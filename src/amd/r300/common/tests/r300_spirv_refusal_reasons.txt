@@ -112,7 +112,7 @@ two vertex inputs at one location
 unrecognized module
 variable initializer outside the grammar
 variable type outside a matching pointer
-vec4 construction outside a DP4 broadcast
+vec4 construction outside a broadcast scalar
 vector type outside the uint3 builtin
 vector type outside vec4 float
 vertex input location beyond the attribute slots
@@ -124,3 +124,7 @@ vertex program exceeds the instruction budget
 vertex varying output left unwritten
 vertex varying outside location 0
 workgroup shared memory
+int vertex input outside the VertexIndex and InstanceIndex builtins
+system value loaded outside its int type
+malformed conversion
+conversion outside a loaded system value to float

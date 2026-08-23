@@ -47,7 +47,22 @@ struct r300_tcl_bypass_triangle_params {
     * eight dwords per vertex at a 32-byte stride.
     */
    bool varying;
+   /* The triangles the consumer draws from the record stream: one
+    * vertex-list draw of 3 * triangle_count vertices over records
+    * 0 .. 3 * triangle_count - 1, the host expansion of an instanced
+    * draw (instance i's three records at 3i).  Zero and one both emit
+    * the reference single triangle, so every consumer that leaves the
+    * field unset keeps its qualified bytes; the ceiling is
+    * R300_TRIANGLE_MAX_TRIANGLES.
+    */
+   uint32_t triangle_count;
 };
+
+/* The vertex-list draw names its count in VAP_VF_CNTL's 16-bit
+ * NUM_VERTICES field and the contract's VAP_VF_MAX_VTX_INDX is a 16-bit
+ * index, so 3 * triangle_count - 1 <= 0xffff.
+ */
+#define R300_TRIANGLE_MAX_TRIANGLES 21845u
 
 /* One IB position whose payload names a relocation slot. */
 struct r300_tcl_bypass_triangle_reloc_site {
@@ -171,6 +186,19 @@ int r300_tcl_bypass_triangle_varying_extent_emit(
    struct r300_tcl_bypass_triangle_ib *out);
 
 int r300_tcl_bypass_triangle_varying_reference_emit(
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The cell family over every admitted parameter: the extent, the record
+ * shape (position-only or position-plus-varying), and the triangle
+ * count.  triangle_count 1 at the maximum extent is the reference cell
+ * of the record shape; a count T differs from it in the contract's
+ * VAP_VF_MAX_VTX_INDX payload (3T - 1) and the draw packet's
+ * NUM_VERTICES field (3T), the two dwords the host expansion of an
+ * instanced draw moves.  Returns -EINVAL for an extent outside 1..64 on
+ * either axis or a count outside 1..R300_TRIANGLE_MAX_TRIANGLES.
+ */
+int r300_tcl_bypass_triangle_family_emit(
+   uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
    struct r300_tcl_bypass_triangle_ib *out);
 
 /* The cell's render geometry.  The manifest publishes these and the contract

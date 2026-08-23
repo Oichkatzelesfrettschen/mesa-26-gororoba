@@ -708,6 +708,15 @@ test(
   args : [r300_triangle_manifest, '--varying'],
   suite : ['r300'],
 )
+# The two-triangle family member -- the host expansion of a two-instance
+# draw -- through the same parser and tracker: six records inside the
+# one-page vertex array bound, VAP_VF_MAX_VTX_INDX 5, NUM_VERTICES 6.
+test(
+  'r300-instanced-cell-cs-track-replay',
+  files('tests/run_cs_track_replay.sh')[0],
+  args : [r300_triangle_manifest, '--triangles', '2'],
+  suite : ['r300'],
+)
 
 # The 2D solid-fill direct-write control cell: the emitter, its oracle,
 # the manifest writer, and the offline kernel-parser replay with the

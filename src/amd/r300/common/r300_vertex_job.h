@@ -62,6 +62,29 @@ enum r300_vertex_job_opcode {
     * input 0.  At most one per job, before the position store; a job
     * that carries it writes eight-dword records. */
    R300_VERTEX_JOB_OP_STORE_VARYING,
+   /* dst lanes = the draw system value src0 names (enum
+    * r300_vertex_job_system_value), the 32-bit two's-complement pattern
+    * broadcast to all four lanes. */
+   R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE,
+   /* dst = (float)(int32_t)temp[src0] per lane, rounded to nearest
+    * even under the executor's environment (SPIR-V OpConvertSToF). */
+   R300_VERTEX_JOB_OP_CONVERT_S_TO_F,
+};
+
+/* The draw system values a job reads, with the Vulkan VertexIndex and
+ * InstanceIndex semantics: each carries the draw's base value.
+ * VERTEX_INDEX is the vertex number the record executes -- first_vertex
+ * plus the relative vertex of a linear draw, or the fetched index plus
+ * the base vertex of an indexed draw.  INSTANCE_INDEX is first_instance
+ * plus the relative instance.  GL's gl_InstanceID omits the base
+ * instance (gl_BaseInstance carries it separately), so a GL front end
+ * over this IR subtracts the base itself; gl_VertexID equals
+ * VERTEX_INDEX.
+ */
+enum r300_vertex_job_system_value {
+   R300_VERTEX_JOB_SV_VERTEX_INDEX = 0,
+   R300_VERTEX_JOB_SV_INSTANCE_INDEX,
+   R300_VERTEX_JOB_SV_COUNT,
 };
 
 struct r300_vertex_job_instruction {
@@ -114,6 +137,20 @@ r300_vertex_job_input_mask(const struct r300_vertex_job *job)
          mask |= 1u << job->instructions[i].src0;
    }
    return mask;
+}
+
+/* True when a LOAD_SYSTEM_VALUE names value sv. */
+static inline bool
+r300_vertex_job_reads_system_value(const struct r300_vertex_job *job,
+                                   enum r300_vertex_job_system_value sv)
+{
+   for (uint32_t i = 0; i < job->instruction_count; i++) {
+      if (job->instructions[i].opcode ==
+             R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE &&
+          job->instructions[i].src0 == (uint8_t)sv)
+         return true;
+   }
+   return false;
 }
 
 static inline uint32_t

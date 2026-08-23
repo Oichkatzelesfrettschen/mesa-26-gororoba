@@ -24,6 +24,44 @@
  */
 int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job);
 
+/* One draw the executor runs: a linear range from first_vertex or a
+ * vertex-id list of vertex_count entries, repeated over instance_count
+ * instances from first_instance.  Records land instance-major, instance
+ * i's vertex v at record i * vertex_count + v -- the triangle list a
+ * TCL-bypass consumer draws linearly as one list.  Each instance's
+ * per-vertex streams read by vertex number, its instance-rate streams
+ * by the Vulkan address calculation (r300_vertex_stream), and the
+ * system values it observes are the Vulkan VertexIndex and
+ * InstanceIndex (enum r300_vertex_job_system_value).
+ */
+struct r300_cpu_vertex_draw {
+   /* NULL for a linear range from first_vertex; otherwise vertex_count
+    * vertex numbers after the index fetch and base-vertex sum. */
+   const uint32_t *vertex_ids;
+   uint32_t first_vertex;
+   uint32_t vertex_count;
+   uint32_t first_instance;
+   uint32_t instance_count;
+};
+
+/* Runs the validated job over the draw and writes
+ * vertex_count * instance_count records.  Refusals, all ahead of the
+ * first carrier write: -EINVAL for a job that fails validation, a zero
+ * vertex or instance count, a read slot whose stream has no data, a
+ * clear stream whose record range (the vertex range or list, or the
+ * instance-record range first_instance .. first_instance plus the last
+ * instance's quotient) the bound cannot prove readable, or an
+ * instance-record number past the 32-bit record space; -ENOSPC when the
+ * records exceed carrier_dwords; the remaining refusals are those of
+ * r300_cpu_vertex_job_execute.  Scalar interpreter; the SIMD candidates
+ * keep the one-instance linear contract.
+ */
+int r300_cpu_vertex_job_execute_draw(const struct r300_vertex_job *job,
+                                     const struct r300_vertex_stream *streams,
+                                     const struct r300_cpu_vertex_draw *draw,
+                                     uint32_t *carrier,
+                                     uint32_t carrier_dwords);
+
 /* Runs the validated job once per vertex in [first_vertex,
  * first_vertex + vertex_count) and writes each vertex's record --
  * the stored position as a packed vec4, then the stored varying when

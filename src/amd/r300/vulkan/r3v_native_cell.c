@@ -238,7 +238,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *vertex_memory,
                                struct r3v_native_memory *color_memory,
                                uint32_t width, uint32_t height,
-                               bool varying)
+                               bool varying, uint32_t triangle_count)
 {
    VkResult role_result = validate_triangle_memory_roles(
       device, vertex_memory, color_memory);
@@ -253,10 +253,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * manifest.
     */
    struct r300_tcl_bypass_triangle_ib cell;
-   int emit_result =
-      varying
-         ? r300_tcl_bypass_triangle_varying_extent_emit(width, height, &cell)
-         : r300_tcl_bypass_triangle_extent_emit(width, height, &cell);
+   int emit_result = r300_tcl_bypass_triangle_family_emit(
+      width, height, varying, triangle_count, &cell);
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -321,7 +319,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory,
                                          R3V_NATIVE_TARGET_WIDTH,
-                                         R3V_NATIVE_TARGET_HEIGHT, false);
+                                         R3V_NATIVE_TARGET_HEIGHT, false, 1);
 }
 
 VkResult
@@ -329,7 +327,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_image *target_image, bool varying)
+   struct r3v_native_image *target_image, bool varying,
+   uint32_t triangle_count)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
    VkResult role_result = validate_triangle_memory_roles(
@@ -337,19 +336,24 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    if (role_result != VK_SUCCESS)
       return role_result;
 
-   const size_t carrier_bytes = varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
-                                        : R3V_TRIANGLE_VERTEX_BYTES;
+   if (triangle_count < 1 || triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   const uint64_t carrier_bytes =
+      (uint64_t)triangle_count * (varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
+                                          : R3V_TRIANGLE_VERTEX_BYTES);
    if (carrier_memory->bo.size < carrier_bytes ||
        color_memory->bo.size <
           r3v_native_image_footprint_bytes(target_image->height)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r3v-native: triangle cell needs %zu vertex bytes "
-                       "and the target image's declared footprint",
+                       "r3v-native: triangle cell needs %" PRIu64
+                       " vertex bytes and the target image's declared "
+                       "footprint",
                        carrier_bytes);
    }
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, target_image->width,
-                                         target_image->height, varying);
+                                         target_image->height, varying,
+                                         triangle_count);
 }
 
 /* Submission-time execution of the public render pass: an empty pass applies
@@ -410,6 +414,8 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          .stride = stream_desc->stride,
          .size_bytes = stream_desc->buffer->vk.size - stream_desc->stream_base,
          .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
+         .instance_rate = stream_desc->instance_rate,
+         .instance_divisor = stream_desc->instance_divisor,
       };
    }
    /* The indexed draw reads its three indices now, at execution, so an
@@ -489,10 +495,38 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                                  draw->target_fill_bytes);
    }
 
-   bool owns_carrier_map = carrier->map == NULL;
-   if (owns_carrier_map &&
-       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
-                            &carrier->map) != 0) {
+   /* The CPU route stages its records on the host and the carrier
+    * receives them only after the clip-volume check below, so a
+    * refused record leaves the carrier untouched.  The staging covers
+    * the draw's 3 * instance_count records of record_dwords each (a
+    * job storing the varying writes eight-dword records; the positions
+    * sit at the head of each record for the transform below): the
+    * reference three ride the stack, a larger expansion rides a host
+    * allocation released before return. */
+   const uint32_t record_dwords =
+      r300_vertex_job_record_dwords(&draw->vertex_job);
+   const uint32_t record_count = 3 * draw->instance_count;
+   const uint32_t staged_dwords = record_count * record_dwords;
+   uint32_t staged_stack[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   uint32_t *staged_heap = NULL;
+   uint32_t *staged = staged_stack;
+   if (staged_dwords > ARRAY_SIZE(staged_stack)) {
+      staged_heap = vk_alloc(&device->vk.alloc,
+                             (size_t)staged_dwords * sizeof(uint32_t), 8,
+                             VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (staged_heap == NULL)
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      staged = staged_heap;
+   }
+
+   bool owns_carrier_map = result == VK_SUCCESS && carrier->map == NULL;
+   if (result != VK_SUCCESS) {
+      /* The staging refusal delivers nothing; the shared unmap and
+       * error paths below still run. */
+   } else if (owns_carrier_map &&
+              radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
+                                   &carrier->map) != 0) {
+      owns_carrier_map = false;
       result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
                          "r3v-native: carrier memory is not CPU-mappable "
                          "at submission");
@@ -525,28 +559,19 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                             "routes through the attended cell surface",
                             route_decision.reason);
       }
-      /* The R2VB host model delivers the raw attribute stream, so it
-       * stands in only for the identity vertex job; any other admitted
-       * job executes on the CPU interpreter route below. */
       /* The R2VB host model delivers one linear range of in-bounds
-       * records, as the device fetch it models would; a robust range
-       * with a record outside the bound, and an indexed draw whose
-       * dereference happens on the host, each execute on the CPU route. */
+       * records for one instance, as the device fetch it models would,
+       * and stands in for the identity vertex job alone; a robust range
+       * with a record outside the bound, an indexed draw whose
+       * dereference happens on the host, an instanced draw, and every
+       * other admitted job execute on the CPU interpreter route. */
       const bool r2vb_route =
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && !draw->indexed &&
+         draw->instance_count == 1 &&
          r300_cpu_vertex_range_in_bounds(stream.format_id, &source,
                                          stream.first_vertex,
                                          R300_TRIANGLE_VERTEX_DWORDS / 4);
-      /* The CPU route stages its records on the host and the carrier
-       * receives them only after the clip-volume check below, so a
-       * refused record leaves the carrier untouched.  A job storing
-       * the varying writes eight-dword records; the positions sit at
-       * the head of each record for the transform below. */
-      const uint32_t record_dwords =
-         r300_vertex_job_record_dwords(&draw->vertex_job);
-      const uint32_t staged_dwords = 3 * record_dwords;
-      uint32_t staged[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
       int gathered = 0;
       if (result != VK_SUCCESS) {
          /* The refused route delivers nothing; the shared unmap and
@@ -573,16 +598,19 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          }
       } else {
          /* The CPU route executes the pipeline's vertex job over every
-          * stream it reads; the identity job reduces to the gather, so
-          * the reference cell's carrier bytes are unchanged. */
-         gathered =
-            draw->indexed
-               ? r300_cpu_vertex_job_execute_indexed(
-                    &draw->vertex_job, sources, vertex_ids,
-                    R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords)
-               : r300_cpu_vertex_job_execute(
-                    &draw->vertex_job, sources, stream.first_vertex,
-                    R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords);
+          * stream it reads, once per instance from first_instance,
+          * instance-major; the identity job over one instance reduces
+          * to the gather, so the reference cell's carrier bytes are
+          * unchanged. */
+         const struct r300_cpu_vertex_draw cpu_draw = {
+            .vertex_ids = draw->indexed ? vertex_ids : NULL,
+            .first_vertex = stream.first_vertex,
+            .vertex_count = R300_TRIANGLE_VERTEX_DWORDS / 4,
+            .first_instance = draw->first_instance,
+            .instance_count = draw->instance_count,
+         };
+         gathered = r300_cpu_vertex_job_execute_draw(
+            &draw->vertex_job, sources, &cpu_draw, staged, staged_dwords);
       }
       if (result == VK_SUCCESS && gathered != 0) {
          const char *operation = r2vb_route ? "R2VB delivery" : "CPU gather";
@@ -609,17 +637,25 @@ r3v_native_cmd_buffer_execute_deferred_draw(
           * The admitted domain is the clip volume, so scissor and
           * clip coincide and the raster needs no clipper; a record
           * outside it refuses, and the submit reports device loss.
+          * The R2VB delivery landed in the carrier, so it transforms
+          * through a host copy; the CPU route transforms its staging.
           */
-         float positions[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
-         const uint32_t position_dwords =
-            r2vb_route ? R300_TRIANGLE_VERTEX_DWORDS : staged_dwords;
-         const uint32_t position_stride = r2vb_route ? 4 : record_dwords;
-         memcpy(positions, r2vb_route ? carrier->map : (void *)staged,
-                position_dwords * sizeof(float));
-         for (unsigned v = 0;
-              result == VK_SUCCESS && v < R300_TRIANGLE_VERTEX_DWORDS / 4;
+         uint32_t delivered[R300_TRIANGLE_VERTEX_DWORDS];
+         uint32_t *records = staged;
+         uint32_t position_count = record_count;
+         uint32_t position_stride = record_dwords;
+         uint32_t position_dwords = staged_dwords;
+         if (r2vb_route) {
+            memcpy(delivered, carrier->map, sizeof(delivered));
+            records = delivered;
+            position_count = R300_TRIANGLE_VERTEX_DWORDS / 4;
+            position_stride = 4;
+            position_dwords = R300_TRIANGLE_VERTEX_DWORDS;
+         }
+         for (uint32_t v = 0; result == VK_SUCCESS && v < position_count;
               v++) {
-            float *pos = &positions[v * position_stride];
+            float pos[4];
+            memcpy(pos, &records[v * position_stride], sizeof(pos));
             /* Negated-conjunction bounds: an unordered comparison
              * fails its conjunct, so a NaN component refuses instead
              * of passing every ordered test.
@@ -635,12 +671,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             }
             pos[0] = (pos[0] + 1.0f) * ((float)draw->target_width / 2.0f);
             pos[1] = (pos[1] + 1.0f) * ((float)draw->target_height / 2.0f);
+            memcpy(&records[v * position_stride], pos, sizeof(pos));
          }
          if (result == VK_SUCCESS)
-            memcpy(carrier->map, positions,
-                   position_dwords * sizeof(float));
+            memcpy(carrier->map, records,
+                   (size_t)position_dwords * sizeof(uint32_t));
       } else if (result == VK_SUCCESS && !r2vb_route) {
-         memcpy(carrier->map, staged, staged_dwords * sizeof(uint32_t));
+         memcpy(carrier->map, staged,
+                (size_t)staged_dwords * sizeof(uint32_t));
       }
       /* Publication is delivery-unconditional: a WINDOW-space carrier
        * skips the transform branch above yet its bytes still cross to
@@ -649,13 +687,14 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       if (result == VK_SUCCESS)
          radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
                                      r2vb_route ? R3V_TRIANGLE_VERTEX_BYTES
-                                                : staged_dwords *
+                                                : (size_t)staged_dwords *
                                                      sizeof(uint32_t));
-      if (owns_carrier_map) {
-         radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
-         carrier->map = NULL;
-      }
    }
+   if (owns_carrier_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
+      carrier->map = NULL;
+   }
+   vk_free(&device->vk.alloc, staged_heap);
 
    for (uint32_t i = 0; i < owned_map_count; i++) {
       radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
@@ -1055,6 +1094,15 @@ r3v_native_deferred_draw_admit_gpu_producer(
                        "r3v-native: GPU producer routes fetch one linear "
                        "source range; an indexed draw executes on the CPU "
                        "route");
+   }
+   /* The producers deliver one instance's three records; the host
+    * expansion of further instances, and the per-instance streams and
+    * InstanceIndex it feeds, belong to the CPU route. */
+   if (draw->instance_count != 1) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: GPU producer routes fetch one linear "
+                       "source range for one instance; an instanced draw "
+                       "executes on the CPU route");
    }
    if (route.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED)
       return admit_fetched_producer(device, cmd_buffer);

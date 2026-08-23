@@ -98,7 +98,12 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
          if (inst->src0 >= job->constant_count)
             return -EINVAL;
          break;
+      case R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE:
+         if (inst->src0 >= R300_VERTEX_JOB_SV_COUNT)
+            return -EINVAL;
+         break;
       case R300_VERTEX_JOB_OP_MOV:
+      case R300_VERTEX_JOB_OP_CONVERT_S_TO_F:
          reads = 1;
          break;
       case R300_VERTEX_JOB_OP_FADD:
@@ -144,12 +149,45 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
 }
 
 /* The vertex number the relative vertex v executes: the v-th entry of
- * the caller's vertex-id list, or first_vertex + v over a linear range.
+ * the draw's vertex-id list, or first_vertex + v over a linear range.
  */
-static inline uint32_t vertex_number(const uint32_t *vertex_ids,
-                                     uint32_t first_vertex, uint32_t v)
+static inline uint32_t vertex_number(const struct r300_cpu_vertex_draw *draw,
+                                     uint32_t v)
 {
-   return vertex_ids ? vertex_ids[v] : first_vertex + v;
+   return draw->vertex_ids ? draw->vertex_ids[v] : draw->first_vertex + v;
+}
+
+/* The record an instance-rate stream serves to relative instance i:
+ * the Vulkan vertex input address calculation, first_instance plus the
+ * relative instance divided by the divisor, or first_instance alone
+ * under divisor zero.
+ */
+static inline uint32_t instance_record(const struct r300_vertex_stream *stream,
+                                       const struct r300_cpu_vertex_draw *draw,
+                                       uint32_t i)
+{
+   return stream->instance_divisor
+             ? draw->first_instance + i / stream->instance_divisor
+             : draw->first_instance;
+}
+
+/* The records an instance-rate stream serves across the draw: one
+ * under divisor zero, otherwise the quotient of the last relative
+ * instance plus one.  Returns false when the last record's number
+ * leaves the 32-bit record space the gather and the VAP address.
+ */
+static bool instance_record_range(const struct r300_vertex_stream *stream,
+                                  const struct r300_cpu_vertex_draw *draw,
+                                  uint32_t *count)
+{
+   const uint64_t last = stream->instance_divisor
+                            ? (uint64_t)(draw->instance_count - 1) /
+                                 stream->instance_divisor
+                            : 0;
+   if ((uint64_t)draw->first_instance + last > UINT32_MAX)
+      return false;
+   *count = (uint32_t)last + 1;
+   return true;
 }
 
 /* The shared execution guard: every refusal every entry point shares,
@@ -160,16 +198,17 @@ static inline uint32_t vertex_number(const uint32_t *vertex_ids,
  */
 static int execute_guard(const struct r300_vertex_job *job,
                          const struct r300_vertex_stream *streams,
-                         const uint32_t *vertex_ids, uint32_t first_vertex,
-                         uint32_t vertex_count, const uint32_t *carrier,
-                         uint32_t carrier_dwords)
+                         const struct r300_cpu_vertex_draw *draw,
+                         const uint32_t *carrier, uint32_t carrier_dwords)
 {
    int error = r300_cpu_vertex_job_validate(job);
    if (error)
       return error;
-   if (!streams || !carrier || vertex_count == 0)
+   if (!streams || !carrier || !draw || draw->vertex_count == 0 ||
+       draw->instance_count == 0)
       return -EINVAL;
-   if ((uint64_t)vertex_count * r300_vertex_job_record_dwords(job) >
+   if ((uint64_t)draw->vertex_count * draw->instance_count *
+          r300_vertex_job_record_dwords(job) >
        carrier_dwords)
       return -ENOSPC;
 
@@ -187,17 +226,26 @@ static int execute_guard(const struct r300_vertex_job *job,
        * cannot fail after the carrier has been written; under the
        * stream's robust rule the gathers substitute instead of
        * refusing, and the range needs no bound. */
+      uint32_t instance_records = 0;
+      if (stream->instance_rate &&
+          !instance_record_range(stream, draw, &instance_records))
+         return -EINVAL;
       if (!stream->oob_reads_zero) {
-         if (vertex_ids) {
-            for (uint32_t v = 0; v < vertex_count; v++) {
+         if (stream->instance_rate) {
+            if (!r300_cpu_vertex_range_in_bounds(
+                   job->input_format_ids[slot], stream, draw->first_instance,
+                   instance_records))
+               return -EINVAL;
+         } else if (draw->vertex_ids) {
+            for (uint32_t v = 0; v < draw->vertex_count; v++) {
                if (!r300_cpu_vertex_range_in_bounds(
-                      job->input_format_ids[slot], stream, vertex_ids[v],
-                      1))
+                      job->input_format_ids[slot], stream,
+                      draw->vertex_ids[v], 1))
                   return -EINVAL;
             }
          } else if (!r300_cpu_vertex_range_in_bounds(
-                       job->input_format_ids[slot], stream, first_vertex,
-                       vertex_count)) {
+                       job->input_format_ids[slot], stream,
+                       draw->first_vertex, draw->vertex_count)) {
             return -EINVAL;
          }
       }
@@ -213,35 +261,60 @@ static int execute_guard(const struct r300_vertex_job *job,
    return 0;
 }
 
-/* Gathers the current vertex's logical vec4 from every slot the job
- * reads; an unread slot's lanes stay unwritten and no LOAD_INPUT names
- * it, so validation keeps the read set and the gather set equal. */
+/* Gathers the current record's logical vec4 from every slot the job
+ * reads -- the vertex number's record from a per-vertex stream, the
+ * relative instance's record from an instance-rate stream; an unread
+ * slot's lanes stay unwritten and no LOAD_INPUT names it, so
+ * validation keeps the read set and the gather set equal. */
 static int gather_inputs(const struct r300_vertex_job *job,
                          const struct r300_vertex_stream *streams,
+                         const struct r300_cpu_vertex_draw *draw,
                          uint32_t input_mask, uint32_t vertex,
+                         uint32_t instance,
                          uint32_t inputs[R300_VERTEX_JOB_MAX_INPUTS][4])
 {
    for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
       if (!(input_mask & (1u << slot)))
          continue;
-      int error = r300_cpu_vertex_gather(job->input_format_ids[slot],
-                                         &streams[slot], vertex, 1,
-                                         inputs[slot], 4);
+      const struct r300_vertex_stream *stream = &streams[slot];
+      const uint32_t record = stream->instance_rate
+                                 ? instance_record(stream, draw, instance)
+                                 : vertex;
+      int error = r300_cpu_vertex_gather(job->input_format_ids[slot], stream,
+                                         record, 1, inputs[slot], 4);
       if (error)
          return error;
    }
    return 0;
 }
 
-/* The scalar interpreter over a linear range or a vertex-id list. */
+/* The system value a record observes: the vertex number, or the
+ * instance index first_instance + relative instance. */
+static inline uint32_t system_value(enum r300_vertex_job_system_value sv,
+                                    const struct r300_cpu_vertex_draw *draw,
+                                    uint32_t vertex, uint32_t instance)
+{
+   return sv == R300_VERTEX_JOB_SV_VERTEX_INDEX
+             ? vertex
+             : draw->first_instance + instance;
+}
+
+static inline uint32_t int_to_float_bits(uint32_t bits)
+{
+   int32_t value;
+   memcpy(&value, &bits, sizeof(value));
+   return float_result_to_bits((float)value);
+}
+
+/* The scalar interpreter over the draw: instance-major records, each
+ * instance's vertices in order over a linear range or a vertex-id
+ * list. */
 static int execute_scalar(const struct r300_vertex_job *job,
                           const struct r300_vertex_stream *streams,
-                          const uint32_t *vertex_ids, uint32_t first_vertex,
-                          uint32_t vertex_count, uint32_t *carrier,
-                          uint32_t carrier_dwords)
+                          const struct r300_cpu_vertex_draw *draw,
+                          uint32_t *carrier, uint32_t carrier_dwords)
 {
-   int error = execute_guard(job, streams, vertex_ids, first_vertex,
-                             vertex_count, carrier, carrier_dwords);
+   int error = execute_guard(job, streams, draw, carrier, carrier_dwords);
    if (error)
       return error;
 
@@ -252,12 +325,15 @@ static int execute_scalar(const struct r300_vertex_job *job,
 
    const uint32_t record_dwords = r300_vertex_job_record_dwords(job);
    const uint32_t input_mask = r300_vertex_job_input_mask(job);
-   for (uint32_t v = 0; v < vertex_count; v++) {
-      uint32_t *record = &carrier[(uint64_t)v * record_dwords];
+   const uint64_t records = (uint64_t)draw->vertex_count * draw->instance_count;
+   for (uint64_t r = 0; r < records; r++) {
+      const uint32_t instance = (uint32_t)(r / draw->vertex_count);
+      const uint32_t v = (uint32_t)(r % draw->vertex_count);
+      const uint32_t vertex = vertex_number(draw, v);
+      uint32_t *record = &carrier[r * record_dwords];
       uint32_t temps[R300_VERTEX_JOB_MAX_TEMPS][4];
       uint32_t inputs[R300_VERTEX_JOB_MAX_INPUTS][4];
-      error = gather_inputs(job, streams, input_mask,
-                            vertex_number(vertex_ids, first_vertex, v),
+      error = gather_inputs(job, streams, draw, input_mask, vertex, instance,
                             inputs);
       if (error)
          goto out;
@@ -277,6 +353,19 @@ static int execute_scalar(const struct r300_vertex_job *job,
          case R300_VERTEX_JOB_OP_MOV:
             memcpy(temps[inst->dst], temps[inst->src0],
                    sizeof(temps[inst->dst]));
+            break;
+         case R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE: {
+            const uint32_t value = system_value(
+               (enum r300_vertex_job_system_value)inst->src0, draw, vertex,
+               instance);
+            for (uint32_t lane = 0; lane < 4; lane++)
+               temps[inst->dst][lane] = value;
+            break;
+         }
+         case R300_VERTEX_JOB_OP_CONVERT_S_TO_F:
+            for (uint32_t lane = 0; lane < 4; lane++)
+               temps[inst->dst][lane] =
+                  int_to_float_bits(temps[inst->src0][lane]);
             break;
          case R300_VERTEX_JOB_OP_FADD:
             for (uint32_t lane = 0; lane < 4; lane++)
@@ -349,13 +438,26 @@ out:
    return error;
 }
 
+int r300_cpu_vertex_job_execute_draw(const struct r300_vertex_job *job,
+                                     const struct r300_vertex_stream *streams,
+                                     const struct r300_cpu_vertex_draw *draw,
+                                     uint32_t *carrier,
+                                     uint32_t carrier_dwords)
+{
+   return execute_scalar(job, streams, draw, carrier, carrier_dwords);
+}
+
 int r300_cpu_vertex_job_execute(const struct r300_vertex_job *job,
                                 const struct r300_vertex_stream *streams,
                                 uint32_t first_vertex, uint32_t vertex_count,
                                 uint32_t *carrier, uint32_t carrier_dwords)
 {
-   return execute_scalar(job, streams, NULL, first_vertex, vertex_count,
-                         carrier, carrier_dwords);
+   const struct r300_cpu_vertex_draw draw = {
+      .first_vertex = first_vertex,
+      .vertex_count = vertex_count,
+      .instance_count = 1,
+   };
+   return execute_scalar(job, streams, &draw, carrier, carrier_dwords);
 }
 
 int r300_cpu_vertex_job_execute_indexed(
@@ -365,8 +467,12 @@ int r300_cpu_vertex_job_execute_indexed(
 {
    if (!vertex_ids)
       return -EINVAL;
-   return execute_scalar(job, streams, vertex_ids, 0, vertex_count, carrier,
-                         carrier_dwords);
+   const struct r300_cpu_vertex_draw draw = {
+      .vertex_ids = vertex_ids,
+      .vertex_count = vertex_count,
+      .instance_count = 1,
+   };
+   return execute_scalar(job, streams, &draw, carrier, carrier_dwords);
 }
 
 #ifdef __SSE2__
@@ -428,8 +534,15 @@ execute_simd(const struct r300_vertex_job *job,
              uint32_t *carrier, uint32_t carrier_dwords,
              enum simd_load_form form)
 {
-   int error = execute_guard(job, streams, NULL, first_vertex, vertex_count,
-                             carrier, carrier_dwords);
+   /* The linear contract: one instance from instance zero, so an
+    * instance-rate stream serves its first_instance record (zero) and
+    * the instance index reads zero. */
+   const struct r300_cpu_vertex_draw draw = {
+      .first_vertex = first_vertex,
+      .vertex_count = vertex_count,
+      .instance_count = 1,
+   };
+   int error = execute_guard(job, streams, &draw, carrier, carrier_dwords);
    if (error)
       return error;
 
@@ -448,8 +561,8 @@ execute_simd(const struct r300_vertex_job *job,
        * interpreter's per-lane host binary32 operation does. */
       __m128i temps[R300_VERTEX_JOB_MAX_TEMPS];
       uint32_t inputs[R300_VERTEX_JOB_MAX_INPUTS][4];
-      error = gather_inputs(job, streams, input_mask, first_vertex + v,
-                            inputs);
+      error = gather_inputs(job, streams, &draw, input_mask, first_vertex + v,
+                            0, inputs);
       if (error)
          goto out;
 
@@ -465,6 +578,17 @@ execute_simd(const struct r300_vertex_job *job,
             break;
          case R300_VERTEX_JOB_OP_MOV:
             temps[inst->dst] = temps[inst->src0];
+            break;
+         case R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE:
+            temps[inst->dst] = _mm_set1_epi32((int)system_value(
+               (enum r300_vertex_job_system_value)inst->src0, &draw,
+               first_vertex + v, 0));
+            break;
+         case R300_VERTEX_JOB_OP_CONVERT_S_TO_F:
+            /* cvtdq2ps rounds each lane under MXCSR's round-to-nearest,
+             * the scalar interpreter's (float)(int32_t) conversion. */
+            temps[inst->dst] = simd_float_result(
+               _mm_castps_si128(_mm_cvtepi32_ps(temps[inst->src0])));
             break;
          case R300_VERTEX_JOB_OP_FADD:
             temps[inst->dst] = simd_float_result(_mm_castps_si128(

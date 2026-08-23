@@ -37,6 +37,10 @@
 #define R3V_NATIVE_MAX_VERTEX_BINDINGS 16u
 #define R3V_NATIVE_MAX_VERTEX_ATTRIBUTE_OFFSET 2047u
 #define R3V_NATIVE_MAX_VERTEX_BINDING_STRIDE 2048u
+/* The instances one draw expands on the host into the cell's consumer
+ * list: the cell family's triangle ceiling (R300_TRIANGLE_MAX_TRIANGLES,
+ * the 16-bit vertex count and index bound). */
+#define R3V_NATIVE_MAX_DRAW_INSTANCES 21845u
 
 /* The result every native refusal returns.  Each command's registry entry
  * fixes the results it may return, and VK_ERROR_UNKNOWN is the one error the
@@ -255,6 +259,11 @@ struct r3v_native_deferred_stream {
    uint64_t stream_base;
    uint32_t stride;
    int format_id;
+   /* An instance-rate binding: the record read is the Vulkan vertex
+    * input address calculation over first_instance and the relative
+    * instance (r300_vertex_stream); the core divisor is one. */
+   bool instance_rate;
+   uint32_t instance_divisor;
 };
 
 struct r3v_native_deferred_draw {
@@ -280,6 +289,12 @@ struct r3v_native_deferred_draw {
    uint32_t index_bytes;
    uint32_t first_index;
    int32_t vertex_offset;
+   /* The draw's instances: the host executes the three vertices once
+    * per instance from first_instance, instance-major, into the
+    * carrier the cell family's 3 * instance_count vertex-list draw
+    * consumes; InstanceIndex observes first_instance + instance. */
+   uint32_t first_instance;
+   uint32_t instance_count;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
@@ -638,6 +653,10 @@ struct r3v_native_pipeline {
    struct r3v_native_vertex_attribute
       attributes[R300_VERTEX_JOB_MAX_INPUTS];
    uint32_t binding_strides[R3V_NATIVE_MAX_VERTEX_BINDINGS];
+   /* The bindings declared VK_VERTEX_INPUT_RATE_INSTANCE, one bit per
+    * binding; their attributes read by instance at the core divisor of
+    * one. */
+   uint32_t instance_rate_bindings;
    /* The immutable CPU vertex job the semantic front end lowered from
     * the vertex module, and the GPU-route admission metadata: the
     * TCL-bypass cell delivers the raw attribute stream, so only the
@@ -814,17 +833,20 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
    const struct r3v_native_vertex_stream_desc *stream);
 
 /* Record-only cell installer for the public draw lowering: emits the
- * fixed cell IB -- the varying cell when the bound pipeline's job stores
- * the varying, the position-only cell otherwise -- against the carrier
- * and color references and installs it, with no memory writes.  The
- * vertex gather and the sentinel clear ride cmd_buffer->deferred_draw
- * and execute at queue submission.
+ * cell family member -- the varying cell when the bound pipeline's job
+ * stores the varying, the position-only cell otherwise, over
+ * triangle_count triangles (the draw's instances) -- against the
+ * carrier and color references and installs it, with no memory writes.
+ * The carrier holds 3 * triangle_count records.  The vertex gather and
+ * the sentinel clear ride cmd_buffer->deferred_draw and execute at
+ * queue submission.
  */
 VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_image *target_image, bool varying);
+   struct r3v_native_image *target_image, bool varying,
+   uint32_t triangle_count);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

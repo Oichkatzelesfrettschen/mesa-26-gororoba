@@ -1759,7 +1759,12 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'indexed-range-refused', 'indexed-unbound-refused',
                         'indexed-uint8-refused',
                         'indexed-alias-target-refused',
-                        'indexed-fetched-refused']
+                        'indexed-fetched-refused', 'instanced-armed',
+                        'instanced-first-instance-armed',
+                        'instanced-index-armed', 'vertex-index-armed',
+                        'instanced-robust-armed', 'instanced-zero-refused',
+                        'instanced-out-of-bounds-refused',
+                        'instanced-fetched-refused']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,

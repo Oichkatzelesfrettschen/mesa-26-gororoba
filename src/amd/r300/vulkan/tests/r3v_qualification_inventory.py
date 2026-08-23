@@ -192,6 +192,14 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-indexed-uint8-refused",
     "r3v-native-submit-order-indexed-alias-target-refused",
     "r3v-native-submit-order-indexed-fetched-refused",
+    "r3v-native-submit-order-instanced-armed",
+    "r3v-native-submit-order-instanced-first-instance-armed",
+    "r3v-native-submit-order-instanced-index-armed",
+    "r3v-native-submit-order-vertex-index-armed",
+    "r3v-native-submit-order-instanced-robust-armed",
+    "r3v-native-submit-order-instanced-zero-refused",
+    "r3v-native-submit-order-instanced-out-of-bounds-refused",
+    "r3v-native-submit-order-instanced-fetched-refused",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.

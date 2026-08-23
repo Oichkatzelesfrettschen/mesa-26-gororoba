@@ -868,6 +868,213 @@ static void test_indexed_execution(void)
    assert(carrier[0] == CANARY);
 }
 
+/* Instanced execution: instance-major records, instance-rate streams
+ * under the Vulkan address calculation at divisors 1, 2, and 0, the
+ * per-instance record bound (clear refuses, robust reads zeros), the
+ * 32-bit record-space refusal, and a zero instance count. */
+static void test_instanced_execution(void)
+{
+   /* Three positions at stride 16 and four offset records at stride
+    * 16; the job adds the instance-rate offset to the position. */
+   const float positions[12] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f,  6.0f,
+                                 7.0f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f };
+   const float offsets[16] = { 100.0f, 0.0f, 0.0f, 0.0f, 200.0f, 0.0f,
+                               0.0f,   0.0f, 300.0f, 0.0f, 0.0f, 0.0f,
+                               400.0f, 0.0f, 0.0f,   0.0f };
+   struct r300_vertex_stream streams[2] = {
+      stream_of(positions, 16, sizeof(positions)),
+      stream_of(offsets, 16, sizeof(offsets)),
+   };
+   streams[1].instance_rate = true;
+   streams[1].instance_divisor = 1;
+   struct r300_vertex_job job = {
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4,
+                            R300_VERTEX_FORMAT_F32_4 },
+      .instruction_count = 4,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0, .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 1, .src0 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_FADD, .dst = 2, .src0 = 0,
+           .src1 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+   };
+   uint32_t carrier[CARRIER_DWORDS];
+
+   /* Two instances from first_instance 1: instance i reads offset
+    * record 1 + i, and the records land instance-major. */
+   struct r300_cpu_vertex_draw draw = {
+      .vertex_count = 3,
+      .first_instance = 1,
+      .instance_count = 2,
+   };
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   for (unsigned i = 0; i < 2; i++) {
+      for (unsigned v = 0; v < 3; v++) {
+         const uint32_t *record = &carrier[(i * 3 + v) * 4];
+         assert(record[0] == f_bits(positions[v * 4] + offsets[(1 + i) * 4]));
+         assert(record[1] == f_bits(positions[v * 4 + 1]));
+         assert(record[3] == f_bits(positions[v * 4 + 3]));
+      }
+   }
+   assert(carrier[24] == CANARY);
+
+   /* Divisor 2 over four instances from first_instance 0: instances 0
+    * and 1 read record 0, instances 2 and 3 read record 1. */
+   streams[1].instance_divisor = 2;
+   draw.first_instance = 0;
+   draw.instance_count = 4;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   for (unsigned i = 0; i < 4; i++)
+      assert(carrier[i * 12] == f_bits(positions[0] + offsets[(i / 2) * 4]));
+   assert(carrier[48] == CANARY);
+
+   /* Divisor 0: every instance reads first_instance's record. */
+   streams[1].instance_divisor = 0;
+   draw.first_instance = 3;
+   draw.instance_count = 4;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   for (unsigned i = 0; i < 4; i++)
+      assert(carrier[i * 12] == f_bits(positions[0] + offsets[12]));
+
+   /* The instance-record bound: first_instance 3 over two instances at
+    * divisor 1 reads record 4 of a four-record stream -- clear refuses
+    * before any write, robust reads the record as zeros. */
+   streams[1].instance_divisor = 1;
+   draw.first_instance = 3;
+   draw.instance_count = 2;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == -EINVAL);
+   assert(carrier[0] == CANARY && carrier[23] == CANARY);
+   streams[1].oob_reads_zero = true;
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   assert(carrier[0] == f_bits(positions[0] + offsets[12]));
+   assert(carrier[12] == f_bits(positions[0]));
+   assert(carrier[15] == f_bits(positions[3]));
+
+   /* A last instance record past the 32-bit record space refuses on a
+    * robust stream too: the record number names nothing the gather or
+    * the VAP can address. */
+   draw.first_instance = 0xffffffffu;
+   draw.instance_count = 2;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == -EINVAL);
+   assert(carrier[0] == CANARY);
+   /* Divisor 0 addresses first_instance alone, so the same draw
+    * executes. */
+   streams[1].instance_divisor = 0;
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   assert(carrier[0] == f_bits(positions[0]));
+   streams[1].oob_reads_zero = false;
+   streams[1].instance_divisor = 1;
+
+   /* A zero instance count refuses; the carrier capacity counts every
+    * instance's records. */
+   draw.first_instance = 0;
+   draw.instance_count = 0;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == -EINVAL);
+   draw.instance_count = 4;
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           47) == -ENOSPC);
+   assert(carrier[0] == CANARY);
+
+   /* The one-instance linear entry equals the draw form byte for byte
+    * over an instance-rate stream: instance 0 reads record 0. */
+   uint32_t linear[CARRIER_DWORDS];
+   draw.instance_count = 1;
+   fill_canary(carrier);
+   fill_canary(linear);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   assert(r300_cpu_vertex_job_execute(&job, streams, 0, 3, linear,
+                                      CARRIER_DWORDS) == 0);
+   assert(memcmp(carrier, linear, sizeof(carrier)) == 0);
+}
+
+/* The draw system values: VertexIndex is the vertex number (the linear
+ * first_vertex sum or the listed id), InstanceIndex is first_instance
+ * plus the relative instance -- the Vulkan values, which carry the
+ * draw's base -- broadcast as int patterns and converted to float under
+ * round-to-nearest-even. */
+static void test_system_values(void)
+{
+   struct r300_vertex_job job = {
+      .instruction_count = 5,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE, .dst = 0,
+           .src0 = R300_VERTEX_JOB_SV_VERTEX_INDEX },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE, .dst = 1,
+           .src0 = R300_VERTEX_JOB_SV_INSTANCE_INDEX },
+         { .opcode = R300_VERTEX_JOB_OP_CONVERT_S_TO_F, .dst = 2,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_VARYING, .src0 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+   };
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+   /* The job reads no stream; a zeroed stream table serves it. */
+   const struct r300_vertex_stream streams[R300_VERTEX_JOB_MAX_INPUTS] = {
+      0
+   };
+   uint32_t carrier[CARRIER_DWORDS];
+
+   /* Linear from vertex 5, two instances from instance 7. */
+   struct r300_cpu_vertex_draw draw = {
+      .first_vertex = 5,
+      .vertex_count = 3,
+      .first_instance = 7,
+      .instance_count = 2,
+   };
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   for (unsigned i = 0; i < 2; i++) {
+      for (unsigned v = 0; v < 3; v++) {
+         const uint32_t *record = &carrier[(i * 3 + v) * 8];
+         for (unsigned lane = 0; lane < 4; lane++) {
+            assert(record[lane] == f_bits((float)(5 + v)));
+            assert(record[4 + lane] == 7 + i);
+         }
+      }
+   }
+   assert(carrier[48] == CANARY);
+
+   /* The listed vertex numbers after a base-vertex sum, including a
+    * wrapped negative one, and the conversion's rounding: 2^24 + 1 is
+    * a tie that rounds to even, and 0xffffffff converts as -1. */
+   const uint32_t ids[3] = { 9, 16777217u, 0xffffffffu };
+   draw.vertex_ids = ids;
+   draw.instance_count = 1;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute_draw(&job, streams, &draw, carrier,
+                                           CARRIER_DWORDS) == 0);
+   assert(carrier[0] == f_bits(9.0f));
+   assert(carrier[8] == f_bits(16777216.0f));
+   assert(carrier[16] == f_bits(-1.0f));
+   assert(carrier[4] == 7 && carrier[12] == 7 && carrier[20] == 7);
+
+   /* Validation: a system value outside the two, and a conversion of
+    * an unwritten register, refuse. */
+   struct r300_vertex_job bad = job;
+   bad.instructions[0].src0 = R300_VERTEX_JOB_SV_COUNT;
+   assert(r300_cpu_vertex_job_validate(&bad) == -EINVAL);
+   bad = job;
+   bad.instructions[2].src0 = 5;
+   assert(r300_cpu_vertex_job_validate(&bad) == -EINVAL);
+}
+
 int main(void)
 {
    test_identity_preserves_bits();
@@ -883,6 +1090,8 @@ int main(void)
    test_varying_store_records();
    test_multi_attribute_slots();
    test_indexed_execution();
+   test_instanced_execution();
+   test_system_values();
    test_execute_refusals_no_partial_write();
    test_determinism();
    printf("r300_cpu_vertex_job_test: all cases pass\n");

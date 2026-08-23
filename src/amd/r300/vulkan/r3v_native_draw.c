@@ -224,13 +224,16 @@ stream_overlaps_target(const struct r3v_native_memory *memory, uint64_t lo,
 
 /* The draw arguments the two draw entry points lower: a linear draw
  * names its first vertex; an indexed draw names the first index and the
- * base vertex and reads the bound index buffer at execution.
+ * base vertex and reads the bound index buffer at execution; both name
+ * the instance range the host expands.
  */
 struct draw_args {
    bool indexed;
    uint32_t first_vertex;
    uint32_t first_index;
    int32_t vertex_offset;
+   uint32_t first_instance;
+   uint32_t instance_count;
 };
 
 /* The draw lowering realizes the CPU_VERTEX node and the fixed cell:
@@ -238,10 +241,12 @@ struct draw_args {
  * carrier and the pass target's memory, and the vertex gather plus the
  * load-op clear ride deferred_draw to queue submission, so resource
  * reads and the clear carry execution-time semantics.  The cell draws
- * exactly three vertices in one instance, so the accepted draw
- * arguments are that shape: a linear draw with any firstVertex the
- * bound range proves readable, or an indexed draw whose three indices
- * the record proves readable.
+ * exactly three vertices per instance, so the accepted draw arguments
+ * are that shape: a linear draw with any firstVertex the bound range
+ * proves readable, or an indexed draw whose three indices the record
+ * proves readable, over instance_count instances from first_instance
+ * that the host expands into the cell family's 3 * instance_count
+ * vertex list.
  */
 static void
 record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
@@ -351,11 +356,22 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
-      if (!args->indexed &&
+      /* The last record the draw reads from this stream: an
+       * instance-rate binding reads records first_instance .. first_instance
+       * + instance_count - 1 at the core divisor of one; a per-vertex
+       * binding of a linear draw reads first_vertex .. first_vertex + 2,
+       * and an indexed draw's vertex numbers are judged at execution. */
+      const bool instance_rate =
+         (pipeline->instance_rate_bindings & (1u << attribute->binding)) != 0;
+      const bool record_bound_proved = instance_rate || !args->indexed;
+      const uint64_t last_record =
+         instance_rate
+            ? (uint64_t)args->first_instance + args->instance_count - 1
+            : (uint64_t)args->first_vertex + 2;
+      if (record_bound_proved &&
           !device->vk.enabled_features.robustBufferAccess &&
           (available < format->semantic_record_bytes ||
-           ((uint64_t)args->first_vertex + 2) * stride >
-              available - format->semantic_record_bytes)) {
+           last_record * stride > available - format->semantic_record_bytes)) {
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
@@ -364,12 +380,16 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          .stream_base = stream_base,
          .stride = stride,
          .format_id = attribute->format_id,
+         .instance_rate = instance_rate,
+         .instance_divisor = 1,
       };
    }
 
    /* The carrier descriptor is recording-lifetime state, so it rides
     * the command pool's allocator and a custom host-memory policy
-    * covers it with the command buffer itself.
+    * covers it with the command buffer itself.  The carrier BO holds
+    * the 3 * instance_count records the host expansion writes, in whole
+    * GTT pages; one page carries the reference three.
     */
    struct r3v_native_memory *carrier =
       vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*carrier), 8,
@@ -378,7 +398,12 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       poison(commandBuffer, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
    }
-   if (radeon_drm_vk_bo_create(&device->drm, 4096,
+   const uint64_t carrier_record_bytes =
+      4 * r300_vertex_job_record_dwords(&pipeline->vertex_job);
+   const uint64_t carrier_bytes =
+      (3 * (uint64_t)args->instance_count * carrier_record_bytes + 4095) &
+      ~(uint64_t)4095;
+   if (radeon_drm_vk_bo_create(&device->drm, carrier_bytes,
                                R3V_NATIVE_MEMORY_ALIGNMENT,
                                RADEON_GEM_DOMAIN_GTT, 0, false,
                                &carrier->bo) != 0) {
@@ -389,7 +414,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
 
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
-      pipeline->varying);
+      pipeline->varying, args->instance_count);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
@@ -408,6 +433,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .index_bytes = args->indexed ? cmd_buffer->bound_index_bytes : 0,
       .first_index = args->first_index,
       .vertex_offset = args->vertex_offset,
+      .first_instance = args->first_instance,
+      .instance_count = args->instance_count,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
@@ -420,17 +447,32 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    cmd_buffer->draw_recorded = true;
 }
 
+/* The instance range both draws accept: at least one instance (the cell
+ * family has no empty member; a zero count draws nothing and refuses
+ * rather than recording a cell that draws), at most the family's
+ * triangle ceiling, from any firstInstance -- the per-instance streams
+ * and the InstanceIndex builtin carry it, the Vulkan semantics in which
+ * the base instance is part of the instance index.
+ */
+static bool
+instance_range_admitted(uint32_t instanceCount)
+{
+   return instanceCount >= 1 && instanceCount <= R3V_NATIVE_MAX_DRAW_INSTANCES;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
             uint32_t instanceCount, uint32_t firstVertex,
             uint32_t firstInstance)
 {
-   if (vertexCount != 3 || instanceCount != 1 || firstInstance != 0) {
+   if (vertexCount != 3 || !instance_range_admitted(instanceCount)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
    record_draw(commandBuffer, &(struct draw_args){
                                  .first_vertex = firstVertex,
+                                 .first_instance = firstInstance,
+                                 .instance_count = instanceCount,
                               });
 }
 
@@ -446,7 +488,7 @@ r3v_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount,
                    uint32_t instanceCount, uint32_t firstIndex,
                    int32_t vertexOffset, uint32_t firstInstance)
 {
-   if (indexCount != 3 || instanceCount != 1 || firstInstance != 0) {
+   if (indexCount != 3 || !instance_range_admitted(instanceCount)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -454,5 +496,7 @@ r3v_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount,
                                  .indexed = true,
                                  .first_index = firstIndex,
                                  .vertex_offset = vertexOffset,
+                                 .first_instance = firstInstance,
+                                 .instance_count = instanceCount,
                               });
 }
