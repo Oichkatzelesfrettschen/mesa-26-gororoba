@@ -140,6 +140,34 @@ execute_copy(struct r3v_native_device *device,
       release_memory(device, dst_memory, clear_owned);
       return VK_SUCCESS;
    }
+   case R3V_NATIVE_COPY_FILL_BUFFER:
+   case R3V_NATIVE_COPY_UPDATE_BUFFER: {
+      dst_memory = op->dst_buffer->memory;
+      if (dst_memory == NULL)
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: fill or update destination is "
+                          "unbound at submission");
+      uint8_t *dst_map = NULL;
+      bool dst_owned;
+      VkResult result = map_memory(device, dst_memory, &dst_map, &dst_owned);
+      if (result != VK_SUCCESS)
+         return result;
+      uint8_t *dst = dst_map + op->dst_buffer->offset + op->dst_offset;
+      if (op->kind == R3V_NATIVE_COPY_UPDATE_BUFFER) {
+         memcpy(dst, op->update_data, op->size);
+      } else {
+         /* The pattern is already little-endian; a byte-wise store
+          * needs no alignment from the destination offset's dword
+          * multiple, which the record admission proved anyway. */
+         for (uint64_t i = 0; i < op->size; i += 4)
+            memcpy(dst + i, &op->clear_dword, 4);
+      }
+      if (!dst_owned)
+         radeon_drm_vk_bo_cache_sync(&device->drm, dst_map,
+                                     dst_memory->bo.size);
+      release_memory(device, dst_memory, dst_owned);
+      return VK_SUCCESS;
+   }
    case R3V_NATIVE_COPY_IMAGE_TO_IMAGE:
       src_memory = op->src_image->memory;
       src_base_offset = op->src_image->memory_offset +

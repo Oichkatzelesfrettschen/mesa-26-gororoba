@@ -155,6 +155,15 @@ enum r3v_native_copy_kind {
     * packed little-endian B8G8R8A8 texel.
     */
    R3V_NATIVE_COPY_CLEAR_IMAGE,
+   /* Dword-pattern fill of a bound range: dst_buffer, dst_offset, size
+    * (resolved at record; VK_WHOLE_SIZE truncates to whole dwords),
+    * clear_dword the pattern.
+    */
+   R3V_NATIVE_COPY_FILL_BUFFER,
+   /* Inline data write: update_data owns a record-time copy of the
+    * application bytes, released with the recording.
+    */
+   R3V_NATIVE_COPY_UPDATE_BUFFER,
 };
 
 struct r3v_native_deferred_copy {
@@ -173,6 +182,7 @@ struct r3v_native_deferred_copy {
    uint32_t dst_x, dst_y;
    uint32_t width, height;
    uint32_t clear_dword;
+   uint8_t *update_data;
 };
 
 /* The first command-pool allocation keeps ordinary copy recordings compact;

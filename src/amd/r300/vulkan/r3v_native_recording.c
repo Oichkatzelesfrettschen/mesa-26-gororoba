@@ -314,6 +314,25 @@ r3v_CmdBeginQuery(
 }
 
 
+/* Half-open rectangle intersection over one image's texel grid; the
+ * copy admissions use it to refuse same-handle overlap, which Vulkan
+ * leaves undefined.
+ */
+static bool
+r3v_native_rects_overlap(int32_t ax, int32_t ay, int32_t bx, int32_t by,
+                         uint32_t width, uint32_t height)
+{
+   return ax < bx + (int32_t)width && bx < ax + (int32_t)width &&
+          ay < by + (int32_t)height && by < ay + (int32_t)height;
+}
+
+/* The admitted blit is the unit-scale unflipped rectangle between
+ * transfer-family images: equal source and destination extents make
+ * every filter the same texel move, so the recording lowers it onto
+ * the image-to-image copy executor.  Scaling, axis flips, and
+ * overlapping same-image rectangles refuse -- the host row mover has
+ * no filter and Vulkan leaves overlapping blits undefined.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBlitImage(
    VkCommandBuffer commandBuffer,
@@ -325,9 +344,65 @@ r3v_CmdBlitImage(
    const VkImageBlit *pRegions,
    VkFilter filter)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_image, src, srcImage);
+   VK_FROM_HANDLE(r3v_native_image, dst, dstImage);
+
+   (void)filter;
+   for (uint32_t r = 0; r < regionCount; r++) {
+      const VkImageBlit *region = &pRegions[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      const int32_t src_w = region->srcOffsets[1].x - region->srcOffsets[0].x;
+      const int32_t src_h = region->srcOffsets[1].y - region->srcOffsets[0].y;
+      const int32_t dst_w = region->dstOffsets[1].x - region->dstOffsets[0].x;
+      const int32_t dst_h = region->dstOffsets[1].y - region->dstOffsets[0].y;
+      const VkExtent3D extent = {
+         .width = (uint32_t)(src_w > 0 ? src_w : 0),
+         .height = (uint32_t)(src_h > 0 ? src_h : 0),
+         .depth = 1,
+      };
+      if (op == NULL || src_w <= 0 || src_h <= 0 ||
+          src_w != dst_w || src_h != dst_h ||
+          region->srcOffsets[0].z != 0 || region->srcOffsets[1].z != 1 ||
+          region->dstOffsets[0].z != 0 || region->dstOffsets[1].z != 1 ||
+          !r3v_native_transfer_source_layout_ok(srcImageLayout) ||
+          !r3v_native_transfer_destination_layout_ok(dstImageLayout) ||
+          !r3v_native_copy_subresource_ok(&region->srcSubresource) ||
+          !r3v_native_copy_subresource_ok(&region->dstSubresource) ||
+          !r3v_native_copy_rect_ok(src, region->srcOffsets[0], extent) ||
+          !r3v_native_copy_rect_ok(dst, region->dstOffsets[0], extent) ||
+          (src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
+          (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
+          (src == dst &&
+           r3v_native_rects_overlap(region->srcOffsets[0].x,
+                                    region->srcOffsets[0].y,
+                                    region->dstOffsets[0].x,
+                                    region->dstOffsets[0].y,
+                                    extent.width, extent.height))) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      *op = (struct r3v_native_deferred_copy){
+         .kind = R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
+         .src_image = src,
+         .dst_image = dst,
+         .src_x = (uint32_t)region->srcOffsets[0].x,
+         .src_y = (uint32_t)region->srcOffsets[0].y,
+         .dst_x = (uint32_t)region->dstOffsets[0].x,
+         .dst_y = (uint32_t)region->dstOffsets[0].y,
+         .width = extent.width,
+         .height = extent.height,
+      };
+      cmd_buffer->deferred_copy_count++;
+   }
 }
 
+/* An in-pass attachment clear interleaves with the pass's one
+ * deferred draw, whose lowering carries the load-op clear alone, so
+ * the recording refuses until the pass machinery orders mid-pass
+ * clears against the draw.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearAttachments(
    VkCommandBuffer commandBuffer,
@@ -401,6 +476,10 @@ r3v_CmdClearColorImage(
    }
 }
 
+/* Depth/stencil clears name a depth or stencil aspect, and image
+ * creation admits the one color format, so no image this command can
+ * clear exists and the recording refuses.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearDepthStencilImage(
    VkCommandBuffer commandBuffer,
@@ -435,7 +514,13 @@ r3v_CmdCopyBuffer(
              region->size) ||
           !r3v_native_copy_buffer_range_ok(
              dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT, region->dstOffset,
-             region->size)) {
+             region->size) ||
+          /* Vulkan leaves overlapping copy regions undefined, so a
+           * same-buffer region pair whose byte ranges intersect
+           * refuses. */
+          (src == dst &&
+           region->srcOffset < region->dstOffset + region->size &&
+           region->dstOffset < region->srcOffset + region->size)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
@@ -524,7 +609,14 @@ r3v_CmdCopyImage(
           !r3v_native_copy_rect_ok(dst, region->dstOffset,
                                    region->extent) ||
           (src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
-          (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
+          (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
+          /* Vulkan leaves overlapping copy regions undefined, so a
+           * same-image rectangle pair that intersects refuses. */
+          (src == dst &&
+           r3v_native_rects_overlap(region->srcOffset.x, region->srcOffset.y,
+                                    region->dstOffset.x, region->dstOffset.y,
+                                    region->extent.width,
+                                    region->extent.height))) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
@@ -652,6 +744,11 @@ r3v_CmdExecuteCommands(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* The fill is a dword-pattern store through the host mapping of the
+ * bound range.  VK_WHOLE_SIZE runs from the offset to the buffer end
+ * truncated to whole dwords; an explicit size is a dword multiple
+ * inside the buffer.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdFillBuffer(
    VkCommandBuffer commandBuffer,
@@ -660,7 +757,32 @@ r3v_CmdFillBuffer(
    VkDeviceSize size,
    uint32_t data)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_buffer, dst, dstBuffer);
+
+   struct r3v_native_deferred_copy *op =
+      r3v_native_copy_slot(commandBuffer);
+   VkDeviceSize fill_size = 0;
+   if (op != NULL && dst != NULL && dstOffset % 4 == 0 &&
+       dstOffset <= dst->vk.size) {
+      fill_size = size == VK_WHOLE_SIZE
+                     ? (dst->vk.size - dstOffset) & ~(VkDeviceSize)3
+                     : size;
+   }
+   if (op == NULL || fill_size == 0 || fill_size % 4 != 0 ||
+       !r3v_native_copy_buffer_range_ok(
+          dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT, dstOffset, fill_size)) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   *op = (struct r3v_native_deferred_copy){
+      .kind = R3V_NATIVE_COPY_FILL_BUFFER,
+      .dst_buffer = dst,
+      .dst_offset = dstOffset,
+      .size = fill_size,
+      .clear_dword = util_cpu_to_le32(data),
+   };
+   cmd_buffer->deferred_copy_count++;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -770,6 +892,10 @@ r3v_CmdResetQueryPool(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* Resolve reads a multisampled source, and image creation admits
+ * VK_SAMPLE_COUNT_1_BIT alone, so no image a resolve can name exists
+ * and the recording refuses.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdResolveImage(
    VkCommandBuffer commandBuffer,
@@ -874,6 +1000,11 @@ r3v_CmdSetViewport(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+/* The update captures the application bytes at record into storage the
+ * recording owns, so the source may be dead at submission; the Vulkan
+ * inline-update ceiling is 65536 bytes and offset and size are dword
+ * multiples.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdUpdateBuffer(
    VkCommandBuffer commandBuffer,
@@ -882,7 +1013,33 @@ r3v_CmdUpdateBuffer(
    VkDeviceSize dataSize,
    const void *pData)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_buffer, dst, dstBuffer);
+
+   struct r3v_native_deferred_copy *op =
+      r3v_native_copy_slot(commandBuffer);
+   if (op == NULL || pData == NULL || dataSize == 0 ||
+       dataSize > 65536 || dataSize % 4 != 0 || dstOffset % 4 != 0 ||
+       !r3v_native_copy_buffer_range_ok(
+          dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT, dstOffset, dataSize)) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   uint8_t *data = vk_alloc(&cmd_buffer->vk.pool->alloc, dataSize, 8,
+                            VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (data == NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   memcpy(data, pData, dataSize);
+   *op = (struct r3v_native_deferred_copy){
+      .kind = R3V_NATIVE_COPY_UPDATE_BUFFER,
+      .dst_buffer = dst,
+      .dst_offset = dstOffset,
+      .size = dataSize,
+      .update_data = data,
+   };
+   cmd_buffer->deferred_copy_count++;
 }
 
 VKAPI_ATTR void VKAPI_CALL

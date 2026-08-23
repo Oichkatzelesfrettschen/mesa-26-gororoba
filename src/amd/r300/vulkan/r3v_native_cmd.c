@@ -63,6 +63,9 @@ r3v_native_cmd_buffer_release_recording(
       vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_slot);
       cmd_buffer->owned_slot = NULL;
    }
+   for (uint32_t i = 0; i < cmd_buffer->deferred_copy_count; i++)
+      vk_free(&cmd_buffer->vk.pool->alloc,
+              cmd_buffer->deferred_copies[i].update_data);
    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_copies);
    cmd_buffer->deferred_copies = NULL;
    cmd_buffer->deferred_copy_capacity = 0;
