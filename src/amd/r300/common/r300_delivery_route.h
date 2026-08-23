@@ -24,11 +24,21 @@
  * keeps the CPU default as the faster route rather than as the
  * incumbent one.
  *
- * That result is bounded to the admitted geometry: three vertices,
- * with the application's records riding as literal DRAW_IMMD_2 body
- * dwords.  The host gather scales with vertex count while the
- * producer's command overhead does not, so a wider admitted set is a
- * separate measurement and does not inherit this decision.
+ * The fetched producer -- the VAP reading the application's records
+ * from the bound vertex BO instead of the CP reading them as packet
+ * dwords -- was measured the same way on RS482 silicon as a third arm
+ * beside the two: over twelve three-route rounds the CPU route's
+ * 101.7 us median led the fetched route's 114.2 us with all twelve
+ * paired differences agreeing in sign, a 0.0913 lead of the CPU
+ * median, and the fetched route did not separate from the immediate
+ * producer.  The CPU default therefore stands measured against both
+ * producer routes.
+ *
+ * Both results are bounded to the admitted geometry: three F32_4
+ * vertices at the consumer's maximum extent.  The host gather scales
+ * with vertex count while neither producer's command overhead does, so
+ * a wider admitted set is a separate measurement and does not inherit
+ * these decisions.
  */
 enum r300_delivery_route {
    R300_DELIVERY_ROUTE_CPU = 0,
