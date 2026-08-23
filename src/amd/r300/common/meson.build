@@ -5,6 +5,7 @@
 # functions publish evidence and are not driver objects.
 r300_common_contract_files = files(
   'r300_carrier_policy.c',
+  'r300_compute_verb.c',
   'r300_direct_write.c',
   'r300_first_draw_state.c',
   'r300_fragment_binary.c',
@@ -68,6 +69,20 @@ r300_grid_fold_test = executable(
   c_args : r300_format_contract_test_c_args,
   include_directories : r300_format_contract_test_includes,
   gnu_symbol_visibility : 'hidden',
+)
+# The compute verb ledger: rows, checker calibration, precommitment.
+r300_compute_verb_test = executable(
+  'r300_compute_verb_test',
+  files('r300_compute_verb.c', 'r300_numeric_domain.c',
+        'tests/r300_compute_verb_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-compute-verb-ledger',
+  r300_compute_verb_test,
+  suite : ['r300'],
 )
 test(
   'r300-grid-fold',
