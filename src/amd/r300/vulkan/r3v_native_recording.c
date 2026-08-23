@@ -398,10 +398,13 @@ r3v_CmdBlitImage(
    }
 }
 
-/* An in-pass attachment clear interleaves with the pass's one
- * deferred draw, whose lowering carries the load-op clear alone, so
- * the recording refuses until the pass machinery orders mid-pass
- * clears against the draw.
+/* In-pass attachment clears admit over a draw-less pass alone: the
+ * host applies each rectangle after the load-op clear on the zero-IB
+ * path, and a pass carrying the device draw refuses the clear because
+ * the draw executes after every host write and would reorder against
+ * it.  Each rectangle names the one color attachment's single layer
+ * and closes inside the render area, which the begin admission pinned
+ * to the target extent.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearAttachments(
@@ -411,7 +414,57 @@ r3v_CmdClearAttachments(
    uint32_t rectCount,
    const VkClearRect *pRects)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+
+   if (cmd_buffer->pass_target == NULL || cmd_buffer->draw_recorded ||
+       draw->stream_mask != 0) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   for (uint32_t a = 0; a < attachmentCount; a++) {
+      const VkClearAttachment *att = &pAttachments[a];
+      if (att->aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
+          att->colorAttachment != 0) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      uint32_t packed = 0;
+      static const unsigned lane_byte[4] = { 2, 1, 0, 3 };
+      for (unsigned c = 0; c < 4; c++) {
+         float f = att->clearValue.color.float32[c];
+         if (f != f)
+            f = 0.0f;
+         f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+         const uint32_t unorm = (uint32_t)(f * 255.0f + 0.5f);
+         packed |= unorm << (lane_byte[c] * 8);
+      }
+      for (uint32_t r = 0; r < rectCount; r++) {
+         const VkClearRect *rect = &pRects[r];
+         const VkRect2D *area = &rect->rect;
+         if (draw->clear_rect_count == R3V_NATIVE_PASS_CLEAR_RECT_MAX ||
+             rect->baseArrayLayer != 0 || rect->layerCount != 1 ||
+             area->offset.x < 0 || area->offset.y < 0 ||
+             area->extent.width == 0 || area->extent.height == 0 ||
+             (uint32_t)area->offset.x > draw->target_width ||
+             (uint32_t)area->offset.y > draw->target_height ||
+             area->extent.width >
+                draw->target_width - (uint32_t)area->offset.x ||
+             area->extent.height >
+                draw->target_height - (uint32_t)area->offset.y) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+         draw->clear_rects[draw->clear_rect_count++] =
+            (struct r3v_native_pass_clear_rect){
+               .x = (uint32_t)area->offset.x,
+               .y = (uint32_t)area->offset.y,
+               .width = area->extent.width,
+               .height = area->extent.height,
+               .dword = util_cpu_to_le32(packed),
+            };
+      }
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
