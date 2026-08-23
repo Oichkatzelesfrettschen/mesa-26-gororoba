@@ -374,9 +374,45 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * empty subpass has no vertex stream or carrier to execute, but its clear
     * still realizes at queue submission.
     */
-   if (draw->stream_mask == 0)
-      return sentinel_fill_color(device, draw->target_memory,
-                                 draw->target_fill_bytes);
+   if (draw->stream_mask == 0) {
+      VkResult clear_result = sentinel_fill_color(
+         device, draw->target_memory, draw->target_fill_bytes);
+      if (clear_result != VK_SUCCESS || draw->clear_rect_count == 0)
+         return clear_result;
+      /* The recorded attachment clears land after the load-op clear,
+       * in API order, over the render family's fixed row pitch at
+       * bind offset zero.
+       */
+      struct r3v_native_memory *target = draw->target_memory;
+      bool owns_map = target->map == NULL;
+      if (owns_map &&
+          radeon_drm_vk_bo_map(&device->drm, &target->bo,
+                               &target->map) != 0) {
+         return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                          "r3v-native: pass target memory is not "
+                          "CPU-mappable for the attachment clear");
+      }
+      for (uint32_t r = 0; r < draw->clear_rect_count; r++) {
+         const struct r3v_native_pass_clear_rect *rect =
+            &draw->clear_rects[r];
+         for (uint32_t row = 0; row < rect->height; row++) {
+            uint32_t *texels =
+               (uint32_t *)((uint8_t *)target->map +
+                            (uint64_t)(rect->y + row) *
+                               R3V_NATIVE_TARGET_ROW_BYTES) +
+               rect->x;
+            for (uint32_t x = 0; x < rect->width; x++)
+               texels[x] = rect->dword;
+         }
+      }
+      radeon_drm_vk_bo_cache_sync(&device->drm, target->map,
+                                  draw->target_fill_bytes);
+      if (owns_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
+         target->map = NULL;
+      }
+      return VK_SUCCESS;
+   }
 
    struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
 

@@ -184,6 +184,7 @@ check_timeline_wait_consumption(void)
    f(vkDestroyPipeline) f(vkCreateCommandPool) f(vkDestroyCommandPool)     \
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
+   f(vkCmdClearAttachments)                                                 \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
    f(vkCmdCopyImageToBuffer)                                               \
@@ -918,6 +919,81 @@ main(void)
         i++)
       empty_color_map[i] = COLOR_SEED;
    vkUnmapMemory(device, color_memory);
+
+   /* In-pass attachment clears over a draw-less pass: each rectangle
+    * lands after the load-op clear on the zero-IB path, exact bytes at
+    * the rect corners and the sentinel outside; a rect past the render
+    * area refuses; a draw after a recorded clear refuses (the device
+    * draw executes after every host write); a clear outside a pass
+    * refuses.
+    */
+   {
+      VkCommandBuffer clear_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(clear_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      const VkClearAttachment red = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+         .colorAttachment = 0,
+         .clearValue = { .color = { .float32 = { 1.0f, 0.0f, 0.0f,
+                                                 1.0f } } },
+      };
+      const VkClearRect rect = {
+         .rect = { .offset = { 8, 8 }, .extent = { 16, 16 } },
+         .layerCount = 1,
+      };
+      vkCmdClearAttachments(clear_cmd, 1, &red, 1, &rect);
+      vkCmdEndRenderPass(clear_cmd);
+      assert(vkEndCommandBuffer(clear_cmd) == VK_SUCCESS);
+      assert(vkQueueSubmit(
+                queue, 1,
+                &(VkSubmitInfo){
+                   .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                   .commandBufferCount = 1,
+                   .pCommandBuffers = &clear_cmd,
+                },
+                VK_NULL_HANDLE) == VK_SUCCESS);
+      uint32_t *clear_map = NULL;
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&clear_map) == VK_SUCCESS);
+      const uint32_t row_words = R3V_NATIVE_TARGET_ROW_BYTES / 4;
+      /* B8G8R8A8 red = 0x00, 0x00, 0xff, 0xff bytes = LE 0xffff0000. */
+      assert(clear_map[8 * row_words + 8] == 0xffff0000u);
+      assert(clear_map[23 * row_words + 23] == 0xffff0000u);
+      assert(clear_map[7 * row_words + 8] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(clear_map[24 * row_words + 24] ==
+             R300_TRIANGLE_COLOR_SENTINEL);
+      for (unsigned i = 0; i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4;
+           i++)
+         clear_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
+
+      VkCommandBuffer bad_rect_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(bad_rect_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      const VkClearRect oversize_rect = {
+         .rect = { .offset = { 60, 0 }, .extent = { 8, 8 } },
+         .layerCount = 1,
+      };
+      vkCmdClearAttachments(bad_rect_cmd, 1, &red, 1, &oversize_rect);
+      assert(vkEndCommandBuffer(bad_rect_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
+      VkCommandBuffer clear_draw_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(clear_draw_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdClearAttachments(clear_draw_cmd, 1, &red, 1, &rect);
+      vkCmdBindPipeline(clear_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(clear_draw_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(clear_draw_cmd, 3, 1, 0, 0);
+      assert(vkEndCommandBuffer(clear_draw_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
+      VkCommandBuffer outside_cmd = fresh_cmd();
+      vkCmdClearAttachments(outside_cmd, 1, &red, 1, &rect);
+      assert(vkEndCommandBuffer(outside_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+   }
 
    /* The positive leg: the full public sequence ends EXECUTABLE and
     * installs the reference cell against the byte-identical carrier.

@@ -285,6 +285,14 @@ struct r3v_native_deferred_stream {
    uint32_t instance_divisor;
 };
 
+/* One recorded vkCmdClearAttachments rectangle, bounded per pass. */
+#define R3V_NATIVE_PASS_CLEAR_RECT_MAX 8
+
+struct r3v_native_pass_clear_rect {
+   uint32_t x, y, width, height;
+   uint32_t dword;
+};
+
 struct r3v_native_deferred_draw {
    bool pending;
    /* The attribute slots the vertex job reads, one bit per slot; zero
@@ -331,6 +339,13 @@ struct r3v_native_deferred_draw {
    uint32_t gpu_producer_dwords;
    uint32_t gpu_expected_carrier[16];
    struct r3v_native_memory *target_memory;
+   /* In-pass attachment clears over a draw-less pass: rectangles
+    * inside the render area with their packed little-endian B8G8R8A8
+    * texels, applied after the load-op clear on the zero-IB path.
+    */
+   uint32_t clear_rect_count;
+   struct r3v_native_pass_clear_rect
+      clear_rects[R3V_NATIVE_PASS_CLEAR_RECT_MAX];
    /* The pass target's declared footprint: the load-op clear's exact
     * byte bound at execution.
     */

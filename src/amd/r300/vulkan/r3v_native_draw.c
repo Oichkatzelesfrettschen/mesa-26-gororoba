@@ -257,8 +257,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
    struct r3v_native_pipeline *pipeline = cmd_buffer->bound_pipeline;
 
+   /* A recorded attachment clear executes on the host after the
+    * load-op clear, and the device draw executes after every host
+    * write, so a clear-then-draw pass would reorder the clear over the
+    * draw's output; the pass carries one or the other.
+    */
    if (cmd_buffer->pass_target == NULL || pipeline == NULL ||
-       cmd_buffer->draw_recorded) {
+       cmd_buffer->draw_recorded ||
+       cmd_buffer->deferred_draw.clear_rect_count != 0) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
