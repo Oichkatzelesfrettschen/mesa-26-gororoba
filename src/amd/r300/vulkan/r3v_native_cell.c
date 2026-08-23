@@ -648,6 +648,13 @@ admit_fetched_producer(struct r3v_native_device *device,
                        " exceeds the 32-bit vertex pointer",
                        first_byte);
    }
+   if (first_byte % 4 != 0 || draw->stride % 4 != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched source offset %" PRIu64
+                       " and stride %u must be dword-granular; the VBPNTR "
+                       "pointer and stride fields carry dwords",
+                       first_byte, draw->stride);
+   }
    const struct r300_r2vb_fetched_source source = {
       .format_id = draw->format_id,
       .offset_bytes = (uint32_t)first_byte,

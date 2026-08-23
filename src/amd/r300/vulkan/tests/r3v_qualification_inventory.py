@@ -165,6 +165,11 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-gpu-fetched-composed",
     "r3v-native-submit-order-gpu-fetched-compose-failure",
     "r3v-native-submit-order-gpu-fetched-wrong-digest",
+    "r3v-native-submit-order-gpu-fetched-offset-misaligned",
+    "r3v-native-submit-order-gpu-fetched-stride-misaligned",
+    "r3v-native-submit-order-gpu-fetched-out-of-domain",
+    "r3v-native-submit-order-gpu-fetched-out-of-bounds",
+    "r3v-native-submit-order-gpu-fetched-aliased-source",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.
