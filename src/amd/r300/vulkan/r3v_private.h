@@ -45,7 +45,10 @@ extern "C" {
 #define R3V_MAX_PUSH_CONSTANTS_SIZE 128u
 
 #define R3V_VK10_MIN_IMAGE_DIMENSION_1D 4096u
-#define R3V_VK10_MIN_IMAGE_DIMENSION_2D 4096u
+/* The executed 2D ceiling: the transfer image family admits extents to
+ * the single-tile texture dimension, so the limit advertises what
+ * creation admits rather than the Vulkan 1.0 minimum. */
+#define R3V_MAX_IMAGE_DIMENSION_2D R3V_R3XX_MAX_TEXTURE_DIMENSION
 #define R3V_VK10_MIN_IMAGE_DIMENSION_CUBE 4096u
 #define R3V_VK10_MIN_UNIFORM_BUFFER_RANGE (16u * 1024u)
 #define R3V_VK10_MIN_STORAGE_BUFFER_RANGE (128u * 1024u * 1024u)
@@ -54,8 +57,12 @@ extern "C" {
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_X 128u
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Y 128u
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z 64u
-#define R3V_VK10_MIN_VIEWPORT_DIMENSION 4096u
-#define R3V_VK10_MIN_FRAMEBUFFER_DIMENSION 4096u
+/* The executed render ceiling: the render-target family and the
+ * viewport/scissor admissions top out at the qualified cell's 64-pixel
+ * extent, so the framebuffer and viewport limits advertise it; the
+ * deviation from the Vulkan 1.0 4096 minimum rides the declared
+ * nonconformance. */
+#define R3V_MAX_RENDER_EXTENT 64u
 /* Every image and pipeline admission executes single-sample alone, so
  * the limits advertise the one truthful bit; Vulkan 1.0's required
  * minimum includes VK_SAMPLE_COUNT_4_BIT, and this deviation is part

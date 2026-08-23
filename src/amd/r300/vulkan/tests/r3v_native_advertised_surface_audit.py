@@ -50,6 +50,56 @@ ADVERTISED_DEVICE_EXTENSIONS = {
 EXTENSION_TABLE = "r3v_native_device_extensions_supported"
 FEATURE_FUNCTION = "r3v_physical_device_init_features"
 
+# Each receipt-bound limit names the expression the source must assign
+# and the test that exercises the executed ceiling the expression
+# advertises.  A limit assignment diverging from its row fails, so a
+# limit cannot widen without naming the receipt that makes it true.
+LIMIT_RECEIPTS = {
+    "maxImageDimension2D": (
+        "R3V_MAX_IMAGE_DIMENSION_2D",
+        "r3v-native-transfer-ops moves bytes through the transfer family "
+        "whose creation ceiling the macro names"),
+    "maxFramebufferWidth": (
+        "R3V_MAX_RENDER_EXTENT",
+        "r3v-native-public-surface renders at the 64-pixel target "
+        "ceiling"),
+    "maxFramebufferHeight": (
+        "R3V_MAX_RENDER_EXTENT",
+        "r3v-native-public-surface renders at the 64-pixel target "
+        "ceiling"),
+    "maxViewportDimensions[0]": (
+        "R3V_MAX_RENDER_EXTENT",
+        "the public-surface dynamic viewport legs hold the recorded "
+        "extent to the cell shape"),
+    "maxViewportDimensions[1]": (
+        "R3V_MAX_RENDER_EXTENT",
+        "the public-surface dynamic viewport legs hold the recorded "
+        "extent to the cell shape"),
+    "framebufferColorSampleCounts": (
+        "R3V_SUPPORTED_SAMPLE_COUNTS",
+        "r3v-native-format-features asserts the nine single-sample "
+        "limits"),
+}
+
+
+def audit_limits(source_text):
+    """Every receipt-bound limit assignment matches its registry row."""
+    text = strip_comments(source_text)
+    for name, (expression, _receipt) in LIMIT_RECEIPTS.items():
+        pattern = (r"props\s*->\s*" + re.escape(name) +
+                   r"\s*=\s*([^;]+);")
+        match = re.search(pattern, text)
+        if match is None:
+            raise AuditFailure(
+                f"the source assigns no props->{name}, so the "
+                f"receipt-bound limit cannot be read")
+        value = " ".join(match.group(1).split())
+        if value != expression:
+            raise AuditFailure(
+                f"props->{name} is {value} where the receipt registry "
+                f"pins {expression}; widen the limit only with the "
+                f"receipt that makes it true")
+
 
 class AuditFailure(Exception):
     """The advertised surface and the registry disagree."""
@@ -161,6 +211,7 @@ def audit(source_text):
             + " which the native build no longer advertises; a registry "
               "naming a route the driver dropped overstates the surface")
     native_features_empty(source_text)
+    audit_limits(source_text)
     return sorted(advertised)
 
 
@@ -176,9 +227,14 @@ def selftest():
             f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
         prefix = ("   memset(features, 0, sizeof(*features));\n"
                   if feature_prefix is None else feature_prefix)
+        limit_lines = "".join(
+            f"   props->{name} = {expression};\n"
+            for name, (expression, _receipt) in LIMIT_RECEIPTS.items())
         return ("static const struct vk_device_extension_table\n"
                 f"   {EXTENSION_TABLE} = {{\n"
                 + "\n".join(entries) + "\n   };\n"
+                "\nstatic void fill_limits(VkPhysicalDeviceLimits *props)\n"
+                "{\n" + limit_lines + "}\n"
                 "\nstatic void\n"
                 f"{FEATURE_FUNCTION}(struct vk_features *features)\n"
                 "{\n" + prefix + feature_branch + "}\n")
@@ -253,6 +309,18 @@ def selftest():
                                     "   return;\n"))
           == sorted(ADVERTISED_DEVICE_EXTENSIONS))
 
+    # Known-bad: a receipt-bound limit widened without its registry row.
+    widened = good().replace(
+        "props->maxFramebufferWidth = R3V_MAX_RENDER_EXTENT;",
+        "props->maxFramebufferWidth = 4096;")
+    check("refuses a widened limit without its receipt",
+          refuses(widened, "receipt"))
+    dropped = good().replace(
+        "   props->maxImageDimension2D = R3V_MAX_IMAGE_DIMENSION_2D;\n",
+        "")
+    check("refuses a source missing a receipt-bound limit",
+          refuses(dropped, "assigns no"))
+
     # Known-bad: a value the audit cannot read leaves the surface unread.
     entries = [f"      .{name} = true," for name in ADVERTISED_DEVICE_EXTENSIONS]
     entries.append("      .KHR_swapchain = with_swapchain,")
@@ -298,7 +366,8 @@ def main(argv):
     for name in advertised:
         print(f"  {name}: {ADVERTISED_DEVICE_EXTENSIONS[name]}")
     print(f"native device extensions advertised: {len(advertised)}; "
-          f"native feature set empty")
+          f"native feature set empty; {len(LIMIT_RECEIPTS)} receipt-bound "
+          f"limits pinned")
     return 0
 
 
