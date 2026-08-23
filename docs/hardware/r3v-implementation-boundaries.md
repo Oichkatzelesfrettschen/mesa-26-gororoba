@@ -1094,7 +1094,10 @@ R2VB migration follows the fixed triangle and CPU route:
    through RS_IP_0 / RS_INST_0 to the pass-through fragment program (the
    varying triangle cell on the CPU route, runner
    `r3v_native_attended_varying_triangle`, procedure
-   `r3v-native-attended-varying-triangle-procedure.md`);
+   `r3v-native-attended-varying-triangle-procedure.md`; silicon-delivered
+   on RS482 with the gradient exact at every interior sample, retained as
+   steinmarder-r300 bundle
+   `r3v-native-varying-triangle-cell-first-delivery-rs482`);
 6. add hybrid carriers only with an explicit final VAP join.
 
 The route owns its BOs, PM4, packers, barriers, and completion; r300g's R2VB
