@@ -178,13 +178,22 @@ call_create_image(void)
 static int
 call_create_event(void)
 {
-   VkEvent event = (VkEvent)(uintptr_t)0x1;
+   VkEvent event = VK_NULL_HANDLE;
    VkResult result = vkCreateEvent(
       device, &(VkEventCreateInfo){
                  .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
               },
       NULL, &event);
-   return (result != VK_SUCCESS && event == VK_NULL_HANDLE) ? 0 : 1;
+   if (result != VK_SUCCESS || event == VK_NULL_HANDLE)
+      return 1;
+   if (vkGetEventStatus(device, event) != VK_EVENT_RESET ||
+       vkSetEvent(device, event) != VK_SUCCESS ||
+       vkGetEventStatus(device, event) != VK_EVENT_SET ||
+       vkResetEvent(device, event) != VK_SUCCESS ||
+       vkGetEventStatus(device, event) != VK_EVENT_RESET)
+      return 1;
+   vkDestroyEvent(device, event, NULL);
+   return 0;
 }
 
 static int
@@ -753,7 +762,8 @@ main(void)
       mapped_range_setup_ready(allocation_result, map_result, live_map);
 
    in_child("vkCreateImage refuses", call_create_image);
-   in_child("vkCreateEvent refuses", call_create_event);
+   in_child("vkCreateEvent constructs the host event",
+            call_create_event);
    in_child("vkCreateSampler records state and destroys",
             call_create_sampler);
    in_child("vkCreateDescriptorPool refuses", call_create_descriptor_pool);

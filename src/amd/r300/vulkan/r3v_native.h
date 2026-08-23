@@ -216,6 +216,33 @@ struct r3v_native_query_pool {
    uint8_t state[R3V_NATIVE_QUERY_POOL_MAX_QUERIES];
 };
 
+/* A host-visible event: one signaled bit, set and read from the host
+ * immediately and from the device timeline at queue submission, which
+ * executes the recorded sequence synchronously.
+ */
+struct r3v_native_event {
+   struct vk_object_base base;
+   bool signaled;
+};
+
+/* One recorded event transition or wait, applied at queue submission
+ * in recorded order; a wait finding its event unsignaled is a
+ * dependency no later work can satisfy under synchronous execution,
+ * so the submission reports device loss.
+ */
+enum r3v_native_event_op_kind {
+   R3V_NATIVE_EVENT_OP_SET,
+   R3V_NATIVE_EVENT_OP_RESET,
+   R3V_NATIVE_EVENT_OP_WAIT,
+};
+
+struct r3v_native_event_op {
+   enum r3v_native_event_op_kind kind;
+   struct r3v_native_event *event;
+};
+
+#define R3V_NATIVE_EVENT_OP_MAX 16
+
 /* One recorded query state transition, applied at queue submission in
  * recorded order.
  */
@@ -434,6 +461,8 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_query_op query_ops[R3V_NATIVE_QUERY_OP_MAX];
    uint32_t query_op_count;
+   struct r3v_native_event_op event_ops[R3V_NATIVE_EVENT_OP_MAX];
+   uint32_t event_op_count;
    struct r3v_native_query_pool *active_query_pool;
    uint32_t active_query;
    bool viewport_set;
@@ -820,6 +849,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_sampler, base, VkSampler,
                                VK_OBJECT_TYPE_SAMPLER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_query_pool, base, VkQueryPool,
                                VK_OBJECT_TYPE_QUERY_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_event, base, VkEvent,
+                               VK_OBJECT_TYPE_EVENT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_pipeline, base, VkPipeline,
                                VK_OBJECT_TYPE_PIPELINE)
 

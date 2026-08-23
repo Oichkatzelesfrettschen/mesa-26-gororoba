@@ -81,13 +81,30 @@ r3v_CreateSampler(VkDevice _device, const VkSamplerCreateInfo *pCreateInfo,
    return VK_SUCCESS;
 }
 
+/* An event is one signaled bit the host reads and writes immediately;
+ * the device timeline observes it at queue submission, which executes
+ * the recorded sequence synchronously, so both sides see one ordered
+ * history.  VK_EVENT_CREATE_DEVICE_ONLY would withhold the host side
+ * and refuses.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateEvent(VkDevice _device, const VkEventCreateInfo *pCreateInfo,
                 const VkAllocationCallbacks *pAllocator, VkEvent *pEvent)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
+
    *pEvent = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (pCreateInfo->flags != 0)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   struct r3v_native_event *event =
+      vk_object_zalloc(&device->vk, pAllocator, sizeof(*event),
+                       VK_OBJECT_TYPE_EVENT);
+   if (event == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   *pEvent = r3v_native_event_to_handle(event);
+   return VK_SUCCESS;
 }
 
 /* Occlusion pools construct as availability state: the recording
@@ -146,9 +163,15 @@ r3v_DestroySampler(VkDevice _device, VkSampler _sampler,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_DestroyEvent(VkDevice _device, VkEvent event,
+r3v_DestroyEvent(VkDevice _device, VkEvent _event,
                  const VkAllocationCallbacks *pAllocator)
 {
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VK_FROM_HANDLE(r3v_native_event, event, _event);
+
+   if (event == NULL)
+      return;
+   vk_object_free(&device->vk, pAllocator, event);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -164,24 +187,38 @@ r3v_DestroyQueryPool(VkDevice _device, VkQueryPool _pool,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r3v_GetEventStatus(VkDevice _device, VkEvent event)
+r3v_GetEventStatus(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   VK_FROM_HANDLE(r3v_native_event, event, _event);
+
+   if (event == NULL)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   return event->signaled ? VK_EVENT_SET : VK_EVENT_RESET;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r3v_SetEvent(VkDevice _device, VkEvent event)
+r3v_SetEvent(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   VK_FROM_HANDLE(r3v_native_event, event, _event);
+
+   if (event == NULL)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   event->signaled = true;
+   return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-r3v_ResetEvent(VkDevice _device, VkEvent event)
+r3v_ResetEvent(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   VK_FROM_HANDLE(r3v_native_event, event, _event);
+
+   if (event == NULL)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   event->signaled = false;
+   return VK_SUCCESS;
 }
 
 /* Availability publishes at queue submission and vkQueueSubmit
