@@ -615,6 +615,105 @@ check_update_poison(const struct fixture *f)
    return 0;
 }
 
+/* Set-layout compatibility at bind and dispatch: two layouts are
+ * compatible exactly when identically defined, so a twin layout object
+ * carries a set through bind and dispatch, a narrower layout refuses
+ * at bind against the two-binding pipeline layout, and a set bound
+ * compatibly under a narrower pipeline layout still refuses at
+ * dispatch against the two-binding pipeline.
+ */
+static int
+check_layout_compatibility(const struct fixture *f)
+{
+   const VkDescriptorSetLayoutBinding both[2] = {
+      storage_binding(0), storage_binding(1),
+   };
+   const VkDescriptorSetLayoutBinding first_only[1] = {
+      storage_binding(0),
+   };
+   VkDescriptorSetLayout twin, narrow;
+   REQUIRE(create_layout(f, both, 2, 0, &twin) == VK_SUCCESS,
+           "twin layout");
+   REQUIRE(create_layout(f, first_only, 1, 0, &narrow) == VK_SUCCESS,
+           "narrow layout");
+   VkPipelineLayout narrow_pipeline_layout;
+   const VkPipelineLayoutCreateInfo narrow_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      .setLayoutCount = 1,
+      .pSetLayouts = &narrow,
+   };
+   REQUIRE(vkCreatePipelineLayout(f->device, &narrow_info, NULL,
+                                  &narrow_pipeline_layout) == VK_SUCCESS,
+           "narrow pipeline layout");
+
+   VkDescriptorPool pool;
+   REQUIRE(create_pool(f, 2, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) ==
+              VK_SUCCESS,
+           "compatibility pool");
+   struct storage input, output;
+   if (create_storage(f, DISPATCH_BYTES, &input) != 0 ||
+       create_storage(f, DISPATCH_BYTES, &output) != 0)
+      return 1;
+
+   VkDescriptorSet twin_set;
+   const VkDescriptorSetAllocateInfo twin_alloc = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = pool,
+      .descriptorSetCount = 1,
+      .pSetLayouts = &twin,
+   };
+   REQUIRE(vkAllocateDescriptorSets(f->device, &twin_alloc, &twin_set) ==
+              VK_SUCCESS,
+           "twin set");
+   write_storage(f, twin_set, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                 input.buffer, 0, VK_WHOLE_SIZE);
+   write_storage(f, twin_set, 1, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                 output.buffer, 0, VK_WHOLE_SIZE);
+   CHECK(record_dispatch(f, twin_set, DISPATCH_GROUPS) == VK_SUCCESS,
+         "a set of an identically defined layout object carries the "
+         "dispatch");
+
+   VkDescriptorSet narrow_set;
+   const VkDescriptorSetAllocateInfo narrow_alloc = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = pool,
+      .descriptorSetCount = 1,
+      .pSetLayouts = &narrow,
+   };
+   REQUIRE(vkAllocateDescriptorSets(f->device, &narrow_alloc,
+                                    &narrow_set) == VK_SUCCESS,
+           "narrow set");
+   CHECK(record_dispatch(f, narrow_set, DISPATCH_GROUPS) != VK_SUCCESS,
+         "a set of a narrower layout refuses at bind against the "
+         "two-binding pipeline layout");
+
+   /* Compatible at bind under the narrow pipeline layout, refused at
+    * dispatch against the two-binding pipeline's copied map.
+    */
+   if (vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS) {
+      const VkCommandBufferBeginInfo begin_info = {
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      };
+      CHECK(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+            "compatibility begin");
+      vkCmdBindPipeline(f->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                        f->pipeline);
+      vkCmdBindDescriptorSets(f->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              narrow_pipeline_layout, 0, 1, &narrow_set,
+                              0, NULL);
+      vkCmdDispatch(f->cmd, 1, 1, 1);
+      CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+            "a compatibly bound narrower set refuses at dispatch "
+            "against the two-binding pipeline");
+   }
+
+   vkDestroyDescriptorPool(f->device, pool, NULL);
+   vkDestroyPipelineLayout(f->device, narrow_pipeline_layout, NULL);
+   vkDestroyDescriptorSetLayout(f->device, twin, NULL);
+   vkDestroyDescriptorSetLayout(f->device, narrow, NULL);
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -640,6 +739,8 @@ main(int argc, char **argv)
    if (check_offset_and_range(&f) != 0)
       return 1;
    if (check_update_poison(&f) != 0)
+      return 1;
+   if (check_layout_compatibility(&f) != 0)
       return 1;
 
    if (failures != 0) {

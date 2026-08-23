@@ -914,6 +914,10 @@ r3v_CmdPipelineBarrier(
    }
 }
 
+/* Every pipeline layout the pipeline admissions accept carries zero
+ * push-constant ranges, so no layout a push can name exists and the
+ * recording refuses.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdPushConstants(
    VkCommandBuffer commandBuffer,
