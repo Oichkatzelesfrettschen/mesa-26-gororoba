@@ -722,6 +722,26 @@ r3v_native_attended_varying_triangle = executable(
   install : false,
 )
 
+# Attended compute identity carrier cell: the public compute surface on
+# the identity verb's GPU route -- two storage buffers, the reference
+# identity-map kernel, one dispatch, submit -- so RS482 silicon fetches the
+# input as F32_4 records and writes the output as one C4_32_FP slot row,
+# the driver's read-back judging it against the CPU bit copy.  Built and
+# never registered as a test, because running it is a hardware
+# authorization rather than a build-graph result.
+r3v_native_attended_compute_identity = executable(
+  'r3v_native_attended_compute_identity',
+  files('tests/r3v_native_attended_compute_identity.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended route dispatch timing cell: one declared-route submission
 # with CLOCK_MONOTONIC_RAW readings at the recording boundary and
 # around the synchronous vkQueueSubmit, so the CPU, immediate GPU
@@ -874,9 +894,15 @@ if with_tests
   r3v_native_arming_runner = executable(
     'r3v_native_arming_runner',
     files('r3v_native_arming.c', 'tests/r3v_native_arming_runner.c',
+          '../common/r300_compute_identity_carrier.c',
           '../common/r300_first_draw_state.c',
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',
+          '../common/r300_pm4_compose.c',
+          '../common/r300_r2vb_carrier_delivery.c',
+          '../common/r300_r2vb_fetch_pass.c',
+          '../common/r300_r2vb_fetched_producer.c',
+          '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -910,6 +936,26 @@ if with_tests
     depends : [r3v_native_arming_runner, r300_triangle_manifest],
     suite : ['r3v'],
   )
+  # The compute identity carrier cell: the arming runner's
+  # --compute-identity emission and the carrier manifest writer's ib.bin
+  # are one byte stream, so the digest the operator declares from either
+  # names the pass the identity verb's GPU route installs.
+  test(
+    'r3v-native-arming-runner-compute-identity-ib-identity',
+    find_program('sh'),
+    args : [
+      '-c',
+      'set -e; d=$(mktemp -d); trap \'rm -rf "$d"\' EXIT; ' +
+      '"$1" --compute-identity --emit-ib "$d/runner.bin"; ' +
+      '"$2" "$d" >/dev/null; cmp "$d/runner.bin" "$d/ib.bin"',
+      'compute-identity-ib-identity',
+      r3v_native_arming_runner.full_path(),
+      r300_compute_identity_carrier_manifest.full_path(),
+    ],
+    depends : [r3v_native_arming_runner,
+               r300_compute_identity_carrier_manifest],
+    suite : ['r3v'],
+  )
 endif
 
 # Full-chain triangle-cell harness on the radeon noop drm-shim: the
@@ -939,6 +985,10 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
   }
   r3v_native_cell_env = environment(r3v_native_cell_vars)
+  # The compute recording calibration runs under the compute gate: the
+  # surface the runner records through stands behind it.
+  r3v_native_compute_record_env = environment(
+    r3v_native_cell_vars + {'R3V_HYBRID_COMPUTE_EXPERIMENTAL' : '1'})
   foreach cell_mode : ['closed', 'open']
     test(
       'r3v-native-triangle-cell-@0@'.format(cell_mode),
@@ -1608,6 +1658,18 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_attended_varying_triangle,
     args : [meson.current_build_dir(), '--record-only'],
     env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  # The compute identity carrier runner's recording boundary on the
+  # fixture: the compute surface under its gate, the descriptor set, the
+  # reference kernel, and one dispatch record.
+  test(
+    'r3v-native-compute-identity-record',
+    r3v_native_attended_compute_identity,
+    args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_compute_record_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
     suite : ['r3v'],

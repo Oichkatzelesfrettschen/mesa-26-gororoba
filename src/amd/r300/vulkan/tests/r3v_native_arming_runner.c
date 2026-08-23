@@ -9,6 +9,7 @@
 
 #include "r3v_native_arming.h"
 
+#include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
@@ -30,6 +31,12 @@ static uint32_t cell_height = R300_TRIANGLE_TARGET_HEIGHT;
  * computed-varying pipeline records, with its own digest.
  */
 static bool cell_varying = false;
+/* --compute-identity selects the compute identity carrier cell: the
+ * fetched producer pass alone over the reference sixteen records, the
+ * stream the identity verb's GPU route installs for one dispatch, with
+ * its own digest and cell kind.
+ */
+static bool cell_compute_identity = false;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -39,6 +46,40 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
                                                             cell_height, cell)
              : r300_tcl_bypass_triangle_extent_emit(cell_width, cell_height,
                                                     cell);
+}
+
+/* The selected cell's words, heap-allocated: the triangle family
+ * through cell_emit, or the compute identity carrier's reference pass.
+ */
+static int
+cell_words(uint32_t **words, uint32_t *count)
+{
+   if (cell_compute_identity) {
+      struct r300_r2vb_fetched_producer_ib pass;
+      if (r300_compute_identity_carrier_reference_emit(&pass) != 0)
+         return 1;
+      *words = malloc((size_t)pass.ib_size_dwords * 4);
+      if (*words == NULL) {
+         r300_r2vb_fetched_producer_release(&pass);
+         return 1;
+      }
+      memcpy(*words, pass.ib, (size_t)pass.ib_size_dwords * 4);
+      *count = pass.ib_size_dwords;
+      r300_r2vb_fetched_producer_release(&pass);
+      return 0;
+   }
+   struct r300_tcl_bypass_triangle_ib cell;
+   if (cell_emit(&cell) != 0)
+      return 1;
+   *words = malloc((size_t)cell.ib_size_dwords * 4);
+   if (*words == NULL) {
+      r300_tcl_bypass_triangle_release(&cell);
+      return 1;
+   }
+   memcpy(*words, cell.ib, (size_t)cell.ib_size_dwords * 4);
+   *count = cell.ib_size_dwords;
+   r300_tcl_bypass_triangle_release(&cell);
+   return 0;
 }
 
 /* Builds the cell at the selected extent and returns its IB digest,
@@ -58,13 +99,13 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
 static int
 cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
-   struct r300_tcl_bypass_triangle_ib cell;
-   if (cell_emit(&cell) != 0)
+   uint32_t *words = NULL;
+   uint32_t count = 0;
+   if (cell_words(&words, &count) != 0)
       return 1;
-
-   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, out);
-   *ib_dwords = cell.ib_size_dwords;
-   r300_tcl_bypass_triangle_release(&cell);
+   r300_triangle_ib_digest_hex(words, count, out);
+   *ib_dwords = count;
+   free(words);
    return 0;
 }
 
@@ -89,29 +130,29 @@ report(const char *factor, const char *declared, const char *observed)
 static int
 emit_reference_ib(const char *path)
 {
-   struct r300_tcl_bypass_triangle_ib cell;
-   if (cell_emit(&cell) != 0) {
+   uint32_t *words = NULL;
+   uint32_t count = 0;
+   if (cell_words(&words, &count) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
    int status = 0;
-   uint8_t *bytes = malloc((size_t)cell.ib_size_dwords * 4);
+   uint8_t *bytes = malloc((size_t)count * 4);
    FILE *out = bytes != NULL ? fopen(path, "wb") : NULL;
    if (out == NULL) {
       fprintf(stderr, "emit-ib: cannot write %s\n", path);
       status = 2;
    } else {
-      r300_triangle_ib_serialize(cell.ib, cell.ib_size_dwords, bytes);
-      const size_t written =
-         fwrite(bytes, 1, (size_t)cell.ib_size_dwords * 4, out);
+      r300_triangle_ib_serialize(words, count, bytes);
+      const size_t written = fwrite(bytes, 1, (size_t)count * 4, out);
       const int close_error = fclose(out);
-      if (written != (size_t)cell.ib_size_dwords * 4 || close_error != 0) {
+      if (written != (size_t)count * 4 || close_error != 0) {
          fprintf(stderr, "emit-ib: short write to %s\n", path);
          status = 2;
       }
    }
    free(bytes);
-   r300_tcl_bypass_triangle_release(&cell);
+   free(words);
    return status;
 }
 
@@ -121,6 +162,10 @@ main(int argc, char **argv)
    int argi = 1;
    if (argc >= argi + 1 && strcmp(argv[argi], "--varying") == 0) {
       cell_varying = true;
+      argi += 1;
+   } else if (argc >= argi + 1 &&
+              strcmp(argv[argi], "--compute-identity") == 0) {
+      cell_compute_identity = true;
       argi += 1;
    }
    if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
@@ -184,8 +229,9 @@ main(int argc, char **argv)
     */
    if (argc != argi + 1) {
       fprintf(stderr,
-              "usage: %s [--varying] [--extent <w> <h>] <evidence-directory> "
-              "| [--varying] [--extent <w> <h>] --emit-ib <path>\n",
+              "usage: %s [--varying|--compute-identity] [--extent <w> <h>] "
+              "<evidence-directory> | [--varying|--compute-identity] "
+              "[--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);
       return 2;
    }
@@ -214,9 +260,11 @@ main(int argc, char **argv)
    char module[128];
    struct r3v_native_arming_facts facts;
    r3v_native_arming_collect(&facts, vendor_id, device_id,
-                             R3V_NATIVE_CELL_KIND_TRIANGLE, digest,
-                             evidence_dir, kernel, sizeof(kernel), module,
-                             sizeof(module));
+                             cell_compute_identity
+                                ? R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER
+                                : R3V_NATIVE_CELL_KIND_TRIANGLE,
+                             digest, evidence_dir, kernel, sizeof(kernel),
+                             module, sizeof(module));
 
    printf("r3v native arming report\n");
    printf("  cell                   %u IB dwords, blake3 %s\n", ib_dwords,

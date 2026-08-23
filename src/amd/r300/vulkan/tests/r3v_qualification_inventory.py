@@ -210,6 +210,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-compute-gpu-route-gate-table",
     "r3v-native-compute-gpu-route-preseeded-agreement",
     "r3v-native-compute-gpu-route-quarantined-refused",
+    "r3v-native-compute-identity-record",
+    "r3v-native-arming-runner-compute-identity-ib-identity",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.
