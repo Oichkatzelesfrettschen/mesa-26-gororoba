@@ -829,13 +829,42 @@ r3v_CmdEndQuery(
    cmd_buffer->active_query_pool = NULL;
 }
 
+/* Executing a secondary buffer replays its recorded sequence, and the
+ * one sequence the native recording admits into a secondary is the
+ * empty one, so the execute is exact as a no-op: each listed buffer
+ * must be a secondary whose recording left no observable state --
+ * no IB, no deferred draw, copies, or query ops, and no dynamic
+ * viewport/scissor -- and the call itself runs outside a pass and
+ * outside an active query span like the work it replays.
+ */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdExecuteCommands(
    VkCommandBuffer commandBuffer,
    uint32_t commandBufferCount,
    const VkCommandBuffer *pCommandBuffers)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+
+   if (cmd_buffer->pass_target != NULL ||
+       cmd_buffer->active_query_pool != NULL ||
+       cmd_buffer->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   for (uint32_t i = 0; i < commandBufferCount; i++) {
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, secondary, pCommandBuffers[i]);
+      if (secondary == NULL ||
+          secondary->vk.level != VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
+          secondary->ib_size_dwords != 0 ||
+          secondary->deferred_draw.pending || secondary->draw_recorded ||
+          secondary->deferred_copy_count != 0 ||
+          secondary->query_op_count != 0 ||
+          secondary->active_query_pool != NULL ||
+          secondary->viewport_set || secondary->scissor_set) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
 }
 
 /* The fill is a dword-pattern store through the host mapping of the
