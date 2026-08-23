@@ -1917,7 +1917,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'instanced-out-of-bounds-refused',
                         'instanced-fetched-refused',
                         'multi-triangle-armed',
-                        'non-triangle-count-refused']
+                        'non-triangle-count-refused',
+                        'cull-back-kept-armed',
+                        'cull-back-dropped-armed']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,

@@ -204,6 +204,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-indexed-fetched-refused",
     "r3v-native-submit-order-instanced-armed",
     "r3v-native-submit-order-multi-triangle-armed",
+    "r3v-native-submit-order-cull-back-kept-armed",
+    "r3v-native-submit-order-cull-back-dropped-armed",
     "r3v-native-submit-order-non-triangle-count-refused",
     "r3v-native-submit-order-instanced-first-instance-armed",
     "r3v-native-submit-order-instanced-index-armed",

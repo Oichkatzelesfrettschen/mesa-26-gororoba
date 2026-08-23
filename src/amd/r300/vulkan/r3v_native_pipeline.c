@@ -288,7 +288,9 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
    if (rs == NULL || rs->depthClampEnable != VK_FALSE ||
        rs->rasterizerDiscardEnable != VK_FALSE ||
        rs->polygonMode != VK_POLYGON_MODE_FILL ||
-       rs->cullMode != VK_CULL_MODE_NONE ||
+       (rs->cullMode & ~(VkCullModeFlags)VK_CULL_MODE_FRONT_AND_BACK) != 0 ||
+       (rs->frontFace != VK_FRONT_FACE_COUNTER_CLOCKWISE &&
+        rs->frontFace != VK_FRONT_FACE_CLOCKWISE) ||
        rs->depthBiasEnable != VK_FALSE || rs->lineWidth != 1.0f)
       return false;
 
@@ -364,6 +366,8 @@ create_pipeline(struct r3v_native_device *device,
    memcpy(pipeline->binding_strides, admitted.binding_strides,
           sizeof(pipeline->binding_strides));
    pipeline->instance_rate_bindings = admitted.instance_rate_bindings;
+   pipeline->cull_mode = info->pRasterizationState->cullMode;
+   pipeline->front_face = info->pRasterizationState->frontFace;
    pipeline->dynamic_viewport_scissor = dynamic_viewport_scissor;
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
