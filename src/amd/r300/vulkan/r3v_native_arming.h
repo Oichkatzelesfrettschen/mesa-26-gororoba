@@ -7,6 +7,8 @@
 #ifndef R3V_NATIVE_ARMING_H
 #define R3V_NATIVE_ARMING_H
 
+#include "amd/r300/common/r300_chip_identity.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -156,8 +158,8 @@ struct r3v_native_arming_facts {
 /* The authorized attended-run chip: RS482, the only identity whose
  * silicon behavior the cell's falsifiers were written against.
  */
-#define R3V_NATIVE_ARMING_PCI_VENDOR 0x1002u
-#define R3V_NATIVE_ARMING_PCI_DEVICE 0x5974u
+#define R3V_NATIVE_ARMING_PCI_VENDOR ((uint32_t)R300_PCI_VENDOR_ATI)
+#define R3V_NATIVE_ARMING_PCI_DEVICE ((uint32_t)R300_PCI_DEVICE_RS482)
 
 /* Pure decision over the collected facts. */
 enum r3v_native_arming_verdict

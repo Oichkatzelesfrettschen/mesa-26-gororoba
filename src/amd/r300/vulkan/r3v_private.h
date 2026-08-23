@@ -6,6 +6,7 @@
 #define R3V_PRIVATE_H
 
 #include <vulkan/vulkan_core.h>
+#include "amd/r300/common/r300_chip_identity.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,16 +18,15 @@
 extern "C" {
 #endif
 
-#define R3V_VENDOR_ID_ATI 0x1002
+#define R3V_VENDOR_ID_ATI R300_PCI_VENDOR_ATI
 
 /* RS482 (Radeon Xpress 200M, IGP) and RS485 (Radeon Xpress 1100/1150,
- * mobile IGP).  The PCI table in src/gallium/drivers/r300/r300_chipset.c
- * maps 0x5974 to RS482_5974 and 0x5975 to RS482_5975 in the RS480 family.
- * Both report GL_RENDERER="ATI RS480"; both route the vertex stage
- * through Gallium Draw SW TCL because num_vert_fpus == 0 for the RS480
- * family in r300_parse_chipset(). */
-#define R3V_PCI_DEVICE_ID_RS482 0x5974
-#define R3V_PCI_DEVICE_ID_RS485 0x5975
+ * mobile IGP).  The common chip identity table maps 0x5974 to RS482_5974
+ * and 0x5975 to RS482_5975 in the RS480 family; both report
+ * GL_RENDERER="ATI RS480", and the RS480-class vertex transform engine is
+ * absent, so every vertex route is TCL bypass over produced records. */
+#define R3V_PCI_DEVICE_ID_RS482 R300_PCI_DEVICE_RS482
+#define R3V_PCI_DEVICE_ID_RS485 R300_PCI_DEVICE_RS485
 
 #define R3V_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
 

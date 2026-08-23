@@ -47,7 +47,7 @@ executables with `main()` rather than driver objects.
 
 | Files | API-neutral contract | Production consumers | Standalone proof | Owner decision |
 |---|---|---|---|---|
-| `r300_chip_identity.c`<br>`r300_chip_identity.h` | PCI-keyed chip family and die-class table generated from `include/pci_ids/r300_pci_ids.h`; an identity outside the table refuses. | `r300g` | `r300-chip-identity` | `KEEP_SILICON_CONTRACT` |
+| `r300_chip_identity.c`<br>`r300_chip_identity.h` | PCI-keyed chip family and die-class table generated from `include/pci_ids/r300_pci_ids.h`; an identity outside the table refuses. | `native`, `r300g` | `r300-chip-identity` | `KEEP_SHARED` |
 | `r300_chipset.c`<br>`r300_chipset.h` | Capability derivation per family over the identity table. | `r300g` | `r300-chip-identity` | `KEEP_SILICON_CONTRACT` |
 | `r300_capabilities.h` | Chip capability record shared by screen and compiler decisions. | `r300g`, `compiler` | `r300-nir-vs-harness` | `KEEP_SHARED` |
 | `r300_reg.h`<br>`r300_shader_semantics.h` | Register encodings and shader semantic vocabulary. | `r300g`, `compiler`, `native` | `r300-pm4-builder`, `r300-nir-to-rc` | `KEEP_SHARED` |

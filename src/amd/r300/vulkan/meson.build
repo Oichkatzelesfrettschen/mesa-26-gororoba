@@ -1600,7 +1600,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_loader_application = executable(
       'r3v_native_loader_application',
       files('tests/r3v_native_loader_application.c'),
-      include_directories : [inc_include, include_directories('.')],
+      include_directories : [inc_include, inc_src, include_directories('.')],
       dependencies : [dep_vulkan_loader],
       c_args : [no_override_init_args],
     )

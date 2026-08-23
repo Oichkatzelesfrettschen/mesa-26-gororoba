@@ -7,7 +7,7 @@
 #ifndef R300_CHIP_IDENTITY_H
 #define R300_CHIP_IDENTITY_H
 
-#include "amd_family.h"
+#include "amd/common/amd_family.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +19,11 @@
  * source; this spelling exists so identity comparisons bind to one constant.
  */
 #define R300_PCI_DEVICE_RS482 0x5974
+
+/* RS485 (Radeon Xpress 1100/1150 mobile IGP), the RS482 sibling in the same
+ * RS480 family row set.
+ */
+#define R300_PCI_DEVICE_RS485 0x5975
 
 /* Die classes group families by the silicon blocks capability decisions
  * key on.  The RS400-class IGPs (RS400, RC410, RS480/RS482/RS485) share an
