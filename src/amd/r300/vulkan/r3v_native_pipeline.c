@@ -294,12 +294,15 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
        rs->depthBiasEnable != VK_FALSE || rs->lineWidth != 1.0f)
       return false;
 
+   /* Single-sample rasterization with the coverage semantics of the
+    * one sample: a mask clearing bit 0 leaves the sample uncovered, so
+    * the pipeline records it and the draw produces no fragment.
+    */
    const VkPipelineMultisampleStateCreateInfo *ms = info->pMultisampleState;
    if (ms == NULL || ms->rasterizationSamples != VK_SAMPLE_COUNT_1_BIT ||
        ms->sampleShadingEnable != VK_FALSE ||
        ms->alphaToCoverageEnable != VK_FALSE ||
-       ms->alphaToOneEnable != VK_FALSE ||
-       (ms->pSampleMask != NULL && (ms->pSampleMask[0] & 1u) != 1u))
+       ms->alphaToOneEnable != VK_FALSE)
       return false;
 
    const VkPipelineColorBlendStateCreateInfo *cb = info->pColorBlendState;
@@ -368,6 +371,9 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->instance_rate_bindings = admitted.instance_rate_bindings;
    pipeline->cull_mode = info->pRasterizationState->cullMode;
    pipeline->front_face = info->pRasterizationState->frontFace;
+   pipeline->sample_mask_zero =
+      info->pMultisampleState->pSampleMask != NULL &&
+      (info->pMultisampleState->pSampleMask[0] & 1u) == 0;
    pipeline->dynamic_viewport_scissor = dynamic_viewport_scissor;
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;

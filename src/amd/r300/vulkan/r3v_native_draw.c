@@ -473,6 +473,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .instance_count = args->instance_count,
       .cull_mode = pipeline->cull_mode,
       .front_face = pipeline->front_face,
+      .sample_mask_zero = pipeline->sample_mask_zero,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,

@@ -333,6 +333,7 @@ struct r3v_native_deferred_draw {
     */
    VkCullModeFlags cull_mode;
    VkFrontFace front_face;
+   bool sample_mask_zero;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
@@ -764,6 +765,11 @@ struct r3v_native_pipeline {
     */
    VkCullModeFlags cull_mode;
    VkFrontFace front_face;
+   /* Set when pSampleMask clears bit 0: the one sample is uncovered,
+    * so the host collapses every triangle to degenerate records and
+    * the draw produces no fragment.
+    */
+   bool sample_mask_zero;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,

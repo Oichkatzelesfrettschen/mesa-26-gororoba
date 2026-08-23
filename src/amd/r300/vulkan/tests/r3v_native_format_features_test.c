@@ -147,6 +147,29 @@ main(int argc, char **argv)
                             "R8G8B8A8_SRGB buffer");
    }
 
+   /* Every image and pipeline admission executes single-sample alone,
+    * so each advertised sample-count limit is the one truthful bit.
+    */
+   {
+      VkPhysicalDeviceProperties properties;
+      vkGetPhysicalDeviceProperties(physical_device, &properties);
+      const VkSampleCountFlags counts[] = {
+         properties.limits.framebufferColorSampleCounts,
+         properties.limits.framebufferDepthSampleCounts,
+         properties.limits.framebufferStencilSampleCounts,
+         properties.limits.framebufferNoAttachmentsSampleCounts,
+         properties.limits.sampledImageColorSampleCounts,
+         properties.limits.sampledImageIntegerSampleCounts,
+         properties.limits.sampledImageDepthSampleCounts,
+         properties.limits.sampledImageStencilSampleCounts,
+         properties.limits.storageImageSampleCounts,
+      };
+      for (unsigned i = 0; i < sizeof(counts) / sizeof(counts[0]); i++)
+         CHECK(counts[i] == VK_SAMPLE_COUNT_1_BIT,
+               "sample-count limit %u advertises the single sample "
+               "(0x%x)", i, counts[i]);
+   }
+
    vkDestroyInstance(instance, NULL);
    if (failures != 0) {
       fprintf(stderr, "FAILED: %u check(s)\n", failures);

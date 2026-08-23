@@ -240,11 +240,11 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->maxFramebufferHeight = R3V_VK10_MIN_FRAMEBUFFER_DIMENSION;
    props->maxFramebufferLayers = 1;
 
-   props->framebufferColorSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->framebufferDepthSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->framebufferStencilSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferColorSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
+   props->framebufferDepthSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
+   props->framebufferStencilSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
    props->framebufferNoAttachmentsSampleCounts =
-      R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+      R3V_SUPPORTED_SAMPLE_COUNTS;
 
    /* R300 binds up to four simultaneous colour buffers (COLOROFFSET0..3 /
     * US_OUT_FMT_0..3), and the replay now binds every subpass colour attachment
@@ -254,11 +254,11 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
     * then requires every attachment's blend state to be identical, which makes
     * binding pAttachments[0] for all of them spec-correct. */
    props->maxColorAttachments = 4;
-   props->sampledImageColorSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->sampledImageColorSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
    props->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->sampledImageDepthSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->sampledImageStencilSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
-   props->storageImageSampleCounts = R3V_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->sampledImageDepthSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
+   props->sampledImageStencilSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
+   props->storageImageSampleCounts = R3V_SUPPORTED_SAMPLE_COUNTS;
    props->maxSampleMaskWords = 1;
 
    props->timestampComputeAndGraphics = VK_FALSE;
