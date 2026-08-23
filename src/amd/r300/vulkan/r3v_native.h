@@ -384,6 +384,15 @@ struct r3v_native_cmd_buffer {
 
    struct r3v_native_image *pass_target;
    struct r3v_native_pipeline *bound_pipeline;
+   /* Dynamic viewport/scissor state: undefined at begin, set by the
+    * vkCmdSet commands, persisting across binds and passes within the
+    * recording; the draw of a dynamic-state pipeline resolves its
+    * extent here.
+    */
+   bool viewport_set;
+   bool scissor_set;
+   VkViewport dynamic_viewport;
+   VkRect2D dynamic_scissor;
    /* Per-binding vertex buffers from CmdBindVertexBuffers, one bit of
     * vertex_bound_mask per bound binding.
     */
@@ -735,8 +744,11 @@ struct r3v_native_pipeline {
     */
    bool varying;
    /* The viewport/scissor extent creation admitted; the draw requires
-    * it equal to the pass target's extent.
+    * it equal to the pass target's extent.  With the dynamic flag the
+    * extent resolves from the recorded vkCmdSetViewport/SetScissor
+    * state instead and the static fields stay zero.
     */
+   bool dynamic_viewport_scissor;
    uint32_t target_width;
    uint32_t target_height;
 };

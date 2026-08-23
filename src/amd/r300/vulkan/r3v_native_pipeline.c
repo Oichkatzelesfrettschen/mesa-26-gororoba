@@ -227,7 +227,8 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
  */
 static bool
 fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
-                         uint32_t *target_width, uint32_t *target_height)
+                         uint32_t *target_width, uint32_t *target_height,
+                         bool *dynamic_out)
 {
    const VkPipelineInputAssemblyStateCreateInfo *ia =
       info->pInputAssemblyState;
@@ -235,24 +236,52 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
        ia->primitiveRestartEnable != VK_FALSE)
       return false;
 
+   /* Dynamic state admits the viewport/scissor pair together and
+    * nothing else: the values then come from the vkCmdSet commands and
+    * the draw holds them to the same cell shape the static form pins
+    * here.
+    */
+   bool dynamic_viewport_scissor = false;
+   const VkPipelineDynamicStateCreateInfo *dyn = info->pDynamicState;
+   if (dyn != NULL && dyn->dynamicStateCount != 0) {
+      if (dyn->dynamicStateCount != 2)
+         return false;
+      bool has_viewport = false, has_scissor = false;
+      for (uint32_t i = 0; i < dyn->dynamicStateCount; i++) {
+         if (dyn->pDynamicStates[i] == VK_DYNAMIC_STATE_VIEWPORT)
+            has_viewport = true;
+         else if (dyn->pDynamicStates[i] == VK_DYNAMIC_STATE_SCISSOR)
+            has_scissor = true;
+         else
+            return false;
+      }
+      if (!has_viewport || !has_scissor)
+         return false;
+      dynamic_viewport_scissor = true;
+   }
+
    const VkPipelineViewportStateCreateInfo *vp = info->pViewportState;
-   if (vp == NULL || vp->viewportCount != 1 || vp->scissorCount != 1 ||
-       vp->pViewports == NULL || vp->pScissors == NULL)
+   if (vp == NULL || vp->viewportCount != 1 || vp->scissorCount != 1)
       return false;
-   const VkViewport *viewport = &vp->pViewports[0];
-   const VkRect2D *scissor = &vp->pScissors[0];
-   const uint32_t width = scissor->extent.width;
-   const uint32_t height = scissor->extent.height;
-   if (width < 1 || width > R3V_NATIVE_TARGET_WIDTH || height < 1 ||
-       height > R3V_NATIVE_TARGET_HEIGHT)
-      return false;
-   if (viewport->x != 0.0f || viewport->y != 0.0f ||
-       viewport->width != (float)width ||
-       viewport->height != (float)height ||
-       viewport->minDepth != 0.0f || viewport->maxDepth != 1.0f)
-      return false;
-   if (scissor->offset.x != 0 || scissor->offset.y != 0)
-      return false;
+   uint32_t width = 0, height = 0;
+   if (!dynamic_viewport_scissor) {
+      if (vp->pViewports == NULL || vp->pScissors == NULL)
+         return false;
+      const VkViewport *viewport = &vp->pViewports[0];
+      const VkRect2D *scissor = &vp->pScissors[0];
+      width = scissor->extent.width;
+      height = scissor->extent.height;
+      if (width < 1 || width > R3V_NATIVE_TARGET_WIDTH || height < 1 ||
+          height > R3V_NATIVE_TARGET_HEIGHT)
+         return false;
+      if (viewport->x != 0.0f || viewport->y != 0.0f ||
+          viewport->width != (float)width ||
+          viewport->height != (float)height ||
+          viewport->minDepth != 0.0f || viewport->maxDepth != 1.0f)
+         return false;
+      if (scissor->offset.x != 0 || scissor->offset.y != 0)
+         return false;
+   }
 
    const VkPipelineRasterizationStateCreateInfo *rs =
       info->pRasterizationState;
@@ -284,16 +313,16 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
       return false;
 
    if (info->pTessellationState != NULL ||
-       info->pDepthStencilState != NULL ||
-       (info->pDynamicState != NULL &&
-        info->pDynamicState->dynamicStateCount != 0))
+       info->pDepthStencilState != NULL)
       return false;
 
    /* The out-parameters publish on the single success return, so a
-    * refused pipeline never leaves a validated-looking extent behind.
+    * refused pipeline never leaves a validated-looking extent behind;
+    * a dynamic pipeline publishes zero and the draw resolves it.
     */
    *target_width = width;
    *target_height = height;
+   *dynamic_out = dynamic_viewport_scissor;
    return true;
 }
 
@@ -309,13 +338,15 @@ create_pipeline(struct r3v_native_device *device,
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
 
    uint32_t target_width = 0, target_height = 0;
+   bool dynamic_viewport_scissor = false;
    struct r300_vertex_job job;
    bool varying = false;
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 || !stages_build_vertex_job(info, &job, &varying) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
-       !fixed_state_matches_cell(info, &target_width, &target_height) ||
+       !fixed_state_matches_cell(info, &target_width, &target_height,
+                                 &dynamic_viewport_scissor) ||
        layout == NULL || layout->set_count != 0 ||
        layout->push_range_count != 0 ||
        !r3v_native_render_pass_matches_cell(pass) || info->subpass != 0)
@@ -333,6 +364,7 @@ create_pipeline(struct r3v_native_device *device,
    memcpy(pipeline->binding_strides, admitted.binding_strides,
           sizeof(pipeline->binding_strides));
    pipeline->instance_rate_bindings = admitted.instance_rate_bindings;
+   pipeline->dynamic_viewport_scissor = dynamic_viewport_scissor;
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;

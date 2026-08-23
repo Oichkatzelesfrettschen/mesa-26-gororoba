@@ -306,10 +306,34 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    }
 
    /* The pipeline's viewport/scissor claim and the pass target carry
-    * one extent: the cell's scissor words resolve from it once.
+    * one extent: the cell's scissor words resolve from it once.  A
+    * dynamic-state pipeline resolves its extent from the recorded
+    * vkCmdSet state instead, held to the same cell shape the static
+    * admission pins -- unset state, a shifted origin, a non-identity
+    * depth range, or a viewport diverging from the scissor extent each
+    * refuses.
     */
-   if (pipeline->target_width != cmd_buffer->pass_target->width ||
-       pipeline->target_height != cmd_buffer->pass_target->height) {
+   uint32_t claim_width = pipeline->target_width;
+   uint32_t claim_height = pipeline->target_height;
+   if (pipeline->dynamic_viewport_scissor) {
+      const VkViewport *viewport = &cmd_buffer->dynamic_viewport;
+      const VkRect2D *scissor = &cmd_buffer->dynamic_scissor;
+      claim_width = scissor->extent.width;
+      claim_height = scissor->extent.height;
+      if (!cmd_buffer->viewport_set || !cmd_buffer->scissor_set ||
+          scissor->offset.x != 0 || scissor->offset.y != 0 ||
+          claim_width < 1 || claim_width > R3V_NATIVE_TARGET_WIDTH ||
+          claim_height < 1 || claim_height > R3V_NATIVE_TARGET_HEIGHT ||
+          viewport->x != 0.0f || viewport->y != 0.0f ||
+          viewport->width != (float)claim_width ||
+          viewport->height != (float)claim_height ||
+          viewport->minDepth != 0.0f || viewport->maxDepth != 1.0f) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+   }
+   if (claim_width != cmd_buffer->pass_target->width ||
+       claim_height != cmd_buffer->pass_target->height) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
