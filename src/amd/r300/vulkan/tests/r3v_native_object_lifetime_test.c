@@ -567,6 +567,100 @@ check_host_events(const struct fixture *f)
    return 0;
 }
 
+/* Fences, semaphores, and idle over the CPU sync type: an unsignaled
+ * fence signals with its submission and waits complete at once (the
+ * submission executed synchronously), reset returns it, a pre-signaled
+ * fence waits immediately, a semaphore signaled by one submission
+ * satisfies the next submission's wait, and both idle calls return on
+ * the drained queue.
+ */
+static int
+check_sync_primitives(const struct fixture *f)
+{
+   VkFence fence;
+   const VkFenceCreateInfo fence_info = {
+      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+   };
+   REQUIRE(vkCreateFence(f->device, &fence_info, NULL, &fence) ==
+              VK_SUCCESS,
+           "fence creation");
+   CHECK(vkGetFenceStatus(f->device, fence) == VK_NOT_READY,
+         "a fresh fence reads unsignaled");
+
+   const VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+   };
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "sync pool reset");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "sync begin");
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS, "empty sync end");
+
+   VkSemaphore semaphore;
+   const VkSemaphoreCreateInfo semaphore_info = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+   };
+   REQUIRE(vkCreateSemaphore(f->device, &semaphore_info, NULL,
+                             &semaphore) == VK_SUCCESS,
+           "semaphore creation");
+
+   const VkSubmitInfo signal_submit = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &f->cmd,
+      .signalSemaphoreCount = 1,
+      .pSignalSemaphores = &semaphore,
+   };
+   CHECK(vkQueueSubmit(f->queue, 1, &signal_submit, fence) == VK_SUCCESS,
+         "the signaling submission");
+   CHECK(vkWaitForFences(f->device, 1, &fence, VK_TRUE, UINT64_MAX) ==
+            VK_SUCCESS &&
+         vkGetFenceStatus(f->device, fence) == VK_SUCCESS,
+         "the fence signaled with its submission");
+   CHECK(vkResetFences(f->device, 1, &fence) == VK_SUCCESS &&
+         vkGetFenceStatus(f->device, fence) == VK_NOT_READY,
+         "the reset returns the fence");
+
+   const VkPipelineStageFlags wait_stage =
+      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   const VkSubmitInfo wait_submit = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = &semaphore,
+      .pWaitDstStageMask = &wait_stage,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &f->cmd,
+   };
+   CHECK(vkQueueSubmit(f->queue, 1, &wait_submit, fence) == VK_SUCCESS &&
+         vkWaitForFences(f->device, 1, &fence, VK_TRUE, UINT64_MAX) ==
+            VK_SUCCESS,
+         "the semaphore signaled by the first submission satisfies the "
+         "second");
+
+   CHECK(vkQueueWaitIdle(f->queue) == VK_SUCCESS &&
+         vkDeviceWaitIdle(f->device) == VK_SUCCESS,
+         "both idle calls return on the drained queue");
+
+   VkFence signaled_fence;
+   const VkFenceCreateInfo signaled_info = {
+      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+      .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+   };
+   REQUIRE(vkCreateFence(f->device, &signaled_info, NULL,
+                         &signaled_fence) == VK_SUCCESS,
+           "pre-signaled fence creation");
+   CHECK(vkWaitForFences(f->device, 1, &signaled_fence, VK_TRUE, 0) ==
+            VK_SUCCESS,
+         "a pre-signaled fence waits immediately");
+
+   vkDestroyFence(f->device, signaled_fence, NULL);
+   vkDestroyFence(f->device, fence, NULL);
+   vkDestroySemaphore(f->device, semaphore, NULL);
+   vkDestroyFence(f->device, VK_NULL_HANDLE, NULL);
+   vkDestroySemaphore(f->device, VK_NULL_HANDLE, NULL);
+   return 0;
+}
+
 static int
 create_fixture(struct fixture *f)
 {
@@ -718,6 +812,7 @@ main(int argc, char **argv)
                check_sampler_use_fail_closed(&f) ||
                check_query_zero_span(&f) ||
                check_empty_secondary_execution(&f) ||
+               check_sync_primitives(&f) ||
                check_host_events(&f);
 
    destroy_fixture(&f);
