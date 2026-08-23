@@ -49,15 +49,6 @@ enum r300_rounding_model {
    R300_ROUND_RNE,       /* round-to-nearest-even: IEEE 754 default, emulated */
 };
 
-/* Evidence tier for a domain or virtual-op claim.  Later values carry
- * stronger claim authority; only HW_CONFIRMED records silicon observation. */
-enum r300_evidence_tier {
-   R300_EVIDENCE_SPECULATIVE,     /* conjecture only; no arithmetic proof */
-   R300_EVIDENCE_NUMERIC_DERIVED, /* arithmetic bound proven; silicon not probed */
-   R300_EVIDENCE_SPEC_GROUNDED,   /* ISA/spec-derived; not silicon-measured */
-   R300_EVIDENCE_HW_CONFIRMED,    /* tier-1: RS482 silicon measurement */
-};
-
 /* Meaning of an exact numeric bound.  The kind, rather than the numeric
  * value, distinguishes an inapplicable bound from a domain whose operation
  * count is not bounded by the numeric representation. */
@@ -160,10 +151,9 @@ enum r300_numeric_domain {
     * unit downstream of the ALU. */
    R300_NUM_DOMAIN_RB3D_BLEND,
 
-   /* ROP Boolean bitplane algebra.  XOR is hardware-confirmed.
-    * AND/OR/NOT family need targeted truth-table probes to confirm the
-    * full family.  Operates on raw color-target bits, not FP24 values.
-    * Exact bitwise semantics. */
+   /* RB3D ROP Boolean bitplane algebra.  AND, OR, and XOR are
+    * hardware-confirmed bit-exact on RS482; ROP NOT still needs a targeted
+    * truth-table probe.  Operates on raw color-target bits, not FP24 values. */
    R300_NUM_DOMAIN_ROP_BOOL,
 
    /* Stencil U8 per-pixel state machine.  Per-pixel value in Z/256 or a
@@ -213,7 +203,6 @@ struct r300_numeric_domain_info {
    bool                        has_inf;
    bool                        has_subnormal;
    bool                        is_native_compute; /* false = storage or reduction only */
-   enum r300_evidence_tier     evidence;
    const char                 *theorem;           /* formal bound string or NULL */
 };
 
@@ -284,7 +273,11 @@ enum r300_operation_id {
    R300_OPERATION_ID_SATURATING_DIFF = 48,
    R300_OPERATION_ID_PARALLEL_4OUT_MAP = 49,
    R300_OPERATION_ID_STENCIL_INVERT_NOT = 50,
-   R300_OPERATION_ID_COUNT = 51,
+   R300_OPERATION_ID_UNARY_AFFINE_MAP = 51,
+   R300_OPERATION_ID_UNARY_TRANSCENDENTAL_MAP = 52,
+   R300_OPERATION_ID_BINARY_TRANSCENDENTAL_MAP = 53,
+   R300_OPERATION_ID_BITWISE_LOGICOP_MAP = 54,
+   R300_OPERATION_ID_COUNT = 55,
 };
 
 /* Stable implementation and GPU-route identities live beside the operation
@@ -310,10 +303,10 @@ enum r300_route_admission_id {
 
 /* Virtual operation descriptor: one row per named virtual op in the
  * RS482 compute-as-raster substrate catalog.  Each op lives in a specific
- * numeric domain, has a named theorem, and carries a status plus an optional
- * descriptive implementation label.  The label is inventory prose and is not
- * required to resolve; it may name a current, historical, or proposed
- * implementation until typed implementation IDs replace it. */
+ * numeric domain, has a named theorem, and carries a compact catalog
+ * evidence/status summary consulted by the interim cross-ledger validator.
+ * implementation_label is preserved provenance prose, not a live symbol;
+ * typed implementation IDs own executable bindings. */
 struct r300_virtual_op_info {
    enum r300_operation_id      operation_id;
    const char                 *op_name;          /* e.g. "DP4_UINT7_EXACT" */

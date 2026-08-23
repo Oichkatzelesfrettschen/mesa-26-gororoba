@@ -112,6 +112,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-tcl-bypass-offline-replay",
     "r300-cs-track-replay",
     "r300-compute-verb-ledger",
+    "r300-operation-ledger",
     "r300-compute-identity-carrier",
     "r300-staging-manifest",
     "r300-staging-manifest-runner-selftest",

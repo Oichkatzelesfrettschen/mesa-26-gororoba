@@ -80,6 +80,17 @@ enum r300_compute_verb_evidence {
    R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED,
 };
 
+/* The smallest claim to which a row's evidence applies.  Scope is separate
+ * from strength: a retained raster-cell observation may support a proposed
+ * route, but it does not establish execution.  An executing native GPU route
+ * must name evidence for the exact retained route cell. */
+enum r300_compute_verb_evidence_scope {
+   R300_COMPUTE_VERB_EVIDENCE_SCOPE_HOST_EXECUTOR = 0,
+   R300_COMPUTE_VERB_EVIDENCE_SCOPE_UNIT_CONTRACT,
+   R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL,
+   R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL,
+};
+
 /* The verbs.  Each names one kernel shape over storage-buffer elements
  * (the flattened invocation index i addresses every range); the shape
  * text in the row is the admitted grammar's meaning, and the direct
@@ -124,8 +135,8 @@ enum r300_compute_verb {
 struct r300_compute_verb_row {
    enum r300_compute_verb verb;
    const char *name;
-   /* The catalog operation whose semantic domain and historical status this
-    * verb references, or NONE when the legacy catalog has no matching row. */
+   /* The catalog operation whose semantic domain and compact catalog
+    * evidence/status summary this verb references.  Every verb has one. */
    enum r300_operation_id operation_id;
    /* The implementation and route contract are a pair.  Both are NONE for an
     * absent GPU route and both are concrete for a precommitted or executing
@@ -145,6 +156,7 @@ struct r300_compute_verb_row {
    enum r300_compute_verb_route_status cpu_route;
    enum r300_compute_verb_route_status gpu_route;
    enum r300_compute_verb_evidence evidence;
+   enum r300_compute_verb_evidence_scope evidence_scope;
    /* The exact opt-in a GPU route for this verb takes, beside the
     * compute gate; the value that opens it is the literal "1". */
    const char *gpu_gate;
@@ -212,8 +224,9 @@ const char *r300_compute_failure_clause_name(enum r300_compute_failure_clause c)
  * names and distinct gate names, an index class inside the grid-fold
  * enum, every FP24_BOUNDED row carrying a
  * positive tolerance and every exact row zero, an EXECUTING GPU route
- * only with SILICON_RETAINED evidence, and a HOST unit only on rows
- * whose GPU route is absent.  Returns true, or false with *reason
+ * only with SILICON_RETAINED evidence scoped to that exact route cell,
+ * raster-cell evidence only on absent or precommitted routes, and a HOST unit
+ * only on rows whose GPU route is absent.  Returns true, or false with *reason
  * naming the first violated rule.  The ledger's own rows pass; a test
  * calibrates the checker on mutated copies. */
 bool r300_compute_verb_rows_valid(const struct r300_compute_verb_row *rows,

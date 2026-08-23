@@ -43,6 +43,13 @@ catalog_rows_valid(const struct r300_virtual_op_info *table, unsigned count,
          *reason = "catalog row has an invalid numeric domain";
          return false;
       }
+      const struct r300_numeric_domain_info *domain =
+         r300_numeric_domain_info(row->domain);
+      if (domain->domain != row->domain || domain->name == NULL ||
+          domain->name[0] == '\0') {
+         *reason = "catalog row lacks a stable numeric-domain name";
+         return false;
+      }
       if ((unsigned)row->status > R300_VOP_REJECTED) {
          *reason = "catalog row has an invalid operation status";
          return false;
@@ -94,7 +101,9 @@ identity_contract_valid(
        verb->exactness != R300_COMPUTE_VERB_FP24_EXACT_WINDOW ||
        verb->cpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
        verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
-       verb->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED) {
+       verb->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ||
+       verb->evidence_scope !=
+          R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL) {
       *reason = "route certificate and verb shape disagree";
       return false;
    }
@@ -219,8 +228,8 @@ test_verb_joins(void)
    assert(reason == NULL);
 
    for (uint32_t i = 0; i < count; i++) {
-      if (verbs[i].operation_id != R300_OPERATION_ID_NONE)
-         assert(r300_virtual_op_info_for_id(verbs[i].operation_id) != NULL);
+      assert(verbs[i].operation_id != R300_OPERATION_ID_NONE);
+      assert(r300_virtual_op_info_for_id(verbs[i].operation_id) != NULL);
    }
 
    const struct r300_compute_verb_row *identity =
@@ -266,6 +275,13 @@ test_contract_calibration(void)
 
    struct r300_compute_verb_row mutated_verb = *identity;
    mutated_verb.unit = R300_COMPUTE_VERB_UNIT_RB3D_CLEAR;
+   assert(!identity_contract_valid(&r300_compute_identity_carrier_contract,
+                                   &mutated_verb, &reason));
+   assert(strcmp(reason, "route certificate and verb shape disagree") == 0);
+
+   mutated_verb = *identity;
+   mutated_verb.evidence_scope =
+      R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL;
    assert(!identity_contract_valid(&r300_compute_identity_carrier_contract,
                                    &mutated_verb, &reason));
    assert(strcmp(reason, "route certificate and verb shape disagree") == 0);

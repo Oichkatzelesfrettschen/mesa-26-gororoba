@@ -4,8 +4,8 @@
  * Registry implementation for the RS482/r300 typed numeric domain model.
  *
  * The per-domain descriptor table defines numeric traits (rounding model,
- * exact bound kind and value, significand width, special-value policy, and
- * evidence tier).  The legacy virtual-op catalog records operation names,
+ * exact bound kind and value, significand width, and special-value policy).
+ * The legacy virtual-op catalog records operation names,
  * theorems, status, and descriptive implementation labels.
  *
  * Build-time assertions keep the domain table and the r300_numeric_domain enum
@@ -31,7 +31,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "|n| <= 2^17 = 131072 exactly representable in FP24",
    },
    {
@@ -45,7 +44,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = true,                 /* IEEE FP16 has Inf */
       .has_subnormal     = true,                 /* IEEE FP16 has subnormals */
       .is_native_compute = false,                /* storage/transport only */
-      .evidence          = R300_EVIDENCE_SPEC_GROUNDED,
       .theorem           = "finite FP16 values fit FP24 (11-bit significand < 17-bit window)",
    },
    {
@@ -59,7 +57,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = true,
       .has_subnormal     = true,
       .is_native_compute = false,                /* input texture only; no FP32 RT */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "R32G32B32A32_FLOAT texture accepted; FP32 color FBO incomplete (0x8cdd)",
    },
    {
@@ -73,7 +70,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17 for Q16_16 add; "
                            "(2^6-1)^2 = 3969, 4*3969 = 15876 < 2^17 per 6-bit limb column; "
                            "limb arithmetic verified on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
@@ -89,7 +85,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "4*(2^7-1)^2 = 64516 < 2^17 = 131072",
    },
    {
@@ -103,7 +98,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "5*(2^7-1)^2 = 80645 < 2^17 = 131072",
    },
    {
@@ -117,7 +111,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "|a_i|, |b_i| <= 127: |sum| <= 4*(2^7-1)^2 = 64516 < 2^17",
    },
    {
@@ -131,7 +124,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "4*(2^8-1)^2 = 260100 > 2^17; results above 2^17 are approximate",
    },
    {
@@ -145,7 +137,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = false,  /* sampler interpolation, not PFS ALU */
-      .evidence          = R300_EVIDENCE_SPEC_GROUNDED,
       .theorem           = NULL,
    },
    {
@@ -159,7 +150,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = false,  /* RT output reduction, not PFS ALU */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = NULL,
    },
    {
@@ -173,8 +163,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = false,  /* bitplane unit, not PFS ALU */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,  /* XOR confirmed; full family pending probes */
-      .theorem           = "XOR hardware-confirmed; AND/OR/NOT need targeted truth-table probes",
+      .theorem           = "AND/OR/XOR hardware-confirmed bit-exact; ROP NOT needs a targeted truth-table probe",
    },
    {
       .domain            = R300_NUM_DOMAIN_U8_STENCIL,
@@ -188,7 +177,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_subnormal     = false,
       .is_native_compute = false,  /* per-pixel state machine, not PFS ALU */
       /* INCR/INVERT confirmed; DECR/WRAP pending. */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "INCR and INVERT confirmed; DECR/WRAP need targeted probes",
    },
    {
@@ -202,7 +190,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = false,  /* reduction unit via ZB_ZPASS_DATA/ZB_ZPASS_ADDR */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "surviving-fragment count exact via ZB_ZPASS_DATA occlusion-query path",
    },
    {
@@ -216,7 +203,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = false,   /* source transform, not compute */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,  /* FLOAT_4 observed; FLOAT_8/FLT16 pending */
       .theorem           = "FLOAT_4 vertex format observed; FLOAT_8/FLT16 remain probe targets",
    },
    {
@@ -230,7 +216,6 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = true,
       .has_subnormal     = true,
       .is_native_compute = false, /* emulated via integer limb arithmetic on FP24 substrate */
-      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "2-limb base-64: c0=a0*b0<=3969, c1=a0*b1+a1*b0<=3906, "
                            "c2=a1*b1<=961; all < 2^17; carry limbs (r0,r1,r2) 12/12 exact on RS482 "
                            "(rs482_fp16_pow2_carry_exactness_20260607); classification 15/15 exact",
@@ -958,6 +943,44 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "bit-exact on RS482 silicon (r300_substrate_probe.sh "
                          "PROBE_STENCIL_INVERT)",
       /* The mechanism is stencil-op state rather than a NIR pattern. */
+      .implementation_label = NULL,
+   },
+   {
+      OP(UNARY_AFFINE_MAP),
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out[gid] = in[gid] * c0 + c1 via one input plus "
+                         "constant scale/bias; MUL then ADD in FP24, exact "
+                         "only inside the admitted FP24 window",
+      .implementation_label = NULL,
+   },
+   {
+      OP(UNARY_TRANSCENDENTAL_MAP),
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_BOUNDARY,
+      .theorem         = "out[gid] = f(in[gid]) for f in {rcp,rsq,sqrt,exp2,"
+                         "log2,sin,cos,fract,floor,round}; retained RS482 "
+                         "cells validate the family within the declared 3% "
+                         "relative bound, not bit-exact",
+      .implementation_label = NULL,
+   },
+   {
+      OP(BINARY_TRANSCENDENTAL_MAP),
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_BOUNDARY,
+      .theorem         = "out[gid] = f(a[gid], b[gid]) for f in {pow,div}; "
+                         "retained scalar and vec4 RS482 cells validate the "
+                         "family within the declared 3% relative bound, not "
+                         "bit-exact",
+      .implementation_label = NULL,
+   },
+   {
+      OP(BITWISE_LOGICOP_MAP),
+      .domain          = R300_NUM_DOMAIN_ROP_BOOL,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out[gid] = a[gid] op b[gid] for op in {and,or,xor}; "
+                         "the packed-RGBA8 RB3D ROP carrier is bit-exact for "
+                         "all 32-bit lanes",
       .implementation_label = NULL,
    },
    /* NULL sentinel -- keep last */

@@ -6,7 +6,7 @@
  * Three test suites:
  *   1. Domain catalog: r300_numeric_domain_info() returns correct row for
  *      R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (rounding=RNE, significand_bits=11,
- *      is_native_compute=false, evidence=HW_CONFIRMED), keeps the five-term
+ *      is_native_compute=false, theorem retained), keeps the five-term
  *      U7 convolution domain distinct from the four-term U7 dot domain, and
  *      verifies explicit bound kinds for bounded and unbounded domains.
  *   2. Classification: all 65536 FP16 raw bit patterns produce the correct
@@ -95,8 +95,6 @@ test_domain_catalog(void)
          "catalog: has_subnormal == true");
    CHECK(fp16_info->is_native_compute == false,
          "catalog: is_native_compute == false (emulated)");
-   CHECK(fp16_info->evidence == R300_EVIDENCE_HW_CONFIRMED,
-         "catalog: evidence == HW_CONFIRMED");
    CHECK(fp16_info->theorem != NULL,
          "catalog: theorem string non-NULL");
 
@@ -626,7 +624,7 @@ test_multiply(void)
       }
    }
 
-   char label[80];
+   char label[128];
    snprintf(label, sizeof(label),
             "multiply (hand-picked): %u/%u cases match reference (%u mismatch)",
             total - mismatches, total, mismatches);
@@ -715,7 +713,7 @@ test_multiply(void)
 int main(void)
 {
    printf("r300-fp16-limb-oracle: IEEE FP16 virtual machine CPU oracle\n");
-   printf("domain: R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (hardware-confirmed)\n");
+   printf("domain: R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (emulated FP24 substrate)\n");
    printf("\n");
 
    test_domain_catalog();

@@ -103,6 +103,23 @@ test(
   r300_operation_ledger_test,
   suite : ['r300'],
 )
+
+# Test-only structural export for external evidence ledgers.  The executable is
+# not part of libr300_common and emits no evidence or route-state authority.
+r300_operation_registry_export = executable(
+  'r300_operation_registry_export',
+  files('tests/r300_operation_registry_export.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-operation-registry-export',
+  r300_operation_registry_export,
+  suite : ['r300'],
+)
 test(
   'r300-grid-fold',
   r300_grid_fold_test,
