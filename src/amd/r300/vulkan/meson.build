@@ -1920,7 +1920,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'non-triangle-count-refused',
                         'cull-back-kept-armed',
                         'cull-back-dropped-armed',
-                        'sample-mask-zero-armed']
+                        'sample-mask-zero-armed',
+                        'write-mask-zero-armed']
     test(
       'r3v-native-submit-order-@0@'.format(submit_arm),
       r3v_native_submit_order_harness,

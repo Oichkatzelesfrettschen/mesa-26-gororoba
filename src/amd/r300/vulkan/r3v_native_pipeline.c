@@ -305,16 +305,31 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
        ms->alphaToOneEnable != VK_FALSE)
       return false;
 
+   /* The cell writes every fragment straight to the target, so the
+    * admitted blend vocabulary is the arithmetic that equals that
+    * write: blending only as the identity configuration (source
+    * factor ONE, destination ZERO, op ADD on both channels), the logic
+    * op only as COPY, and the write mask as all channels or none -- a
+    * zero mask writes no channel, so the host collapses the draw's
+    * triangles and the target keeps its clear.
+    */
    const VkPipelineColorBlendStateCreateInfo *cb = info->pColorBlendState;
-   if (cb == NULL || cb->logicOpEnable != VK_FALSE ||
-       cb->attachmentCount != 1)
+   if (cb == NULL || cb->attachmentCount != 1 ||
+       (cb->logicOpEnable != VK_FALSE && cb->logicOp != VK_LOGIC_OP_COPY))
       return false;
    const VkPipelineColorBlendAttachmentState *blend = &cb->pAttachments[0];
-   if (blend->blendEnable != VK_FALSE ||
-       blend->colorWriteMask != (VK_COLOR_COMPONENT_R_BIT |
-                                 VK_COLOR_COMPONENT_G_BIT |
-                                 VK_COLOR_COMPONENT_B_BIT |
-                                 VK_COLOR_COMPONENT_A_BIT))
+   if (blend->blendEnable != VK_FALSE &&
+       (blend->srcColorBlendFactor != VK_BLEND_FACTOR_ONE ||
+        blend->dstColorBlendFactor != VK_BLEND_FACTOR_ZERO ||
+        blend->colorBlendOp != VK_BLEND_OP_ADD ||
+        blend->srcAlphaBlendFactor != VK_BLEND_FACTOR_ONE ||
+        blend->dstAlphaBlendFactor != VK_BLEND_FACTOR_ZERO ||
+        blend->alphaBlendOp != VK_BLEND_OP_ADD))
+      return false;
+   const VkColorComponentFlags full_mask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+   if (blend->colorWriteMask != full_mask && blend->colorWriteMask != 0)
       return false;
 
    /* The pass shape carries no depth/stencil attachment, so the only
@@ -385,8 +400,9 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->cull_mode = info->pRasterizationState->cullMode;
    pipeline->front_face = info->pRasterizationState->frontFace;
    pipeline->sample_mask_zero =
-      info->pMultisampleState->pSampleMask != NULL &&
-      (info->pMultisampleState->pSampleMask[0] & 1u) == 0;
+      (info->pMultisampleState->pSampleMask != NULL &&
+       (info->pMultisampleState->pSampleMask[0] & 1u) == 0) ||
+      info->pColorBlendState->pAttachments[0].colorWriteMask == 0;
    pipeline->dynamic_viewport_scissor = dynamic_viewport_scissor;
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
