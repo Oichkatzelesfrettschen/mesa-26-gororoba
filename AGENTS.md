@@ -502,7 +502,7 @@ Source comments name durable mechanisms: exact chip, ISA/register rule, API/spec
 
 Commit messages and finding documents may carry chronology and the spec section number when useful. A source comment states the mechanism or names the controlling rule in its own terms, so a reader does not need the spec open to parse it. A stable spec section or version may trail the named rule as supplemental disambiguation; the named rule itself carries the authority, and chronology lives in the commit message and the finding, as does section-number provenance. Like the American-spelling rule, this governs new or modified comments only; existing comments keep their section numbers rather than absorb churn.
 
-Mechanism controls comment length: the number of distinct load-bearing facts sets the length, and a line threshold does not. Use short labels for obvious local sections, and compact multi-sentence blocks only when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. Every sentence carries a distinct contract, cause, consequence, scope, or falsifier; a sentence that repeats or paraphrases another sentence in the block is removed. Default to the shortest form that preserves the load-bearing constraint: a single sentence trailing the code, a short block for a constraint with interacting parts, and a longer block only when each added sentence still carries a distinct fact -- a cross-layer invariant that genuinely spans an API rule, a lowering pass, allocation granularity, kernel validation, and an observed failure may legitimately run long. Architecture that persists across the file moves to file or type scope (see the descriptor-layout preamble in `si_descriptors.c`); the point of use keeps only the local link in the chain. Mesa-upstream blocks for a single constraint (see `si_buffer.c`, `evergreen_state.c`) are typically four to five lines; use them to calibrate how much space a single fact deserves.
+Mechanism controls comment length: the number of distinct load-bearing facts sets the length, and a line threshold does not. Use short labels for obvious local sections, and compact connected blocks when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. A comment may carry several independently checkable facts when they form one causal, temporal, conditional, or ownership chain; independent checkability belongs to the claims, not to sentence boundaries. Split when the actor, ownership, phase, evidence class, or invariant changes, or when added syntax obscures the dependency it is meant to expose. Default to the shortest form that preserves the mechanism: a single sentence for one local fact, a causal sentence for a connected relation, and a short block when the model spans an API rule, a lowering pass, allocation granularity, kernel validation, and an observed failure. Remove repetition and paraphrase at any length. Architecture that persists across the file moves to file or type scope (see the descriptor-layout preamble in `si_descriptors.c`); the point of use keeps only the local link in the chain. Mesa-upstream blocks for a single constraint (see `si_buffer.c`, `evergreen_state.c`) are typically four to five lines; use them to calibrate how much space a single fact deserves.
 
 A comment runs from its first useful sentence to its last. A compact semantic table or diagram that encodes a descriptor word layout, packet fields, a bit layout, or a state transition is content, and it belongs when it carries the mapping more precisely than prose (the image/sampler descriptor table at the top of `si_descriptors.c` is the calibration example); delimiter lines, banner boxes, ASCII art, long punctuation runs, and wrappers such as `/* ----- */`, `// =====`, and `/* --- label --- */` are decoration.
 
@@ -554,11 +554,17 @@ A full mechanism comment orders its facts:
 4. Test reference when the comment explains a fixed failure: CTS case or `dEQP-VK.<group>.*`.
 5. Env knobs or flags, grouped at the end of the block when relevant.
 
-Use the smallest applicable subset of that order; most comments carry one or two of the elements, and only a comment explaining a fixed conformance failure or a gated path carries all five. The order is a dependency order -- claim, then the cause or authority it rests on, then consequence, then scope or guard -- so each fact stands on the one before it, and a comment carrying one fact is one sentence.
+Use the smallest applicable subset of that order; most comments carry one or two of the elements, and only a comment explaining a fixed conformance failure or a gated path carries all five. The order is a dependency order -- claim, then the cause or authority it rests on, then consequence, then scope or guard -- rather than a sentence template. Bind facts that describe one mechanism into the same movement so the reader sees why the consequence follows from the constraint. A comment carrying one fact may be one sentence; a connected mechanism may require a causal sentence or a short block.
+
+### Mechanism movement
+
+The unit of composition is a mechanism movement, not a sentence. A movement names the governing object or operation, carries it through the constraint that shapes the code, and arrives at the consequence or guard that makes the constraint useful. Dependent clauses, participial phrases, appositives, and causal or temporal connectives preserve those relations while keeping each load-bearing claim exact. Repeated subject-proposition openings mark a new movement when ownership or scope changes; continuous mechanisms carry the established subject through their dependent and coordinated clauses. Paratactic rhythm belongs to finite maps and strict ordered protocols when separateness or order is itself the invariant; related facts use connected prose.
+
+Generate comments from the mechanism model, not from a list of extracted facts: identify the subject, state, constraint, transition, consequence, and scope, then linearize their dependency graph into one movement. A movement can relate documented behavior to a measured consequence, but it names each evidence class where it enters rather than turning the consequence into proof of the mechanism. Hypothesis remains marked as hypothesis.
 
 Default to short comments. A one-line trailing comment on the load-bearing line is better than a function-header paragraph unless the whole function encodes a non-obvious invariant.
 
-Use one thought per comment. Stack separate comments when steps are distinct; a multi-clause sentence fusing separate steps splits into stacked comments.
+Keep each comment block centered on one mechanism movement. A movement may contain several sentences when each advances the same state, ownership relation, or causal model. Start a separate comment when the mechanism or ownership changes, or when a phase or evidence boundary requires independent treatment; use a sentence boundary for a new dependency or for clarity, not merely because another fact is independently checkable.
 
 The code itself says what happens; a comment explains why the code has that shape: silicon constraint, spec rule, kernel validator, measurement, or non-local invariant.
 
@@ -574,14 +580,14 @@ emitting after issuing the prefetch; the one wait lands at end-of-IB before
 the stream retires.
 ```
 
-Use sequence (`The kernel reads WORD0. Then it adds reloc->gpu_offset. Then the shader sees the intended VA.`) when the order itself is the mechanism. Either form beats one passive sentence with three clauses, and both beat imperative narration (`make sure to wait before returning`).
+Use explicit sequence when order itself is the mechanism, but carry the sequence through causal or temporal linking; a new sentence marks a distinct phase or decision rather than resetting the subject after every step. Connected sequence and causal prose beat imperative narration (`make sure to wait before returning`).
 
 Example:
 
 ```text
-The kernel reads WORD0 as a byte offset. It adds reloc->gpu_offset.
-The buffer base reaches the shader at the right VA; any per-element
-offset requested by the caller survives relocation.
+The kernel reads WORD0 as a byte offset, adds reloc->gpu_offset, and presents
+the buffer base to the shader at the intended VA; any per-element offset
+requested by the caller survives relocation.
 ```
 
 Multi-paragraph comment blocks are reserved for genuine silicon-quirk reasoning.
