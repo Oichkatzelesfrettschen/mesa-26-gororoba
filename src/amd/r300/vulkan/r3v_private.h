@@ -56,8 +56,12 @@ extern "C" {
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z 64u
 #define R3V_VK10_MIN_VIEWPORT_DIMENSION 4096u
 #define R3V_VK10_MIN_FRAMEBUFFER_DIMENSION 4096u
-#define R3V_VK10_REQUIRED_SAMPLE_COUNTS \
-   (VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT)
+/* Every image and pipeline admission executes single-sample alone, so
+ * the limits advertise the one truthful bit; Vulkan 1.0's required
+ * minimum includes VK_SAMPLE_COUNT_4_BIT, and this deviation is part
+ * of the declared nonconformance (conformanceVersion 0.0.0.0).
+ */
+#define R3V_SUPPORTED_SAMPLE_COUNTS VK_SAMPLE_COUNT_1_BIT
 
 /* Conformance classification reported to probes and external tooling.
  *

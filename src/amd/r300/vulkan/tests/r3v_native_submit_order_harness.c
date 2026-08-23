@@ -200,6 +200,10 @@ enum arm {
     * it to degenerate records of its first vertex. */
    ARM_CULL_BACK_KEPT_ARMED,
    ARM_CULL_BACK_DROPPED_ARMED,
+   /* A sample mask clearing bit 0 leaves the one sample uncovered, so
+    * the host collapses every triangle and the target keeps the clear
+    * alone. */
+   ARM_SAMPLE_MASK_ZERO_ARMED,
    ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED,
    ARM_INSTANCED_FETCHED_REFUSED,
 };
@@ -261,6 +265,7 @@ static const struct {
    { "non-triangle-count-refused", ARM_NON_TRIANGLE_COUNT_REFUSED },
    { "cull-back-kept-armed", ARM_CULL_BACK_KEPT_ARMED },
    { "cull-back-dropped-armed", ARM_CULL_BACK_DROPPED_ARMED },
+   { "sample-mask-zero-armed", ARM_SAMPLE_MASK_ZERO_ARMED },
    { "instanced-out-of-bounds-refused", ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED },
    { "instanced-fetched-refused", ARM_INSTANCED_FETCHED_REFUSED },
 };
@@ -1132,6 +1137,10 @@ run_arm(enum arm arm, const char *name)
                       .sType =
                          VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                       .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                      .pSampleMask =
+                         arm == ARM_SAMPLE_MASK_ZERO_ARMED
+                            ? &(VkSampleMask){ 0 }
+                            : NULL,
                    },
                 .pColorBlendState =
                    &(VkPipelineColorBlendStateCreateInfo){
@@ -1383,7 +1392,8 @@ run_arm(enum arm arm, const char *name)
     * viewport transform, instance-major. */
    float expected_carrier[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    unsigned expected_records = 0;
-   if (arm == ARM_CULL_BACK_DROPPED_ARMED) {
+   if (arm == ARM_CULL_BACK_DROPPED_ARMED ||
+       arm == ARM_SAMPLE_MASK_ZERO_ARMED) {
       /* The culled triangle collapses to three copies of its first
        * transformed record. */
       float first[4];
@@ -1546,6 +1556,7 @@ run_arm(enum arm arm, const char *name)
    case ARM_INSTANCED_ROBUST_ARMED:
    case ARM_MULTI_TRIANGLE_ARMED:
    case ARM_CULL_BACK_DROPPED_ARMED:
+   case ARM_SAMPLE_MASK_ZERO_ARMED:
       /* The CPU route expanded the instances: the carrier holds each
        * instance's transformed triangle in instance order -- the robust
        * arm's out-of-bounds offset record read zeros, so its carrier is

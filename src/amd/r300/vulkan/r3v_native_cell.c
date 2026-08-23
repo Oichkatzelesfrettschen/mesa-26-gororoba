@@ -619,6 +619,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && !draw->indexed &&
          draw->cull_mode == VK_CULL_MODE_NONE &&
+         !draw->sample_mask_zero &&
          draw->instance_count == 1 && draw->vertex_count == 3 &&
          r300_cpu_vertex_range_in_bounds(stream.format_id, &source,
                                          stream.first_vertex,
@@ -733,7 +734,8 @@ r3v_native_cmd_buffer_execute_deferred_draw(
           * nothing and passes through.
           */
          if (result == VK_SUCCESS &&
-             draw->cull_mode != VK_CULL_MODE_NONE) {
+             (draw->cull_mode != VK_CULL_MODE_NONE ||
+              draw->sample_mask_zero)) {
             for (uint32_t t = 0; t + 3 <= position_count; t += 3) {
                float p[3][2];
                for (unsigned v = 0; v < 3; v++)
@@ -744,17 +746,21 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                      ((double)p[2][1] - p[0][1]) -
                   ((double)p[2][0] - p[0][0]) *
                      ((double)p[1][1] - p[0][1]);
-               if (area2 == 0.0)
-                  continue;
-               const bool counter_clockwise = area2 > 0.0;
-               const bool front_facing =
-                  counter_clockwise ==
-                  (draw->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
-               const VkCullModeFlags facing_bit =
-                  front_facing ? VK_CULL_MODE_FRONT_BIT
-                               : VK_CULL_MODE_BACK_BIT;
-               if ((draw->cull_mode & facing_bit) == 0)
-                  continue;
+               /* Zero coverage collapses every triangle; culling
+                * decides by facing. */
+               if (!draw->sample_mask_zero) {
+                  if (area2 == 0.0)
+                     continue;
+                  const bool counter_clockwise = area2 > 0.0;
+                  const bool front_facing =
+                     counter_clockwise ==
+                     (draw->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                  const VkCullModeFlags facing_bit =
+                     front_facing ? VK_CULL_MODE_FRONT_BIT
+                                  : VK_CULL_MODE_BACK_BIT;
+                  if ((draw->cull_mode & facing_bit) == 0)
+                     continue;
+               }
                for (unsigned v = 1; v < 3; v++)
                   memcpy(&records[(t + v) * position_stride],
                          &records[t * position_stride],
@@ -1191,11 +1197,11 @@ r3v_native_deferred_draw_admit_gpu_producer(
     * transform, and the producer routes deliver records the device
     * transformed, so a culling pipeline executes on the CPU route.
     */
-   if (draw->cull_mode != VK_CULL_MODE_NONE) {
+   if (draw->cull_mode != VK_CULL_MODE_NONE || draw->sample_mask_zero) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: GPU producer routes deliver "
-                       "untouched records; a culling pipeline executes "
-                       "on the CPU route");
+                       "untouched records; a culling or zero-coverage "
+                       "pipeline executes on the CPU route");
    }
    /* The producer cells embed exactly the reference three records, so
     * a multi-triangle list refuses the producer routes by name.
