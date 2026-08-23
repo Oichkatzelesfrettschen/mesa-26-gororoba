@@ -352,6 +352,8 @@ create_compute_pipeline(struct r3v_native_device *device,
 
    pipeline->is_compute = true;
    pipeline->compute_job = job;
+   memcpy(pipeline->set0_binding_present, set_layout->binding_present,
+          sizeof(pipeline->set0_binding_present));
 
    *pPipeline = r3v_native_pipeline_to_handle(pipeline);
    return VK_SUCCESS;
@@ -392,7 +394,14 @@ r3v_CmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX,
       cmd_buffer->bound_compute_pipeline;
    const struct r3v_native_descriptor_set *set =
       cmd_buffer->bound_compute_set;
+   /* The dispatch consumes the set through the pipeline's layout, so
+    * the set's layout must be identically defined with the layout the
+    * pipeline was created against.
+    */
    if (pipeline == NULL || set == NULL || set->poisoned ||
+       memcmp(pipeline->set0_binding_present,
+              set->layout->binding_present,
+              sizeof(pipeline->set0_binding_present)) != 0 ||
        cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
        cmd_buffer->deferred_draw.pending ||
        cmd_buffer->deferred_copy_count != 0 ||
@@ -471,7 +480,21 @@ r3v_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
       return;
    }
    VK_FROM_HANDLE(r3v_native_descriptor_set, set, pDescriptorSets[0]);
-   if (set == NULL) {
+   VK_FROM_HANDLE(vk_pipeline_layout, bind_layout, layout);
+   /* The bind names a pipeline layout whose set 0 the set's own layout
+    * must be compatible with; identically defined reduces to equal
+    * binding-presence maps under the bounded storage-buffer shape.
+    */
+   if (set == NULL || bind_layout == NULL || bind_layout->set_count != 1) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+   const struct r3v_native_descriptor_set_layout *bind_set_layout =
+      container_of(bind_layout->set_layouts[0],
+                   struct r3v_native_descriptor_set_layout, vk);
+   if (memcmp(bind_set_layout->binding_present,
+              set->layout->binding_present,
+              sizeof(set->layout->binding_present)) != 0) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }

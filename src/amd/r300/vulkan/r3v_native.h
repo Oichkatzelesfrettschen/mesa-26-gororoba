@@ -697,6 +697,14 @@ struct r3v_native_pipeline {
     */
    bool is_compute;
    struct r300_compute_job compute_job;
+   /* The compute pipeline layout's set-0 binding map, copied at
+    * creation: two set layouts are compatible exactly when they are
+    * identically defined, and the bounded shape (storage-buffer
+    * bindings of one descriptor under the compute stage) makes the
+    * presence map the whole definition, so the dispatch admission
+    * compares maps rather than handles.
+    */
+   bool set0_binding_present[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
    /* The attribute slots the vertex job reads (r300_vertex_job_input_mask
     * of vertex_job), each described in attributes[slot], and the stride
     * of every binding an attribute names.
