@@ -112,8 +112,11 @@ what the substrate cannot lower (scatter, image store, shared memory or
 barrier, general atomic, integer shift); six failure clauses bind every
 route: refuse at admission, exact gate per verb, no fallback after submit,
 refuse before write, oracle divergence quarantines, advertise after silicon.
-The identity map is the one verb whose CPU route executes, and the one
-whose GPU route executes: under the compute gate and its own exact gate
+The device reads every row's gate at creation into one table (the literal
+`1` opens; `0`, empty, any other value, and unset stay closed; an open gate
+on a row without an executing GPU route selects nothing). The identity map
+is the one verb whose CPU route executes, and the one whose GPU route
+executes: under the compute gate and its own exact gate
 `R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL=1`, a dispatch of whole F32_4
 records (at most 1024, input and output in distinct buffer objects, input
 offset dword-granular, output offset 32-byte aligned, every input word
@@ -129,7 +132,10 @@ allocation, reference, IB, or write, and a closed verb gate keeps the CPU
 route. Evidence: host unit (`r300-compute-identity-carrier`, the pinned
 reference pass), offline kernel-parser replay with known-bad arms
 (`r300-compute-identity-carrier-cs-track-replay`), and the drm-shim arms
-(`r3v-native-compute-gpu-route-*`); no attended RS482 delivery yet, so the
+(`r3v-native-compute-gpu-route-*`: the composed route, the gate-off CPU
+route, the domain, alias, and ceiling refusals, the gate table, the
+comparator's pre-seeded agreement, and the quarantine refusal); no attended
+RS482 delivery yet, so the
 route advertises nothing and stays behind its gate. `r300-compute-verb-ledger`
 pins the rows and calibrates the checker. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the

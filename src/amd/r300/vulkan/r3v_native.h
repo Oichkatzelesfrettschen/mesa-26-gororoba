@@ -10,6 +10,7 @@
 #include "r3v_native_arming.h"
 
 #include "amd/r300/common/r300_compute_job.h"
+#include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
@@ -511,10 +512,12 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
-   /* The identity verb's GPU route gate (the ledger row's gpu_gate),
-    * read the same way; with the compute gate it selects the compute
-    * identity carrier for an admissible dispatch. */
-   const char *compute_identity_gpu_gate;
+   /* The compute verb gate table, one entry per ledger row read from
+    * that row's gpu_gate the same way (the literal "1" or NULL): with
+    * the compute gate, a verb's open gate selects its GPU route when the
+    * row's route executes, and an open gate on a row without an
+    * executing route selects nothing. */
+   const char *compute_verb_gates[R300_COMPUTE_VERB_COUNT];
    /* Failure injection at the fetched route's composition boundary: a
     * nonzero negative errno makes the admission treat the composed route
     * as refused with that errno, after the emitters ran and before any

@@ -61,8 +61,11 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
    device->r2vb_fetched_gate =
       exact_gate("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
-   device->compute_identity_gpu_gate = exact_gate(
-      r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate);
+   uint32_t verb_count = 0;
+   const struct r300_compute_verb_row *rows =
+      r300_compute_verb_rows(&verb_count);
+   for (uint32_t v = 0; v < verb_count; v++)
+      device->compute_verb_gates[v] = exact_gate(rows[v].gpu_gate);
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
