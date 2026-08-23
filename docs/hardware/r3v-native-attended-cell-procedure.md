@@ -105,11 +105,20 @@ The run proceeds only when all of the following hold.
   ```sh
   R3V_SUITE_REPORT="$R3V_NATIVE_MANIFEST_DIR/preflight-suites.txt"
   R3V_KERNEL_REPLAY_TOOL=<path to replay_r300_cs_track> \
+  env -u R3V_NATIVE_MANIFEST_DIR \
   meson test -C "$R3V_BUILD_DIR" --no-rebuild --print-errorlogs \
     --suite r300 --suite r3v --suite radeon-drm-vk --suite drm-shim \
     >"$R3V_SUITE_REPORT" 2>&1
   cat "$R3V_SUITE_REPORT"
   ```
+
+  The suites run with `R3V_NATIVE_MANIFEST_DIR` withheld: the drm-shim
+  harnesses retain manifests and write `attempt.token` into whatever
+  directory that variable names, so a suite run that inherits the
+  evidence directory fills it with host-model artifacts and the
+  harnesses' one-attempt and retention-order checks fail against each
+  other (ten such failures on a clean build when the variable leaks).
+  The evidence directory receives the suite report alone.
 
   A nonzero suite status blocks the run. The qualification inventory gate
   then confirms the required test set is complete and the replay tool's
@@ -120,6 +129,7 @@ The run proceeds only when all of the following hold.
   R3V_CS_TRACK_REPLAY_TOOL=<path to replay_r300_cs_track> \
   R3V_CS_TRACK_CONTROLS=<path to its controls fixture> \
   R3V_CS_TRACK_REPLAY_PROVENANCE=<path to the provenance record> \
+  env -u R3V_NATIVE_MANIFEST_DIR \
   python3 src/amd/r300/vulkan/tests/r3v_qualification_inventory.py \
     "$R3V_BUILD_DIR" --qualification \
     >"$R3V_QUALIFICATION_REPORT" 2>&1

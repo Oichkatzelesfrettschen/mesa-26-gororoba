@@ -73,9 +73,14 @@ format and returns one decision: the CPU route by default, the R2VB host model
 under `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1`, the immediate GPU producer
 with `R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL=1` added, and the fetched GPU
 producer with `R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL=1` added to both;
-the fetched route is a new cell with a no-submit composition identity
-(`common/tests/r300_fetched_route_digests.h`) and no retained silicon delivery,
-so the third gate keeps the qualified immediate route reachable beside it. The device caches each gate at creation as the
+the fetched F32_4 route carries the silicon identity `597b762d...` (547
+dwords, split 316, four relocations), pinned in
+`common/tests/r300_fetched_route_digests.h` and delivered on RS482 as the
+steinmarder-r300 bundle
+`r3v-native-fetched-gpu-producer-route-first-delivery-rs482` (carrier
+read-back equal to the delivery identity, target equal to the analytic
+triangle, empty dmesg delta); the third gate keeps the qualified immediate
+route reachable beside it. The device caches each gate at creation as the
 literal `"1"` or closed, so the route cannot drift mid-process, and a harness
 that varies a gate on one device calls
 `r3v_native_device_refresh_delivery_gates` to re-run the same creation-time read.
@@ -416,9 +421,12 @@ model.
 - Fetched-route closure. The fetched F32_4 route composes at submit time
   byte-identical to its offline composition (the submit-order harness's
   `gpu-fetched-composed` arm proves the digests equal through the arming
-  gate) and refuses atomically on an injected composition failure; closing
-  needs the kernel-parser replay of the composed stream and an attended
-  RS482 cell whose carrier read-back equals the delivery identity.
+  gate), refuses atomically on an injected composition failure, replays
+  through the kernel parser as `dwords=547 relocs=4 draws=2 ACCEPT`, and is
+  delivered on RS482 (bundle
+  `r3v-native-fetched-gpu-producer-route-first-delivery-rs482`); the open
+  items are the F32_3 and F32_2 cells and a timing cut over the fetched
+  route against the measured CPU default.
 - Fetch-tail enforcement. The offset-blind kernel bound leaves userspace as the
   enforcing layer. A kernel-side offset-aware bound would move that obligation;
   until then a replay `ACCEPT` is not a statement about the fetch window.
