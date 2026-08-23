@@ -549,6 +549,9 @@ if with_tests
     args : [files('tests/r3v_rename_ratchet.py'),
             meson.project_source_root()],
     suite : ['r3v'],
+    # The ratchet walks every scan root of the source tree; the RS482 host
+    # (K8) needs past the default 30 s for that walk.
+    timeout : 180,
   )
   test(
     'r3v-rename-ratchet-selftest',
