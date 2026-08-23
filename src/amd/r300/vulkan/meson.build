@@ -705,13 +705,15 @@ r3v_native_attended_public_gpu_producer = executable(
 
 # Attended route dispatch timing cell: one declared-route submission
 # with CLOCK_MONOTONIC_RAW readings at the recording boundary and
-# around the synchronous vkQueueSubmit, so the CPU and GPU delivery
-# routes earn comparable timing rows on verified bytes.  Built and
-# never registered as a test, because running it is a hardware
-# authorization rather than a build-graph result.
+# around the synchronous vkQueueSubmit, so the CPU, immediate GPU
+# producer, and fetched GPU producer delivery routes earn comparable
+# timing rows on verified bytes.  Built and never registered as a
+# test, because running it is a hardware authorization rather than a
+# build-graph result.
 r3v_native_attended_route_dispatch_timing = executable(
   'r3v_native_attended_route_dispatch_timing',
   files('tests/r3v_native_attended_route_dispatch_timing.c',
+        '../common/r300_r2vb_fetched_producer.c',
         '../common/r300_r2vb_public_route.c'),
   include_directories : [r3v_native_inc, include_directories('.')],
   dependencies : r3v_native_deps,
@@ -1584,6 +1586,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   r3v_native_route_timing_digest_test = executable(
     'r3v_native_route_timing_digest_test',
     files('tests/r3v_native_route_timing_digest_test.c',
+          '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_public_route.c'),
     include_directories : r3v_native_inc,
     dependencies : r3v_native_deps,
@@ -1622,6 +1625,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-route-timing-record-gpu',
     r3v_native_attended_route_dispatch_timing,
     args : [meson.current_build_dir(), 'gpu', '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-route-timing-record-fetched',
+    r3v_native_attended_route_dispatch_timing,
+    args : [meson.current_build_dir(), 'fetched', '--record-only'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,

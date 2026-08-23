@@ -16,22 +16,28 @@
  * proves nothing; instead the driver reports the route its resolver
  * and submit-time admission actually took, and a completed submission
  * whose observed route differs from the declared one reports the
- * disagreement rather than a timing row.  --route gpu takes both
- * delivery gates at their exact opt-in values and submits the composed
- * producer-plus-consumer stream; --route cpu takes both closed and
- * submits the consumer alone over the CPU-executed vertex job.  The
- * color oracle decides that the timed submission delivered, so every
- * timing row rests on verified bytes.  One submission, one verdict, one
- * timing row per process; repetition lives with the orchestrator, which
- * arms each repetition in a fresh evidence directory.
+ * disagreement rather than a timing row.  --route gpu takes the two
+ * producer gates at their exact opt-in values with the fetched gate
+ * closed and submits the immediate producer-plus-consumer stream;
+ * --route fetched takes all three open and submits the fetched
+ * producer -- the device reading the bound vertex BO through the
+ * two-array fetched body -- ahead of the same consumer; --route cpu
+ * takes all three closed and submits the consumer alone over the
+ * CPU-executed vertex job.  The color oracle decides that the timed
+ * submission delivered, so every timing row rests on verified bytes.
+ * One submission, one verdict, one timing row per process; repetition
+ * lives with the orchestrator, which arms each repetition in a fresh
+ * evidence directory.
  */
 
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
 
+#include "amd/r300/common/r300_r2vb_fetched_producer.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_vertex_format.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -117,9 +123,10 @@ same_directory(const char *a, const char *b)
           strcmp(resolved_a, resolved_b) == 0;
 }
 
-/* The exact-value delivery gates.  Both open the GPU producer route;
- * either one closed selects the CPU route, which submits the consumer
- * alone under an authorization naming the composed stream.
+/* The exact-value delivery gates.  The two producer gates open the
+ * immediate GPU producer route, the third on top of them selects the
+ * fetched producer, and any producer gate closed selects the CPU
+ * route, which submits the consumer alone.
  */
 static bool
 gate_open(const char *name)
@@ -127,6 +134,30 @@ gate_open(const char *name)
    const char *value = getenv(name);
    return value != NULL && strcmp(value, "1") == 0;
 }
+
+/* The declared routes, in the resolver's own vocabulary: the names are
+ * the outcome record's route field and the orchestrator's leg suffix.
+ */
+enum declared_route {
+   ROUTE_CPU = R3V_NATIVE_OBSERVED_ROUTE_CPU,
+   ROUTE_GPU = R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER,
+   ROUTE_FETCHED = R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER_FETCHED,
+};
+
+/* Which of the three gates each route requires open; every other gate
+ * stays closed, so a gate state naming another route refuses before a
+ * token is spent.
+ */
+static const struct {
+   const char *name;
+   bool delivery;
+   bool gpu_delivery;
+   bool fetched;
+} route_gates[] = {
+   [ROUTE_CPU] = { "cpu", false, false, false },
+   [ROUTE_GPU] = { "gpu", true, true, false },
+   [ROUTE_FETCHED] = { "fetched", true, true, true },
+};
 
 int
 main(int argc, char **argv)
@@ -144,13 +175,14 @@ main(int argc, char **argv)
    const bool timed_run = argc == 3;
    if (!digest_only && !record_only && !timed_run) {
       fprintf(stderr,
-              "usage: %s <evidence-directory> cpu|gpu [--record-only]\n"
+              "usage: %s <evidence-directory> cpu|gpu|fetched "
+              "[--record-only]\n"
               "       %s --digest-only\n",
               argv[0], argv[0]);
       return 2;
    }
    const char *evidence_dir = digest_only ? NULL : argv[1];
-   bool gpu_route = false;
+   enum declared_route route_kind = ROUTE_CPU;
    if (!digest_only) {
       /* The route rides as its own word so the declared route is
        * visible in the process line an evidence bundle retains.
@@ -159,13 +191,21 @@ main(int argc, char **argv)
       if (strncmp(route_arg, "--route=", 8) == 0)
          route_arg += 8;
       if (strcmp(route_arg, "gpu") == 0)
-         gpu_route = true;
+         route_kind = ROUTE_GPU;
+      else if (strcmp(route_arg, "fetched") == 0)
+         route_kind = ROUTE_FETCHED;
       else if (strcmp(route_arg, "cpu") != 0) {
-         fprintf(stderr, "unknown route %s; the routes are cpu and gpu\n",
+         fprintf(stderr,
+                 "unknown route %s; the routes are cpu, gpu, and fetched\n",
                  route_arg);
          return 2;
       }
    }
+   const char *route_name = route_gates[route_kind].name;
+   /* Both producer routes rasterize on the device over screen-space
+    * records; the CPU route alone takes clip-space records.
+    */
+   const bool device_producer = route_kind != ROUTE_CPU;
 
    /* A silicon result binds to the real libc entry points.  A preloaded
     * interposer -- the drm-shim fixture or any other -- would let the
@@ -200,29 +240,30 @@ main(int argc, char **argv)
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 
-   /* The declared route must be the route the device resolves: the gpu
-    * route takes both delivery gates at their exact values, and the cpu
-    * route takes both closed, so a gate state naming the other route
-    * refuses before any token is spent on a mislabeled timing row.
+   /* The declared route must be the route the device resolves: each
+    * route takes exactly its gates at their exact values and the others
+    * closed, so a gate state naming another route refuses before any
+    * token is spent on a mislabeled timing row.
     */
    if (!record_only && !digest_only) {
-      const bool gates_open =
-         gate_open("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") &&
+      const bool delivery = gate_open("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+      const bool gpu_delivery =
          gate_open("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
-      const bool gates_closed =
-         !gate_open("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") &&
-         !gate_open("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
-      if (gpu_route && !gates_open) {
+      const bool fetched =
+         gate_open("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
+      if (delivery != route_gates[route_kind].delivery ||
+          gpu_delivery != route_gates[route_kind].gpu_delivery ||
+          fetched != route_gates[route_kind].fetched) {
          fprintf(stderr,
-                 "--route gpu requires both "
-                 "R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL and "
-                 "R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL at 1\n");
-         return finish(OUTCOME_SUBMISSION_REFUSED);
-      }
-      if (!gpu_route && !gates_closed) {
-         fprintf(stderr,
-                 "--route cpu requires both delivery gates closed so the "
-                 "resolver takes the CPU route\n");
+                 "--route %s requires R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL "
+                 "%s, R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL %s, and "
+                 "R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL %s; the "
+                 "environment carries %s, %s, %s\n",
+                 route_name, route_gates[route_kind].delivery ? "1" : "unset",
+                 route_gates[route_kind].gpu_delivery ? "1" : "unset",
+                 route_gates[route_kind].fetched ? "1" : "unset",
+                 delivery ? "1" : "closed", gpu_delivery ? "1" : "closed",
+                 fetched ? "1" : "closed");
          return finish(OUTCOME_SUBMISSION_REFUSED);
       }
    }
@@ -251,12 +292,32 @@ main(int argc, char **argv)
                                cpu_digest);
    printf("route ib_dwords=%u consumer_start_dwords=%u\n",
           route.ib_size_dwords, route.consumer_start_dwords);
-   printf("gpu_ib_blake3=%s\ncpu_ib_blake3=%s\n", gpu_digest, cpu_digest);
-   fflush(stdout);
-   const char *route_digest = digest_only    ? NULL
-                              : gpu_route    ? gpu_digest
-                                             : cpu_digest;
    r300_r2vb_public_route_release(&route);
+   /* The fetched route's stream: the F32_4 fetched producer over the
+    * bound vertex BO ahead of the same consumer.  The runner binds the
+    * records at offset zero with the F32_4 record size as stride, which
+    * is the geometry the reference composition states, so the digest
+    * here is the one the submit-time composition reproduces.
+    */
+   struct r300_r2vb_fetched_route_ib fetched_route;
+   if (r300_r2vb_fetched_route_reference_compose(R300_VERTEX_FORMAT_F32_4,
+                                                 &fetched_route) != 0) {
+      fprintf(stderr, "fetched route composition failed\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   char fetched_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(fetched_route.ib, fetched_route.ib_size_dwords,
+                               fetched_digest);
+   printf("fetched route ib_dwords=%u consumer_start_dwords=%u\n",
+          fetched_route.ib_size_dwords, fetched_route.consumer_start_dwords);
+   r300_r2vb_fetched_route_release(&fetched_route);
+   printf("gpu_ib_blake3=%s\ncpu_ib_blake3=%s\nfetched_ib_blake3=%s\n",
+          gpu_digest, cpu_digest, fetched_digest);
+   fflush(stdout);
+   const char *route_digest = digest_only             ? NULL
+                              : route_kind == ROUTE_GPU ? gpu_digest
+                              : route_kind == ROUTE_FETCHED ? fetched_digest
+                                                            : cpu_digest;
    if (digest_only)
       return 0;
 
@@ -442,23 +503,23 @@ main(int argc, char **argv)
       fprintf(stderr, "vertex map failed\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   /* The two routes admit different input spaces for the same rendered
-    * triangle, and each leg writes the form its route admits.  The GPU
-    * producer route declares R300_CARRIER_POSITION_WINDOW, so the
-    * device pass rasterizes the screen-space records and the consumer
-    * binds the carrier untransformed; the CPU route declares
+   /* The routes admit different input spaces for the same rendered
+    * triangle, and each leg writes the form its route admits.  Both
+    * device producer routes declare R300_CARRIER_POSITION_WINDOW, so
+    * the device pass rasterizes the screen-space records and the
+    * consumer binds the carrier untransformed; the CPU route declares
     * R300_CARRIER_POSITION_CLIP, validates the clip volume, and
     * realizes the one viewport transform itself as
     * (ndc + 1) * extent / 2.  Feeding the screen-space records to the
     * CPU route refuses every vertex as outside the clip volume, so the
     * NDC below is the same triangle stated in that route's own space.
-    * Both legs therefore render one triangle to one target and the
+    * Every leg therefore renders one triangle to one target and the
     * color oracle holds each to it; the transform each route performs
     * is part of what the interval measures.
     */
    float records[R300_TRIANGLE_VERTEX_DWORDS];
    memcpy(records, r300_tcl_bypass_triangle_vertices, sizeof(records));
-   if (!gpu_route) {
+   if (!device_producer) {
       for (unsigned v = 0; v < R300_TRIANGLE_VERTEX_DWORDS / 4; v++) {
          float *pos = &records[v * 4];
          pos[0] = pos[0] * 2.0f / (float)R3V_NATIVE_TARGET_WIDTH - 1.0f;
@@ -753,11 +814,15 @@ main(int argc, char **argv)
     * decided it.  The delivery gates this process set are what the
     * driver cached, so reading them back here would prove nothing; the
     * resolver additionally requires the F32_4 stream format, and a
-    * declared gpu route over any other format resolves to a host
-    * delivery.  Comparing the observed route against the declared one is
-    * what makes a mislabeled timing row impossible.
+    * declared producer route over any other format resolves to a host
+    * delivery.  The driver reports which producer wrote the carrier, so
+    * a fetched leg is not credited to the immediate route or the other
+    * way around; comparing the observed route against the declared one
+    * is what makes a mislabeled timing row impossible.
     */
-   const bool observed_gpu = r3v_native_queue_observed_gpu_producer(device);
+   const enum r3v_native_observed_route observed =
+      r3v_native_queue_observed_route(device);
+   const char *observed_name = r3v_native_observed_route_name(observed);
    /* The transport bracket: DRM_RADEON_CS plus the bounded completion
     * wait.  The vkQueueSubmit wall around it also spans the semantic-cell
     * and submit-object evidence writes, the IB digest, the completion BO
@@ -775,8 +840,7 @@ main(int argc, char **argv)
          : 0ull;
    printf("[timing] route=%s observed=%s transport_wall_ns=%llu "
           "submit_wall_ns=%llu\n",
-          gpu_route ? "gpu" : "cpu", observed_gpu ? "gpu" : "cpu",
-          transport_wall_ns, submit_wall_ns);
+          route_name, observed_name, transport_wall_ns, submit_wall_ns);
    fflush(stdout);
 
    /* Readback and retention run for every submit result: a refused or
@@ -819,7 +883,7 @@ main(int argc, char **argv)
    if (!verdict.canary_pass)
       outcome = OUTCOME_CANARY_DISTURBED;
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED &&
-            observed_gpu != gpu_route)
+            (int)observed != (int)route_kind)
       /* A completed submission whose delivery route is not the declared
        * one carries a timing row for the other route; it reports the
        * disagreement rather than the row.
@@ -828,12 +892,12 @@ main(int argc, char **argv)
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE)
       outcome = OUTCOME_COMPLETION_FAILURE;
    else if (submit_result == VK_ERROR_DEVICE_LOST)
-      /* Carrier divergence is the GPU route's own falsifier; the CPU
+      /* Carrier divergence is a producer route's own falsifier; the CPU
        * route writes the carrier itself, so its device loss is a
        * transport failure.
        */
-      outcome = gpu_route ? OUTCOME_CARRIER_DIVERGED
-                          : OUTCOME_COMPLETION_FAILURE;
+      outcome = device_producer ? OUTCOME_CARRIER_DIVERGED
+                                : OUTCOME_COMPLETION_FAILURE;
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED ||
             submit_result != VK_SUCCESS)
       outcome = OUTCOME_SUBMISSION_REFUSED;
@@ -851,7 +915,7 @@ main(int argc, char **argv)
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
       "{\n"
-      "  \"schema\": \"r3v-native-route-dispatch-timing-outcome/2\",\n"
+      "  \"schema\": \"r3v-native-route-dispatch-timing-outcome/3\",\n"
       "  \"route\": \"%s\",\n"
       "  \"observed_route\": \"%s\",\n"
       "  \"verdict\": \"%s\",\n"
@@ -871,8 +935,7 @@ main(int argc, char **argv)
       "  \"interior_samples\": %u,\n"
       "  \"exterior_samples\": %u\n"
       "}\n",
-      gpu_route ? "gpu" : "cpu", observed_gpu ? "gpu" : "cpu",
-      outcome_names[outcome], submit_result,
+      route_name, observed_name, outcome_names[outcome], submit_result,
       r3v_native_queue_status_name(queue_status), route_digest,
       (unsigned long long)t_record_done_ns,
       (unsigned long long)t_submit_enter_ns,
