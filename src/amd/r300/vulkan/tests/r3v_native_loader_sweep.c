@@ -190,13 +190,16 @@ call_create_event(void)
 static int
 call_create_sampler(void)
 {
-   VkSampler sampler = (VkSampler)(uintptr_t)0x1;
+   VkSampler sampler = VK_NULL_HANDLE;
    VkResult result = vkCreateSampler(
       device, &(VkSamplerCreateInfo){
                  .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
               },
       NULL, &sampler);
-   return (result != VK_SUCCESS && sampler == VK_NULL_HANDLE) ? 0 : 1;
+   if (result != VK_SUCCESS || sampler == VK_NULL_HANDLE)
+      return 1;
+   vkDestroySampler(device, sampler, NULL);
+   return 0;
 }
 
 static int
@@ -748,7 +751,8 @@ main(void)
 
    in_child("vkCreateImage refuses", call_create_image);
    in_child("vkCreateEvent refuses", call_create_event);
-   in_child("vkCreateSampler refuses", call_create_sampler);
+   in_child("vkCreateSampler records state and destroys",
+            call_create_sampler);
    in_child("vkCreateDescriptorPool refuses", call_create_descriptor_pool);
    in_child("vkCreateQueryPool refuses", call_create_query_pool);
    in_child("vkCreateDescriptorSetLayout admits the storage contract "

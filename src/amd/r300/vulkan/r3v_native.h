@@ -640,6 +640,15 @@ struct r3v_native_image_view {
    struct r3v_native_image *image;
 };
 
+/* A sampler is pure recorded state: no native route samples, so the
+ * descriptor surface refuses every write that names one, and the object
+ * carries its creation parameters alone.
+ */
+struct r3v_native_sampler {
+   struct vk_object_base base;
+   VkSamplerCreateInfo info;
+};
+
 /* One vertex attribute the job reads: its binding, the attribute offset
  * into that binding's record, and the F32 format of its data.
  */
@@ -698,6 +707,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,
                                VK_OBJECT_TYPE_IMAGE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image_view, base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_sampler, base, VkSampler,
+                               VK_OBJECT_TYPE_SAMPLER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_pipeline, base, VkPipeline,
                                VK_OBJECT_TYPE_PIPELINE)
 

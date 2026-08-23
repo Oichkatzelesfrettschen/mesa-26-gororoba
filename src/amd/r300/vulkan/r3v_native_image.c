@@ -180,7 +180,10 @@ r3v_GetImageSparseMemoryRequirements2(VkDevice _device,
  * stable.  The transfer family binds any aligned suballocation whose
  * footprint fits and carries that offset into every host copy address.  The
  * complete field consumer set is enumerated by `(rg --fixed-strings
- * memory_offset src/amd/r300/vulkan/)`.
+ * memory_offset src/amd/r300/vulkan/)`.  Binding happens exactly once
+ * per image, to the one host-visible type the requirement admits: the
+ * load-op clear and the host copies execute through a CPU mapping, and
+ * type 1 allocates with RADEON_GEM_NO_CPU_ACCESS.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
@@ -197,7 +200,8 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
                                                      image->height)
                : r3v_native_image_footprint_bytes(image->height))
          : 0;
-   if (image == NULL || memory == NULL ||
+   if (image == NULL || memory == NULL || image->memory != NULL ||
+       memory->vk.memory_type_index != 0 ||
        memoryOffset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
        (!image->transfer_family && memoryOffset != 0) ||
        memoryOffset > memory->bo.size ||

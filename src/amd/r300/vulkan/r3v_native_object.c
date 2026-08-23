@@ -23,14 +23,22 @@
  * exist.  A command that reads or writes an object of an unconstructable
  * type refuses on the same grounds as its creation command.
  *
- * VkDeviceMemory is the exception: r3v_AllocateMemory builds a real GEM
- * buffer object, so the mapped-range commands below validate and execute
- * rather than refuse.
+ * Two exceptions construct: VkDeviceMemory, whose r3v_AllocateMemory
+ * builds a real GEM buffer object so the mapped-range commands below
+ * validate and execute, and VkSampler, whose creation depends on no
+ * format or route so the object records state and the descriptor
+ * surface refuses its use.
  *
  * The definitions follow those shapes in order: creation, destruction,
  * access, then the device-memory commands.
  */
 
+/* A buffer view requires a format whose buffer features contain the
+ * view's texel-buffer bit, and the format table advertises
+ * VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT alone, so no format a valid
+ * program can present admits a view and creation refuses with a
+ * cleared handle.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateBufferView(VkDevice _device,
                      const VkBufferViewCreateInfo *pCreateInfo,
@@ -42,14 +50,35 @@ r3v_CreateBufferView(VkDevice _device,
    return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 }
 
+/* Sampler creation binds to no format or route, so a valid program may
+ * create one freely; the object records its creation state, and the
+ * descriptor surface poisons every write that names a sampler, which
+ * keeps the unsampled route fail-closed at the point of use.
+ * samplerAnisotropy is not advertised, so an enabled anisotropy is
+ * state no valid program presents and it refuses.
+ */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateSampler(VkDevice _device, const VkSamplerCreateInfo *pCreateInfo,
                   const VkAllocationCallbacks *pAllocator,
                   VkSampler *pSampler)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
+
    *pSampler = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (pCreateInfo->flags != 0 ||
+       pCreateInfo->anisotropyEnable != VK_FALSE)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   struct r3v_native_sampler *sampler =
+      vk_object_zalloc(&device->vk, pAllocator, sizeof(*sampler),
+                       VK_OBJECT_TYPE_SAMPLER);
+   if (sampler == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   sampler->info = *pCreateInfo;
+   sampler->info.pNext = NULL;
+   *pSampler = r3v_native_sampler_to_handle(sampler);
+   return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -84,9 +113,15 @@ r3v_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_DestroySampler(VkDevice _device, VkSampler sampler,
+r3v_DestroySampler(VkDevice _device, VkSampler _sampler,
                    const VkAllocationCallbacks *pAllocator)
 {
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VK_FROM_HANDLE(r3v_native_sampler, sampler, _sampler);
+
+   if (sampler == NULL)
+      return;
+   vk_object_free(&device->vk, pAllocator, sampler);
 }
 
 VKAPI_ATTR void VKAPI_CALL
