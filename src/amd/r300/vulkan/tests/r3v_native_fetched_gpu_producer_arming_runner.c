@@ -5,9 +5,10 @@
  * composes the exact stream an attended run submits -- the fetched
  * producer over the slot and source arrays ahead of the consumer cell,
  * bound through the role composer -- reports its digest and every
- * arming factor, and stops at the authorization boundary.  The runner performs no ioctl and creates no
- * Vulkan device, so running it is safe on the target host.  Each cell's
- * digest authorizes only its own stream.
+ * arming factor, and stops at the authorization boundary.  The runner
+ * performs no ioctl and creates no Vulkan device, so running it is safe
+ * on the target host.  Each cell's digest authorizes only its own
+ * stream, and each source width is its own cell.
  */
 
 #include "r3v_native_arming.h"
@@ -25,18 +26,18 @@
 
 /* Composes the route stream and returns its IB digest, the content an
  * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The
- * composition is the reference fetched F32_4 route -- one-page source at
- * offset zero with a 16-byte stride, one-page slot BO, the reference
- * consumer -- which is the geometry the attended runner's vertex buffer
- * binds, so the driver's submit-time composition is these bytes.
+ * composition is the reference fetched route for the width -- one-page
+ * source at offset zero with the width's record size as stride, one-page
+ * slot BO, the reference consumer -- which is the geometry the attended
+ * runner's vertex buffer binds for that width, so the driver's
+ * submit-time composition is these bytes.
  */
 static int
-route_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords,
-             uint32_t *consumer_start_dwords)
+route_digest(int format_id, char out[BLAKE3_OUT_LEN * 2 + 1],
+             uint32_t *ib_dwords, uint32_t *consumer_start_dwords)
 {
    struct r300_r2vb_fetched_route_ib route;
-   if (r300_r2vb_fetched_route_reference_compose(R300_VERTEX_FORMAT_F32_4,
-                                                 &route) != 0)
+   if (r300_r2vb_fetched_route_reference_compose(format_id, &route) != 0)
       return 1;
    r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords, out);
    *ib_dwords = route.ib_size_dwords;
@@ -61,19 +62,39 @@ report(const char *factor, const char *declared, const char *observed)
 int
 main(int argc, char **argv)
 {
-   /* The runner takes the evidence directory an attended run would use;
-    * its freshness is itself an arming factor.
+   /* The runner takes the evidence directory an attended run would use
+    * -- its freshness is itself an arming factor -- and the source width
+    * of the cell, F32_4 when unnamed.
     */
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   if (argc != 2 && argc != 3) {
+      fprintf(stderr, "usage: %s <evidence-directory> [f32_4|f32_3|f32_2]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+   int format_id = R300_VERTEX_FORMAT_F32_4;
+   const char *format_name = "F32_4";
+   if (argc == 3) {
+      if (strcmp(argv[2], "f32_4") == 0) {
+         format_id = R300_VERTEX_FORMAT_F32_4;
+      } else if (strcmp(argv[2], "f32_3") == 0) {
+         format_id = R300_VERTEX_FORMAT_F32_3;
+         format_name = "F32_3";
+      } else if (strcmp(argv[2], "f32_2") == 0) {
+         format_id = R300_VERTEX_FORMAT_F32_2;
+         format_name = "F32_2";
+      } else {
+         fprintf(stderr, "source width %s is outside f32_4, f32_3, f32_2\n",
+                 argv[2]);
+         return 2;
+      }
+   }
 
    char digest[BLAKE3_OUT_LEN * 2 + 1];
    uint32_t ib_dwords = 0;
    uint32_t consumer_start_dwords = 0;
-   if (route_digest(digest, &ib_dwords, &consumer_start_dwords) != 0) {
+   if (route_digest(format_id, digest, &ib_dwords, &consumer_start_dwords) !=
+       0) {
       fprintf(stderr, "route composition failed\n");
       return 2;
    }
@@ -100,6 +121,7 @@ main(int argc, char **argv)
 
    printf("r3v native r2vb-gpu-producer-fetched arming report\n");
    printf("cell_kind=r2vb-gpu-producer-fetched\n");
+   printf("source_format=%s\n", format_name);
    printf("ib_dwords=%u\n", ib_dwords);
    printf("consumer_start_dwords=%u\n", consumer_start_dwords);
    printf("ib_blake3=%s\n", digest);

@@ -90,6 +90,13 @@ enum arm {
     * composed stream as a bundle mismatch, the fetched stream being a
     * distinct cell. */
    ARM_GPU_FETCHED_COMPOSED,
+   /* The same composed arm over the narrower source widths: the records
+    * are the reference triangle's leading components at the width's
+    * record size as stride and attribute format, the fetch swizzle
+    * restores z = 0 and w = 1, and the submit-time IB equals that width's
+    * offline composition identity, distinct from the other widths'. */
+   ARM_GPU_FETCHED_COMPOSED_F32_3,
+   ARM_GPU_FETCHED_COMPOSED_F32_2,
    ARM_GPU_FETCHED_COMPOSE_FAILURE,
    ARM_GPU_FETCHED_WRONG_DIGEST,
    /* The fetched admission's named refusals, each before any write: a
@@ -124,6 +131,8 @@ static const struct {
    { "robust-oob-w0-refused", ARM_ROBUST_OOB_W0_REFUSED },
    { "robust-oob-disabled", ARM_ROBUST_OOB_DISABLED },
    { "gpu-fetched-composed", ARM_GPU_FETCHED_COMPOSED },
+   { "gpu-fetched-composed-f32_3", ARM_GPU_FETCHED_COMPOSED_F32_3 },
+   { "gpu-fetched-composed-f32_2", ARM_GPU_FETCHED_COMPOSED_F32_2 },
    { "gpu-fetched-compose-failure", ARM_GPU_FETCHED_COMPOSE_FAILURE },
    { "gpu-fetched-wrong-digest", ARM_GPU_FETCHED_WRONG_DIGEST },
    { "gpu-fetched-offset-misaligned", ARM_GPU_FETCHED_OFFSET_MISALIGNED },
@@ -329,6 +338,8 @@ run_arm(enum arm arm, const char *name)
       arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS ||
       arm == ARM_GPU_FETCHED_ALIASED_SOURCE;
    const bool fetched_arm = arm == ARM_GPU_FETCHED_COMPOSED ||
+                            arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ||
+                            arm == ARM_GPU_FETCHED_COMPOSED_F32_2 ||
                             arm == ARM_GPU_FETCHED_COMPOSE_FAILURE ||
                             arm == ARM_GPU_FETCHED_WRONG_DIGEST ||
                             fetched_refusal_arm;
@@ -343,11 +354,17 @@ run_arm(enum arm arm, const char *name)
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
              R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
    } else if (fetched_arm) {
-      /* The offline no-submit composition identity of the fetched F32_4
-       * route over this arm's exact geometry: one-page source at offset
-       * zero, stride 16, one-page slot BO, the reference consumer. */
+      /* The offline no-submit composition identity of the fetched route
+       * over this arm's exact geometry: one-page source at offset zero,
+       * the width's record size as stride, one-page slot BO, the
+       * reference consumer. */
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
-             R300_FETCHED_F32_4_ROUTE_IB_BLAKE3, 1);
+             arm == ARM_GPU_FETCHED_COMPOSED_F32_3
+                ? R300_FETCHED_F32_3_ROUTE_IB_BLAKE3
+             : arm == ARM_GPU_FETCHED_COMPOSED_F32_2
+                ? R300_FETCHED_F32_2_ROUTE_IB_BLAKE3
+                : R300_FETCHED_F32_4_ROUTE_IB_BLAKE3,
+             1);
    } else {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", reference_digest, 1);
    }
@@ -401,12 +418,16 @@ run_arm(enum arm arm, const char *name)
    const bool robust_enabled = arm == ARM_ROBUST_OOB_ENABLED ||
                                arm == ARM_ROBUST_OOB_W0_REFUSED ||
                                arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS;
-   /* Per-arm stream geometry: the bind offset, binding stride, buffer
-    * size, and whether the buffer binds into the color target's memory. */
+   /* Per-arm stream geometry: the bind offset, binding stride, record
+    * width, buffer size, and whether the buffer binds into the color
+    * target's memory. */
    const VkDeviceSize bind_offset =
       arm == ARM_GPU_FETCHED_OFFSET_MISALIGNED ? 2 : 0;
+   const uint32_t record_bytes = arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ? 12
+                                 : arm == ARM_GPU_FETCHED_COMPOSED_F32_2 ? 8
+                                                                         : 16;
    const uint32_t binding_stride =
-      arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ? 18 : 16;
+      arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ? 18 : record_bytes;
    const bool short_buffer = robust_arm || arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS;
    const bool alias_target = arm == ARM_GPU_FETCHED_ALIASED_SOURCE;
    const VkPhysicalDeviceFeatures robust_features = {
@@ -544,7 +565,7 @@ run_arm(enum arm arm, const char *name)
                                 : ndc_triangle;
       for (unsigned v = 0; v < 3; v++)
          memcpy((uint8_t *)map + bind_offset + v * binding_stride,
-                &records[v * 4], 4 * sizeof(float));
+                &records[v * 4], record_bytes);
       vkUnmapMemory(device, vertex_memory);
    }
 
@@ -637,8 +658,11 @@ run_arm(enum arm arm, const char *name)
                             .location = 0,
                             .binding = 0,
                             .format = (arm == ARM_ROBUST_OOB_ENABLED ||
-                                       arm == ARM_ROBUST_OOB_DISABLED)
+                                       arm == ARM_ROBUST_OOB_DISABLED ||
+                                       arm == ARM_GPU_FETCHED_COMPOSED_F32_3)
                                          ? VK_FORMAT_R32G32B32_SFLOAT
+                                      : arm == ARM_GPU_FETCHED_COMPOSED_F32_2
+                                         ? VK_FORMAT_R32G32_SFLOAT
                                          : VK_FORMAT_R32G32B32A32_SFLOAT,
                             .offset = 0,
                          },
@@ -932,6 +956,8 @@ run_arm(enum arm arm, const char *name)
       assert(token);
       break;
    case ARM_GPU_FETCHED_COMPOSED:
+   case ARM_GPU_FETCHED_COMPOSED_F32_3:
+   case ARM_GPU_FETCHED_COMPOSED_F32_2:
       /* The ioctl ran on the composed stream and the token was spent;
        * the shim executes no producer, so the carrier still holds the
        * poison the admission published, the read-back verdict reports
@@ -1030,14 +1056,27 @@ run_arm(enum arm arm, const char *name)
     * composition, and its bytes are the offline no-submit composition's
     * -- the digest the composed arm's gate matched and the wrong-digest
     * arm's gate refused against the immediate route's identity. */
-   if (arm == ARM_GPU_FETCHED_COMPOSED || arm == ARM_GPU_FETCHED_WRONG_DIGEST) {
+   if (arm == ARM_GPU_FETCHED_COMPOSED ||
+       arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ||
+       arm == ARM_GPU_FETCHED_COMPOSED_F32_2 ||
+       arm == ARM_GPU_FETCHED_WRONG_DIGEST) {
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
+      const char *pin = arm == ARM_GPU_FETCHED_COMPOSED_F32_3
+                           ? R300_FETCHED_F32_3_ROUTE_IB_BLAKE3
+                        : arm == ARM_GPU_FETCHED_COMPOSED_F32_2
+                           ? R300_FETCHED_F32_2_ROUTE_IB_BLAKE3
+                           : R300_FETCHED_F32_4_ROUTE_IB_BLAKE3;
       assert(submitted_dwords == R300_FETCHED_F32_4_ROUTE_IB_DWORDS);
-      assert(strcmp(submitted_digest, R300_FETCHED_F32_4_ROUTE_IB_BLAKE3) ==
-             0);
+      assert(strcmp(submitted_digest, pin) == 0);
       assert(strcmp(submitted_digest, R300_RETAINED_GPU_ROUTE_IB_BLAKE3) != 0);
+      /* The three widths are three cells: one stream geometry, three
+       * digests. */
+      assert(strcmp(R300_FETCHED_F32_4_ROUTE_IB_BLAKE3,
+                    R300_FETCHED_F32_3_ROUTE_IB_BLAKE3) != 0);
+      assert(strcmp(R300_FETCHED_F32_3_ROUTE_IB_BLAKE3,
+                    R300_FETCHED_F32_2_ROUTE_IB_BLAKE3) != 0);
    }
 
    vkDestroyCommandPool(device, pool, NULL);

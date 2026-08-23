@@ -22,20 +22,28 @@ document adds only what the fetched composition changes.
 
 ## Cell identity
 
-- Runner: `r3v_native_attended_public_gpu_producer <dir> --fetched`
-  (native build), the immediate cell's runner in its fetched mode: the
-  same recording, the same records, the fetched composition at
-  submission.
+- Runner: `r3v_native_attended_public_gpu_producer <dir>
+  --fetched[=f32_4|f32_3|f32_2]` (native build), the immediate cell's
+  runner in its fetched mode: the same recording and the same three
+  positions, the fetched composition at submission. Each source width is
+  its own cell: `--fetched` and `--fetched=f32_4` bind 16-byte
+  `R32G32B32A32_SFLOAT` records; `--fetched=f32_3` binds 12-byte
+  `R32G32B32_SFLOAT` records and `--fetched=f32_2` 8-byte
+  `R32G32_SFLOAT` records holding the leading components, with the fetch
+  swizzle restoring `z = 0` and `w = 1`, so the three widths share the
+  target oracle and differ in the stream digest alone.
 - Arming digest source:
-  `r3v_native_fetched_gpu_producer_arming_runner` composes the route
-  through `r300_r2vb_fetched_route_reference_compose` for `F32_4`
-  without submitting and reports the `ib_blake3` an authorization
-  declares, the stream length, and the dword the producer half ends at.
-  The runner evaluates the full conjunction for this cell kind and
-  reports all three delivery gates, so its `armed` verdict plus its
+  `r3v_native_fetched_gpu_producer_arming_runner <dir> [f32_4|f32_3|f32_2]`
+  composes the route through `r300_r2vb_fetched_route_reference_compose`
+  for the named width (`F32_4` unnamed) without submitting and reports
+  the `ib_blake3` an authorization declares, the `source_format`, the
+  stream length, and the dword the producer half ends at. The runner
+  evaluates the full conjunction for this cell kind and reports all three
+  delivery gates, so its `armed` verdict plus its
   `route: gpu-producer-fetched` line replace the shared procedure's
-  arming step. The pinned identity is
-  `common/tests/r300_fetched_route_digests.h` (547 dwords, split 316).
+  arming step. The pinned identities are
+  `common/tests/r300_fetched_route_digests.h` (547 dwords, split 316 for
+  every width; one digest per width).
 - Digest authority: the offline composition and the submit-time
   composition are two constructions of one stream. The submit-order
   harness arm `gpu-fetched-composed` declares the offline digest, drives
@@ -52,17 +60,20 @@ document adds only what the fetched composition changes.
   and the record values stay outside the digest; one arming still
   authorizes one composition. The reference records are
   `r300_tcl_bypass_triangle_vertices`, the pretransformed screen
-  positions (8, 8), (56, 8), (32, 56), bound at offset zero with a
-  16-byte stride in a one-page allocation, which is the reference
-  composition's geometry.
+  positions (8, 8), (56, 8), (32, 56), bound at offset zero with the
+  width's record size as stride in a one-page allocation, which is the
+  reference composition's geometry for that width.
 - Admission domain: the delivery identity admits FP24 fixed points alone
   and the fetched route fetches in-bounds records alone; a record outside
   either refuses the submit by name before any write.
 - Clear value: the 0xa5a5a5a5 sentinel, as the immediate cell.
 - Recording calibration: `r3v_native_attended_public_gpu_producer <dir>
-  --record-only --fetched` builds every object and records the command
-  buffer on the drm-shim fixture, then stops at the recording boundary;
-  the suite runs it as `r3v-native-fetched-gpu-producer-record`.
+  --record-only --fetched=<width>` builds every object and records the
+  command buffer on the drm-shim fixture, then stops at the recording
+  boundary; the suite runs it as
+  `r3v-native-fetched-gpu-producer-record-{f32_4,f32_3,f32_2}`, and the
+  submit-order arms `gpu-fetched-composed{,-f32_3,-f32_2}` prove each
+  width's submit-time composition equals its pinned digest.
 - Allocations: the carrier is driver-owned and poisoned with
   `R300_R2VB_PRODUCER_POISON_DWORD` across its sixteen dwords before the
   ioctl; the slot BO is driver-owned, one page, holding the three
@@ -80,7 +91,7 @@ gate and consumes the attempt.
 - `R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL=1`
 - `R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL=1`
 - `R3V_NATIVE_AUTHORIZED_IB_BLAKE3=<digest the fetched arming runner
-  reports>`
+  reports for the run's width>`
 - `R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE=<uname -r>`
 - `R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION=<loaded radeon srcversion>`
 - `R3V_NATIVE_MANIFEST_DIR=<fresh evidence directory>`, the same
@@ -96,7 +107,7 @@ spending the one-shot token.
 Recorded before the run; deviation is the finding.
 
 1. The kernel CS parser accepts the composed stream. The offline replay
-   `r300-r2vb-fetched-route-replay-f32_4` reports `replay dwords=547
+   `r300-r2vb-fetched-route-replay-<width>` reports `replay dwords=547
    relocs=4 draws=2 passed=2 verdict=ACCEPT`, and every known-bad arm --
    truncated final packet, carrier below the producer color-buffer
    bound, color target below the consumer's, slot or source array below
@@ -158,5 +169,9 @@ field. `color.bin`, `gpu_carrier_observed.bin`, and
 `gpu_carrier_expected.bin` carry the target and the carrier read-back with
 its expectation. The `steinmarder-r300` bundle seals these beside the
 run's dmesg delta, the loaded-module identity, and the arming report;
-the retained digest becomes the fetched F32_4 route's silicon identity and
-the resolver's F32_3/F32_2 admission waits on their own cells.
+the retained digest becomes that width's fetched-route silicon identity.
+The F32_4 cell is retained as
+`r3v-native-fetched-gpu-producer-route-first-delivery-rs482`; the F32_3
+and F32_2 cells run the same procedure with their width named on the
+runner, the arming runner, and the declared digest, one evidence directory
+and one arming per width.

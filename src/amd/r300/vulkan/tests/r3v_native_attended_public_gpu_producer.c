@@ -118,25 +118,51 @@ main(int argc, char **argv)
     * and the same records, with the submit-time admission composing the
     * fetched producer (slot BO + the bound vertex BO through the
     * two-array fetched body) under the third gate, and the authorization
-    * naming that composition's digest.
+    * naming that composition's digest.  --fetched=f32_3 and
+    * --fetched=f32_2 bind the same three positions as narrower records
+    * -- the stride and the attribute format are the width's record size,
+    * the record holds the leading components, and the fetch swizzle
+    * fills z and w -- so each width is its own cell with its own stream
+    * digest over the same target oracle.
     */
    bool record_only = false;
    bool fetched = false;
+   int source_format = R300_VERTEX_FORMAT_F32_4;
    bool usage_error = argc < 2 || argc > 4;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0 && !record_only)
          record_only = true;
       else if (strcmp(argv[i], "--fetched") == 0 && !fetched)
          fetched = true;
-      else
+      else if (strcmp(argv[i], "--fetched=f32_4") == 0 && !fetched)
+         fetched = true;
+      else if (strcmp(argv[i], "--fetched=f32_3") == 0 && !fetched) {
+         fetched = true;
+         source_format = R300_VERTEX_FORMAT_F32_3;
+      } else if (strcmp(argv[i], "--fetched=f32_2") == 0 && !fetched) {
+         fetched = true;
+         source_format = R300_VERTEX_FORMAT_F32_2;
+      } else
          usage_error = true;
    }
    if (usage_error) {
       fprintf(stderr,
-              "usage: %s <evidence-directory> [--record-only] [--fetched]\n",
+              "usage: %s <evidence-directory> [--record-only] "
+              "[--fetched[=f32_4|f32_3|f32_2]]\n",
               argv[0]);
       return 2;
    }
+   const struct r300_vertex_format_semantics *source_semantics =
+      r300_vertex_format_semantics((enum r300_vertex_format_id)source_format);
+   const uint32_t source_record_bytes = source_semantics->semantic_record_bytes;
+   const VkFormat source_vk_format =
+      source_format == R300_VERTEX_FORMAT_F32_4   ? VK_FORMAT_R32G32B32A32_SFLOAT
+      : source_format == R300_VERTEX_FORMAT_F32_3 ? VK_FORMAT_R32G32B32_SFLOAT
+                                                  : VK_FORMAT_R32G32_SFLOAT;
+   const char *source_format_name =
+      source_format == R300_VERTEX_FORMAT_F32_4   ? "F32_4"
+      : source_format == R300_VERTEX_FORMAT_F32_3 ? "F32_3"
+                                                  : "F32_2";
    const char *evidence_dir = argv[1];
 
    /* A silicon result binds to the real libc entry points.  A preloaded
@@ -206,7 +232,7 @@ main(int argc, char **argv)
    uint32_t route_split = 0;
    if (fetched) {
       struct r300_r2vb_fetched_route_ib route;
-      if (r300_r2vb_fetched_route_reference_compose(R300_VERTEX_FORMAT_F32_4,
+      if (r300_r2vb_fetched_route_reference_compose(source_format,
                                                     &route) != 0) {
          fprintf(stderr, "fetched route composition failed\n");
          return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -229,9 +255,10 @@ main(int argc, char **argv)
       route_split = route.consumer_start_dwords;
       r300_r2vb_public_route_release(&route);
    }
-   printf("route %s ib_dwords=%u consumer_start_dwords=%u ib_blake3=%s\n",
-          fetched ? "fetched" : "immediate", route_dwords, route_split,
-          route_digest);
+   printf("route %s source_format=%s ib_dwords=%u consumer_start_dwords=%u "
+          "ib_blake3=%s\n",
+          fetched ? "fetched" : "immediate", source_format_name,
+          route_dwords, route_split, route_digest);
    fflush(stdout);
 
    stage("instance");
@@ -399,7 +426,7 @@ main(int argc, char **argv)
    if (vkCreateBuffer(device,
                       &(VkBufferCreateInfo){
                          .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                         .size = sizeof(r300_tcl_bypass_triangle_vertices),
+                         .size = 3 * source_record_bytes,
                          .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                          .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                       },
@@ -416,8 +443,13 @@ main(int argc, char **argv)
       fprintf(stderr, "vertex map failed\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   memcpy(map, r300_tcl_bypass_triangle_vertices,
-          sizeof(r300_tcl_bypass_triangle_vertices));
+   /* Each record carries the leading components of its F32_4 position;
+    * the fetch swizzle restores z = 0 and w = 1 on the narrower widths,
+    * which is what the reference triangle carries there.
+    */
+   for (unsigned v = 0; v < 3; v++)
+      memcpy((uint8_t *)map + v * source_record_bytes,
+             &r300_tcl_bypass_triangle_vertices[v * 4], source_record_bytes);
    vkUnmapMemory(device, vertex_memory);
 
    stage("pipeline");
@@ -532,7 +564,7 @@ main(int argc, char **argv)
             .pVertexBindingDescriptions =
                &(VkVertexInputBindingDescription){
                   .binding = 0,
-                  .stride = 16,
+                  .stride = source_record_bytes,
                   .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
                },
             .vertexAttributeDescriptionCount = 1,
@@ -540,7 +572,7 @@ main(int argc, char **argv)
                &(VkVertexInputAttributeDescription){
                   .location = 0,
                   .binding = 0,
-                  .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                  .format = source_vk_format,
                   .offset = 0,
                },
          },
@@ -761,6 +793,7 @@ main(int argc, char **argv)
       "{\n"
       "  \"schema\": \"%s\",\n"
       "  \"route\": \"%s\",\n"
+      "  \"source_format\": \"%s\",\n"
       "  \"verdict\": \"%s\",\n"
       "  \"submit_result\": %d,\n"
       "  \"queue_status\": \"%s\",\n"
@@ -775,7 +808,8 @@ main(int argc, char **argv)
       "}\n",
       fetched ? "r3v-native-r2vb-fetched-route-outcome/1"
               : "r3v-native-r2vb-public-route-outcome/1",
-      fetched ? "fetched" : "immediate", outcome_names[outcome],
+      fetched ? "fetched" : "immediate", source_format_name,
+      outcome_names[outcome],
       submit_result, r3v_native_queue_status_name(queue_status),
       route_digest,
       (unsigned)R3V_NATIVE_TARGET_MEMORY_BYTES,

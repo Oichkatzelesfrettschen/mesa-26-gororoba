@@ -5,8 +5,10 @@
 # declarations must produce, the route-identity lines an operator reads
 # to build an authorization, the three-gate report that separates the
 # fetched composition from the immediate route and from the consumer
-# alone, and the wrong-cell refusal when the immediate public route
-# runner's digest is declared against the fetched route.
+# alone, the per-width identities (F32_4 unnamed, F32_3 and F32_2 by
+# name, each its own digest over one stream geometry), and the wrong-cell
+# refusal when the immediate public route runner's digest is declared
+# against the fetched route.
 
 import os
 import re
@@ -57,6 +59,8 @@ def main():
         if "cell_kind=r2vb-gpu-producer-fetched" not in undeclared.stdout:
             return fail("report does not name the fetched route cell",
                         undeclared)
+        if "source_format=F32_4" not in undeclared.stdout:
+            return fail("the unnamed width is F32_4", undeclared)
 
         dwords = re.search(r"^ib_dwords=([1-9][0-9]*)$", undeclared.stdout,
                            re.MULTILINE)
@@ -71,6 +75,41 @@ def main():
                            re.MULTILINE)
         if digest is None:
             return fail("report carries no route digest", undeclared)
+
+        # Each source width is its own cell: the named width reports
+        # itself and a distinct digest over the same length and split,
+        # and a width outside the admitted three refuses by usage.
+        width_digests = {"F32_4": digest.group(1)}
+        for width in ("f32_3", "f32_2"):
+            named = run(runner, evidence_dir, environment, width)
+            label = width.upper()
+            if named.returncode == 0:
+                return fail(f"undeclared {width} run reported an armed "
+                            "verdict", named)
+            if f"source_format={label}" not in named.stdout:
+                return fail(f"{width} report does not name its width", named)
+            named_digest = re.search(r"^ib_blake3=([0-9a-f]{64})$",
+                                     named.stdout, re.MULTILINE)
+            named_dwords = re.search(r"^ib_dwords=([1-9][0-9]*)$",
+                                     named.stdout, re.MULTILINE)
+            named_split = re.search(r"^consumer_start_dwords=([1-9][0-9]*)$",
+                                    named.stdout, re.MULTILINE)
+            if named_digest is None or named_dwords is None or \
+                    named_split is None:
+                return fail(f"{width} report carries no stream identity",
+                            named)
+            if named_dwords.group(1) != dwords.group(1) or \
+                    named_split.group(1) != split.group(1):
+                return fail(f"{width} stream geometry differs from F32_4; "
+                            "the widths differ in the fetch swizzle alone",
+                            named)
+            if named_digest.group(1) in width_digests.values():
+                return fail(f"{width} reports another width's digest", named)
+            width_digests[label] = named_digest.group(1)
+        outside = run(runner, evidence_dir, environment, "f32_1")
+        if outside.returncode != 2:
+            return fail("a width outside the admitted three did not refuse "
+                        "by usage", outside)
 
         # Every delivery gate unset: the report names the CPU route, so
         # an operator reading it cannot mistake a consumer-only
