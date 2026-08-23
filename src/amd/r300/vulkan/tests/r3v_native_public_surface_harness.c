@@ -263,6 +263,9 @@ make_module(const uint32_t *words, size_t bytes)
  * one member.
  */
 struct pipeline_shape {
+   /* Attach a depth/stencil state: DISABLED passes the all-disabled
+    * struct, ENABLED turns the depth test on (the refusal leg). */
+   int depth_stencil; /* 0 none, 1 disabled, 2 enabled */
    VkFormat attribute_format;
    uint32_t stride;
    VkBool32 blend_enable;
@@ -378,6 +381,16 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                                     VK_COLOR_COMPONENT_A_BIT,
                },
          },
+      .pDepthStencilState =
+         shape->depth_stencil != 0
+            ? &(VkPipelineDepthStencilStateCreateInfo){
+                 .sType =
+                    VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                 .depthTestEnable =
+                    shape->depth_stencil == 2 ? VK_TRUE : VK_FALSE,
+                 .depthCompareOp = VK_COMPARE_OP_LESS,
+              }
+            : NULL,
       .pDynamicState =
          shape->dynamic_viewport_scissor
             ? &(VkPipelineDynamicStateCreateInfo){
@@ -1007,6 +1020,23 @@ main(void)
       VkCommandBuffer outside_cmd = fresh_cmd();
       vkCmdClearAttachments(outside_cmd, 1, &red, 1, &rect);
       assert(vkEndCommandBuffer(outside_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+   }
+
+   /* Depth/stencil state: the fully disabled struct admits (the pass
+    * carries no depth attachment, so disabled state is the one valid
+    * shape) and an enabled depth test refuses at pipeline creation.
+    */
+   {
+      struct pipeline_shape ds_shape = contract_shape;
+      ds_shape.depth_stencil = 1;
+      VkPipeline ds_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&ds_shape, pass, layout, &ds_pipeline) ==
+             VK_SUCCESS);
+      vkDestroyPipeline(device, ds_pipeline, NULL);
+      ds_shape.depth_stencil = 2;
+      assert(make_pipeline(&ds_shape, pass, layout, &ds_pipeline) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+      assert(ds_pipeline == VK_NULL_HANDLE);
    }
 
    /* Dynamic viewport/scissor: the pipeline declares the pair dynamic

@@ -317,8 +317,21 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
                                  VK_COLOR_COMPONENT_A_BIT))
       return false;
 
-   if (info->pTessellationState != NULL ||
-       info->pDepthStencilState != NULL)
+   /* The pass shape carries no depth/stencil attachment, so the only
+    * depth/stencil state a valid program presents is the fully
+    * disabled one; any enabled test, bounds, or write refuses until a
+    * depth surface exists.
+    */
+   const VkPipelineDepthStencilStateCreateInfo *ds =
+      info->pDepthStencilState;
+   if (ds != NULL &&
+       (ds->flags != 0 || ds->depthTestEnable != VK_FALSE ||
+        ds->depthWriteEnable != VK_FALSE ||
+        ds->depthBoundsTestEnable != VK_FALSE ||
+        ds->stencilTestEnable != VK_FALSE))
+      return false;
+
+   if (info->pTessellationState != NULL)
       return false;
 
    /* The out-parameters publish on the single success return, so a
