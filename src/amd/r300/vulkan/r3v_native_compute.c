@@ -16,6 +16,7 @@
 #include "r3v_physical_device.h"
 
 #include "amd/r300/common/r300_compute_spirv.h"
+#include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/cpu/r300_cpu_compute_job.h"
 
 #include "vk_log.h"
@@ -311,6 +312,15 @@ create_compute_pipeline(struct r3v_native_device *device,
    }
    if (r300_cpu_compute_job_validate(&job) != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   /* The verb ledger is the precommitted admission authority: the job
+    * realizes a ledger row whose CPU route executes, or the pipeline
+    * refuses (R300_COMPUTE_FAILURE_REFUSE_AT_ADMISSION). */
+   const struct r300_compute_verb_row *verb = r300_compute_verb_for_job(&job);
+   if (verb == NULL || verb->cpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING) {
+      return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                       "r3v-native: compute verb %s has no executing route",
+                       verb ? verb->name : "outside the ledger");
+   }
 
    /* The pipeline layout's set 0 carries both job bindings, so a
     * bound set of that layout can always name the two buffers.

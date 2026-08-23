@@ -98,7 +98,24 @@ every other module refuses at pipeline creation; with the opt-in unset,
 `r3v_CreateComputePipelines` returns `R3V_NATIVE_REFUSAL_RESULT`. This is an
 experimental nonconformant surface rather than a Vulkan 1.0 capability claim,
 and promotion stays blocked until the compute route stands without its
-opt-in. The
+opt-in. The compute admission consults the precommitted verb ledger
+`src/amd/r300/common/r300_compute_verb.h`: fourteen kernel shapes, each
+naming its `r300_virtual_op_catalog` row where one exists, its
+invocation-index class (the FP24 exact-index guards of `r300_grid_fold.h`
+bound a GPU route, never the CPU ceiling), and the raster unit that executes
+it (TX fetch plus RB3D export, the
+FP24 US ALU, the RB3D blend combiner, the RB3D ROP logic op, the ZB stencil
+unit, or the R2VB producer carrier), an exactness class (bit-exact, the FP24
+exact window, or a declared FP24 tolerance), a CPU and a GPU route status,
+an evidence class, and its own exact GPU gate; five refusal classes name
+what the substrate cannot lower (scatter, image store, shared memory or
+barrier, general atomic, integer shift); six failure clauses bind every
+route: refuse at admission, exact gate per verb, no fallback after submit,
+refuse before write, oracle divergence quarantines, advertise after silicon.
+The identity map is the one verb whose CPU route executes, its GPU route is
+precommitted on the R2VB carrier under the FP24 window, and no GPU route
+executes; `r300-compute-verb-ledger` pins the rows and calibrates the
+checker. The
 extent gap is closed: `vkCreateImage` accepts every extent inside the
 reported 64x64 maximum, and the cell family realizes it -- in TCL
 bypass the extent reaches the hardware through the `SC_SCISSORS_BR`
