@@ -130,27 +130,20 @@ test_domain_catalog(void)
    CHECK(r300_vop_status_is_carrier_pending(R300_VOP_HW_CONFIRMED_CARRIER_PENDING),
          "catalog status: HW_CONFIRMED_CARRIER_PENDING blocks production carrier use");
 
-   const struct r300_virtual_op_info *multilimb = NULL;
-   const struct r300_virtual_op_info *signed_dp4 = NULL;
-   const struct r300_virtual_op_info *quad_disc = NULL;
-   const struct r300_virtual_op_info *q16_add = NULL;
-   const struct r300_virtual_op_info *q16_mul = NULL;
-   const struct r300_virtual_op_info *q16_mac = NULL;
-   for (unsigned op_index = 0; r300_virtual_op_catalog[op_index].op_name; op_index++) {
-      const struct r300_virtual_op_info *op = &r300_virtual_op_catalog[op_index];
-      if (strcmp(op->op_name, "MULTILIMB7_U32_MUL") == 0)
-         multilimb = op;
-      if (strcmp(op->op_name, "DP4_INT8_SIGNED_CARRIER_PENDING") == 0)
-         signed_dp4 = op;
-      if (strcmp(op->op_name, "QUADRATIC_DISCRIMINANT_OFFGRID") == 0)
-         quad_disc = op;
-      if (strcmp(op->op_name, "Q16_16_ADD") == 0)
-         q16_add = op;
-      if (strcmp(op->op_name, "Q16_16_MUL") == 0)
-         q16_mul = op;
-      if (strcmp(op->op_name, "Q16_16_MAC") == 0)
-         q16_mac = op;
-   }
+   const struct r300_virtual_op_info *multilimb =
+      r300_virtual_op_info_for_id(R300_OPERATION_ID_MULTILIMB7_U32_MUL);
+   const struct r300_virtual_op_info *signed_dp4 =
+      r300_virtual_op_info_for_id(
+         R300_OPERATION_ID_DP4_INT8_SIGNED_CARRIER_PENDING);
+   const struct r300_virtual_op_info *quad_disc =
+      r300_virtual_op_info_for_id(
+         R300_OPERATION_ID_QUADRATIC_DISCRIMINANT_OFFGRID);
+   const struct r300_virtual_op_info *q16_add =
+      r300_virtual_op_info_for_id(R300_OPERATION_ID_Q16_16_ADD);
+   const struct r300_virtual_op_info *q16_mul =
+      r300_virtual_op_info_for_id(R300_OPERATION_ID_Q16_16_MUL);
+   const struct r300_virtual_op_info *q16_mac =
+      r300_virtual_op_info_for_id(R300_OPERATION_ID_Q16_16_MAC);
 
    CHECK(multilimb != NULL,
          "catalog: MULTILIMB7_U32_MUL row exists");

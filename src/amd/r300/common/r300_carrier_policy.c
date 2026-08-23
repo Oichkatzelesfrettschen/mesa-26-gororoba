@@ -16,6 +16,7 @@
  * This is not the executing R2VB F32_4 identity-carrier route. */
 const struct r300_carrier_policy r300_carrier_identity = {
    .name                = "identity",
+   .operation_id        = R300_OPERATION_ID_IDENTITY_MAP,
    .domain              = R300_NUM_DOMAIN_FP24_RTZ,
    .encoding            = R300_CARRIER_ENC_IDENTITY,
    .value_format        = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
@@ -35,6 +36,7 @@ const struct r300_carrier_policy r300_carrier_identity = {
  * is zero for every exact-domain result; pack_alpha_byte is false. */
 const struct r300_carrier_policy r300_carrier_dp4_u7 = {
    .name                = "dp4-u7-exact",
+   .operation_id        = R300_OPERATION_ID_DP4_UINT7_EXACT,
    .domain              = R300_NUM_DOMAIN_U7_DOT,
    .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
    .value_format        = R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
@@ -53,6 +55,7 @@ const struct r300_carrier_policy r300_carrier_dp4_u7 = {
  * DP4_UINT8_OFFGRID_ROUNDS boundary behavior. */
 const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
    .name                = "dp4-u8-boundary",
+   .operation_id        = R300_OPERATION_ID_DP4_UINT8_OFFGRID_ROUNDS,
    .domain              = R300_NUM_DOMAIN_U8_OFFGRID,
    .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
    .value_format        = R300_CARRIER_FORMAT_R32G32B32A32_FLOAT,
@@ -71,6 +74,7 @@ const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
  * accumulates normalized float channels. */
 const struct r300_carrier_policy r300_carrier_blend_acc = {
    .name                = "blend-acc-reduction",
+   .operation_id        = R300_OPERATION_ID_BLEND_ACC_REDUCTION,
    .domain              = R300_NUM_DOMAIN_RB3D_BLEND,
    .encoding            = R300_CARRIER_ENC_RGBA8_UNORM,
    .value_format        = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
@@ -91,6 +95,7 @@ const struct r300_carrier_policy r300_carrier_blend_acc = {
  * SSBO. */
 const struct r300_carrier_policy r300_carrier_zpass = {
    .name                = "zpass-count",
+   .operation_id        = R300_OPERATION_ID_ZPASS_COVERAGE_COUNT,
    .domain              = R300_NUM_DOMAIN_ZPASS_COUNT,
    .encoding            = R300_CARRIER_ENC_UINT32_COUNTER,
    .value_format        = R300_CARRIER_FORMAT_R8G8B8A8_UNORM,
@@ -105,6 +110,7 @@ const struct r300_carrier_policy r300_carrier_zpass = {
 
 const struct r300_carrier_policy r300_carrier_ieee16_classify = {
    .name                = "ieee16-classify",
+   .operation_id        = R300_OPERATION_ID_IEEE16_CLASSIFY_LUT,
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
    .value_format        = R300_CARRIER_FORMAT_R32_FLOAT,
@@ -119,6 +125,7 @@ const struct r300_carrier_policy r300_carrier_ieee16_classify = {
 
 const struct r300_carrier_policy r300_carrier_ieee16_mul = {
    .name                = "ieee16-mul",
+   .operation_id        = R300_OPERATION_ID_IEEE16_MUL_RNE,
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_RGBA8_U24,
    .value_format        = R300_CARRIER_FORMAT_R32G32_FLOAT,
@@ -133,6 +140,7 @@ const struct r300_carrier_policy r300_carrier_ieee16_mul = {
 
 const struct r300_carrier_policy r300_carrier_ieee16_result = {
    .name                = "ieee16-result",
+   .operation_id        = R300_OPERATION_ID_NONE,
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_RGBA8_U16,
    .value_format        = R300_CARRIER_FORMAT_R32_FLOAT,
@@ -147,6 +155,7 @@ const struct r300_carrier_policy r300_carrier_ieee16_result = {
 
 const struct r300_carrier_policy r300_carrier_ieee16_debug = {
    .name                = "ieee16-debug",
+   .operation_id        = R300_OPERATION_ID_NONE,
    .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
    .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
    .value_format        = R300_CARRIER_FORMAT_R32_FLOAT,
@@ -158,6 +167,26 @@ const struct r300_carrier_policy r300_carrier_ieee16_debug = {
    .pack_alpha_byte     = true,
    .requires_fp32_rt    = false,
 };
+
+static const struct r300_carrier_policy *const policies[] = {
+   &r300_carrier_identity,
+   &r300_carrier_dp4_u7,
+   &r300_carrier_dp4_u8_boundary,
+   &r300_carrier_blend_acc,
+   &r300_carrier_zpass,
+   &r300_carrier_ieee16_classify,
+   &r300_carrier_ieee16_mul,
+   &r300_carrier_ieee16_result,
+   &r300_carrier_ieee16_debug,
+};
+
+const struct r300_carrier_policy *const *
+r300_carrier_policies(unsigned *count)
+{
+   if (count != NULL)
+      *count = sizeof(policies) / sizeof(policies[0]);
+   return policies;
+}
 
 const struct r300_carrier_policy *
 r300_carrier_dp4_select(unsigned max_operand_magnitude)

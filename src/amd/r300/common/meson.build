@@ -6,6 +6,7 @@
 r300_common_contract_files = files(
   'r300_carrier_policy.c',
   'r300_compute_identity_carrier.c',
+  'r300_compute_identity_carrier_contract.c',
   'r300_compute_verb.c',
   'r300_direct_write.c',
   'r300_first_draw_state.c',
@@ -83,6 +84,23 @@ r300_compute_verb_test = executable(
 test(
   'r300-compute-verb-ledger',
   r300_compute_verb_test,
+  suite : ['r300'],
+)
+
+# Cross-registry typed joins: operation catalog, verb authority, executing
+# identity route certificate, and candidate carrier-policy inventory.
+r300_operation_ledger_test = executable(
+  'r300_operation_ledger_test',
+  files('tests/r300_operation_ledger_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-operation-ledger',
+  r300_operation_ledger_test,
   suite : ['r300'],
 )
 test(
@@ -432,7 +450,8 @@ r300_r2vb_fetched_route_manifest = executable(
 # The compute identity carrier pass: structure, pinned reference digest,
 # refusals, and the host model against the CPU route's bit copy.
 r300_compute_identity_carrier_sources = files(
-  'r300_compute_identity_carrier.c', 'r300_first_draw_state.c',
+  'r300_compute_identity_carrier.c',
+  'r300_compute_identity_carrier_contract.c', 'r300_first_draw_state.c',
   'r300_fragment_binary.c', 'r300_pm4_builder.c', 'r300_pm4_compose.c',
   'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
   'r300_r2vb_fetched_producer.c', 'r300_r2vb_producer_pass.c',

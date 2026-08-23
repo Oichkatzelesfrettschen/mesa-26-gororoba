@@ -376,6 +376,7 @@ test_refusals(void)
    const struct r300_r2vb_fetched_producer_params good = {
       .layout = layout,
       .fragment_binary = &fs,
+      .target = &r300_r2vb_producer_target_c4_32_fp,
       .source = { .format_id = R300_VERTEX_FORMAT_F32_4, .offset_bytes = 0,
                   .stride_bytes = 16, .bo_size_bytes = 4096 },
       .slot_offset_bytes = 0,
@@ -406,6 +407,9 @@ test_refusals(void)
    assert(r300_r2vb_fetched_producer_emit(&bad, &ib) == -EINVAL);
    bad = good;
    bad.fragment_binary = NULL;
+   assert(r300_r2vb_fetched_producer_emit(&bad, &ib) == -EINVAL);
+   bad = good;
+   bad.target = NULL;
    assert(r300_r2vb_fetched_producer_emit(&bad, &ib) == -EINVAL);
    bad = good;
    bad.layout.count = 0;

@@ -77,6 +77,9 @@ struct r300_r2vb_fetched_producer_params {
    struct r300_r2vb_producer_layout layout;
    const struct r300_fragment_binary *fragment_binary;
    const struct r300_first_draw_contract *first_draw_contract;
+   /* Complete output target state.  Route certificates pass their owned
+    * state here; a missing target refuses before emission. */
+   const struct r300_r2vb_producer_target *target;
    struct r300_r2vb_fetched_source source;
    /* The slot BO: layout.count records of
     * R300_R2VB_FETCHED_PRODUCER_SLOT_RECORD_BYTES from slot_offset_bytes.

@@ -148,7 +148,7 @@ r300_r2vb_fetched_producer_emit_into(
    const struct r300_fragment_binary *fs = params->fragment_binary;
    const struct r300_vertex_format_semantics *fmt =
       fetched_format(params->source.format_id);
-   if (!layout_valid(layout) || fmt == NULL)
+   if (!layout_valid(layout) || fmt == NULL || params->target == NULL)
       return -EINVAL;
    if (fs == NULL || !fs->validated)
       return -EINVAL;
@@ -213,7 +213,7 @@ r300_r2vb_fetched_producer_emit_into(
 
    uint32_t carrier_site = R300_PM4_NO_INDEX;
    r300_r2vb_producer_prologue_emit(&b, params->carrier_offset, layout,
-                                    &carrier_site);
+                                    params->target, &carrier_site);
    r300_r2vb_producer_fs_emit(&b, fs);
 
    /* The fetched body replaces the immediate pass's VAP tuple, varying
@@ -371,6 +371,7 @@ reference_geometry_emit(const struct r300_r2vb_fetched_source *source,
       .layout = layout,
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
+      .target = &r300_r2vb_producer_target_c4_32_fp,
       .source = *source,
       .slot_offset_bytes = slot_offset_bytes,
       .slot_bo_size_bytes = slot_bo_size_bytes,

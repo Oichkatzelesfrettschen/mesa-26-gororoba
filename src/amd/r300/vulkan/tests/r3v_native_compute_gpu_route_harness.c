@@ -19,6 +19,7 @@
 
 #include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/tests/r300_compute_identity_carrier_digests.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_ioctl.h"
@@ -144,6 +145,26 @@ run_arm(enum arm arm, const char *name)
    uint32_t verb_count = 0;
    const struct r300_compute_verb_row *rows =
       r300_compute_verb_rows(&verb_count);
+   const struct r300_compute_verb_row *identity =
+      &rows[R300_COMPUTE_VERB_IDENTITY_MAP];
+   const struct r300_compute_identity_carrier_contract *contract =
+      &r300_compute_identity_carrier_contract;
+   assert(identity->operation_id == contract->operation_id);
+   assert(identity->implementation_id == contract->implementation_id);
+   assert(identity->gpu_route_contract_id ==
+          contract->gpu_route_contract_id);
+   assert(contract->admission_id == R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY);
+   assert(contract->domain == R300_NUM_DOMAIN_FP24_RTZ);
+   assert(contract->input_format_id == R300_VERTEX_FORMAT_F32_4);
+   assert(contract->target.rb3d_color_format ==
+          R300_COLOR_FORMAT_ARGB32323232);
+   assert(contract->target.us_out_fmt[0] ==
+          (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+           R300_C2_SEL_R | R300_C3_SEL_A));
+   assert(contract->record_dwords ==
+          GROUP_WORDS / R300_COMPUTE_IDENTITY_CARRIER_REFERENCE_RECORDS);
+   assert(contract->record_bytes ==
+          contract->record_dwords * sizeof(uint32_t));
    for (uint32_t v = 0; v < verb_count; v++)
       unsetenv(rows[v].gpu_gate);
    if (arm == ARM_GATE_TABLE) {
