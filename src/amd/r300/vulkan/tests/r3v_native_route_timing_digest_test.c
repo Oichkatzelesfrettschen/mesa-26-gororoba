@@ -1,14 +1,15 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * The route dispatch timing runner declares two authorizations from
- * one offline composition: the composed stream's digest for the GPU
- * route and the consumer slice's digest for the CPU route.  The CPU
- * declaration holds only while the consumer slice of the composed
- * reference is the recorded triangle consumer verbatim, so this test
- * pins that identity dword for dword and proves the two digests
- * differ, which is what keeps one route's authorization from admitting
- * the other's stream.
+ * The route dispatch timing runner declares three authorizations from
+ * two offline compositions: the immediate composed stream's digest for
+ * the GPU route, the fetched F32_4 composed stream's digest for the
+ * fetched route, and the consumer slice's digest for the CPU route.
+ * The CPU declaration holds only while the consumer slice of each
+ * composed reference is the recorded triangle consumer verbatim, so
+ * this test pins that identity dword for dword in both compositions
+ * and proves the three digests differ pairwise, which is what keeps
+ * one route's authorization from admitting another's stream.
  *
  * The runner also states one triangle in two spaces, because the two
  * routes admit different ones: the GPU producer route declares
@@ -20,9 +21,10 @@
  * different triangles and the timing pair would compare two workloads,
  * so the round trip is pinned here in binary32.
  *
- * Both digests, the composed length, and the consumer split are pinned
- * to the retained RS482 route identities, so a composer or emitter
- * change reports as a movement against the bytes silicon executed.
+ * All three digests, the composed lengths, and the consumer splits are
+ * pinned to the retained RS482 route identities, so a composer or
+ * emitter change reports as a movement against the bytes silicon
+ * executed.
  * `--inject-consumer-drift` flips one consumer dword after
  * composition and must fail on the CPU pin alone, which calibrates the
  * pins' sensitivity.
@@ -30,8 +32,11 @@
  * Checks are explicit so the test decides the same way under NDEBUG.
  */
 
+#include "amd/r300/common/r300_r2vb_fetched_producer.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_vertex_format.h"
+#include "amd/r300/common/tests/r300_fetched_route_digests.h"
 #include "amd/r300/common/tests/r300_retained_route_digests.h"
 
 #include <stdbool.h>
@@ -57,6 +62,11 @@ main(int argc, char **argv)
    if (r300_r2vb_public_route_reference_compose(&route) != 0)
       return fail("route composition failed");
 
+   struct r300_r2vb_fetched_route_ib fetched;
+   if (r300_r2vb_fetched_route_reference_compose(R300_VERTEX_FORMAT_F32_4,
+                                                 &fetched) != 0)
+      return fail("fetched route composition failed");
+
    struct r300_tcl_bypass_triangle_ib consumer;
    if (r300_tcl_bypass_triangle_reference_emit(&consumer) != 0)
       return fail("consumer reference emission failed");
@@ -70,9 +80,17 @@ main(int argc, char **argv)
    if (consumer.ib_size_dwords != R300_RETAINED_CPU_ROUTE_IB_DWORDS)
       return fail("consumer cell length differs from the retained "
                   "CPU route");
+   if (fetched.ib_size_dwords != R300_FETCHED_F32_4_ROUTE_IB_DWORDS)
+      return fail("fetched stream length differs from the retained "
+                  "fetched F32_4 route");
+   if (fetched.consumer_start_dwords !=
+       R300_FETCHED_F32_4_ROUTE_CONSUMER_START_DWORDS)
+      return fail("fetched consumer split differs from the retained "
+                  "fetched F32_4 route");
    if (inject_consumer_drift) {
       consumer.ib[consumer.ib_size_dwords - 1] ^= 1u;
       route.ib[route.ib_size_dwords - 1] ^= 1u;
+      fetched.ib[fetched.ib_size_dwords - 1] ^= 1u;
    }
 
    if (route.ib_size_dwords <= route.consumer_start_dwords)
@@ -84,6 +102,19 @@ main(int argc, char **argv)
    if (memcmp(route.ib + route.consumer_start_dwords, consumer.ib,
               slice_dwords * sizeof(uint32_t)) != 0)
       return fail("consumer slice bytes differ from the recorded cell");
+   /* The fetched composition carries the same consumer behind its own
+    * producer, so the CPU declaration names the slice of either stream.
+    */
+   if (fetched.ib_size_dwords <= fetched.consumer_start_dwords)
+      return fail("fetched stream carries no consumer slice");
+   if (fetched.ib_size_dwords - fetched.consumer_start_dwords !=
+       consumer.ib_size_dwords)
+      return fail("fetched consumer slice length differs from the "
+                  "recorded cell");
+   if (memcmp(fetched.ib + fetched.consumer_start_dwords, consumer.ib,
+              slice_dwords * sizeof(uint32_t)) != 0)
+      return fail("fetched consumer slice bytes differ from the recorded "
+                  "cell");
 
    char gpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    char cpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
@@ -93,8 +124,16 @@ main(int argc, char **argv)
                                slice_dwords, cpu_digest);
    r300_triangle_ib_digest_hex(consumer.ib, consumer.ib_size_dwords,
                                consumer_digest);
-   if (strcmp(gpu_digest, cpu_digest) == 0)
-      return fail("the two route digests coincide");
+   char fetched_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(fetched.ib, fetched.ib_size_dwords,
+                               fetched_digest);
+   if (strcmp(gpu_digest, cpu_digest) == 0 ||
+       strcmp(fetched_digest, cpu_digest) == 0 ||
+       strcmp(fetched_digest, gpu_digest) == 0)
+      return fail("two route digests coincide");
+   if (strcmp(fetched_digest, R300_FETCHED_F32_4_ROUTE_IB_BLAKE3) != 0)
+      return fail("fetched digest differs from the retained fetched F32_4 "
+                  "route");
    if (strcmp(cpu_digest, consumer_digest) != 0)
       return fail("cpu digest differs from the recorded consumer digest");
    if (strcmp(cpu_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) != 0)
@@ -126,9 +165,11 @@ main(int argc, char **argv)
    }
 
    r300_r2vb_public_route_release(&route);
+   r300_r2vb_fetched_route_release(&fetched);
    r300_tcl_bypass_triangle_release(&consumer);
-   printf("route-timing-digest: consumer slice identity holds and the "
-          "clip round trip is exact; gpu %.8s.. cpu %.8s..\n",
-          gpu_digest, cpu_digest);
+   printf("route-timing-digest: consumer slice identity holds in both "
+          "compositions and the clip round trip is exact; gpu %.8s.. "
+          "cpu %.8s.. fetched %.8s..\n",
+          gpu_digest, cpu_digest, fetched_digest);
    return 0;
 }

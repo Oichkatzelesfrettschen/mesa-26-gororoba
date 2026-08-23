@@ -757,6 +757,32 @@ r3v_native_queue_observed_gpu_producer(VkDevice _device)
    return device != NULL && device->transport_gpu_producer_delivery;
 }
 
+enum r3v_native_observed_route
+r3v_native_queue_observed_route(VkDevice _device)
+{
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   if (device == NULL || !device->transport_gpu_producer_delivery)
+      return R3V_NATIVE_OBSERVED_ROUTE_CPU;
+   return device->transport_cell_kind ==
+                R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED
+             ? R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER_FETCHED
+             : R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER;
+}
+
+const char *
+r3v_native_observed_route_name(enum r3v_native_observed_route route)
+{
+   switch (route) {
+   case R3V_NATIVE_OBSERVED_ROUTE_CPU:
+      return "cpu";
+   case R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER:
+      return "gpu";
+   case R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER_FETCHED:
+      return "fetched";
+   }
+   return "unknown";
+}
+
 static int
 r3v_native_submission_trace_emit(
    struct r3v_native_device *device,
@@ -981,6 +1007,7 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
     */
    device->transport_gpu_producer_delivery =
       cmd_buffer->deferred_draw.gpu_producer_delivery;
+   device->transport_cell_kind = cmd_buffer->cell_kind;
    device->transport_return_ns = 0;
    device->transport_enter_ns = r3v_native_raw_now_ns();
    int result = radeon_drm_vk_cs_submit(&device->drm, &prepared->cs);
@@ -1460,6 +1487,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        */
       device->transport_gpu_producer_delivery =
          cmd_buffer->deferred_draw.gpu_producer_delivery;
+      device->transport_cell_kind = cmd_buffer->cell_kind;
       device->transport_return_ns = 0;
       device->transport_enter_ns = r3v_native_raw_now_ns();
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);

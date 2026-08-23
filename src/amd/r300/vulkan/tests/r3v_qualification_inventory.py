@@ -229,6 +229,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-route-timing-digest-known-bad-consumer-drift",
     "r3v-native-route-timing-record-cpu",
     "r3v-native-route-timing-record-gpu",
+    "r3v-native-route-timing-record-fetched",
     "r3v-native-gallium-separation",
     "r3v-native-gallium-separation-selftest",
     "r3v-native-gallium-separation-known-bad",

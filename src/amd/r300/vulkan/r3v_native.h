@@ -417,6 +417,12 @@ struct r3v_native_device {
     * actually did, so an evidence bundle states the route that ran.
     */
    bool transport_gpu_producer_delivery;
+   /* The cell kind of the last submission that reached the ioctl; with
+    * the flag above it names which producer -- immediate or fetched --
+    * wrote the carrier, so a timing row over one route is not credited
+    * to the other.
+    */
+   enum r3v_native_cell_kind transport_cell_kind;
    /* Serial status-load admissions this instance has counted against the
     * declared bound; the instance that wrote the attempt token is the
     * only one whose count is nonzero, which is what lets a continuation
@@ -663,6 +669,24 @@ uint64_t r3v_native_queue_transport_wall_ns(VkDevice device);
  * admission decided it rather than as a caller declared it.
  */
 bool r3v_native_queue_observed_gpu_producer(VkDevice device);
+
+/* The delivery route the last submission's deferred draw took, as the
+ * resolver and the submit-time admission decided it: the CPU vertex
+ * job, the immediate GPU producer (records embedded as DRAW_IMMD_2
+ * dwords), or the fetched GPU producer (records fetched from the bound
+ * vertex BO).  A route timing row rests on this rather than on the
+ * gates the caller set.
+ */
+enum r3v_native_observed_route {
+   R3V_NATIVE_OBSERVED_ROUTE_CPU = 0,
+   R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER = 1,
+   R3V_NATIVE_OBSERVED_ROUTE_GPU_PRODUCER_FETCHED = 2,
+};
+
+enum r3v_native_observed_route
+r3v_native_queue_observed_route(VkDevice device);
+
+const char *r3v_native_observed_route_name(enum r3v_native_observed_route route);
 
 /* A permanent binary wait is reset after deferred execution.  Emulated
  * timeline points, temporary payloads, and same-submit re-signals retain
