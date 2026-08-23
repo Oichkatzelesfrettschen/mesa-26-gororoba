@@ -12,15 +12,20 @@
  * analytic triangle.  A carrier divergence quarantines the capability
  * inside the driver and surfaces here as device loss.  The producer,
  * triangle, and direct-write cells keep their own runners; no runner
- * records another's cell.
+ * records another's cell.  --fetched drives the fetched GPU-producer
+ * cell over the same recording: the admission composes the fetched
+ * producer under the third gate and the authorization names that
+ * composition.
  */
 
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
 
+#include "amd/r300/common/r300_r2vb_fetched_producer.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_vertex_format.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -109,9 +114,26 @@ main(int argc, char **argv)
     * wrong without any device, so the shim fixture calibrates it there
     * and the hardware mode inherits a proven sequence.
     */
-   const bool record_only = argc == 3 && strcmp(argv[2], "--record-only") == 0;
-   if (argc != 2 && !record_only) {
-      fprintf(stderr, "usage: %s <evidence-directory> [--record-only]\n",
+   /* --fetched selects the fetched GPU-producer cell: the same recording
+    * and the same records, with the submit-time admission composing the
+    * fetched producer (slot BO + the bound vertex BO through the
+    * two-array fetched body) under the third gate, and the authorization
+    * naming that composition's digest.
+    */
+   bool record_only = false;
+   bool fetched = false;
+   bool usage_error = argc < 2 || argc > 4;
+   for (int i = 2; i < argc && !usage_error; i++) {
+      if (strcmp(argv[i], "--record-only") == 0 && !record_only)
+         record_only = true;
+      else if (strcmp(argv[i], "--fetched") == 0 && !fetched)
+         fetched = true;
+      else
+         usage_error = true;
+   }
+   if (usage_error) {
+      fprintf(stderr,
+              "usage: %s <evidence-directory> [--record-only] [--fetched]\n",
               argv[0]);
       return 2;
    }
@@ -162,23 +184,55 @@ main(int argc, char **argv)
               "value 1 on this route\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
+   /* The third gate selects the fetched composition; a run declared for
+    * one producer form with the gate set for the other would submit a
+    * stream its authorization does not name, so it refuses by name.
+    */
+   if (!record_only &&
+       gate_open("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL") != fetched) {
+      fprintf(stderr,
+              "R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL %s on the %s "
+              "cell\n",
+              fetched ? "carries the exact value 1" : "stays unset",
+              fetched ? "fetched" : "immediate");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
 
    /* The stream this run submits, composed here so its digest reaches
     * the console beside the authorization the operator declared.
     */
-   struct r300_r2vb_public_route_ib route;
-   if (r300_r2vb_public_route_reference_compose(&route) != 0 ||
-       r300_r2vb_public_route_validate_reloc_sites(&route) != 0) {
-      fprintf(stderr, "route composition failed\n");
-      return finish(OUTCOME_SUBMISSION_REFUSED);
-   }
    char route_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
-   r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords,
-                               route_digest);
-   printf("route ib_dwords=%u consumer_start_dwords=%u ib_blake3=%s\n",
-          route.ib_size_dwords, route.consumer_start_dwords, route_digest);
+   uint32_t route_dwords = 0;
+   uint32_t route_split = 0;
+   if (fetched) {
+      struct r300_r2vb_fetched_route_ib route;
+      if (r300_r2vb_fetched_route_reference_compose(R300_VERTEX_FORMAT_F32_4,
+                                                    &route) != 0) {
+         fprintf(stderr, "fetched route composition failed\n");
+         return finish(OUTCOME_SUBMISSION_REFUSED);
+      }
+      r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords,
+                                  route_digest);
+      route_dwords = route.ib_size_dwords;
+      route_split = route.consumer_start_dwords;
+      r300_r2vb_fetched_route_release(&route);
+   } else {
+      struct r300_r2vb_public_route_ib route;
+      if (r300_r2vb_public_route_reference_compose(&route) != 0 ||
+          r300_r2vb_public_route_validate_reloc_sites(&route) != 0) {
+         fprintf(stderr, "route composition failed\n");
+         return finish(OUTCOME_SUBMISSION_REFUSED);
+      }
+      r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords,
+                                  route_digest);
+      route_dwords = route.ib_size_dwords;
+      route_split = route.consumer_start_dwords;
+      r300_r2vb_public_route_release(&route);
+   }
+   printf("route %s ib_dwords=%u consumer_start_dwords=%u ib_blake3=%s\n",
+          fetched ? "fetched" : "immediate", route_dwords, route_split,
+          route_digest);
    fflush(stdout);
-   r300_r2vb_public_route_release(&route);
 
    stage("instance");
    PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
@@ -705,7 +759,8 @@ main(int argc, char **argv)
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
       "{\n"
-      "  \"schema\": \"r3v-native-r2vb-public-route-outcome/1\",\n"
+      "  \"schema\": \"%s\",\n"
+      "  \"route\": \"%s\",\n"
       "  \"verdict\": \"%s\",\n"
       "  \"submit_result\": %d,\n"
       "  \"queue_status\": \"%s\",\n"
@@ -718,8 +773,11 @@ main(int argc, char **argv)
       "  \"interior_samples\": %u,\n"
       "  \"exterior_samples\": %u\n"
       "}\n",
-      outcome_names[outcome], submit_result,
-      r3v_native_queue_status_name(queue_status), route_digest,
+      fetched ? "r3v-native-r2vb-fetched-route-outcome/1"
+              : "r3v-native-r2vb-public-route-outcome/1",
+      fetched ? "fetched" : "immediate", outcome_names[outcome],
+      submit_result, r3v_native_queue_status_name(queue_status),
+      route_digest,
       (unsigned)R3V_NATIVE_TARGET_MEMORY_BYTES,
       verdict.executed ? "true" : "false",
       verdict.interior_pass ? "true" : "false",
@@ -728,7 +786,8 @@ main(int argc, char **argv)
       verdict.exterior_samples);
    if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
        r3v_native_evidence_write_file(evidence_dir,
-                                      "public_route_outcome.json",
+                                      fetched ? "fetched_route_outcome.json"
+                                              : "public_route_outcome.json",
                                       outcome_json, (size_t)length) != 0) {
       fprintf(stderr, "outcome retention failed\n");
       return finish(OUTCOME_RETENTION_FAILURE);

@@ -1558,6 +1558,17 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The fetched cell shares the runner and the recording; its mode is the
+  # composition the admission selects and the digest the run declares.
+  test(
+    'r3v-native-fetched-gpu-producer-record',
+    r3v_native_attended_public_gpu_producer,
+    args : [meson.current_build_dir(), '--record-only', '--fetched'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
 
   # The timing runner's CPU-route authorization rests on the consumer
   # slice of the offline composition being the recorded consumer cell
@@ -1795,6 +1806,39 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       files('tests/r3v_native_public_gpu_producer_arming_runner_check.py'),
       r3v_native_public_gpu_producer_arming_runner,
       r3v_native_producer_arming_runner,
+    ],
+    suite : ['r3v'],
+  )
+
+  # Non-submitting arming runner for the fetched GPU-producer route:
+  # composes the fetched F32_4 reference route, reports its digest and
+  # every arming factor including the third gate, then stops at the
+  # authorization boundary.  The check drives the refusal legs and the
+  # immediate route's digest as the wrong cell.
+  r3v_native_fetched_gpu_producer_arming_runner = executable(
+    'r3v_native_fetched_gpu_producer_arming_runner',
+    files('r3v_native_arming.c',
+          'tests/r3v_native_fetched_gpu_producer_arming_runner.c',
+          '../common/r300_first_draw_state.c',
+          '../common/r300_fragment_binary.c',
+          '../common/r300_pm4_builder.c',
+          '../common/r300_pm4_compose.c',
+          '../common/r300_r2vb_carrier_delivery.c',
+          '../common/r300_r2vb_fetch_pass.c',
+          '../common/r300_r2vb_fetched_producer.c',
+          '../common/r300_r2vb_producer_pass.c',
+          '../common/r300_tcl_bypass_triangle.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : [idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r3v-native-fetched-gpu-producer-arming-runner',
+    prog_python,
+    args : [
+      files('tests/r3v_native_fetched_gpu_producer_arming_runner_check.py'),
+      r3v_native_fetched_gpu_producer_arming_runner,
+      r3v_native_public_gpu_producer_arming_runner,
     ],
     suite : ['r3v'],
   )

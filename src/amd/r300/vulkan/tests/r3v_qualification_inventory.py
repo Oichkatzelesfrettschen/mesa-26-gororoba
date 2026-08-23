@@ -214,6 +214,8 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-direct-write-authority-parity",
     "r3v-native-public-gpu-producer-arming-runner",
     "r3v-native-public-gpu-producer-record",
+    "r3v-native-fetched-gpu-producer-arming-runner",
+    "r3v-native-fetched-gpu-producer-record",
     "r3v-native-route-timing-digest",
     "r3v-native-route-timing-digest-known-bad-consumer-drift",
     "r3v-native-route-timing-record-cpu",
