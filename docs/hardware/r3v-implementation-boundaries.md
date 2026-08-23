@@ -1098,7 +1098,15 @@ R2VB migration follows the fixed triangle and CPU route:
    on RS482 with the gradient exact at every interior sample, retained as
    steinmarder-r300 bundle
    `r3v-native-varying-triangle-cell-first-delivery-rs482`);
-6. add hybrid carriers only with an explicit final VAP join.
+6. read several vertex attributes, one job slot per shader input
+   location over one or more per-vertex bindings, through the CPU
+   executor into the same varying cell (the IB identity is unchanged;
+   only the host-gathered records differ); the pipeline refuses an
+   attribute that crosses its binding's stride, the draw refuses an
+   unbound binding and a stream sharing bytes with the pass target, and
+   the composed GPU-producer routes keep one source relocation role, so
+   they admit the slot-0 identity job alone;
+7. add hybrid carriers only with an explicit final VAP join.
 
 The route owns its BOs, PM4, packers, barriers, and completion; r300g's R2VB
 planner belongs to the GL lane and is never an R3V execution path.

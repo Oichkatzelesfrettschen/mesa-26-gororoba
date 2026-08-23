@@ -19,8 +19,9 @@
 #include <stdint.h>
 
 /* Lowers an admitted SPIR-V vertex module to the job IR.  The admitted
- * subset is straight-line vec4 code over one location-0 vec4 float
- * input: loads of that input, vec4 float composite constants, FAdd,
+ * subset is straight-line vec4 code over located vec4 float inputs, one
+ * attribute slot per location below R300_VERTEX_JOB_MAX_INPUTS: loads
+ * of those inputs, vec4 float composite constants, FAdd,
  * FMul, GLSL.std.450 Fma (fused), Dot rejoined only by its own
  * four-way replicate, exactly one full store of the Position builtin
  * as the program's result, and at most one full store of a location-0
@@ -28,7 +29,7 @@
  * declared varying must be stored.  Descriptors, push constants,
  * control flow, non-32-bit types, and every opcode outside the
  * recognized grammar refuse with *reason naming the construct; the job
- * leaves with input_format_id unassigned and is unspecified on
+ * leaves with input_format_ids unassigned and is unspecified on
  * refusal.
  * entry_name binds the OpEntryPoint literal byte for byte.
  */

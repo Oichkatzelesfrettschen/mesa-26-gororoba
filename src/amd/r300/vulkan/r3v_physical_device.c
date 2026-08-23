@@ -140,10 +140,11 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
 
    /* Vertex input.  R300 VAP_PROG_STREAM_CNTL_0..15 carries 16 vertex
     * attribute streams (R3xx-RRG ch. "Vertex Assembly and Processor"). */
-   props->maxVertexInputAttributes = 16;
-   props->maxVertexInputBindings = 16;
-   props->maxVertexInputAttributeOffset = 2047;
-   props->maxVertexInputBindingStride = 2048;
+   props->maxVertexInputAttributes = R300_VERTEX_JOB_MAX_INPUTS;
+   props->maxVertexInputBindings = R3V_NATIVE_MAX_VERTEX_BINDINGS;
+   props->maxVertexInputAttributeOffset =
+      R3V_NATIVE_MAX_VERTEX_ATTRIBUTE_OFFSET;
+   props->maxVertexInputBindingStride = R3V_NATIVE_MAX_VERTEX_BINDING_STRIDE;
 
    /* VAP varying export budget: 8 generic varyings x 4 components +
     * position + color + back-color + texcoords; aggregate ceiling 64

@@ -61,7 +61,7 @@ static struct r300_vertex_stream stream_of(const void *data,
 static struct r300_vertex_job identity_job(int format_id)
 {
    struct r300_vertex_job job = {
-      .input_format_id = format_id,
+      .input_format_ids = { format_id },
       .instruction_count = 2,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -132,7 +132,7 @@ static void test_arithmetic_exact(void)
 {
    /* t0 = input; t1 = const0; t2 = t0 + t1; t3 = t2 * t1; store t3. */
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 5,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -160,7 +160,7 @@ static void test_arithmetic_exact(void)
     * source-payload choice.
     */
    struct r300_vertex_job nan_job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -185,7 +185,7 @@ static void test_multiply_add_rounding(void)
    const float a = 1.0f + 0x1.0p-12f;
    const float c = -(1.0f + 0x1.0p-11f);
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -223,7 +223,7 @@ static void test_dot_product_rounding(void)
     */
    const float a = 1.0f + 0x1.0p-12f;
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -244,7 +244,7 @@ static void test_dot_product_rounding(void)
 static void test_float_environment_isolation(void)
 {
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -300,7 +300,7 @@ static void test_dp4_order_and_broadcast(void)
    /* dot((1,2,3,4), (2,3,4,5)) = 2 + 6 + 12 + 20 = 40 exactly, and
     * the scalar broadcasts to all four lanes. */
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -337,7 +337,7 @@ static void test_dp4_order_and_broadcast(void)
 static void test_mov_preserves_nan_payload(void)
 {
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -372,7 +372,7 @@ static void test_validation_refusals(void)
    bad.instruction_count = R300_VERTEX_JOB_MAX_INSTRUCTIONS + 1;
    expect_refusal(&bad, -EINVAL);
    bad = job;
-   bad.input_format_id = R300_VERTEX_FORMAT_INVALID;
+   bad.input_format_ids[0] = R300_VERTEX_FORMAT_INVALID;
    expect_refusal(&bad, -EINVAL);
    bad = job;
    bad.instructions[0].opcode = 0x7f;
@@ -393,7 +393,7 @@ static void test_validation_refusals(void)
    bad.instructions[1].src0 = 1;
    expect_refusal(&bad, -EINVAL);
    struct r300_vertex_job unwritten = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -407,7 +407,7 @@ static void test_validation_refusals(void)
    bad.instructions[1].opcode = R300_VERTEX_JOB_OP_MOV;
    expect_refusal(&bad, -EINVAL);
    struct r300_vertex_job two_stores = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -419,7 +419,7 @@ static void test_validation_refusals(void)
    /* The varying store: at most one, from a written register, ahead of
     * the final position store. */
    struct r300_vertex_job varying_last = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -429,7 +429,7 @@ static void test_validation_refusals(void)
    };
    expect_refusal(&varying_last, -EINVAL);
    struct r300_vertex_job two_varyings = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -440,7 +440,7 @@ static void test_validation_refusals(void)
    };
    expect_refusal(&two_varyings, -EINVAL);
    struct r300_vertex_job varying_unwritten = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -459,7 +459,7 @@ static void test_validation_refusals(void)
 static void test_varying_store_records(void)
 {
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .constant_count = 1,
       .instruction_count = 5,
       .instructions = {
@@ -509,6 +509,128 @@ static void test_varying_store_records(void)
       assert(carrier[i] == CANARY);
 }
 
+/* Two attribute slots: slot 0 (F32_4) feeds the position, slot 1
+ * (F32_3, alpha synthesized as 1) feeds the varying, each from its own
+ * stream at its own stride.  Every per-slot refusal precedes the first
+ * carrier write: a read slot with no bound format fails validation, a
+ * read slot whose stream has no data or whose range the bound cannot
+ * prove refuses, a carrier overlapping the second stream refuses, and
+ * under the robust rule the second stream substitutes zeros on its
+ * own.
+ */
+static void test_multi_attribute_slots(void)
+{
+   struct r300_vertex_job job = {
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4,
+                            R300_VERTEX_FORMAT_F32_3 },
+      .instruction_count = 4,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 1, 0, 0 },
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 1, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 1, 0, 0 },
+      },
+   };
+   assert(r300_vertex_job_input_mask(&job) == 0x3u);
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+
+   const uint32_t positions[3][4] = {
+      { f_bits(1.0f), f_bits(2.0f), f_bits(3.0f), f_bits(4.0f) },
+      { f_bits(-1.0f), f_bits(0.0f), f_bits(0.25f), f_bits(1.0f) },
+      { 0x7fc00123u, 0x80000000u, f_bits(8.0f), f_bits(1.0f) },
+   };
+   /* Three-component colors at a 20-byte stride with 8 pad bytes. */
+   uint8_t colors[3 * 20];
+   memset(colors, 0xcd, sizeof(colors));
+   const uint32_t color_values[3][3] = {
+      { f_bits(0.125f), f_bits(0.25f), f_bits(0.5f) },
+      { 0x80000000u, f_bits(1.0f), 0x00000001u },
+      { f_bits(0.875f), 0x7fc00321u, f_bits(0.0f) },
+   };
+   for (uint32_t v = 0; v < 3; v++)
+      memcpy(&colors[v * 20], color_values[v], 12);
+   struct r300_vertex_stream streams[2] = {
+      stream_of(positions, 16, sizeof(positions)),
+      stream_of(colors, 20, sizeof(colors)),
+   };
+   uint32_t carrier[CARRIER_DWORDS];
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, streams, 0, 3, carrier, 24) ==
+          0);
+   for (uint32_t v = 0; v < 3; v++) {
+      assert(memcmp(&carrier[v * 8], positions[v], 16) == 0);
+      assert(memcmp(&carrier[v * 8 + 4], color_values[v], 12) == 0);
+      assert(carrier[v * 8 + 7] == f_bits(1.0f));
+   }
+   for (uint32_t i = 24; i < CARRIER_DWORDS; i++)
+      assert(carrier[i] == CANARY);
+
+   /* A slot read without a bound format fails validation. */
+   struct r300_vertex_job unbound = job;
+   unbound.input_format_ids[1] = R300_VERTEX_FORMAT_INVALID;
+   assert(r300_cpu_vertex_job_validate(&unbound) == -EINVAL);
+   /* A slot index beyond the slot count fails validation. */
+   struct r300_vertex_job beyond = job;
+   beyond.instructions[0].src0 = R300_VERTEX_JOB_MAX_INPUTS;
+   assert(r300_cpu_vertex_job_validate(&beyond) == -EINVAL);
+   /* A job reading slot 1 alone validates with slot 0 left unbound. */
+   struct r300_vertex_job second_only = {
+      .input_format_ids = { [1] = R300_VERTEX_FORMAT_F32_3 },
+      .instruction_count = 2,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 1, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   assert(r300_vertex_job_input_mask(&second_only) == 0x2u);
+   assert(r300_cpu_vertex_job_validate(&second_only) == 0);
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&second_only, streams, 0, 3, carrier,
+                                      12) == 0);
+   assert(memcmp(&carrier[4], color_values[1], 12) == 0 &&
+          carrier[7] == f_bits(1.0f));
+
+   /* The second stream without data refuses before any write. */
+   struct r300_vertex_stream no_data[2] = { streams[0], streams[1] };
+   no_data[1].data = NULL;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, no_data, 0, 3, carrier, 24) ==
+          -EINVAL);
+   for (uint32_t i = 0; i < CARRIER_DWORDS; i++)
+      assert(carrier[i] == CANARY);
+   /* The second stream one byte short of its last record refuses. */
+   struct r300_vertex_stream short_second[2] = { streams[0], streams[1] };
+   short_second[1].size_bytes = 2 * 20 + 11;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, short_second, 0, 3, carrier,
+                                      24) == -EINVAL);
+   for (uint32_t i = 0; i < CARRIER_DWORDS; i++)
+      assert(carrier[i] == CANARY);
+   /* Under the robust rule the same short stream reads its third record
+    * as zeros with the synthesized alpha, the first stream untouched. */
+   short_second[1].oob_reads_zero = true;
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, short_second, 0, 3, carrier,
+                                      24) == 0);
+   assert(memcmp(&carrier[16], positions[2], 16) == 0);
+   assert(carrier[20] == 0 && carrier[21] == 0 && carrier[22] == 0 &&
+          carrier[23] == f_bits(1.0f));
+   assert(memcmp(&carrier[12], color_values[1], 12) == 0);
+
+   /* A carrier overlapping the second stream refuses whole. */
+   uint32_t shared[64];
+   memset(shared, 0, sizeof(shared));
+   memcpy(shared, colors, sizeof(colors));
+   struct r300_vertex_stream aliased[2] = { streams[0],
+                                            stream_of(shared, 20, 60) };
+   assert(r300_cpu_vertex_job_execute(&job, aliased, 0, 3, shared + 8,
+                                      24) == -EINVAL);
+   /* The same carrier past the second stream's bytes executes. */
+   assert(r300_cpu_vertex_job_execute(&job, aliased, 0, 3, shared + 15,
+                                      24) == 0);
+   assert(memcmp(&shared[15 + 4], color_values[0], 12) == 0);
+}
+
 static void test_execute_refusals_no_partial_write(void)
 {
    const uint32_t records[3][4] = { { 1, 2, 3, 4 } };
@@ -555,7 +677,7 @@ static void test_determinism(void)
       { f_bits(9.0f), f_bits(-9.0f), f_bits(0.0f), f_bits(1.0f) },
    };
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 5,
       .instructions = {
          { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
@@ -630,7 +752,7 @@ static void test_robust_out_of_bounds_reads_zero(void)
 
       /* The identity job executes the same rule. */
       struct r300_vertex_job job = {
-         .input_format_id = rows[i].format,
+         .input_format_ids[0] = rows[i].format,
          .instruction_count = 2,
          .instructions = {
             { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
@@ -680,6 +802,7 @@ int main(void)
    test_mov_preserves_nan_payload();
    test_validation_refusals();
    test_varying_store_records();
+   test_multi_attribute_slots();
    test_execute_refusals_no_partial_write();
    test_determinism();
    printf("r300_cpu_vertex_job_test: all cases pass\n");

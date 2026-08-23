@@ -21,6 +21,10 @@
 #define R300_VERTEX_JOB_MAX_INSTRUCTIONS 64
 #define R300_VERTEX_JOB_MAX_TEMPS 16
 #define R300_VERTEX_JOB_MAX_CONSTANTS 32
+/* Attribute slots the job can read, one per vertex-input location; the
+ * count is the Vulkan maxVertexInputAttributes the physical device
+ * publishes, so every admitted pipeline's locations fit. */
+#define R300_VERTEX_JOB_MAX_INPUTS 16
 
 /* Arithmetic executes in IEEE-754 binary32 under the executor's
  * round-to-nearest, denormal-preserving environment.  FMAD commits the
@@ -30,9 +34,9 @@
  * lanes.
  */
 enum r300_vertex_job_opcode {
-   /* dst = logical vec4 of input attribute src0 for the current
-    * vertex, gathered through the r300_vertex_format_semantics
-    * selectors.  The single-binding subset admits attribute 0 only. */
+   /* dst = logical vec4 of input attribute slot src0 for the current
+    * vertex, gathered from that slot's stream through the
+    * r300_vertex_format_semantics selectors of input_format_ids[src0]. */
    R300_VERTEX_JOB_OP_LOAD_INPUT = 0,
    /* dst = constants[src0] (bit copy). */
    R300_VERTEX_JOB_OP_LOAD_CONSTANT,
@@ -69,8 +73,10 @@ struct r300_vertex_job_instruction {
 };
 
 struct r300_vertex_job {
-   /* enum r300_vertex_format_id of the one bound attribute stream. */
-   int input_format_id;
+   /* enum r300_vertex_format_id per attribute slot; a slot no
+    * LOAD_INPUT reads stays R300_VERTEX_FORMAT_INVALID (zero), and a
+    * slot one reads carries the bound attribute's format. */
+   int input_format_ids[R300_VERTEX_JOB_MAX_INPUTS];
    uint32_t instruction_count;
    struct r300_vertex_job_instruction
       instructions[R300_VERTEX_JOB_MAX_INSTRUCTIONS];
@@ -94,6 +100,20 @@ r300_vertex_job_has_varying(const struct r300_vertex_job *job)
          return true;
    }
    return false;
+}
+
+/* The attribute slots the job's LOAD_INPUT instructions read, one bit
+ * per slot: the streams an executor must bind and bound-prove. */
+static inline uint32_t
+r300_vertex_job_input_mask(const struct r300_vertex_job *job)
+{
+   uint32_t mask = 0;
+   for (uint32_t i = 0; i < job->instruction_count; i++) {
+      if (job->instructions[i].opcode == R300_VERTEX_JOB_OP_LOAD_INPUT &&
+          job->instructions[i].src0 < R300_VERTEX_JOB_MAX_INPUTS)
+         mask |= 1u << job->instructions[i].src0;
+   }
+   return mask;
 }
 
 static inline uint32_t

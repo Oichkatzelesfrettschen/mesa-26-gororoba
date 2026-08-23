@@ -33,8 +33,10 @@ extended instruction outside GLSL.std.450 Fma
 extended-instruction import outside GLSL.std.450
 float type outside the identity-map subset
 float width outside 32 bits
+fragment input outside varying 0 as vec4
 fragment output outside color 0 as vec4
 fragment program outside one constant color
+fragment program outside the varying pass-through
 fragment shader reads an input
 function ends before returning
 function outside the entry point
@@ -80,11 +82,12 @@ memory model outside Logical addressing
 memory operands outside the grammar
 module preamble outside the admitted grammar
 more than one entry point
+more than one fragment input
 more than one function
 more than one shader output
 more than one storage load
 more than one storage store
-more than one vertex input
+more than one vertex varying output
 opcode outside the identity-map subset
 opcode outside the vec4 straight line
 operand outside the admitted straight line
@@ -93,6 +96,7 @@ result id defined twice
 result-id bound outside the admitted module size
 second color store
 second position store
+second varying store
 storage access outside member 0 of the word array
 storage address outside the flattened invocation index
 storage atomic
@@ -104,22 +108,19 @@ store outside the admitted pointers
 store outside the bound
 stored value is not the loaded word
 struct type outside gl_PerVertex
+two vertex inputs at one location
 unrecognized module
 variable initializer outside the grammar
 variable type outside a matching pointer
 vec4 construction outside a DP4 broadcast
 vector type outside the uint3 builtin
 vector type outside vec4 float
-vertex input outside attribute 0 as vec4
+vertex input location beyond the attribute slots
+vertex input outside a located vec4
 vertex output outside the Position builtin
 vertex program exceeds the 16-temp file
 vertex program exceeds the constant file
 vertex program exceeds the instruction budget
-workgroup shared memory
-fragment input outside varying 0 as vec4
-more than one fragment input
-vertex varying outside location 0
-more than one vertex varying output
-second varying store
-fragment program outside the varying pass-through
 vertex varying output left unwritten
+vertex varying outside location 0
+workgroup shared memory

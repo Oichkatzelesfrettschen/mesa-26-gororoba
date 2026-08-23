@@ -44,7 +44,7 @@ bool r300_vertex_job_nir_normalize(nir_shader *nir, const char **reason);
  * code over attribute 0 -- LOAD_INPUT, vec4 constants, MOV, FADD,
  * FMUL, two-rounding FMAD, fused FFMA, DP4 (a scalar dot rejoined only
  * by its own broadcast), and exactly one full store to the position output.  The caller
- * assigns job->input_format_id from the pipeline's vertex-input state
+ * assigns job->input_format_ids from the pipeline's vertex-input state
  * and validates the finished job.  Returns false with *reason naming
  * the first inadmissible construct; the job is unspecified on refusal.
  */

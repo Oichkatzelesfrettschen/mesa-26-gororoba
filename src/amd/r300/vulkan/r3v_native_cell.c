@@ -370,29 +370,71 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * empty subpass has no vertex stream or carrier to execute, but its clear
     * still realizes at queue submission.
     */
-   if (draw->buffer == NULL)
+   if (draw->stream_mask == 0)
       return sentinel_fill_color(device, draw->target_memory,
                                  draw->target_fill_bytes);
 
-   struct r3v_native_buffer *buffer = draw->buffer;
-   struct r3v_native_memory *memory = buffer->memory;
    struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
 
-   bool owns_map = memory->map == NULL;
-   if (owns_map &&
-       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
-      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                       "r3v-native: bound vertex memory is not "
-                       "CPU-mappable at submission");
+   /* Every stream the job reads maps for the execution; two slots may
+    * share one memory (one buffer bound to two bindings, or two buffers
+    * in one allocation), so the first slot to map a memory owns the
+    * unmap and the unmap runs after the last use.  robustBufferAccess
+    * enabled at device creation makes an out-of-bounds vertex record
+    * read zeros; with the feature off the same record refuses the draw
+    * before any write. */
+   struct r300_vertex_stream sources[R300_VERTEX_JOB_MAX_INPUTS] = { 0 };
+   struct r3v_native_memory *owned_maps[R300_VERTEX_JOB_MAX_INPUTS];
+   uint32_t owned_map_count = 0;
+   VkResult result = VK_SUCCESS;
+   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
+      if (!(draw->stream_mask & (1u << slot)))
+         continue;
+      const struct r3v_native_deferred_stream *stream_desc =
+         &draw->streams[slot];
+      struct r3v_native_memory *memory = stream_desc->buffer->memory;
+      if (memory->map == NULL) {
+         if (radeon_drm_vk_bo_map(&device->drm, &memory->bo,
+                                  &memory->map) != 0) {
+            result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                               "r3v-native: bound vertex memory is not "
+                               "CPU-mappable at submission");
+            break;
+         }
+         owned_maps[owned_map_count++] = memory;
+      }
+      sources[slot] = (struct r300_vertex_stream){
+         .data = (const uint8_t *)memory->map + stream_desc->buffer->offset +
+                 stream_desc->stream_base,
+         .stride = stream_desc->stride,
+         .size_bytes = stream_desc->buffer->vk.size - stream_desc->stream_base,
+         .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
+      };
    }
+   if (result != VK_SUCCESS) {
+      for (uint32_t i = 0; i < owned_map_count; i++) {
+         radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
+                                owned_maps[i]->map);
+         owned_maps[i]->map = NULL;
+      }
+      return result;
+   }
+   /* Slot 0 is the position stream the delivery routes model: the
+    * route resolves on its format, and the GPU and R2VB host-model
+    * routes then admit the slot-0 identity job alone, so a job reading
+    * other slots under a producer gate refuses by name at admission
+    * rather than taking a route the gate did not select.  A job that
+    * leaves slot 0 unread resolves through the INVALID format to the
+    * CPU route, as a format outside the producer family does. */
    const struct r3v_native_vertex_stream_desc stream = {
-      .records =
-         (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
-      .size_bytes = buffer->vk.size - draw->stream_base,
-      .stride = draw->stride,
+      .records = sources[0].data,
+      .size_bytes = sources[0].size_bytes,
+      .stride = sources[0].stride,
       .first_vertex = draw->first_vertex,
-      .format_id = draw->format_id,
+      .format_id = (draw->stream_mask & 1u) ? draw->streams[0].format_id
+                                            : R300_VERTEX_FORMAT_INVALID,
    };
+   const struct r300_vertex_stream source = sources[0];
 
    /* An admitted GPU-producer delivery already poisoned and published
     * the carrier at admission; the device writes it, so the host fill,
@@ -400,16 +442,16 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * the load-op clear executes here.
     */
    if (draw->gpu_producer_delivery) {
-      if (owns_map) {
-         radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
-         memory->map = NULL;
+      for (uint32_t i = 0; i < owned_map_count; i++) {
+         radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
+                                owned_maps[i]->map);
+         owned_maps[i]->map = NULL;
       }
       return sentinel_fill_color(device, draw->target_memory,
                                  draw->target_fill_bytes);
    }
 
    bool owns_carrier_map = carrier->map == NULL;
-   VkResult result = VK_SUCCESS;
    if (owns_carrier_map &&
        radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
                             &carrier->map) != 0) {
@@ -417,15 +459,6 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                          "r3v-native: carrier memory is not CPU-mappable "
                          "at submission");
    } else {
-      /* robustBufferAccess enabled at device creation makes an
-       * out-of-bounds vertex record read zeros; with the feature off the
-       * same record refuses the draw before any write. */
-      const struct r300_vertex_stream source = {
-         .data = stream.records,
-         .stride = stream.stride,
-         .size_bytes = stream.size_bytes,
-         .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
-      };
       /* Delivery route selection lives in r300_delivery_route_resolve:
        * the CPU gather is the default and the semantic oracle, and the
        * R2VB identity delivery engages only on the exact opt-in value
@@ -500,11 +533,11 @@ r3v_native_cmd_buffer_execute_deferred_draw(
             }
          }
       } else {
-         /* The CPU route executes the pipeline's vertex job; the
-          * identity job reduces to the gather, so the reference cell's
-          * carrier bytes are unchanged. */
+         /* The CPU route executes the pipeline's vertex job over every
+          * stream it reads; the identity job reduces to the gather, so
+          * the reference cell's carrier bytes are unchanged. */
          gathered = r300_cpu_vertex_job_execute(
-            &draw->vertex_job, &source, stream.first_vertex,
+            &draw->vertex_job, sources, stream.first_vertex,
             R300_TRIANGLE_VERTEX_DWORDS / 4, staged, staged_dwords);
       }
       if (result == VK_SUCCESS && gathered != 0) {
@@ -580,9 +613,10 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       }
    }
 
-   if (owns_map) {
-      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
-      memory->map = NULL;
+   for (uint32_t i = 0; i < owned_map_count; i++) {
+      radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
+                             owned_maps[i]->map);
+      owned_maps[i]->map = NULL;
    }
    if (result != VK_SUCCESS)
       return result;
@@ -641,41 +675,47 @@ admit_fetched_producer(struct r3v_native_device *device,
                        "quarantined on this device; a completed delivery "
                        "diverged from the CPU oracle");
    }
-   if (!draw->vertex_job_identity ||
+   /* The composed route binds one source relocation role, so the
+    * identity job over slot 0 alone is admissible: a job reading any
+    * other slot would need a relocation the composition has no role
+    * for. */
+   if (!draw->vertex_job_identity || draw->stream_mask != 1u ||
        (cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE &&
         cmd_buffer->cell_kind !=
            R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: fetched GPU producer route admits the "
-                       "identity vertex job on the recorded triangle "
-                       "consumer alone");
+                       "identity vertex job over one source stream on the "
+                       "recorded triangle consumer alone; the route binds "
+                       "one source relocation role");
    }
 
    /* Source geometry: the first fetched record's byte offset inside the
     * bound memory's BO, dword-granular, with the stride the pipeline
     * declared.  The VBPNTR pointer is a 32-bit byte offset.
     */
-   struct r3v_native_buffer *buffer = draw->buffer;
+   const struct r3v_native_deferred_stream *position = &draw->streams[0];
+   struct r3v_native_buffer *buffer = position->buffer;
    struct r3v_native_memory *memory = buffer->memory;
-   const uint64_t first_byte = buffer->offset + draw->stream_base +
-                               (uint64_t)draw->first_vertex * draw->stride;
+   const uint64_t first_byte = buffer->offset + position->stream_base +
+                               (uint64_t)draw->first_vertex * position->stride;
    if (first_byte > UINT32_MAX) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: fetched source offset %" PRIu64
                        " exceeds the 32-bit vertex pointer",
                        first_byte);
    }
-   if (first_byte % 4 != 0 || draw->stride % 4 != 0) {
+   if (first_byte % 4 != 0 || position->stride % 4 != 0) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: fetched source offset %" PRIu64
                        " and stride %u must be dword-granular; the VBPNTR "
                        "pointer and stride fields carry dwords",
-                       first_byte, draw->stride);
+                       first_byte, position->stride);
    }
    const struct r300_r2vb_fetched_source source = {
-      .format_id = draw->format_id,
+      .format_id = position->format_id,
       .offset_bytes = (uint32_t)first_byte,
-      .stride_bytes = draw->stride,
+      .stride_bytes = position->stride,
       .bo_size_bytes = memory->bo.size,
    };
 
@@ -712,16 +752,16 @@ admit_fetched_producer(struct r3v_native_device *device,
    uint32_t expected[R300_TRIANGLE_VERTEX_DWORDS];
    uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
    const struct r300_vertex_stream stream = {
-      .data =
-         (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
-      .stride = draw->stride,
-      .size_bytes = buffer->vk.size - draw->stream_base,
+      .data = (const uint8_t *)memory->map + buffer->offset +
+              position->stream_base,
+      .stride = position->stride,
+      .size_bytes = buffer->vk.size - position->stream_base,
    };
    int delivered = r300_r2vb_identity_deliver(
-      draw->format_id, &stream, draw->first_vertex,
+      position->format_id, &stream, draw->first_vertex,
       R300_TRIANGLE_VERTEX_DWORDS / 4, expected, R300_TRIANGLE_VERTEX_DWORDS);
    int gathered = delivered == 0
-                     ? r300_cpu_vertex_gather(draw->format_id, &stream,
+                     ? r300_cpu_vertex_gather(position->format_id, &stream,
                                               draw->first_vertex,
                                               R300_TRIANGLE_VERTEX_DWORDS / 4,
                                               oracle,
@@ -944,13 +984,20 @@ r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
    struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
-   if (!draw->pending || draw->buffer == NULL)
+   if (!draw->pending || draw->stream_mask == 0)
       return VK_SUCCESS;
 
+   /* The routes deliver the slot-0 position stream, so the route
+    * resolves on its format and the admissions below refuse a job
+    * reading any other slot by name; a job that leaves slot 0 unread
+    * resolves through the INVALID format to the CPU route. */
    struct r300_delivery_route_decision route;
    r300_delivery_route_resolve(device->r2vb_delivery_gate,
                                device->r2vb_gpu_delivery_gate,
-                               device->r2vb_fetched_gate, draw->format_id,
+                               device->r2vb_fetched_gate,
+                               (draw->stream_mask & 1u)
+                                  ? draw->streams[0].format_id
+                                  : R300_VERTEX_FORMAT_INVALID,
                                &route);
    if (route.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED)
       return admit_fetched_producer(device, cmd_buffer);
@@ -969,21 +1016,22 @@ r3v_native_deferred_draw_admit_gpu_producer(
     * resolver already bound the format; the job identity and the
     * consumer kind are the remaining shape facts.
     */
-   if (!draw->vertex_job_identity ||
+   if (!draw->vertex_job_identity || draw->stream_mask != 1u ||
        (cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE &&
         cmd_buffer->cell_kind !=
            R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: GPU producer route admits the "
-                       "identity vertex job on the recorded triangle "
-                       "consumer alone");
+                       "identity vertex job over one source stream on the "
+                       "recorded triangle consumer alone");
    }
 
    /* The oracle read: the same execution-time gather the CPU route
     * runs, retained as the read-back expectation.  Under the identity
     * job and F32_4 these dwords are the records the producer embeds.
     */
-   struct r3v_native_buffer *buffer = draw->buffer;
+   const struct r3v_native_deferred_stream *position = &draw->streams[0];
+   struct r3v_native_buffer *buffer = position->buffer;
    struct r3v_native_memory *memory = buffer->memory;
    bool owns_map = memory->map == NULL;
    if (owns_map &&
@@ -994,13 +1042,13 @@ r3v_native_deferred_draw_admit_gpu_producer(
    }
    uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
    const struct r300_vertex_stream source = {
-      .data =
-         (const uint8_t *)memory->map + buffer->offset + draw->stream_base,
-      .stride = draw->stride,
-      .size_bytes = buffer->vk.size - draw->stream_base,
+      .data = (const uint8_t *)memory->map + buffer->offset +
+              position->stream_base,
+      .stride = position->stride,
+      .size_bytes = buffer->vk.size - position->stream_base,
    };
    int gathered = r300_cpu_vertex_gather(
-      draw->format_id, &source, draw->first_vertex,
+      position->format_id, &source, draw->first_vertex,
       R300_TRIANGLE_VERTEX_DWORDS / 4, oracle, R300_TRIANGLE_VERTEX_DWORDS);
    if (owns_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);

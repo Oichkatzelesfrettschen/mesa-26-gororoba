@@ -176,6 +176,12 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-submit-order-varying-armed",
     "r3v-native-submit-order-varying-fragment-mismatch",
     "r3v-native-submit-order-varying-missing",
+    "r3v-native-submit-order-multi-attribute-armed",
+    "r3v-native-submit-order-multi-attribute-interleaved-armed",
+    "r3v-native-submit-order-multi-attribute-overlap-refused",
+    "r3v-native-submit-order-multi-attribute-unbound-refused",
+    "r3v-native-submit-order-multi-attribute-alias-target-refused",
+    "r3v-native-submit-order-multi-attribute-fetched-refused",
     # Native prepared submission lifetime: commit, reset, shape refusals,
     # pre-ioctl failure, teardown, and one single-reason calibration per
     # releaser or binding guard.

@@ -101,7 +101,12 @@ static uint32_t hostile_bits(void)
 static void random_job(struct r300_vertex_job *job)
 {
    memset(job, 0, sizeof(*job));
-   job->input_format_id = R300_VERTEX_FORMAT_F32_4;
+   job->input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
+   /* Half the jobs read a second attribute slot, an F32_3 stream whose
+    * fourth lane the gather synthesizes. */
+   const bool two_slots = prng() % 2 == 0;
+   if (two_slots)
+      job->input_format_ids[1] = R300_VERTEX_FORMAT_F32_3;
    job->constant_count = 1 + prng() % R300_VERTEX_JOB_MAX_CONSTANTS;
    for (uint32_t c = 0; c < job->constant_count; c++)
       for (uint32_t lane = 0; lane < 4; lane++)
@@ -129,7 +134,7 @@ static void random_job(struct r300_vertex_job *job)
       switch (prng() % 7) {
       case 0:
          inst->opcode = R300_VERTEX_JOB_OP_LOAD_INPUT;
-         inst->src0 = 0;
+         inst->src0 = two_slots ? prng() % 2 : 0;
          break;
       case 1:
          inst->opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT;
@@ -196,10 +201,21 @@ static void differential_random_jobs(const struct simd_lane *lane)
    uint32_t stream_bytes[VERTEX_COUNT * 4];
    for (uint32_t i = 0; i < VERTEX_COUNT * 4; i++)
       stream_bytes[i] = hostile_bits();
-   const struct r300_vertex_stream stream = {
-      .data = (const uint8_t *)stream_bytes,
-      .stride = STREAM_STRIDE,
-      .size_bytes = sizeof(stream_bytes),
+   /* The second slot's F32_3 records at a 12-byte stride. */
+   uint32_t second_bytes[VERTEX_COUNT * 3];
+   for (uint32_t i = 0; i < VERTEX_COUNT * 3; i++)
+      second_bytes[i] = hostile_bits();
+   const struct r300_vertex_stream stream[2] = {
+      {
+         .data = (const uint8_t *)stream_bytes,
+         .stride = STREAM_STRIDE,
+         .size_bytes = sizeof(stream_bytes),
+      },
+      {
+         .data = (const uint8_t *)second_bytes,
+         .stride = 12,
+         .size_bytes = sizeof(second_bytes),
+      },
    };
 
    for (uint32_t trial = 0; trial < RANDOM_JOBS; trial++) {
@@ -213,9 +229,9 @@ static void differential_random_jobs(const struct simd_lane *lane)
       uint32_t sse2[VERTEX_COUNT * 8];
       memset(scalar, 0xa5, sizeof(scalar));
       memset(sse2, 0x5a, sizeof(sse2));
-      assert(r300_cpu_vertex_job_execute(&job, &stream, 0, VERTEX_COUNT,
+      assert(r300_cpu_vertex_job_execute(&job, stream, 0, VERTEX_COUNT,
                                          scalar, carrier_dwords) == 0);
-      assert(lane->execute(&job, &stream, 0, VERTEX_COUNT, sse2,
+      assert(lane->execute(&job, stream, 0, VERTEX_COUNT, sse2,
                            carrier_dwords) == 0);
       if (memcmp(scalar, sse2, carrier_dwords * sizeof(uint32_t)) != 0) {
          fprintf(stderr, "divergence at trial %u\n", trial);
@@ -235,7 +251,7 @@ static void differential_random_jobs(const struct simd_lane *lane)
 static void witness_fmad_two_roundings(const struct simd_lane *lane)
 {
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .constant_count = 2,
       .instruction_count = 4,
       .instructions = {
@@ -276,7 +292,7 @@ static void witness_fmad_two_roundings(const struct simd_lane *lane)
 static void witness_float_environment(const struct simd_lane *lane)
 {
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .constant_count = 1,
       .instruction_count = 4,
       .instructions = {
@@ -342,7 +358,7 @@ static void witness_float_environment(const struct simd_lane *lane)
 static void witness_dp4_signed_zero(const struct simd_lane *lane)
 {
    struct r300_vertex_job job = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .constant_count = 2,
       .instruction_count = 4,
       .instructions = {
@@ -379,7 +395,7 @@ static void witness_dp4_signed_zero(const struct simd_lane *lane)
 static void witness_nan_policy(const struct simd_lane *lane)
 {
    struct r300_vertex_job arithmetic = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .constant_count = 1,
       .instruction_count = 4,
       .instructions = {
@@ -413,7 +429,7 @@ static void witness_nan_policy(const struct simd_lane *lane)
    assert(scalar[2] == 0x7fc00000u);
 
    struct r300_vertex_job copy = {
-      .input_format_id = R300_VERTEX_FORMAT_F32_4,
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
       .instructions = {
          { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },
@@ -463,7 +479,7 @@ int main(void)
        * instruction set, and the differential claim is x86-only, so that
        * lane skips while the others still run. */
       struct r300_vertex_job probe = {
-         .input_format_id = R300_VERTEX_FORMAT_F32_4,
+         .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
          .instruction_count = 2,
          .instructions = {
             { .opcode = R300_VERTEX_JOB_OP_LOAD_INPUT, .dst = 0 },

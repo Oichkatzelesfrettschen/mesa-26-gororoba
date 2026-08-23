@@ -154,19 +154,46 @@ r3v_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (firstBinding != 0 || bindingCount != 1) {
+   if (bindingCount == 0 || firstBinding >= R3V_NATIVE_MAX_VERTEX_BINDINGS ||
+       bindingCount > R3V_NATIVE_MAX_VERTEX_BINDINGS - firstBinding) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
-   VK_FROM_HANDLE(r3v_native_buffer, buffer, pBuffers[0]);
-   if (buffer == NULL || buffer->memory == NULL ||
-       pOffsets[0] > buffer->vk.size) {
-      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
-      return;
+   /* Every binding of the call is checked before any is installed, so a
+    * refused call leaves the bound state as it was. */
+   for (uint32_t i = 0; i < bindingCount; i++) {
+      VK_FROM_HANDLE(r3v_native_buffer, buffer, pBuffers[i]);
+      if (buffer == NULL || buffer->memory == NULL ||
+          pOffsets[i] > buffer->vk.size) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
    }
-   cmd_buffer->bound_vertex_buffer = buffer;
-   cmd_buffer->bound_vertex_offset = pOffsets[0];
-   cmd_buffer->vertex_bound = true;
+   for (uint32_t i = 0; i < bindingCount; i++) {
+      VK_FROM_HANDLE(r3v_native_buffer, buffer, pBuffers[i]);
+      cmd_buffer->bound_vertex_buffers[firstBinding + i] = buffer;
+      cmd_buffer->bound_vertex_offsets[firstBinding + i] = pOffsets[i];
+      cmd_buffer->vertex_bound_mask |= 1u << (firstBinding + i);
+   }
+}
+
+/* True when the byte range [lo, lo + bytes) of one bound memory shares
+ * a byte with the pass target's footprint in the same buffer object.
+ * The draw's load-op clear and color writes land in that footprint
+ * and the vertex executor reads the stream on the host ahead of the
+ * ioctl, so a stream inside it has no defined order against the clear
+ * the Vulkan render pass sequences before the draw.
+ */
+static bool
+stream_overlaps_target(const struct r3v_native_memory *memory, uint64_t lo,
+                       uint64_t bytes, const struct r3v_native_image *target)
+{
+   if (memory->bo.handle != target->memory->bo.handle)
+      return false;
+   const uint64_t target_lo = target->memory_offset;
+   const uint64_t target_hi =
+      target_lo + r3v_native_image_footprint_bytes(target->height);
+   return lo < target_hi && target_lo < lo + bytes;
 }
 
 /* The draw lowering realizes the CPU_VERTEX node and the fixed cell:
@@ -188,11 +215,10 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
    struct r3v_native_pipeline *pipeline = cmd_buffer->bound_pipeline;
-   struct r3v_native_buffer *buffer = cmd_buffer->bound_vertex_buffer;
 
    if (cmd_buffer->pass_target == NULL || pipeline == NULL ||
-       !cmd_buffer->vertex_bound || cmd_buffer->draw_recorded ||
-       vertexCount != 3 || instanceCount != 1 || firstInstance != 0) {
+       cmd_buffer->draw_recorded || vertexCount != 3 ||
+       instanceCount != 1 || firstInstance != 0) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -206,42 +232,69 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       return;
    }
 
-   /* The readable stream range is the bound buffer past the bind and
-    * attribute offsets; the gather then proves each requested record
-    * against it.  The buffer range itself must close inside the bound
-    * memory, which BindBufferMemory2 recorded without validating.
-    */
-   struct r3v_native_memory *memory = buffer->memory;
-   uint64_t stream_base = (uint64_t)cmd_buffer->bound_vertex_offset +
-                          pipeline->attribute_offset;
-   if (stream_base > buffer->vk.size ||
-       buffer->offset > memory->bo.size ||
-       buffer->vk.size > memory->bo.size - buffer->offset) {
-      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
-      return;
-   }
-
-   /* Early bound proof at recording, the same arithmetic the gather
+   /* Every attribute slot the job reads resolves to a stream: its
+    * binding is bound, the readable range is the bound buffer past the
+    * bind and attribute offsets, the buffer range closes inside the
+    * bound memory (BindBufferMemory2 recorded it without validating),
+    * and the range shares no byte with the pass target.  The early
+    * bound proof at recording is the same arithmetic the gather
     * enforces at submission: the last requested record closes inside
     * the readable range, so a stream the execution would refuse
-    * poisons here where the application still sees the recording error.
-    * With robustBufferAccess enabled the execution reads an
+    * poisons here where the application still sees the recording
+    * error.  With robustBufferAccess enabled the execution reads an
     * out-of-bounds record as zeros instead, so the draw records.
     */
-   const struct r300_vertex_format_semantics *format =
-      r300_vertex_format_semantics(
-         (enum r300_vertex_format_id)pipeline->format_id);
-   const uint64_t available = buffer->vk.size - stream_base;
-   if (format == NULL) {
-      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
-      return;
-   }
-   if (!device->vk.enabled_features.robustBufferAccess &&
-       (available < format->semantic_record_bytes ||
-        ((uint64_t)firstVertex + 2) * pipeline->binding_stride >
-           available - format->semantic_record_bytes)) {
-      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
-      return;
+   struct r3v_native_deferred_stream streams[R300_VERTEX_JOB_MAX_INPUTS] = {
+      0
+   };
+   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
+      if (!(pipeline->attribute_mask & (1u << slot)))
+         continue;
+      const struct r3v_native_vertex_attribute *attribute =
+         &pipeline->attributes[slot];
+      if (!(cmd_buffer->vertex_bound_mask & (1u << attribute->binding))) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      struct r3v_native_buffer *buffer =
+         cmd_buffer->bound_vertex_buffers[attribute->binding];
+      struct r3v_native_memory *memory = buffer->memory;
+      const uint64_t stream_base =
+         (uint64_t)cmd_buffer->bound_vertex_offsets[attribute->binding] +
+         attribute->offset;
+      if (stream_base > buffer->vk.size ||
+          buffer->offset > memory->bo.size ||
+          buffer->vk.size > memory->bo.size - buffer->offset) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      const uint64_t available = buffer->vk.size - stream_base;
+      if (stream_overlaps_target(memory, buffer->offset + stream_base,
+                                 available, cmd_buffer->pass_target)) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      const struct r300_vertex_format_semantics *format =
+         r300_vertex_format_semantics(
+            (enum r300_vertex_format_id)attribute->format_id);
+      const uint32_t stride = pipeline->binding_strides[attribute->binding];
+      if (format == NULL) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      if (!device->vk.enabled_features.robustBufferAccess &&
+          (available < format->semantic_record_bytes ||
+           ((uint64_t)firstVertex + 2) * stride >
+              available - format->semantic_record_bytes)) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      streams[slot] = (struct r3v_native_deferred_stream){
+         .buffer = buffer,
+         .stream_base = stream_base,
+         .stride = stride,
+         .format_id = attribute->format_id,
+      };
    }
 
    /* The carrier descriptor is recording-lifetime state, so it rides
@@ -277,11 +330,8 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
    cmd_buffer->owned_carrier = carrier;
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
       .pending = true,
-      .buffer = buffer,
-      .stream_base = stream_base,
-      .stride = pipeline->binding_stride,
+      .stream_mask = pipeline->attribute_mask,
       .first_vertex = firstVertex,
-      .format_id = pipeline->format_id,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
@@ -290,5 +340,6 @@ r3v_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount,
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
    };
+   memcpy(cmd_buffer->deferred_draw.streams, streams, sizeof(streams));
    cmd_buffer->draw_recorded = true;
 }

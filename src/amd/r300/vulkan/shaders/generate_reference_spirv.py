@@ -35,6 +35,8 @@ STAGES = (
      HERE / "r3v_reference_vertex_varying.vert"),
     ("r3v_reference_fragment_varying_spirv",
      HERE / "r3v_reference_fragment_varying.frag"),
+    ("r3v_reference_vertex_two_attributes_spirv",
+     HERE / "r3v_reference_vertex_two_attributes.vert"),
 )
 
 
