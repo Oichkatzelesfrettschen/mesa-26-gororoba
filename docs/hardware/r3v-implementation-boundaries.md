@@ -1118,7 +1118,20 @@ R2VB migration follows the fixed triangle and CPU route:
    ordinary index, a UINT8 index type refuses at the bind, and the
    producer routes refuse an indexed draw, fetching one linear source
    range;
-8. add hybrid carriers only with an explicit final VAP join.
+8. draw instanced: the host executes the three vertices once per
+   instance from firstInstance, instance-major, into a carrier of
+   3 * instanceCount records, and the cell family member the recording
+   installs draws that list (VAP_VF_MAX_VTX_INDX 3N - 1, NUM_VERTICES
+   3N, the two dwords the family moves; one instance is the retained
+   cell byte for byte); an instance-rate binding reads the Vulkan
+   vertex input address, firstInstance plus the relative instance at
+   the core divisor of one, under the robust rule; the VertexIndex and
+   InstanceIndex builtins lower to LOAD_SYSTEM_VALUE plus ConvertSToF
+   and carry the draw's base values (GL's gl_InstanceID omits the base
+   instance, so a GL front end subtracts it itself); a zero instance
+   count refuses at recording, and the producer routes refuse an
+   instanced draw, fetching one instance's linear range;
+9. add hybrid carriers only with an explicit final VAP join.
 
 The route owns its BOs, PM4, packers, barriers, and completion; r300g's R2VB
 planner belongs to the GL lane and is never an R3V execution path.

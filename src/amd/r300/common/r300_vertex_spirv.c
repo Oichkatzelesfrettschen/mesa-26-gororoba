@@ -52,6 +52,7 @@ enum {
    OP_DECORATE = 71,
    OP_MEMBER_DECORATE = 72,
    OP_COMPOSITE_CONSTRUCT = 80,
+   OP_CONVERT_S_TO_F = 111,
    OP_F_ADD = 129,
    OP_F_MUL = 133,
    OP_DOT = 148,
@@ -81,6 +82,8 @@ enum {
    BUILTIN_POINT_SIZE = 1,
    BUILTIN_CLIP_DISTANCE = 3,
    BUILTIN_CULL_DISTANCE = 4,
+   BUILTIN_VERTEX_INDEX = 42,
+   BUILTIN_INSTANCE_INDEX = 43,
 };
 
 /* Per-result-id record: the module walk classifies every id once, and
@@ -125,6 +128,12 @@ enum id_kind {
    /* The fragment module's loaded varying: the only value the
     * pass-through program stores. */
    ID_VAL_VARYING,
+   /* A vertex input variable carrying the VertexIndex or InstanceIndex
+    * builtin as a 32-bit int (a = enum r300_vertex_job_system_value),
+    * and the int broadcast its load leaves in a job temp (a), which
+    * reaches the vec4 straight line only through OpConvertSToF. */
+   ID_VAR_INPUT_SYSTEM_VALUE,
+   ID_VAL_INT_BROADCAST,
 };
 
 /* The fragment program shapes the two fragment admitters accept: one
@@ -638,6 +647,22 @@ admit_module(const uint32_t *words, size_t word_count,
                varying_var = w[2];
                break;
             }
+            /* The two draw system values arrive as builtin-decorated
+             * 32-bit int inputs; every other vertex input is a located
+             * vec4 attribute. */
+            if (id_is(r, ptr->b, ID_TYPE_INT32)) {
+               if (!entry->has_builtin ||
+                   (entry->builtin != BUILTIN_VERTEX_INDEX &&
+                    entry->builtin != BUILTIN_INSTANCE_INDEX))
+                  return refuse(r,
+                                "int vertex input outside the VertexIndex "
+                                "and InstanceIndex builtins");
+               entry->kind = ID_VAR_INPUT_SYSTEM_VALUE;
+               entry->a = entry->builtin == BUILTIN_VERTEX_INDEX
+                             ? R300_VERTEX_JOB_SV_VERTEX_INDEX
+                             : R300_VERTEX_JOB_SV_INSTANCE_INDEX;
+               break;
+            }
             if (!id_is(r, ptr->b, ID_TYPE_VEC4) || !entry->has_location)
                return refuse(r, "vertex input outside a located vec4");
             /* One attribute slot per location, inside the slot count
@@ -768,6 +793,16 @@ admit_module(const uint32_t *words, size_t word_count,
                       (uint8_t)ptr->a, 0, 0))
                return false;
             entry->kind = ID_VAL_VEC4;
+            entry->a = dst;
+         } else if (ptr->kind == ID_VAR_INPUT_SYSTEM_VALUE) {
+            if (!id_is(r, w[1], ID_TYPE_INT32))
+               return refuse(r, "system value loaded outside its int type");
+            uint8_t dst;
+            if (!new_temp(r, &dst) ||
+                !emit(r, R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE, dst,
+                      (uint8_t)ptr->a, 0, 0))
+               return false;
+            entry->kind = ID_VAL_INT_BROADCAST;
             entry->a = dst;
          } else if (ptr->kind == ID_VAR_INPUT_VARYING) {
             if (!id_is(r, w[1], ID_TYPE_VEC4))
@@ -912,6 +947,31 @@ admit_module(const uint32_t *words, size_t word_count,
          break;
       }
 
+      case OP_CONVERT_S_TO_F: {
+         /* The loaded system value enters the float straight line here
+          * alone: the int broadcast converts per lane, and the result
+          * is a broadcast scalar the vec4 replicate below rejoins. */
+         if (len != 4 || !in_function || returned)
+            return refuse(r, "malformed conversion");
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL)
+            return refuse(r, "malformed conversion");
+         const struct id_info *operand = info(r, w[3]);
+         if (!id_is(r, w[1], ID_TYPE_FLOAT32) || operand == NULL ||
+             operand->kind != ID_VAL_INT_BROADCAST)
+            return refuse(r,
+                          "conversion outside a loaded system value to "
+                          "float");
+         uint8_t dst;
+         if (!new_temp(r, &dst) ||
+             !emit(r, R300_VERTEX_JOB_OP_CONVERT_S_TO_F, dst,
+                   (uint8_t)operand->a, 0, 0))
+            return false;
+         entry->kind = ID_VAL_SCALAR_BROADCAST;
+         entry->a = dst;
+         break;
+      }
+
       case OP_COMPOSITE_CONSTRUCT: {
          /* The one admitted vec4 construction is a broadcast scalar's
           * own replicate, which the DP4 temp already carries. */
@@ -925,7 +985,7 @@ admit_module(const uint32_t *words, size_t word_count,
              scalar->kind != ID_VAL_SCALAR_BROADCAST || w[4] != w[3] ||
              w[5] != w[3] || w[6] != w[3])
             return refuse(r,
-                          "vec4 construction outside a DP4 broadcast");
+                          "vec4 construction outside a broadcast scalar");
          entry->kind = ID_VAL_VEC4;
          entry->a = scalar->a;
          break;

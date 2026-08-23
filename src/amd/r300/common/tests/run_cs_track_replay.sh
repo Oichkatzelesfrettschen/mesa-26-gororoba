@@ -13,17 +13,25 @@
 # passing it.  An unset variable is an absent configuration and skips; a set
 # variable naming something unusable is a broken configuration and fails.
 #
-# Usage: run_cs_track_replay.sh <r300_triangle_manifest-binary> [--varying]
+# Usage: run_cs_track_replay.sh <r300_triangle_manifest-binary>
+#        [--varying] [--triangles N]
 # The optional --varying selects the manifest tool's varying cell: the
 # same bundle (one vertex page, the 65-row target), a 32-byte record.
+# --triangles N selects the cell family member of N triangles, the host
+# expansion of an N-instance draw: the same bundle, the vertex-array
+# bound and the draw count over 3N records (N <= 85 keeps the 16-byte
+# records inside the one vertex page the bundle declares).
 
 set -eu
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    echo "usage: $0 <r300_triangle_manifest-binary> [--varying]" >&2
+if [ "$#" -lt 1 ]; then
+    echo "usage: $0 <r300_triangle_manifest-binary> [--varying]" \
+         "[--triangles N]" >&2
     exit 1
 fi
-cell_arg="${2:-}"
+manifest_tool="$1"
+shift
+cell_arg="$*"
 
 if [ -z "${R3V_CS_TRACK_REPLAY_TOOL:-}" ]; then
     echo "R3V_CS_TRACK_REPLAY_TOOL unset; CS-track replay not run" >&2
@@ -43,7 +51,6 @@ if [ ! -x "${R3V_CS_TRACK_CONTROLS}" ]; then
     exit 1
 fi
 
-manifest_tool="$1"
 if [ ! -x "${manifest_tool}" ]; then
     echo "manifest tool ${manifest_tool} is not executable" >&2
     exit 1

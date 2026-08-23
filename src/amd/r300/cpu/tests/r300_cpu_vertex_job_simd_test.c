@@ -131,10 +131,22 @@ static void random_job(struct r300_vertex_job *job)
             live[n++] = t;
       assert(n == live_count && n > 0);
 
-      switch (prng() % 7) {
+      switch (prng() % 8) {
       case 0:
          inst->opcode = R300_VERTEX_JOB_OP_LOAD_INPUT;
          inst->src0 = two_slots ? prng() % 2 : 0;
+         break;
+      case 7:
+         /* The draw system values and their conversion: the linear
+          * entries observe VertexIndex = first_vertex + v and
+          * InstanceIndex 0. */
+         if (prng() & 1) {
+            inst->opcode = R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE;
+            inst->src0 = prng() % R300_VERTEX_JOB_SV_COUNT;
+         } else {
+            inst->opcode = R300_VERTEX_JOB_OP_CONVERT_S_TO_F;
+            inst->src0 = live[prng() % n];
+         }
          break;
       case 1:
          inst->opcode = R300_VERTEX_JOB_OP_LOAD_CONSTANT;
@@ -353,6 +365,38 @@ static void witness_float_environment(const struct simd_lane *lane)
    assert(fesetenv(&original_environment) == 0);
 }
 
+/* The system values on the SIMD entries: VertexIndex is first_vertex
+ * plus the relative vertex, InstanceIndex is zero (the linear contract
+ * draws one instance from instance zero), and cvtdq2ps rounds the
+ * 2^24 + 1 tie to even exactly as the scalar conversion does. */
+static void witness_system_values(const struct simd_lane *lane)
+{
+   const struct r300_vertex_job job = {
+      .instruction_count = 5,
+      .instructions = {
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE, .dst = 0,
+           .src0 = R300_VERTEX_JOB_SV_VERTEX_INDEX },
+         { .opcode = R300_VERTEX_JOB_OP_LOAD_SYSTEM_VALUE, .dst = 1,
+           .src0 = R300_VERTEX_JOB_SV_INSTANCE_INDEX },
+         { .opcode = R300_VERTEX_JOB_OP_CONVERT_S_TO_F, .dst = 2,
+           .src0 = 0 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_VARYING, .src0 = 1 },
+         { .opcode = R300_VERTEX_JOB_OP_STORE_POSITION, .src0 = 2 },
+      },
+   };
+   const struct r300_vertex_stream streams[R300_VERTEX_JOB_MAX_INPUTS] = {
+      0
+   };
+   uint32_t simd_out[16], scalar_out[16];
+   assert(lane->execute(&job, streams, 16777216u, 2, simd_out, 16) == 0);
+   assert(r300_cpu_vertex_job_execute(&job, streams, 16777216u, 2,
+                                      scalar_out, 16) == 0);
+   assert(memcmp(simd_out, scalar_out, sizeof(simd_out)) == 0);
+   assert(simd_out[0] == 0x4b800000u);  /* 16777216.0 */
+   assert(simd_out[8] == 0x4b800000u);  /* 16777217 rounds to even */
+   assert(simd_out[4] == 0 && simd_out[12] == 0);
+}
+
 /* An all-negative-zero DP4 keeps -0 on the SSE2 entry: the sum seeds
  * from the first product instead of an additive +0. */
 static void witness_dp4_signed_zero(const struct simd_lane *lane)
@@ -510,6 +554,7 @@ int main(void)
       witness_float_environment(lane);
       witness_dp4_signed_zero(lane);
       witness_nan_policy(lane);
+      witness_system_values(lane);
       refusal_parity(lane);
       printf("r300_cpu_vertex_job_simd_test: %s bit-identical over %u "
              "random jobs; all checks passed\n",

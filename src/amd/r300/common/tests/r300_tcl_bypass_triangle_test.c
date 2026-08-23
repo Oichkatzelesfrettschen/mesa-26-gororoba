@@ -1114,9 +1114,79 @@ test_varying_oracle_calibration(void)
    }
 }
 
+/* The triangle-count family: count 1 is the reference cell byte for
+ * byte; a count T keeps the dword count and differs in exactly the two
+ * payloads the host expansion moves -- the contract's VAP_VF_MAX_VTX_INDX
+ * (3T - 1) and the draw packet's VAP_VF_CNTL (NUM_VERTICES 3T) -- for
+ * the position-only and the varying shape; a count outside
+ * 1..R300_TRIANGLE_MAX_TRIANGLES refuses, and the ceiling itself emits
+ * with the 16-bit fields at their maximum.
+ */
+static void
+test_family_emit_deviates_in_count_words_alone(void)
+{
+   for (unsigned shape = 0; shape < 2; shape++) {
+      const bool varying = shape == 1;
+      struct r300_tcl_bypass_triangle_ib reference;
+      assert((varying ? r300_tcl_bypass_triangle_varying_reference_emit(
+                           &reference)
+                      : r300_tcl_bypass_triangle_reference_emit(
+                           &reference)) == 0);
+      struct r300_tcl_bypass_triangle_ib anchor;
+      assert(r300_tcl_bypass_triangle_family_emit(
+                R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+                varying, 1, &anchor) == 0);
+      assert(anchor.ib_size_dwords == reference.ib_size_dwords);
+      assert(memcmp(anchor.ib, reference.ib,
+                    reference.ib_size_dwords * sizeof(uint32_t)) == 0);
+      r300_tcl_bypass_triangle_release(&anchor);
+
+      static const uint32_t counts[] = { 2, 7, 1000,
+                                         R300_TRIANGLE_MAX_TRIANGLES };
+      const uint32_t reference_draw = R300_VAP_VF_CNTL__PRIM_TRIANGLES |
+                                      R300_PRIM_WALK_LIST |
+                                      (3 << R300_PRIM_NUM_VERTICES_SHIFT);
+      for (unsigned i = 0; i < ARRAY_SIZE(counts); i++) {
+         const uint32_t vertices = 3 * counts[i];
+         struct r300_tcl_bypass_triangle_ib cell;
+         assert(r300_tcl_bypass_triangle_family_emit(
+                   R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+                   varying, counts[i], &cell) == 0);
+         assert(cell.ib_size_dwords == reference.ib_size_dwords);
+         uint32_t deviating = 0;
+         for (uint32_t d = 0; d < cell.ib_size_dwords; d++) {
+            if (cell.ib[d] == reference.ib[d])
+               continue;
+            if (reference.ib[d] == reference_draw) {
+               assert(cell.ib[d] ==
+                      (R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
+                       (vertices << R300_PRIM_NUM_VERTICES_SHIFT)));
+            } else {
+               /* The contract's maximum vertex index payload. */
+               assert(reference.ib[d] == 2);
+               assert(cell.ib[d] == vertices - 1);
+            }
+            deviating++;
+         }
+         assert(deviating == 2);
+         r300_tcl_bypass_triangle_release(&cell);
+      }
+      struct r300_tcl_bypass_triangle_ib refused;
+      assert(r300_tcl_bypass_triangle_family_emit(
+                R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+                varying, 0, &refused) == -EINVAL);
+      assert(r300_tcl_bypass_triangle_family_emit(
+                R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+                varying, R300_TRIANGLE_MAX_TRIANGLES + 1, &refused) ==
+             -EINVAL);
+      r300_tcl_bypass_triangle_release(&reference);
+   }
+}
+
 int
 main(void)
 {
+   test_family_emit_deviates_in_count_words_alone();
    test_contract_cell_size_and_digest_are_pinned();
    test_varying_cell_tuple_and_digest_are_pinned();
    test_varying_extent_emit_deviates_in_scissor_words_alone();

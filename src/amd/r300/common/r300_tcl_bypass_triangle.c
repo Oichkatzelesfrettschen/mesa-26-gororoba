@@ -82,6 +82,11 @@ r300_tcl_bypass_triangle_emit_into(
       return -EINVAL;
    }
 
+   if (params->triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   const uint32_t vertex_count =
+      3 * (params->triangle_count ? params->triangle_count : 1);
+
    struct r300_pm4_builder b;
    r300_pm4_builder_init(&b, words, capacity);
 
@@ -124,7 +129,7 @@ r300_tcl_bypass_triangle_emit_into(
                       RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
                       RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
                       RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0);
-      r300_pm4_emit_vertex_index_range(&b, 0, 2);
+      r300_pm4_emit_vertex_index_range(&b, 0, vertex_count - 1);
    }
 
    /* Vertex path: pretransformed positions bypass the TCL block, one
@@ -215,10 +220,11 @@ r300_tcl_bypass_triangle_emit_into(
                     ARRAY_SIZE(vbpntr));
    write_reloc(&b, out, R300_TRIANGLE_SLOT_VERTEX);
 
-   /* One vertex-list triangle; the draw packet carries VAP_VF_CNTL. */
+   /* One vertex-list draw of the cell's triangles; the draw packet
+    * carries VAP_VF_CNTL. */
    const uint32_t draw = R300_VAP_VF_CNTL__PRIM_TRIANGLES |
                          R300_PRIM_WALK_LIST |
-                         (3 << R300_PRIM_NUM_VERTICES_SHIFT);
+                         (vertex_count << R300_PRIM_NUM_VERTICES_SHIFT);
    r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &draw, 1);
 
    /* Destination-cache publication retires the color writes before the IB
@@ -398,11 +404,12 @@ r300_tcl_bypass_triangle_reference_contract(
 }
 
 static int
-extent_emit(uint32_t width, uint32_t height, bool varying,
-            struct r300_tcl_bypass_triangle_ib *out)
+family_emit(uint32_t width, uint32_t height, bool varying,
+            uint32_t triangle_count, struct r300_tcl_bypass_triangle_ib *out)
 {
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
-       height > R300_TRIANGLE_TARGET_HEIGHT)
+       height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
+       triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
       return -EINVAL;
 
    struct r300_fragment_binary fs;
@@ -411,16 +418,17 @@ extent_emit(uint32_t width, uint32_t height, bool varying,
    if (rc != 0)
       return rc;
 
-   /* The extent parameterizes the contract's GEOMETRY_PARAMETER entries
-    * alone; the pitch word stays the reference cell's, so the row
-    * layout and every other register class are the qualified bytes.
+   /* The extent and the vertex-index bound parameterize the contract's
+    * GEOMETRY_PARAMETER entries alone; the pitch word stays the
+    * reference cell's, so the row layout and every other register
+    * class are the qualified bytes.
     */
    struct r300_first_draw_params draw_params = {
       .chip_family = CHIP_RS480,
       .width = width,
       .height = height,
       .min_vtx_index = 0,
-      .max_vtx_index = 2,
+      .max_vtx_index = 3 * triangle_count - 1,
       .texture_enabled = false,
    };
    struct r300_first_draw_contract contract;
@@ -442,10 +450,26 @@ extent_emit(uint32_t width, uint32_t height, bool varying,
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
       .varying = varying,
+      .triangle_count = triangle_count,
    };
    rc = r300_tcl_bypass_triangle_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+static int
+extent_emit(uint32_t width, uint32_t height, bool varying,
+            struct r300_tcl_bypass_triangle_ib *out)
+{
+   return family_emit(width, height, varying, 1, out);
+}
+
+int
+r300_tcl_bypass_triangle_family_emit(
+   uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return family_emit(width, height, varying, triangle_count, out);
 }
 
 int

@@ -371,6 +371,130 @@ static void test_reference_two_attribute_module(void)
           (1u | 1u << (R300_VERTEX_JOB_MAX_INPUTS - 1)));
 }
 
+/* The instance-offset module reads two located vec4 inputs; the
+ * instance-index and vertex-index modules load an int builtin, convert
+ * it, replicate it, and fma it onto the position.  The jobs execute to
+ * the exact bytes the harness arms expect, and the builtin surface
+ * refuses by name: a builtin outside the two, a load of the builtin as
+ * a float, and a conversion of a non-builtin operand. */
+static void test_reference_instance_modules(void)
+{
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   bool admitted = r300_vertex_job_from_spirv(
+      r3v_reference_vertex_instance_offset_spirv,
+      WORDS(r3v_reference_vertex_instance_offset_spirv), "main", &job,
+      &reason);
+   if (!admitted)
+      fprintf(stderr, "reference instance-offset refusal: %s\n", reason);
+   assert(admitted);
+   assert(r300_vertex_job_input_mask(&job) == 0x3u);
+   assert(!r300_vertex_job_reads_system_value(
+      &job, R300_VERTEX_JOB_SV_INSTANCE_INDEX));
+
+   const uint32_t *m = r3v_reference_vertex_instance_index_spirv;
+   const size_t n = WORDS(r3v_reference_vertex_instance_index_spirv);
+   admitted = r300_vertex_job_from_spirv(m, n, "main", &job, &reason);
+   if (!admitted)
+      fprintf(stderr, "reference instance-index refusal: %s\n", reason);
+   assert(admitted);
+   assert(r300_vertex_job_input_mask(&job) == 0x1u);
+   assert(r300_vertex_job_reads_system_value(
+      &job, R300_VERTEX_JOB_SV_INSTANCE_INDEX));
+   assert(!r300_vertex_job_reads_system_value(
+      &job, R300_VERTEX_JOB_SV_VERTEX_INDEX));
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+   const float ndc[12] = { -0.75f, -0.75f, 0.0f, 1.0f, 0.75f, -0.75f,
+                           0.0f,   1.0f,   0.0f, 0.75f, 0.0f, 1.0f };
+   const struct r300_vertex_stream stream = {
+      .data = (const uint8_t *)ndc, .stride = 16, .size_bytes = sizeof(ndc),
+   };
+   const struct r300_cpu_vertex_draw draw = {
+      .vertex_count = 3, .first_instance = 3, .instance_count = 2,
+   };
+   uint32_t carrier[24];
+   assert(r300_cpu_vertex_job_execute_draw(&job, &stream, &draw, carrier,
+                                           24) == 0);
+   for (unsigned i = 0; i < 2; i++) {
+      for (unsigned v = 0; v < 3; v++) {
+         const uint32_t *record = &carrier[(i * 3 + v) * 4];
+         assert(record[0] == f_bits(ndc[v * 4] + 0.0625f * (float)(3 + i)));
+         assert(record[1] == f_bits(ndc[v * 4 + 1]));
+         assert(record[3] == f_bits(1.0f));
+      }
+   }
+
+   const uint32_t *vm = r3v_reference_vertex_vertex_index_spirv;
+   const size_t vn = WORDS(r3v_reference_vertex_vertex_index_spirv);
+   admitted = r300_vertex_job_from_spirv(vm, vn, "main", &job, &reason);
+   if (!admitted)
+      fprintf(stderr, "reference vertex-index refusal: %s\n", reason);
+   assert(admitted);
+   assert(r300_vertex_job_reads_system_value(
+      &job, R300_VERTEX_JOB_SV_VERTEX_INDEX));
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 12) ==
+          0);
+   for (unsigned v = 0; v < 3; v++)
+      assert(carrier[v * 4 + 1] == f_bits(ndc[v * 4 + 1] + 0.0625f * v));
+
+   /* Known-bads over the instance-index module.  The BuiltIn decoration
+    * payload, the int load's result type, the conversion, and the
+    * position load are located by opcode walk. */
+   enum { OP_DECORATE = 71, OP_LOAD = 61, OP_CONVERT_S_TO_F = 111,
+          OP_TYPE_FLOAT = 22, DECOR_BUILTIN = 11,
+          BUILTIN_INSTANCE_INDEX = 43 };
+   size_t builtin_at = 0, int_load_at = 0, convert_at = 0, float_type = 0,
+          position_load_at = 0;
+   for (size_t at = 5; at < n;) {
+      const uint32_t len = m[at] >> 16, op = m[at] & 0xffffu;
+      assert(len != 0 && at + len <= n);
+      if (op == OP_DECORATE && m[at + 2] == DECOR_BUILTIN &&
+          m[at + 3] == BUILTIN_INSTANCE_INDEX)
+         builtin_at = at + 3;
+      if (op == OP_TYPE_FLOAT)
+         float_type = m[at + 1];
+      if (op == OP_CONVERT_S_TO_F)
+         convert_at = at;
+      if (op == OP_LOAD && m[at + 1] != float_type &&
+          int_load_at == 0 && convert_at == 0)
+         int_load_at = at;
+      else if (op == OP_LOAD && convert_at != 0)
+         position_load_at = at;
+      at += len;
+   }
+   assert(builtin_at && int_load_at && convert_at && float_type &&
+          position_load_at);
+   assert(m[convert_at + 3] == m[int_load_at + 2]);
+   uint32_t mutated[WORDS(r3v_reference_vertex_instance_index_spirv)];
+   /* The builtin renamed outside the two index builtins. */
+   memcpy(mutated, m, n * 4);
+   mutated[builtin_at] = 5;
+   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(strcmp(reason, "int vertex input outside the VertexIndex and "
+                         "InstanceIndex builtins") == 0);
+   /* The builtin renamed to VertexIndex admits as that value. */
+   mutated[builtin_at] = 42;
+   assert(r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(r300_vertex_job_reads_system_value(
+      &job, R300_VERTEX_JOB_SV_VERTEX_INDEX));
+   /* The builtin loaded as a float. */
+   memcpy(mutated, m, n * 4);
+   mutated[int_load_at + 1] = (uint32_t)float_type;
+   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(strcmp(reason, "system value loaded outside its int type") == 0);
+   /* The conversion's operand redirected at the position load's result
+    * id: the module loads the position after the conversion, so the id
+    * names no defined value there and the operand refuses as outside a
+    * loaded system value. */
+   memcpy(mutated, m, n * 4);
+   mutated[convert_at + 3] = m[position_load_at + 2];
+   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(strcmp(reason, "conversion outside a loaded system value to "
+                         "float") == 0);
+}
+
 /* Whole-module refusals: each inadmissible module names its construct. */
 static void test_module_refusals(void)
 {
@@ -546,6 +670,7 @@ int main(void)
    test_reference_varying_modules();
    test_varying_module_known_bads();
    test_reference_two_attribute_module();
+   test_reference_instance_modules();
    test_module_refusals();
    test_malformed_streams();
    test_entry_name_binding();

@@ -40,9 +40,33 @@ main(int argc, char **argv)
     * its own ib.bin and digest, a distinct cell from the position-only
     * reference.
     */
-   const bool varying = argc == 3 && strcmp(argv[2], "--varying") == 0;
-   if (argc != 2 && !varying) {
-      fprintf(stderr, "usage: %s <output-directory> [--varying]\n", argv[0]);
+   bool varying = false;
+   /* --triangles N writes the cell family member of N triangles: the
+    * host expansion of an N-instance draw, differing from the single
+    * triangle in the vertex-index bound and the draw count alone. */
+   uint32_t triangles = 1;
+   bool usage_error = argc < 2;
+   for (int a = 2; a < argc && !usage_error; a++) {
+      if (strcmp(argv[a], "--varying") == 0) {
+         varying = true;
+      } else if (strcmp(argv[a], "--triangles") == 0 && a + 1 < argc) {
+         char *end = NULL;
+         const unsigned long value = strtoul(argv[++a], &end, 10);
+         if (end == argv[a] || *end != '\0' || value < 1 ||
+             value > R300_TRIANGLE_MAX_TRIANGLES) {
+            fprintf(stderr, "--triangles takes 1..%u\n",
+                    R300_TRIANGLE_MAX_TRIANGLES);
+            return 2;
+         }
+         triangles = (uint32_t)value;
+      } else {
+         usage_error = true;
+      }
+   }
+   if (usage_error) {
+      fprintf(stderr,
+              "usage: %s <output-directory> [--varying] [--triangles N]\n",
+              argv[0]);
       return 2;
    }
    const char *dir = argv[1];
@@ -68,8 +92,9 @@ main(int argc, char **argv)
    }
 
    struct r300_tcl_bypass_triangle_ib cell;
-   if ((varying ? r300_tcl_bypass_triangle_varying_reference_emit(&cell)
-                : r300_tcl_bypass_triangle_reference_emit(&cell)) != 0) {
+   if (r300_tcl_bypass_triangle_family_emit(R300_TRIANGLE_TARGET_WIDTH,
+                                            R300_TRIANGLE_TARGET_HEIGHT,
+                                            varying, triangles, &cell) != 0) {
       fprintf(stderr, "triangle emission failed\n");
       r300_fragment_binary_finish(&fs);
       return 1;
@@ -152,7 +177,9 @@ main(int argc, char **argv)
       "  \"target_pitch_pixels\": %u,\n"
       "  \"allocation_rows\": %u\n"
       "}\n",
-      varying ? "contract-prefixed-varying" : "contract-prefixed-successor",
+      triangles > 1 ? "contract-prefixed-instanced"
+      : varying     ? "contract-prefixed-varying"
+                    : "contract-prefixed-successor",
       cell.ib_size_dwords, draw_dword, ib_blake3_hex, hash_hex,
       contract.count, sites, R300_TRIANGLE_TARGET_WIDTH,
       R300_TRIANGLE_TARGET_HEIGHT, R300_TRIANGLE_TARGET_PITCH_PIXELS,

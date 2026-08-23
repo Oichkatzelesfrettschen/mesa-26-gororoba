@@ -20,10 +20,12 @@
 
 /* Lowers an admitted SPIR-V vertex module to the job IR.  The admitted
  * subset is straight-line vec4 code over located vec4 float inputs, one
- * attribute slot per location below R300_VERTEX_JOB_MAX_INPUTS: loads
- * of those inputs, vec4 float composite constants, FAdd,
- * FMul, GLSL.std.450 Fma (fused), Dot rejoined only by its own
- * four-way replicate, exactly one full store of the Position builtin
+ * attribute slot per location below R300_VERTEX_JOB_MAX_INPUTS, and the
+ * int VertexIndex and InstanceIndex builtin inputs: loads of those
+ * inputs, vec4 float composite constants, FAdd,
+ * FMul, GLSL.std.450 Fma (fused), Dot and a ConvertSToF of a loaded
+ * builtin each rejoined only by its own four-way replicate, exactly one
+ * full store of the Position builtin
  * as the program's result, and at most one full store of a location-0
  * vec4 output, the varying the job stores ahead of the position.  A
  * declared varying must be stored.  Descriptors, push constants,

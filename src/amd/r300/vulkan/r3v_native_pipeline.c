@@ -92,7 +92,8 @@ attribute_format_id(VkFormat format)
 }
 
 /* Vertex-input admission over the lowered job: every binding is
- * per-vertex with its stride inside maxVertexInputBindingStride and
+ * per-vertex or per-instance (the core instance rate, divisor one) with
+ * its stride inside maxVertexInputBindingStride and
  * declared once; every attribute names a declared binding, a location
  * inside the job's slots, an F32 format, an offset inside
  * maxVertexInputAttributeOffset, and is declared once; and each
@@ -119,10 +120,13 @@ vertex_input_admit(const VkPipelineVertexInputStateCreateInfo *vi,
          &vi->pVertexBindingDescriptions[b];
       if (binding->binding >= R3V_NATIVE_MAX_VERTEX_BINDINGS ||
           (declared_bindings & (1u << binding->binding)) ||
-          binding->inputRate != VK_VERTEX_INPUT_RATE_VERTEX ||
+          (binding->inputRate != VK_VERTEX_INPUT_RATE_VERTEX &&
+           binding->inputRate != VK_VERTEX_INPUT_RATE_INSTANCE) ||
           binding->stride > R3V_NATIVE_MAX_VERTEX_BINDING_STRIDE)
          return false;
       declared_bindings |= 1u << binding->binding;
+      if (binding->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE)
+         out->instance_rate_bindings |= 1u << binding->binding;
       out->binding_strides[binding->binding] = binding->stride;
    }
    const uint32_t read_mask = r300_vertex_job_input_mask(job);
@@ -328,22 +332,26 @@ create_pipeline(struct r3v_native_device *device,
           sizeof(pipeline->attributes));
    memcpy(pipeline->binding_strides, admitted.binding_strides,
           sizeof(pipeline->binding_strides));
+   pipeline->instance_rate_bindings = admitted.instance_rate_bindings;
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
    pipeline->varying = varying;
    /* GPU-route admission metadata: the qualified TCL-bypass cell
     * delivers the raw attribute stream, so only the identity job
-    * (LOAD_INPUT of slot 0 feeding the position store) is
-    * GPU-admissible; every other admitted job executes on the CPU
-    * route.
+    * (LOAD_INPUT of slot 0 feeding the position store) over a
+    * per-vertex slot-0 binding is GPU-admissible -- an instance-rate
+    * binding repeats one record, which the linear source fetch cannot
+    * express; every other admitted job executes on the CPU route.
     */
    pipeline->gpu_vertex_job_identity =
       job.instruction_count == 2 && job.constant_count == 0 &&
       job.instructions[0].opcode == R300_VERTEX_JOB_OP_LOAD_INPUT &&
       job.instructions[0].src0 == 0 &&
       job.instructions[1].opcode == R300_VERTEX_JOB_OP_STORE_POSITION &&
-      job.instructions[1].src0 == job.instructions[0].dst;
+      job.instructions[1].src0 == job.instructions[0].dst &&
+      !(admitted.instance_rate_bindings &
+        (1u << admitted.attributes[0].binding));
 
    *pPipeline = r3v_native_pipeline_to_handle(pipeline);
    return VK_SUCCESS;

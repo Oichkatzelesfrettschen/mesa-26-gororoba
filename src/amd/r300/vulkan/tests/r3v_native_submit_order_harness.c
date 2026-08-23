@@ -166,6 +166,30 @@ enum arm {
    ARM_INDEXED_UINT8_REFUSED,
    ARM_INDEXED_ALIAS_TARGET_REFUSED,
    ARM_INDEXED_FETCHED_REFUSED,
+   /* Instanced draws on the CPU route.  The instance-offset module
+    * (location-1 vec4 over an instance-rate binding) under two
+    * instances records the two-triangle cell family member and delivers
+    * six records, each instance's triangle translated by its own
+    * offset record; under one instance from firstInstance 1 it records
+    * the reference cell and delivers the triangle translated by record
+    * 1 (the Vulkan fetch reads first_instance); the instance-index
+    * module under two instances from firstInstance 3 observes
+    * InstanceIndex 3 and 4 (the Vulkan value carries firstInstance);
+    * the vertex-index module from firstVertex 2 observes VertexIndex 2,
+    * 3, 4; with robustBufferAccess on, an instance record past the
+    * offset buffer's bound reads zeros and the reference carrier
+    * delivers; a zero instance count refuses at recording; an instance
+    * record past the bound with the feature off refuses at recording;
+    * and the fetched gates over two instances refuse at admission, the
+    * producer routes fetching one instance's linear range. */
+   ARM_INSTANCED_ARMED,
+   ARM_INSTANCED_FIRST_INSTANCE_ARMED,
+   ARM_INSTANCED_INDEX_ARMED,
+   ARM_VERTEX_INDEX_ARMED,
+   ARM_INSTANCED_ROBUST_ARMED,
+   ARM_INSTANCED_ZERO_REFUSED,
+   ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED,
+   ARM_INSTANCED_FETCHED_REFUSED,
 };
 
 
@@ -215,6 +239,14 @@ static const struct {
    { "indexed-uint8-refused", ARM_INDEXED_UINT8_REFUSED },
    { "indexed-alias-target-refused", ARM_INDEXED_ALIAS_TARGET_REFUSED },
    { "indexed-fetched-refused", ARM_INDEXED_FETCHED_REFUSED },
+   { "instanced-armed", ARM_INSTANCED_ARMED },
+   { "instanced-first-instance-armed", ARM_INSTANCED_FIRST_INSTANCE_ARMED },
+   { "instanced-index-armed", ARM_INSTANCED_INDEX_ARMED },
+   { "vertex-index-armed", ARM_VERTEX_INDEX_ARMED },
+   { "instanced-robust-armed", ARM_INSTANCED_ROBUST_ARMED },
+   { "instanced-zero-refused", ARM_INSTANCED_ZERO_REFUSED },
+   { "instanced-out-of-bounds-refused", ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED },
+   { "instanced-fetched-refused", ARM_INSTANCED_FETCHED_REFUSED },
 };
 
 /* Injection over the transport's ioctl seam: the saved production table
@@ -441,6 +473,30 @@ run_arm(enum arm arm, const char *name)
                             arm == ARM_INDEXED_UINT8_REFUSED ||
                             arm == ARM_INDEXED_ALIAS_TARGET_REFUSED ||
                             arm == ARM_INDEXED_FETCHED_REFUSED;
+   /* The instanced arms: the instance-offset arms bind the offset
+    * records through binding 1 at the instance rate; the two-triangle
+    * arms draw two instances and record the cell family member of two
+    * triangles. */
+   const bool instance_offset_arm = arm == ARM_INSTANCED_ARMED ||
+                                    arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED ||
+                                    arm == ARM_INSTANCED_ROBUST_ARMED ||
+                                    arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED;
+   const bool two_triangle_arm = arm == ARM_INSTANCED_ARMED ||
+                                 arm == ARM_INSTANCED_INDEX_ARMED ||
+                                 arm == ARM_INSTANCED_FETCHED_REFUSED;
+   struct r300_tcl_bypass_triangle_ib two_triangles;
+   assert(r300_tcl_bypass_triangle_family_emit(
+             R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, false, 2,
+             &two_triangles) == 0);
+   char two_triangle_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(two_triangles.ib, two_triangles.ib_size_dwords,
+                               two_triangle_digest);
+   const uint32_t two_triangle_dwords = two_triangles.ib_size_dwords;
+   /* The family member keeps the reference dword count and differs
+    * from it in exactly two payloads. */
+   assert(two_triangle_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+   assert(strcmp(two_triangle_digest, reference_digest) != 0);
+   r300_tcl_bypass_triangle_release(&two_triangles);
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
    const bool varying_cell_arm = arm == ARM_VARYING_ARMED || multi_arm;
@@ -457,6 +513,8 @@ run_arm(enum arm arm, const char *name)
    } else if (varying_cell_arm) {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", R300_VARYING_CELL_IB_BLAKE3,
              1);
+   } else if (two_triangle_arm) {
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", two_triangle_digest, 1);
    } else if (fetched_arm) {
       /* The offline no-submit composition identity of the fetched route
        * over this arm's exact geometry: one-page source at offset zero,
@@ -478,7 +536,8 @@ run_arm(enum arm arm, const char *name)
    setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
           R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
    if (fetched_arm || arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED ||
-       arm == ARM_INDEXED_FETCHED_REFUSED) {
+       arm == ARM_INDEXED_FETCHED_REFUSED ||
+       arm == ARM_INSTANCED_FETCHED_REFUSED) {
       setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
       setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1);
       setenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL", "1", 1);
@@ -523,7 +582,8 @@ run_arm(enum arm arm, const char *name)
    const bool robust_enabled = arm == ARM_ROBUST_OOB_ENABLED ||
                                arm == ARM_ROBUST_OOB_W0_REFUSED ||
                                arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS ||
-                               arm == ARM_INDEXED_ROBUST_RESTART_ARMED;
+                               arm == ARM_INDEXED_ROBUST_RESTART_ARMED ||
+                               arm == ARM_INSTANCED_ROBUST_ARMED;
    /* Per-arm stream geometry: the bind offset, binding stride, record
     * width, buffer size, and whether the buffer binds into the color
     * target's memory. */
@@ -674,10 +734,14 @@ run_arm(enum arm arm, const char *name)
                                 ? r300_tcl_bypass_triangle_vertices
                                 : ndc_triangle;
       /* The permuted indexed arm stores the records as (v1, v2, v0), so
-       * only the index order restores the reference triangle. */
+       * only the index order restores the reference triangle; the
+       * vertex-index arm stores the triangle at records 2..4 and draws
+       * from firstVertex 2. */
       static const unsigned permuted_order[3] = { 1, 2, 0 };
+      const unsigned record_base = arm == ARM_VERTEX_INDEX_ARMED ? 2 : 0;
       for (unsigned v = 0; v < 3; v++)
-         memcpy((uint8_t *)map + bind_offset + v * binding_stride,
+         memcpy((uint8_t *)map + bind_offset +
+                   (record_base + v) * binding_stride,
                 &records[(arm == ARM_INDEXED_PERMUTED_ARMED
                              ? permuted_order[v]
                              : v) *
@@ -730,6 +794,43 @@ run_arm(enum arm arm, const char *name)
                    &r300_tcl_bypass_triangle_varying_colors[v * 4], 12);
          vkUnmapMemory(device, color_memory);
       }
+   }
+
+   /* The instance-offset buffer of the instance-offset arms: two F32_4
+    * records, (0, 0, 0, 0) and (0.125, 0.125, 0, 0), at stride 16 --
+    * one record alone for the robust and out-of-bounds arms, whose
+    * draws read past it. */
+   static const float instance_offsets[8] = {
+      0.0f, 0.0f, 0.0f, 0.0f, 0.125f, 0.125f, 0.0f, 0.0f,
+   };
+   VkDeviceMemory offset_memory = VK_NULL_HANDLE;
+   VkBuffer offset_buffer = VK_NULL_HANDLE;
+   if (instance_offset_arm) {
+      const bool one_record = arm == ARM_INSTANCED_ROBUST_ARMED ||
+                              arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED;
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = 4096,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &offset_memory) == VK_SUCCESS);
+      assert(vkCreateBuffer(device,
+                            &(VkBufferCreateInfo){
+                               .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = one_record ? 16 : 32,
+                               .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            },
+                            NULL, &offset_buffer) == VK_SUCCESS);
+      assert(vkBindBufferMemory(device, offset_buffer, offset_memory, 0) ==
+             VK_SUCCESS);
+      void *map = NULL;
+      assert(vkMapMemory(device, offset_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+             VK_SUCCESS);
+      memcpy(map, instance_offsets, sizeof(instance_offsets));
+      vkUnmapMemory(device, offset_memory);
    }
 
    /* The index buffer of the indexed arms: sixteen bytes in its own
@@ -839,6 +940,15 @@ run_arm(enum arm arm, const char *name)
       multi_arm
          ? make_module(device, r3v_reference_vertex_two_attributes_spirv,
                        sizeof(r3v_reference_vertex_two_attributes_spirv))
+      : instance_offset_arm
+         ? make_module(device, r3v_reference_vertex_instance_offset_spirv,
+                       sizeof(r3v_reference_vertex_instance_offset_spirv))
+      : arm == ARM_INSTANCED_INDEX_ARMED
+         ? make_module(device, r3v_reference_vertex_instance_index_spirv,
+                       sizeof(r3v_reference_vertex_instance_index_spirv))
+      : arm == ARM_VERTEX_INDEX_ARMED
+         ? make_module(device, r3v_reference_vertex_vertex_index_spirv,
+                       sizeof(r3v_reference_vertex_vertex_index_spirv))
       : varying_vs
          ? make_module(device, r3v_reference_vertex_varying_spirv,
                        sizeof(r3v_reference_vertex_varying_spirv))
@@ -878,6 +988,27 @@ run_arm(enum arm arm, const char *name)
       .vertexAttributeDescriptionCount = 2,
       .pVertexAttributeDescriptions = multi_attributes,
    };
+   /* The instance-offset arms' vertex input: the offset attribute at
+    * location 1 reads binding 1 at the instance rate (F32_4, stride
+    * 16). */
+   const VkVertexInputBindingDescription offset_bindings[2] = {
+      { .binding = 0, .stride = 16, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+      { .binding = 1, .stride = 16,
+        .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE },
+   };
+   const VkVertexInputAttributeDescription offset_attributes[2] = {
+      { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+        .offset = 0 },
+      { .location = 1, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+        .offset = 0 },
+   };
+   const VkPipelineVertexInputStateCreateInfo offset_vertex_input = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+      .vertexBindingDescriptionCount = 2,
+      .pVertexBindingDescriptions = offset_bindings,
+      .vertexAttributeDescriptionCount = 2,
+      .pVertexAttributeDescriptions = offset_attributes,
+   };
    VkPipeline pipeline = VK_NULL_HANDLE;
    const VkResult created = vkCreateGraphicsPipelines(
              device, VK_NULL_HANDLE, 1,
@@ -898,8 +1029,9 @@ run_arm(enum arm arm, const char *name)
                         .pName = "main" },
                    },
                 .pVertexInputState =
-                   multi_arm ? &multi_vertex_input :
-                   &(VkPipelineVertexInputStateCreateInfo){
+                   multi_arm           ? &multi_vertex_input
+                   : instance_offset_arm ? &offset_vertex_input
+                   : &(VkPipelineVertexInputStateCreateInfo){
                       .sType =
                          VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                       .vertexBindingDescriptionCount = 1,
@@ -1055,6 +1187,18 @@ run_arm(enum arm arm, const char *name)
    if (multi_arm && !interleaved_arm &&
        arm != ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED)
       vkCmdBindVertexBuffers(cmd, 1, 1, &color_buffer, &(VkDeviceSize){ 0 });
+   if (instance_offset_arm)
+      vkCmdBindVertexBuffers(cmd, 1, 1, &offset_buffer, &(VkDeviceSize){ 0 });
+   /* The instanced arms' draw parameters: instances from firstInstance,
+    * and the vertex-index arm's firstVertex. */
+   const uint32_t instance_count =
+      arm == ARM_INSTANCED_ZERO_REFUSED ? 0 : two_triangle_arm ? 2
+      : arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED ? 2 : 1;
+   const uint32_t first_instance =
+      arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED ? 1
+      : arm == ARM_INSTANCED_INDEX_ARMED ? 3
+      : arm == ARM_INSTANCED_ROBUST_ARMED ? 5 : 0;
+   const uint32_t first_vertex = arm == ARM_VERTEX_INDEX_ARMED ? 2 : 0;
    if (indexed_arm) {
       if (arm != ARM_INDEXED_UNBOUND_REFUSED) {
          vkCmdBindIndexBuffer(cmd, index_buffer, 0,
@@ -1072,7 +1216,7 @@ run_arm(enum arm arm, const char *name)
                                                           : 0,
                        arm == ARM_INDEXED_PERMUTED_ARMED ? -3 : 0, 0);
    } else {
-      vkCmdDraw(cmd, 3, 1, 0, 0);
+      vkCmdDraw(cmd, 3, instance_count, first_vertex, first_instance);
    }
    vkCmdEndRenderPass(cmd);
    const VkResult ended = vkEndCommandBuffer(cmd);
@@ -1082,8 +1226,12 @@ run_arm(enum arm arm, const char *name)
        arm == ARM_INDEXED_RANGE_REFUSED ||
        arm == ARM_INDEXED_UNBOUND_REFUSED ||
        arm == ARM_INDEXED_UINT8_REFUSED ||
-       arm == ARM_INDEXED_ALIAS_TARGET_REFUSED) {
-      /* The feature off, the record-time bound proof poisons the
+       arm == ARM_INDEXED_ALIAS_TARGET_REFUSED ||
+       arm == ARM_INSTANCED_ZERO_REFUSED ||
+       arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED) {
+      /* A zero instance count and an instance record past the offset
+       * buffer's bound with the feature off each poison the draw at
+       * recording.  The feature off, the record-time bound proof poisons the
        * recording; the color binding left unbound, and the color stream
        * inside the pass target's footprint, each poison the draw; the
        * index range past the index buffer, the index buffer left
@@ -1112,6 +1260,11 @@ run_arm(enum arm arm, const char *name)
       if (varying_cell_arm) {
          assert(native_cmd->ib_size_dwords == R300_VARYING_CELL_IB_DWORDS);
          assert(strcmp(recorded_digest, R300_VARYING_CELL_IB_BLAKE3) == 0);
+      } else if (two_triangle_arm) {
+         /* Two instances record the two-triangle family member: the
+          * reference dword count, the family digest. */
+         assert(native_cmd->ib_size_dwords == two_triangle_dwords);
+         assert(strcmp(recorded_digest, two_triangle_digest) == 0);
       } else {
          assert(native_cmd->ib_size_dwords ==
                 R300_RETAINED_CPU_ROUTE_IB_DWORDS);
@@ -1179,6 +1332,39 @@ run_arm(enum arm arm, const char *name)
    const bool carrier_is_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_vertices,
              sizeof(r300_tcl_bypass_triangle_vertices)) == 0;
+   /* The instanced arms' expected carrier: each record the job
+    * produces in NDC -- the triangle translated by its instance's
+    * offset record, by InstanceIndex * (0.0625, 0, 0, 0), or by
+    * VertexIndex * (0, 0.0625, 0, 0); every term is exact in binary32,
+    * so the fused and the separate evaluations agree -- through the
+    * viewport transform, instance-major. */
+   float expected_carrier[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   unsigned expected_records = 0;
+   {
+      const unsigned instances = instance_count ? instance_count : 1;
+      for (unsigned i = 0; i < instances; i++) {
+         for (unsigned v = 0; v < 3; v++) {
+            float *record = &expected_carrier[(i * 3 + v) * 4];
+            memcpy(record, &ndc_triangle[v * 4], 16);
+            if (arm == ARM_INSTANCED_ARMED ||
+                arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED) {
+               const float *offset = &instance_offsets[(first_instance + i) * 4];
+               for (unsigned c = 0; c < 4; c++)
+                  record[c] += offset[c];
+            } else if (arm == ARM_INSTANCED_INDEX_ARMED) {
+               record[0] += 0.0625f * (float)(first_instance + i);
+            } else if (arm == ARM_VERTEX_INDEX_ARMED) {
+               record[1] += 0.0625f * (float)(first_vertex + v);
+            }
+            record[0] = (record[0] + 1.0f) * (R3V_NATIVE_TARGET_WIDTH / 2.0f);
+            record[1] = (record[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
+            expected_records = i * 3 + v + 1;
+         }
+      }
+   }
+   const bool carrier_is_expected =
+      expected_records != 0 &&
+      memcmp(carrier_after, expected_carrier, expected_records * 16) == 0;
    const bool carrier_is_varying_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_varying_vertices,
              sizeof(r300_tcl_bypass_triangle_varying_vertices)) == 0;
@@ -1287,12 +1473,36 @@ run_arm(enum arm arm, const char *name)
       /* Returned above at vkEndCommandBuffer. */
       assert(!"unreachable");
       break;
+   case ARM_INSTANCED_ARMED:
+   case ARM_INSTANCED_FIRST_INSTANCE_ARMED:
+   case ARM_INSTANCED_INDEX_ARMED:
+   case ARM_VERTEX_INDEX_ARMED:
+   case ARM_INSTANCED_ROBUST_ARMED:
+      /* The CPU route expanded the instances: the carrier holds each
+       * instance's transformed triangle in instance order -- the robust
+       * arm's out-of-bounds offset record read zeros, so its carrier is
+       * the reference. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_expected);
+      assert(arm != ARM_INSTANCED_ROBUST_ARMED || carrier_is_reference);
+      check_target(device, &target, true, name);
+      assert(token);
+      break;
+   case ARM_INSTANCED_ZERO_REFUSED:
+   case ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED:
+      /* Returned above at vkEndCommandBuffer. */
+      assert(!"unreachable");
+      break;
    case ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED:
    case ARM_INDEXED_FETCHED_REFUSED:
+   case ARM_INSTANCED_FETCHED_REFUSED:
       /* The fetched admission refuses the two-slot job, and the
-       * producer admission refuses the indexed draw, before any
-       * allocation, reference, IB, or carrier write: the recording is
-       * exactly as recorded, the gate unreached, the token unspent. */
+       * producer admission refuses the indexed and the instanced draw,
+       * before any allocation, reference, IB, or carrier write: the
+       * recording is exactly as recorded, the gate unreached, the token
+       * unspent. */
       assert(submitted == VK_ERROR_DEVICE_LOST);
       assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
       assert(cs_ioctls == 0);
@@ -1452,7 +1662,8 @@ run_arm(enum arm arm, const char *name)
    if (arm == ARM_RETENTION_UNWRITABLE ||
        arm == ARM_GPU_FETCHED_COMPOSE_FAILURE || fetched_refusal_arm ||
        arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED ||
-       arm == ARM_INDEXED_FETCHED_REFUSED)
+       arm == ARM_INDEXED_FETCHED_REFUSED ||
+       arm == ARM_INSTANCED_FETCHED_REFUSED)
       assert(!ib_retained);
    else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
       assert(ib_retained);
@@ -1461,12 +1672,23 @@ run_arm(enum arm arm, const char *name)
     * retained CPU route identity, so the re-sequenced submit path moves
     * no dword of the reference cell. */
    if (arm == ARM_ARMED || arm == ARM_INDEXED_ARMED ||
-       arm == ARM_INDEXED_PERMUTED_ARMED) {
+       arm == ARM_INDEXED_PERMUTED_ARMED ||
+       arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED ||
+       arm == ARM_VERTEX_INDEX_ARMED || arm == ARM_INSTANCED_ROBUST_ARMED) {
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
       assert(submitted_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
       assert(strcmp(submitted_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
+   }
+   /* The two-instance armed arms submitted the two-triangle family
+    * member the recording installed. */
+   if (arm == ARM_INSTANCED_ARMED || arm == ARM_INSTANCED_INDEX_ARMED) {
+      char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+      uint32_t submitted_dwords;
+      retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
+      assert(submitted_dwords == two_triangle_dwords);
+      assert(strcmp(submitted_digest, two_triangle_digest) == 0);
    }
    /* The fetched arms that reached retention retained the submit-time
     * composition, and its bytes are the offline no-submit composition's
