@@ -46,11 +46,11 @@ static const struct debug_control r3v_debug_options[] = {
 static const struct vk_instance_extension_table r3v_instance_extensions_supported = {
    .KHR_get_physical_device_properties2 = true,
    /* The VK_KHR_surface family backs presentation through Mesa's common WSI
-    * in software mode (wsi_device_init with sw_device on the physical
-    * device): the vkCreate*SurfaceKHR entrypoints and surface queries come
-    * from wsi_instance_entrypoints, layered into the instance dispatch in
-    * r3v_instance_init.  X11 surfaces only; presentation runs the xcb-shm
-    * CPU path, no DRM modifiers or dma-buf involved. */
+    * (wsi_device_init in r3v_init_wsi): the vkCreate*SurfaceKHR entrypoints
+    * and surface queries come from wsi_instance_entrypoints, layered into
+    * the instance dispatch in r3v_instance_init.  X11 surfaces only.
+    * r3v_init_wsi routes the DRM/DRI3 path by default; R3V_WSI_SW=1 switches
+    * to the xcb-shm CPU path with no DRM modifiers or dma-buf involved. */
    .KHR_surface = true,
    .KHR_xcb_surface = true,
    .KHR_xlib_surface = true,

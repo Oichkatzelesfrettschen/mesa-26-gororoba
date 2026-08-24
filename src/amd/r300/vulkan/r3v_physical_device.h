@@ -60,9 +60,11 @@ struct r3v_physical_device {
     * is the binary sync, slot 1 the timeline emulation above. */
    const struct vk_sync_type *sync_types[3];
 
-   /* Mesa common WSI in software mode (the lavapipe pattern): swapchain
-    * images are CPU-reachable and presentation runs the xcb-shm path, so no
-    * dma-buf, DRM modifier, or external-memory support is required of the
+   /* r3v_init_wsi routes this device through the render-node fd by
+    * default, the DRM/DRI3 path; R3V_WSI_SW=1 switches it to the Mesa
+    * common WSI software mode (the lavapipe pattern), CPU-reachable
+    * swapchain images presented through the xcb-shm path with no
+    * dma-buf, DRM modifier, or external-memory support required of the
     * radeon winsys.  vk.wsi_device points here after r3v_init_wsi. */
    struct wsi_device wsi_device;
 };
