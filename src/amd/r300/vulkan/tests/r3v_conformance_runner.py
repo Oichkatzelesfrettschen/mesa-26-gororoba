@@ -40,6 +40,7 @@ Usage:
       [--env KEY=VALUE]...
   r3v_conformance_runner.py verify-receipt --receipt receipt.json
   r3v_conformance_runner.py check-ledgers --nonpass-ledger TSV --slices TSV
+  r3v_conformance_runner.py run ... --partition-manifest partition_manifest.json
   r3v_conformance_runner.py selftest --fixture-qpa FILE
 """
 
@@ -87,6 +88,37 @@ SLICE_EVIDENCE = {"host-model", "silicon"}
 
 class RunnerRefusal(Exception):
     pass
+
+
+def partition_identity(manifest_path, caselist_path):
+    """Bind the caselist to a slice of a verified partition manifest and
+    refuse a slice whose hazard is unknown.  With no manifest the run is
+    ad hoc: it names no slice and no corpus."""
+    if manifest_path is None:
+        return {"kind": "ad-hoc"}, None
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import r3v_conformance_partition as part
+    try:
+        manifest = part.verify_manifest(manifest_path)
+        s = part.slice_for_caselist(manifest, caselist_path)
+    except part.PartitionRefusal as e:
+        raise RunnerRefusal(f"partition manifest: {e}")
+    ident = {"kind": manifest["kind"],
+             "cts_describe": manifest.get("cts_describe"),
+             "manifest_sha256": manifest["manifest_sha256"],
+             "corpus_sha256": manifest["corpus_sha256"],
+             "corpus_case_count": manifest["corpus_case_count"],
+             "covered_case_count": manifest["covered_case_count"],
+             "executable_case_count": manifest["executable_case_count"],
+             "uncovered_case_count": manifest["uncovered_case_count"],
+             "slice": s["slice"], "order": s["order"], "hazard": s["hazard"],
+             "required_evidence": s["required_evidence"],
+             "case_count": s["case_count"],
+             "caselist_sha256": s["caselist_sha256"]}
+    # The hazard value itself opens execution; the stored flag is
+    # derived for readers and verify_manifest holds it to the hazard.
+    refusal = "blocked_slice" if s["hazard"] == "unknown" else None
+    return ident, refusal
 
 
 def sha256_file(path):
@@ -440,6 +472,8 @@ def execute(args):
             raise RunnerRefusal(f"--env {kv!r} is not KEY=VALUE")
         env[k] = v
     cases = read_caselist(args.caselist)
+    partition, part_refusal = partition_identity(args.partition_manifest,
+                                                 args.caselist)
     host = host_identity()
     icd = icd_identity(args.icd)
     evidence, node = evidence_class(env, host, icd)
@@ -457,13 +491,17 @@ def execute(args):
         "case_count": len(cases),
         "caselist_sha256": hashlib.sha256(
             "\n".join(cases).encode()).hexdigest(),
+        "partition": partition,
         "expected": {"source_sha": args.expect_source_sha,
                      "dso_sha256": args.expect_dso_sha256},
     }
-    refusal = None
+    refusal = part_refusal
+    if refusal is None and partition.get("required_evidence") == "silicon" \
+            and evidence != "silicon":
+        refusal = "evidence_below_required"
     if args.expect_dso_sha256 and \
             receipt["icd"]["dso_sha256"] != args.expect_dso_sha256:
-        refusal = "wrong_icd"
+        refusal = refusal or "wrong_icd"
     src = receipt["source"]
     if args.expect_source_sha and (not src.get("available") or
                                    src["sha"] != args.expect_source_sha):
@@ -757,7 +795,7 @@ def selftest(fixture_qpa):
         dmesg_cmd.chmod(0o755)
 
         def run(mode, expect, dmesg_after=None, dso=None, cases=caselist,
-                timeout=5.0):
+                timeout=5.0, manifest_json=None):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
             os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
@@ -769,7 +807,7 @@ def selftest(fixture_qpa):
                 expect_dso_sha256=dso, timeout=timeout,
                 nonpass_ledger=str(ledger),
                 dmesg_command=str(dmesg_cmd), env=["LD_PRELOAD=drm_shim"],
-                deqp_arg=None)
+                deqp_arg=None, partition_manifest=manifest_json)
             if dmesg_after is not None:
                 orig = dmesg_file.read_text()
                 r = _run_with_dmesg_change(args, dmesg_file, orig,
@@ -829,6 +867,60 @@ def selftest(fixture_qpa):
             assert "twice" in str(e)
         else:
             raise SystemExit("selftest: a duplicated caselist was admitted")
+        # A partition manifest binds the caselist to its slice: a blocked
+        # (unknown-hazard) slice refuses before dEQP starts, an executable
+        # slice records its identity, and a caselist outside the manifest
+        # refuses.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import r3v_conformance_partition as part
+        corpus = d / "corpus"
+        corpus.mkdir()
+        (corpus / "m.txt").write_text(caselist.read_text() +
+                                      "dEQP-VK.other.x\n")
+        table = d / "partition.tsv"
+        table.write_text("\t".join(part.HEADER) + "\n"
+                         "1\tfake\tdEQP-VK.fake\tnone\thost-model\n"
+                         "2\tother\tdEQP-VK.other\tunknown\tsilicon\n")
+        pdir = d / "partition"
+        cases_all = sorted(x.strip() for x in (corpus / "m.txt").read_text()
+                           .splitlines() if x.strip())
+        ppin = d / "pin.tsv"
+        ppin.write_text(f"cts_describe\tfixture\ncase_count\t"
+                        f"{len(cases_all)}\ncorpus_sha256\t"
+                        f"{part.sha256_lines(cases_all)}\n")
+        part.generate(table, corpus, pdir, "exhaustive", pin_path=ppin)
+        mj = str(pdir / "partition_manifest.json")
+        r = run("all_pass", "pass", cases=pdir / "fake.txt", manifest_json=mj)
+        assert r["partition"]["slice"] == "fake" and \
+            r["partition"]["kind"] == "exhaustive"
+        r = run("all_pass", "blocked_slice", cases=pdir / "other.txt",
+                manifest_json=mj)
+        assert r["partition"]["hazard"] == "unknown" and "argv" not in r
+        pm = json.loads((pdir / "partition_manifest.json").read_text())
+        assert r["partition"]["caselist_sha256"] == \
+            pm["slices"][1]["caselist_sha256"] and \
+            r["partition"]["executable_case_count"] == \
+            pm["executable_case_count"] == pm["slices"][0]["case_count"]
+        # A silicon-required slice under the drm-shim host model refuses
+        # before dEQP starts.
+        table.write_text("\t".join(part.HEADER) + "\n"
+                         "1\tfake\tdEQP-VK.fake\tsubmission\tsilicon\n"
+                         "2\tother\tdEQP-VK.other\tunknown\tsilicon\n")
+        sdir = d / "partition-silicon"
+        part.generate(table, corpus, sdir, "exhaustive", pin_path=ppin)
+        r = run("all_pass", "evidence_below_required",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"))
+        assert "argv" not in r
+        subset = d / "subset.txt"
+        subset.write_text("dEQP-VK.fake.a\n")
+        try:
+            run("all_pass", "pass", cases=subset, manifest_json=mj)
+        except RunnerRefusal as e:
+            assert "matches no manifest slice" in str(e)
+        else:
+            raise SystemExit("selftest: an unbound caselist was admitted "
+                             "under a manifest")
         if fixture_qpa:
             real_cases = d / "real.txt"
             names = re.findall(r"^#beginTestCaseResult (\S+)",
@@ -856,7 +948,9 @@ def selftest(fixture_qpa):
           "unclassified blocks), truncated, timeout, hang-after-session, "
           "crash, device-loss with a terminated case, multi-line result, "
           "late abort, framework-abort, wrong-ICD, dmesg-hazard, duplicate "
-          f"caselist, {fixture_note}and tampered-receipt fixtures each "
+          f"caselist, {fixture_note}tampered-receipt, and partition "
+          "(bound slice, blocked slice, silicon-required slice under the "
+          "host model, unbound caselist) fixtures each "
           "yield their verdict")
 
 
@@ -895,6 +989,7 @@ def main():
     r.add_argument("--dmesg-command", default="dmesg")
     r.add_argument("--env", action="append")
     r.add_argument("--deqp-arg", action="append")
+    r.add_argument("--partition-manifest")
     s = sub.add_parser("selftest")
     s.add_argument("--fixture-qpa")
     c = sub.add_parser("check-ledgers")

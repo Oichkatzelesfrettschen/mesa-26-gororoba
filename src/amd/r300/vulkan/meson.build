@@ -329,6 +329,40 @@ if with_tests
             '--slices', files('tests/r3v_conformance_slices.tsv')],
     suite : ['r3v'],
   )
+  # The exact-cover partition assigns every pinned mustpass case to one
+  # slice and one slice alone, generates each slice's caselist with its
+  # count and digest, and marks an unknown-hazard slice blocked so the
+  # runner refuses it.  The selftest calibrates every refusal on a
+  # synthetic corpus; the corpus checks prove the exhaustive table's
+  # exact cover and the pilot table's disjointness against the pinned
+  # mustpass directory when R3V_DEQP_MUSTPASS_DIR names it, against the
+  # checked-in corpus pin; unnamed, they skip (exit 77).
+  test(
+    'r3v-conformance-partition-selftest',
+    prog_python,
+    args : [files('tests/r3v_conformance_partition.py'), 'selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-conformance-partition-exhaustive',
+    prog_python,
+    args : [files('tests/r3v_conformance_partition.py'), 'check',
+            '--kind', 'exhaustive', '--partition',
+            files('tests/r3v_conformance_partition.tsv'),
+            '--corpus-pin', files('tests/r3v_conformance_corpus.pin')],
+    suite : ['r3v'],
+    timeout : 300,
+  )
+  test(
+    'r3v-conformance-partition-pilot',
+    prog_python,
+    args : [files('tests/r3v_conformance_partition.py'), 'check',
+            '--kind', 'pilot', '--partition',
+            files('tests/r3v_conformance_slices.tsv'),
+            '--corpus-pin', files('tests/r3v_conformance_corpus.pin')],
+    suite : ['r3v'],
+    timeout : 300,
+  )
   # Source layer: the ICD's sources carry no Gallium include and no
   # Gallium runtime identifier on any line the compile keeps.
   test(
