@@ -1792,6 +1792,39 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       'VK_DRIVER_FILES' : _dev_icd.full_path(),
       'R3V_EXPECTED_ICD_DSO' : libvulkan_r3v.full_path(),
     }
+    # The queue-claim report reaches the ICD through the loader under
+    # VK_DRIVER_FILES and names the queue flags it advertises, the claim
+    # mode behind the compute bit, and the verb ledger digest; the
+    # conformance runner records it in every receipt so a gate-assisted
+    # run reads as its mode.  Both gate states run under the shim and the
+    # report's own consistency check judges them.
+    r3v_native_queue_claim_report = executable(
+      'r3v_native_queue_claim_report',
+      files('tests/r3v_native_queue_claim_report.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common],
+      dependencies : [dep_vulkan_loader, idep_mesautil],
+      link_with : [libr300_common],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-queue-claim-report-default',
+      prog_python,
+      args : [files('tests/r3v_native_queue_claim_report_check.py'),
+              r3v_native_queue_claim_report, 'default_graphics_only'],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-queue-claim-report-gated',
+      prog_python,
+      args : [files('tests/r3v_native_queue_claim_report_check.py'),
+              r3v_native_queue_claim_report, 'experimental_compute_subset'],
+      env : environment(r3v_native_loader_app_vars +
+                        {'R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL' : '1'}),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-loader-application',
       prog_python,

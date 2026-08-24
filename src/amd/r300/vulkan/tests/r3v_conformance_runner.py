@@ -152,10 +152,10 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def run_capture(argv, cwd=None):
+def run_capture(argv, cwd=None, env=None):
     try:
         p = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
-                           timeout=60)
+                           timeout=60, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, str(e)
     return p.returncode, p.stdout.strip()
@@ -600,6 +600,53 @@ def runtime_event_identity(path, out):
             "run_id": body.get("run_id"), "boot_id": body.get("boot_id")}
 
 
+QUEUE_CLAIM_MODES = ("default_graphics_only", "experimental_compute_subset",
+                     "conformant")
+
+
+def queue_claim_identity(report_binary, env, expected_sha256=None):
+    """Runs the queue-claim report through the loader under the run's
+    own environment, the pinned VK_DRIVER_FILES included, and records
+    the queue flags the ICD advertises there, the claim mode behind the
+    compute bit, the verb ledger digest of the source both were built
+    from, and the report binary's own digest.  A report whose
+    advertised bit, ledger claim, and gate state disagree refuses the
+    run; the compute claim is eligible as a conformance statement about
+    the queue only in the conformant mode, and a gate-assisted run
+    reads as its mode."""
+    if report_binary is None:
+        return {"available": False, "mode": None,
+                "compute_claim_eligible": False}
+    path = Path(report_binary).resolve()
+    rc, out = run_capture([str(path)], env=env)
+    fields = {}
+    for line in out.splitlines():
+        k, sep, v = line.partition("\t")
+        if sep:
+            fields[k] = v
+    mode = fields.get("queue_claim_mode")
+    gate = fields.get("queue_claim_gate") == "1"
+    if rc != 0 or mode not in QUEUE_CLAIM_MODES or \
+            fields.get("claim_consistent") != "1" or \
+            (mode == "experimental_compute_subset" and not gate):
+        raise RunnerRefusal("queue-claim report refused: "
+                            f"exit {rc}, mode {mode!r}, gate {gate}, "
+                            f"consistent {fields.get('claim_consistent')!r}"
+                            f"{': ' + out[:200] if rc is None else ''}")
+    digest = sha256_file(path)
+    if expected_sha256 and expected_sha256 != digest:
+        raise RunnerRefusal("queue-claim report binary "
+                            f"{digest[:12]} is not the declared "
+                            f"{expected_sha256[:12]}")
+    return {"available": True, "mode": mode,
+            "report_sha256": digest,
+            "compute_bit": fields.get("compute_bit") == "1",
+            "gate_declared": gate,
+            "queue_flags": fields.get("queue_flags"),
+            "verb_table_blake3": fields.get("verb_table_blake3"),
+            "compute_claim_eligible": mode == "conformant"}
+
+
 def read_caselist(path):
     cases = []
     seen = set()
@@ -634,6 +681,12 @@ def execute(args):
     runtime_event = runtime_event_identity(args.runtime_event, out)
     host = host_identity()
     icd = icd_identity(args.icd)
+    # The report probes the ICD the run pins, so the pin enters the
+    # environment ahead of it.
+    env["VK_DRIVER_FILES"] = icd["manifest"]
+    env.pop("VK_ICD_FILENAMES", None)
+    queue_claim = queue_claim_identity(args.queue_report, env,
+                                       args.expect_report_sha256)
     evidence, node = evidence_class(env, host, icd)
     receipt = {
         "receipt_version": RECEIPT_VERSION,
@@ -650,13 +703,16 @@ def execute(args):
             "\n".join(cases).encode()).hexdigest(),
         "partition": partition,
         "runtime_event": runtime_event,
+        "queue_claim": queue_claim,
+        "compute_claim_eligible": queue_claim["compute_claim_eligible"],
         "expected": {"source_sha": args.expect_source_sha,
                      "dso_sha256": args.expect_dso_sha256,
                      "deqp_sha256": args.expect_deqp_sha256,
                      "caselist_sha256": args.expect_caselist_sha256,
                      "partition_sha256": args.expect_partition_sha256,
                      "runtime_event_sha256":
-                         args.expect_runtime_event_sha256},
+                         args.expect_runtime_event_sha256,
+                     "queue_claim_mode": args.expect_queue_claim_mode},
         "timeouts": {"total_seconds": args.timeout,
                      "case_seconds": args.case_timeout},
         "max_cases": args.max_cases,
@@ -665,6 +721,9 @@ def execute(args):
     if refusal is None and contaminating:
         refusal = "gate_contamination"
         receipt["contaminating_gates"] = contaminating
+    if args.expect_queue_claim_mode and \
+            args.expect_queue_claim_mode != queue_claim["mode"]:
+        refusal = refusal or "wrong_queue_claim"
     for key, expected, actual in (
             ("deqp_sha256", args.expect_deqp_sha256,
              receipt["deqp"].get("sha256")),
@@ -697,6 +756,8 @@ def execute(args):
         ("partition SHA-256", args.expect_partition_sha256)) if not value]
     if evidence == "silicon" and not args.expect_runtime_event_sha256:
         undeclared.append("runtime-event SHA-256")
+    if not queue_claim["available"]:
+        undeclared.append("queue-claim report")
     if not src.get("available"):
         grade, reason = False, "source identity unavailable"
     elif not src["clean"]:
@@ -796,6 +857,7 @@ def execute(args):
     (out / "receipt.json").write_text(json.dumps(receipt, indent=1,
                                                  sort_keys=True) + "\n")
     print(f"verdict={receipt['verdict']} evidence={evidence} "
+          f"queue_claim={queue_claim['mode']} "
           f"decision_grade={grade} counts={counts} classes={classes} "
           f"seal={receipt['seal_sha256'][:12]}")
     return receipt
@@ -965,6 +1027,20 @@ elif mode == "replay":
 f.write("#endSession\n"); f.close()
 '''
 
+FAKE_QUEUE_REPORT = '''#!/bin/sh
+mode="$FAKE_QUEUE_MODE"
+bit=1
+consistent=1
+gate=0
+[ "$mode" = default_graphics_only ] && bit=0
+[ "$mode" = experimental_compute_subset ] && gate=1
+if [ "$mode" = gateless ]; then mode=experimental_compute_subset; fi
+if [ "$mode" = inconsistent ]; then mode=conformant; consistent=0; fi
+printf 'queue_family_count\t1\nqueue_flags\t0\t0x%x\tcount\t1\ttimestamp_bits\t0\n' $((bit ? 3 : 1))
+printf 'compute_bit\t%s\nqueue_claim_mode\t%s\nqueue_claim_gate\t%s\n' "$bit" "$mode" "$gate"
+printf 'verb_table_blake3\t%s\nclaim_consistent\t%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef "$consistent"
+'''
+
 FAKE_DMESG = '''#!/bin/sh
 cat "$FAKE_DMESG_FILE"
 '''
@@ -1009,7 +1085,8 @@ def selftest(fixture_qpa):
                 timeout=5.0, manifest_json=None, env=None,
                 case_timeout=120.0, max_cases=MAX_SHARD_CASES,
                 replace_dmesg=False, runtime_event=None,
-                expect_runtime_event=None, outdir=None):
+                expect_runtime_event=None, outdir=None,
+                queue_report=None, expect_queue_claim=None):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
             os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
@@ -1025,6 +1102,9 @@ def selftest(fixture_qpa):
                 runtime_event=runtime_event, timeout=timeout,
                 case_timeout=case_timeout, max_cases=max_cases,
                 journal_command="", nonpass_ledger=str(ledger),
+                queue_report=queue_report,
+                expect_queue_claim_mode=expect_queue_claim,
+                expect_report_sha256=None,
                 dmesg_command=str(dmesg_cmd),
                 env=(env if env is not None else ["LD_PRELOAD=drm_shim"]) +
                     [f"FAKE_DEQP_MODE={mode}",
@@ -1106,6 +1186,47 @@ def selftest(fixture_qpa):
         r = run("hang_after_session", "dmesg_hazard", timeout=2.0,
                 dmesg_after="[2.0] radeon 0000:01:05.0: GPU lockup\n")
         assert r["exit_code"] == "timeout"
+        # The queue-claim report is recorded under the run's environment:
+        # the mode names what the compute bit rests on, only the
+        # conformant mode makes the receipt conformance-eligible, an
+        # expected mode other than the reported one refuses, and an
+        # inconsistent report refuses.
+        report = d / "report.sh"
+        report.write_text(FAKE_QUEUE_REPORT)
+        report.chmod(0o755)
+        r = run("all_pass", "pass", queue_report=str(report),
+                env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE="
+                     "experimental_compute_subset"])
+        assert r["queue_claim"]["mode"] == "experimental_compute_subset" \
+            and r["queue_claim"]["compute_bit"] and \
+            r["queue_claim"]["gate_declared"] and \
+            not r["compute_claim_eligible"] and \
+            r["queue_claim"]["report_sha256"]
+        r = run("all_pass", "pass", queue_report=str(report),
+                env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=conformant"])
+        assert r["compute_claim_eligible"]
+        # The gated mode without the gate is inconsistent.
+        try:
+            run("all_pass", "pass", queue_report=str(report),
+                env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=gateless"])
+        except RunnerRefusal as e:
+            assert "gate False" in str(e)
+        else:
+            raise SystemExit("selftest: a gated mode without its gate was "
+                             "admitted")
+        r = run("all_pass", "wrong_queue_claim", queue_report=str(report),
+                env=["LD_PRELOAD=drm_shim",
+                     "FAKE_QUEUE_MODE=default_graphics_only"],
+                expect_queue_claim="conformant")
+        assert "argv" not in r and not r["queue_claim"]["compute_bit"]
+        try:
+            run("all_pass", "pass", queue_report=str(report),
+                env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=inconsistent"])
+        except RunnerRefusal as e:
+            assert "queue-claim report refused" in str(e)
+        else:
+            raise SystemExit("selftest: an inconsistent queue report was "
+                             "admitted")
         # A runtime event joins by digest; a wrong digest refuses.
         event = d / "event.json"
         event.write_text('{"run_id": "rs482-001", "boot_id": "b"}\n')
@@ -1291,7 +1412,10 @@ def selftest(fixture_qpa):
           "environment, gate contamination (hazard-free and display "
           "slices), used output directory, shard ceiling, kernel-log "
           "continuity, case deadline with its runner-deadline and "
-          "kernel-hazard precedences, and runtime-event join fixtures each "
+          "kernel-hazard precedences, runtime-event join, and queue-claim "
+          "report (mode, eligibility, wrong mode, gateless, inconsistent) "
+          "fixtures "
+          "each "
           "yield their verdict")
 
 
@@ -1330,6 +1454,9 @@ def main():
     r.add_argument("--expect-partition-sha256")
     r.add_argument("--expect-runtime-event-sha256")
     r.add_argument("--runtime-event")
+    r.add_argument("--queue-report")
+    r.add_argument("--expect-queue-claim-mode", choices=QUEUE_CLAIM_MODES)
+    r.add_argument("--expect-report-sha256")
     r.add_argument("--timeout", type=float, default=3600.0)
     r.add_argument("--case-timeout", type=float, default=120.0)
     r.add_argument("--max-cases", type=int, default=MAX_SHARD_CASES)
