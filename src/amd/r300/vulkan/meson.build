@@ -246,6 +246,32 @@ if with_tests
             '--source', files('r3v_physical_device.c')],
     suite : ['r3v'],
   )
+  # The Vulkan 1.0 requirement inventory: feature and limit member
+  # identity from the registry, the advertised extension surface with
+  # its dependency closure evaluated at core 1.0 (unknown, disabled,
+  # unsatisfied-depends each reject by class; orphan-alias screens
+  # registry integrity), the queue-family shape, and the apiVersion 1.0 pin.  The
+  # checked-in TSV must equal the regeneration; the core 1.0 command
+  # closure stays with r3v_native_entrypoint_audit.py.
+  test(
+    'r3v-vulkan10-requirement-inventory-selftest',
+    prog_python,
+    args : [files('tests/r3v_vulkan10_requirement_inventory.py'),
+            '--selftest', '--registry', vk_api_xml],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-vulkan10-requirement-inventory',
+    prog_python,
+    args : [files('tests/r3v_vulkan10_requirement_inventory.py'),
+            '--registry', vk_api_xml,
+            '--physical-device', files('r3v_physical_device.c'),
+            '--instance', files('r3v_instance.c'),
+            '--private-header', files('r3v_private.h'),
+            '--inventory',
+            files('tests/r3v_vulkan10_requirement_inventory.tsv')],
+    suite : ['r3v'],
+  )
   # Source layer: the ICD's sources carry no Gallium include and no
   # Gallium runtime identifier on any line the compile keeps.
   test(
