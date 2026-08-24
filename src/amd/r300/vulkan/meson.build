@@ -364,6 +364,18 @@ if with_tests
     suite : ['r3v'],
     timeout : 300,
   )
+  # A dEQP-VK binary reaches the target as a bundle whose provenance
+  # (source commit and cleanliness, CMake pins, compiler, digest, dynamic
+  # inventory, ELF ISA-needed note, above-K8 screen with its allow
+  # pattern, data and mustpass tree digests)
+  # verifies itself before a run; the selftest calibrates the refusals.
+  test(
+    'r3v-deqp-provision-selftest',
+    prog_python,
+    args : [files('tests/r3v_deqp_provision.py'), 'selftest'],
+    suite : ['r3v'],
+    timeout : 120,
+  )
   # Source layer: the ICD's sources carry no Gallium include and no
   # Gallium runtime identifier on any line the compile keeps.
   test(
