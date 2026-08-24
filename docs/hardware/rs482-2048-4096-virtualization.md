@@ -12,6 +12,15 @@ R3xx color-render axis cap is 2560; the Vulkan 1.0 logical floor
 sampled uses 2048, the smaller cap (`R300_RASTER_AXIS_CAP`,
 `r300_grid_fold.h`).
 
+## Lane status
+
+The R3V render/copy tiling, NEAREST stitch, and LINEAR halo atlas rows
+below were implemented on the retired Gallium-backed Vulkan lane; the
+silicon evidence they cite stands, and the direct-DRM ICD carries none
+of the three implementations yet.  `rs482-composed-surface-campaign.md`
+records the re-derivation rungs for the native lane and the receipts
+that widen each advertised limit.
+
 ## Matrix
 
 Representation classes: partition = disjoint tiles, each logical element in
