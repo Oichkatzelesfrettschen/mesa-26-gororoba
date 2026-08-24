@@ -235,7 +235,10 @@ call_create_descriptor_pool(void)
             },
       },
       NULL, &pool);
-   return (result != VK_SUCCESS && pool == VK_NULL_HANDLE) ? 0 : 1;
+   if (result != VK_SUCCESS || pool == VK_NULL_HANDLE)
+      return 1;
+   vkDestroyDescriptorPool(device, pool, NULL);
+   return 0;
 }
 
 /* A query pool and a descriptor set layout take no object handle, so their
@@ -260,9 +263,9 @@ call_create_query_pool(void)
    return 0;
 }
 
-/* The descriptor-set-layout surface is live for the compute route:
- * the storage-buffer contract admits (the empty layout among it), and
- * a binding type outside it refuses with the handle cleared.
+/* The descriptor-set-layout surface admits every core descriptor type
+ * (the empty layout among them), and a type outside the core eleven
+ * refuses with the handle cleared.
  */
 static int
 call_create_descriptor_set_layout(void)
@@ -278,7 +281,6 @@ call_create_descriptor_set_layout(void)
       return 1;
    vkDestroyDescriptorSetLayout(device, layout, NULL);
 
-   layout = (VkDescriptorSetLayout)(uintptr_t)0x1;
    result = vkCreateDescriptorSetLayout(
       device,
       &(VkDescriptorSetLayoutCreateInfo){
@@ -288,6 +290,25 @@ call_create_descriptor_set_layout(void)
             &(VkDescriptorSetLayoutBinding){
                .binding = 0,
                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+               .descriptorCount = 1,
+               .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+      },
+      NULL, &layout);
+   if (result != VK_SUCCESS || layout == VK_NULL_HANDLE)
+      return 1;
+   vkDestroyDescriptorSetLayout(device, layout, NULL);
+
+   layout = (VkDescriptorSetLayout)(uintptr_t)0x1;
+   result = vkCreateDescriptorSetLayout(
+      device,
+      &(VkDescriptorSetLayoutCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+         .bindingCount = 1,
+         .pBindings =
+            &(VkDescriptorSetLayoutBinding){
+               .binding = 0,
+               .descriptorType = (VkDescriptorType)11,
                .descriptorCount = 1,
                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
             },
@@ -775,11 +796,12 @@ main(void)
             call_create_event);
    in_child("vkCreateSampler records state and destroys",
             call_create_sampler);
-   in_child("vkCreateDescriptorPool refuses", call_create_descriptor_pool);
+   in_child("vkCreateDescriptorPool admits a uniform-buffer pool",
+            call_create_descriptor_pool);
    in_child("vkCreateQueryPool constructs the occlusion pool",
             call_create_query_pool);
-   in_child("vkCreateDescriptorSetLayout admits the storage contract "
-            "and refuses outside it",
+   in_child("vkCreateDescriptorSetLayout admits every core type and "
+            "refuses outside them",
             call_create_descriptor_set_layout);
    in_child("vkCreateBufferView refuses over a live buffer",
             call_create_buffer_view);

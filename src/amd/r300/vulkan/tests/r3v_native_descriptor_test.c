@@ -28,6 +28,9 @@ enum mutation_mode {
    MUTATION_UNPOISONED_OVERSIZE_WRITE,
    /* The allocation past the pool capacity is reported as admitted. */
    MUTATION_POOL_OVERFLOW_ADMITS,
+   /* The allocation past the pool's per-type capacity is reported as
+    * admitted while set capacity remains. */
+   MUTATION_TYPED_POOL_OVERFLOW_ADMITS,
 };
 
 static enum mutation_mode mutation;
@@ -350,22 +353,39 @@ check_layout_admission(const struct fixture *f)
    VkDescriptorSetLayout layout;
    VkDescriptorSetLayoutBinding binding = storage_binding(0);
 
-   binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-   CHECK(create_layout(f, &binding, 1, 0, &layout) != VK_SUCCESS &&
-            layout == VK_NULL_HANDLE,
-         "a uniform-buffer binding refuses");
+   /* Every core descriptor type, array count, and stage mask is a
+    * declared object the layout admits; the executing contract narrows
+    * at pipeline creation.
+    */
+   for (VkDescriptorType type = VK_DESCRIPTOR_TYPE_SAMPLER;
+        type <= VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT; type++) {
+      binding = storage_binding(0);
+      binding.descriptorType = type;
+      binding.stageFlags = VK_SHADER_STAGE_ALL;
+      CHECK(create_layout(f, &binding, 1, 0, &layout) == VK_SUCCESS &&
+               layout != VK_NULL_HANDLE,
+            "descriptor type %u admits at layout creation", type);
+      if (layout != VK_NULL_HANDLE)
+         vkDestroyDescriptorSetLayout(f->device, layout, NULL);
+   }
 
    binding = storage_binding(0);
-   binding.descriptorCount = 2;
+   binding.descriptorCount = 1024;
+   CHECK(create_layout(f, &binding, 1, 0, &layout) == VK_SUCCESS &&
+            layout != VK_NULL_HANDLE,
+         "a descriptor array at the count bound admits");
+   if (layout != VK_NULL_HANDLE)
+      vkDestroyDescriptorSetLayout(f->device, layout, NULL);
+   binding.descriptorCount = 1025;
    CHECK(create_layout(f, &binding, 1, 0, &layout) != VK_SUCCESS &&
             layout == VK_NULL_HANDLE,
-         "a descriptor array refuses");
+         "a descriptor array past the count bound refuses");
 
    binding = storage_binding(0);
-   binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+   binding.descriptorType = (VkDescriptorType)11;
    CHECK(create_layout(f, &binding, 1, 0, &layout) != VK_SUCCESS &&
             layout == VK_NULL_HANDLE,
-         "a vertex-stage binding refuses");
+         "a descriptor type outside the core eleven refuses");
 
    binding = storage_binding(0);
    const VkSampler sampler = (VkSampler)(uintptr_t)0x404;
@@ -381,10 +401,10 @@ check_layout_admission(const struct fixture *f)
             layout == VK_NULL_HANDLE,
          "a duplicate binding number refuses");
 
-   binding = storage_binding(4);
+   binding = storage_binding(16);
    CHECK(create_layout(f, &binding, 1, 0, &layout) != VK_SUCCESS &&
             layout == VK_NULL_HANDLE,
-         "a binding number past the four-binding bound refuses");
+         "a binding number past the sixteen-binding bound refuses");
 
    binding = storage_binding(0);
    CHECK(create_layout(
@@ -412,14 +432,31 @@ check_pool_lifetime(const struct fixture *f)
             VK_SUCCESS &&
             pool == VK_NULL_HANDLE,
          "a zero-capacity pool refuses");
-   CHECK(create_pool(f, 17, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) !=
-            VK_SUCCESS &&
+   CHECK(create_pool(f, 65537, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     &pool) != VK_SUCCESS &&
             pool == VK_NULL_HANDLE,
-         "a pool past sixteen sets refuses");
-   CHECK(create_pool(f, 2, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &pool) !=
+         "a pool past the set bound refuses");
+   CHECK(create_pool(f, 2, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &pool) ==
             VK_SUCCESS &&
-            pool == VK_NULL_HANDLE,
-         "a uniform-buffer pool size refuses");
+            pool != VK_NULL_HANDLE,
+         "a uniform-buffer pool size admits");
+   if (pool != VK_NULL_HANDLE) {
+      /* The two-binding storage layout finds no storage capacity in a
+       * uniform-only pool, so the allocation refuses by type while set
+       * capacity remains.
+       */
+      VkDescriptorSet typed_set;
+      VkResult typed = allocate_set(f, pool, &typed_set);
+      if (mutation == MUTATION_TYPED_POOL_OVERFLOW_ADMITS) {
+         typed = VK_SUCCESS;
+         typed_set = (VkDescriptorSet)(uintptr_t)0x1;
+      }
+      CHECK(typed == VK_ERROR_OUT_OF_POOL_MEMORY &&
+               typed_set == VK_NULL_HANDLE,
+            "a pool without the layout's descriptor type refuses with "
+            "out-of-pool-memory");
+      vkDestroyDescriptorPool(f->device, pool, NULL);
+   }
    CHECK(create_pool(f, 2, VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) !=
             VK_SUCCESS &&
@@ -524,7 +561,7 @@ static int
 check_update_poison(const struct fixture *f)
 {
    VkDescriptorPool pool;
-   REQUIRE(create_pool(f, 8, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) ==
+   REQUIRE(create_pool(f, 9, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) ==
               VK_SUCCESS,
            "poison pool");
    struct storage input, output;
@@ -550,7 +587,7 @@ check_update_poison(const struct fixture *f)
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, VK_WHOLE_SIZE },
       { "a binding absent from the layout", 3, 0,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, VK_WHOLE_SIZE },
-      { "a uniform-buffer write", 0, 0,
+      { "a write whose type differs from the layout binding", 0, 0,
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, VK_WHOLE_SIZE },
    };
    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
@@ -572,7 +609,10 @@ check_update_poison(const struct fixture *f)
             arms[i].label);
    }
 
-   /* A copy poisons its destination whatever the source holds. */
+   /* A copy between same-type single-element bindings carries the bound
+    * buffer, so the destination records; a copy from an unbound source
+    * leaves the destination unbound and the recording refuses.
+    */
    VkDescriptorSet source, destination;
    REQUIRE(allocate_set(f, pool, &source) == VK_SUCCESS, "copy source");
    REQUIRE(allocate_set(f, pool, &destination) == VK_SUCCESS,
@@ -594,10 +634,24 @@ check_update_poison(const struct fixture *f)
       .descriptorCount = 1,
    };
    vkUpdateDescriptorSets(f->device, 0, NULL, 1, &copy);
-   CHECK(record_dispatch(f, destination, DISPATCH_GROUPS) != VK_SUCCESS,
-         "a descriptor copy poisons its destination set");
+   CHECK(record_dispatch(f, destination, DISPATCH_GROUPS) == VK_SUCCESS,
+         "a same-type single-element copy carries the bound buffer");
    CHECK(record_dispatch(f, source, DISPATCH_GROUPS) == VK_SUCCESS,
          "the copy source stays recordable");
+   VkDescriptorSet unbound_source;
+   REQUIRE(allocate_set(f, pool, &unbound_source) == VK_SUCCESS,
+           "unbound copy source");
+   const VkCopyDescriptorSet unbound_copy = {
+      .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET,
+      .srcSet = unbound_source,
+      .srcBinding = 1,
+      .dstSet = destination,
+      .dstBinding = 1,
+      .descriptorCount = 1,
+   };
+   vkUpdateDescriptorSets(f->device, 0, NULL, 1, &unbound_copy);
+   CHECK(record_dispatch(f, destination, DISPATCH_GROUPS) != VK_SUCCESS,
+         "a copy from an unbound source leaves the destination unbound");
 
    /* An unbound binding refuses at recording without a poison. */
    VkDescriptorSet half;
@@ -723,10 +777,14 @@ main(int argc, char **argv)
    } else if (argc == 2 &&
               strcmp(argv[1], "--inject-pool-overflow-admits") == 0) {
       mutation = MUTATION_POOL_OVERFLOW_ADMITS;
+   } else if (argc == 2 &&
+              strcmp(argv[1], "--inject-typed-pool-overflow-admits") == 0) {
+      mutation = MUTATION_TYPED_POOL_OVERFLOW_ADMITS;
    } else if (argc != 1) {
       fprintf(stderr,
               "usage: %s [--inject-unpoisoned-oversize-write|"
-              "--inject-pool-overflow-admits]\n",
+              "--inject-pool-overflow-admits|"
+              "--inject-typed-pool-overflow-admits]\n",
               argv[0]);
       return 2;
    }
