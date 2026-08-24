@@ -484,6 +484,30 @@ check_pool_lifetime(const struct fixture *f)
          "the third allocation refuses with out-of-pool-memory and a "
          "cleared handle");
 
+   /* A multi-set allocation that straddles the capacity edge frees the
+    * sets it created and returns VK_NULL_HANDLE in every slot, so no
+    * handle to a freed set survives in the array.
+    */
+   CHECK(vkFreeDescriptorSets(f->device, pool, 1, &sets[1]) == VK_SUCCESS,
+         "freeing the second set succeeds");
+   {
+      const VkDescriptorSetLayout layouts[2] = { f->set_layout, f->set_layout };
+      VkDescriptorSet pair[2] = { (VkDescriptorSet)(uintptr_t)0x2,
+                                  (VkDescriptorSet)(uintptr_t)0x2 };
+      const VkDescriptorSetAllocateInfo info = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+         .descriptorPool = pool,
+         .descriptorSetCount = 2,
+         .pSetLayouts = layouts,
+      };
+      CHECK(vkAllocateDescriptorSets(f->device, &info, pair) ==
+               VK_ERROR_OUT_OF_POOL_MEMORY &&
+               pair[0] == VK_NULL_HANDLE && pair[1] == VK_NULL_HANDLE,
+            "a two-set allocation past capacity frees its first set and "
+            "clears both handles");
+      CHECK(allocate_set(f, pool, &sets[1]) == VK_SUCCESS,
+            "the capacity the failed pair released allocates again");
+   }
    CHECK(vkFreeDescriptorSets(f->device, pool, 1, &sets[0]) == VK_SUCCESS,
          "freeing one set succeeds");
    CHECK(allocate_set(f, pool, &sets[0]) == VK_SUCCESS,
@@ -561,7 +585,7 @@ static int
 check_update_poison(const struct fixture *f)
 {
    VkDescriptorPool pool;
-   REQUIRE(create_pool(f, 9, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) ==
+   REQUIRE(create_pool(f, 12, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &pool) ==
               VK_SUCCESS,
            "poison pool");
    struct storage input, output;
@@ -652,6 +676,31 @@ check_update_poison(const struct fixture *f)
    vkUpdateDescriptorSets(f->device, 0, NULL, 1, &unbound_copy);
    CHECK(record_dispatch(f, destination, DISPATCH_GROUPS) != VK_SUCCESS,
          "a copy from an unbound source leaves the destination unbound");
+
+   /* One write spanning both job bindings (the consecutive-binding
+    * update rule) binds both, and the dispatch records.
+    */
+   {
+      VkDescriptorSet spanned;
+      REQUIRE(allocate_set(f, pool, &spanned) == VK_SUCCESS,
+              "spanned-write set");
+      const VkDescriptorBufferInfo infos[2] = {
+         { input.buffer, 0, VK_WHOLE_SIZE },
+         { output.buffer, 0, VK_WHOLE_SIZE },
+      };
+      const VkWriteDescriptorSet span = {
+         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstSet = spanned,
+         .dstBinding = 0,
+         .descriptorCount = 2,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+         .pBufferInfo = infos,
+      };
+      vkUpdateDescriptorSets(f->device, 1, &span, 0, NULL);
+      CHECK(record_dispatch(f, spanned, DISPATCH_GROUPS) == VK_SUCCESS,
+            "a write spanning consecutive bindings binds both job "
+            "bindings");
+   }
 
    /* An unbound binding refuses at recording without a poison. */
    VkDescriptorSet half;

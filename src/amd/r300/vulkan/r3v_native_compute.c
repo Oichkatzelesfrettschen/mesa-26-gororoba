@@ -239,24 +239,30 @@ r3v_AllocateDescriptorSets(VkDevice _device,
    for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; i++) {
       VK_FROM_HANDLE(r3v_native_descriptor_set_layout, layout,
                      pAllocateInfo->pSetLayouts[i]);
+      VkResult failure = VK_SUCCESS;
+      struct r3v_native_descriptor_set *set = NULL;
       if (layout == NULL) {
-         r3v_FreeDescriptorSets(_device, pAllocateInfo->descriptorPool, i,
-                                pDescriptorSets);
-         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+         failure = R3V_NATIVE_REFUSAL_RESULT;
+      } else if (!pool_reserve_capacity(pool, layout)) {
+         failure = VK_ERROR_OUT_OF_POOL_MEMORY;
+      } else {
+         set = vk_object_zalloc(&device->vk, NULL, sizeof(*set),
+                                VK_OBJECT_TYPE_DESCRIPTOR_SET);
+         if (set == NULL) {
+            pool_release_capacity(pool, layout);
+            failure = VK_ERROR_OUT_OF_HOST_MEMORY;
+         }
       }
-      if (!pool_reserve_capacity(pool, layout)) {
+      if (failure != VK_SUCCESS) {
+         /* The failure clause frees every set this call created and
+          * hands back VK_NULL_HANDLE in every slot, so no handle to a
+          * freed set survives in the application's array.
+          */
          r3v_FreeDescriptorSets(_device, pAllocateInfo->descriptorPool, i,
                                 pDescriptorSets);
-         return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
-      }
-      struct r3v_native_descriptor_set *set =
-         vk_object_zalloc(&device->vk, NULL, sizeof(*set),
-                          VK_OBJECT_TYPE_DESCRIPTOR_SET);
-      if (set == NULL) {
-         pool_release_capacity(pool, layout);
-         r3v_FreeDescriptorSets(_device, pAllocateInfo->descriptorPool, i,
-                                pDescriptorSets);
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         for (uint32_t k = 0; k < i; k++)
+            pDescriptorSets[k] = VK_NULL_HANDLE;
+         return vk_error(device, failure);
       }
       set->layout = layout;
       vk_descriptor_set_layout_ref(&layout->vk);
@@ -306,14 +312,39 @@ descriptor_type_is_texel_buffer(VkDescriptorType type)
 }
 
 /* vkUpdateDescriptorSets returns void, so a write outside its layout
- * binding's type and array bounds, or one whose payload pointer the
+ * bindings' type and array bounds, or one whose payload pointer the
  * type requires is absent, poisons its set and the dispatch recording
- * refuses it.  A single storage-buffer element at index zero binds
- * the executing shape; a write of any other admitted type records the
- * binding as written without an executing route.  A copy carries the
- * source binding's state when both layouts declare the same type and
- * count, and poisons otherwise.
+ * refuses it.  A write's descriptorCount may run past its binding into
+ * the consecutive bindings of the same type (the update rule for
+ * consecutive binding updates), so the write walks the bindings it
+ * spans.  A single-element storage-buffer binding written at index
+ * zero binds the executing shape; a write of any other admitted shape
+ * leaves the binding unbound.  Copies apply after writes; a copy
+ * carries a same-type single-element binding, propagates a poisoned
+ * source, and poisons on a type or bound mismatch.
  */
+static bool
+descriptor_write_span_ok(const struct r3v_native_descriptor_set_layout *layout,
+                         uint32_t binding, uint32_t element,
+                         uint32_t count, VkDescriptorType type)
+{
+   while (count > 0) {
+      if (binding >= R3V_NATIVE_DESCRIPTOR_BINDING_MAX)
+         return false;
+      const struct r3v_native_descriptor_layout_binding *decl =
+         &layout->bindings[binding];
+      if (!decl->present || decl->type != type || element > decl->count)
+         return false;
+      const uint32_t here = decl->count - element;
+      if (here == 0 && count > 0 && decl->count != 0)
+         return false;
+      count -= here < count ? here : count;
+      binding++;
+      element = 0;
+   }
+   return true;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
                          const VkWriteDescriptorSet *pDescriptorWrites,
@@ -327,56 +358,61 @@ r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
       VK_FROM_HANDLE(r3v_native_descriptor_set, set, write->dstSet);
       if (set == NULL)
          continue;
-      if (write->dstBinding >= R3V_NATIVE_DESCRIPTOR_BINDING_MAX) {
-         set->poisoned = true;
-         continue;
-      }
-      const struct r3v_native_descriptor_layout_binding *decl =
-         &set->layout->bindings[write->dstBinding];
       const bool buffer_type = descriptor_type_is_buffer(write->descriptorType);
       const bool texel_type =
          descriptor_type_is_texel_buffer(write->descriptorType);
       const bool image_type = !buffer_type && !texel_type;
-      if (!decl->present || write->descriptorType != decl->type ||
-          write->descriptorCount == 0 ||
-          write->dstArrayElement > decl->count ||
-          write->descriptorCount > decl->count - write->dstArrayElement ||
+      if (write->descriptorCount == 0 ||
+          !descriptor_write_span_ok(set->layout, write->dstBinding,
+                                    write->dstArrayElement,
+                                    write->descriptorCount,
+                                    write->descriptorType) ||
           (buffer_type && write->pBufferInfo == NULL) ||
           (texel_type && write->pTexelBufferView == NULL) ||
           (image_type && write->pImageInfo == NULL)) {
          set->poisoned = true;
          continue;
       }
-      struct r3v_native_descriptor_binding *binding =
-         &set->bindings[write->dstBinding];
-      if (write->descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
-          write->descriptorCount != 1 || write->dstArrayElement != 0) {
-         *binding = (struct r3v_native_descriptor_binding){
-            .written = true,
-         };
-         continue;
+      /* Walk the spanned bindings; each single-element storage-buffer
+       * binding the write covers at element zero binds its buffer.
+       */
+      uint32_t binding = write->dstBinding;
+      uint32_t element = write->dstArrayElement;
+      uint32_t remaining = write->descriptorCount;
+      uint32_t payload = 0;
+      while (remaining > 0) {
+         const struct r3v_native_descriptor_layout_binding *decl =
+            &set->layout->bindings[binding];
+         const uint32_t here_max = decl->count - element;
+         const uint32_t here = here_max < remaining ? here_max : remaining;
+         if (write->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+             decl->count == 1 && element == 0 && here == 1) {
+            const VkDescriptorBufferInfo *info =
+               &write->pBufferInfo[payload];
+            VK_FROM_HANDLE(r3v_native_buffer, buffer, info->buffer);
+            if (buffer == NULL || info->offset > buffer->vk.size ||
+                (info->range != VK_WHOLE_SIZE &&
+                 info->range > buffer->vk.size - info->offset)) {
+               set->poisoned = true;
+               break;
+            }
+            const VkDeviceSize range =
+               info->range == VK_WHOLE_SIZE
+                  ? buffer->vk.size - info->offset
+                  : info->range;
+            set->bindings[binding] =
+               (struct r3v_native_descriptor_binding){
+                  .bound = true,
+                  .buffer = buffer,
+                  .offset = info->offset,
+                  .range = range,
+               };
+         }
+         payload += here;
+         remaining -= here;
+         binding++;
+         element = 0;
       }
-      VK_FROM_HANDLE(r3v_native_buffer, buffer,
-                     write->pBufferInfo->buffer);
-      if (buffer == NULL ||
-          write->pBufferInfo->offset > buffer->vk.size ||
-          (write->pBufferInfo->range != VK_WHOLE_SIZE &&
-           write->pBufferInfo->range >
-              buffer->vk.size - write->pBufferInfo->offset)) {
-         set->poisoned = true;
-         continue;
-      }
-      const VkDeviceSize range =
-         write->pBufferInfo->range == VK_WHOLE_SIZE
-            ? buffer->vk.size - write->pBufferInfo->offset
-            : write->pBufferInfo->range;
-      *binding = (struct r3v_native_descriptor_binding){
-         .bound = true,
-         .written = true,
-         .buffer = buffer,
-         .offset = write->pBufferInfo->offset,
-         .range = range,
-      };
    }
 
    for (uint32_t i = 0; i < descriptorCopyCount; i++) {
@@ -385,7 +421,7 @@ r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
       VK_FROM_HANDLE(r3v_native_descriptor_set, src, copy->srcSet);
       if (dst == NULL)
          continue;
-      if (src == NULL ||
+      if (src == NULL || src->poisoned ||
           copy->srcBinding >= R3V_NATIVE_DESCRIPTOR_BINDING_MAX ||
           copy->dstBinding >= R3V_NATIVE_DESCRIPTOR_BINDING_MAX) {
          dst->poisoned = true;
@@ -406,13 +442,13 @@ r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
       }
       /* The executing shape is one element at index zero, so a whole
        * single-element copy carries the bound buffer; any other slice
-       * records the destination as written without a route.
+       * leaves the destination binding unbound.
        */
       if (s->count == 1 && d->count == 1)
          dst->bindings[copy->dstBinding] = src->bindings[copy->srcBinding];
       else
          dst->bindings[copy->dstBinding] =
-            (struct r3v_native_descriptor_binding){ .written = true };
+            (struct r3v_native_descriptor_binding){ .bound = false };
    }
 }
 
@@ -545,8 +581,8 @@ r3v_CmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX,
     * pipeline was created against.
     */
    if (pipeline == NULL || set == NULL || set->poisoned ||
-       memcmp(pipeline->set0_bindings, set->layout->bindings,
-              sizeof(pipeline->set0_bindings)) != 0 ||
+       !r3v_native_descriptor_bindings_equal(pipeline->set0_bindings,
+                                             set->layout->bindings) ||
        cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
        cmd_buffer->deferred_draw.pending ||
        cmd_buffer->deferred_copy_count != 0 ||

@@ -287,14 +287,13 @@ struct r3v_native_descriptor_set_layout {
    uint32_t type_counts[R3V_NATIVE_DESCRIPTOR_TYPE_COUNT];
 };
 
-/* A written binding is `bound` only through the executing shape (one
- * storage-buffer element at index zero); a write of any other admitted
- * type records `written` so the set stays unpoisoned, and a dispatch
- * naming that binding refuses because it is not bound.
+/* A binding is `bound` only through the executing shape (a
+ * single-element storage-buffer binding written at index zero); a
+ * write of any other admitted shape leaves the binding unbound, and a
+ * dispatch naming it refuses.
  */
 struct r3v_native_descriptor_binding {
    bool bound;
-   bool written;
    struct r3v_native_buffer *buffer;
    VkDeviceSize offset;
    /* Resolved byte range: VK_WHOLE_SIZE resolves against the buffer at
@@ -320,12 +319,30 @@ struct r3v_native_descriptor_pool {
    struct r3v_native_descriptor_set **sets;
 };
 
+/* Identically defined layouts compare field by field, so struct
+ * padding never enters the verdict. */
+static inline bool
+r3v_native_descriptor_bindings_equal(
+   const struct r3v_native_descriptor_layout_binding *a,
+   const struct r3v_native_descriptor_layout_binding *b)
+{
+   for (uint32_t i = 0; i < R3V_NATIVE_DESCRIPTOR_BINDING_MAX; i++) {
+      if (a[i].present != b[i].present)
+         return false;
+      if (a[i].present && (a[i].type != b[i].type ||
+                           a[i].count != b[i].count ||
+                           a[i].stages != b[i].stages))
+         return false;
+   }
+   return true;
+}
+
 static inline bool
 r3v_native_descriptor_layouts_equal(
    const struct r3v_native_descriptor_set_layout *a,
    const struct r3v_native_descriptor_set_layout *b)
 {
-   return memcmp(a->bindings, b->bindings, sizeof(a->bindings)) == 0;
+   return r3v_native_descriptor_bindings_equal(a->bindings, b->bindings);
 }
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_descriptor_set_layout, vk.base,
