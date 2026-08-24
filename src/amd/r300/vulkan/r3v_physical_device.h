@@ -41,11 +41,11 @@ struct r3v_physical_device {
    int64_t render_node_major;
    int64_t render_node_minor;
 
-   /* Experimental hybrid-compute queue gate, read once from the environment
-    * at physical-device creation.  Caching it keeps the advertised queue
-    * flags consistent across queries even if the environment changes
+   /* The verb ledger's compute-queue claim, evaluated once at
+    * physical-device creation so the advertised queue flags stay
+    * consistent across queries even if the environment changes
     * mid-process. */
-   bool hybrid_compute_enabled;
+   bool compute_queue_claimed;
 
 
    /* Timeline sync type emulated on top of the binary cpu_sync.  radeon has no

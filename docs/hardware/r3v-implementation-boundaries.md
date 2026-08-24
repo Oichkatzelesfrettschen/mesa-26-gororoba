@@ -91,7 +91,7 @@ remain open. The [Vulkan queues rule](https://registry.khronos.org/vulkan/specs/
 requires an implementation that exposes graphics to expose at least one
 family supporting both graphics and compute. The one family reports
 `VK_QUEUE_GRAPHICS_BIT`, and `VK_QUEUE_COMPUTE_BIT` only behind the exact
-`R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in, under which
+`R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in, under which
 `r3v_native_compute.c` admits the identity-map kernel from SPIR-V words into
 the common compute job and executes it on the CPU route at submission while
 every other module refuses at pipeline creation; with the opt-in unset,
@@ -344,8 +344,8 @@ native_queue=$(function_body \
   r3v_GetPhysicalDeviceQueueFamilyProperties2 \
   src/amd/r300/vulkan/r3v_physical_device.c)
 printf '%s\n' "$native_queue" | rg -n --fixed-strings \
-  -e 'VK_QUEUE_GRAPHICS_BIT' -e 'hybrid_compute_enabled'
-rg -n --fixed-strings -e 'hybrid_compute_enabled' \
+  -e 'VK_QUEUE_GRAPHICS_BIT' -e 'compute_queue_claimed'
+rg -n --fixed-strings -e 'compute_queue_claimed' \
   -e 'R3V_NATIVE_REFUSAL_RESULT' -e 'r300_compute_job_from_spirv' \
   src/amd/r300/vulkan/r3v_native_compute.c
 
@@ -780,7 +780,7 @@ the capability ladder's work.
 | CPU vertex execution over Gallium Draw SW TCL | `r300_cpu_vertex_job_execute` over the job IR | host unit, and silicon through the cell's carrier |
 | R300 graphics state: VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, raster | the cell's fixed state vector alone | silicon, one state vector |
 | R2VB producer, CB export, cache publication, TCL-bypass re-ingest | public GPU-producer route, one payload, F32_4 position stream, three vertices | silicon, one payload |
-| Graphics-as-compute: `VK_QUEUE_COMPUTE_BIT` and `vkCmdDispatch` over raster kernels and multipass carriers, behind the `R3V_HYBRID_COMPUTE_EXPERIMENTAL` gate | native compute surface behind the same exact gate: `r300_compute_job_from_spirv` admits the identity-map kernel from SPIR-V words directly (no NIR), storage-buffer descriptors on set 0, one recorded dispatch per command buffer, `r300_cpu_compute_job_execute` at submission; every out-of-subset module refuses at pipeline creation, closing the Gallium lane's admitted-but-unmatched no-op | host unit and end-to-end shim dispatch; raster-carrier execution and the wider verb corpus are the open widening axes |
+| Graphics-as-compute: `VK_QUEUE_COMPUTE_BIT` and `vkCmdDispatch` over raster kernels and multipass carriers, behind the `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL` gate | native compute surface behind the same exact gate: `r300_compute_job_from_spirv` admits the identity-map kernel from SPIR-V words directly (no NIR), storage-buffer descriptors on set 0, one recorded dispatch per command buffer, `r300_cpu_compute_job_execute` at submission; every out-of-subset module refuses at pipeline creation, closing the Gallium lane's admitted-but-unmatched no-op | host unit and end-to-end shim dispatch; raster-carrier execution and the wider verb corpus are the open widening axes |
 | Video: Gallium VL MPEG-1/MPEG-2 shader decode | reclassified out of the Vulkan surface: `libgalliumvl` decode reaches applications through the GL state trackers alone, neither ICD names a `VK_KHR_video_*` symbol, so it retires with the GL carve-out above | not an R3V capability |
 | Memory and transfers: maps, uploads, copies, blits, clears | GEM-backed memory, one linear `B8G8R8A8_UNORM` transfer surface | host model, and silicon for the cell's carrier |
 | Queue and completion | owned Radeon DRM submission with fence retirement | silicon |
@@ -834,7 +834,7 @@ mechanisms are:
   image, image-view, pipeline, queue, and command-carrier objects;
   reporting narrowed to executable source routes: the queue family reports
   `VK_QUEUE_GRAPHICS_BIT`, and `VK_QUEUE_COMPUTE_BIT` only under the exact
-  `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in that admits the identity-map
+  `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in that admits the identity-map
   kernel (`r3v_native_compute.c`). The Vulkan 1.0 queue-family rule keeps
   promotion open until the compute route stands without its opt-in.
   Format properties advertise one linear `B8G8R8A8_UNORM`

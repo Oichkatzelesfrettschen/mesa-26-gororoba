@@ -6,8 +6,8 @@ the core 1.0 VkPhysicalDeviceFeatures and VkPhysicalDeviceLimits member
 lists from vk.xml, so a registry update that renames or moves a member
 the driver fills surfaces as a row change.  The source pins read the
 driver: the apiVersion 1.0 definition, the granted feature bits, the
-queue-family shape (one family, GRAPHICS base, COMPUTE behind the exact
-hybrid gate, queueCount 1, timestampValidBits 0), and both extension
+queue-family shape (one family, GRAPHICS base, COMPUTE as the verb ledger claims it (unconditional once every
+verb executes, else the exact opt-in), queueCount 1, timestampValidBits 0), and both extension
 tables.  The dependency closure judges the advertised extension surface.
 The checked-in TSV must equal the regeneration or the check fails naming
 the divergent row.  The core 1.0 command closure is owned by
@@ -126,24 +126,24 @@ def parse_granted_features(physical_device_text):
 
 def parse_queue_family(physical_device_text):
     """The queue family as source facts: bare GRAPHICS base, COMPUTE
-    behind the hybrid gate, queueCount 1, timestampValidBits 0."""
+    behind the ledger queue-claim gate, queueCount 1, timestampValidBits 0."""
     text = strip_comments(physical_device_text)
     if not re.search(r"VkQueueFlags\s+queue_flags\s*=\s*"
                      r"VK_QUEUE_GRAPHICS_BIT\s*;", text):
         raise InventoryFailure(
             "the queue family base flags are not the bare "
             "VK_QUEUE_GRAPHICS_BIT assignment the inventory pins")
-    if not re.search(r"if\s*\(\s*pdev->hybrid_compute_enabled\s*\)\s*"
+    if not re.search(r"if\s*\(\s*pdev->compute_queue_claimed\s*\)\s*"
                      r"queue_flags\s*\|=\s*VK_QUEUE_COMPUTE_BIT", text):
         raise InventoryFailure(
             "the COMPUTE queue bit is not gated on "
-            "pdev->hybrid_compute_enabled; a gate change re-derives the "
+            "pdev->compute_queue_claimed; a gate change re-derives the "
             "inventory row deliberately")
     for field, value in (("queueCount", "1"), ("timestampValidBits", "0")):
         if not re.search(r"\." + field + r"\s*=\s*" + value + r"\s*,", text):
             raise InventoryFailure(
                 f"the queue family does not set .{field} = {value}")
-    return "graphics_base_compute_gated"
+    return "graphics_base_compute_claimed"
 
 
 class Registry:
@@ -288,7 +288,7 @@ def generate_rows(registry, device_exts, instance_exts, api_version,
              "R3V_API_VERSION pins core 1.0; a raise is a new campaign")]
     rows.append(("queue_family", queue_shape,
                  "one family, GRAPHICS base, COMPUTE behind the exact "
-                 "hybrid gate, queueCount 1, timestampValidBits 0"))
+                 "ledger queue-claim gate, queueCount 1, timestampValidBits 0"))
     for name in granted:
         rows.append(("feature_granted", name,
                      "r3v_physical_device_init_features sets it true"))
@@ -415,7 +415,7 @@ def selftest(registry_path):
     expect("not a VK_MAKE_API_VERSION", parse_api_version,
            "#define R3V_API_VERSION VK_API_VERSION_1_1\n")
     good_queue = ("VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT;\n"
-                  "if (pdev->hybrid_compute_enabled)\n"
+                  "if (pdev->compute_queue_claimed)\n"
                   "   queue_flags |= VK_QUEUE_COMPUTE_BIT;\n"
                   ".queueCount = 1,\n.timestampValidBits = 0,\n")
     parse_queue_family(good_queue)

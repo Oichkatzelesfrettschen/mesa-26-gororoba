@@ -70,7 +70,7 @@ Every value below is set for the run; one missing value refuses at the
 gate and consumes the attempt.
 
 - `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`
-- `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1`
+- `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1`
 - `R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL=1`
 - `R3V_NATIVE_AUTHORIZED_IB_BLAKE3=<digest r3v_native_arming_runner
   --compute-identity reports>`

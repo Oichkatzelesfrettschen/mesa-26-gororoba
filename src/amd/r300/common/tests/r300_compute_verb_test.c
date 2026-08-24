@@ -323,6 +323,28 @@ test_checker_calibration(void)
 
    memcpy(mutated, rows, sizeof(mutated));
    assert(!r300_compute_verb_rows_valid(mutated, count - 1, &reason));
+
+   /* The queue claim: the ledger today is not conformant (thirteen rows
+    * absent), so the claim follows the gate over the delivered CPU
+    * route; a table with every route executing claims without a gate;
+    * a table whose only executing route is a GPU route claims nothing
+    * through the gate; an empty table claims nothing.
+    */
+   assert(!r300_compute_verb_queue_conformant());
+   assert(!r300_compute_verb_queue_claim(false));
+   assert(r300_compute_verb_queue_claim(true));
+   memcpy(mutated, rows, sizeof(*rows) * count);
+   for (uint32_t v = 0; v < count; v++) {
+      mutated[v].cpu_route = R300_COMPUTE_VERB_ROUTE_EXECUTING;
+      mutated[v].gpu_route = R300_COMPUTE_VERB_ROUTE_EXECUTING;
+   }
+   assert(r300_compute_verb_queue_conformant_rows(mutated, count));
+   assert(r300_compute_verb_queue_claim_rows(mutated, count, false));
+   memcpy(mutated, rows, sizeof(*rows) * count);
+   for (uint32_t v = 0; v < count; v++)
+      mutated[v].cpu_route = R300_COMPUTE_VERB_ROUTE_ABSENT;
+   assert(!r300_compute_verb_queue_claim_rows(mutated, count, true));
+   assert(!r300_compute_verb_queue_claim_rows(mutated, 0, true));
    assert(strcmp(reason, "row count outside the verb enum") == 0);
 
    memcpy(mutated, rows, sizeof(mutated));

@@ -25,6 +25,7 @@
 #include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
 
+#include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 
 #include "vk_semaphore.h"
@@ -576,8 +577,8 @@ main(void)
           pdev_count == 1);
 
    /* The one queue family is the shape the inventory pins: GRAPHICS
-    * base, COMPUTE only under the exact hybrid opt-in, queueCount 1,
-    * timestampValidBits 0.
+    * base, COMPUTE as the verb ledger claims it under the exact opt-in,
+    * queueCount 1, timestampValidBits 0.
     */
    PFN_vkGetPhysicalDeviceQueueFamilyProperties query_queue_families =
       (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(
@@ -588,11 +589,14 @@ main(void)
    assert(family_count == 1);
    VkQueueFamilyProperties family;
    query_queue_families(pdev, &family_count, &family);
-   const char *hybrid = getenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL");
+   const char *gate = getenv(R300_COMPUTE_QUEUE_CLAIM_GATE);
    const VkQueueFlags expected_flags =
       VK_QUEUE_GRAPHICS_BIT |
-      (hybrid != NULL && strcmp(hybrid, "1") == 0 ? VK_QUEUE_COMPUTE_BIT
-                                                  : 0);
+      (r300_compute_verb_queue_claim(
+          gate != NULL &&
+          strcmp(gate, R300_COMPUTE_QUEUE_CLAIM_GATE_VALUE) == 0)
+          ? VK_QUEUE_COMPUTE_BIT
+          : 0);
    assert(family.queueFlags == expected_flags);
    assert(family.queueCount == 1);
    assert(family.timestampValidBits == 0);

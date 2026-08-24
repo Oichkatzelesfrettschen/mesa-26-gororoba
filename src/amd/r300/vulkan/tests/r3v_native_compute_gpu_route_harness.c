@@ -139,7 +139,7 @@ run_arm(enum arm arm, const char *name)
    assert(mkdtemp(manifest_dir) != NULL);
    setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
    setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
-   setenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL", "1", 1);
+   setenv("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL", "1", 1);
    const char *verb_gate =
       r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate;
    uint32_t verb_count = 0;

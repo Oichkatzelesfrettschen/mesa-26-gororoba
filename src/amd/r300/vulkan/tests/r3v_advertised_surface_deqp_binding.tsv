@@ -1,6 +1,6 @@
 kind	name	implementation_test	deqp_group
 api_version	1.0	r3v-vulkan10-requirement-inventory	dEQP-VK.api.version_check
-queue_family	graphics_base_compute_gated	r3v-native-public-surface	dEQP-VK.api.device_init.create_device_various_queue_counts
+queue_family	graphics_base_compute_claimed	r3v-native-public-surface	dEQP-VK.api.device_init.create_device_various_queue_counts
 feature	robustBufferAccess	r3v-native-submit-order-robust-oob-enabled	dEQP-VK.robustness.buffer_access
 instance_extension	VK_KHR_get_physical_device_properties2	r3v-native-format-features	dEQP-VK.api.info.get_physical_device_properties2
 instance_extension	VK_KHR_surface	r3v-native-wsi-surface-contract	dEQP-VK.wsi.xcb.surface.query_support

@@ -1,6 +1,6 @@
 kind	name	detail
 api_version	1.0	R3V_API_VERSION pins core 1.0; a raise is a new campaign
-queue_family	graphics_base_compute_gated	one family, GRAPHICS base, COMPUTE behind the exact hybrid gate, queueCount 1, timestampValidBits 0
+queue_family	graphics_base_compute_claimed	one family, GRAPHICS base, COMPUTE behind the exact ledger queue-claim gate, queueCount 1, timestampValidBits 0
 feature_granted	robustBufferAccess	r3v_physical_device_init_features sets it true
 feature_member	robustBufferAccess	core 1.0 feature struct
 feature_member	fullDrawIndexUint32	core 1.0 feature struct
