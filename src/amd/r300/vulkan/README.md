@@ -367,6 +367,33 @@ and `libgcc_eh.a`, which the bundle records under `startfiles`.
 level the note carried; `verify` on any other CPU refuses the stripped
 bundle by `/proc/cpuinfo`.
 
+`tests/r3v_cs_ioctl_trace.py` is the independent witness that a slice
+run issued no command submission: `trace -- <argv>` runs the command
+under `strace -f -qq -e raw=ioctl -e trace=ioctl`, counts ioctls by
+request number, and exits nonzero on any `DRM_IOCTL_RADEON_CS` past
+`--expect-cs`, writing `{cs_ioctls, gem_ioctls, total_ioctls,
+strace_sha256, argv}` beside the per-request census and the tracee's
+own exit status.  The request number derives from the headers rather
+than from a name strace happens to print -- `_IOWR('d', DRM_COMMAND_BASE
+0x40 + DRM_RADEON_CS 0x26, struct drm_radeon_cs)` is `0xc0206466`, and
+`derivation` prints the same construction for GEM_CREATE, GEM_MMAP,
+GEM_WAIT_IDLE, and INFO -- because strace resolves a request several
+drivers share into an ambiguous alternation and `raw=ioctl` is what
+makes the bare number the thing counted.  The witness stops at the
+syscall boundary: the radeon drm-shim answers the whole radeon request
+set inside the tracee's address space, so a shim run performs no DRM
+ioctl syscall and this tool reports zero for a submitting arm whose own
+transport-table counter reports one.  `selftest` therefore calibrates
+the parser on emitters issuing a known count of real CS-numbered and
+GEM-numbered syscalls -- three refused by default and admitted under
+`--expect-cs 3`, two GEM calls admitted with `cs_ioctls` zero -- and
+pins both shim arms of `r3v_native_submit_order_harness` at a
+syscall-visible zero, which is the property that holds the scope of the
+verdict.  On the host model the zero states that nothing reached the
+kernel; on silicon, where every submission is a real syscall, the same
+zero states that no submission happened, which is what the hazard-free
+slices must show.
+
 ## Conformance contract
 
 The ICD must not be advertised as conformant Vulkan until:
