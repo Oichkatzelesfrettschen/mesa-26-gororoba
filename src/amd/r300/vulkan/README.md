@@ -321,6 +321,24 @@ default context requires a GRAPHICS|COMPUTE queue and aborts on the
 graphics-only family; the operator passes the exact compute-queue opt-in
 through `--env` and the receipt records it.
 
+`tests/r3v_conformance_partition.tsv` is the exhaustive partition of
+the pinned mustpass corpus (3,251,483 cases): `tests/
+r3v_conformance_partition.py` reads every corpus file once, assigns each
+case to the one slice whose group prefixes it, and refuses an uncovered
+case, a case two slices claim, a group claiming nothing, and a case a
+corpus file repeats; it generates every slice's sorted caselist with its
+count and SHA-256 beside the corpus and table digests in
+`partition_manifest.json`, and the slice counts sum to the corpus count
+by construction.  The eleven-row `r3v_conformance_slices.tsv` is the
+pilot ladder: the same tool proves its disjointness with `--kind pilot`
+and records what it leaves uncovered, so a run over it is a pilot slice
+run and never the corpus.  A slice whose hazard is `unknown` is blocked:
+its caselist is generated for the record and the runner refuses it
+(`blocked_slice`), so an unclassified case never rides a hazard-free
+slice onto the target.  `run --partition-manifest` binds the caselist to
+its slice by digest and records kind, slice, hazard, corpus digest, and
+manifest digest in the receipt.
+
 ## Conformance contract
 
 The ICD must not be advertised as conformant Vulkan until:
