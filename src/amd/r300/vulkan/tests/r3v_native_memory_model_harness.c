@@ -39,9 +39,14 @@ enum arm {
    ARM_MAPPED_RANGES,
    ARM_BIND_ADMISSION,
    ARM_BUDGET_CONTRACT,
+   ARM_IMAGE_ALIAS_BINDING,
    /* Known-bad: a flush range past the end of the allocation admitted --
     * the range validation this harness proves must make this arm fail. */
    ARM_KNOWN_BAD_RANGE_ADMITS,
+   /* Known-bad: VK_IMAGE_CREATE_ALIAS_BIT admitted on the render family,
+    * whose required dedicated allocation binds its memory to that one
+    * image -- the family-scoped flag admission must make this arm fail. */
+   ARM_KNOWN_BAD_RENDER_FAMILY_ALIAS_ADMITS,
 };
 
 static enum arm current_arm;
@@ -71,7 +76,9 @@ injected_mmap(size_t size, int fd, uint64_t offset)
    f(vkAllocateMemory) f(vkFreeMemory) f(vkMapMemory) f(vkUnmapMemory)        \
    f(vkFlushMappedMemoryRanges) f(vkInvalidateMappedMemoryRanges)             \
    f(vkCreateBuffer) f(vkDestroyBuffer) f(vkGetBufferMemoryRequirements)      \
-   f(vkBindBufferMemory) f(vkGetDeviceMemoryCommitment) f(vkDestroyDevice)
+   f(vkBindBufferMemory) f(vkGetDeviceMemoryCommitment)                       \
+   f(vkCreateImage) f(vkDestroyImage) f(vkGetImageMemoryRequirements)         \
+   f(vkBindImageMemory) f(vkDestroyDevice)
 
 #define DECLARE(name) static PFN_##name name;
 DEVICE_COMMANDS(DECLARE)
@@ -124,6 +131,35 @@ create_buffer(VkDevice device, VkDeviceSize size)
    return buffer;
 }
 
+/* The shape the image arms create, differing in usage, format, and
+ * create flags alone: 2D, one mip, one layer, one sample, linear,
+ * exclusive.  Transfer usage names the linear transfer family, and
+ * color-attachment usage names the render family. */
+static VkResult
+create_image(VkDevice device, VkImageUsageFlags usage,
+             VkImageCreateFlags flags, VkFormat format, uint32_t width,
+             uint32_t height, VkImage *image)
+{
+   *image = VK_NULL_HANDLE;
+   return vkCreateImage(
+      device,
+      &(VkImageCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+         .flags = flags,
+         .imageType = VK_IMAGE_TYPE_2D,
+         .format = format,
+         .extent = { width, height, 1 },
+         .mipLevels = 1,
+         .arrayLayers = 1,
+         .samples = VK_SAMPLE_COUNT_1_BIT,
+         .tiling = VK_IMAGE_TILING_LINEAR,
+         .usage = usage,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      },
+      NULL, image);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -138,8 +174,12 @@ main(int argc, char **argv)
       current_arm = ARM_BIND_ADMISSION;
    else if (strcmp(argv[1], "budget-contract") == 0)
       current_arm = ARM_BUDGET_CONTRACT;
+   else if (strcmp(argv[1], "image-alias-binding") == 0)
+      current_arm = ARM_IMAGE_ALIAS_BINDING;
    else if (strcmp(argv[1], "known-bad-range-admits") == 0)
       current_arm = ARM_KNOWN_BAD_RANGE_ADMITS;
+   else if (strcmp(argv[1], "known-bad-render-family-alias-admits") == 0)
+      current_arm = ARM_KNOWN_BAD_RENDER_FAMILY_ALIAS_ADMITS;
    else {
       fprintf(stderr, "unknown arm %s\n", argv[1]);
       return 2;
@@ -382,10 +422,93 @@ main(int argc, char **argv)
       vkFreeMemory(device, memory, NULL);
       break;
    }
+   case ARM_IMAGE_ALIAS_BINDING: {
+      const VkImageUsageFlags transfer_usage =
+         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      VkDeviceMemory memory = allocate(device, 16384, 0, VK_SUCCESS);
+      VkImage alias_a = VK_NULL_HANDLE;
+      VkImage alias_b = VK_NULL_HANDLE;
+      VkImage alias_window = VK_NULL_HANDLE;
+      assert(create_image(device, transfer_usage, VK_IMAGE_CREATE_ALIAS_BIT,
+                          VK_FORMAT_R8G8B8A8_UINT, 33, 33,
+                          &alias_a) == VK_SUCCESS);
+      assert(create_image(device, transfer_usage, VK_IMAGE_CREATE_ALIAS_BIT,
+                          VK_FORMAT_R8G8B8A8_UINT, 33, 33,
+                          &alias_b) == VK_SUCCESS);
+      assert(create_image(device, transfer_usage, VK_IMAGE_CREATE_ALIAS_BIT,
+                          VK_FORMAT_R8G8B8A8_UINT, 33, 33,
+                          &alias_window) == VK_SUCCESS);
+      /* The requirement reports the aliasing window itself: the linear
+       * footprint row_pitch_bytes * height, 64-byte-aligned pitch over
+       * the 33-texel row. */
+      VkMemoryRequirements reqs;
+      vkGetImageMemoryRequirements(device, alias_a, &reqs);
+      assert(reqs.size == r3v_native_transfer_footprint_bytes(33, 33, 4) &&
+             reqs.alignment == R3V_NATIVE_MEMORY_ALIGNMENT &&
+             reqs.memoryTypeBits == 0x1);
+      /* Two identically-created images bound at one offset cover the same
+       * window, so a write through the mapping reads back through both;
+       * a third binds a disjoint aligned window of the same allocation. */
+      assert(vkBindImageMemory(device, alias_a, memory, 0) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, alias_b, memory, 0) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, alias_window, memory, 8192) ==
+             VK_SUCCESS);
+      void *map = NULL;
+      assert(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+             VK_SUCCESS);
+      struct r3v_native_image *a = r3v_native_image_from_handle(alias_a);
+      struct r3v_native_image *b = r3v_native_image_from_handle(alias_b);
+      struct r3v_native_image *window =
+         r3v_native_image_from_handle(alias_window);
+      assert(a->memory == b->memory && a->memory_offset == 0 &&
+             b->memory_offset == 0 && window->memory_offset == 8192);
+      assert(a->row_pitch_bytes == b->row_pitch_bytes &&
+             a->row_pitch_bytes == 192);
+      const uint64_t last = reqs.size - 1;
+      ((unsigned char *)map)[a->memory_offset + last] = 0x7e;
+      assert(((unsigned char *)map)[b->memory_offset + last] == 0x7e);
+      /* The third window opens past the aliased pair's last byte, so a
+       * write there leaves the pair's contents standing. */
+      assert(window->memory_offset > a->memory_offset + last);
+      ((unsigned char *)map)[window->memory_offset] = 0x3c;
+      assert(((unsigned char *)map)[a->memory_offset + last] == 0x7e);
+      /* The render family reports a required dedicated allocation, whose
+       * memory carries that one image, so the flag refuses there; an
+       * unadmitted create flag refuses in either family. */
+      VkImage render_alias = VK_NULL_HANDLE;
+      assert(create_image(device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                          VK_IMAGE_CREATE_ALIAS_BIT,
+                          R3V_NATIVE_TARGET_FORMAT, R3V_NATIVE_TARGET_WIDTH,
+                          R3V_NATIVE_TARGET_HEIGHT,
+                          &render_alias) == R3V_NATIVE_REFUSAL_RESULT);
+      assert(render_alias == VK_NULL_HANDLE);
+      VkImage mutable_transfer = VK_NULL_HANDLE;
+      assert(create_image(device, transfer_usage,
+                          VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                          VK_FORMAT_R8G8B8A8_UINT, 33, 33,
+                          &mutable_transfer) == R3V_NATIVE_REFUSAL_RESULT);
+      assert(mutable_transfer == VK_NULL_HANDLE);
+      vkUnmapMemory(device, memory);
+      vkDestroyImage(device, alias_window, NULL);
+      vkDestroyImage(device, alias_b, NULL);
+      vkDestroyImage(device, alias_a, NULL);
+      vkFreeMemory(device, memory, NULL);
+      break;
+   }
    case ARM_KNOWN_BAD_RANGE_ADMITS: {
       VkDeviceMemory memory = allocate(device, 4096, 0, VK_SUCCESS);
       assert(flush_one(device, memory, 4097, VK_WHOLE_SIZE) == VK_SUCCESS);
       vkFreeMemory(device, memory, NULL);
+      break;
+   }
+   case ARM_KNOWN_BAD_RENDER_FAMILY_ALIAS_ADMITS: {
+      VkImage render_alias = VK_NULL_HANDLE;
+      assert(create_image(device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                          VK_IMAGE_CREATE_ALIAS_BIT,
+                          R3V_NATIVE_TARGET_FORMAT, R3V_NATIVE_TARGET_WIDTH,
+                          R3V_NATIVE_TARGET_HEIGHT,
+                          &render_alias) == VK_SUCCESS);
+      vkDestroyImage(device, render_alias, NULL);
       break;
    }
    }

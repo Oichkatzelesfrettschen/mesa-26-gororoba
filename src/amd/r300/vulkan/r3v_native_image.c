@@ -36,9 +36,24 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
 
    *pImage = VK_NULL_HANDLE;
 
+   /* VK_IMAGE_CREATE_ALIAS_BIT admits the transfer family alone.  The
+    * flag's rule is that images created with identical parameters over
+    * one memory range read that range's contents consistently, and the
+    * family's linear layout makes the aliasing window exact:
+    * row_pitch_bytes * height from the bind offset, the same footprint
+    * r3v_GetImageMemoryRequirements reports, so two such images over one
+    * offset cover the same bytes texel for texel.  The render family
+    * reports a required dedicated allocation, whose memory carries that
+    * one image alone, so no aliasing window opens there and the flag
+    * refuses.  An executing route reaches an alias only where the
+    * recorded pass proves the ranges apart -- stream_overlaps_target
+    * (r3v_native_draw.c) refuses a vertex stream sharing bytes with the
+    * pass target's footprint in the same BO -- so a stale alias stops at
+    * recording instead of reaching the draw.
+    */
    const uint32_t texel_bytes =
       r3v_native_transfer_texel_bytes(pCreateInfo->format);
-   if (pCreateInfo->flags != 0 ||
+   if ((pCreateInfo->flags & ~(VkImageCreateFlags)VK_IMAGE_CREATE_ALIAS_BIT) ||
        pCreateInfo->imageType != VK_IMAGE_TYPE_2D || texel_bytes == 0 ||
        pCreateInfo->extent.width < 1 || pCreateInfo->extent.height < 1 ||
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
@@ -53,7 +68,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    bool transfer_family;
    uint32_t row_pitch_bytes;
    if (pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
-      if (pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
+      if (pCreateInfo->flags != 0 ||
+          pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
           pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
           pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);

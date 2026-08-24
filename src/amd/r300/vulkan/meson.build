@@ -2096,8 +2096,14 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # once-per-buffer aligned type-0 contract and admits aliasing windows,
   # and the budget arm holds the reported table to the platform-ceiling
   # contract, the zero commitment, the 64-byte noncoherent atom, and the
-  # never-dedicated requirement.  The known-bad arm asserts an admitted
-  # out-of-range flush, so the range validation must fail it.
+  # never-dedicated requirement.  The image-alias arm binds two
+  # identically-created VK_IMAGE_CREATE_ALIAS_BIT transfer images over one
+  # linear footprint and a third over a disjoint window of the same
+  # allocation.  One known-bad arm asserts an admitted out-of-range flush,
+  # so the range validation must fail it; the other asserts the flag
+  # admitted on the render family, whose required dedicated allocation
+  # binds its memory to one image, so the family-scoped admission must
+  # fail it.
   r3v_native_memory_model_harness = executable(
     'r3v_native_memory_model_harness',
     files('tests/r3v_native_memory_model_harness.c'),
@@ -2109,7 +2115,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     gnu_symbol_visibility : 'hidden',
   )
   foreach memory_arm : ['alloc-refused', 'map-refused', 'mapped-ranges',
-                        'bind-admission', 'budget-contract']
+                        'bind-admission', 'budget-contract',
+                        'image-alias-binding']
     test(
       'r3v-native-memory-model-@0@'.format(memory_arm),
       r3v_native_memory_model_harness,
@@ -2124,6 +2131,16 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-memory-model-known-bad-range-admits',
     r3v_native_memory_model_harness,
     args : ['known-bad-range-admits'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    should_fail : true,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-memory-model-known-bad-render-family-alias-admits',
+    r3v_native_memory_model_harness,
+    args : ['known-bad-render-family-alias-admits'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
