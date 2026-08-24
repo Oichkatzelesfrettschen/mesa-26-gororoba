@@ -44,38 +44,13 @@ FORBIDDEN_INCLUDE_DIR_MARKERS = ("/gallium/",)
 
 
 def native_active_lines(text: str):
-    """Yield (line_number, line) pairs a -DR3V_NATIVE_BACKEND compile keeps.
+    """Yield every (line_number, line) pair in the source.
 
-    A minimal conditional tracker over the two backend macros: a region
-    under `#ifdef R3V_GALLIUM_BACKEND` or `#ifndef R3V_NATIVE_BACKEND`
-    never compiles in the native lane, and its `#else` arm does.  Any
-    other conditional stays conservatively active.
+    No source names a backend macro, so the native compilation keeps every
+    line and the scan reads them all; a conditional arm cannot hide a
+    forbidden include or identifier from it.
     """
-    stack = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        directive = line.strip()
-        if directive.startswith("#ifdef"):
-            macro = directive.split(None, 1)[1].split()[0] if len(
-                directive.split()) > 1 else ""
-            stack.append((macro != "R3V_GALLIUM_BACKEND", True))
-            continue
-        if directive.startswith("#ifndef"):
-            macro = directive.split(None, 1)[1].split()[0] if len(
-                directive.split()) > 1 else ""
-            stack.append((macro != "R3V_NATIVE_BACKEND", True))
-            continue
-        if directive.startswith("#if"):
-            stack.append((True, False))
-            continue
-        if directive.startswith("#else") and stack:
-            active, tracked = stack[-1]
-            stack[-1] = ((not active) if tracked else True, tracked)
-            continue
-        if directive.startswith("#endif") and stack:
-            stack.pop()
-            continue
-        if all(active for active, _ in stack):
-            yield number, line
+    return enumerate(text.splitlines(), start=1)
 
 
 def strip_comments(text: str) -> str:
@@ -344,20 +319,14 @@ def selftest() -> int:
         source_cases = (
             ("clean", '#include "util/format/u_formats.h"\n'
              "struct pipe_screen;\n"
-             "/* comment names pipe_context and pipe/p_defines.h */\n"
-             "#ifdef R3V_GALLIUM_BACKEND\n"
-             '#include "pipe/p_screen.h"\n'
-             "struct pipe_screen *screen;\n"
-             "#endif\n"
-             "#ifndef R3V_NATIVE_BACKEND\n"
-             '#include "pipe/p_defines.h"\n'
-             "#endif\n", AUDIT_OK),
+             "/* comment names pipe_context and pipe/p_defines.h */\n",
+             AUDIT_OK),
             ("include", '#include "pipe/p_defines.h"\n',
              AUDIT_FORBIDDEN_SOURCE),
             ("identifier", "struct pipe_screen *screen;\n",
              AUDIT_FORBIDDEN_SOURCE),
-            ("else-arm", "#ifdef R3V_GALLIUM_BACKEND\n"
-             "int gallium;\n"
+            ("conditional-arm", "#ifdef __SSE3__\n"
+             "int vector;\n"
              "#else\n"
              '#include "winsys/radeon_winsys.h"\n'
              "#endif\n", AUDIT_FORBIDDEN_SOURCE),
