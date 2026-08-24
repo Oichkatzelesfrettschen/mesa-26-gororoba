@@ -96,6 +96,7 @@ r3v_native_files = files(
   'r3v_native_memory.c',
   'r3v_native_object.c',
   'r3v_native_pipeline.c',
+  'r3v_native_plan.c',
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
@@ -973,6 +974,22 @@ if with_tests
       files('r3v_native_arming.c', 'tests/r3v_native_arming_test.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+  # The ordered-submission plan validates without the device: seal,
+  # schema, identity binding, whole-entry matching, and the monotonic
+  # replay session each refuse on their single-defect fixtures.
+  test(
+    'r3v-native-plan',
+    executable(
+      'r3v_native_plan_test',
+      files('r3v_native_plan.c', 'tests/r3v_native_plan_test.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
+      dependencies : [idep_mesautil],
+      link_with : [libr300_common],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r3v'],
