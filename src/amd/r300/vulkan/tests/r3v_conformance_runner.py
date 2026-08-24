@@ -501,7 +501,7 @@ def execute(args):
         refusal = "evidence_below_required"
     if args.expect_dso_sha256 and \
             receipt["icd"]["dso_sha256"] != args.expect_dso_sha256:
-        refusal = "wrong_icd"
+        refusal = refusal or "wrong_icd"
     src = receipt["source"]
     if args.expect_source_sha and (not src.get("available") or
                                    src["sha"] != args.expect_source_sha):
@@ -882,7 +882,13 @@ def selftest(fixture_qpa):
                          "1\tfake\tdEQP-VK.fake\tnone\thost-model\n"
                          "2\tother\tdEQP-VK.other\tunknown\tsilicon\n")
         pdir = d / "partition"
-        part.generate(table, corpus, pdir, "exhaustive")
+        cases_all = sorted(x.strip() for x in (corpus / "m.txt").read_text()
+                           .splitlines() if x.strip())
+        ppin = d / "pin.tsv"
+        ppin.write_text(f"cts_describe\tfixture\ncase_count\t"
+                        f"{len(cases_all)}\ncorpus_sha256\t"
+                        f"{part.sha256_lines(cases_all)}\n")
+        part.generate(table, corpus, pdir, "exhaustive", pin_path=ppin)
         mj = str(pdir / "partition_manifest.json")
         r = run("all_pass", "pass", cases=pdir / "fake.txt", manifest_json=mj)
         assert r["partition"]["slice"] == "fake" and \
@@ -901,7 +907,7 @@ def selftest(fixture_qpa):
                          "1\tfake\tdEQP-VK.fake\tsubmission\tsilicon\n"
                          "2\tother\tdEQP-VK.other\tunknown\tsilicon\n")
         sdir = d / "partition-silicon"
-        part.generate(table, corpus, sdir, "exhaustive")
+        part.generate(table, corpus, sdir, "exhaustive", pin_path=ppin)
         r = run("all_pass", "evidence_below_required",
                 cases=sdir / "fake.txt",
                 manifest_json=str(sdir / "partition_manifest.json"))

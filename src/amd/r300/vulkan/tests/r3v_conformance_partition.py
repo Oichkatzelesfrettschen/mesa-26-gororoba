@@ -38,7 +38,7 @@ HEADER = ["order", "slice", "groups", "hazard", "required_evidence"]
 HAZARDS = {"none", "submission", "display", "unknown"}
 EVIDENCE = {"host-model", "silicon"}
 KINDS = {"pilot", "exhaustive"}
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 
 
 class PartitionRefusal(Exception):
@@ -266,6 +266,9 @@ def verify_manifest(path):
         raise PartitionRefusal("manifest version unknown")
     if manifest.get("kind") not in KINDS:
         raise PartitionRefusal("manifest kind unknown")
+    if manifest["kind"] == "exhaustive" and not manifest.get("cts_describe"):
+        raise PartitionRefusal("an exhaustive manifest names no pinned CTS "
+                               "revision")
     if manifest_digest(manifest) != manifest.get("manifest_sha256"):
         raise PartitionRefusal("manifest digest does not match its body")
     total = 0
@@ -358,6 +361,12 @@ def selftest():
         write_table(good)
         out = d / "out"
         m = generate(table, corpus, out, "exhaustive")
+        expect(lambda: verify_manifest(out / "partition_manifest.json"),
+               "names no pinned CTS revision")
+        pin0 = d / "pin0.tsv"
+        pin0.write_text(f"cts_describe\tfixture\ncase_count\t5\n"
+                        f"corpus_sha256\t{m['corpus_sha256']}\n")
+        m = generate(table, corpus, out, "exhaustive", pin_path=pin0)
         if m["corpus_case_count"] != 5 or not m["exact_cover"] or \
                 [s["case_count"] for s in m["slices"]] != [1, 2, 1, 1]:
             raise SystemExit("selftest: exhaustive cover miscounted")
@@ -420,7 +429,8 @@ def selftest():
                  "does not derive"),
                 (flip("executable_case_count", 5), "executable counts"),
                 (flip("exact_cover", False), "without exact cover"),
-                (flip("manifest_version", 0), "version unknown"),
+                (flip("manifest_version", 1), "version unknown"),
+                (flip("cts_describe", ""), "names no pinned"),
                 (flip("kind", "weekly"), "kind unknown"),
                 (lambda mm: mm["slices"][0].__setitem__("caselist", "x.txt"),
                  "is missing")):
