@@ -291,26 +291,35 @@ those bindings prove; 1.1 and later are new campaigns with their own
 evidence, never a string edit.
 
 `tests/r3v_conformance_runner.py` runs a caselist against the ICD and
-seals an identity receipt: source SHA and cleanliness, Meson options,
-ICD manifest and DSO digest, dEQP binary digest and CTS release, kernel
-release and radeon module srcversion, packages, GPU PCI identity, boot
-id, the driver-visible environment, the case list, per-case status,
-dmesg delta, timeouts, and the finite verdict.  The evidence class is
+seals an identity receipt: source SHA against the declared SHA and tree
+cleanliness, Meson options, ICD manifest and DSO digest, the dEQP
+binary digest and the release name the binary writes into its own log,
+kernel release and radeon module srcversion, packages, GPU PCI identity
+and the render node resolving to it, boot id, the driver-visible
+environment, the case list, per-case status, dmesg delta, the deadline,
+digests of every raw artifact, and the finite verdict; `verify-receipt`
+recomputes the seal and the artifact digests.  The evidence class is
 derived from the run (a preloaded drm-shim is host-model; only an
-unpreloaded run on the RS4xx render node is silicon), NotSupported never
-counts as a pass, and every non-pass classifies against
-`tests/r3v_conformance_nonpass_ledger.tsv`, most-specific row first; a
-status the ledger does not name blocks the run as unclassified.  The
-runner calibrates on fake-dEQP fixtures for pass, mixed, truncated,
-timeout, crash, device-loss, framework-abort, wrong-ICD, and
-dmesg-hazard runs.
+unpreloaded run of libvulkan_r3v.so on a host whose render node resolves
+to an RS4xx device is silicon), a run is decision-grade only with a
+clean tree at the declared SHA, NotSupported never counts as a pass, a
+process the deadline kills is never a pass, and every non-pass
+classifies against `tests/r3v_conformance_nonpass_ledger.tsv`,
+most-specific row first over status, case name, and result text; a
+status the ledger does not name blocks the run as unclassified, and
+each row carries a witness case that `check-ledgers` classifies through
+the real path so no row is unreachable.  The runner calibrates on
+fake-dEQP fixtures (pass, mixed, truncated, timeout, hang after session,
+crash, device loss with a terminated case, multi-line result, late
+abort, framework abort, wrong ICD, dmesg hazard, duplicate caselist,
+tampered receipt) and on a replay of a real dEQP log.
 
 `tests/r3v_conformance_slices.tsv` orders the mustpass groups by hazard:
-info and api slices run on the host model, and command, transfer, draw,
-synchronization, robustness, and WSI slices carry a submission or display
-hazard and run on silicon only.  dEQP's default context requires a
-GRAPHICS|COMPUTE queue and aborts on the graphics-only family, so every
-run sets the exact compute-queue opt-in and the receipt records it.
+a hazard-free slice runs on the host model or on silicon, and a slice
+carrying a submission or display hazard requires silicon.  dEQP's
+default context requires a GRAPHICS|COMPUTE queue and aborts on the
+graphics-only family; the operator passes the exact compute-queue opt-in
+through `--env` and the receipt records it.
 
 ## Conformance contract
 

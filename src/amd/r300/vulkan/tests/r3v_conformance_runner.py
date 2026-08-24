@@ -3,32 +3,44 @@
 
 A conformance result is decision-grade only when it binds to one exact
 configuration, so the runner records the identity before the first case
-and seals it with the results: source SHA and cleanliness, Meson build
-options, ICD manifest and DSO digest, dEQP binary digest and CTS release
-name, kernel release and radeon module srcversion, installed package
-versions, GPU PCI identity, boot id, the exact environment the driver
-reads, the case list, per-case status, dmesg delta, and timeouts.  The
-evidence class is derived rather than declared: a preloaded drm-shim
-makes the run host-model, and only a run with no preload on a host whose
-render node is the RS4xx PCI device is silicon.
+and seals it with the results: source SHA against the declared SHA and
+tree cleanliness, Meson build options, ICD manifest and DSO digest, the
+dEQP binary digest and the release name the binary itself writes into
+its log, kernel release and radeon module srcversion, installed
+packages, GPU PCI identity and the render node that resolves to it, boot
+id, the exact environment the driver reads, the case list, per-case
+status, dmesg delta, the deadline, and digests of every raw artifact the
+run wrote.  The seal is the SHA-256 of the canonical receipt with the
+seal itself removed; `verify-receipt` recomputes it and re-digests the
+artifacts.
+
+The evidence class derives from the run: a preloaded drm-shim makes it
+host-model, and only an unpreloaded run whose ICD is libvulkan_r3v.so
+on a host whose render node resolves to an RS4xx PCI device is silicon;
+a run without source identity, with a dirty tree, or with a SHA other
+than the declared one is never decision-grade.
 
 Verdicts are finite.  NotSupported never counts as a pass.  Every
-non-pass status is classified against the non-pass ledger; a status the
-ledger does not classify makes the run's verdict `unclassified_nonpass`.
-A dEQP process ending without `#endSession` truncates the run: the case
-in flight becomes `crash` (signal exit) or `timeout` (runner deadline)
-and every remaining case is `not_run`.  A dmesg delta matching a hazard
-pattern marks the run `dmesg_hazard`, and the ICD DSO digest must equal
-the expected digest when one is given, else the run refuses before
-launch as `wrong_icd`.
+non-pass status classifies against the non-pass ledger most-specific
+row first over status, case name, and the untruncated result text; a
+status the ledger does not name makes the run `unclassified_nonpass`.
+A process the deadline kills is `runner_deadline` whatever the log
+says; a dEQP process ending without `#endSession` truncates the run
+(the case in flight becomes `crash` or `timeout`, the rest `not_run`);
+a dEQP framework abort with no case reported is
+`framework_precondition`; a dmesg delta matching a hazard pattern is
+`dmesg_hazard`; a DSO or source SHA other than the expected one refuses
+before launch.
 
 Usage:
   r3v_conformance_runner.py run --deqp-binary BIN --icd MANIFEST \
       --caselist FILE --out DIR [--source-root DIR] [--build-root DIR] \
-      [--expect-dso-sha256 HEX] [--timeout SEC] [--case-timeout SEC] \
-      [--nonpass-ledger TSV] [--dmesg-command CMD] [--env KEY=VALUE]...
-  r3v_conformance_runner.py selftest
+      [--expect-source-sha HEX] [--expect-dso-sha256 HEX] \
+      [--timeout SEC] [--nonpass-ledger TSV] [--dmesg-command CMD] \
+      [--env KEY=VALUE]...
+  r3v_conformance_runner.py verify-receipt --receipt receipt.json
   r3v_conformance_runner.py check-ledgers --nonpass-ledger TSV --slices TSV
+  r3v_conformance_runner.py selftest --fixture-qpa FILE
 """
 
 import argparse
@@ -45,14 +57,15 @@ import tempfile
 import time
 from pathlib import Path
 
-RECEIPT_VERSION = 1
+RECEIPT_VERSION = 2
 
 PASS_STATUS = {"Pass"}
-ACCEPTED_NONPASS = {"NotSupported"}
 DEQP_STATUSES = {"Pass", "Fail", "QualityWarning", "CompatibilityWarning",
                  "Pending", "NotSupported", "ResourceError", "InternalError",
                  "Crash", "Timeout", "Waiver"}
 RUNNER_STATUSES = {"crash", "timeout", "not_run", "truncated"}
+QPA_LOG_FORMAT = "0.3.4"
+R3V_ICD_BASENAME = "libvulkan_r3v.so"
 
 DRIVER_ENV_PREFIXES = ("R3V_", "VK_", "RADEON_", "LD_PRELOAD", "MESA_",
                        "DISPLAY", "XDG_RUNTIME_DIR")
@@ -62,6 +75,14 @@ DMESG_HAZARD_PATTERNS = [
     r"Unable to handle kernel", r"BUG:", r"Oops:", r"soft lockup",
 ]
 RS4XX_PCI_DEVICES = {"0x5954", "0x5955", "0x5974", "0x5975"}
+ARTIFACT_NAMES = ("run.qpa", "stdout.txt", "stderr.txt", "dmesg_delta.txt",
+                  "caselist.txt")
+
+LEDGER_HEADER = ["class", "status", "case_pattern", "detail_pattern",
+                 "disposition", "authority", "witness"]
+SLICE_HEADER = ["order", "slice", "groups", "hazard", "required_evidence"]
+SLICE_HAZARDS = {"none", "submission", "display"}
+SLICE_EVIDENCE = {"host-model", "silicon"}
 
 
 class RunnerRefusal(Exception):
@@ -92,6 +113,13 @@ def read_optional(path):
         return None
 
 
+def load_json(path, what):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise RunnerRefusal(f"{what} {path} is unreadable: {e}")
+
+
 def source_identity(root):
     if root is None:
         return {"available": False}
@@ -109,7 +137,7 @@ def build_identity(root):
     opts = Path(root) / "meson-info" / "intro-buildoptions.json"
     if not opts.is_file():
         return {"available": False, "error": f"{opts} absent"}
-    data = json.loads(opts.read_text())
+    data = load_json(opts, "build options")
     selected = {o["name"]: o["value"] for o in data
                 if o.get("section") in ("user", "core") and
                 o["name"] in ("buildtype", "vulkan-drivers", "gallium-drivers",
@@ -119,7 +147,7 @@ def build_identity(root):
 
 
 def icd_identity(manifest):
-    data = json.loads(Path(manifest).read_text())
+    data = load_json(manifest, "ICD manifest")
     lib = data.get("ICD", {}).get("library_path")
     if not lib:
         raise RunnerRefusal(f"{manifest} names no ICD.library_path")
@@ -129,7 +157,8 @@ def icd_identity(manifest):
     if not lib_path.is_file():
         raise RunnerRefusal(f"ICD library {lib_path} does not exist")
     return {"manifest": str(Path(manifest).resolve()),
-            "library_path": str(lib_path),
+            "library_path": str(lib_path.resolve()),
+            "library_basename": lib_path.name,
             "dso_sha256": sha256_file(lib_path),
             "api_version": data.get("ICD", {}).get("api_version")}
 
@@ -145,9 +174,20 @@ def deqp_identity(binary):
         if (repo / ".git").exists():
             rc, desc = run_capture(["git", "describe", "--tags", "--always",
                                     "--dirty"], cwd=repo)
-            ident["cts_git"] = desc if rc == 0 else None
+            ident["cts_worktree_describe"] = desc if rc == 0 else None
             break
     return ident
+
+
+def render_nodes():
+    nodes = []
+    for node in sorted(Path("/sys/class/drm").glob("renderD*")):
+        try:
+            slot = (node / "device").resolve().name
+        except OSError:
+            slot = None
+        nodes.append({"node": f"/dev/dri/{node.name}", "slot": slot})
+    return nodes
 
 
 def host_identity():
@@ -176,6 +216,7 @@ def host_identity():
                          "subsystem_device":
                              read_optional(dev / "subsystem_device")})
     ident["gpus"] = gpus
+    ident["render_nodes"] = render_nodes()
     return ident
 
 
@@ -184,13 +225,20 @@ def environment_identity(env):
             if k.startswith(DRIVER_ENV_PREFIXES)}
 
 
-def evidence_class(env, host):
+def evidence_class(env, host, icd):
+    """host-model under a drm-shim preload; silicon only when the ICD is
+    the r3v DSO and a render node resolves to an RS4xx PCI device."""
     preload = env.get("LD_PRELOAD", "")
     if "drm_shim" in preload or "drm-shim" in preload:
-        return "host-model"
-    rs4xx = [g for g in host["gpus"] if g["vendor"] == "0x1002" and
-             g["device"] in RS4XX_PCI_DEVICES]
-    return "silicon" if rs4xx else "host-unknown"
+        return "host-model", None
+    rs4xx_slots = {g["slot"] for g in host["gpus"]
+                   if g["vendor"] == "0x1002" and
+                   g["device"] in RS4XX_PCI_DEVICES}
+    node = next((n for n in host["render_nodes"] if n["slot"] in rs4xx_slots),
+                None)
+    if node and icd["library_basename"] == R3V_ICD_BASENAME:
+        return "silicon", node
+    return "host-unknown", None
 
 
 def read_dmesg(command):
@@ -217,30 +265,64 @@ def hazard_lines(delta):
 
 
 def parse_qpa(text):
-    """Per-case status from a qpa log; the in-flight case is reported
-    separately when the log ends without its end marker."""
+    """Per-case status from a qpa log.
+
+    The session block carries the release the binary was built from;
+    each case is `#beginTestCaseResult NAME` through `#endTestCaseResult`
+    around a TestCaseResult element whose <Result> may span lines.  A
+    case whose begin marker has no end marker stays `truncated`, and a
+    `#terminateTestCaseResult STATUS` closes the case with that status.
+    """
     results = {}
+    session = {}
     in_flight = None
+    result_text = None
+    partial_begin = False
     for line in text.splitlines():
-        if line.startswith("#beginTestCaseResult "):
-            in_flight = line.split(" ", 1)[1].strip()
+        if line.startswith("#sessionInfo "):
+            parts = line.split(" ", 2)
+            if len(parts) == 3:
+                session[parts[1]] = parts[2].strip().strip('"')
+        elif line.startswith("#beginTestCaseResult"):
+            name = line[len("#beginTestCaseResult"):].strip()
+            if not name:
+                partial_begin = True
+                continue
+            in_flight = name
             results[in_flight] = {"status": "truncated", "detail": ""}
         elif line.startswith("#endTestCaseResult"):
             in_flight = None
+            result_text = None
         elif line.startswith("#terminateTestCaseResult"):
             parts = line.split(" ", 1)
             status = parts[1].strip() if len(parts) > 1 else "Crash"
             if in_flight:
-                results[in_flight] = {"status": status, "detail":
-                                      "terminated"}
+                results[in_flight] = {"status": status,
+                                      "detail": "terminated"}
             in_flight = None
-        elif in_flight and "<Result StatusCode=" in line:
-            m = re.search(r'StatusCode="(\w+)">(.*?)</Result>', line)
-            if m:
-                results[in_flight] = {"status": m.group(1),
-                                      "detail": m.group(2)[:400]}
-    session_closed = "#endSession" in text
-    return results, in_flight, session_closed
+            result_text = None
+        elif in_flight:
+            if result_text is None:
+                m = re.search(r'<Result StatusCode="(\w+)">(.*)', line)
+                if m:
+                    status, rest = m.group(1), m.group(2)
+                    if "</Result>" in rest:
+                        results[in_flight] = {
+                            "status": status,
+                            "detail": rest.split("</Result>")[0]}
+                    else:
+                        result_text = [status, rest]
+            else:
+                if "</Result>" in line:
+                    result_text[1] += "\n" + line.split("</Result>")[0]
+                    results[in_flight] = {"status": result_text[0],
+                                          "detail": result_text[1]}
+                    result_text = None
+                else:
+                    result_text[1] += "\n" + line
+    return {"results": results, "in_flight": in_flight,
+            "partial_begin": partial_begin,
+            "session_closed": "#endSession" in text, "session": session}
 
 
 def load_nonpass_ledger(path):
@@ -248,17 +330,16 @@ def load_nonpass_ledger(path):
     if path is None:
         return rows
     lines = Path(path).read_text().splitlines()
-    header = lines[0].split("\t")
-    expected = ["class", "status", "case_pattern", "detail_pattern",
-                "disposition", "authority"]
-    if header != expected:
-        raise RunnerRefusal(f"{path} header is {header}, not {expected}")
+    if not lines or lines[0].split("\t") != LEDGER_HEADER:
+        raise RunnerRefusal(f"{path} header is not {LEDGER_HEADER}")
     for n, line in enumerate(lines[1:], start=2):
         f = line.split("\t")
-        if len(f) != 6 or not all(f):
-            raise RunnerRefusal(f"{path}:{n} is not a six-field row")
+        if len(f) != len(LEDGER_HEADER) or not all(f):
+            raise RunnerRefusal(f"{path}:{n} is not a "
+                                f"{len(LEDGER_HEADER)}-field row")
         rows.append({"class": f[0], "status": f[1], "pattern": f[2],
-                     "detail": f[3], "disposition": f[4], "authority": f[5]})
+                     "detail": f[3], "disposition": f[4], "authority": f[5],
+                     "witness": f[6]})
     return rows
 
 
@@ -299,14 +380,21 @@ def summarize(results, ledger):
 def verdict_for(run):
     if run["refusal"]:
         return run["refusal"]
+    if run["exit_code"] == "timeout":
+        return "runner_deadline"
     if run["hazard_lines"]:
         return "dmesg_hazard"
-    if run.get("framework_abort"):
+    observed = any(k not in RUNNER_STATUSES for k in run["counts"])
+    if run.get("framework_abort") and not observed:
         return "framework_precondition"
     if not run["session_closed"]:
         return "truncated_run"
-    if run["classes"].get("unclassified", 0) or run["classes"].get(
-            "ambiguous", 0):
+    if isinstance(run["exit_code"], int) and run["exit_code"] != 0 and \
+            not run["blocking"]:
+        return "dirty_exit"
+    if run["unexpected_cases"]:
+        return "unexpected_cases"
+    if run["classes"].get("unclassified", 0):
         return "unclassified_nonpass"
     if run["blocking"]:
         return "classified_nonpass"
@@ -316,9 +404,30 @@ def verdict_for(run):
         k not in PASS_STATUS for k in run["counts"]) else "pass"
 
 
+def canonical(receipt):
+    body = {k: v for k, v in receipt.items() if k != "seal_sha256"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
+
+
 def seal(receipt):
-    body = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(body.encode()).hexdigest()
+    return hashlib.sha256(canonical(receipt).encode()).hexdigest()
+
+
+def read_caselist(path):
+    cases = []
+    seen = set()
+    for line in Path(path).read_text().splitlines():
+        c = line.strip()
+        if not c.startswith("dEQP-VK."):
+            continue
+        if c in seen:
+            raise RunnerRefusal(f"{path} lists {c} twice; a duplicate case "
+                                "collapses in the results")
+        seen.add(c)
+        cases.append(c)
+    if not cases:
+        raise RunnerRefusal(f"{path} lists no dEQP-VK cases")
+    return cases
 
 
 def execute(args):
@@ -326,51 +435,65 @@ def execute(args):
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     for kv in args.env or []:
-        k, _, v = kv.partition("=")
+        k, sep, v = kv.partition("=")
+        if not sep or not k:
+            raise RunnerRefusal(f"--env {kv!r} is not KEY=VALUE")
         env[k] = v
-    cases = [l.strip() for l in Path(args.caselist).read_text().splitlines()
-             if l.strip().startswith("dEQP-VK.")]
-    if not cases:
-        raise RunnerRefusal(f"{args.caselist} lists no dEQP-VK cases")
+    cases = read_caselist(args.caselist)
     host = host_identity()
+    icd = icd_identity(args.icd)
+    evidence, node = evidence_class(env, host, icd)
     receipt = {
         "receipt_version": RECEIPT_VERSION,
         "source": source_identity(args.source_root),
         "build": build_identity(args.build_root),
-        "icd": icd_identity(args.icd),
+        "icd": icd,
         "deqp": deqp_identity(args.deqp_binary),
         "host": host,
         "environment": environment_identity(env),
-        "evidence_class": evidence_class(env, host),
-        "timeouts": {"total_seconds": args.timeout,
-                     "case_seconds": args.case_timeout},
+        "evidence_class": evidence,
+        "render_node": node,
+        "timeouts": {"total_seconds": args.timeout},
         "case_count": len(cases),
         "caselist_sha256": hashlib.sha256(
             "\n".join(cases).encode()).hexdigest(),
+        "expected": {"source_sha": args.expect_source_sha,
+                     "dso_sha256": args.expect_dso_sha256},
     }
     refusal = None
     if args.expect_dso_sha256 and \
             receipt["icd"]["dso_sha256"] != args.expect_dso_sha256:
         refusal = "wrong_icd"
-    if receipt["source"].get("available") and not receipt["source"]["clean"]:
-        receipt["decision_grade"] = False
-        receipt["decision_grade_reason"] = "source tree dirty"
+    src = receipt["source"]
+    if args.expect_source_sha and (not src.get("available") or
+                                   src["sha"] != args.expect_source_sha):
+        refusal = refusal or "wrong_source"
+    if not src.get("available"):
+        grade, reason = False, "source identity unavailable"
+    elif not src["clean"]:
+        grade, reason = False, "source tree dirty"
+    elif args.expect_source_sha is None:
+        grade, reason = False, "no declared source SHA"
+    elif evidence == "host-unknown":
+        grade, reason = False, "evidence class unknown"
     else:
-        receipt["decision_grade"] = receipt["evidence_class"] != "host-unknown"
+        grade, reason = True, None
     ledger = load_nonpass_ledger(args.nonpass_ledger)
     results = {c: {"status": "not_run", "detail": ""} for c in cases}
+    unexpected = {}
     exit_code = None
-    session_closed = False
-    in_flight = None
+    parsed = {"results": {}, "in_flight": None, "partial_begin": False,
+              "session_closed": False, "session": {}}
     dmesg_before = read_dmesg(args.dmesg_command)
     log = out / "run.qpa"
+    stderr_text = ""
     if refusal is None:
         caselist_file = out / "caselist.txt"
         caselist_file.write_text("\n".join(cases) + "\n")
         argv = [str(Path(args.deqp_binary).resolve()),
                 f"--deqp-caselist-file={caselist_file}",
                 f"--deqp-log-filename={log}",
-                f"--deqp-watchdog=disable"] + (args.deqp_arg or [])
+                "--deqp-watchdog=disable"] + (args.deqp_arg or [])
         env["VK_DRIVER_FILES"] = receipt["icd"]["manifest"]
         env.pop("VK_ICD_FILENAMES", None)
         receipt["environment"] = environment_identity(env)
@@ -383,17 +506,23 @@ def execute(args):
             exit_code = p.returncode
             (out / "stdout.txt").write_text(p.stdout)
             (out / "stderr.txt").write_text(p.stderr)
+            stderr_text = p.stderr
         except subprocess.TimeoutExpired as e:
             exit_code = "timeout"
-            (out / "stdout.txt").write_text(e.stdout.decode() if e.stdout else "")
-            (out / "stderr.txt").write_text(e.stderr.decode() if e.stderr else "")
+            (out / "stdout.txt").write_text(
+                e.stdout.decode(errors="replace") if e.stdout else "")
+            stderr_text = e.stderr.decode(errors="replace") if e.stderr else ""
+            (out / "stderr.txt").write_text(stderr_text)
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
         if log.is_file():
-            parsed, in_flight, session_closed = parse_qpa(log.read_text())
-            for c, r in parsed.items():
+            parsed = parse_qpa(log.read_text(errors="replace"))
+            for c, r in parsed["results"].items():
                 if c in results:
                     results[c] = r
-        if in_flight:
+                else:
+                    unexpected[c] = r
+        in_flight = parsed["in_flight"]
+        if in_flight and in_flight in results:
             if exit_code == "timeout":
                 results[in_flight]["status"] = "timeout"
             elif isinstance(exit_code, int) and exit_code < 0:
@@ -403,35 +532,137 @@ def execute(args):
             elif isinstance(exit_code, int) and exit_code != 0:
                 results[in_flight]["status"] = "crash"
                 results[in_flight]["detail"] = f"exit {exit_code}"
-    stderr_text = (out / "stderr.txt").read_text() if (out / "stderr.txt").is_file() else ""
-    receipt["framework_abort"] = next(
-        (m.group(0) for m in [re.search(r"FATAL ERROR: [^\n]*", stderr_text)] if m),
-        None)
     dmesg_after = read_dmesg(args.dmesg_command)
     delta = dmesg_delta(dmesg_before, dmesg_after)
+    if delta:
+        (out / "dmesg_delta.txt").write_text("\n".join(delta) + "\n")
+    session = parsed["session"]
+    if session.get("logFormatVersion") not in (None, QPA_LOG_FORMAT):
+        refusal = refusal or "unknown_log_format"
+    m = re.search(r"FATAL ERROR: [^\n]*", stderr_text)
+    receipt["framework_abort"] = m.group(0) if m else None
     receipt["exit_code"] = exit_code
-    receipt["session_closed"] = session_closed
+    receipt["session"] = session
+    receipt["session_closed"] = parsed["session_closed"]
+    receipt["partial_begin"] = parsed["partial_begin"]
     receipt["refusal"] = refusal
     receipt["dmesg"] = {"available": delta is not None,
                         "delta_lines": len(delta) if delta else 0}
-    if receipt["evidence_class"] == "silicon" and delta is None:
-        receipt["decision_grade"] = False
-        receipt["decision_grade_reason"] = "dmesg unavailable on a silicon run"
+    if evidence == "silicon" and delta is None:
+        grade, reason = False, "dmesg unavailable on a silicon run"
+    receipt["decision_grade"] = grade
+    receipt["decision_grade_reason"] = reason
     receipt["hazard_lines"] = hazard_lines(delta)
-    if delta:
-        (out / "dmesg_delta.txt").write_text("\n".join(delta) + "\n")
     counts, classes, blocking = summarize(results, ledger)
     receipt["counts"] = counts
     receipt["classes"] = classes
     receipt["blocking"] = blocking
     receipt["results"] = results
+    receipt["unexpected_cases"] = unexpected
+    receipt["result_count"] = sum(counts.values())
     receipt["verdict"] = verdict_for(receipt)
+    receipt["artifacts"] = {n: sha256_file(out / n) for n in ARTIFACT_NAMES
+                            if (out / n).is_file()}
     receipt["seal_sha256"] = seal(receipt)
     (out / "receipt.json").write_text(json.dumps(receipt, indent=1,
                                                  sort_keys=True) + "\n")
-    print(f"verdict={receipt['verdict']} evidence={receipt['evidence_class']}"
-          f" counts={counts} classes={classes} seal={receipt['seal_sha256'][:12]}")
+    print(f"verdict={receipt['verdict']} evidence={evidence} "
+          f"decision_grade={grade} counts={counts} classes={classes} "
+          f"seal={receipt['seal_sha256'][:12]}")
     return receipt
+
+
+def verify_receipt(path):
+    receipt = load_json(path, "receipt")
+    recorded = receipt.get("seal_sha256")
+    if recorded != seal(receipt):
+        raise RunnerRefusal("seal does not match the receipt body")
+    base = Path(path).parent
+    for name, digest in receipt.get("artifacts", {}).items():
+        p = base / name
+        if not p.is_file():
+            raise RunnerRefusal(f"artifact {name} is missing")
+        if sha256_file(p) != digest:
+            raise RunnerRefusal(f"artifact {name} does not match its digest")
+    if receipt.get("result_count") != sum(receipt["counts"].values()) or \
+            receipt.get("result_count") != len(receipt["results"]):
+        raise RunnerRefusal("result count does not reconcile")
+    print(f"receipt verified: seal {recorded[:12]}, "
+          f"{len(receipt.get('artifacts', {}))} artifacts, verdict "
+          f"{receipt['verdict']}")
+
+
+def check_ledgers(nonpass_path, slices_path, mustpass_dir=None):
+    """Hold both TSVs to their contracts: every row compiles, every dEQP
+    status is named, every row's witness (case|detail) classifies to
+    that row through the real classify() so it is reachable and not
+    shadowed, each slice is well-formed with a hazardous slice requiring
+    silicon, and with a corpus every slice group and witness case is a
+    mustpass case."""
+    ledger = load_nonpass_ledger(nonpass_path)
+    named = set()
+    for r in ledger:
+        for key in ("pattern", "detail"):
+            if r[key] != "-":
+                try:
+                    re.compile(r[key])
+                except re.error as e:
+                    raise RunnerRefusal(f"{r['class']}: {key} {r[key]!r}: {e}")
+        if r["status"] not in DEQP_STATUSES:
+            raise RunnerRefusal(f"{r['class']}: status {r['status']} is not "
+                                "a dEQP status")
+        if r["disposition"] not in ("accepted", "blocks"):
+            raise RunnerRefusal(f"{r['class']}: disposition must be accepted "
+                                "or blocks")
+        named.add(r["status"])
+        case, _, detail = r["witness"].partition("|")
+        got, _ = classify(case, r["status"], detail, ledger)
+        if got != r["class"]:
+            raise RunnerRefusal(f"{r['class']}: its witness {r['witness']!r} "
+                                f"classifies as {got}, so the row is "
+                                "unreachable or shadowed")
+    missing = sorted(DEQP_STATUSES - PASS_STATUS - named)
+    if missing:
+        raise RunnerRefusal(f"no ledger row names status {missing}")
+    lines = Path(slices_path).read_text().splitlines()
+    if lines[0].split("\t") != SLICE_HEADER:
+        raise RunnerRefusal(f"{slices_path} header is not {SLICE_HEADER}")
+    orders = []
+    groups = []
+    for n, line in enumerate(lines[1:], start=2):
+        f = line.split("\t")
+        if len(f) != 5 or not all(f):
+            raise RunnerRefusal(f"{slices_path}:{n} is not a five-field row")
+        orders.append(int(f[0]))
+        if f[3] not in SLICE_HAZARDS or f[4] not in SLICE_EVIDENCE:
+            raise RunnerRefusal(f"{slices_path}:{n} hazard/evidence unknown")
+        if f[3] != "none" and f[4] != "silicon":
+            raise RunnerRefusal(f"{slices_path}:{n}: a hazardous slice "
+                                "requires silicon evidence")
+        for g in f[2].split(" "):
+            if not re.fullmatch(r"dEQP-VK(\.[A-Za-z0-9_]+)+", g):
+                raise RunnerRefusal(f"{slices_path}:{n}: {g!r} is not a group")
+            groups.append(g)
+    if orders != list(range(1, len(orders) + 1)):
+        raise RunnerRefusal("slice order is not 1..N")
+    corpus = None
+    if mustpass_dir:
+        cases = set()
+        for f in Path(mustpass_dir).rglob("*.txt"):
+            cases.update(l.strip() for l in f.read_text().splitlines()
+                         if l.startswith("dEQP-VK."))
+        for g in groups:
+            if not any(c == g or c.startswith(g + ".") for c in cases):
+                raise RunnerRefusal(f"slice group {g} matches no mustpass case")
+        for r in ledger:
+            case = r["witness"].partition("|")[0]
+            if case not in cases:
+                raise RunnerRefusal(f"{r['class']}: witness {case} is not a "
+                                    "mustpass case")
+        corpus = f"{len(cases)} mustpass cases"
+    print(f"ledgers hold: {len(ledger)} non-pass rows with reachable "
+          f"witnesses, {len(orders)} slices, {len(groups)} groups, "
+          f"{corpus or 'mustpass clause not run (no corpus named)'}")
 
 
 FAKE_DEQP = r'''#!/usr/bin/env python3
@@ -441,9 +672,9 @@ log = [a.split("=",1)[1] for a in sys.argv if a.startswith("--deqp-log-filename=
 cl = [a.split("=",1)[1] for a in sys.argv if a.startswith("--deqp-caselist-file=")][0]
 cases = [l.strip() for l in open(cl) if l.strip()]
 f = open(log, "w")
-f.write("#sessionInfo releaseName fake\n#beginSession\n"); f.flush()
+f.write('#sessionInfo releaseName fake-1\n#sessionInfo logFormatVersion "0.3.4"\n#beginSession\n'); f.flush()
 def case(name, status, detail="x"):
-    f.write(f"#beginTestCaseResult {name}\n <Result StatusCode=\"{status}\">{detail}</Result>\n#endTestCaseResult\n"); f.flush()
+    f.write(f"#beginTestCaseResult {name}\n<TestCaseResult CasePath=\"{name}\" Version=\"0.3.4\" CaseType=\"SelfValidate\">\n <Text>note</Text>\n <Result StatusCode=\"{status}\">{detail}</Result>\n</TestCaseResult>\n\n#endTestCaseResult\n"); f.flush()
 if mode == "mixed":
     sts = ["Pass", "NotSupported", "Fail", "Pass", "QualityWarning"]
     for i, c in enumerate(cases): case(c, sts[i % len(sts)])
@@ -455,20 +686,35 @@ elif mode == "timeout":
     case(cases[0], "Pass")
     f.write(f"#beginTestCaseResult {cases[1]}\n"); f.flush()
     time.sleep(30)
+elif mode == "hang_after_session":
+    for c in cases: case(c, "Pass")
+    f.write("#endSession\n"); f.flush()
+    time.sleep(30)
 elif mode == "crash":
     case(cases[0], "Pass")
     f.write(f"#beginTestCaseResult {cases[1]}\n"); f.flush()
     os.kill(os.getpid(), signal.SIGSEGV)
 elif mode == "device_loss":
     case(cases[0], "Pass")
-    case(cases[1], "Fail", "vkQueueSubmit returned VK_ERROR_DEVICE_LOST")
-    f.write("#terminateTestCaseResult Crash\n")
+    f.write(f"#beginTestCaseResult {cases[1]}\n <Result StatusCode=\"Fail\">vkQueueSubmit returned VK_ERROR_DEVICE_LOST</Result>\n#endTestCaseResult\n")
+    f.write(f"#beginTestCaseResult {cases[2]}\n#terminateTestCaseResult Crash\n"); f.flush()
     sys.exit(1)
+elif mode == "multiline":
+    case(cases[0], "Pass")
+    f.write(f"#beginTestCaseResult {cases[1]}\n <Result StatusCode=\"Fail\">line one\nline two</Result>\n#endTestCaseResult\n")
+    for c in cases[2:]: case(c, "Pass")
 elif mode == "all_pass":
     for c in cases: case(c, "Pass")
+elif mode == "late_abort":
+    for c in cases: case(c, "Pass")
+    sys.stderr.write("FATAL ERROR: late abort at foo.cpp:1\n")
 elif mode == "framework":
     sys.stderr.write("FATAL ERROR: No matching queue found: findQueueFamilyIndexWithCaps(requiredCaps=0x3, excludedCaps=0x0) at vktTestCase.cpp:508\n")
     sys.exit(1)
+elif mode == "replay":
+    f.close()
+    import shutil; shutil.copyfile(os.environ["FAKE_DEQP_REPLAY"], log)
+    sys.exit(0)
 f.write("#endSession\n"); f.close()
 '''
 
@@ -476,15 +722,18 @@ FAKE_DMESG = '''#!/bin/sh
 cat "$FAKE_DMESG_FILE"
 '''
 
-SELFTEST_LEDGER = """class\tstatus\tcase_pattern\tdetail_pattern\tdisposition\tauthority
-withheld_feature\tNotSupported\tdEQP-VK\\..*\t-\taccepted\tunimplemented optional path
-quality_warning\tQualityWarning\tdEQP-VK\\..*\t-\taccepted\tdEQP quality warning
-device_loss\tFail\tdEQP-VK\\.fake\\.b\tDEVICE_LOST\tblocks\tqueue loss classification
-open_defect\tFail\tdEQP-VK\\.fake\\.[abd]\t-\tblocks\tcatch-all after the specific row
+SELFTEST_LEDGER = """class\tstatus\tcase_pattern\tdetail_pattern\tdisposition\tauthority\twitness
+withheld_feature\tNotSupported\tdEQP-VK\\..*\t-\taccepted\tunimplemented optional path\tdEQP-VK.fake.a|
+quality_warning\tQualityWarning\tdEQP-VK\\..*\t-\taccepted\tdEQP quality warning\tdEQP-VK.fake.a|
+device_loss\tFail\tdEQP-VK\\.fake\\.b\tDEVICE_LOST\tblocks\tqueue loss classification\tdEQP-VK.fake.b|VK_ERROR_DEVICE_LOST
+open_defect\tFail\tdEQP-VK\\.fake\\.[abd]\t-\tblocks\tcatch-all after the specific row\tdEQP-VK.fake.a|
+deqp_crash\tCrash\tdEQP-VK\\..*\t-\tblocks\tdEQP-terminated case\tdEQP-VK.fake.c|
 """
 
 
-def selftest():
+def selftest(fixture_qpa):
+    if fixture_qpa:
+        fixture_qpa = str(Path(fixture_qpa).resolve())
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         fake = d / "deqp-vk"
@@ -507,15 +756,18 @@ def selftest():
         dmesg_cmd.write_text(FAKE_DMESG)
         dmesg_cmd.chmod(0o755)
 
-        def run(mode, expect, extra=None, dmesg_after=None, dso=None):
+        def run(mode, expect, dmesg_after=None, dso=None, cases=caselist,
+                timeout=5.0):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
+            os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
             outdir = d / f"out-{mode}-{expect}"
             args = argparse.Namespace(
                 deqp_binary=str(fake), icd=str(manifest),
-                caselist=str(caselist), out=str(outdir), source_root=None,
-                build_root=None, expect_dso_sha256=dso, timeout=5,
-                case_timeout=5, nonpass_ledger=str(ledger),
+                caselist=str(cases), out=str(outdir), source_root=None,
+                build_root=None, expect_source_sha=None,
+                expect_dso_sha256=dso, timeout=timeout,
+                nonpass_ledger=str(ledger),
                 dmesg_command=str(dmesg_cmd), env=["LD_PRELOAD=drm_shim"],
                 deqp_arg=None)
             if dmesg_after is not None:
@@ -528,11 +780,15 @@ def selftest():
                 raise SystemExit(
                     f"selftest {mode}: verdict {r['verdict']}, expected "
                     f"{expect}: {r['counts']} {r['classes']}")
+            verify_receipt(outdir / "receipt.json")
             return r
 
         r = run("all_pass", "pass")
         assert r["counts"] == {"Pass": 5}, r["counts"]
         assert r["evidence_class"] == "host-model"
+        assert r["decision_grade"] is False and \
+            r["decision_grade_reason"] == "source identity unavailable"
+        assert r["session"]["releaseName"] == "fake-1"
         r = run("mixed", "unclassified_nonpass")
         assert r["counts"] == {"Pass": 2, "NotSupported": 1, "Fail": 1,
                                "QualityWarning": 1}, r["counts"]
@@ -541,26 +797,67 @@ def selftest():
         r = run("truncated", "truncated_run")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "truncated"
         assert r["results"]["dEQP-VK.fake.c"]["status"] == "not_run"
-        r = run("timeout", "truncated_run")
+        r = run("timeout", "runner_deadline")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "timeout"
+        r = run("hang_after_session", "runner_deadline")
+        assert r["session_closed"] and r["counts"] == {"Pass": 5}
         r = run("crash", "truncated_run")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "crash"
         assert "SIGSEGV" in r["results"]["dEQP-VK.fake.b"]["detail"]
         r = run("device_loss", "truncated_run")
         assert r["results"]["dEQP-VK.fake.b"]["class"] == "device_loss"
+        assert r["results"]["dEQP-VK.fake.c"]["status"] == "Crash"
+        assert r["results"]["dEQP-VK.fake.c"]["class"] == "deqp_crash"
+        r = run("multiline", "classified_nonpass")
+        assert r["results"]["dEQP-VK.fake.b"]["status"] == "Fail"
+        assert r["results"]["dEQP-VK.fake.b"]["detail"] == "line one\nline two"
+        r = run("late_abort", "pass")
+        assert r["framework_abort"] and "late abort" in r["framework_abort"]
         r = run("framework", "framework_precondition")
         assert r["counts"] == {"not_run": 5}, r["counts"]
-        assert "No matching queue" in r["framework_abort"]
+        assert r["classes"] == {"runner_not_run": 5}, r["classes"]
         r = run("all_pass", "wrong_icd", dso="0" * 64)
         assert r["counts"] == {"not_run": 5}
-        assert r["classes"] == {"runner_not_run": 5}, r["classes"]
         r = run("all_pass", "dmesg_hazard",
                 dmesg_after="[2.0] radeon 0000:01:05.0: GPU lockup\n")
         assert r["hazard_lines"]
+        dup = d / "dup.txt"
+        dup.write_text("dEQP-VK.fake.a\ndEQP-VK.fake.a\n")
+        try:
+            run("all_pass", "pass", cases=dup)
+        except RunnerRefusal as e:
+            assert "twice" in str(e)
+        else:
+            raise SystemExit("selftest: a duplicated caselist was admitted")
+        if fixture_qpa:
+            real_cases = d / "real.txt"
+            names = re.findall(r"^#beginTestCaseResult (\S+)",
+                               Path(fixture_qpa).read_text(), re.M)
+            real_cases.write_text("\n".join(names) + "\n")
+            r = run("replay", "unclassified_nonpass", cases=real_cases)
+            assert r["counts"] == {"Pass": 17, "NotSupported": 3,
+                                   "Fail": 1}, r["counts"]
+            assert r["session"]["logFormatVersion"] == QPA_LOG_FORMAT
+            assert r["session"]["deviceID"] == "0x5974"
+            assert "feature limits failed" in \
+                r["results"]["dEQP-VK.info.device_properties"]["detail"]
+        tampered = d / "out-all_pass-pass" / "receipt.json"
+        body = json.loads(tampered.read_text())
+        body["counts"]["Pass"] = 6
+        tampered.write_text(json.dumps(body))
+        try:
+            verify_receipt(tampered)
+        except RunnerRefusal:
+            pass
+        else:
+            raise SystemExit("selftest: a tampered receipt verified")
+    fixture_note = "real-qpa replay, " if fixture_qpa else ""
     print("selftest: pass, mixed (NotSupported never a pass; Fail "
-          "unclassified blocks), truncated, timeout, crash, device-loss, "
-          "framework-abort, wrong-ICD, and dmesg-hazard fixtures each yield "
-          "their verdict")
+          "unclassified blocks), truncated, timeout, hang-after-session, "
+          "crash, device-loss with a terminated case, multi-line result, "
+          "late abort, framework-abort, wrong-ICD, dmesg-hazard, duplicate "
+          f"caselist, {fixture_note}and tampered-receipt fixtures each "
+          "yield their verdict")
 
 
 def _run_with_dmesg_change(args, dmesg_file, before, after):
@@ -581,79 +878,6 @@ def _run_with_dmesg_change(args, dmesg_file, before, after):
         read_dmesg = orig
 
 
-SLICE_HEADER = ["order", "slice", "groups", "hazard", "evidence_floor"]
-SLICE_HAZARDS = {"none", "submission", "display"}
-SLICE_FLOORS = {"host-model", "silicon"}
-
-
-def check_ledgers(nonpass_path, slices_path, mustpass_dir=None):
-    """Hold both TSVs to their schemas: every ledger row compiles, the
-    status-wide catch-all rows sit after the specific rows of their
-    status, every slice row is well-formed with a hazard-consistent
-    evidence floor, and with a mustpass corpus every slice group and
-    every case pattern matches at least one case."""
-    ledger = load_nonpass_ledger(nonpass_path)
-    seen_catchall = set()
-    for r in ledger:
-        for key in ("pattern", "detail"):
-            if r[key] != "-":
-                try:
-                    re.compile(r[key])
-                except re.error as e:
-                    raise RunnerRefusal(f"{r['class']}: {key} {r[key]!r}: {e}")
-        if r["status"] not in DEQP_STATUSES:
-            raise RunnerRefusal(f"{r['class']}: status {r['status']} is not "
-                                "a dEQP status")
-        if r["disposition"] not in ("accepted", "blocks"):
-            raise RunnerRefusal(f"{r['class']}: disposition must be accepted "
-                                "or blocks")
-        catchall = r["pattern"] == r"dEQP-VK\..*" and r["detail"] == "-"
-        if r["status"] in seen_catchall:
-            raise RunnerRefusal(f"{r['class']}: a {r['status']} row after "
-                                "that status's catch-all is unreachable")
-        if catchall:
-            seen_catchall.add(r["status"])
-    lines = Path(slices_path).read_text().splitlines()
-    if lines[0].split("\t") != SLICE_HEADER:
-        raise RunnerRefusal(f"{slices_path} header is not {SLICE_HEADER}")
-    orders = []
-    groups = []
-    for n, line in enumerate(lines[1:], start=2):
-        f = line.split("\t")
-        if len(f) != 5 or not all(f):
-            raise RunnerRefusal(f"{slices_path}:{n} is not a five-field row")
-        orders.append(int(f[0]))
-        if f[3] not in SLICE_HAZARDS or f[4] not in SLICE_FLOORS:
-            raise RunnerRefusal(f"{slices_path}:{n} hazard/floor unknown")
-        if (f[3] == "none") != (f[4] == "host-model"):
-            raise RunnerRefusal(f"{slices_path}:{n}: a hazard-free slice "
-                                "runs on the host model and a hazardous "
-                                "slice waits for silicon")
-        for g in f[2].split(" "):
-            if not re.fullmatch(r"dEQP-VK(\.[A-Za-z0-9_]+)+", g):
-                raise RunnerRefusal(f"{slices_path}:{n}: {g!r} is not a group")
-            groups.append(g)
-    if orders != list(range(1, len(orders) + 1)):
-        raise RunnerRefusal("slice order is not 1..N")
-    corpus = None
-    if mustpass_dir:
-        cases = set()
-        for f in Path(mustpass_dir).rglob("*.txt"):
-            cases.update(l.strip() for l in f.read_text().splitlines()
-                         if l.startswith("dEQP-VK."))
-        for g in groups:
-            if not any(c == g or c.startswith(g + ".") for c in cases):
-                raise RunnerRefusal(f"slice group {g} matches no mustpass case")
-        for r in ledger:
-            if not any(re.fullmatch(r["pattern"], c) for c in cases):
-                raise RunnerRefusal(f"{r['class']}: case pattern matches no "
-                                    "mustpass case")
-        corpus = f"{len(cases)} mustpass cases"
-    print(f"ledgers hold: {len(ledger)} non-pass rows, {len(orders)} slices, "
-          f"{len(groups)} groups, "
-          f"{corpus or 'mustpass clause not run (no corpus named)'}")
-
-
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -664,36 +888,36 @@ def main():
     r.add_argument("--out", required=True)
     r.add_argument("--source-root")
     r.add_argument("--build-root")
+    r.add_argument("--expect-source-sha")
     r.add_argument("--expect-dso-sha256")
     r.add_argument("--timeout", type=float, default=3600.0)
-    r.add_argument("--case-timeout", type=float, default=600.0)
     r.add_argument("--nonpass-ledger")
     r.add_argument("--dmesg-command", default="dmesg")
     r.add_argument("--env", action="append")
     r.add_argument("--deqp-arg", action="append")
-    sub.add_parser("selftest")
+    s = sub.add_parser("selftest")
+    s.add_argument("--fixture-qpa")
     c = sub.add_parser("check-ledgers")
     c.add_argument("--nonpass-ledger", required=True)
     c.add_argument("--slices", required=True)
+    v = sub.add_parser("verify-receipt")
+    v.add_argument("--receipt", required=True)
     args = p.parse_args()
-    if args.cmd == "selftest":
-        selftest()
-        return
-    if args.cmd == "check-ledgers":
-        try:
+    try:
+        if args.cmd == "selftest":
+            selftest(args.fixture_qpa)
+        elif args.cmd == "check-ledgers":
             check_ledgers(args.nonpass_ledger, args.slices,
                           os.environ.get("R3V_DEQP_MUSTPASS_DIR"))
-        except RunnerRefusal as e:
-            print(f"FAIL: {e}", file=sys.stderr)
-            sys.exit(1)
-        return
-    try:
-        receipt = execute(args)
+        elif args.cmd == "verify-receipt":
+            verify_receipt(args.receipt)
+        else:
+            receipt = execute(args)
+            sys.exit(0 if receipt["verdict"] in
+                     ("pass", "pass_with_accepted_nonpass") else 1)
     except RunnerRefusal as e:
-        print(f"REFUSED: {e}", file=sys.stderr)
+        print(f"FAIL: {e}", file=sys.stderr)
         sys.exit(2)
-    sys.exit(0 if receipt["verdict"] in ("pass", "pass_with_accepted_nonpass")
-             else 1)
 
 
 if __name__ == "__main__":

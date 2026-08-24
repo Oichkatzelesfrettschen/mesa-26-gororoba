@@ -1,4 +1,4 @@
-order	slice	groups	hazard	evidence_floor
+order	slice	groups	hazard	required_evidence
 1	info	dEQP-VK.info	none	host-model
 2	api-version-init	dEQP-VK.api.version_check dEQP-VK.api.device_init dEQP-VK.api.smoke	none	host-model
 3	api-objects	dEQP-VK.api.object_management dEQP-VK.api.null_handle dEQP-VK.api.buffer dEQP-VK.api.buffer_view dEQP-VK.api.descriptor_set dEQP-VK.api.descriptor_pool	none	host-model

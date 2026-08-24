@@ -301,20 +301,22 @@ if with_tests
     suite : ['r3v'],
   )
   # The conformance runner seals an identity receipt around a dEQP-VK
-  # caselist run (source SHA and cleanliness, Meson options, ICD DSO
-  # digest, dEQP digest and CTS release, kernel and module identity,
-  # PCI identity, environment, per-case status, dmesg delta, timeouts)
-  # with a finite verdict: NotSupported never counts as a pass and every
-  # non-pass classifies against the ledger most-specific-row-first.  The
-  # selftest drives fake-dEQP fixtures through the real runner: pass,
-  # mixed, truncated, timeout, crash, device-loss, framework-abort,
-  # wrong-ICD, and dmesg-hazard runs each yield their verdict.  The
-  # ledger and slice checks hold the two TSVs to their schemas and prove
-  # every ledger row reachable by a synthetic case.
+  # caselist run (source SHA against the declared SHA and cleanliness,
+  # Meson options, ICD DSO digest, dEQP digest and the log's own release
+  # name, kernel and module identity, PCI identity and render node,
+  # environment, per-case status, dmesg delta, the deadline, artifact
+  # digests) with a finite verdict: NotSupported never counts as a pass,
+  # a process the deadline kills never passes, and every non-pass
+  # classifies against the ledger most-specific-row-first.  The selftest
+  # drives fake-dEQP fixtures and a replay of a real dEQP log through
+  # the real runner; the ledger check classifies each row's witness
+  # through the real path so every row is reachable and unshadowed.
   test(
     'r3v-conformance-runner-selftest',
     prog_python,
-    args : [files('tests/r3v_conformance_runner.py'), 'selftest'],
+    args : [files('tests/r3v_conformance_runner.py'), 'selftest',
+            '--fixture-qpa',
+            files('tests/r3v_conformance_runner_fixture_info.qpa')],
     suite : ['r3v'],
     timeout : 120,
   )
