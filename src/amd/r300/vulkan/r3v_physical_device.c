@@ -424,15 +424,15 @@ r3v_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
    return vk_instance_get_proc_addr_unchecked(pdevice->vk.instance, pName);
 }
 
-/* sw_device follows R3V_WSI_SW: unset, empty, or not starting with '1'
- * keeps sw_device false and routes wsi_device_init through the render-node
- * fd, the DRM/DRI3 path.  R3V_WSI_SW=1 sets sw_device true and passes -1
- * for the fd, the Mesa common WSI software mode (the lavapipe pattern):
- * CPU-reachable swapchain images presented through the xcb-shm path, no
- * dma-buf, modifier, or external-memory support required of the radeon
- * winsys.  wants_linear keeps the swapchain images row-major in both
- * routes, the layout the present copy reads and the one r3v's single-tile
- * linear images provide. */
+/* sw_device follows R3V_WSI_SW.  A value beginning with '1' sets sw_device
+ * true and passes -1 for the fd, the Mesa common WSI software mode (the
+ * lavapipe pattern): CPU-reachable swapchain images presented through the
+ * xcb-shm path, no dma-buf, modifier, or external-memory support required
+ * of the radeon winsys.  Every other value--unset, empty, or any other
+ * leading byte--routes wsi_device_init through the render-node fd, the
+ * DRM/DRI3 path.  wants_linear keeps the swapchain images row-major in
+ * both routes, the layout the present copy reads and the one r3v's
+ * single-tile linear images provide. */
 static VkResult
 r3v_init_wsi(struct r3v_physical_device *device)
 {

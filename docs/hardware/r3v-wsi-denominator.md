@@ -2,8 +2,13 @@
 
 ## Scope
 
+This document carries ICD-surface facts about the R3V native Vulkan
+driver's WSI boundary, so it lives in `docs/hardware` beside
+`r3v-implementation-boundaries.md` and the other r3v-native procedure and
+contract documents `src/amd/r300/vulkan/README.md` links into.
+
 `libvulkan_r3v.so` (`src/amd/r300/vulkan/`) links the Mesa common WSI layer
-through `idep_vulkan_wsi` (`meson.build` line 119: `idep_vulkan_wsi`, `rg
+through `idep_vulkan_wsi` (`meson.build` line 120: `idep_vulkan_wsi`, `rg
 --fixed-strings idep_vulkan_wsi src/amd/r300/vulkan/meson.build`) and
 advertises `VK_KHR_surface` plus the X11 surface extensions, but the device
 extension table carries no `VK_KHR_swapchain`. This document names the
@@ -58,7 +63,7 @@ device table, so the loader never resolves the entry point into the driver.
 
 ## Default present route
 
-`r3v_init_wsi` (`r3v_physical_device.c` lines 432-455, `rg -n r3v_init_wsi
+`r3v_init_wsi` (`r3v_physical_device.c` lines 436-459, `rg -n r3v_init_wsi
 src/amd/r300/vulkan/r3v_physical_device.c`) reads `R3V_WSI_SW` and sets
 `wsi_device_options.sw_device` to `true` only when the variable's first byte
 is `'1'`. `wsi_sw` is otherwise `false`, so `wsi_device_init` receives
@@ -86,8 +91,9 @@ The correct description already existed inline inside `r3v_init_wsi` itself:
 "GPU-resident present by default: the render-node fd lets the common WSI
 take the DRM/DRI3 path ... `R3V_WSI_SW=1` falls back to the xcb-shm CPU
 copy". The three comments now state the same mechanism the inline comment
-and the code carry: `sw_device` follows `R3V_WSI_SW`, and the default is
-the DRM fd path.
+and the code carry: a value of `R3V_WSI_SW` beginning with `'1'` sets
+`sw_device` and passes `-1` for the fd; every other value routes through
+the render-node fd, the DRM/DRI3 path.
 
 ## Driver callback denominator
 
@@ -99,10 +105,10 @@ driver's own entry points.
 | callback / path | location | status | evidence |
 |---|---|---|---|
 | `vkGetMemoryFdKHR` / PRIME export | `r3v_native_memory.c` | absent | `rg -i "GetMemoryFd|PRIME|dma.buf" src/amd/r300/vulkan/r3v_native_memory.c` has no hit |
-| `vkCreateImage` on a color-attachment image outside 64x64 | `r3v_native_image.c` `r3v_CreateImage`, lines 40-58 | refused (`R3V_NATIVE_REFUSAL_RESULT`) | `R3V_NATIVE_TARGET_WIDTH`/`R3V_NATIVE_TARGET_HEIGHT` are `64` (`r3v_native.h` lines 746-747) |
-| `vkCreateImage` on a transfer image outside 2048 per axis | `r3v_native_image.c` lines 59-65 | refused | `R3V_NATIVE_TRANSFER_DIMENSION_MAX` is `2048` (`r3v_native.h` line 774) |
-| `vkCreateImage` with mixed color-attachment and transfer usage | `r3v_native_image.c` lines 53-66 | refused | color-attachment branch requires `usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` exactly; the transfer branch requires `usage & ~(TRANSFER_SRC\|TRANSFER_DST) == 0` |
-| `vkCreateImage` non-2D, non-`LINEAR`, non-exclusive, or with `flags != 0` | `r3v_native_image.c` lines 40-48 | refused | same function, first guard clause |
+| `vkCreateImage` on a color-attachment image outside 64x64 | `r3v_native_image.c` `r3v_CreateImage`, lines 73-78 | refused (`R3V_NATIVE_REFUSAL_RESULT`) | `R3V_NATIVE_TARGET_WIDTH`/`R3V_NATIVE_TARGET_HEIGHT` are `64` (`r3v_native.h` lines 787-788) |
+| `vkCreateImage` on a transfer image outside 2048 per axis | `r3v_native_image.c` lines 81-85 | refused | `R3V_NATIVE_TRANSFER_DIMENSION_MAX` is `2048` (`r3v_native.h` line 815) |
+| `vkCreateImage` with mixed color-attachment and transfer usage | `r3v_native_image.c` lines 73-90 | refused | color-attachment branch requires `usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` exactly; the transfer branch requires `usage & ~(TRANSFER_SRC\|TRANSFER_DST) == 0`; every other usage combination falls to the `else` refusal at line 90 |
+| `vkCreateImage` non-2D, non-`LINEAR`, non-exclusive, or with an unrecognized `flags` bit | `r3v_native_image.c` lines 59-67 | refused | same function, first guard clause; `VK_IMAGE_CREATE_ALIAS_BIT` is the one admitted flag bit, and only the transfer branch keeps an aliased image (the color-attachment branch re-refuses any nonzero `flags` at line 74) |
 | sync export (external semaphore/fence) | `r3v_physical_device.h` lines 57-61 (`sync_types[3]`) | absent | comment: "r3v uses a CPU-side binary sync; the radeon DRM driver does not support DRM_CAP_SYNCOBJ"; two slots only, no external sync type |
 
 A swapchain-shaped presentable image (any extent an application picks, a
@@ -125,7 +131,7 @@ requiring `display` hazard clearance and `silicon` evidence:
 `tests/r3v_native_wsi_surface_contract.c` states its own boundary in its file
 comment (lines 4-5): "surface construction and surface queries at instance
 scope, with no presentation capability at device scope." Its registration in
-`meson.build` (lines 1440, 1476-1480) is gated on `dep_xcb.found() and
+`meson.build` (lines 1467, 1503-1512) is gated on `dep_xcb.found() and
 prog_xvfb.found()`; a host missing either `libxcb` development headers or
 `Xvfb` registers zero test binaries from this file, not a skip result.
 
@@ -148,7 +154,7 @@ would close it. None of these change the presentation surface; each pins
 the denominator itself so a future extension can be measured against a known
 baseline instead of an assumed one.
 
-### T11.2: swapchain-extension-absence audit
+### Swapchain-extension-absence audit
 
 Add a retained check (`tests/`, mirroring `r3v_native_advertised_surface_audit.py`'s
 source-vs-binding-table comparison) that fails when `VK_KHR_swapchain`
@@ -162,7 +168,7 @@ anywhere) and fails when a synthetic device-extension-table edit adds
 `.KHR_swapchain = true` with no matching `r3v_CreateSwapchainKHR` symbol in
 `nm`.
 
-### T11.3: WSI-init comment/code parity
+### WSI-init comment/code parity
 
 Add the comment-hygiene-style structural check (`ast-grep` or a small `rg`
 script) that flags a comment adjacent to `r3v_init_wsi`, the `wsi_device`
@@ -175,7 +181,7 @@ Falsifier: the check fails against a synthetic reintroduction of the
 original wording at any of the three sites, and passes on the corrected
 tree.
 
-### T11.4: swapchain-image-shape refusal pins
+### Swapchain-image-shape refusal pins
 
 Add unit cases to the existing `r3v_CreateImage` test coverage that construct
 a `VkImageCreateInfo` shaped like a typical swapchain image (`TRANSFER_DST |
@@ -188,7 +194,7 @@ Falsifier: the new case fails (returns `VK_SUCCESS`) only if a future change
 widens `r3v_CreateImage`'s admission gate without an explicit WSI decision;
 until then it passes and documents the boundary.
 
-### T11.5: WSI-test registration gate audit
+### WSI-test registration-gate audit
 
 Add a check that runs `meson introspect --tests` (or parses `meson.build`
 directly) against a build configured with `-Dxcb=disabled` and asserts that
@@ -197,15 +203,19 @@ appear, and a second run with `xcb` enabled but `Xvfb` unavailable
 (`PATH` scrubbed) asserting the same, closing the "registers nothing" gap
 this document's per-host-class table names as distinct from a run-time skip.
 
-Falsifier: both configurations currently produce silent non-registration
-(no failing test, no skipped test, nothing in `meson test --list`); the
-audit fails until it is added, and passes once it asserts the absence
-explicitly.
+Falsifier: a mutated `meson.build` that drops the `dep_xcb.found() and
+prog_xvfb.found()` guard so the targets register unconditionally makes the
+audit fail, because the `-Dxcb=disabled` run now finds
+`r3v_native_wsi_surface_contract` in `meson introspect --tests`. The audit
+catches a silently deregistered gate and a silently over-registered one by
+the same mechanism, and it passes again once the guard is restored.
 
 ## Dropped claims
 
-None. Every claim in the read-only inventory this document is built from
-checked out against the current tree: the extension tables, the `nm`/`ldd`
-symbol evidence, the `r3v_CreateImage` refusal gate, the partition and
+None. Every claim in this document was checked against the tree at the
+commit this revision was written against
+(`git log -1 --format=%H -- docs/hardware/r3v-wsi-denominator.md`): the
+extension tables, the `nm`/`ldd` symbol evidence, the `r3v_CreateImage`
+refusal gate and its exact guard lines, the partition and
 advertised-surface TSV rows, the surface-contract test's own file comment,
 and its `meson.build` registration gate all hold as stated.
