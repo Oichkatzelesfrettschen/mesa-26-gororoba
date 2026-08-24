@@ -13,6 +13,8 @@
 
 #include "r3v_native.h"
 
+#include "amd/r300/common/r300_compute_verb.h"
+
 #include "util/disk_cache.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
@@ -37,11 +39,15 @@
 #include <radeon_drm.h>
 #include <xf86drm.h>
 
+/* The compute-queue claim derives from the verb ledger: unconditional
+ * once every verb executes on both routes, else the exact opt-in over
+ * the delivered CPU route. */
 static bool
-r3v_hybrid_compute_enabled(void)
+r3v_compute_queue_claimed(void)
 {
-   const char *gate = getenv(R3V_HYBRID_COMPUTE_ENV);
-   return gate && strcmp(gate, R3V_HYBRID_COMPUTE_ENV_VALUE) == 0;
+   const char *gate = getenv(R300_COMPUTE_QUEUE_CLAIM_GATE);
+   return r300_compute_verb_queue_claim(
+      gate && strcmp(gate, R300_COMPUTE_QUEUE_CLAIM_GATE_VALUE) == 0);
 }
 
 
@@ -636,7 +642,7 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
    }
 
    device->vk.supported_sync_types = device->sync_types;
-   device->hybrid_compute_enabled = r3v_hybrid_compute_enabled();
+   device->compute_queue_claimed = r3v_compute_queue_claimed();
 
    result = r3v_init_wsi(device);
    if (result != VK_SUCCESS) {
@@ -657,10 +663,9 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
    return VK_SUCCESS;
 }
 
-/* Queue family enumeration.  Advertises one graphics+transfer queue
- * family with one queue.  RS482/RS485 has no native compute dispatch
- * surface, so VK_QUEUE_COMPUTE_BIT is absent unless the hybrid compute
- * experiment is explicitly enabled for CTS/RCA work. */
+/* Queue family enumeration.  Advertises one graphics queue family with
+ * one queue; VK_QUEUE_COMPUTE_BIT follows the verb ledger's queue
+ * claim. */
 VKAPI_ATTR void VKAPI_CALL
 r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
                                                uint32_t *pCount,
@@ -670,15 +675,15 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
    /* The public recording surface records the graphics command subset
     * -- render pass, pipeline bind, vertex bind, draw -- on this
-    * family, so GRAPHICS is advertised.  Each further bit returns with
-    * the recording surface that executes it: COMPUTE returns with the
-    * dispatch recording and the CPU compute route, behind the exact
-    * R3V_HYBRID_COMPUTE_EXPERIMENTAL=1 opt-in, because the admitted
-    * kernel subset stays nonconformant against the full compute contract
-    * the bit claims.
+    * family, so GRAPHICS is advertised.  COMPUTE returns with the
+    * verb ledger's queue claim (r300_compute_verb_queue_claim):
+    * unconditional once every verb executes on both routes, else the
+    * exact R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1 opt-in over the
+    * delivered CPU route, because the admitted verb subset stays
+    * nonconformant against the full compute contract the bit claims.
     */
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT;
-   if (pdev->hybrid_compute_enabled)
+   if (pdev->compute_queue_claimed)
       queue_flags |= VK_QUEUE_COMPUTE_BIT;
 
    vk_outarray_append_typed(VkQueueFamilyProperties2, &out, p) {

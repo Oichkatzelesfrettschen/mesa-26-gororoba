@@ -7,7 +7,7 @@
  * refuses, and the gate-on leg drives the reference identity-map
  * module through descriptors, recording, and submission to exact
  * output bytes.  Each leg runs in a child process so the
- * R3V_HYBRID_COMPUTE_EXPERIMENTAL latch at physical-device creation
+ * R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL latch at physical-device creation
  * is per-leg state.
  */
 
@@ -89,7 +89,7 @@ family_flags(VkPhysicalDevice pdev)
 static int
 gate_off_leg(void)
 {
-   unsetenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL");
+   unsetenv("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL");
 
    VkInstance instance;
    VkPhysicalDevice pdev;
@@ -173,7 +173,7 @@ bind_storage_buffer(VkDevice device, VkDeviceSize size, VkBuffer *buffer,
 static int
 gate_on_leg(void)
 {
-   setenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL", "1", 1);
+   setenv("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL", "1", 1);
 
    VkInstance instance;
    VkPhysicalDevice pdev;

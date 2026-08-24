@@ -91,6 +91,49 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
 
 #undef ROW
 
+bool
+r300_compute_verb_queue_conformant_rows(
+   const struct r300_compute_verb_row *table, uint32_t count)
+{
+   if (count == 0)
+      return false;
+   for (uint32_t v = 0; v < count; v++) {
+      if (table[v].cpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
+          table[v].gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING)
+         return false;
+   }
+   return true;
+}
+
+bool
+r300_compute_verb_queue_claim_rows(
+   const struct r300_compute_verb_row *table, uint32_t count, bool gate_open)
+{
+   if (r300_compute_verb_queue_conformant_rows(table, count))
+      return true;
+   if (!gate_open)
+      return false;
+   for (uint32_t v = 0; v < count; v++) {
+      if (table[v].cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING)
+         return true;
+   }
+   return false;
+}
+
+bool
+r300_compute_verb_queue_conformant(void)
+{
+   return r300_compute_verb_queue_conformant_rows(rows,
+                                                  R300_COMPUTE_VERB_COUNT);
+}
+
+bool
+r300_compute_verb_queue_claim(bool gate_open)
+{
+   return r300_compute_verb_queue_claim_rows(rows, R300_COMPUTE_VERB_COUNT,
+                                             gate_open);
+}
+
 const struct r300_compute_verb_row *
 r300_compute_verb_rows(uint32_t *count)
 {

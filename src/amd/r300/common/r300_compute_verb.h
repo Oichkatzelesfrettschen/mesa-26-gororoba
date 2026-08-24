@@ -210,6 +210,27 @@ enum r300_compute_failure_clause {
 /* The ledger rows in enum order. */
 const struct r300_compute_verb_row *r300_compute_verb_rows(uint32_t *count);
 
+/* The compute-queue claim.  VK_QUEUE_COMPUTE_BIT asserts the full
+ * compute contract, so the ledger advertises it unconditionally only
+ * when every row executes on both routes (the conformant predicate,
+ * the ratchet that closes the gate as rows land); until then the bit
+ * is a nonconformant claim behind this exact opt-in, and the gated
+ * claim additionally asserts that some row executes on the ungated CPU
+ * route, so losing the delivered verb closes the gated claim as well.
+ * The GPU routes carry their own per-verb gates and never enter the
+ * gated claim.  Compute pipeline creation opens with the same claim.
+ * The _rows forms take a table so a test calibrates them on mutated
+ * copies; the bare forms read the ledger.
+ */
+#define R300_COMPUTE_QUEUE_CLAIM_GATE "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL"
+#define R300_COMPUTE_QUEUE_CLAIM_GATE_VALUE "1"
+bool r300_compute_verb_queue_conformant_rows(
+   const struct r300_compute_verb_row *rows, uint32_t count);
+bool r300_compute_verb_queue_claim_rows(
+   const struct r300_compute_verb_row *rows, uint32_t count, bool gate_open);
+bool r300_compute_verb_queue_conformant(void);
+bool r300_compute_verb_queue_claim(bool gate_open);
+
 const struct r300_compute_verb_row *
 r300_compute_verb_row(enum r300_compute_verb verb);
 

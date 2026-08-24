@@ -37,7 +37,7 @@ or conformance semantics. `r3v_private.h` owns the canonical
 | Mesa family | `CHIP_RS480` | `r300_parse_chipset()` |
 | Generation | R3xx | AMD R3xx Register Reference Guide |
 | Mesa-classified vertex FPUs | 0 | `r300_parse_chipset()` |
-| Vulkan compute queue | behind the exact `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in (CPU compute route) | `r3v_native_compute.c` |
+| Vulkan compute queue | behind the exact `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in (CPU compute route) | `r3v_native_compute.c` |
 | Kernel driver | `radeon` | Linux `drivers/gpu/drm/radeon/` |
 | Renderer string | `ATI RS480` | r300g `r300_get_renderer()` |
 
@@ -153,7 +153,7 @@ in `docs/hardware/r3v-implementation-boundaries.md`.
 
 ## Compute status
 
-Behind the exact `R3V_HYBRID_COMPUTE_EXPERIMENTAL=1` opt-in the one queue
+Behind the exact `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in the one queue
 family advertises `VK_QUEUE_COMPUTE_BIT`; `r3v_CreateComputePipelines` admits
 the identity-map kernel from SPIR-V words directly into the common compute
 job (`src/amd/r300/common/r300_compute_spirv.c`), storage-buffer

@@ -4,7 +4,7 @@
  * Native R3V compute surface: storage-buffer descriptors, direct SPIR-V
  * admission, dispatch recording, the default CPU execution route, and the
  * separately gated R2VB identity-map GPU route.  The surface stands behind
- * the exact R3V_HYBRID_COMPUTE_EXPERIMENTAL=1 opt-in the queue-family compute
+ * the exact R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1 opt-in the queue-family compute
  * bit advertises under.  Every out-of-contract input refuses before device
  * work rather than executing as a no-op.
  */
@@ -482,7 +482,7 @@ create_compute_pipeline(struct r3v_native_device *device,
 {
    *pPipeline = VK_NULL_HANDLE;
 
-   if (!device->pdevice->hybrid_compute_enabled)
+   if (!device->pdevice->compute_queue_claimed)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);

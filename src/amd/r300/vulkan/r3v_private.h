@@ -12,7 +12,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "util/u_debug.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,8 +29,6 @@ extern "C" {
 
 #define R3V_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
 
-#define R3V_HYBRID_COMPUTE_ENV "R3V_HYBRID_COMPUTE_EXPERIMENTAL"
-#define R3V_HYBRID_COMPUTE_ENV_VALUE "1"
 #define R3V_IDENTITY_MAP_FP32X4_ENV "R3V_IDENTITY_MAP_FP32X4_EXPERIMENTAL"
 #define R3V_IDENTITY_MAP_FP32X4_ENV_VALUE "1"
 
@@ -86,39 +83,11 @@ extern "C" {
  * this classification before treating the implementation as a graphics
  * device. */
 #define R3V_CONFORMANCE_STATUS "experimental_nonconformant_graphics_without_compute"
-#define R3V_HYBRID_COMPUTE_STATUS "experimental_nonconformant_hybrid_compute_queue"
 
 /* The number of fragment Gallium texture units r300 exposes.  Shared between the
  * pipeline (which flattens combined-image-sampler descriptors from every
  * descriptor set into this unit space) and the replay (which binds them). */
 #define R3V_MAX_FS_SAMPLER_UNITS 16
-
-/* Experimental NEAREST tile-stitching.  r300 cannot address a texture wider or
- * taller than the sampler cap (2048 on r300-class), so r3v stores a larger
- * logical image as a grid of up to 2x2 hardware tiles and normally refuses to
- * bind such a split image as a sampled view.  Under this gate a logical sampled
- * image is compiled into a static family of per-tile samplers plus a piecewise-
- * affine coordinate transform: one texture() becomes up to four hardware fetches
- * and a branchless tile select.  Exact ONLY for NEAREST / CLAMP_TO_EDGE /
- * normalized-coordinate / 2D / single-mip / single-layer sampling; it makes no
- * conformance claim and does not solve LINEAR seams, mip chains, wrap modes, or
- * the texture-fetch precision the deqp texture-lookup tests check.  Off by
- * default. */
-#define R3V_NEAREST_STITCH_TILE_UNITS  4u  /* up to a 2x2 tile grid */
-#define R3V_NEAREST_STITCH_CONST_VEC4S 2u  /* per-tile affine + split thresholds */
-
-static inline bool
-r3v_debug_option_enabled(const char *options, const char *option)
-{
-   return options && comma_separated_list_contains(options, option);
-}
-
-static inline bool
-r3v_experimental_nearest_stitch_enabled(void)
-{
-   const char *e = getenv("R3V_EXPERIMENTAL_NEAREST_STITCH");
-   return e && e[0] == '1' && e[1] == '\0';
-}
 
 static inline bool
 r3v_pci_device_id_is_supported(uint32_t pci_device_id)

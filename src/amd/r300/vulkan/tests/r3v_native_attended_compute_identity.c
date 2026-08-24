@@ -152,8 +152,8 @@ main(int argc, char **argv)
     */
    const char *verb_gate =
       r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate;
-   if (!gate_open("R3V_HYBRID_COMPUTE_EXPERIMENTAL")) {
-      fprintf(stderr, "R3V_HYBRID_COMPUTE_EXPERIMENTAL=1 opens the compute "
+   if (!gate_open("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL")) {
+      fprintf(stderr, "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1 opens the compute "
                       "surface the cell dispatches through\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }

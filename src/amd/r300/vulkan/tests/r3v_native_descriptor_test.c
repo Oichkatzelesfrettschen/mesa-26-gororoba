@@ -242,7 +242,7 @@ submit_and_wait(const struct fixture *f)
 static int
 create_fixture(struct fixture *f)
 {
-   setenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL", "1", 1);
+   setenv("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL", "1", 1);
 
    const VkApplicationInfo app_info = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
