@@ -347,6 +347,26 @@ Hazard is assigned from the CTS sources: a family whose tests reach
 api.descriptor_set, api.get_memory_commitment, memory.binding) is a
 submission slice whatever its namespace.
 
+The dEQP-VK binary reaches the target as a bundle
+`tests/r3v_deqp_provision.py bundle` writes: the binary, its data
+directory, the pinned mustpass corpus, and `provenance.json` (source
+commit and cleanliness, CMake pins, compiler and binutils, digest,
+dynamic inventory, embedded release name held equal to the source
+commit, the GNU x86 ISA-needed property, the functions a finite
+above-K8 mnemonic screen flags with the allow pattern that admits each,
+tree digests, build-host glibc); `verify` recomputes every digest on
+the target and re-derives the four refusals.  The RS482 host's loader
+refuses a binary whose ISA-needed note exceeds the baseline, and that
+note is the admission test the tool keeps: a build host whose crt and
+libgcc objects carry x86-64-v3 stamps every link with it even at
+`-march=x86-64`, so the K8 build compiles with `-march=x86-64
+-mtune=k8` and links with `gcc -B<dir>` over the target's own baseline
+`Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`, `libgcc.a`,
+and `libgcc_eh.a`, which the bundle records under `startfiles`.
+`--strip-isa-property` exists for a host whose CPU satisfies every
+level the note carried; `verify` on any other CPU refuses the stripped
+bundle by `/proc/cpuinfo`.
+
 ## Conformance contract
 
 The ICD must not be advertised as conformant Vulkan until:
