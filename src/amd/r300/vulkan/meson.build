@@ -2356,6 +2356,25 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     suite : ['r3v'],
   )
 
+  # The independent witness that a run entered the kernel with no
+  # command submission, calibrated over its parser, every refusal its
+  # verdict carries, and the shim arms that bound its scope; the
+  # README's conformance ladder carries the mechanism.  The selftest
+  # skips itself when strace is absent or cannot attach.
+  test(
+    'r3v-cs-ioctl-trace-selftest',
+    prog_python,
+    args : [
+      files('tests/r3v_cs_ioctl_trace.py'),
+      'selftest',
+      '--harness', r3v_native_submit_order_harness.full_path(),
+      '--shim', libradeon_noop_drm_shim.full_path(),
+    ],
+    depends : [r3v_native_submit_order_harness, libradeon_noop_drm_shim],
+    timeout : 120,
+    suite : ['r3v'],
+  )
+
   # Non-submitting direct-write arming runner: reports the control
   # cell's digest and every arming factor, then stops at the
   # authorization boundary.  The check drives the refusal legs and the

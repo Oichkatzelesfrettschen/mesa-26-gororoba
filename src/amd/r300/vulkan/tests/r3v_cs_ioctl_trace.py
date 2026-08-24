@@ -1,0 +1,515 @@
+# SPDX-License-Identifier: MIT
+#
+# Independent witness that a run entered the kernel with no command
+# submission: strace records every ioctl the tracee issues as a syscall,
+# and the parser counts them by request number, so a hazard-free slice
+# run carries a machine-checked zero for DRM_IOCTL_RADEON_CS beside the
+# driver's own refusal.  The witness stops at the syscall boundary, and
+# the "Conformance ladder" section of the driver README carries what
+# that scope admits and what it leaves to the transport's own counter.
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+# _IOC packs direction, type, command number, and argument size into the
+# request word, so a number derives from the header constants alone:
+# DRM_COMMAND_BASE 0x40 (include/drm-uapi/drm.h) plus the radeon command
+# number (include/drm-uapi/radeon_drm.h) gives the _IOC command byte
+# under type 'd' = 0x64, and the ioctl struct's size fills the size
+# field.  DRM_RADEON_CS 0x26 lands at _IOWR('d', 0x66,
+# struct drm_radeon_cs) = 0xc0206466.
+DRM_COMMAND_BASE = 0x40
+IOC_TYPE = ord('d')
+
+IOC_WRITE, IOC_READ = 1, 2
+IOC_NRSHIFT, IOC_TYPESHIFT, IOC_SIZESHIFT, IOC_DIRSHIFT = 0, 8, 16, 30
+
+
+def ioc(direction, command, size):
+    return ((direction << IOC_DIRSHIFT) | (IOC_TYPE << IOC_TYPESHIFT) |
+            ((DRM_COMMAND_BASE + command) << IOC_NRSHIFT) |
+            (size << IOC_SIZESHIFT))
+
+
+# name -> (radeon command number, direction, sizeof(struct), request).
+# The sizes are the ioctl structs in include/drm-uapi/radeon_drm.h on a
+# 64-bit host, and the `derivation` subcommand prints the whole
+# construction.  This is the allowlist the named counters key on; the
+# complete census of what the tracee issued lives in ioctls_by_request.
+REQUESTS = {}
+for _name, _command, _direction, _size in (
+    ("DRM_IOCTL_RADEON_CS", 0x26, IOC_READ | IOC_WRITE, 32),
+    ("DRM_IOCTL_RADEON_GEM_CREATE", 0x1d, IOC_READ | IOC_WRITE, 32),
+    ("DRM_IOCTL_RADEON_GEM_MMAP", 0x1e, IOC_READ | IOC_WRITE, 32),
+    ("DRM_IOCTL_RADEON_GEM_WAIT_IDLE", 0x24, IOC_WRITE, 8),
+    ("DRM_IOCTL_RADEON_INFO", 0x27, IOC_READ | IOC_WRITE, 16),
+):
+    REQUESTS[_name] = (_command, _direction, _size,
+                       ioc(_direction, _command, _size))
+
+CS_REQUEST = REQUESTS["DRM_IOCTL_RADEON_CS"][3]
+GEM_INFO_REQUESTS = {name: entry[3] for name, entry in REQUESTS.items()
+                     if name != "DRM_IOCTL_RADEON_CS"}
+REQUEST_NAMES = {entry[3]: name for name, entry in REQUESTS.items()}
+
+# strace prints the request word as a bare hex literal under
+# `-e raw=ioctl`; without it the symbolic name is printed, and a number
+# several drivers share prints as an ambiguous alternation, so the raw
+# qualifier is what makes the count exact.  A call the tracer splits
+# across a context switch carries its request on the entry line and
+# `<... ioctl resumed>` on the return line, so matching the request word
+# counts each call once.
+IOCTL_LINE = re.compile(
+    r"^(?:\d+\s+)?ioctl\((?:0x[0-9a-fA-F]+|-?\d+),\s*"
+    r"(0x[0-9a-fA-F]+|\d+)[,)\s]")
+
+STRACE_ARGS = ["-f", "-qq", "-e", "raw=ioctl", "-e", "trace=ioctl"]
+
+# meson reads exit 77 as a skip.
+EXIT_SKIP = 77
+
+
+def derivation_lines():
+    lines = [
+        "_IOC(dir, type, nr, size) packs dir<<30 | size<<16 | type<<8 | nr;",
+        "radeon ioctls take type 'd' = 0x%02x and nr = DRM_COMMAND_BASE "
+        "0x%02x + command." % (IOC_TYPE, DRM_COMMAND_BASE),
+    ]
+    for name, (command, direction, size, request) in REQUESTS.items():
+        letters = "".join(letter for bit, letter in
+                          ((IOC_READ, "R"), (IOC_WRITE, "W"))
+                          if direction & bit)
+        lines.append(
+            "%-31s dir %s size %2d nr 0x%02x+0x%02x=0x%02x -> 0x%08x"
+            % (name, letters, size, DRM_COMMAND_BASE, command,
+               DRM_COMMAND_BASE + command, request))
+    return lines
+
+
+def strace_available():
+    """Report the strace binary and whether it can actually trace.
+
+    A binary on PATH is not a usable tracer: kernel.yama.ptrace_scope and
+    a container without CAP_SYS_PTRACE both deny the attach, so the probe
+    traces `true` and reads the exit status.
+    """
+    binary = shutil.which("strace")
+    if binary is None:
+        return None, "strace is absent from PATH"
+    probe = subprocess.run([binary, "-o", os.devnull, "-qq", "true"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        return None, ("strace at %s cannot trace: %s"
+                      % (binary, (probe.stderr or "").strip() or
+                         "exit %d" % probe.returncode))
+    return binary, None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 16), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def parse_strace(path):
+    """Count ioctl requests by request number over an strace log."""
+    counts = {}
+    unparsed = 0
+    with open(path, "r", errors="replace") as handle:
+        for line in handle:
+            if not line.startswith("ioctl") and " ioctl(" not in line:
+                continue
+            if "resumed>" in line:
+                continue
+            match = IOCTL_LINE.match(line.strip())
+            if match is None:
+                unparsed += 1
+                continue
+            request = int(match.group(1), 0)
+            counts[request] = counts.get(request, 0) + 1
+    return counts, unparsed
+
+
+def run_trace(argv, strace_binary, strace_path, environment=None):
+    """Run argv under strace and return its exit status."""
+    completed = subprocess.run(
+        [strace_binary] + STRACE_ARGS + ["-o", strace_path, "--"] + argv,
+        env=environment)
+    return completed.returncode
+
+
+def summarize(argv, strace_path, tracee_status, preload):
+    counts, unparsed = parse_strace(strace_path)
+    by_request = {}
+    for request, count in sorted(counts.items()):
+        by_request["0x%08x" % request] = {
+            "count": count,
+            "name": REQUEST_NAMES.get(request),
+        }
+    named = {name: counts.get(request, 0)
+             for name, request in
+             [("DRM_IOCTL_RADEON_CS", CS_REQUEST)] +
+             sorted(GEM_INFO_REQUESTS.items())}
+    return {
+        "argv": argv,
+        "cs_ioctls": counts.get(CS_REQUEST, 0),
+        "gem_info_ioctls": sum(counts.get(request, 0)
+                               for request in GEM_INFO_REQUESTS.values()),
+        "gem_info_requests": sorted(GEM_INFO_REQUESTS),
+        "total_ioctls": sum(counts.values()),
+        "radeon_ioctls_by_name": named,
+        "ioctls_by_request": by_request,
+        "unparsed_ioctl_lines": unparsed,
+        "tracee_exit_status": tracee_status,
+        "ld_preload": preload,
+        "strace_args": STRACE_ARGS,
+        "strace_sha256": sha256_file(strace_path),
+        "witness_scope": "syscall_boundary",
+    }
+
+
+def refusals(summary, expect_cs, allow_tracee_failure, allow_empty,
+             allow_preload):
+    """Name every condition that keeps this run from witnessing anything.
+
+    A count of zero is a verdict only when the tracee actually ran, the
+    tracer actually recorded it, and the parser read every line it saw,
+    so each of those failures refuses instead of passing the count
+    through.  An interposer in the preload path answers ioctls in the
+    tracee's address space, which makes the syscall count silent about
+    submission, so it refuses under the same rule.
+    """
+    found = []
+    if summary["cs_ioctls"] != expect_cs:
+        found.append("cs_count: %d DRM_IOCTL_RADEON_CS other than exactly %d"
+                     % (summary["cs_ioctls"], expect_cs))
+    if summary["tracee_exit_status"] != 0 and not allow_tracee_failure:
+        found.append("tracee_failed: exit status %d; --allow-tracee-failure "
+                     "admits a run expected to fail"
+                     % summary["tracee_exit_status"])
+    if summary["total_ioctls"] == 0 and not allow_empty:
+        found.append("empty_trace: the tracer recorded no ioctl at all, so "
+                     "the zero describes the trace rather than the run; "
+                     "--allow-empty admits it")
+    if summary["unparsed_ioctl_lines"] != 0:
+        found.append("unparsed_lines: %d ioctl lines the parser could not "
+                     "read, so the census is incomplete"
+                     % summary["unparsed_ioctl_lines"])
+    if summary["ld_preload"] and not allow_preload:
+        found.append("preload_interposer: LD_PRELOAD is set (%s), and an "
+                     "interposer answering in the tracee's address space "
+                     "makes the syscall count silent about submission; "
+                     "--allow-preload admits it"
+                     % summary["ld_preload"])
+    return found
+
+
+def command_trace(args):
+    strace_binary, reason = strace_available()
+    if strace_binary is None:
+        print("skip: %s" % reason, file=sys.stderr)
+        return EXIT_SKIP
+    if not args.argv:
+        print("trace requires a command after --", file=sys.stderr)
+        return 2
+
+    holder = None
+    if args.strace_out is not None:
+        strace_path = args.strace_out
+    else:
+        holder = tempfile.TemporaryDirectory()
+        strace_path = os.path.join(holder.name, "ioctl.strace")
+    try:
+        status = run_trace(args.argv, strace_binary, strace_path)
+        summary = summarize(args.argv, strace_path, status,
+                            os.environ.get("LD_PRELOAD", ""))
+        summary["expect_cs"] = args.expect_cs
+        # A witnessed verdict reads the same whether the run was clean or
+        # the caller opened a gate over it, so the summary carries which
+        # gates stood open.
+        summary["gates_opened"] = {
+            "allow_tracee_failure": args.allow_tracee_failure,
+            "allow_empty": args.allow_empty,
+            "allow_preload": args.allow_preload,
+        }
+        found = refusals(summary, args.expect_cs, args.allow_tracee_failure,
+                         args.allow_empty, args.allow_preload)
+        summary["refusals"] = found
+        summary["verdict"] = "refused" if found else "witnessed"
+        text = json.dumps(summary, indent=2, sort_keys=True)
+        if args.json is not None:
+            with open(args.json, "w") as handle:
+                handle.write(text + "\n")
+        print(text)
+        for refusal in found:
+            print("FAIL: %s" % refusal, file=sys.stderr)
+        return 1 if found else 0
+    finally:
+        if holder is not None:
+            holder.cleanup()
+
+
+def command_derivation(args):
+    for line in derivation_lines():
+        print(line)
+    return 0
+
+
+def emitter_source(request, repeats, exit_status=0):
+    """A program issuing `repeats` ioctls of one request on /dev/null.
+
+    /dev/null answers ENOTTY, and the syscall is what the tracer records,
+    so the emitter calibrates the parser against a known count with no
+    device and no driver in the path.  The exit status is a parameter so
+    one emitter serves both the count calibration and the tracee-failure
+    verdict.
+    """
+    return (
+        "import fcntl, os, sys\n"
+        "fd = os.open('/dev/null', os.O_RDWR)\n"
+        "for _ in range(%d):\n"
+        "    try:\n"
+        "        fcntl.ioctl(fd, %d, bytearray(64))\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "sys.exit(%d)\n" % (repeats, request, exit_status))
+
+
+def trace_here(argv, strace_binary, work_dir, tag, environment=None):
+    strace_path = os.path.join(work_dir, "%s.strace" % tag)
+    status = run_trace(argv, strace_binary, strace_path, environment)
+    preload = (environment or os.environ).get("LD_PRELOAD", "")
+    return summarize(argv, strace_path, status, preload)
+
+
+def report(tag, summary):
+    print("  %-32s cs=%d gem_info=%d total=%d status=%d"
+          % (tag, summary["cs_ioctls"], summary["gem_info_ioctls"],
+             summary["total_ioctls"], summary["tracee_exit_status"]))
+
+
+def command_selftest(args):
+    strace_binary, reason = strace_available()
+    if strace_binary is None:
+        print("skip: %s" % reason, file=sys.stderr)
+        return EXIT_SKIP
+
+    tool = os.path.abspath(__file__)
+    failures = []
+    # The emitters and the verdict arms calibrate against real syscalls,
+    # so they run with no interposer in the preload path.
+    plain = dict(os.environ)
+    plain.pop("LD_PRELOAD", None)
+    three_cs = [sys.executable, "-c", emitter_source(CS_REQUEST, 3)]
+    three_cs_failing = [sys.executable, "-c",
+                        emitter_source(CS_REQUEST, 3, exit_status=1)]
+    two_gem = [sys.executable, "-c",
+               emitter_source(REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 2)]
+
+    def invoke(tag, expect_refused, argv, environment=None):
+        """Drive the real trace path and hold it to its verdict."""
+        run = subprocess.run([sys.executable, tool, "trace"] + argv,
+                             env=environment or plain, capture_output=True,
+                             text=True)
+        refused = run.returncode != 0
+        print("  %-32s exit=%d %s" % (tag, run.returncode,
+                                      "refused" if refused else "witnessed"))
+        if refused != expect_refused:
+            failures.append("%s: exit %d, expected %s"
+                            % (tag, run.returncode,
+                               "a refusal" if expect_refused else "a witness"))
+        return run
+
+    print("derivation:")
+    for line in derivation_lines():
+        print("  " + line)
+    if CS_REQUEST != 0xc0206466:
+        failures.append("DRM_IOCTL_RADEON_CS derived 0x%08x" % CS_REQUEST)
+
+    with tempfile.TemporaryDirectory() as work_dir:
+        # The parser contract over a written log: a request the regex
+        # reads, a call the tracer split across a context switch (the
+        # entry line carries the request, the resumed line does not, so
+        # the pair counts once), and a line the regex rejects, which is
+        # the one refusal no live run trips on demand.
+        print("parser contract:")
+        fixture = os.path.join(work_dir, "contract.strace")
+        with open(fixture, "w") as handle:
+            handle.write(
+                "1234 ioctl(0x3, 0x%08x, 0x7ffd0000) = 0\n"
+                "1234 ioctl(0x3, 0x%08x <unfinished ...>\n"
+                "1234 <... ioctl resumed>) = 0\n"
+                "1234 ioctl(0x4, 0x%08x, 0x7ffd0000) = 0\n"
+                "1234 ioctl(a line carrying no request word) = -1\n"
+                % (CS_REQUEST, CS_REQUEST,
+                   REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3]))
+        counts, unparsed = parse_strace(fixture)
+        print("  %-32s cs=%d gem_create=%d unparsed=%d"
+              % ("written log", counts.get(CS_REQUEST, 0),
+                 counts.get(REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 0),
+                 unparsed))
+        if counts.get(CS_REQUEST, 0) != 2:
+            failures.append("the parser counted %d CS ioctls over the "
+                            "written log, expected 2 (one whole call and "
+                            "one split across a context switch)"
+                            % counts.get(CS_REQUEST, 0))
+        if counts.get(REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 0) != 1:
+            failures.append("the parser counted %d GEM_CREATE ioctls over "
+                            "the written log, expected 1"
+                            % counts.get(
+                                REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 0))
+        if unparsed != 1:
+            failures.append("the parser reported %d unparsed ioctl lines "
+                            "over the written log, expected 1" % unparsed)
+        # The refusal itself, over the same log: an incomplete census
+        # refuses whatever the counts say, and no gate opens it.
+        raised = [refusal.split(":")[0] for refusal in
+                  refusals(summarize(["written-log"], fixture, 0, ""),
+                           2, True, True, True)]
+        print("  %-32s refusals=%s" % ("incomplete census", raised))
+        if raised != ["unparsed_lines"]:
+            failures.append("the written log raised %s, expected exactly "
+                            "unparsed_lines" % raised)
+
+        print("parser calibration:")
+        # Known-bad: three real CS-numbered syscalls.  The parser must
+        # count exactly three and read every line it saw.
+        bad = trace_here(three_cs, strace_binary, work_dir, "known-bad",
+                         plain)
+        report("known-bad emitter", bad)
+        if bad["cs_ioctls"] != 3:
+            failures.append("known-bad emitter counted %d CS ioctls, "
+                            "expected 3" % bad["cs_ioctls"])
+        if bad["unparsed_ioctl_lines"] != 0:
+            failures.append("known-bad emitter left %d unparsed ioctl lines"
+                            % bad["unparsed_ioctl_lines"])
+
+        # Known-good: two GEM_CREATE-numbered syscalls and no CS.
+        good = trace_here(two_gem, strace_binary, work_dir, "known-good",
+                          plain)
+        report("known-good emitter", good)
+        if good["cs_ioctls"] != 0 or good["gem_info_ioctls"] != 2:
+            failures.append("known-good emitter counted cs=%d gem_info=%d, "
+                            "expected cs=0 gem_info=2"
+                            % (good["cs_ioctls"], good["gem_info_ioctls"]))
+
+        # Every refusal the trace verdict carries, driven through the
+        # real path against a run that trips exactly it.
+        print("verdict calibration:")
+        invoke("three CS, default", True, ["--"] + three_cs)
+        invoke("three CS, --expect-cs 3", False,
+               ["--expect-cs", "3", "--"] + three_cs)
+        invoke("two GEM_CREATE", False, ["--"] + two_gem)
+        # A tracee that never ran leaves an empty log, and a zero read
+        # off that log describes the tracer rather than the run.
+        invoke("nonexistent command", True,
+               ["--", os.path.join(work_dir, "absent-command")])
+        invoke("aborted tracee", True, ["--", "sh", "-c", "kill -ABRT $$"])
+        invoke("failing tracee", True, ["--expect-cs", "3", "--"] +
+               three_cs_failing)
+        invoke("failing tracee, allowed", False,
+               ["--expect-cs", "3", "--allow-tracee-failure", "--"] +
+               three_cs_failing)
+        invoke("no ioctl at all", True, ["--", "true"])
+        invoke("no ioctl at all, allowed", False,
+               ["--allow-empty", "--", "true"])
+        preloaded = dict(plain)
+        preloaded["LD_PRELOAD"] = args.shim or "libc.so.6"
+        invoke("interposer in the preload", True,
+               ["--allow-empty", "--", "true"], preloaded)
+        invoke("interposer, allowed", False,
+               ["--allow-empty", "--allow-preload", "--", "true"], preloaded)
+
+        if args.harness is None:
+            print("shim calibration: not run (no --harness)")
+        else:
+            print("shim calibration (LD_PRELOAD=%s):"
+                  % os.path.basename(args.shim or ""))
+            environment = dict(os.environ)
+            if args.shim is not None:
+                environment["LD_PRELOAD"] = args.shim
+                environment["DRM_SHIM_EXPECTED_DSO"] = args.shim
+                environment["RADEON_GPU_ID"] = "0x5974"
+            # The harness builds its own evidence directory per arm, so
+            # an inherited one would redirect the retention the arm
+            # asserts over.
+            environment.pop("R3V_NATIVE_MANIFEST_DIR", None)
+            closed = trace_here([args.harness, "gate-closed"], strace_binary,
+                                work_dir, "gate-closed", environment)
+            armed = trace_here([args.harness, "armed"], strace_binary,
+                               work_dir, "armed", environment)
+            report("harness gate-closed", closed)
+            report("harness armed", armed)
+            for tag, summary in (("gate-closed", closed), ("armed", armed)):
+                if summary["tracee_exit_status"] != 0:
+                    failures.append("the %s arm exited %d"
+                                    % (tag, summary["tracee_exit_status"]))
+                # The shim answers the radeon request set in the tracee's
+                # address space, so the submitting arm holds a
+                # syscall-visible zero beside its own transport-table
+                # count of one; pinning both arms holds that scope, and
+                # an arm that starts entering the kernel breaks it.
+                if summary["cs_ioctls"] != 0 or \
+                        summary["gem_info_ioctls"] != 0:
+                    failures.append(
+                        "the %s arm entered the kernel with cs=%d "
+                        "gem_info=%d" % (tag, summary["cs_ioctls"],
+                                         summary["gem_info_ioctls"]))
+
+    if failures:
+        for failure in failures:
+            print("FAIL: %s" % failure, file=sys.stderr)
+        return 1
+    print("r3v-cs-ioctl-trace-selftest: PASS")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Witness DRM_IOCTL_RADEON_CS syscalls under strace.")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    trace = commands.add_parser(
+        "trace", help="trace a command and count radeon ioctls")
+    trace.add_argument("--expect-cs", type=int, default=0,
+                       help="the exact CS ioctl count the run must hold")
+    trace.add_argument("--allow-tracee-failure", action="store_true",
+                       help="admit a run whose tracee exits nonzero")
+    trace.add_argument("--allow-empty", action="store_true",
+                       help="admit a run whose trace holds no ioctl at all")
+    trace.add_argument("--allow-preload", action="store_true",
+                       help="admit a run with an interposer in LD_PRELOAD")
+    trace.add_argument("--json", help="write the JSON summary to this path")
+    trace.add_argument("--strace-out",
+                       help="retain the raw strace log at this path")
+    trace.add_argument("argv", nargs=argparse.REMAINDER)
+    trace.set_defaults(handler=command_trace)
+
+    derivation = commands.add_parser(
+        "derivation", help="print the ioctl request-number derivation")
+    derivation.set_defaults(handler=command_derivation)
+
+    selftest = commands.add_parser(
+        "selftest", help="calibrate the parser, the verdict, and the scope")
+    selftest.add_argument("--harness",
+                          help="the submit-order harness to trace")
+    selftest.add_argument("--shim", help="the drm-shim to preload")
+    selftest.set_defaults(handler=command_selftest)
+
+    args = parser.parse_args()
+    if getattr(args, "argv", None) and args.argv[0] == "--":
+        args.argv = args.argv[1:]
+    return args.handler(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
