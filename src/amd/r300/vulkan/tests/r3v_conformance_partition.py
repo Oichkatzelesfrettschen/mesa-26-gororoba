@@ -38,7 +38,12 @@ HEADER = ["order", "slice", "groups", "hazard", "required_evidence"]
 HAZARDS = {"none", "submission", "display", "unknown"}
 EVIDENCE = {"host-model", "silicon"}
 KINDS = {"pilot", "exhaustive"}
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
+# A shard is the recovery unit one dEQP process runs; a slice above the
+# shard ceiling splits into consecutive shards, each with its own
+# caselist and digest, so the recovery unit and the identity unit are
+# one object.
+SHARD_MAX_CASES = 20000
 
 
 class PartitionRefusal(Exception):
@@ -187,17 +192,28 @@ def partition(cases, rows, kind):
     return assigned, uncovered
 
 
+def shard_lines(lines, shard_max):
+    return [lines[i:i + shard_max] for i in range(0, len(lines), shard_max)]
+
+
 def build_manifest(kind, table_path, cases, files, rows, assigned,
-                   uncovered):
+                   uncovered, shard_max=SHARD_MAX_CASES):
     slices = []
     for r in rows:
         lines = assigned[r["slice"]]
+        shards = []
+        for i, part in enumerate(shard_lines(lines, shard_max)):
+            shards.append({"index": i, "caselist": f"{r['slice']}.{i:04d}.txt",
+                           "case_count": len(part),
+                           "caselist_sha256": sha256_lines(part)})
         slices.append({
             "order": r["order"], "slice": r["slice"], "groups": r["groups"],
             "hazard": r["hazard"], "required_evidence": r["required_evidence"],
             "executable": r["hazard"] != "unknown",
             "case_count": len(lines), "caselist_sha256": sha256_lines(lines),
             "caselist": f"{r['slice']}.txt",
+            "shard_max_cases": shard_max, "shard_count": len(shards),
+            "shards": shards,
         })
     covered = sum(s["case_count"] for s in slices)
     executable = sum(s["case_count"] for s in slices if s["executable"])
@@ -227,7 +243,9 @@ def manifest_digest(manifest):
 
 
 def generate(table_path, mustpass_dir, out_dir, kind, write=True,
-             pin_path=None):
+             pin_path=None, shard_max=SHARD_MAX_CASES):
+    if shard_max < 1:
+        raise PartitionRefusal("shard ceiling must be at least 1")
     if kind not in KINDS:
         raise PartitionRefusal(f"kind {kind!r} is not one of {sorted(KINDS)}")
     rows = load_partition(table_path)
@@ -237,7 +255,7 @@ def generate(table_path, mustpass_dir, out_dir, kind, write=True,
         check_corpus_pin(pin, cases)
     assigned, uncovered = partition(cases, rows, kind)
     manifest = build_manifest(kind, table_path, cases, files, rows,
-                              assigned, uncovered)
+                              assigned, uncovered, shard_max)
     if pin:
         manifest["cts_describe"] = pin["cts_describe"]
         manifest["manifest_sha256"] = manifest_digest(manifest)
@@ -249,6 +267,12 @@ def generate(table_path, mustpass_dir, out_dir, kind, write=True,
             p.write_text("\n".join(assigned[s["slice"]]) + "\n")
             if sha256_file(p) != s["caselist_sha256"]:
                 raise PartitionRefusal(f"{p} digest drifted after write")
+            for sh, part in zip(s["shards"],
+                                shard_lines(assigned[s["slice"]], shard_max)):
+                q = out / sh["caselist"]
+                q.write_text("\n".join(part) + "\n")
+                if sha256_file(q) != sh["caselist_sha256"]:
+                    raise PartitionRefusal(f"{q} digest drifted after write")
         (out / "partition_manifest.json").write_text(
             json.dumps(manifest, indent=1, sort_keys=True) + "\n")
         if uncovered:
@@ -287,6 +311,21 @@ def verify_manifest(path):
                 sha256_file(f) != s["caselist_sha256"]:
             raise PartitionRefusal(f"caselist {s['caselist']} does not match "
                                    "its recorded count and digest")
+        shards = s.get("shards", [])
+        if len(shards) != s.get("shard_count") or \
+                sum(sh["case_count"] for sh in shards) != s["case_count"] or \
+                [sh["index"] for sh in shards] != list(range(len(shards))) or \
+                any(sh["case_count"] > s.get("shard_max_cases", 0)
+                    for sh in shards):
+            raise PartitionRefusal(f"slice {s['slice']}: shards do not "
+                                   "reconcile with the slice")
+        for sh in shards:
+            q = p.parent / sh["caselist"]
+            if not q.is_file() or sha256_file(q) != sh["caselist_sha256"] or \
+                    len([x for x in q.read_text().splitlines() if x]) != \
+                    sh["case_count"]:
+                raise PartitionRefusal(f"shard {sh['caselist']} does not "
+                                       "match its recorded count and digest")
         total += s["case_count"]
     if total != manifest["covered_case_count"] or \
             executable != manifest.get("executable_case_count"):
@@ -301,13 +340,16 @@ def verify_manifest(path):
 
 
 def slice_for_caselist(manifest, caselist_path):
-    """The manifest slice whose digest equals the caselist's, or a
-    refusal: a caselist outside the manifest carries no slice identity."""
+    """The manifest slice and shard whose digest equals the caselist's,
+    or a refusal: a caselist outside the manifest carries no slice
+    identity.  A whole-slice caselist binds when the slice is one shard;
+    otherwise the shard caselist is the bound unit."""
     digest = sha256_file(caselist_path)
     for s in manifest["slices"]:
-        if s["caselist_sha256"] == digest:
-            return s
-    raise PartitionRefusal(f"{caselist_path} matches no manifest slice "
+        for sh in s.get("shards", []):
+            if sh["caselist_sha256"] == digest:
+                return s, sh
+    raise PartitionRefusal(f"{caselist_path} matches no manifest shard "
                            "digest")
 
 
@@ -322,7 +364,8 @@ def report(manifest):
     for s in manifest["slices"]:
         flag = "" if s["executable"] else " BLOCKED"
         print(f"  {s['order']:2d} {s['slice']:<22} {s['case_count']:>8} "
-              f"{s['hazard']:<10} {s['caselist_sha256'][:12]}{flag}")
+              f"{s['hazard']:<10} {s['caselist_sha256'][:12]} "
+              f"{s['shard_count']:>3} shards{flag}")
 
 
 def selftest():
@@ -361,6 +404,11 @@ def selftest():
         write_table(good)
         out = d / "out"
         m = generate(table, corpus, out, "exhaustive")
+        if m["slices"][0]["shard_count"] != 1 or \
+                m["slices"][0]["shards"][0]["caselist_sha256"] != \
+                m["slices"][0]["caselist_sha256"]:
+            raise SystemExit("selftest: a one-shard slice's shard digest is "
+                             "not the slice digest")
         expect(lambda: verify_manifest(out / "partition_manifest.json"),
                "names no pinned CTS revision")
         pin0 = d / "pin0.tsv"
@@ -373,10 +421,33 @@ def selftest():
         if m["slices"][3]["executable"] or not m["slices"][0]["executable"]:
             raise SystemExit("selftest: unknown hazard is not blocked")
         v = verify_manifest(out / "partition_manifest.json")
-        if slice_for_caselist(v, out / "api.txt")["slice"] != "api":
+        bound, shard = slice_for_caselist(v, out / "api.txt")
+        if bound["slice"] != "api" or shard["index"] != 0 or \
+                bound["shard_count"] != 1:
             raise SystemExit("selftest: caselist did not bind to its slice")
+        # A slice above the shard ceiling splits into consecutive shards
+        # that reconcile with the slice and each bind on their own.
+        ms = generate(table, corpus, out / "sharded", "exhaustive",
+                      pin_path=pin0, shard_max=1)
+        api = ms["slices"][1]
+        if api["shard_count"] != 2 or \
+                [sh["case_count"] for sh in api["shards"]] != [1, 1]:
+            raise SystemExit("selftest: shards did not split the slice")
+        vs = verify_manifest(out / "sharded" / "partition_manifest.json")
+        b1, sh1 = slice_for_caselist(vs, out / "sharded" / "api.0001.txt")
+        if b1["slice"] != "api" or sh1["index"] != 1:
+            raise SystemExit("selftest: shard did not bind")
+        expect(lambda: slice_for_caselist(vs, out / "sharded" / "api.txt"),
+               "matches no manifest shard")
+        (out / "sharded" / "api.0001.txt").write_text("dEQP-VK.api.smoke.x\n")
+        expect(lambda: verify_manifest(out / "sharded" /
+                                       "partition_manifest.json"),
+               "shard api.0001.txt does not match")
+        expect(lambda: generate(table, corpus, out / "z", "exhaustive",
+                                False, pin_path=pin0, shard_max=0),
+               "at least 1")
         expect(lambda: slice_for_caselist(v, corpus / "a.txt"),
-               "matches no manifest slice")
+               "matches no manifest shard")
         if (out / "api.txt").read_text() != \
                 "dEQP-VK.api.smoke.asm\ndEQP-VK.api.smoke.triangle\n":
             raise SystemExit("selftest: caselist is not the sorted slice")
@@ -429,7 +500,9 @@ def selftest():
                  "does not derive"),
                 (flip("executable_case_count", 5), "executable counts"),
                 (flip("exact_cover", False), "without exact cover"),
-                (flip("manifest_version", 1), "version unknown"),
+                (flip("manifest_version", 2), "version unknown"),
+                (lambda mm: mm["slices"][0].__setitem__("shard_count", 2),
+                 "shards do not reconcile"),
                 (flip("cts_describe", ""), "names no pinned"),
                 (flip("kind", "weekly"), "kind unknown"),
                 (lambda mm: mm["slices"][0].__setitem__("caselist", "x.txt"),
@@ -510,7 +583,8 @@ def selftest():
         (corpus / "sub" / "c.txt").write_text("dEQP-VK.draw.basic\n")
         expect(lambda: generate(table, corpus, out, "exhaustive", False),
                "is listed in")
-    print("selftest: exact cover, executable count, prefix matching, "
+    print("selftest: exact cover, shards (split, bind, tamper), executable "
+          "count, prefix matching, "
           "corpus pin, blocked unknown hazard, caselist binding, tampered "
           "caselist, tampered and re-sealed manifest clauses, uncovered "
           "(pilot vs exhaustive), double cover, empty group, group syntax, "
@@ -529,6 +603,8 @@ def main():
         s.add_argument("--corpus-pin")
         if name == "generate":
             s.add_argument("--out", required=True)
+        s.add_argument("--shard-max-cases", type=int,
+                       default=SHARD_MAX_CASES)
     v = sub.add_parser("verify-manifest")
     v.add_argument("--manifest", required=True)
     sub.add_parser("selftest")
@@ -550,7 +626,8 @@ def main():
             m = generate(args.partition, corpus,
                          getattr(args, "out", None), args.kind,
                          write=args.cmd == "generate",
-                         pin_path=args.corpus_pin)
+                         pin_path=args.corpus_pin,
+                         shard_max=args.shard_max_cases)
             report(m)
     except PartitionRefusal as e:
         print(f"FAIL: {e}", file=sys.stderr)
