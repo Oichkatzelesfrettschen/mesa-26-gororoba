@@ -432,10 +432,14 @@ refuses a `cs_ioctls` other than exactly `--expect-cs`, a tracee that
 exited nonzero, a trace holding no ioctl at all, an ioctl line the
 parser could not read, and an `LD_PRELOAD` interposer that answers in
 the tracee's address space; `--allow-tracee-failure`, `--allow-empty`,
-and `--allow-preload` open each of the last three by name, and the
-summary lists every refusal it raised.  A run that never executed
-therefore refuses on both its exit status and its empty log rather than
-sealing the digest of an empty file as a witnessed zero.
+and `--allow-preload` open each of the last three by name; an
+incomplete census stays closed, since a count read off lines the parser
+could not finish reading is no count at all.  The summary lists every
+refusal it raised beside the `gates_opened` the caller passed, so a
+witnessed verdict carries whether the run was clean or a gate stood open
+over it.  A run that never executed therefore refuses on both its exit
+status and its empty log rather than sealing the digest of an empty file
+as a witnessed zero.
 
 The witness stops at the syscall boundary.  The radeon drm-shim answers
 the whole radeon request set inside the tracee's address space, so a
@@ -443,12 +447,14 @@ shim run performs no DRM ioctl syscall and this tool reports zero for a
 submitting arm whose own transport-table counter reports one; every
 syscall-boundary instrument shares that blindness, and a counter ahead
 of the shim in the preload order is what witnesses an absorbed call.
-`selftest` calibrates the parser on emitters issuing a known count of
-real CS-numbered and GEM-numbered syscalls, drives each refusal through
-the real trace path against a run that trips exactly it, and pins both
-shim arms of `r3v_native_submit_order_harness` at a syscall-visible
-zero, which is the property that holds the scope of the verdict.  On the
-host model the zero states that nothing reached the kernel; on silicon,
+`selftest` holds the parser to its contract over a written log (a whole
+call, a call the tracer split across a context switch counting once, and
+a line it rejects), calibrates it on emitters issuing a known count of
+real CS-numbered and GEM-numbered syscalls, drives each refusal against
+an input that trips exactly it, and pins both shim arms of
+`r3v_native_submit_order_harness` at a syscall-visible zero, which is
+the property that holds the scope of the verdict.  On the host model the
+zero states that nothing reached the kernel; on silicon,
 where every submission is a real syscall, the same zero states that no
 submission happened, which is what the hazard-free slices must show.
 

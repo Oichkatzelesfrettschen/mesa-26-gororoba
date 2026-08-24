@@ -233,6 +233,14 @@ def command_trace(args):
         summary = summarize(args.argv, strace_path, status,
                             os.environ.get("LD_PRELOAD", ""))
         summary["expect_cs"] = args.expect_cs
+        # A witnessed verdict reads the same whether the run was clean or
+        # the caller opened a gate over it, so the summary carries which
+        # gates stood open.
+        summary["gates_opened"] = {
+            "allow_tracee_failure": args.allow_tracee_failure,
+            "allow_empty": args.allow_empty,
+            "allow_preload": args.allow_preload,
+        }
         found = refusals(summary, args.expect_cs, args.allow_tracee_failure,
                          args.allow_empty, args.allow_preload)
         summary["refusals"] = found
@@ -328,6 +336,50 @@ def command_selftest(args):
         failures.append("DRM_IOCTL_RADEON_CS derived 0x%08x" % CS_REQUEST)
 
     with tempfile.TemporaryDirectory() as work_dir:
+        # The parser contract over a written log: a request the regex
+        # reads, a call the tracer split across a context switch (the
+        # entry line carries the request, the resumed line does not, so
+        # the pair counts once), and a line the regex rejects, which is
+        # the one refusal no live run trips on demand.
+        print("parser contract:")
+        fixture = os.path.join(work_dir, "contract.strace")
+        with open(fixture, "w") as handle:
+            handle.write(
+                "1234 ioctl(0x3, 0x%08x, 0x7ffd0000) = 0\n"
+                "1234 ioctl(0x3, 0x%08x <unfinished ...>\n"
+                "1234 <... ioctl resumed>) = 0\n"
+                "1234 ioctl(0x4, 0x%08x, 0x7ffd0000) = 0\n"
+                "1234 ioctl(a line carrying no request word) = -1\n"
+                % (CS_REQUEST, CS_REQUEST,
+                   REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3]))
+        counts, unparsed = parse_strace(fixture)
+        print("  %-32s cs=%d gem_create=%d unparsed=%d"
+              % ("written log", counts.get(CS_REQUEST, 0),
+                 counts.get(REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 0),
+                 unparsed))
+        if counts.get(CS_REQUEST, 0) != 2:
+            failures.append("the parser counted %d CS ioctls over the "
+                            "written log, expected 2 (one whole call and "
+                            "one split across a context switch)"
+                            % counts.get(CS_REQUEST, 0))
+        if counts.get(REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 0) != 1:
+            failures.append("the parser counted %d GEM_CREATE ioctls over "
+                            "the written log, expected 1"
+                            % counts.get(
+                                REQUESTS["DRM_IOCTL_RADEON_GEM_CREATE"][3], 0))
+        if unparsed != 1:
+            failures.append("the parser reported %d unparsed ioctl lines "
+                            "over the written log, expected 1" % unparsed)
+        # The refusal itself, over the same log: an incomplete census
+        # refuses whatever the counts say, and no gate opens it.
+        raised = [refusal.split(":")[0] for refusal in
+                  refusals(summarize(["written-log"], fixture, 0, ""),
+                           2, True, True, True)]
+        print("  %-32s refusals=%s" % ("incomplete census", raised))
+        if raised != ["unparsed_lines"]:
+            failures.append("the written log raised %s, expected exactly "
+                            "unparsed_lines" % raised)
+
         print("parser calibration:")
         # Known-bad: three real CS-numbered syscalls.  The parser must
         # count exactly three and read every line it saw.
