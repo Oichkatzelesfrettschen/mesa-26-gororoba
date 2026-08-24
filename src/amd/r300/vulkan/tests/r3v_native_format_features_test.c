@@ -174,6 +174,35 @@ main(int argc, char **argv)
          physical_device, legacy_query, properties2_query,
          VK_FORMAT_R32_SFLOAT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
          "R32_SFLOAT vertex fetch");
+      /* The transfer family's texel table grants the two transfer bits
+       * on the linear layout alone, through both queries.
+       */
+      static const VkFormat transfer_formats[] = {
+         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT,
+         VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R32G32B32A32_UINT,
+         VK_FORMAT_R32_UINT,
+      };
+      for (unsigned i = 0; i < 5; i++) {
+         VkFormatProperties legacy;
+         legacy_query(physical_device, transfer_formats[i], &legacy);
+         VkFormatProperties2KHR properties2 = {
+            .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2_KHR,
+         };
+         properties2_query(physical_device, transfer_formats[i],
+                           &properties2);
+         CHECK(legacy.linearTilingFeatures ==
+                     (VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+                      VK_FORMAT_FEATURE_TRANSFER_DST_BIT) &&
+                  legacy.optimalTilingFeatures == 0 &&
+                  legacy.bufferFeatures == 0 &&
+                  properties2.formatProperties.linearTilingFeatures ==
+                     legacy.linearTilingFeatures,
+               "transfer-family texel format %u grants the two transfer "
+               "bits on the linear layout alone (linear 0x%08x optimal "
+               "0x%08x buffer 0x%08x)",
+               transfer_formats[i], legacy.linearTilingFeatures,
+               legacy.optimalTilingFeatures, legacy.bufferFeatures);
+      }
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_R8_UNORM, 0,
                             "R8_UNORM non-fetchable buffer");

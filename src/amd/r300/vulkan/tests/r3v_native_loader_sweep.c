@@ -151,27 +151,34 @@ in_child(const char *label, int (*body)(void))
    CHECK(exit_status == 0, "%s: exit status %d", label, exit_status);
 }
 
-/* Creation of an unsupported type refuses and hands back no handle. */
+/* A transfer-family texel format admits under transfer usage, and a
+ * format outside the texel table refuses and hands back no handle.
+ */
 static int
 call_create_image(void)
 {
-   VkImage image = (VkImage)(uintptr_t)0x1;
-   VkResult result = vkCreateImage(
-      device,
-      &(VkImageCreateInfo){
-         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-         .imageType = VK_IMAGE_TYPE_2D,
-         .format = VK_FORMAT_R8G8B8A8_UNORM,
-         .extent = { 4, 4, 1 },
-         .mipLevels = 1,
-         .arrayLayers = 1,
-         .samples = VK_SAMPLE_COUNT_1_BIT,
-         .tiling = VK_IMAGE_TILING_LINEAR,
-         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      },
-      NULL, &image);
+   VkImageCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .extent = { 4, 4, 1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+   };
+   VkImage image = VK_NULL_HANDLE;
+   VkResult result = vkCreateImage(device, &info, NULL, &image);
+   if (result != VK_SUCCESS || image == VK_NULL_HANDLE)
+      return 1;
+   vkDestroyImage(device, image, NULL);
+
+   info.format = VK_FORMAT_R8_UNORM;
+   image = (VkImage)(uintptr_t)0x1;
+   result = vkCreateImage(device, &info, NULL, &image);
    return (result != VK_SUCCESS && image == VK_NULL_HANDLE) ? 0 : 1;
 }
 
@@ -761,7 +768,9 @@ main(void)
    const bool live_memory_ready =
       mapped_range_setup_ready(allocation_result, map_result, live_map);
 
-   in_child("vkCreateImage refuses", call_create_image);
+   in_child("vkCreateImage admits a texel-table format and refuses outside "
+            "it",
+            call_create_image);
    in_child("vkCreateEvent constructs the host event",
             call_create_event);
    in_child("vkCreateSampler records state and destroys",

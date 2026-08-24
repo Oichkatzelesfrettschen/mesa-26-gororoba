@@ -36,9 +36,10 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
 
    *pImage = VK_NULL_HANDLE;
 
+   const uint32_t texel_bytes =
+      r3v_native_transfer_texel_bytes(pCreateInfo->format);
    if (pCreateInfo->flags != 0 ||
-       pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
-       pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
+       pCreateInfo->imageType != VK_IMAGE_TYPE_2D || texel_bytes == 0 ||
        pCreateInfo->extent.width < 1 || pCreateInfo->extent.height < 1 ||
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
        pCreateInfo->arrayLayers != 1 ||
@@ -52,7 +53,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    bool transfer_family;
    uint32_t row_pitch_bytes;
    if (pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
-      if (pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
+      if (pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
+          pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
           pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       transfer_family = false;
@@ -63,8 +65,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
           pCreateInfo->extent.height > R3V_NATIVE_TRANSFER_DIMENSION_MAX)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       transfer_family = true;
-      row_pitch_bytes =
-         r3v_native_transfer_row_pitch_bytes(pCreateInfo->extent.width);
+      row_pitch_bytes = r3v_native_transfer_row_pitch_bytes(
+         pCreateInfo->extent.width, texel_bytes);
    } else {
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
    }
@@ -77,6 +79,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
 
    image->width = pCreateInfo->extent.width;
    image->height = pCreateInfo->extent.height;
+   image->format = pCreateInfo->format;
+   image->texel_bytes = texel_bytes;
    image->row_pitch_bytes = row_pitch_bytes;
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
@@ -119,7 +123,8 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
    *pMemoryRequirements = (VkMemoryRequirements){
       .size = image->transfer_family
                  ? r3v_native_transfer_footprint_bytes(image->width,
-                                                       image->height)
+                                                       image->height,
+                                                       image->texel_bytes)
                  : r3v_native_image_footprint_bytes(image->height),
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
@@ -197,7 +202,8 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
       image != NULL
          ? (image->transfer_family
                ? r3v_native_transfer_footprint_bytes(image->width,
-                                                     image->height)
+                                                     image->height,
+                                                     image->texel_bytes)
                : r3v_native_image_footprint_bytes(image->height))
          : 0;
    if (image == NULL || memory == NULL || image->memory != NULL ||
