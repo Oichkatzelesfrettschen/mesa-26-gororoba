@@ -187,7 +187,11 @@ def summarize(argv, strace_path, tracee_status):
         "strace_sha256": sha256_file(strace_path),
         "witness_scope": "syscall-entering ioctls only; a user-space "
                          "interposer that answers without a syscall is "
-                         "invisible to this witness",
+                         "invisible to this witness.  total_ioctls counts "
+                         "every request the tracee issued, so libc's "
+                         "terminal probe on a redirected stdout lands in "
+                         "it; the radeon traffic is cs_ioctls, gem_ioctls, "
+                         "and the ioctls_by_request census",
     }
 
 
