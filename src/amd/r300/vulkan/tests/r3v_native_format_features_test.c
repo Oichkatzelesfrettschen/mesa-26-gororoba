@@ -90,6 +90,7 @@ main(int argc, char **argv)
 
    const char *const extensions[] = {
       VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+      VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
    };
    VkInstance instance = VK_NULL_HANDLE;
    VkResult result = vkCreateInstance(
@@ -100,7 +101,7 @@ main(int argc, char **argv)
                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                .apiVersion = VK_API_VERSION_1_0,
             },
-         .enabledExtensionCount = 1,
+         .enabledExtensionCount = 2,
          .ppEnabledExtensionNames = extensions,
       },
       NULL, &instance);
@@ -121,6 +122,43 @@ main(int argc, char **argv)
    if (physical_device == VK_NULL_HANDLE) {
       vkDestroyInstance(instance, NULL);
       return 1;
+   }
+
+   /* VK_KHR_external_memory_capabilities executes as the zeroed answer:
+    * no handle type is exportable or importable, so every queried
+    * handle type reports empty external-memory properties.
+    */
+   PFN_vkGetPhysicalDeviceExternalBufferPropertiesKHR external_query =
+      (PFN_vkGetPhysicalDeviceExternalBufferPropertiesKHR)
+         vkGetInstanceProcAddr(
+            instance, "vkGetPhysicalDeviceExternalBufferPropertiesKHR");
+   CHECK(external_query != NULL,
+         "the loader resolves vkGetPhysicalDeviceExternalBufferPropertiesKHR");
+   if (external_query != NULL) {
+      const VkExternalMemoryHandleTypeFlagBits handle_types[] = {
+         VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+      };
+      for (unsigned i = 0; i < 2; i++) {
+         VkExternalBufferPropertiesKHR props = {
+            .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES_KHR,
+         };
+         external_query(
+            physical_device,
+            &(VkPhysicalDeviceExternalBufferInfoKHR){
+               .sType =
+                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO_KHR,
+               .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+               .handleType = handle_types[i],
+            },
+            &props);
+         CHECK(props.externalMemoryProperties.externalMemoryFeatures == 0 &&
+                  props.externalMemoryProperties.compatibleHandleTypes == 0 &&
+                  props.externalMemoryProperties
+                        .exportFromImportedHandleTypes == 0,
+               "external buffer properties for handle type 0x%x are zeroed",
+               handle_types[i]);
+      }
    }
 
    PFN_vkGetPhysicalDeviceFormatProperties legacy_query =

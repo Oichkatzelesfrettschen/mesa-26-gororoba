@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: MIT
-"""Bind every advertised Vulkan 1.0 bit to its implementation test and
-its exact dEQP group.
+"""Bind every advertised extension, granted feature bit, receipt-bound
+limit, and format-feature row to its implementation test and its exact
+dEQP group.
 
-An advertised extension, feature bit, receipt-bound limit, or format
-feature row is a claim the conformance run measures, so each one names
-the registered Mesa test that exercises the executing route and the
-dEQP-VK group whose mustpass cases judge it.  The advertised set is
+Each advertised item is a claim the conformance run measures, so it
+names the registered Mesa test that exercises the executing route and
+the dEQP-VK group whose mustpass cases judge it.  The judging group is
+exact: a version-gated group above the pinned apiVersion (vulkan1p2 and
+later) judges nothing on a 1.0 device, and a group shallower than a
+test family (dEQP-VK.api) is an ancestor, so both refuse.  A group whose
+cases fail today stays bound; the ledger records the judge, and the
+non-pass ledger records the deviation.  The advertised set is
 derived from the driver sources (extension tables, granted feature bits,
 the limit-receipt registry, the format-property switch, the apiVersion
 pin, and the queue-family shape); a derived item with no ledger row
@@ -41,15 +46,6 @@ class BindingFailure(Exception):
     pass
 
 
-def granted_features(text):
-    body = re.search(r"r3v_physical_device_init_features\s*\([^)]*\)\s*\{(.*?)\n\}",
-                     text, re.S)
-    if body is None:
-        raise BindingFailure("no r3v_physical_device_init_features body")
-    stripped = surface.strip_comments(body.group(1))
-    return sorted(set(re.findall(r"features->(\w+)\s*=\s*true", stripped)))
-
-
 def advertised_formats(text):
     body = re.search(r"r3v_get_format_properties\s*\([^{]*\{(.*?)\n\}",
                      text, re.S)
@@ -64,7 +60,7 @@ def derive(pdev_text, instance_text, private_text):
     api = inventory.parse_api_version(private_text)
     items.add(("api_version", f"{api[0]}.{api[1]}"))
     items.add(("queue_family", inventory.parse_queue_family(pdev_text)))
-    for f in granted_features(pdev_text):
+    for f in inventory.parse_granted_features(pdev_text):
         items.add(("feature", f))
     for e in inventory.parse_struct_table(instance_text,
                                          inventory.INSTANCE_TABLE):
@@ -92,9 +88,15 @@ def read_ledger(path):
     return rows
 
 
+SELF_TESTS = {"r3v-advertised-surface-deqp-binding",
+              "r3v-advertised-surface-deqp-binding-selftest"}
+VERSION_GATED_GROUP = re.compile(r"\.vulkan1p[1-9]")
+MIN_GROUP_DEPTH = 2
+
+
 def registered_tests(intro_tests_path):
     data = json.loads(Path(intro_tests_path).read_text())
-    names = {t["name"] for t in data}
+    names = {t["name"] for t in data} - SELF_TESTS
     if not names:
         raise BindingFailure(f"{intro_tests_path} lists no tests")
     return names
@@ -137,6 +139,14 @@ def check(rows, derived, tests, cases):
             raise BindingFailure(
                 f"{kind}:{name} names {group!r}, which is not a dEQP-VK "
                 "group path")
+        if VERSION_GATED_GROUP.search(group):
+            raise BindingFailure(
+                f"{kind}:{name} names {group}, a group gated above the "
+                "pinned apiVersion 1.0, which judges nothing on this device")
+        if group.count(".") < MIN_GROUP_DEPTH:
+            raise BindingFailure(
+                f"{kind}:{name} names {group}, an ancestor group rather "
+                "than the judging group")
         if cases is not None and not group_matches(group, cases):
             raise BindingFailure(
                 f"{kind}:{name} names {group}, which matches no mustpass "
@@ -192,13 +202,20 @@ def selftest():
     expect("not a dEQP-VK group path", rows=[rows[0], (
         "device_extension", "VK_KHR_bind_memory2", "t-bind",
         "memory.binding")])
+    expect("gated above the pinned apiVersion", rows=[rows[0], (
+        "device_extension", "VK_KHR_bind_memory2", "t-bind",
+        "dEQP-VK.api.info.vulkan1p2_limits_validation")])
+    expect("an ancestor group", rows=[rows[0], (
+        "device_extension", "VK_KHR_bind_memory2", "t-bind",
+        "dEQP-VK.memory")], cases=cases | {"dEQP-VK.memory.x"})
     with tempfile.TemporaryDirectory() as d:
         Path(d, "api.txt").write_text("dEQP-VK.api.smoke.triangle\n")
         got = mustpass_cases(d)
         assert got == {"dEQP-VK.api.smoke.triangle"}, got
     print("selftest: known-good binding passes; missing-row, stale-row, "
-          "unregistered-test, group-without-case, and malformed-group "
-          "fixtures each fail by their clause")
+          "unregistered-test, group-without-case, malformed-group, "
+          "version-gated-group, and ancestor-group fixtures each fail by "
+          "their clause")
 
 
 def main():
@@ -219,7 +236,8 @@ def main():
             p.error(f"--{f.replace('_', '-')} is required")
     try:
         run(args)
-    except BindingFailure as e:
+    except (BindingFailure, inventory.InventoryFailure,
+            surface.AuditFailure) as e:
         print(f"FAIL: {e}", file=sys.stderr)
         sys.exit(1)
 

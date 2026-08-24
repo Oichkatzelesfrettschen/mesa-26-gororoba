@@ -173,6 +173,32 @@ check_buffer_binding(const struct fixture *f)
          "an aligned bind whose footprint closes inside the allocation "
          "admits");
 
+   /* VK_KHR_bind_memory2 resolves through the vk_common bridge onto the
+    * same once-per-buffer binding, so the *2 form admits an aligned
+    * bind and refuses a rebind exactly as the core form does.
+    */
+   PFN_vkBindBufferMemory2KHR bind_buffer2 =
+      (PFN_vkBindBufferMemory2KHR)vkGetDeviceProcAddr(
+         f->device, "vkBindBufferMemory2KHR");
+   CHECK(bind_buffer2 != NULL, "vkBindBufferMemory2KHR resolves");
+   if (bind_buffer2 != NULL) {
+      VkBuffer buffer2;
+      REQUIRE(vkCreateBuffer(f->device, &buffer_info, NULL, &buffer2) ==
+                 VK_SUCCESS,
+              "second buffer object creation");
+      VkBindBufferMemoryInfoKHR bind2 = {
+         .sType = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO_KHR,
+         .buffer = buffer2,
+         .memory = memory,
+         .memoryOffset = 0,
+      };
+      CHECK(bind_buffer2(f->device, 1, &bind2) == VK_SUCCESS,
+            "vkBindBufferMemory2KHR admits an aligned bind");
+      CHECK(bind_buffer2(f->device, 1, &bind2) != VK_SUCCESS,
+            "vkBindBufferMemory2KHR refuses a rebind");
+      vkDestroyBuffer(f->device, buffer2, NULL);
+   }
+
    const VkResult rebind =
       vkBindBufferMemory(f->device, buffer, memory, 0);
    if (mutation == MUTATION_REBIND_ADMITS)
@@ -246,6 +272,32 @@ check_image_binding(const struct fixture *f)
    CHECK(vkBindImageMemory(f->device, image, memory, 0) != VK_SUCCESS,
          "a second bind of a bound image refuses: binding happens "
          "exactly once");
+   PFN_vkBindImageMemory2KHR bind_image2 =
+      (PFN_vkBindImageMemory2KHR)vkGetDeviceProcAddr(
+         f->device, "vkBindImageMemory2KHR");
+   CHECK(bind_image2 != NULL, "vkBindImageMemory2KHR resolves");
+   if (bind_image2 != NULL) {
+      VkImage image2;
+      REQUIRE(vkCreateImage(f->device, &image_info, NULL, &image2) ==
+                 VK_SUCCESS,
+              "second render-family image creation");
+      VkDeviceMemory memory2;
+      if (allocate_memory(f, requirements.size, 0, &memory2))
+         return 1;
+      VkBindImageMemoryInfoKHR bind2 = {
+         .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO_KHR,
+         .image = image2,
+         .memory = memory2,
+         .memoryOffset = 0,
+      };
+      CHECK(bind_image2(f->device, 1, &bind2) == VK_SUCCESS,
+            "vkBindImageMemory2KHR binds the render-family image at "
+            "offset zero");
+      CHECK(bind_image2(f->device, 1, &bind2) != VK_SUCCESS,
+            "vkBindImageMemory2KHR refuses a rebind");
+      vkDestroyImage(f->device, image2, NULL);
+      vkFreeMemory(f->device, memory2, NULL);
+   }
 
    vkDestroyImage(f->device, image, NULL);
    vkFreeMemory(f->device, memory, NULL);
@@ -691,10 +743,16 @@ create_fixture(struct fixture *f)
       .queueCount = 1,
       .pQueuePriorities = &priority,
    };
+   const char *const device_extensions[] = {
+      VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+      VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+   };
    const VkDeviceCreateInfo device_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .queueCreateInfoCount = 1,
       .pQueueCreateInfos = &queue_info,
+      .enabledExtensionCount = 2,
+      .ppEnabledExtensionNames = device_extensions,
    };
    REQUIRE(vkCreateDevice(f->pdev, &device_info, NULL, &f->device) ==
               VK_SUCCESS,

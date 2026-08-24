@@ -575,6 +575,28 @@ main(void)
    assert((enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) &&
           pdev_count == 1);
 
+   /* The one queue family is the shape the inventory pins: GRAPHICS
+    * base, COMPUTE only under the exact hybrid opt-in, queueCount 1,
+    * timestampValidBits 0.
+    */
+   PFN_vkGetPhysicalDeviceQueueFamilyProperties query_queue_families =
+      (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(
+         instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+   assert(query_queue_families != NULL);
+   uint32_t family_count = 0;
+   query_queue_families(pdev, &family_count, NULL);
+   assert(family_count == 1);
+   VkQueueFamilyProperties family;
+   query_queue_families(pdev, &family_count, &family);
+   const char *hybrid = getenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL");
+   const VkQueueFlags expected_flags =
+      VK_QUEUE_GRAPHICS_BIT |
+      (hybrid != NULL && strcmp(hybrid, "1") == 0 ? VK_QUEUE_COMPUTE_BIT
+                                                  : 0);
+   assert(family.queueFlags == expected_flags);
+   assert(family.queueCount == 1);
+   assert(family.timestampValidBits == 0);
+
    const float priority = 1.0f;
    const char *device_extensions[] = {
       VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
