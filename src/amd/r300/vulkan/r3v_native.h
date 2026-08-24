@@ -8,6 +8,7 @@
 #define R3V_NATIVE_H
 
 #include "r3v_native_arming.h"
+#include "r3v_native_plan.h"
 
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
@@ -630,6 +631,37 @@ struct r3v_native_prepared_submission {
    uint32_t *reference_indices;
 };
 
+/* Plan capture state: the entries recorded so far and the transcript
+ * path they land in after every submission.
+ */
+struct r3v_native_plan_capture {
+   char *path;
+   struct r3v_native_plan_submission *entries;
+   uint32_t count;
+   uint32_t capacity;
+};
+
+bool r3v_native_plan_capture_host_model_present(void);
+int r3v_native_plan_capture_init(struct r3v_native_plan_capture *capture,
+                                 const char *path);
+void r3v_native_plan_capture_finish(struct r3v_native_plan_capture *capture);
+int r3v_native_plan_capture_record(
+   struct r3v_native_plan_capture *capture,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   const uint32_t *reference_indices, uint32_t completion_index,
+   uint64_t completion_size);
+/* The relocation role a cell kind gives reference slot `slot`, written
+ * into out (R3V_NATIVE_PLAN_NAME_MAX + 1 bytes). */
+void r3v_native_plan_capture_slot_role(enum r3v_native_cell_kind kind,
+                                       uint32_t slot, char *out);
+bool r3v_native_plan_capture_lands_now(
+   const struct r3v_native_plan_capture *capture);
+int r3v_native_plan_capture_write(struct r3v_native_plan_capture *capture,
+                                  uint32_t pci_vendor_id,
+                                  uint32_t pci_device_id,
+                                  const char *module_srcversion);
+
 struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
@@ -638,6 +670,15 @@ struct r3v_native_device {
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
    const char *manifest_dir;
+   /* Plan capture, read once at device creation from
+    * R3V_NATIVE_PLAN_CAPTURE_FILE: with a path set, the device runs only
+    * under the preloaded drm-shim, keeps the hazard gate closed, and
+    * records every executable submission's whole plan entry before its
+    * ioctl reaches the shim.  A capture device and an open hazard gate
+    * refuse each other at creation.
+    */
+   struct r3v_native_plan_capture plan_capture;
+   bool plan_capture_active;
    enum r3v_native_queue_status queue_status;
    /* The last submission's transport interval on the raw monotonic
     * clock: the reading immediately before DRM_RADEON_CS and the one
