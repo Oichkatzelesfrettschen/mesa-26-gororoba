@@ -94,7 +94,7 @@ execute_copy(struct r3v_native_device *device,
    case R3V_NATIVE_COPY_BUFFER_TO_IMAGE:
       src_memory = op->buffer->memory;
       src_base_offset = op->buffer->offset + op->buffer_offset;
-      src_pitch = op->buffer_row_length * op->dst_image->texel_bytes;
+      src_pitch = (uint64_t)op->buffer_row_length * op->dst_image->texel_bytes;
       dst_memory = op->dst_image->memory;
       dst_base_offset = op->dst_image->memory_offset +
                         (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
@@ -109,7 +109,7 @@ execute_copy(struct r3v_native_device *device,
       src_pitch = op->src_image->row_pitch_bytes;
       dst_memory = op->buffer->memory;
       dst_base_offset = op->buffer->offset + op->buffer_offset;
-      dst_pitch = op->buffer_row_length * op->src_image->texel_bytes;
+      dst_pitch = (uint64_t)op->buffer_row_length * op->src_image->texel_bytes;
       break;
    case R3V_NATIVE_COPY_CLEAR_IMAGE: {
       /* One mapping, one fill: the packed texel lands across the full
@@ -127,12 +127,13 @@ execute_copy(struct r3v_native_device *device,
          map_memory(device, dst_memory, &clear_map, &clear_owned);
       if (clear_result != VK_SUCCESS)
          return clear_result;
+      const uint32_t texel_bytes = op->dst_image->texel_bytes;
       for (uint32_t row = 0; row < op->height; row++) {
-         uint32_t *texels =
-            (uint32_t *)(clear_map + op->dst_image->memory_offset +
-                         (uint64_t)row * op->dst_image->row_pitch_bytes);
+         uint8_t *texels = clear_map + op->dst_image->memory_offset +
+                           (uint64_t)row * op->dst_image->row_pitch_bytes;
          for (uint32_t x = 0; x < op->width; x++)
-            texels[x] = op->clear_dword;
+            memcpy(texels + (uint64_t)x * texel_bytes, op->clear_texel,
+                   texel_bytes);
       }
       if (!clear_owned)
          radeon_drm_vk_bo_cache_sync(&device->drm, clear_map,

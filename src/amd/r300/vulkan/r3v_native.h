@@ -151,8 +151,8 @@ enum r3v_native_copy_kind {
    R3V_NATIVE_COPY_BUFFER_TO_IMAGE,
    R3V_NATIVE_COPY_IMAGE_TO_BUFFER,
    R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
-   /* Whole-subresource color fill: dst_image alone, clear_dword the
-    * packed little-endian B8G8R8A8 texel.
+   /* Whole-subresource color fill: dst_image alone, clear_texel the
+    * packed little-endian texel of the image's format, texel_bytes wide.
     */
    R3V_NATIVE_COPY_CLEAR_IMAGE,
    /* Dword-pattern fill of a bound range: dst_buffer, dst_offset, size
@@ -182,6 +182,7 @@ struct r3v_native_deferred_copy {
    uint32_t dst_x, dst_y;
    uint32_t width, height;
    uint32_t clear_dword;
+   uint8_t clear_texel[16];
    uint8_t *update_data;
 };
 
