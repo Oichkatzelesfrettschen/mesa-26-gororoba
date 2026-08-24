@@ -39,9 +39,9 @@ mechanisms sharing one radix, `i = q * 2048 + r`, and no unified law:
   probe is open.
 - Partition lowered into the shader for NEAREST sampling: one fetch
   becomes up to four per-tile fetches plus a branchless tile select.
-  Silicon-proven pixel-exact at 4096x64 across the seam (finding
-  `2026-06-13-r300vk-experimental-nearest-tile-stitch-sampler`, Mesa
-  `57c6c912f59`).
+  Silicon-proven pixel-exact at 4096x64 across the seam (the
+  steinmarder-r300 finding of 2026-06-13 on the experimental nearest
+  tile-stitch sampler, Mesa `57c6c912f59`).
 - Cover for LINEAR sampling: overlapped halo charts so a bilinear
   footprint near the seam stays in one chart; exact to 4094 per axis,
   4095 and 4096 refused pending a three-chart cover.  Source-implemented
