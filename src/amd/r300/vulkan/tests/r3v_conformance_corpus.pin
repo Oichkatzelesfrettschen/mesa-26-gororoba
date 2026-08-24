@@ -1,0 +1,4 @@
+# Pinned dEQP-VK mustpass corpus (external/vulkancts/mustpass/main/vk-default).
+cts_describe	opengl-cts-4.6.8.0-414-g43c65c132
+case_count	3251483
+corpus_sha256	9cbcaff30025bf8cbcb1e99e3e96b35779c23d3f4dcdc62328e4afe10f1fe7cf

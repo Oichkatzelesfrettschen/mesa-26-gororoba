@@ -335,7 +335,8 @@ if with_tests
   # runner refuses it.  The selftest calibrates every refusal on a
   # synthetic corpus; the corpus checks prove the exhaustive table's
   # exact cover and the pilot table's disjointness against the pinned
-  # mustpass directory when R3V_DEQP_MUSTPASS_DIR names it.
+  # mustpass directory when R3V_DEQP_MUSTPASS_DIR names it, against the
+  # checked-in corpus pin; unnamed, they skip (exit 77).
   test(
     'r3v-conformance-partition-selftest',
     prog_python,
@@ -347,7 +348,8 @@ if with_tests
     prog_python,
     args : [files('tests/r3v_conformance_partition.py'), 'check',
             '--kind', 'exhaustive', '--partition',
-            files('tests/r3v_conformance_partition.tsv')],
+            files('tests/r3v_conformance_partition.tsv'),
+            '--corpus-pin', files('tests/r3v_conformance_corpus.pin')],
     suite : ['r3v'],
     timeout : 300,
   )
@@ -356,7 +358,8 @@ if with_tests
     prog_python,
     args : [files('tests/r3v_conformance_partition.py'), 'check',
             '--kind', 'pilot', '--partition',
-            files('tests/r3v_conformance_slices.tsv')],
+            files('tests/r3v_conformance_slices.tsv'),
+            '--corpus-pin', files('tests/r3v_conformance_corpus.pin')],
     suite : ['r3v'],
     timeout : 300,
   )

@@ -104,13 +104,20 @@ def partition_identity(manifest_path, caselist_path):
     except part.PartitionRefusal as e:
         raise RunnerRefusal(f"partition manifest: {e}")
     ident = {"kind": manifest["kind"],
+             "cts_describe": manifest.get("cts_describe"),
              "manifest_sha256": manifest["manifest_sha256"],
              "corpus_sha256": manifest["corpus_sha256"],
              "corpus_case_count": manifest["corpus_case_count"],
+             "covered_case_count": manifest["covered_case_count"],
+             "executable_case_count": manifest["executable_case_count"],
+             "uncovered_case_count": manifest["uncovered_case_count"],
              "slice": s["slice"], "order": s["order"], "hazard": s["hazard"],
              "required_evidence": s["required_evidence"],
-             "case_count": s["case_count"]}
-    refusal = None if s["executable"] else "blocked_slice"
+             "case_count": s["case_count"],
+             "caselist_sha256": s["caselist_sha256"]}
+    # The hazard value itself opens execution; the stored flag is
+    # derived for readers and verify_manifest holds it to the hazard.
+    refusal = "blocked_slice" if s["hazard"] == "unknown" else None
     return ident, refusal
 
 
@@ -489,6 +496,9 @@ def execute(args):
                      "dso_sha256": args.expect_dso_sha256},
     }
     refusal = part_refusal
+    if refusal is None and partition.get("required_evidence") == "silicon" \
+            and evidence != "silicon":
+        refusal = "evidence_below_required"
     if args.expect_dso_sha256 and \
             receipt["icd"]["dso_sha256"] != args.expect_dso_sha256:
         refusal = "wrong_icd"
@@ -880,6 +890,22 @@ def selftest(fixture_qpa):
         r = run("all_pass", "blocked_slice", cases=pdir / "other.txt",
                 manifest_json=mj)
         assert r["partition"]["hazard"] == "unknown" and "argv" not in r
+        pm = json.loads((pdir / "partition_manifest.json").read_text())
+        assert r["partition"]["caselist_sha256"] == \
+            pm["slices"][1]["caselist_sha256"] and \
+            r["partition"]["executable_case_count"] == \
+            pm["executable_case_count"] == pm["slices"][0]["case_count"]
+        # A silicon-required slice under the drm-shim host model refuses
+        # before dEQP starts.
+        table.write_text("\t".join(part.HEADER) + "\n"
+                         "1\tfake\tdEQP-VK.fake\tsubmission\tsilicon\n"
+                         "2\tother\tdEQP-VK.other\tunknown\tsilicon\n")
+        sdir = d / "partition-silicon"
+        part.generate(table, corpus, sdir, "exhaustive")
+        r = run("all_pass", "evidence_below_required",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"))
+        assert "argv" not in r
         subset = d / "subset.txt"
         subset.write_text("dEQP-VK.fake.a\n")
         try:
@@ -917,7 +943,8 @@ def selftest(fixture_qpa):
           "crash, device-loss with a terminated case, multi-line result, "
           "late abort, framework-abort, wrong-ICD, dmesg-hazard, duplicate "
           f"caselist, {fixture_note}tampered-receipt, and partition "
-          "(bound slice, blocked slice, unbound caselist) fixtures each "
+          "(bound slice, blocked slice, silicon-required slice under the "
+          "host model, unbound caselist) fixtures each "
           "yield their verdict")
 
 
