@@ -45,11 +45,12 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     * offset cover the same bytes texel for texel.  The render family
     * reports a required dedicated allocation, whose memory carries that
     * one image alone, so no aliasing window opens there and the flag
-    * refuses.  An executing route reaches an alias only where the
-    * recorded pass proves the ranges apart -- stream_overlaps_target
-    * (r3v_native_draw.c) refuses a vertex stream sharing bytes with the
-    * pass target's footprint in the same BO -- so a stale alias stops at
-    * recording instead of reaching the draw.
+    * refuses.  The transfer family's copies move bytes through host
+    * mappings of the bound allocation and the queue completes each
+    * submission before vkQueueSubmit returns (r3v_native_transfer.c,
+    * r3v_native_queue.c; rg --fixed-strings memory_offset
+    * src/amd/r300/vulkan/), so a read through one alias observes every
+    * write the record order places before it.
     */
    const uint32_t texel_bytes =
       r3v_native_transfer_texel_bytes(pCreateInfo->format);

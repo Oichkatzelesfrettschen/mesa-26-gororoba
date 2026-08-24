@@ -473,8 +473,16 @@ main(int argc, char **argv)
       ((unsigned char *)map)[window->memory_offset] = 0x3c;
       assert(((unsigned char *)map)[a->memory_offset + last] == 0x7e);
       /* The render family reports a required dedicated allocation, whose
-       * memory carries that one image, so the flag refuses there; an
+       * memory carries that one image, so the flag refuses there; the
+       * same format and extent at no create flag succeeds, which pins
+       * that refusal to the flag rather than to the shape.  An
        * unadmitted create flag refuses in either family. */
+      VkImage render_plain = VK_NULL_HANDLE;
+      assert(create_image(device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0,
+                          R3V_NATIVE_TARGET_FORMAT, R3V_NATIVE_TARGET_WIDTH,
+                          R3V_NATIVE_TARGET_HEIGHT,
+                          &render_plain) == VK_SUCCESS);
+      vkDestroyImage(device, render_plain, NULL);
       VkImage render_alias = VK_NULL_HANDLE;
       assert(create_image(device, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                           VK_IMAGE_CREATE_ALIAS_BIT,
