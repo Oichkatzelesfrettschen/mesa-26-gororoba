@@ -21,3 +21,8 @@ format_feature	VK_FORMAT_R32_SFLOAT	r3v-native-format-features	dEQP-VK.api.info.
 format_feature	VK_FORMAT_R32G32_SFLOAT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r32g32_sfloat
 format_feature	VK_FORMAT_R32G32B32_SFLOAT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r32g32b32_sfloat
 format_feature	VK_FORMAT_R32G32B32A32_SFLOAT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r32g32b32a32_sfloat
+format_feature	VK_FORMAT_R8G8B8A8_UNORM	r3v-native-format-features	dEQP-VK.api.info.format_properties.r8g8b8a8_unorm
+format_feature	VK_FORMAT_R8G8B8A8_UINT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r8g8b8a8_uint
+format_feature	VK_FORMAT_R16G16B16A16_UINT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r16g16b16a16_uint
+format_feature	VK_FORMAT_R32G32B32A32_UINT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r32g32b32a32_uint
+format_feature	VK_FORMAT_R32_UINT	r3v-native-format-features	dEQP-VK.api.info.format_properties.r32_uint

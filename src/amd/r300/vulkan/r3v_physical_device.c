@@ -716,6 +716,19 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       break;
+   case VK_FORMAT_R8G8B8A8_UNORM:
+   case VK_FORMAT_R8G8B8A8_UINT:
+   case VK_FORMAT_R16G16B16A16_UINT:
+   case VK_FORMAT_R32G32B32A32_UINT:
+   case VK_FORMAT_R32_UINT:
+      /* The transfer family's texel table: the copies move these
+       * texels by size through host mappings and never interpret them,
+       * so the grant is the two transfer bits on the linear layout.
+       */
+      properties->linearTilingFeatures =
+         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      break;
    case VK_FORMAT_R32_SFLOAT:
    case VK_FORMAT_R32G32_SFLOAT:
    case VK_FORMAT_R32G32B32_SFLOAT:

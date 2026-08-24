@@ -255,6 +255,7 @@ static bool
 r3v_native_copy_buffer_ok(const struct r3v_native_buffer *buffer,
                           VkBufferUsageFlags usage_bit,
                           const VkBufferImageCopy *region,
+                          uint32_t texel_bytes,
                           uint32_t *row_length_out)
 {
    if (buffer == NULL || (buffer->vk.usage & usage_bit) == 0)
@@ -283,7 +284,7 @@ r3v_native_copy_buffer_ok(const struct r3v_native_buffer *buffer,
       region->bufferOffset +
       ((uint64_t)(region->imageExtent.height - 1) * row_length +
        region->imageExtent.width) *
-         4;
+         texel_bytes;
    if (last_byte > buffer->vk.size)
       return false;
    *row_length_out = row_length;
@@ -414,6 +415,9 @@ r3v_CmdBlitImage(
           !r3v_native_copy_rect_ok(dst, region->dstOffsets[0], extent) ||
           (src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
           (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
+          /* The unit-scale blit lowers onto the byte copy, which
+           * converts nothing, so the two formats must be one format. */
+          src->format != dst->format ||
           (src == dst &&
            r3v_native_rects_overlap(region->srcOffsets[0].x,
                                     region->srcOffsets[0].y,
@@ -521,7 +525,9 @@ r3v_CmdClearColorImage(
 
    /* The one-mip one-layer image has one clearable subresource, so
     * every admitted range names the whole image and the fill covers the
-    * full extent.  The Vulkan format registry defines
+    * full extent.  The packed value encodes the B8G8R8A8_UNORM lane
+    * order, so the clear admits that format alone and every other
+    * transfer-family format refuses.  The Vulkan format registry defines
     * VK_FORMAT_B8G8R8A8_UNORM as four 8-bit components in B, G, R, A
     * order.  lane_byte maps the RGBA lanes to those component positions,
     * and util_cpu_to_le32 converts the packed value before the transfer
@@ -535,6 +541,7 @@ r3v_CmdClearColorImage(
       struct r3v_native_deferred_copy *op =
          r3v_native_copy_slot(commandBuffer);
       if (op == NULL || image == NULL || !image->transfer_family ||
+          image->format != R3V_NATIVE_TARGET_FORMAT ||
           image->memory == NULL ||
           !r3v_native_transfer_destination_layout_ok(imageLayout) ||
           (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
@@ -655,7 +662,8 @@ r3v_CmdCopyBufferToImage(
           (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
           !r3v_native_copy_buffer_ok(buffer,
                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                     region, &row_length)) {
+                                     region, image->texel_bytes,
+                                     &row_length)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
@@ -703,6 +711,9 @@ r3v_CmdCopyImage(
                                    region->extent) ||
           (src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
           (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
+          /* vkCmdCopyImage requires size-compatible formats: the byte
+           * copy moves texels of one size. */
+          src->texel_bytes != dst->texel_bytes ||
           /* Vulkan leaves overlapping copy regions undefined, so a
            * same-image rectangle pair that intersects refuses. */
           (src == dst &&
@@ -754,7 +765,8 @@ r3v_CmdCopyImageToBuffer(
           (image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
           !r3v_native_copy_buffer_ok(buffer,
                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                     region, &row_length)) {
+                                     region, image->texel_bytes,
+                                     &row_length)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }

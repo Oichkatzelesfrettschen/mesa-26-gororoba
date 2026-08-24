@@ -701,30 +701,53 @@ r3v_native_image_footprint_bytes(uint32_t height)
    return (uint64_t)R3V_NATIVE_TARGET_ROW_BYTES * (height + 1);
 }
 
-/* The linear transfer family: B8G8R8A8_UNORM 2D images under transfer
- * usage alone, at any extent inside 2048 per axis -- a deliberately
- * conservative policy bound taken from the RS48x single-tile texture
- * ceiling, below every constraint that could bind a linear surface.
- * The row pitch aligns each row to 64 bytes: the 2D engine's
- * DST_PITCH_OFFSET word carries the pitch in 64-byte units, so every
- * transfer-family row layout stays addressable by the qualified
- * direct-write 2D path.  The recorded vkCmdCopy* subset executes the
- * family's copies through host mappings at submission, so the
- * footprint is the rows alone; the oracle-headroom row is the render
- * family's contract.
+/* The linear transfer family: 2D images of a fixed-size color texel
+ * under transfer usage alone, at any extent inside 2048 per axis -- a
+ * deliberately conservative policy bound taken from the RS48x
+ * single-tile texture ceiling, below every constraint that could bind
+ * a linear surface.  The family moves bytes, so its format table is
+ * the texel size alone: the copies address texels by size and never
+ * interpret them, and the packed clear stays with the one format whose
+ * lane order it encodes.  The row pitch aligns each row to 64 bytes:
+ * the 2D engine's DST_PITCH_OFFSET word carries the pitch in 64-byte
+ * units, so every transfer-family row layout stays addressable by the
+ * qualified direct-write 2D path.  The recorded vkCmdCopy* subset
+ * executes the family's copies through host mappings at submission, so
+ * the footprint is the rows alone; the oracle-headroom row is the
+ * render family's contract.
  */
 #define R3V_NATIVE_TRANSFER_DIMENSION_MAX 2048
 
 static inline uint32_t
-r3v_native_transfer_row_pitch_bytes(uint32_t width)
+r3v_native_transfer_texel_bytes(VkFormat format)
 {
-   return (width * 4 + 63u) & ~63u;
+   switch (format) {
+   case VK_FORMAT_B8G8R8A8_UNORM:
+   case VK_FORMAT_R8G8B8A8_UNORM:
+   case VK_FORMAT_R8G8B8A8_UINT:
+   case VK_FORMAT_R32_UINT:
+      return 4;
+   case VK_FORMAT_R16G16B16A16_UINT:
+      return 8;
+   case VK_FORMAT_R32G32B32A32_UINT:
+      return 16;
+   default:
+      return 0;
+   }
+}
+
+static inline uint32_t
+r3v_native_transfer_row_pitch_bytes(uint32_t width, uint32_t texel_bytes)
+{
+   return (width * texel_bytes + 63u) & ~63u;
 }
 
 static inline uint64_t
-r3v_native_transfer_footprint_bytes(uint32_t width, uint32_t height)
+r3v_native_transfer_footprint_bytes(uint32_t width, uint32_t height,
+                                    uint32_t texel_bytes)
 {
-   return (uint64_t)r3v_native_transfer_row_pitch_bytes(width) * height;
+   return (uint64_t)r3v_native_transfer_row_pitch_bytes(width, texel_bytes) *
+          height;
 }
 
 struct r3v_native_image {
@@ -735,6 +758,12 @@ struct r3v_native_image {
    /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;
+   /* Creation format and its texel size; the render family holds the
+    * one target format, the transfer family any format in the texel
+    * table.
+    */
+   VkFormat format;
+   uint32_t texel_bytes;
    /* Row layout in bytes: the fixed target pitch for the render
     * family, the width-derived 64-byte-aligned pitch for the transfer
     * family.

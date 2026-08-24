@@ -94,22 +94,22 @@ execute_copy(struct r3v_native_device *device,
    case R3V_NATIVE_COPY_BUFFER_TO_IMAGE:
       src_memory = op->buffer->memory;
       src_base_offset = op->buffer->offset + op->buffer_offset;
-      src_pitch = op->buffer_row_length * 4;
+      src_pitch = op->buffer_row_length * op->dst_image->texel_bytes;
       dst_memory = op->dst_image->memory;
       dst_base_offset = op->dst_image->memory_offset +
                         (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
-                        (uint64_t)op->dst_x * 4;
+                        (uint64_t)op->dst_x * op->dst_image->texel_bytes;
       dst_pitch = op->dst_image->row_pitch_bytes;
       break;
    case R3V_NATIVE_COPY_IMAGE_TO_BUFFER:
       src_memory = op->src_image->memory;
       src_base_offset = op->src_image->memory_offset +
                         (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
-                        (uint64_t)op->src_x * 4;
+                        (uint64_t)op->src_x * op->src_image->texel_bytes;
       src_pitch = op->src_image->row_pitch_bytes;
       dst_memory = op->buffer->memory;
       dst_base_offset = op->buffer->offset + op->buffer_offset;
-      dst_pitch = op->buffer_row_length * 4;
+      dst_pitch = op->buffer_row_length * op->src_image->texel_bytes;
       break;
    case R3V_NATIVE_COPY_CLEAR_IMAGE: {
       /* One mapping, one fill: the packed texel lands across the full
@@ -172,12 +172,12 @@ execute_copy(struct r3v_native_device *device,
       src_memory = op->src_image->memory;
       src_base_offset = op->src_image->memory_offset +
                         (uint64_t)op->src_y * op->src_image->row_pitch_bytes +
-                        (uint64_t)op->src_x * 4;
+                        (uint64_t)op->src_x * op->src_image->texel_bytes;
       src_pitch = op->src_image->row_pitch_bytes;
       dst_memory = op->dst_image->memory;
       dst_base_offset = op->dst_image->memory_offset +
                         (uint64_t)op->dst_y * op->dst_image->row_pitch_bytes +
-                        (uint64_t)op->dst_x * 4;
+                        (uint64_t)op->dst_x * op->dst_image->texel_bytes;
       dst_pitch = op->dst_image->row_pitch_bytes;
       break;
    default:
@@ -204,7 +204,9 @@ execute_copy(struct r3v_native_device *device,
       return result;
    }
 
-   const uint64_t row_bytes = (uint64_t)op->width * 4;
+   const uint64_t row_bytes =
+      (uint64_t)op->width * (op->dst_image != NULL ? op->dst_image->texel_bytes
+                                                   : op->src_image->texel_bytes);
    for (uint32_t row = 0; row < op->height; row++) {
       memmove(dst_map + dst_base_offset + row * dst_pitch,
               src_map + src_base_offset + row * src_pitch,
