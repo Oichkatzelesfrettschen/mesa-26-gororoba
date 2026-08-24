@@ -1973,6 +1973,49 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     should_fail : true,
     suite : ['r3v'],
   )
+  # The memory-concurrency matrix: independent memory cycles across
+  # threads keep the atomic cache-sync arithmetic closed (one sync at map
+  # establishment, one at the unmap or free publication), empty
+  # submissions interleave with those cycles, concurrent frees of
+  # live-mapped objects publish exactly once each, and a lost queue
+  # refuses submission from the runtime without reaching the transport
+  # while allocation, map, and free stay serviceable for teardown.  The
+  # known-bad arm asserts a lost queue admitting a submission, so the
+  # loss classification must fail it.
+  r3v_native_memory_concurrency_harness = executable(
+    'r3v_native_memory_concurrency_harness',
+    files('tests/r3v_native_memory_concurrency_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach concurrency_arm : ['concurrent-map-free',
+                             'concurrent-submit-teardown',
+                             'teardown-live-frees',
+                             'device-loss-classification']
+    test(
+      'r3v-native-memory-concurrency-@0@'.format(concurrency_arm),
+      r3v_native_memory_concurrency_harness,
+      args : [concurrency_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  test(
+    'r3v-native-memory-concurrency-known-bad-lost-queue-submits',
+    r3v_native_memory_concurrency_harness,
+    args : ['known-bad-lost-queue-submits'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    should_fail : true,
+    suite : ['r3v'],
+  )
   # The identity verb's GPU route under the compute gate and the verb's
   # gate: the composed carrier pass against its pin, the shim's empty
   # delivery quarantining on the oracle divergence, and the named
