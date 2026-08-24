@@ -272,6 +272,34 @@ if with_tests
             files('tests/r3v_vulkan10_requirement_inventory.tsv')],
     suite : ['r3v'],
   )
+  # The advertised-bit binding ledger: every advertised extension,
+  # granted feature bit, receipt-bound limit, and format-feature row
+  # names the registered test that exercises its executing route and
+  # the exact dEQP-VK group whose mustpass cases judge it.  A derived
+  # item with no row, a row nothing advertises, or an unregistered test
+  # fails; with R3V_DEQP_MUSTPASS_DIR naming a CTS mustpass directory a
+  # group matching no case fails, and without it that clause reports
+  # itself as not run while the others still decide.
+  test(
+    'r3v-advertised-surface-deqp-binding-selftest',
+    prog_python,
+    args : [files('tests/r3v_advertised_surface_deqp_binding.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-advertised-surface-deqp-binding',
+    prog_python,
+    args : [files('tests/r3v_advertised_surface_deqp_binding.py'),
+            '--ledger',
+            files('tests/r3v_advertised_surface_deqp_binding.tsv'),
+            '--physical-device', files('r3v_physical_device.c'),
+            '--instance', files('r3v_instance.c'),
+            '--private-header', files('r3v_private.h'),
+            '--intro-tests',
+            meson.global_build_root() / 'meson-info' / 'intro-tests.json'],
+    suite : ['r3v'],
+  )
   # Source layer: the ICD's sources carry no Gallium include and no
   # Gallium runtime identifier on any line the compile keeps.
   test(
