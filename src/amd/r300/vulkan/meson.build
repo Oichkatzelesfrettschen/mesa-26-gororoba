@@ -300,6 +300,35 @@ if with_tests
             meson.global_build_root() / 'meson-info' / 'intro-tests.json'],
     suite : ['r3v'],
   )
+  # The conformance runner seals an identity receipt around a dEQP-VK
+  # caselist run (source SHA against the declared SHA and cleanliness,
+  # Meson options, ICD DSO digest, dEQP digest and the log's own release
+  # name, kernel and module identity, PCI identity and render node,
+  # environment, per-case status, dmesg delta, the deadline, artifact
+  # digests) with a finite verdict: NotSupported never counts as a pass,
+  # a process the deadline kills never passes, and every non-pass
+  # classifies against the ledger most-specific-row-first.  The selftest
+  # drives fake-dEQP fixtures and a replay of a real dEQP log through
+  # the real runner; the ledger check classifies each row's witness
+  # through the real path so every row is reachable and unshadowed.
+  test(
+    'r3v-conformance-runner-selftest',
+    prog_python,
+    args : [files('tests/r3v_conformance_runner.py'), 'selftest',
+            '--fixture-qpa',
+            files('tests/r3v_conformance_runner_fixture_info.qpa')],
+    suite : ['r3v'],
+    timeout : 120,
+  )
+  test(
+    'r3v-conformance-ledgers',
+    prog_python,
+    args : [files('tests/r3v_conformance_runner.py'), 'check-ledgers',
+            '--nonpass-ledger',
+            files('tests/r3v_conformance_nonpass_ledger.tsv'),
+            '--slices', files('tests/r3v_conformance_slices.tsv')],
+    suite : ['r3v'],
+  )
   # Source layer: the ICD's sources carry no Gallium include and no
   # Gallium runtime identifier on any line the compile keeps.
   test(

@@ -277,6 +277,50 @@ The Radeon drm-shim is a host model. Kernel parser acceptance is not execution.
 Fence retirement is not output correctness. An old image hash is not evidence
 for the current source head.
 
+## Conformance ladder
+
+The Vulkan 1.0 conformance surface is finite and machine-checked.
+`tests/r3v_vulkan10_requirement_inventory.py` generates the registry
+inventory and closes the advertised extension dependencies at core 1.0;
+`tests/r3v_advertised_surface_deqp_binding.tsv` binds every advertised
+extension, granted feature bit, receipt-bound limit, and format-feature
+row to the registered test that exercises its executing route and to the
+exact dEQP-VK mustpass group that judges it, so a bit without a binding
+row fails the build.  `apiVersion` stays 1.0 and advertises exactly what
+those bindings prove; 1.1 and later are new campaigns with their own
+evidence, never a string edit.
+
+`tests/r3v_conformance_runner.py` runs a caselist against the ICD and
+seals an identity receipt: source SHA against the declared SHA and tree
+cleanliness, Meson options, ICD manifest and DSO digest, the dEQP
+binary digest and the release name the binary writes into its own log,
+kernel release and radeon module srcversion, packages, GPU PCI identity
+and the render node resolving to it, boot id, the driver-visible
+environment, the case list, per-case status, dmesg delta, the deadline,
+digests of every raw artifact, and the finite verdict; `verify-receipt`
+recomputes the seal and the artifact digests.  The evidence class is
+derived from the run (a preloaded drm-shim is host-model; only an
+unpreloaded run of libvulkan_r3v.so on a host whose render node resolves
+to an RS4xx device is silicon), a run is decision-grade only with a
+clean tree at the declared SHA, NotSupported never counts as a pass, a
+process the deadline kills is never a pass, and every non-pass
+classifies against `tests/r3v_conformance_nonpass_ledger.tsv`,
+most-specific row first over status, case name, and result text; a
+status the ledger does not name blocks the run as unclassified, and
+each row carries a witness case that `check-ledgers` classifies through
+the real path so no row is unreachable.  The runner calibrates on
+fake-dEQP fixtures (pass, mixed, truncated, timeout, hang after session,
+crash, device loss with a terminated case, multi-line result, late
+abort, framework abort, wrong ICD, dmesg hazard, duplicate caselist,
+tampered receipt) and on a replay of a real dEQP log.
+
+`tests/r3v_conformance_slices.tsv` orders the mustpass groups by hazard:
+a hazard-free slice runs on the host model or on silicon, and a slice
+carrying a submission or display hazard requires silicon.  dEQP's
+default context requires a GRAPHICS|COMPUTE queue and aborts on the
+graphics-only family; the operator passes the exact compute-queue opt-in
+through `--env` and the receipt records it.
+
 ## Conformance contract
 
 The ICD must not be advertised as conformant Vulkan until:
