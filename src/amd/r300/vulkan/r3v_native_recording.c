@@ -525,23 +525,23 @@ r3v_CmdClearColorImage(
 
    /* The one-mip one-layer image has one clearable subresource, so
     * every admitted range names the whole image and the fill covers the
-    * full extent.  The packed value encodes the B8G8R8A8_UNORM lane
-    * order, so the clear admits that format alone and every other
-    * transfer-family format refuses.  The Vulkan format registry defines
-    * VK_FORMAT_B8G8R8A8_UNORM as four 8-bit components in B, G, R, A
-    * order.  lane_byte maps the RGBA lanes to those component positions,
-    * and util_cpu_to_le32 converts the packed value before the transfer
-    * executor stores it through a native uint32_t, so mapped memory holds
-    * B, G, R, A bytes on every supported host.  A NaN component converts
-    * as zero -- every ordered comparison on NaN is false, so it slips both
-    * clamp arms, and the float-to-integer cast of NaN has no defined value.
+    * full extent.  The clear value packs per the image's format from
+    * the Vulkan format registry's component layout: the two UNORM8
+    * formats take the float lanes clamped and rounded to 8 bits (B, G,
+    * R, A order for B8G8R8A8_UNORM; R, G, B, A for R8G8B8A8_UNORM), and
+    * the UINT formats take the uint32 lanes masked to the component
+    * width (8, 16, or 32 bits) in R, G, B, A order; every packed value
+    * is little-endian in memory, so mapped memory holds the registry's
+    * byte layout on every supported host.  A NaN float component
+    * converts as zero -- every ordered comparison on NaN is false, so
+    * it slips both clamp arms, and the float-to-integer cast of NaN
+    * has no defined value.
     */
    for (uint32_t r = 0; r < rangeCount; r++) {
       const VkImageSubresourceRange *range = &pRanges[r];
       struct r3v_native_deferred_copy *op =
          r3v_native_copy_slot(commandBuffer);
       if (op == NULL || image == NULL || !image->transfer_family ||
-          image->format != R3V_NATIVE_TARGET_FORMAT ||
           image->memory == NULL ||
           !r3v_native_transfer_destination_layout_ok(imageLayout) ||
           (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
@@ -555,23 +555,54 @@ r3v_CmdClearColorImage(
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
-      uint32_t packed = 0;
-      static const unsigned lane_byte[4] = { 2, 1, 0, 3 };
-      for (unsigned c = 0; c < 4; c++) {
-         float f = pColor->float32[c];
-         if (f != f)
-            f = 0.0f;
-         f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
-         const uint32_t unorm = (uint32_t)(f * 255.0f + 0.5f);
-         packed |= unorm << (lane_byte[c] * 8);
+      uint8_t texel[16] = { 0 };
+      switch (image->format) {
+      case VK_FORMAT_B8G8R8A8_UNORM:
+      case VK_FORMAT_R8G8B8A8_UNORM: {
+         static const unsigned bgra[4] = { 2, 1, 0, 3 };
+         static const unsigned rgba[4] = { 0, 1, 2, 3 };
+         const unsigned *lane_byte =
+            image->format == VK_FORMAT_B8G8R8A8_UNORM ? bgra : rgba;
+         for (unsigned c = 0; c < 4; c++) {
+            float f = pColor->float32[c];
+            if (f != f)
+               f = 0.0f;
+            f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+            texel[lane_byte[c]] = (uint8_t)(f * 255.0f + 0.5f);
+         }
+         break;
+      }
+      case VK_FORMAT_R8G8B8A8_UINT:
+         for (unsigned c = 0; c < 4; c++)
+            texel[c] = (uint8_t)(pColor->uint32[c] & 0xffu);
+         break;
+      case VK_FORMAT_R16G16B16A16_UINT:
+         for (unsigned c = 0; c < 4; c++) {
+            const uint16_t v = (uint16_t)(pColor->uint32[c] & 0xffffu);
+            texel[2 * c] = (uint8_t)(v & 0xffu);
+            texel[2 * c + 1] = (uint8_t)(v >> 8);
+         }
+         break;
+      case VK_FORMAT_R32_UINT:
+      case VK_FORMAT_R32G32B32A32_UINT: {
+         const unsigned lanes = image->texel_bytes / 4;
+         for (unsigned c = 0; c < lanes; c++) {
+            const uint32_t v = util_cpu_to_le32(pColor->uint32[c]);
+            memcpy(texel + 4 * c, &v, 4);
+         }
+         break;
+      }
+      default:
+         r3v_native_cmd_poison(commandBuffer);
+         return;
       }
       *op = (struct r3v_native_deferred_copy){
          .kind = R3V_NATIVE_COPY_CLEAR_IMAGE,
          .dst_image = image,
          .width = image->width,
          .height = image->height,
-         .clear_dword = util_cpu_to_le32(packed),
       };
+      memcpy(op->clear_texel, texel, sizeof(texel));
       cmd_buffer->deferred_copy_count++;
    }
 }

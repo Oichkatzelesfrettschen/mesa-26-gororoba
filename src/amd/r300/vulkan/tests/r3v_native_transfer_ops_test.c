@@ -250,13 +250,14 @@ struct transfer_image {
 };
 
 static int
-create_transfer_image(const struct fixture *f, uint32_t width,
-                      uint32_t height, struct transfer_image *out)
+create_transfer_image_format(const struct fixture *f, uint32_t width,
+                             uint32_t height, VkFormat format,
+                             struct transfer_image *out)
 {
    const VkImageCreateInfo image_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = VK_IMAGE_TYPE_2D,
-      .format = VK_FORMAT_B8G8R8A8_UNORM,
+      .format = format,
       .extent = { width, height, 1 },
       .mipLevels = 1,
       .arrayLayers = 1,
@@ -295,6 +296,14 @@ create_transfer_image(const struct fixture *f, uint32_t width,
            "transfer image map");
    out->map = map;
    return 0;
+}
+
+static int
+create_transfer_image(const struct fixture *f, uint32_t width,
+                      uint32_t height, struct transfer_image *out)
+{
+   return create_transfer_image_format(f, width, height,
+                                       VK_FORMAT_B8G8R8A8_UNORM, out);
 }
 
 static void
@@ -432,6 +441,127 @@ check_blit(const struct fixture *f)
    return 0;
 }
 
+
+/* The texel table beyond four bytes: an 8- and a 16-byte texel image
+ * round-trip buffer -> image -> buffer through a padded buffer row
+ * length and a non-zero image offset byte for byte, and the format
+ * clear lands each format's packed texel across the full extent.
+ */
+static int
+check_texel_formats(const struct fixture *f)
+{
+   static const struct {
+      VkFormat format;
+      uint32_t texel_bytes;
+   } formats[] = {
+      { VK_FORMAT_R16G16B16A16_UINT, 8 },
+      { VK_FORMAT_R32G32B32A32_UINT, 16 },
+   };
+   for (unsigned i = 0; i < 2; i++) {
+      const uint32_t tb = formats[i].texel_bytes;
+      const uint32_t w = 6, h = 5, row_length = 9;
+      struct transfer_image img;
+      if (create_transfer_image_format(f, 16, 12, formats[i].format, &img))
+         return 1;
+      struct staging src, dst;
+      if (create_staging(f, (VkDeviceSize)row_length * h * tb,
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &src) ||
+          create_staging(f, (VkDeviceSize)row_length * h * tb,
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT, &dst))
+         return 1;
+      for (uint32_t b = 0; b < row_length * h * tb; b++) {
+         src.map[b] = (uint8_t)(b * 7u + i);
+         dst.map[b] = 0xee;
+      }
+      const VkBufferImageCopy region = {
+         .bufferRowLength = row_length,
+         .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+         .imageOffset = { 3, 2, 0 },
+         .imageExtent = { w, h, 1 },
+      };
+      if (begin(f))
+         return 1;
+      vkCmdCopyBufferToImage(f->cmd, src.buffer, img.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                             &region);
+      vkCmdCopyImageToBuffer(f->cmd, img.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             dst.buffer, 1, &region);
+      REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+              "texel-format round-trip recording");
+      if (submit(f))
+         return 1;
+      unsigned mismatches = 0;
+      for (uint32_t y = 0; y < h; y++) {
+         for (uint32_t b = 0; b < w * tb; b++) {
+            const uint64_t at = (uint64_t)y * row_length * tb + b;
+            if (dst.map[at] != src.map[at])
+               mismatches++;
+            const uint8_t *in_image =
+               img.map + (uint64_t)(2 + y) * img.row_pitch + 3 * tb + b;
+            if (*in_image != src.map[at])
+               mismatches++;
+         }
+         /* The padding past the copied row stays untouched. */
+         for (uint32_t b = w * tb; b < row_length * tb; b++) {
+            if (dst.map[(uint64_t)y * row_length * tb + b] != 0xee)
+               mismatches++;
+         }
+      }
+      CHECK(mismatches == 0,
+            "%u-byte texel round-trip through a %u-texel row length at "
+            "offset (3, 2): %u byte mismatches",
+            tb, row_length, mismatches);
+
+      const VkClearColorValue color = {
+         .uint32 = { 0x00010203u, 0x8000fffeu, 0x00000001u, 0xdeadbeefu },
+      };
+      const VkImageSubresourceRange whole = {
+         VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1,
+      };
+      if (begin(f))
+         return 1;
+      vkCmdClearColorImage(f->cmd, img.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1,
+                           &whole);
+      REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+              "texel-format clear recording");
+      if (submit(f))
+         return 1;
+      uint8_t expect[16];
+      if (tb == 8) {
+         const uint16_t lanes[4] = { 0x0203, 0xfffe, 0x0001, 0xbeef };
+         for (unsigned c = 0; c < 4; c++) {
+            expect[2 * c] = (uint8_t)(lanes[c] & 0xff);
+            expect[2 * c + 1] = (uint8_t)(lanes[c] >> 8);
+         }
+      } else {
+         for (unsigned c = 0; c < 4; c++) {
+            const uint32_t v = color.uint32[c];
+            expect[4 * c] = (uint8_t)v;
+            expect[4 * c + 1] = (uint8_t)(v >> 8);
+            expect[4 * c + 2] = (uint8_t)(v >> 16);
+            expect[4 * c + 3] = (uint8_t)(v >> 24);
+         }
+      }
+      mismatches = 0;
+      for (uint32_t y = 0; y < 12; y++) {
+         for (uint32_t x = 0; x < 16; x++) {
+            if (memcmp(img.map + (uint64_t)y * img.row_pitch + x * tb,
+                       expect, tb) != 0)
+               mismatches++;
+         }
+      }
+      CHECK(mismatches == 0,
+            "%u-byte texel clear lands the packed texel on every texel: "
+            "%u mismatches", tb, mismatches);
+      destroy_staging(f, &src);
+      destroy_staging(f, &dst);
+      destroy_transfer_image(f, &img);
+   }
+   return 0;
+}
+
 static int
 create_fixture(struct fixture *f)
 {
@@ -505,7 +635,7 @@ main(int argc, char **argv)
    if (create_fixture(&f))
       return 1;
    int fatal = check_fill_and_update(&f) || check_copy_overlap(&f) ||
-               check_blit(&f);
+               check_blit(&f) || check_texel_formats(&f);
    vkDestroyCommandPool(f.device, f.cmd_pool, NULL);
    vkDestroyDevice(f.device, NULL);
    vkDestroyInstance(f.instance, NULL);
