@@ -11,17 +11,5 @@
 # variables, test names) are not product identity and are not tokens.
 #
 # Format: path<TAB>token<TAB>replacement<TAB>owner<TAB>removal_condition
-src/amd/r300/vulkan/r3v_private.h	R300VK	R3V_ environment names	env-compat retirement	r3v_getenv_compat and its R300VK_ fallback names leave once the retained runbooks and probe scripts in steinmarder-r300 read the R3V_ names
-src/amd/r300/vulkan/r3v_private.h	r300vk	r3v	env-compat retirement	the getenv-compat comment leaves with r3v_getenv_compat
-src/amd/r300/vulkan/r3v_instance.c	R300VK	R3V_DEBUG	env-compat retirement	r3v_getenv_compat and its R300VK_ fallback names leave once the retained runbooks and probe scripts in steinmarder-r300 read the R3V_ names
-src/amd/r300/vulkan/r3v_physical_device.c	R300VK	R3V_HYBRID_COMPUTE_EXPERIMENTAL / R3V_WSI_SW	env-compat retirement	r3v_getenv_compat and its R300VK_ fallback names leave once the retained runbooks and probe scripts in steinmarder-r300 read the R3V_ names
-src/amd/r300/vulkan/tests/r3v_native_compute_dispatch_test.c	R300VK	R3V_HYBRID_COMPUTE_EXPERIMENTAL	env-compat retirement	the test stops clearing the fallback name when the fallback reader leaves
-build-infra/Makefile	libvulkan_r300	libvulkan_r3v.so	packaging promotion (P12)	the stale-artifact scan for r300vk-era install prefixes retires when the operator confirms no such prefix remains on the hosts
-build-infra/Makefile	r300_icd_manifest	r3v_icd.<cpu>.json	packaging promotion (P12)	the stale-artifact scan for r300vk-era install prefixes retires when the operator confirms no such prefix remains on the hosts
-build-infra/Makefile	r300_devenv_icd	r3v_devenv_icd.<cpu>.json	packaging promotion (P12)	the stale-artifact scan for r300vk-era install prefixes retires when the operator confirms no such prefix remains on the hosts
 build-infra/docs/last-100-pr-review-comment-audit.md	r300vk	r3v	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
 build-infra/docs/last-100-pr-review-comment-audit.md	R300VK	R3V_	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
-src/amd/r300/common/tests/r300_common_boundary_audit.py	R3V_GALLIUM_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro
-src/amd/r300/common/tests/r300_common_boundary_audit.py	R3V_NATIVE_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro
-src/amd/r300/vulkan/tests/r3v_native_separation_audit.py	R3V_GALLIUM_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro
-src/amd/r300/vulkan/tests/r3v_native_separation_audit.py	R3V_NATIVE_BACKEND	no lane macro	dual-backend conditional-model retirement	the backend-macro walkers reduce to plain line iteration and their macro selftest cases leave, since no source names either macro

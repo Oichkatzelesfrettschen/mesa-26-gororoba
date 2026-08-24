@@ -97,11 +97,6 @@ FORBIDDEN_UNDEFINED_PREFIXES = (
     "vtn_",
 )
 
-NATIVE_BACKEND_MACROS = {
-    "R3V_GALLIUM_BACKEND": False,
-    "R3V_NATIVE_BACKEND": True,
-}
-
 NATIVE_PIPE_TOKEN_EXCEPTIONS = ("pipe_format",)
 NATIVE_PIPE_ENUM_PREFIX_EXCEPTIONS = ("PIPE_FORMAT_",)
 ROOT_ONLY_INCLUDE_PREFIXES = ("r300/",)
@@ -206,109 +201,14 @@ def strip_outer_parentheses(expression: str) -> str:
     return expression
 
 
-def preprocessor_values(expression: str) -> set[bool]:
-    """Evaluate known backend terms and retain both values for unknown terms."""
-    expression = strip_outer_parentheses(expression)
-    disjunction = split_top_level(expression, "||")
-    if disjunction:
-        values = {False}
-        for part in disjunction:
-            right = preprocessor_values(part)
-            values = {left or item for left in values for item in right}
-        return values
-    conjunction = split_top_level(expression, "&&")
-    if conjunction:
-        values = {True}
-        for part in conjunction:
-            right = preprocessor_values(part)
-            values = {left and item for left in values for item in right}
-        return values
-    if expression.startswith("!") and not expression.startswith("!="):
-        return {not value for value in preprocessor_values(expression[1:])}
-
-    defined = re.fullmatch(
-        r"defined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|"
-        r"\s+([A-Za-z_]\w*))",
-        expression,
-    )
-    if defined:
-        macro = defined.group(1) or defined.group(2)
-        if macro in NATIVE_BACKEND_MACROS:
-            return {NATIVE_BACKEND_MACROS[macro]}
-        return {False, True}
-    if expression in NATIVE_BACKEND_MACROS:
-        return {NATIVE_BACKEND_MACROS[expression]}
-    try:
-        return {bool(int(expression, 0))}
-    except ValueError:
-        return {False, True}
-
-
-def native_condition(kind: str, expression: str) -> bool | None:
-    """Evaluate a backend condition, retaining uncertainty conservatively."""
-    expression = expression.strip()
-    if kind in ("ifdef", "ifndef"):
-        fields = expression.split()
-        if len(fields) != 1 or fields[0] not in NATIVE_BACKEND_MACROS:
-            return None
-        value = NATIVE_BACKEND_MACROS[fields[0]]
-        return value if kind == "ifdef" else not value
-
-    values = preprocessor_values(expression)
-    return next(iter(values)) if len(values) == 1 else None
-
-
-def native_active_lines(text: str):
-    """Yield every line that can survive a native-backend preprocessing."""
-    # A tracked frame is an exact R3V backend predicate.  An unrelated
-    # conditional is deliberately untracked, so every arm is scanned; host
-    # compiler feature macros must not hide a forbidden dependency.
-    stack: list[tuple[bool, bool, bool]] = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        directive = re.match(
-            r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$", line)
-        if not directive:
-            if all(active for active, _, _ in stack):
-                yield number, line
-            continue
-
-        kind = directive.group(1)
-        expression = directive.group(2)
-        if kind in ("if", "ifdef", "ifndef"):
-            value = native_condition(kind, expression)
-            if value is None:
-                stack.append((True, False, False))
-            else:
-                stack.append((value, True, value))
-            continue
-        if kind == "elif" and stack:
-            _, tracked, taken = stack[-1]
-            if not tracked:
-                stack[-1] = (True, False, False)
-                continue
-            if taken:
-                stack[-1] = (False, True, True)
-                continue
-            value = native_condition("if", expression)
-            if value is None:
-                stack[-1] = (True, False, False)
-            else:
-                stack[-1] = (value, True, value)
-            continue
-        if kind == "else" and stack:
-            _, tracked, taken = stack[-1]
-            stack[-1] = ((not taken) if tracked else True, tracked, True)
-            continue
-        if kind == "endif" and stack:
-            stack.pop()
-            continue
-
-
 def source_lines(layer: str, text: str):
-    stripped = strip_comments(text)
-    if layer == "native":
-        return native_active_lines(stripped)
-    return enumerate(stripped.splitlines(), start=1)
+    """Yield every (line_number, line) pair the layer's sources carry.
+
+    No source names a backend macro, so both layers keep every line and a
+    conditional arm cannot hide a forbidden include or identifier.
+    """
+    del layer
+    return enumerate(strip_comments(text).splitlines(), start=1)
 
 
 def include_has_prefix(include: str, prefix: str) -> bool:
@@ -510,23 +410,9 @@ def selftest() -> int:
              AUDIT_FORBIDDEN),
             ("native-pipe-format-transition", "native",
              "enum pipe_format format = PIPE_FORMAT_R8_UNORM;\n", AUDIT_OK),
-            ("native-inactive", "native",
-             "#ifdef R3V_GALLIUM_BACKEND\n"
-             '#include "pipe/p_context.h"\n'
-             "struct pipe_context *context;\n"
-             "#endif\n", AUDIT_OK),
-            ("native-active", "native",
-             "#ifdef R3V_GALLIUM_BACKEND\nint gallium;\n#else\n"
-             "struct pipe_context *context;\n#endif\n", AUDIT_FORBIDDEN),
             ("native-unrelated-else", "native",
              "# ifdef __SSE3__\nint vector;\n#else\n"
              "nir_shader *bad;\n#endif\n", AUDIT_FORBIDDEN),
-            ("native-defined-form", "native",
-             "#if defined(R3V_GALLIUM_BACKEND)\n"
-             "struct pipe_context *context;\n#endif\n", AUDIT_OK),
-            ("native-composite-inactive", "native",
-             "#if defined(R3V_GALLIUM_BACKEND) && FEATURE\n"
-             "nir_shader *bad;\n#endif\n", AUDIT_OK),
             ("native-literal-comment-markers", "native",
              'const char *url = "http://x"; nir_shader *bad;\n',
              AUDIT_FORBIDDEN),
@@ -581,7 +467,7 @@ def selftest() -> int:
             print("selftest clean symbol direction failed")
             return 1
 
-    print("r300_common_boundary_audit: source layers, conditional native "
+    print("r300_common_boundary_audit: source layers, whole-file line "
           "view, empty inputs, and undefined-symbol parser calibrated")
     return AUDIT_OK
 
