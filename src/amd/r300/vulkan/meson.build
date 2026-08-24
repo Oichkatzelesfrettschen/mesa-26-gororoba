@@ -1973,6 +1973,25 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     should_fail : true,
     suite : ['r3v'],
   )
+  # The kernel memory-contract pin: each kernel-side fact the memory
+  # model consumes is bound to a SHA-256 of its exact linux-radeon
+  # policy-ledger row.  With R3V_KERNEL_MEMORY_CONTRACT_ROOT naming the
+  # kernel checkout a moved row fails the check (a mismatch blocks, it
+  # does not skip); with the checkout unavailable the check exits 77.
+  # The selftest calibrates the pass and three failure classes on
+  # synthetic fixtures.
+  test(
+    'r3v-kernel-memory-contract-pin-selftest',
+    prog_python,
+    args : [files('tests/r3v_kernel_memory_contract_pin.py'), '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-kernel-memory-contract-pin',
+    prog_python,
+    args : [files('tests/r3v_kernel_memory_contract_pin.py')],
+    suite : ['r3v'],
+  )
   # The memory-concurrency matrix: independent memory cycles across
   # threads keep the atomic cache-sync arithmetic closed (one sync at map
   # establishment, one at the unmap or free publication), empty
