@@ -898,7 +898,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
    char kernel_release[128];
    char module_srcversion[128];
-   struct r3v_native_arming_facts facts;
+   struct r3v_native_arming_facts facts = {0};
    r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
                                ib_digest);
    r3v_native_arming_collect_from(
@@ -1108,7 +1108,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
     * keeps a multi-buffer submit from executing its first buffer and
     * then reporting device loss on the disarmed second.
     */
-   if (device->submit_hazard_accepted || device->manifest_dir != NULL) {
+   if (device->submit_hazard_accepted || device->manifest_dir != NULL ||
+       device->plan_capture_active) {
       uint32_t executable = 0;
       for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
          const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
@@ -1308,7 +1309,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
       char kernel_release[128];
       char module_srcversion[128];
-      struct r3v_native_arming_facts facts;
+      struct r3v_native_arming_facts facts = {0};
       if (device->submit_hazard_accepted) {
          /* An open gate without a retention destination fails before the
           * deferred CPU execution and before any evidence bytes are written.
@@ -1421,7 +1422,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * fails closed with application memory untouched: the deferred
        * draw's writes come after every gate below.
        */
-      if (!device->submit_hazard_accepted) {
+      if (!device->submit_hazard_accepted && !device->plan_capture_active) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -1431,12 +1432,45 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "attended run");
       }
 
+      /* Plan capture records the whole entry the live replay must
+       * present -- digest, dwords, kind, emitter, every relocation --
+       * before the ioctl reaches the shim, and refuses the submission
+       * when the entry cannot be recorded; the attended-run machinery
+       * (submit-object retention, arming, disarm) belongs to the open
+       * gate and stays out of a capture session.
+       */
+      if (device->plan_capture_active) {
+         int recorded = r3v_native_plan_capture_record(
+            &device->plan_capture, cmd_buffer, &relocs, reference_indices,
+            completion_index, completion.bo.size);
+         if (recorded != 0) {
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            if (recorded == -E2BIG) {
+               return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                                "r3v-native: plan capture is full; split "
+                                "the shard");
+            }
+            if (recorded == -EMSGSIZE) {
+               return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                                "r3v-native: submission carries %u "
+                                "relocations, outside the plan schema",
+                                relocs.count);
+            }
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: plan capture refused the "
+                             "submission: %s", strerror(-recorded));
+         }
+      }
+
       /* The collected arming facts carry the same kernel and module identity
        * the gate below judges; the evaluation itself stays the last gate
        * before the ioctl.  The exact ioctl payload retains before that gate,
        * and a retention failure refuses with nothing sent.
        */
-      if (r3v_native_queue_write_submit_object(
+      if (!device->plan_capture_active &&
+          r3v_native_queue_write_submit_object(
              device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,
              &cs, cmd_buffer->references, reference_indices,
              cmd_buffer->reference_count, completion_index,
@@ -1460,7 +1494,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * same evidence refuses even with the same environment.
        */
       enum r3v_native_arming_verdict arming =
-         r3v_native_arming_evaluate(&facts);
+         device->plan_capture_active ? R3V_NATIVE_ARMING_ARMED
+                                     : r3v_native_arming_evaluate(&facts);
       if (arming != R3V_NATIVE_ARMING_ARMED) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -1522,7 +1557,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * serial bound before the ioctl, so a failed ioctl still consumes
        * its authorization.
        */
-      if (!facts.attempt_token_present &&
+      if (!device->plan_capture_active && !facts.attempt_token_present &&
           r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -1613,6 +1648,22 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             r3v_native_deferred_dispatch_verify_gpu(device, cmd_buffer);
       if (gpu_verdict != VK_SUCCESS)
          return gpu_verdict;
+      /* The transcript lands on the capture cadence after a completed
+       * submission, so a planning pass cut short keeps the entries that
+       * landed; a write failure loses the queue, since a plan missing an
+       * entry that ran would replay short.
+       */
+      if (device->plan_capture_active &&
+          r3v_native_plan_capture_lands_now(&device->plan_capture)) {
+         int written = r3v_native_plan_capture_write(
+            &device->plan_capture, device->pdevice->pci_vendor_id,
+            device->pdevice->pci_device_id, NULL);
+         if (written != 0) {
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: plan transcript write failed: %s",
+                             strerror(-written));
+         }
+      }
       device->queue_status =
          r3v_native_queue_status_from_transport(ioctl_accepted, true);
    }

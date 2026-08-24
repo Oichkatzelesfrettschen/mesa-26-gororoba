@@ -97,6 +97,7 @@ r3v_native_files = files(
   'r3v_native_object.c',
   'r3v_native_pipeline.c',
   'r3v_native_plan.c',
+  'r3v_native_plan_capture.c',
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
@@ -1005,6 +1006,18 @@ if with_tests
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r3v'],
+  )
+  # The plan tool composes a sealed plan from a captured transcript and
+  # the declared run identities; the capture harness below runs two
+  # distinct draws under the shim with the capture path set and proves
+  # the transcript carries both entries, then composes and binds it.
+  r3v_native_plan_tool = executable(
+    'r3v_native_plan_tool',
+    files('r3v_native_plan.c', 'tests/r3v_native_plan_tool.c'),
+    include_directories : [inc_include, inc_src, include_directories('.')],
+    dependencies : [idep_mesautil],
+    link_with : [libr300_common],
+    gnu_symbol_visibility : 'hidden',
   )
   test(
     'r3v-native-arming-positive',
@@ -2225,6 +2238,46 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  # Plan capture under the shim: two distinct draws in separate submits
+  # land two ordered transcript entries with the retained digests and
+  # the whole relocation shape; a two-buffer submit refuses; an open
+  # hazard gate or an unreachable transcript refuses the device.
+  r3v_native_plan_capture_harness = executable(
+    'r3v_native_plan_capture_harness',
+    files('tests/r3v_native_plan_capture_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach capture_arm : ['capture', 'slot-roles', 'gate-open-refused',
+                         'manifest-dir-refused', 'second-device-refused',
+                         'missing-directory-refused']
+    test(
+      'r3v-native-plan-capture-@0@'.format(capture_arm),
+      r3v_native_plan_capture_harness,
+      args : [capture_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  # The composed plan: the harness transcript composes with declared
+  # identities into a plan the tool checks; a missing identity refuses.
+  test(
+    'r3v-native-plan-compose',
+    prog_python,
+    args : [files('tests/r3v_native_plan_compose_check.py'),
+            r3v_native_plan_capture_harness, r3v_native_plan_tool],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 120,
+    suite : ['r3v'],
+  )
+
   # Calibration: a draw executed ahead of a refused submit is the
   # ordering the matrix refuses, so the untouched verdicts fail on it.
   test(
