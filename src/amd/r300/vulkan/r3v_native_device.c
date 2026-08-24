@@ -46,6 +46,23 @@ r3v_native_plan_capture_file(void)
    return value != NULL && value[0] != '\0' ? value : NULL;
 }
 
+/* The plan file and its nonce: an absolute path and the 32-hex nonce the
+ * plan carries; unset or empty leaves replay off.
+ */
+static const char *
+r3v_native_plan_file(void)
+{
+   const char *value = getenv("R3V_NATIVE_PLAN_FILE");
+   return value != NULL && value[0] != '\0' ? value : NULL;
+}
+
+static const char *
+r3v_native_plan_nonce(void)
+{
+   const char *value = getenv("R3V_NATIVE_PLAN_NONCE");
+   return value != NULL && value[0] != '\0' ? value : NULL;
+}
+
 static const char *
 r3v_native_manifest_dir(void)
 {
@@ -179,6 +196,47 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
       device->plan_capture_active = true;
    }
 
+   /* Plan replay opens the ioctl for the plan's submissions alone, so
+    * it exists only with every other authorization closed; the plan
+    * parses at creation and binds to the running identity at the first
+    * submission, where the arming provider is in place.
+    */
+   const char *plan_path = r3v_native_plan_file();
+   if (plan_path != NULL) {
+      const char *refusal = NULL;
+      if (device->submit_hazard_accepted)
+         refusal = "the hazard gate is open";
+      else if (device->manifest_dir != NULL)
+         refusal = "a plan session names its own evidence directory";
+      else if (device->plan_capture_active)
+         refusal = "a plan session and a capture session are one device "
+                   "apiece";
+      int init = refusal == NULL
+                    ? r3v_native_plan_replay_init(&device->plan_replay,
+                                                  plan_path,
+                                                  r3v_native_plan_nonce())
+                    : -EINVAL;
+      if (refusal != NULL || init != 0) {
+         const char *parse =
+            init == -EPROTO
+               ? r3v_native_plan_parse_result_name(
+                    device->plan_replay.parse_result)
+               : NULL;
+         if (device->plan_capture_active)
+            r3v_native_plan_capture_finish(&device->plan_capture);
+         vk_queue_finish(&device->queue.vk);
+         radeon_drm_vk_device_finish(&device->drm);
+         vk_device_finish(&device->vk);
+         vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+         return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                          "r3v-native: plan replay refused: %s",
+                          refusal != NULL ? refusal
+                          : parse != NULL ? parse
+                                          : strerror(-init));
+      }
+      device->plan_replay_active = true;
+   }
+
    *pDevice = r3v_native_device_to_handle(device);
    return VK_SUCCESS;
 }
@@ -192,6 +250,14 @@ r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    vk_queue_finish(&device->queue.vk);
    r3v_native_prepared_release(device);
+   if (device->plan_replay_active) {
+      const char *state = r3v_native_plan_replay_close(&device->plan_replay);
+      if (strcmp(state, "complete") != 0) {
+         vk_logw(VK_LOG_OBJS(&device->vk.base),
+                 "r3v-native: plan session closed %s", state);
+      }
+      r3v_native_plan_replay_finish(&device->plan_replay);
+   }
    if (device->plan_capture_active) {
       int written = r3v_native_plan_capture_write(
          &device->plan_capture, device->pdevice->pci_vendor_id,
