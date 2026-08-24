@@ -348,7 +348,19 @@ target-side capture by digest and retains it beside the receipt.  The
 receipt records declared values verbatim and inherited values as
 digests, so the operator's paths stay out of a retained receipt; a
 display-slice receipt therefore names `R3V_WSI_SW=1`, the xcb-shm
-CPU-copy present path, whenever that value was declared.
+CPU-copy present path, whenever that value was declared.  `--queue-report` runs
+`r3v_native_queue_claim_report` through the Vulkan loader under the
+run's environment with the pinned `VK_DRIVER_FILES` and records the
+queue flags the ICD advertises there, the claim mode behind the
+compute bit (`default_graphics_only`, `experimental_compute_subset`
+under the exact framework gate over the delivered CPU route, or
+`conformant` once every verb ledger row executes on both routes), the
+digest of every field of the verb ledger the report was built from,
+and the report binary's digest; the report refuses when the advertised
+bit, the ledger's claim, and the gate state disagree.  Only the
+conformant mode makes a receipt `compute_claim_eligible`, a statement
+about the compute queue alone, so a gate-assisted run reads as its
+mode, and decision grade requires the report.
 
 `tests/r3v_conformance_partition.tsv` is the exhaustive partition of
 the pinned mustpass corpus (3,251,483 cases, of which 1,542,801 sit in
