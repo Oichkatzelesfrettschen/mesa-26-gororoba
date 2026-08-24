@@ -2101,9 +2101,10 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # linear footprint and a third over a disjoint window of the same
   # allocation.  One known-bad arm asserts an admitted out-of-range flush,
   # so the range validation must fail it; the other asserts the flag
-  # admitted on the render family, whose required dedicated allocation
-  # binds its memory to one image, so the family-scoped admission must
-  # fail it.
+  # admitted on the render family, which binds at offset zero alone, so
+  # the family-scoped admission must fail it.  That arm opens with a
+  # plain render-family create and destroy, so its abort attributes to
+  # the flag rather than to the shape.
   r3v_native_memory_model_harness = executable(
     'r3v_native_memory_model_harness',
     files('tests/r3v_native_memory_model_harness.c'),

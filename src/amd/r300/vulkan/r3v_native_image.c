@@ -43,14 +43,16 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     * row_pitch_bytes * height from the bind offset, the same footprint
     * r3v_GetImageMemoryRequirements reports, so two such images over one
     * offset cover the same bytes texel for texel.  The render family
-    * reports a required dedicated allocation, whose memory carries that
-    * one image alone, so no aliasing window opens there and the flag
-    * refuses.  The transfer family's copies move bytes through host
-    * mappings of the bound allocation and the queue completes each
-    * submission before vkQueueSubmit returns (r3v_native_transfer.c,
-    * r3v_native_queue.c; rg --fixed-strings memory_offset
-    * src/amd/r300/vulkan/), so a read through one alias observes every
-    * write the record order places before it.
+    * reports a required dedicated allocation and binds at offset zero
+    * alone (the `!image->transfer_family && memoryOffset != 0` refusal
+    * in r3v_BindImageMemory), so its window starts where the allocation
+    * starts and a second render image over it would need the same base;
+    * the flag refuses there.  The transfer family's copies move bytes
+    * through host mappings of the bound allocation and the queue
+    * completes each submission before vkQueueSubmit returns
+    * (r3v_native_transfer.c, r3v_native_queue.c; rg --fixed-strings
+    * memory_offset src/amd/r300/vulkan/), so a read through one alias
+    * observes every write the record order places before it.
     */
    const uint32_t texel_bytes =
       r3v_native_transfer_texel_bytes(pCreateInfo->format);
