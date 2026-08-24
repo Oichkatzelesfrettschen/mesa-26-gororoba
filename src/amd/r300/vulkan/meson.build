@@ -1544,6 +1544,17 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 120,
       suite : ['r3v'],
     )
+    test(
+      'r3v-native-descriptor-known-bad-typed-pool-overflow-admits',
+      r3v_native_descriptor_test,
+      args : ['--inject-typed-pool-overflow-admits'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v,
+                 _dev_icd],
+      should_fail : true,
+      timeout : 120,
+      suite : ['r3v'],
+    )
     # Transfer-op contract through the public surface: dword-pattern
     # fills with whole-size truncation, inline updates from
     # record-time-captured bytes, unit-scale blits lowered onto the

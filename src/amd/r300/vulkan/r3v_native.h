@@ -199,8 +199,14 @@ struct r3v_native_deferred_copy {
  * recording refuses it, keeping the surface fail-closed without a
  * result channel.
  */
-#define R3V_NATIVE_DESCRIPTOR_BINDING_MAX 4
-#define R3V_NATIVE_DESCRIPTOR_POOL_SET_MAX 16
+#define R3V_NATIVE_DESCRIPTOR_BINDING_MAX 16
+#define R3V_NATIVE_DESCRIPTOR_POOL_SET_MAX 65536
+#define R3V_NATIVE_DESCRIPTOR_COUNT_MAX 1024
+/* The eleven core 1.0 descriptor types, VK_DESCRIPTOR_TYPE_SAMPLER (0)
+ * through VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT (10); a pool accounts
+ * capacity per type.
+ */
+#define R3V_NATIVE_DESCRIPTOR_TYPE_COUNT 11
 
 /* An occlusion query pool: per-query availability plus the counted
  * value's one admitted case.  The recording admits a query span that
@@ -261,11 +267,31 @@ struct r3v_native_query_op {
 
 #define R3V_NATIVE_QUERY_OP_MAX 16
 
-struct r3v_native_descriptor_set_layout {
-   struct vk_descriptor_set_layout vk;
-   bool binding_present[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
+/* A layout binding as declared: any core descriptor type, a bounded
+ * array count, and any stage mask admit at creation, so the object
+ * graph the API contracts exists; the executing contract narrows at
+ * pipeline creation (a compute job's bindings are single storage
+ * buffers visible to the compute stage) and at dispatch admission.
+ */
+struct r3v_native_descriptor_layout_binding {
+   bool present;
+   VkDescriptorType type;
+   uint32_t count;
+   VkShaderStageFlags stages;
 };
 
+struct r3v_native_descriptor_set_layout {
+   struct vk_descriptor_set_layout vk;
+   struct r3v_native_descriptor_layout_binding
+      bindings[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
+   uint32_t type_counts[R3V_NATIVE_DESCRIPTOR_TYPE_COUNT];
+};
+
+/* A binding is `bound` only through the executing shape (a
+ * single-element storage-buffer binding written at index zero); a
+ * write of any other admitted shape leaves the binding unbound, and a
+ * dispatch naming it refuses.
+ */
 struct r3v_native_descriptor_binding {
    bool bound;
    struct r3v_native_buffer *buffer;
@@ -288,8 +314,36 @@ struct r3v_native_descriptor_pool {
    struct vk_object_base base;
    uint32_t max_sets;
    uint32_t set_count;
-   struct r3v_native_descriptor_set *sets[R3V_NATIVE_DESCRIPTOR_POOL_SET_MAX];
+   uint32_t type_capacity[R3V_NATIVE_DESCRIPTOR_TYPE_COUNT];
+   uint32_t type_used[R3V_NATIVE_DESCRIPTOR_TYPE_COUNT];
+   struct r3v_native_descriptor_set **sets;
 };
+
+/* Identically defined layouts compare field by field, so struct
+ * padding never enters the verdict. */
+static inline bool
+r3v_native_descriptor_bindings_equal(
+   const struct r3v_native_descriptor_layout_binding *a,
+   const struct r3v_native_descriptor_layout_binding *b)
+{
+   for (uint32_t i = 0; i < R3V_NATIVE_DESCRIPTOR_BINDING_MAX; i++) {
+      if (a[i].present != b[i].present)
+         return false;
+      if (a[i].present && (a[i].type != b[i].type ||
+                           a[i].count != b[i].count ||
+                           a[i].stages != b[i].stages))
+         return false;
+   }
+   return true;
+}
+
+static inline bool
+r3v_native_descriptor_layouts_equal(
+   const struct r3v_native_descriptor_set_layout *a,
+   const struct r3v_native_descriptor_set_layout *b)
+{
+   return r3v_native_descriptor_bindings_equal(a->bindings, b->bindings);
+}
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_descriptor_set_layout, vk.base,
                                VkDescriptorSetLayout,
@@ -824,7 +878,8 @@ struct r3v_native_pipeline {
     * presence map the whole definition, so the dispatch admission
     * compares maps rather than handles.
     */
-   bool set0_binding_present[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
+   struct r3v_native_descriptor_layout_binding
+      set0_bindings[R3V_NATIVE_DESCRIPTOR_BINDING_MAX];
    /* The attribute slots the vertex job reads (r300_vertex_job_input_mask
     * of vertex_job), each described in attributes[slot], and the stride
     * of every binding an attribute names.
