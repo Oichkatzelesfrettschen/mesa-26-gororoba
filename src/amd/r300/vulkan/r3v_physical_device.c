@@ -824,18 +824,23 @@ r3v_get_image_format_properties(
    VkFormatProperties3 format_properties;
    r3v_get_format_properties(device, info->format, &format_properties);
 
-   /* The native image contract carries two 2D flat families with no
-    * create flags -- color-attachment usage alone, and transfer usage
-    * alone -- so the query reports every other type, flagged, or
-    * differently-used request unsupported before the shared type
-    * switch, the same refusal vkCreateImage applies.
+   /* The native image contract carries two 2D flat families --
+    * color-attachment usage alone at no create flag, and transfer usage
+    * alone at no create flag or at VK_IMAGE_CREATE_ALIAS_BIT, whose
+    * aliasing window is the linear footprint (r3v_native_image.c) -- so
+    * the query reports every other type, flag, or usage unsupported
+    * before the shared type switch, the same refusal vkCreateImage
+    * applies.
     */
    const VkImageUsageFlags r3v_native_transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    const bool r3v_native_transfer_query =
       info->usage != 0 &&
       (info->usage & ~r3v_native_transfer_usage) == 0;
-   if (info->type != VK_IMAGE_TYPE_2D || info->flags != 0 ||
+   const VkImageCreateFlags r3v_native_admitted_flags =
+      r3v_native_transfer_query ? VK_IMAGE_CREATE_ALIAS_BIT : 0;
+   if (info->type != VK_IMAGE_TYPE_2D ||
+       (info->flags & ~r3v_native_admitted_flags) ||
        (info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT &&
         !r3v_native_transfer_query))
       goto unsupported;

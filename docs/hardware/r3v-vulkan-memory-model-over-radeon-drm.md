@@ -113,10 +113,17 @@ object footprint closed inside the allocation, type 0 only.  Aliasing is
 admitted by construction -- multiple objects may bind disjoint or
 overlapping windows of one allocation, and the pass-target disjointness
 proofs at recording refuse the aliases that would fold two relocation
-roles into one BO range.  Sparse binding is unsupported and reports an
-empty sparse-format table; dedicated-allocation is never preferred nor
-required (`r3v_native_fill_buffer_dedicated_requirements`).  External
-memory rides PRIME fd export/import in the transport
+roles into one BO range.  `VK_IMAGE_CREATE_ALIAS_BIT` names that
+admission for images and `r3v_CreateImage` accepts it on the linear
+transfer family, whose footprint `row_pitch_bytes * height` is the
+aliasing window the requirement reports; the render family binds at
+offset zero alone, so its one window covers the whole allocation and the
+flag refuses there.  Sparse binding is unsupported and reports an empty
+sparse-format table; buffers report dedicated allocation neither
+preferred nor required (`r3v_native_fill_buffer_dedicated_requirements`)
+and the render image family reports it required
+(`r3v_GetImageMemoryRequirements2`).  External memory rides PRIME fd
+export/import in the transport
 (`radeon_drm_vk_bo_export_fd` / `_import_fd`) with a per-device
 shared-handle reference count so `DRM_IOCTL_GEM_CLOSE` runs exactly once
 per handle; cross-device external sync stays implicit `dma_resv`, the

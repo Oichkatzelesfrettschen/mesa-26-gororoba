@@ -36,9 +36,27 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
 
    *pImage = VK_NULL_HANDLE;
 
+   /* VK_IMAGE_CREATE_ALIAS_BIT admits the transfer family alone.  The
+    * flag's rule is that images created with identical parameters over
+    * one memory range read that range's contents consistently, and the
+    * family's linear layout makes the aliasing window exact:
+    * row_pitch_bytes * height from the bind offset, the same footprint
+    * r3v_GetImageMemoryRequirements reports, so two such images over one
+    * offset cover the same bytes texel for texel.  The render family
+    * reports a required dedicated allocation and binds at offset zero
+    * alone (the `!image->transfer_family && memoryOffset != 0` refusal
+    * in r3v_BindImageMemory), so its window starts where the allocation
+    * starts and a second render image over it would need the same base;
+    * the flag refuses there.  The transfer family's copies move bytes
+    * through host mappings of the bound allocation and the queue
+    * completes each submission before vkQueueSubmit returns
+    * (r3v_native_transfer.c, r3v_native_queue.c; rg --fixed-strings
+    * memory_offset src/amd/r300/vulkan/), so a read through one alias
+    * observes every write the record order places before it.
+    */
    const uint32_t texel_bytes =
       r3v_native_transfer_texel_bytes(pCreateInfo->format);
-   if (pCreateInfo->flags != 0 ||
+   if ((pCreateInfo->flags & ~(VkImageCreateFlags)VK_IMAGE_CREATE_ALIAS_BIT) ||
        pCreateInfo->imageType != VK_IMAGE_TYPE_2D || texel_bytes == 0 ||
        pCreateInfo->extent.width < 1 || pCreateInfo->extent.height < 1 ||
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
@@ -53,7 +71,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    bool transfer_family;
    uint32_t row_pitch_bytes;
    if (pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
-      if (pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
+      if (pCreateInfo->flags != 0 ||
+          pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
           pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
           pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);

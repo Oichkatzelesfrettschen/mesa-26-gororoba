@@ -17,6 +17,7 @@
 #include "vk_common_entrypoints.h"
 #include "vk_log.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -35,6 +36,16 @@ r3v_native_submit_hazard_accepted(void)
  * unset value so the queue cannot format artifact names against the root
  * directory while the submit gate is open.
  */
+/* The plan-capture path: any absolute path selects capture; empty and
+ * unset leave it off.
+ */
+static const char *
+r3v_native_plan_capture_file(void)
+{
+   const char *value = getenv("R3V_NATIVE_PLAN_CAPTURE_FILE");
+   return value != NULL && value[0] != '\0' ? value : NULL;
+}
+
 static const char *
 r3v_native_manifest_dir(void)
 {
@@ -138,6 +149,36 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->manifest_dir = r3v_native_manifest_dir();
    r3v_native_device_refresh_delivery_gates(device);
 
+   /* Plan capture opens the CS ioctl with the hazard gate closed, so it
+    * exists only under the preloaded drm-shim and only with the gate
+    * closed; a set capture path outside that shape refuses the device.
+    */
+   const char *capture_path = r3v_native_plan_capture_file();
+   if (capture_path != NULL) {
+      const char *refusal = NULL;
+      if (device->submit_hazard_accepted)
+         refusal = "the hazard gate is open";
+      else if (device->manifest_dir != NULL)
+         refusal = "a capture session names no attended-evidence "
+                   "directory";
+      else if (!r3v_native_plan_capture_host_model_present())
+         refusal = "no drm-shim host model answers the ioctl";
+      int init = refusal == NULL
+                    ? r3v_native_plan_capture_init(&device->plan_capture,
+                                                   capture_path)
+                    : -EINVAL;
+      if (refusal != NULL || init != 0) {
+         vk_queue_finish(&device->queue.vk);
+         radeon_drm_vk_device_finish(&device->drm);
+         vk_device_finish(&device->vk);
+         vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+         return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                          "r3v-native: plan capture refused: %s",
+                          refusal != NULL ? refusal : strerror(-init));
+      }
+      device->plan_capture_active = true;
+   }
+
    *pDevice = r3v_native_device_to_handle(device);
    return VK_SUCCESS;
 }
@@ -151,6 +192,21 @@ r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    vk_queue_finish(&device->queue.vk);
    r3v_native_prepared_release(device);
+   if (device->plan_capture_active) {
+      int written = r3v_native_plan_capture_write(
+         &device->plan_capture, device->pdevice->pci_vendor_id,
+         device->pdevice->pci_device_id, NULL);
+      if (written == -ENOENT) {
+         vk_logw(VK_LOG_OBJS(&device->vk.base),
+                 "r3v-native: no executable submission ran; no plan "
+                 "transcript written");
+      } else if (written != 0) {
+         vk_logw(VK_LOG_OBJS(&device->vk.base),
+                 "r3v-native: plan transcript write at destroy failed: %s",
+                 strerror(-written));
+      }
+      r3v_native_plan_capture_finish(&device->plan_capture);
+   }
    radeon_drm_vk_device_finish(&device->drm);
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);

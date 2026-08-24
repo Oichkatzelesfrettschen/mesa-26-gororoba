@@ -97,6 +97,7 @@ r3v_native_files = files(
   'r3v_native_object.c',
   'r3v_native_pipeline.c',
   'r3v_native_plan.c',
+  'r3v_native_plan_capture.c',
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
@@ -338,6 +339,20 @@ if with_tests
   # exact cover and the pilot table's disjointness against the pinned
   # mustpass directory when R3V_DEQP_MUSTPASS_DIR names it, against the
   # checked-in corpus pin; unnamed, they skip (exit 77).
+  # The conformance tooling is Python the runner executes on the target;
+  # pyflakes holds it free of undefined names and duplicate keys.
+  prog_pyflakes = find_program('pyflakes', required : false)
+  if prog_pyflakes.found()
+    test(
+      'r3v-conformance-tooling-pyflakes',
+      prog_pyflakes,
+      args : [files('tests/r3v_conformance_runner.py',
+                    'tests/r3v_conformance_partition.py',
+                    'tests/r3v_deqp_provision.py',
+                    'tests/r3v_native_plan_compose_check.py')],
+      suite : ['r3v'],
+    )
+  endif
   test(
     'r3v-conformance-partition-selftest',
     prog_python,
@@ -1005,6 +1020,18 @@ if with_tests
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r3v'],
+  )
+  # The plan tool composes a sealed plan from a captured transcript and
+  # the declared run identities; the capture harness below runs two
+  # distinct draws under the shim with the capture path set and proves
+  # the transcript carries both entries, then composes and binds it.
+  r3v_native_plan_tool = executable(
+    'r3v_native_plan_tool',
+    files('r3v_native_plan.c', 'tests/r3v_native_plan_tool.c'),
+    include_directories : [inc_include, inc_src, include_directories('.')],
+    dependencies : [idep_mesautil],
+    link_with : [libr300_common],
+    gnu_symbol_visibility : 'hidden',
   )
   test(
     'r3v-native-arming-positive',
@@ -1765,6 +1792,39 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       'VK_DRIVER_FILES' : _dev_icd.full_path(),
       'R3V_EXPECTED_ICD_DSO' : libvulkan_r3v.full_path(),
     }
+    # The queue-claim report reaches the ICD through the loader under
+    # VK_DRIVER_FILES and names the queue flags it advertises, the claim
+    # mode behind the compute bit, and the verb ledger digest; the
+    # conformance runner records it in every receipt so a gate-assisted
+    # run reads as its mode.  Both gate states run under the shim and the
+    # report's own consistency check judges them.
+    r3v_native_queue_claim_report = executable(
+      'r3v_native_queue_claim_report',
+      files('tests/r3v_native_queue_claim_report.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common],
+      dependencies : [dep_vulkan_loader, idep_mesautil],
+      link_with : [libr300_common],
+      gnu_symbol_visibility : 'hidden',
+    )
+    test(
+      'r3v-native-queue-claim-report-default',
+      prog_python,
+      args : [files('tests/r3v_native_queue_claim_report_check.py'),
+              r3v_native_queue_claim_report, 'default_graphics_only'],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-queue-claim-report-gated',
+      prog_python,
+      args : [files('tests/r3v_native_queue_claim_report_check.py'),
+              r3v_native_queue_claim_report, 'experimental_compute_subset'],
+      env : environment(r3v_native_loader_app_vars +
+                        {'R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL' : '1'}),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      suite : ['r3v'],
+    )
     test(
       'r3v-native-loader-application',
       prog_python,
@@ -2096,8 +2156,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # once-per-buffer aligned type-0 contract and admits aliasing windows,
   # and the budget arm holds the reported table to the platform-ceiling
   # contract, the zero commitment, the 64-byte noncoherent atom, and the
-  # never-dedicated requirement.  The known-bad arm asserts an admitted
-  # out-of-range flush, so the range validation must fail it.
+  # never-dedicated requirement.  The image-alias arm binds two
+  # identically-created VK_IMAGE_CREATE_ALIAS_BIT transfer images over one
+  # linear footprint and a third over a disjoint window of the same
+  # allocation.  One known-bad arm asserts an admitted out-of-range flush,
+  # so the range validation must fail it; the other asserts the flag
+  # admitted on the render family, which binds at offset zero alone, so
+  # the family-scoped admission must fail it.  That arm opens with a
+  # plain render-family create and destroy, so its abort attributes to
+  # the flag rather than to the shape.
   r3v_native_memory_model_harness = executable(
     'r3v_native_memory_model_harness',
     files('tests/r3v_native_memory_model_harness.c'),
@@ -2109,7 +2176,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     gnu_symbol_visibility : 'hidden',
   )
   foreach memory_arm : ['alloc-refused', 'map-refused', 'mapped-ranges',
-                        'bind-admission', 'budget-contract']
+                        'bind-admission', 'budget-contract',
+                        'image-alias-binding']
     test(
       'r3v-native-memory-model-@0@'.format(memory_arm),
       r3v_native_memory_model_harness,
@@ -2124,6 +2192,16 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-memory-model-known-bad-range-admits',
     r3v_native_memory_model_harness,
     args : ['known-bad-range-admits'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    should_fail : true,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-memory-model-known-bad-render-family-alias-admits',
+    r3v_native_memory_model_harness,
+    args : ['known-bad-render-family-alias-admits'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
@@ -2225,6 +2303,46 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  # Plan capture under the shim: two distinct draws in separate submits
+  # land two ordered transcript entries with the retained digests and
+  # the whole relocation shape; a two-buffer submit refuses; an open
+  # hazard gate or an unreachable transcript refuses the device.
+  r3v_native_plan_capture_harness = executable(
+    'r3v_native_plan_capture_harness',
+    files('tests/r3v_native_plan_capture_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach capture_arm : ['capture', 'slot-roles', 'gate-open-refused',
+                         'manifest-dir-refused', 'second-device-refused',
+                         'missing-directory-refused']
+    test(
+      'r3v-native-plan-capture-@0@'.format(capture_arm),
+      r3v_native_plan_capture_harness,
+      args : [capture_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  # The composed plan: the harness transcript composes with declared
+  # identities into a plan the tool checks; a missing identity refuses.
+  test(
+    'r3v-native-plan-compose',
+    prog_python,
+    args : [files('tests/r3v_native_plan_compose_check.py'),
+            r3v_native_plan_capture_harness, r3v_native_plan_tool],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 120,
+    suite : ['r3v'],
+  )
+
   # Calibration: a draw executed ahead of a refused submit is the
   # ordering the matrix refuses, so the untouched verdicts fail on it.
   test(
