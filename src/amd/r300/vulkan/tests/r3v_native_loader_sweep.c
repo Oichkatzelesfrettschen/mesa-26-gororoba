@@ -36,6 +36,17 @@ static unsigned failures;
 
 static VkInstance instance = VK_NULL_HANDLE;
 static VkDevice device = VK_NULL_HANDLE;
+
+/* call_create_buffer_view's buffer and its memory binding: the parent
+ * allocates and binds both before in_child() forks -- a forked child's
+ * own GEM create observes VK_ERROR_OUT_OF_DEVICE_MEMORY under this
+ * shim's fork model (test_fork_child_close_preserves_parent_bo,
+ * src/amd/drm-shim/radeon_noop_drm_shim.c), the same reason live_memory
+ * below is parent-allocated -- so the child only records the view over
+ * an already-bound buffer.
+ */
+static VkBuffer texel_buffer = VK_NULL_HANDLE;
+static VkDeviceMemory texel_buffer_memory = VK_NULL_HANDLE;
 static PFN_vkGetDeviceProcAddr gdpa;
 
 /* Run one invocation in a child so a null call, an abort, or a sanitizer
@@ -317,34 +328,24 @@ call_create_descriptor_set_layout(void)
    return (result != VK_SUCCESS && layout == VK_NULL_HANDLE) ? 0 : 1;
 }
 
-/* vkCreateBuffer executes natively, so a real VkBuffer is available.
- * R8G8B8A8_UNORM sits in the transfer-image texel table
- * r3v_native_transfer_texel_bytes names, and r3v_get_format_properties
- * grants that table's formats both texel-buffer feature bits, so a view
- * over it constructs.
+/* texel_buffer carries VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT and a
+ * complete memory binding from the parent-side setup above
+ * (VUID-VkBufferViewCreateInfo-buffer-00935).  R8G8B8A8_UNORM sits in
+ * the transfer-image texel table r3v_native_transfer_texel_bytes
+ * names, and r3v_get_format_properties grants that table's formats
+ * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT, so a uniform-usage view
+ * over it constructs; the child destroys the view alone and leaves the
+ * buffer and its memory to the parent's teardown.
  */
 static int
 call_create_buffer_view(void)
 {
-   VkBuffer buffer = VK_NULL_HANDLE;
-   VkResult result = vkCreateBuffer(
-      device,
-      &(VkBufferCreateInfo){
-         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-         .size = 1024,
-         .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-      },
-      NULL, &buffer);
-   if (result != VK_SUCCESS || buffer == VK_NULL_HANDLE)
-      return 1;
-
    VkBufferView view = VK_NULL_HANDLE;
-   result = vkCreateBufferView(
+   const VkResult result = vkCreateBufferView(
       device,
       &(VkBufferViewCreateInfo){
          .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
-         .buffer = buffer,
+         .buffer = texel_buffer,
          .format = VK_FORMAT_R8G8B8A8_UNORM,
          .offset = 0,
          .range = VK_WHOLE_SIZE,
@@ -352,7 +353,6 @@ call_create_buffer_view(void)
       NULL, &view);
    const int rc = (result == VK_SUCCESS && view != VK_NULL_HANDLE) ? 0 : 1;
    vkDestroyBufferView(device, view, NULL);
-   vkDestroyBuffer(device, buffer, NULL);
    return rc;
 }
 
@@ -793,6 +793,47 @@ main(void)
    const bool live_memory_ready =
       mapped_range_setup_ready(allocation_result, map_result, live_map);
 
+   /* texel_buffer: parent-side buffer creation, allocation, and
+    * binding, for call_create_buffer_view (see the field comments
+    * above texel_buffer's declaration for why this happens before
+    * fork rather than inside the forked child).
+    */
+   const VkResult texel_buffer_result = vkCreateBuffer(
+      device,
+      &(VkBufferCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+         .size = 1024,
+         .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      },
+      NULL, &texel_buffer);
+   CHECK(texel_buffer_result == VK_SUCCESS && texel_buffer != VK_NULL_HANDLE,
+         "vkCreateBuffer for the buffer-view fixture: %d",
+         texel_buffer_result);
+   if (texel_buffer_result == VK_SUCCESS) {
+      VkMemoryRequirements texel_buffer_reqs;
+      vkGetBufferMemoryRequirements(device, texel_buffer, &texel_buffer_reqs);
+      const VkResult texel_buffer_alloc_result = vkAllocateMemory(
+         device,
+         &(VkMemoryAllocateInfo){
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = texel_buffer_reqs.size,
+            .memoryTypeIndex = 0,
+         },
+         NULL, &texel_buffer_memory);
+      CHECK(texel_buffer_alloc_result == VK_SUCCESS &&
+               texel_buffer_memory != VK_NULL_HANDLE,
+            "vkAllocateMemory for the buffer-view fixture: %d",
+            texel_buffer_alloc_result);
+      if (texel_buffer_alloc_result == VK_SUCCESS) {
+         const VkResult texel_buffer_bind_result = vkBindBufferMemory(
+            device, texel_buffer, texel_buffer_memory, 0);
+         CHECK(texel_buffer_bind_result == VK_SUCCESS,
+               "vkBindBufferMemory for the buffer-view fixture: %d",
+               texel_buffer_bind_result);
+      }
+   }
+
    in_child("vkCreateImage admits a texel-table format and refuses outside "
             "it",
             call_create_image);
@@ -834,6 +875,10 @@ main(void)
       vkUnmapMemory(device, live_memory);
    if (live_memory != VK_NULL_HANDLE)
       vkFreeMemory(device, live_memory, NULL);
+   if (texel_buffer != VK_NULL_HANDLE)
+      vkDestroyBuffer(device, texel_buffer, NULL);
+   if (texel_buffer_memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, texel_buffer_memory, NULL);
    vkDestroyDevice(device, NULL);
    vkDestroyInstance(instance, NULL);
 

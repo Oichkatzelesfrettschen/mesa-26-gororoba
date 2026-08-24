@@ -76,6 +76,14 @@ VkResult r3v_physical_device_try_create_for_drm(struct vk_instance *instance,
 
 void r3v_physical_device_destroy(struct vk_physical_device *device);
 
+/* The format-feature grant switch: r3v_GetPhysicalDeviceFormatProperties2
+ * and r3v_CreateBufferView (r3v_native_object.c) both read this table, so
+ * a format's queried bufferFeatures and its buffer-view admission stay
+ * derived from the same source. */
+void r3v_get_format_properties(const struct r3v_physical_device *device,
+                                VkFormat vk_format,
+                                VkFormatProperties3 *properties);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1544,7 +1544,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     test(
       'r3v-native-format-features-known-bad-texel-buffer',
       r3v_native_format_features_test,
-      args : ['--inject-uniform-texel-buffer'],
+      args : ['--inject-storage-texel-buffer'],
       env : r3v_native_loader_env,
       depends : [libradeon_noop_drm_shim, libvulkan_r3v,
                  _dev_icd],

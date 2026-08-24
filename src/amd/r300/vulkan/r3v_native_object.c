@@ -8,6 +8,7 @@
 #include "r3v_native.h"
 
 #include "r3v_entrypoints.h"
+#include "r3v_physical_device.h"
 
 #include "vk_log.h"
 
@@ -35,21 +36,30 @@
  * access, then the device-memory commands.
  */
 
-/* A buffer view admits the same texel table the transfer-image family
- * publishes (r3v_native_transfer_texel_bytes), over a buffer created
- * with VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT or
- * VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT, so
- * r3v_get_format_properties advertises the matching bufferFeatures
- * bits for exactly this table.  The offset holds
- * R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT, the Vulkan spec's
- * minTexelBufferOffsetAlignment rule (VUID-VkBufferViewCreateInfo-offset-02749
- * family), and closes inside the buffer; VK_WHOLE_SIZE resolves to the
- * remaining bytes from offset to the buffer's end, and an explicit range
- * closes inside that remainder.  Both forms require their byte span a
- * multiple of the format's texel size, since the view addresses whole
- * texels.  Every other request -- an inadmissible format, a buffer without
- * either texel-buffer usage bit, a misaligned offset, or a byte span the
- * texel size does not divide -- refuses with a cleared handle.
+/* Admission is exact, keyed on the queried format rather than a
+ * duplicated table: a buffer created with
+ * VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT needs
+ * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT from
+ * r3v_get_format_properties for pCreateInfo->format, and one created
+ * with VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT needs the matching
+ * storage bit, which every format withholds -- the RS480 die lacks the
+ * storage-texel-buffer and integer-format routes
+ * tests/r3v_conformance_nonpass_ledger.tsv row
+ * mandatory_format_feature_absent names, so a storage-usage buffer
+ * never admits a view.  r3v_native_transfer_texel_bytes supplies the
+ * format's texel size for the range math below; the two tables share
+ * one format set by construction; a zero texel size only guards the
+ * division that follows.  The offset is a multiple of
+ * R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT
+ * (VUID-VkBufferViewCreateInfo-offset-00926) and sits strictly inside
+ * the buffer (VUID-VkBufferViewCreateInfo-offset-00925).  VK_WHOLE_SIZE
+ * resolves to the remainder from offset to the buffer's end, rounded
+ * down to the nearest multiple of the texel size (VkBufferViewCreateInfo
+ * prose; no VU covers this rounding); an explicit range is instead a
+ * positive multiple of the texel size that closes inside that
+ * remainder.  The resulting element count holds
+ * R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS.  A request outside that
+ * admitted envelope returns a cleared handle.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateBufferView(VkDevice _device,
@@ -62,28 +72,51 @@ r3v_CreateBufferView(VkDevice _device,
 
    *pView = VK_NULL_HANDLE;
 
+   if (pCreateInfo->flags != 0 || buffer == NULL)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
    const uint32_t texel_bytes =
       r3v_native_transfer_texel_bytes(pCreateInfo->format);
-   const VkBufferUsageFlags texel_usage_mask =
-      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-      VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+   if (texel_bytes == 0)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
-   if (pCreateInfo->flags != 0 || buffer == NULL || texel_bytes == 0 ||
-       (buffer->vk.usage & texel_usage_mask) == 0 ||
-       pCreateInfo->offset %
+   VkFormatProperties3 format_properties;
+   r3v_get_format_properties(device->pdevice, pCreateInfo->format,
+                             &format_properties);
+
+   const VkBufferUsageFlags usage = buffer->vk.usage;
+   const bool wants_uniform =
+      (usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) != 0;
+   const bool wants_storage =
+      (usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT) != 0;
+   if (!wants_uniform && !wants_storage)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (wants_uniform &&
+       !(format_properties.bufferFeatures &
+         VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT))
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (wants_storage &&
+       !(format_properties.bufferFeatures &
+         VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT))
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   if (pCreateInfo->offset %
              R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT != 0 ||
-       pCreateInfo->offset > buffer->vk.size)
+       pCreateInfo->offset >= buffer->vk.size)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    const VkDeviceSize remaining = buffer->vk.size - pCreateInfo->offset;
    VkDeviceSize range = pCreateInfo->range;
    if (range == VK_WHOLE_SIZE) {
-      if (remaining % texel_bytes != 0)
+      range = (remaining / texel_bytes) * texel_bytes;
+      if (range == 0)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-      range = remaining;
    } else if (range == 0 || range % texel_bytes != 0 || range > remaining) {
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
    }
+
+   if (range / texel_bytes > R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    struct r3v_native_buffer_view *view =
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*view),

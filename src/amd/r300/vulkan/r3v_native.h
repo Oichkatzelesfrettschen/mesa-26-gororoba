@@ -49,6 +49,13 @@
  */
 #define R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT 16u
 
+/* VkPhysicalDeviceLimits::maxTexelBufferElements; the buffer-view range
+ * admission below enforces the same texel-count ceiling the physical
+ * device publishes (R3xx has no native texel buffer object, so this is
+ * the Vulkan 1.4 floor rather than a silicon count).
+ */
+#define R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS 65536u
+
 /* The result every native refusal returns.  Each command's registry entry
  * fixes the results it may return, and VK_ERROR_UNKNOWN is the one error the
  * whole native refusal set shares: the other universal member,
