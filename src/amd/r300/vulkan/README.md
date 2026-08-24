@@ -321,6 +321,35 @@ default context requires a GRAPHICS|COMPUTE queue and aborts on the
 graphics-only family; the operator passes the exact compute-queue opt-in
 through `--env` and the receipt records it.
 
+The runner's evidence boundary: the dEQP process inherits an
+allowlisted environment (PATH, HOME, user, locale, terminal) plus the
+values declared through `--env` (the drm-shim preload, its library
+path, and the compute-queue framework gate are declared values), and
+the receipt records that whole environment; a declared submission,
+authorization, experimental-route, plan, or evidence-directory value
+is admitted on a submission-hazard slice alone and refuses elsewhere
+as `gate_contamination`, with `check-ledgers` holding the pattern to
+every compute verb gate the ledger names; a run takes a fresh output
+directory and a caselist inside the shard ceiling; decision grade
+requires the declared source SHA, DSO, dEQP, caselist, and partition
+digests, the runtime event digest on silicon, the queue-claim report,
+and a caselist bound to a partition shard; the kernel log delta comes
+from a journal cursor when journalctl serves the kernel log, or from
+dmesg with the before stream held as a prefix of the after stream
+(`kernel_log_continuity_broken` otherwise); the runner writes dEQP's
+stdout and stderr to files and kills the process group when neither
+the log (dEQP flushes it after every write) nor stdout grows within
+`--case-timeout` (`case_deadline`, ranked below a kernel hazard and
+folded into `runner_deadline` after the session closed) or the shard
+passes `--timeout`; the receipt keeps the exit code that named the
+deadline; a runner `--max-cases` other than the manifest's shard
+ceiling refuses (`shard_ceiling_mismatch`); `--runtime-event` joins the
+target-side capture by digest and retains it beside the receipt.  The
+receipt records declared values verbatim and inherited values as
+digests, so the operator's paths stay out of a retained receipt; a
+display-slice receipt therefore names `R3V_WSI_SW=1`, the xcb-shm
+CPU-copy present path, whenever that value was declared.
+
 `tests/r3v_conformance_partition.tsv` is the exhaustive partition of
 the pinned mustpass corpus (3,251,483 cases, of which 1,542,801 sit in
 executable slices; the rest wait in blocked slices):
@@ -329,8 +358,12 @@ case to the one slice whose group prefixes it, and refuses an uncovered
 case, a case two slices claim, a group claiming nothing, and a case a
 corpus file repeats; it generates every slice's sorted caselist with its
 count and SHA-256 beside the corpus and table digests in
-`partition_manifest.json`, the slice counts sum to the corpus count by
-construction, and `tests/r3v_conformance_corpus.pin` binds the corpus
+`partition_manifest.json`, splits every slice into consecutive shards
+of at most `--shard-max-cases` (20,000) cases, each with its own
+caselist and digest, so the recovery unit one dEQP process runs and the
+identity unit the receipt binds are one object; the slice counts sum
+to the corpus count by construction, and
+`tests/r3v_conformance_corpus.pin` binds the corpus
 digest, case count, and CTS revision so another mustpass directory is
 another denominator and refuses.  The eleven-row `r3v_conformance_slices.tsv` is the
 pilot ladder: the same tool proves its disjointness with `--kind pilot`

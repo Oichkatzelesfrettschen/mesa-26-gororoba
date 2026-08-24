@@ -339,6 +339,20 @@ if with_tests
   # exact cover and the pilot table's disjointness against the pinned
   # mustpass directory when R3V_DEQP_MUSTPASS_DIR names it, against the
   # checked-in corpus pin; unnamed, they skip (exit 77).
+  # The conformance tooling is Python the runner executes on the target;
+  # pyflakes holds it free of undefined names and duplicate keys.
+  prog_pyflakes = find_program('pyflakes', required : false)
+  if prog_pyflakes.found()
+    test(
+      'r3v-conformance-tooling-pyflakes',
+      prog_pyflakes,
+      args : [files('tests/r3v_conformance_runner.py',
+                    'tests/r3v_conformance_partition.py',
+                    'tests/r3v_deqp_provision.py',
+                    'tests/r3v_native_plan_compose_check.py')],
+      suite : ['r3v'],
+    )
+  endif
   test(
     'r3v-conformance-partition-selftest',
     prog_python,
