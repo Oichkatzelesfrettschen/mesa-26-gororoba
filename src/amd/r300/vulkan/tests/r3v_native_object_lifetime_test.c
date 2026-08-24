@@ -3,9 +3,9 @@
  *
  * Native R3V object-lifetime fixture: sampler creation as recorded
  * state with its use refused at the descriptor write, buffer-view
- * refusal under the advertised format table, and the once-only
- * host-visible memory-binding admission for buffers and images under
- * the drm-shim transport.
+ * admission and refusal under the advertised texel-buffer format
+ * table, and the once-only host-visible memory-binding admission for
+ * buffers and images under the drm-shim transport.
  */
 
 #include "r3v_native_reference_spirv.h"
@@ -103,8 +103,18 @@ check_sampler_lifetime(const struct fixture *f)
    return 0;
 }
 
+/* VK_FORMAT_R32_SFLOAT carries VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT alone
+ * (r3v_get_format_properties), so a view over it refuses whatever the
+ * buffer's own usage bits are.  VK_FORMAT_R32_UINT sits in the texel
+ * table r3v_native_transfer_texel_bytes names and carries
+ * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT alone -- the RS480 die
+ * withholds the storage-texel-buffer bit on every format
+ * (tests/r3v_conformance_nonpass_ledger.tsv row
+ * mandatory_format_feature_absent) -- so a uniform-usage view over it
+ * constructs and a storage-usage view over it refuses.
+ */
 static int
-check_buffer_view_refusal(const struct fixture *f)
+check_buffer_view_lifetime(const struct fixture *f)
 {
    const VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -117,7 +127,27 @@ check_buffer_view_refusal(const struct fixture *f)
               VK_SUCCESS,
            "texel-usage buffer object creation");
 
-   const VkBufferViewCreateInfo view_info = {
+   /* VUID-VkBufferViewCreateInfo-buffer-00935: buffer must have a
+    * non-sparse, complete memory binding before a view over it
+    * constructs, so this fixture binds real host-visible memory (type
+    * 0, r3v_native_memory_properties_fill) before any vkCreateBufferView
+    * call below.
+    */
+   VkMemoryRequirements mem_reqs;
+   vkGetBufferMemoryRequirements(f->device, buffer, &mem_reqs);
+   const VkMemoryAllocateInfo memory_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_reqs.size,
+      .memoryTypeIndex = 0,
+   };
+   VkDeviceMemory memory = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateMemory(f->device, &memory_info, NULL, &memory) ==
+              VK_SUCCESS,
+           "buffer-view backing memory allocation");
+   REQUIRE(vkBindBufferMemory(f->device, buffer, memory, 0) == VK_SUCCESS,
+           "buffer-view backing memory binding");
+
+   const VkBufferViewCreateInfo unadmitted_format = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
       .buffer = buffer,
       .format = VK_FORMAT_R32_SFLOAT,
@@ -125,13 +155,231 @@ check_buffer_view_refusal(const struct fixture *f)
       .range = VK_WHOLE_SIZE,
    };
    VkBufferView view = (VkBufferView)(uintptr_t)0xdeadbeef;
-   CHECK(vkCreateBufferView(f->device, &view_info, NULL, &view) !=
+   CHECK(vkCreateBufferView(f->device, &unadmitted_format, NULL, &view) !=
             VK_SUCCESS &&
          view == VK_NULL_HANDLE,
-         "buffer-view creation refuses with a cleared handle: no format "
-         "advertises texel-buffer features");
+         "buffer-view creation over an unadmitted format refuses with a "
+         "cleared handle: R32_SFLOAT advertises no texel-buffer feature");
    vkDestroyBufferView(f->device, VK_NULL_HANDLE, NULL);
+
+   const VkBufferViewCreateInfo whole_size = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView whole_size_view = VK_NULL_HANDLE;
+   CHECK(vkCreateBufferView(f->device, &whole_size, NULL,
+                            &whole_size_view) == VK_SUCCESS &&
+            whole_size_view != VK_NULL_HANDLE,
+         "buffer-view creation over the admitted texel table constructs: "
+         "R32_UINT VK_WHOLE_SIZE from offset 0");
+   vkDestroyBufferView(f->device, whole_size_view, NULL);
+
+   /* 16 is minTexelBufferOffsetAlignment (r3v_physical_device_init_limits);
+    * a loader-level fixture has no internal header to name the driver's
+    * own macro, so the aligned and misaligned offsets below are the
+    * literal value and one that is not a multiple of it.
+    */
+   const VkBufferViewCreateInfo explicit_range = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 16,
+      .range = 64,
+   };
+   VkBufferView explicit_range_view = VK_NULL_HANDLE;
+   CHECK(vkCreateBufferView(f->device, &explicit_range, NULL,
+                            &explicit_range_view) == VK_SUCCESS &&
+            explicit_range_view != VK_NULL_HANDLE,
+         "buffer-view creation admits an aligned offset with an "
+         "explicit range a multiple of the texel size");
+   vkDestroyBufferView(f->device, explicit_range_view, NULL);
+
+   /* Calibration: an offset that is not a multiple of
+    * minTexelBufferOffsetAlignment (16) is the known-bad input; a driver
+    * that admitted it here would pass a view an application cannot
+    * legally present, and this assertion is what catches that defect.
+    */
+   const VkBufferViewCreateInfo misaligned_offset = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 4,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView misaligned_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &misaligned_offset, NULL,
+                            &misaligned_view) != VK_SUCCESS &&
+            misaligned_view == VK_NULL_HANDLE,
+         "known-bad: a misaligned offset (4, not a multiple of 16) "
+         "refuses with a cleared handle rather than admitting");
+
+   /* VUID-VkBufferViewCreateInfo-offset-00925: offset must be less than
+    * the buffer's size; offset == size leaves zero remaining bytes and
+    * refuses rather than resolving VK_WHOLE_SIZE to an empty view.
+    */
+   const VkBufferViewCreateInfo offset_at_size = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = buffer_info.size,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView offset_at_size_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &offset_at_size, NULL,
+                            &offset_at_size_view) != VK_SUCCESS &&
+            offset_at_size_view == VK_NULL_HANDLE,
+         "an offset equal to the buffer size refuses: offset must be "
+         "strictly less than the buffer size");
+
+   /* A buffer with neither texel-buffer usage bit names no route a
+    * view can admit, whatever format or range it presents.
+    */
+   const VkBufferCreateInfo vertex_only_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 256,
+      .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer vertex_only_buffer;
+   REQUIRE(vkCreateBuffer(f->device, &vertex_only_info, NULL,
+                          &vertex_only_buffer) == VK_SUCCESS,
+           "vertex-only buffer object creation");
+   const VkBufferViewCreateInfo neither_usage = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = vertex_only_buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView neither_usage_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &neither_usage, NULL,
+                            &neither_usage_view) != VK_SUCCESS &&
+            neither_usage_view == VK_NULL_HANDLE,
+         "a buffer with neither texel-buffer usage bit refuses every "
+         "view");
+   vkDestroyBuffer(f->device, vertex_only_buffer, NULL);
+
+   /* A storage-usage buffer over an admitted format still refuses: the
+    * queried format grants VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT
+    * alone, so the storage-usage route names a bit no format carries.
+    */
+   const VkBufferCreateInfo storage_only_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 256,
+      .usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer storage_only_buffer;
+   REQUIRE(vkCreateBuffer(f->device, &storage_only_info, NULL,
+                          &storage_only_buffer) == VK_SUCCESS,
+           "storage-usage buffer object creation");
+   const VkBufferViewCreateInfo storage_over_uniform_format = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = storage_only_buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView storage_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &storage_over_uniform_format, NULL,
+                            &storage_view) != VK_SUCCESS &&
+            storage_view == VK_NULL_HANDLE,
+         "a storage-usage buffer over a uniform-only format refuses: "
+         "no format grants VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT");
+   vkDestroyBuffer(f->device, storage_only_buffer, NULL);
+
+   /* VUID-VkBufferViewCreateInfo-range-00928-adjacent: an explicit range
+    * not a multiple of the format's texel size (63, R32_UINT's 4-byte
+    * texel) refuses.
+    */
+   const VkBufferViewCreateInfo range_not_texel_multiple = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = 63,
+   };
+   VkBufferView misaligned_range_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &range_not_texel_multiple, NULL,
+                            &misaligned_range_view) != VK_SUCCESS &&
+            misaligned_range_view == VK_NULL_HANDLE,
+         "an explicit range that is not a multiple of the texel size "
+         "refuses");
+
+   /* An explicit range past the buffer's remainder from offset refuses:
+    * buffer_info.size is 256, so 260 exceeds it.
+    */
+   const VkBufferViewCreateInfo range_past_remainder = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = 260,
+   };
+   VkBufferView oversize_range_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &range_past_remainder, NULL,
+                            &oversize_range_view) != VK_SUCCESS &&
+            oversize_range_view == VK_NULL_HANDLE,
+         "an explicit range past the buffer's remainder from offset "
+         "refuses");
+
    vkDestroyBuffer(f->device, buffer, NULL);
+   vkFreeMemory(f->device, memory, NULL);
+   return 0;
+}
+
+/* VK_WHOLE_SIZE rounding, finding 1: a buffer whose size is not a
+ * multiple of the requested format's texel size resolves VK_WHOLE_SIZE
+ * down to the nearest texel multiple rather than refusing, per
+ * VkBufferViewCreateInfo prose (no VU governs this rounding).
+ */
+static int
+check_buffer_view_whole_size_rounds_down(const struct fixture *f)
+{
+   const VkBufferCreateInfo odd_size_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 257,
+      .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer buffer;
+   REQUIRE(vkCreateBuffer(f->device, &odd_size_info, NULL, &buffer) ==
+              VK_SUCCESS,
+           "odd-size texel-usage buffer object creation");
+
+   VkMemoryRequirements mem_reqs;
+   vkGetBufferMemoryRequirements(f->device, buffer, &mem_reqs);
+   const VkMemoryAllocateInfo memory_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_reqs.size,
+      .memoryTypeIndex = 0,
+   };
+   VkDeviceMemory memory = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateMemory(f->device, &memory_info, NULL, &memory) ==
+              VK_SUCCESS,
+           "odd-size buffer-view backing memory allocation");
+   REQUIRE(vkBindBufferMemory(f->device, buffer, memory, 0) == VK_SUCCESS,
+           "odd-size buffer-view backing memory binding");
+
+   const VkBufferViewCreateInfo whole_size = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView view = VK_NULL_HANDLE;
+   CHECK(vkCreateBufferView(f->device, &whole_size, NULL, &view) ==
+            VK_SUCCESS && view != VK_NULL_HANDLE,
+         "VK_WHOLE_SIZE over a 257-byte buffer with a 4-byte texel "
+         "rounds the remainder down to 256 bytes and admits, rather "
+         "than refusing the non-multiple remainder");
+   vkDestroyBufferView(f->device, view, NULL);
+   vkDestroyBuffer(f->device, buffer, NULL);
+   vkFreeMemory(f->device, memory, NULL);
    return 0;
 }
 
@@ -864,7 +1112,8 @@ main(int argc, char **argv)
       return 1;
 
    int fatal = check_sampler_lifetime(&f) ||
-               check_buffer_view_refusal(&f) ||
+               check_buffer_view_lifetime(&f) ||
+               check_buffer_view_whole_size_rounds_down(&f) ||
                check_buffer_binding(&f) ||
                check_image_binding(&f) ||
                check_sampler_use_fail_closed(&f) ||

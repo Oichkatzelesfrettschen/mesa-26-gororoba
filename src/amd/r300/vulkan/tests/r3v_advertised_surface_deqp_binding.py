@@ -46,13 +46,38 @@ class BindingFailure(Exception):
     pass
 
 
+FEATURE_BIT_RE = re.compile(r"VK_FORMAT_FEATURE_2_\w+_BIT")
+CASE_BLOCK_RE = re.compile(
+    r"((?:case\s+VK_FORMAT_\w+\s*:\s*)+)(.*?)"
+    r"(?=case\s+VK_FORMAT_\w+\s*:|default\s*:|\Z)", re.S)
+
+
 def advertised_formats(text):
+    """Every (format, feature bit) pair r3v_get_format_properties grants.
+
+    A grant is scoped to the exact bit, not the format alone: two case
+    labels sharing one block share every bit that block assigns across
+    linearTilingFeatures and bufferFeatures, and a block that widens or
+    narrows its assigned bits changes the derived pair set even when its
+    format labels do not, so a feature-bit change needs a ledger row of
+    its own rather than riding an unrelated format's existing row.
+    """
     body = re.search(r"r3v_get_format_properties\s*\([^{]*\{(.*?)\n\}",
                      text, re.S)
     if body is None:
         raise BindingFailure("no r3v_get_format_properties body")
     stripped = surface.strip_comments(body.group(1))
-    return sorted(set(re.findall(r"case\s+(VK_FORMAT_\w+)\s*:", stripped)))
+    pairs = set()
+    for labels_text, block in CASE_BLOCK_RE.findall(stripped):
+        formats = re.findall(r"VK_FORMAT_\w+", labels_text)
+        bits = set(FEATURE_BIT_RE.findall(block))
+        for fmt in formats:
+            for bit in bits:
+                pairs.add(f"{fmt}:{bit}")
+    if not pairs:
+        raise BindingFailure(
+            "r3v_get_format_properties grants no (format, feature bit) pair")
+    return sorted(pairs)
 
 
 def derive(pdev_text, instance_text, private_text):
@@ -70,8 +95,8 @@ def derive(pdev_text, instance_text, private_text):
         items.add(("device_extension", e))
     for name in surface.LIMIT_RECEIPTS:
         items.add(("limit", name))
-    for fmt in advertised_formats(pdev_text):
-        items.add(("format_feature", fmt))
+    for fmt_bit in advertised_formats(pdev_text):
+        items.add(("format_feature", fmt_bit))
     return items
 
 
