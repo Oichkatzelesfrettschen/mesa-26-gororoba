@@ -1,0 +1,12 @@
+order	slice	groups	hazard	evidence_floor
+1	info	dEQP-VK.info	none	host-model
+2	api-version-init	dEQP-VK.api.version_check dEQP-VK.api.device_init dEQP-VK.api.smoke	none	host-model
+3	api-objects	dEQP-VK.api.object_management dEQP-VK.api.null_handle dEQP-VK.api.buffer dEQP-VK.api.buffer_view dEQP-VK.api.descriptor_set dEQP-VK.api.descriptor_pool	none	host-model
+4	api-info-surface	dEQP-VK.api.info.format_properties dEQP-VK.api.info.get_physical_device_properties2 dEQP-VK.api.info.image_format_properties dEQP-VK.api.info.image_format_properties2 dEQP-VK.api.info.vulkan1p2_limits_validation	none	host-model
+5	memory	dEQP-VK.memory.mapping dEQP-VK.memory.requirements dEQP-VK.memory.binding dEQP-VK.memory.allocation dEQP-VK.api.buffer_memory_requirements dEQP-VK.api.get_memory_commitment dEQP-VK.api.external.memory	none	host-model
+6	command	dEQP-VK.api.command_buffers dEQP-VK.memory.pipeline_barrier	submission	silicon
+7	transfer	dEQP-VK.api.fill_and_update_buffer dEQP-VK.api.copy_and_blit dEQP-VK.api.image_clearing	submission	silicon
+8	draw	dEQP-VK.draw dEQP-VK.pipeline.monolithic.vertex_input	submission	silicon
+9	synchronization	dEQP-VK.synchronization	submission	silicon
+10	robustness	dEQP-VK.robustness.buffer_access	submission	silicon
+11	wsi	dEQP-VK.wsi.xcb.surface dEQP-VK.wsi.xlib.surface	display	silicon

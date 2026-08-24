@@ -277,6 +277,41 @@ The Radeon drm-shim is a host model. Kernel parser acceptance is not execution.
 Fence retirement is not output correctness. An old image hash is not evidence
 for the current source head.
 
+## Conformance ladder
+
+The Vulkan 1.0 conformance surface is finite and machine-checked.
+`tests/r3v_vulkan10_requirement_inventory.py` generates the registry
+inventory and closes the advertised extension dependencies at core 1.0;
+`tests/r3v_advertised_surface_deqp_binding.tsv` binds every advertised
+extension, granted feature bit, receipt-bound limit, and format-feature
+row to the registered test that exercises its executing route and to the
+exact dEQP-VK mustpass group that judges it, so a bit without a binding
+row fails the build.  `apiVersion` stays 1.0 and advertises exactly what
+those bindings prove; 1.1 and later are new campaigns with their own
+evidence, never a string edit.
+
+`tests/r3v_conformance_runner.py` runs a caselist against the ICD and
+seals an identity receipt: source SHA and cleanliness, Meson options,
+ICD manifest and DSO digest, dEQP binary digest and CTS release, kernel
+release and radeon module srcversion, packages, GPU PCI identity, boot
+id, the driver-visible environment, the case list, per-case status,
+dmesg delta, timeouts, and the finite verdict.  The evidence class is
+derived from the run (a preloaded drm-shim is host-model; only an
+unpreloaded run on the RS4xx render node is silicon), NotSupported never
+counts as a pass, and every non-pass classifies against
+`tests/r3v_conformance_nonpass_ledger.tsv`, most-specific row first; a
+status the ledger does not name blocks the run as unclassified.  The
+runner calibrates on fake-dEQP fixtures for pass, mixed, truncated,
+timeout, crash, device-loss, framework-abort, wrong-ICD, and
+dmesg-hazard runs.
+
+`tests/r3v_conformance_slices.tsv` orders the mustpass groups by hazard:
+info and api slices run on the host model, and command, transfer, draw,
+synchronization, robustness, and WSI slices carry a submission or display
+hazard and run on silicon only.  dEQP's default context requires a
+GRAPHICS|COMPUTE queue and aborts on the graphics-only family, so every
+run sets the exact compute-queue opt-in and the receipt records it.
+
 ## Conformance contract
 
 The ICD must not be advertised as conformant Vulkan until:
