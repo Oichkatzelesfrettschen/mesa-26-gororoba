@@ -412,6 +412,46 @@ and `libgcc_eh.a`, which the bundle records under `startfiles`.
 level the note carried; `verify` on any other CPU refuses the stripped
 bundle by `/proc/cpuinfo`.
 
+`tests/r3v_cs_ioctl_trace.py` is the independent witness that a slice
+run issued no command submission.  `trace -- <argv>` runs the command
+under `strace -f -qq -e raw=ioctl -e trace=ioctl` and counts ioctls by
+request number, sealing `{cs_ioctls, gem_info_ioctls, total_ioctls,
+strace_sha256, argv}` into a JSON summary beside the tracee's own exit
+status, the complete `ioctls_by_request` census, and the four-request
+`gem_info_requests` allowlist the named GEM and INFO counter keys on.
+The request number derives from the headers rather than from a name
+strace happens to print -- `_IOWR('d', DRM_COMMAND_BASE 0x40 +
+DRM_RADEON_CS 0x26, struct drm_radeon_cs)` is `0xc0206466`, and
+`derivation` prints the same construction for GEM_CREATE, GEM_MMAP,
+GEM_WAIT_IDLE, and INFO -- because strace resolves a request several
+drivers share into an ambiguous alternation and `raw=ioctl` is what
+makes the bare number the thing counted.
+
+A count is a verdict only when the run behind it happened, so the tool
+refuses a `cs_ioctls` other than exactly `--expect-cs`, a tracee that
+exited nonzero, a trace holding no ioctl at all, an ioctl line the
+parser could not read, and an `LD_PRELOAD` interposer that answers in
+the tracee's address space; `--allow-tracee-failure`, `--allow-empty`,
+and `--allow-preload` open each of the last three by name, and the
+summary lists every refusal it raised.  A run that never executed
+therefore refuses on both its exit status and its empty log rather than
+sealing the digest of an empty file as a witnessed zero.
+
+The witness stops at the syscall boundary.  The radeon drm-shim answers
+the whole radeon request set inside the tracee's address space, so a
+shim run performs no DRM ioctl syscall and this tool reports zero for a
+submitting arm whose own transport-table counter reports one; every
+syscall-boundary instrument shares that blindness, and a counter ahead
+of the shim in the preload order is what witnesses an absorbed call.
+`selftest` calibrates the parser on emitters issuing a known count of
+real CS-numbered and GEM-numbered syscalls, drives each refusal through
+the real trace path against a run that trips exactly it, and pins both
+shim arms of `r3v_native_submit_order_harness` at a syscall-visible
+zero, which is the property that holds the scope of the verdict.  On the
+host model the zero states that nothing reached the kernel; on silicon,
+where every submission is a real syscall, the same zero states that no
+submission happened, which is what the hazard-free slices must show.
+
 ## Conformance contract
 
 The ICD must not be advertised as conformant Vulkan until:
