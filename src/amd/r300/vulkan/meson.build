@@ -1932,6 +1932,47 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  # The memory-model matrix: transport-injected allocation and map
+  # refusals unwind to the exact Vulkan error and succeed once lifted,
+  # mapped-range validation admits partial and empty ranges and refuses
+  # out-of-range and wrap-shaped sizes, bind admission proves the
+  # once-per-buffer aligned type-0 contract and admits aliasing windows,
+  # and the budget arm holds the reported table to the platform-ceiling
+  # contract, the zero commitment, the 64-byte noncoherent atom, and the
+  # never-dedicated requirement.  The known-bad arm asserts an admitted
+  # out-of-range flush, so the range validation must fail it.
+  r3v_native_memory_model_harness = executable(
+    'r3v_native_memory_model_harness',
+    files('tests/r3v_native_memory_model_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach memory_arm : ['alloc-refused', 'map-refused', 'mapped-ranges',
+                        'bind-admission', 'budget-contract']
+    test(
+      'r3v-native-memory-model-@0@'.format(memory_arm),
+      r3v_native_memory_model_harness,
+      args : [memory_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  test(
+    'r3v-native-memory-model-known-bad-range-admits',
+    r3v_native_memory_model_harness,
+    args : ['known-bad-range-admits'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    should_fail : true,
+    suite : ['r3v'],
+  )
   # The identity verb's GPU route under the compute gate and the verb's
   # gate: the composed carrier pass against its pin, the shim's empty
   # delivery quarantining on the oracle divergence, and the named
