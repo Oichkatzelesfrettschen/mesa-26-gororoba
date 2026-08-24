@@ -43,6 +43,12 @@
  * the 16-bit vertex count and index bound). */
 #define R3V_NATIVE_MAX_DRAW_INSTANCES 21845u
 
+/* VkPhysicalDeviceLimits::minTexelBufferOffsetAlignment; the buffer-view
+ * offset admission below enforces the same bound the physical device
+ * publishes.
+ */
+#define R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT 16u
+
 /* The result every native refusal returns.  Each command's registry entry
  * fixes the results it may return, and VK_ERROR_UNKNOWN is the one error the
  * whole native refusal set shares: the other universal member,
@@ -734,6 +740,23 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_memory, vk.base, VkDeviceMemory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
+
+/* A buffer view over the admitted texel table
+ * (r3v_native_transfer_texel_bytes): the view is a recorded object with
+ * no executing route past creation and destruction, so it carries the
+ * validated offset and range alone, in texel-table bytes, for a
+ * future descriptor-binding route to read.
+ */
+struct r3v_native_buffer_view {
+   struct vk_object_base base;
+   struct r3v_native_buffer *buffer;
+   VkFormat format;
+   VkDeviceSize offset;
+   VkDeviceSize range;
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer_view, base, VkBufferView,
+                               VK_OBJECT_TYPE_BUFFER_VIEW)
 
 /* The public recording surface's qualified render-target family:
  * B8G8R8A8_UNORM linear 2D color attachments at any extent inside the

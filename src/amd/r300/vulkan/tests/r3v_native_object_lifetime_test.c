@@ -3,9 +3,9 @@
  *
  * Native R3V object-lifetime fixture: sampler creation as recorded
  * state with its use refused at the descriptor write, buffer-view
- * refusal under the advertised format table, and the once-only
- * host-visible memory-binding admission for buffers and images under
- * the drm-shim transport.
+ * admission and refusal under the advertised texel-buffer format
+ * table, and the once-only host-visible memory-binding admission for
+ * buffers and images under the drm-shim transport.
  */
 
 #include "r3v_native_reference_spirv.h"
@@ -103,8 +103,14 @@ check_sampler_lifetime(const struct fixture *f)
    return 0;
 }
 
+/* VK_FORMAT_R32_SFLOAT carries VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT alone
+ * (r3v_get_format_properties), so a view over it refuses whatever the
+ * buffer's own usage bits are; VK_FORMAT_R32_UINT sits in the texel
+ * table r3v_native_transfer_texel_bytes names and carries both
+ * texel-buffer bits, so a view over it constructs.
+ */
 static int
-check_buffer_view_refusal(const struct fixture *f)
+check_buffer_view_lifetime(const struct fixture *f)
 {
    const VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -117,7 +123,7 @@ check_buffer_view_refusal(const struct fixture *f)
               VK_SUCCESS,
            "texel-usage buffer object creation");
 
-   const VkBufferViewCreateInfo view_info = {
+   const VkBufferViewCreateInfo unadmitted_format = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
       .buffer = buffer,
       .format = VK_FORMAT_R32_SFLOAT,
@@ -125,12 +131,67 @@ check_buffer_view_refusal(const struct fixture *f)
       .range = VK_WHOLE_SIZE,
    };
    VkBufferView view = (VkBufferView)(uintptr_t)0xdeadbeef;
-   CHECK(vkCreateBufferView(f->device, &view_info, NULL, &view) !=
+   CHECK(vkCreateBufferView(f->device, &unadmitted_format, NULL, &view) !=
             VK_SUCCESS &&
          view == VK_NULL_HANDLE,
-         "buffer-view creation refuses with a cleared handle: no format "
-         "advertises texel-buffer features");
+         "buffer-view creation over an unadmitted format refuses with a "
+         "cleared handle: R32_SFLOAT advertises no texel-buffer feature");
    vkDestroyBufferView(f->device, VK_NULL_HANDLE, NULL);
+
+   const VkBufferViewCreateInfo whole_size = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView whole_size_view = VK_NULL_HANDLE;
+   CHECK(vkCreateBufferView(f->device, &whole_size, NULL,
+                            &whole_size_view) == VK_SUCCESS &&
+            whole_size_view != VK_NULL_HANDLE,
+         "buffer-view creation over the admitted texel table constructs: "
+         "R32_UINT VK_WHOLE_SIZE from offset 0");
+   vkDestroyBufferView(f->device, whole_size_view, NULL);
+
+   /* 16 is minTexelBufferOffsetAlignment (r3v_physical_device_init_limits);
+    * a loader-level fixture has no internal header to name the driver's
+    * own macro, so the aligned and misaligned offsets below are the
+    * literal value and one that is not a multiple of it.
+    */
+   const VkBufferViewCreateInfo explicit_range = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 16,
+      .range = 64,
+   };
+   VkBufferView explicit_range_view = VK_NULL_HANDLE;
+   CHECK(vkCreateBufferView(f->device, &explicit_range, NULL,
+                            &explicit_range_view) == VK_SUCCESS &&
+            explicit_range_view != VK_NULL_HANDLE,
+         "buffer-view creation admits an aligned offset with an "
+         "explicit range a multiple of the texel size");
+   vkDestroyBufferView(f->device, explicit_range_view, NULL);
+
+   /* Calibration: an offset that is not a multiple of
+    * minTexelBufferOffsetAlignment (16) is the known-bad input; a driver
+    * that admitted it here would pass a view an application cannot
+    * legally present, and this assertion is what catches that defect.
+    */
+   const VkBufferViewCreateInfo misaligned_offset = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buffer,
+      .format = VK_FORMAT_R32_UINT,
+      .offset = 4,
+      .range = VK_WHOLE_SIZE,
+   };
+   VkBufferView misaligned_view = (VkBufferView)(uintptr_t)0xdeadbeef;
+   CHECK(vkCreateBufferView(f->device, &misaligned_offset, NULL,
+                            &misaligned_view) != VK_SUCCESS &&
+            misaligned_view == VK_NULL_HANDLE,
+         "known-bad: a misaligned offset (4, not a multiple of 16) "
+         "refuses with a cleared handle rather than admitting");
+
    vkDestroyBuffer(f->device, buffer, NULL);
    return 0;
 }
@@ -864,7 +925,7 @@ main(int argc, char **argv)
       return 1;
 
    int fatal = check_sampler_lifetime(&f) ||
-               check_buffer_view_refusal(&f) ||
+               check_buffer_view_lifetime(&f) ||
                check_buffer_binding(&f) ||
                check_image_binding(&f) ||
                check_sampler_use_fail_closed(&f) ||

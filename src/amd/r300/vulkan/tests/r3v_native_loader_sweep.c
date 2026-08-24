@@ -317,8 +317,11 @@ call_create_descriptor_set_layout(void)
    return (result != VK_SUCCESS && layout == VK_NULL_HANDLE) ? 0 : 1;
 }
 
-/* vkCreateBuffer executes natively, so a real VkBuffer is available and the
- * buffer-view creation that consumes it runs on valid input.
+/* vkCreateBuffer executes natively, so a real VkBuffer is available.
+ * R8G8B8A8_UNORM sits in the transfer-image texel table
+ * r3v_native_transfer_texel_bytes names, and r3v_get_format_properties
+ * grants that table's formats both texel-buffer feature bits, so a view
+ * over it constructs.
  */
 static int
 call_create_buffer_view(void)
@@ -336,7 +339,7 @@ call_create_buffer_view(void)
    if (result != VK_SUCCESS || buffer == VK_NULL_HANDLE)
       return 1;
 
-   VkBufferView view = (VkBufferView)(uintptr_t)0x1;
+   VkBufferView view = VK_NULL_HANDLE;
    result = vkCreateBufferView(
       device,
       &(VkBufferViewCreateInfo){
@@ -347,7 +350,8 @@ call_create_buffer_view(void)
          .range = VK_WHOLE_SIZE,
       },
       NULL, &view);
-   const int rc = (result != VK_SUCCESS && view == VK_NULL_HANDLE) ? 0 : 1;
+   const int rc = (result == VK_SUCCESS && view != VK_NULL_HANDLE) ? 0 : 1;
+   vkDestroyBufferView(device, view, NULL);
    vkDestroyBuffer(device, buffer, NULL);
    return rc;
 }
@@ -803,7 +807,8 @@ main(void)
    in_child("vkCreateDescriptorSetLayout admits every core type and "
             "refuses outside them",
             call_create_descriptor_set_layout);
-   in_child("vkCreateBufferView refuses over a live buffer",
+   in_child("vkCreateBufferView admits an admitted-table format over a "
+            "live buffer",
             call_create_buffer_view);
    in_child("vkDestroy* over the null handle", call_destroy_image_null);
    in_child("vkUpdateDescriptorSets over zero writes",
