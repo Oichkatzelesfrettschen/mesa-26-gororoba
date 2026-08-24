@@ -123,7 +123,7 @@ r3v_instance_init(struct r3v_instance *const instance,
    instance->vk.physical_devices.try_create_for_drm = r3v_physical_device_try_create_for_drm;
    instance->vk.physical_devices.destroy = r3v_physical_device_destroy;
 
-   instance->debug_flags = parse_debug_string(r3v_getenv_compat("R3V_DEBUG", "R300VK_DEBUG"), r3v_debug_options);
+   instance->debug_flags = parse_debug_string(getenv("R3V_DEBUG"), r3v_debug_options);
 
    if (instance->debug_flags & R3V_DEBUG_STARTUP)
       fputs("r3v: info: Created an instance.\n", stderr);

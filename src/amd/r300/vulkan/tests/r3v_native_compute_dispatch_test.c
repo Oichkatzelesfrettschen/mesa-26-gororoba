@@ -90,7 +90,6 @@ static int
 gate_off_leg(void)
 {
    unsetenv("R3V_HYBRID_COMPUTE_EXPERIMENTAL");
-   unsetenv("R300VK_HYBRID_COMPUTE_EXPERIMENTAL");
 
    VkInstance instance;
    VkPhysicalDevice pdev;

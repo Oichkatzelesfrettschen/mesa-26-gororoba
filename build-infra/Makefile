@@ -1425,20 +1425,7 @@ artifact-check: source-root-check vostro-prefix-check
 		printf '%s\n' "$$artifact_rows" >&2; \
 		exit 2; \
 	fi; \
-	printf '%s\n' "$$artifact_rows" | sort; \
-	if ! stale="$$(find "$(PREFIX)" -maxdepth 6 -type f \
-		\( -name "libvulkan_r300.so" -o -name "r300_icd*.json" -o \
-		   -name "r300_devenv_icd*.json" \) 2>&1)"; then \
-		echo "FAIL  stale-artifact scan could not read PREFIX: $(PREFIX)" >&2; \
-		printf '%s\n' "$$stale" >&2; \
-		exit 2; \
-	fi; \
-	stale="$$(printf '%s\n' "$$stale" | sort)"; \
-	if [ -n "$$stale" ]; then \
-		echo "WARN  stale pre-rename r300 Vulkan ICD artifacts still under $(PREFIX):" >&2; \
-		echo "$$stale" | sed 's/^/WARN    /' >&2; \
-		echo "WARN  Meson install does not remove absent files; the Vulkan loader still scans icd.d/*.json" >&2; \
-	fi
+	printf '%s\n' "$$artifact_rows" | sort
 
 test: source-root-check
 	@$(call CHECK_LAYOUT,test); \

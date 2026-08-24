@@ -40,7 +40,7 @@
 static bool
 r3v_hybrid_compute_enabled(void)
 {
-   const char *gate = r3v_getenv_compat(R3V_HYBRID_COMPUTE_ENV, "R300VK_HYBRID_COMPUTE_EXPERIMENTAL");
+   const char *gate = getenv(R3V_HYBRID_COMPUTE_ENV);
    return gate && strcmp(gate, R3V_HYBRID_COMPUTE_ENV_VALUE) == 0;
 }
 
@@ -431,7 +431,7 @@ r3v_init_wsi(struct r3v_physical_device *device)
     * the export substrate provides -- the contract the GL oracle measured.
     * R3V_WSI_SW=1 falls back to the xcb-shm CPU copy, the proven
     * bring-up baseline. */
-   const char *wsi_sw_env = r3v_getenv_compat("R3V_WSI_SW", "R300VK_WSI_SW");
+   const char *wsi_sw_env = getenv("R3V_WSI_SW");
    const bool wsi_sw = wsi_sw_env && wsi_sw_env[0] == '1';
    VkResult result =
       wsi_device_init(&device->wsi_device,
