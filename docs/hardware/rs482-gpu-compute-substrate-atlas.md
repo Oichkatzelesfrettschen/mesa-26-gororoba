@@ -131,7 +131,8 @@ which splits the family gates in `r300_packet0_check` two ways.
 
 - Excluded by `>= CHIP_RV515`: `VAP_ALT_NUM_VERTICES` 0x2088 is rejected, color
   buffer format code 5 is rejected, and `TX_FORMAT2` bit 14 (`TXFORMAT_MSB`,
-  carrying width_11/height_11 and ATI1N) is rejected outright. `SC_SCISSOR1`
+  which signals ATI1N above the threshold) is rejected outright, while bits 15
+  and 16 carry width_11 and height_11 and are decoded only above it. `SC_SCISSOR1`
   additionally subtracts 1440 when deriving `maxy` below that threshold, and
   `r100_cs_track_texture_check` withholds the extra high width and height bits.
 - Admitted because RS480 clears the lower thresholds: `R300_TX_FORMAT_ATI2N`
@@ -176,8 +177,13 @@ for any `DATA_TYPE` in `FLOAT_1..FLOAT_4`, and XY01 `0xFB08`, accepted only with
 `DATA_TYPE = FLOAT_2`, where 2 fetched dwords deliver 4 lanes through a
 synthesized Z=0 and W=1. Delivered below required is a **reject**; an underfeed
 on a non-identity list is a reject; an overfeed is a decline; every unmodeled
-selector, a nonzero `SKIP_DWORDS`, a duplicate destination location, and an
-identity element with `DATA_TYPE` above 3 decline rather than reject. A compute
+selector, a nonzero `SKIP_DWORDS`, and a duplicate destination location decline
+rather than reject. An identity element with `DATA_TYPE` above 3 behaves
+differently: it clears the checker's width-known flag without recording a
+decline reason, and the width-unknowable decline fires only for a list that also
+contains a non-identity element. A pure-identity list therefore stays in scope,
+takes `delivered` and `fetch` from `VAP_VTX_SIZE` outright, and resolves on
+`VAP_VTX_SIZE` against the required tuple width. A compute
 route that carries results back through the vertex path designs inside those two
 selector patterns or it is unmodeled by the checker that protects it.
 
@@ -240,7 +246,7 @@ domain is marked outside native compute.
 24-bit `MAX_INDX`, `VAP_CNTL_STATUS` bit 8 is `TCL_BYPASS`, and the eight
 `VAP_PROG_STREAM_CNTL` registers carry per-element `DATA_TYPE`, `SKIP_DWORDS`,
 `DST_VEC_LOC`, `LAST_VEC`, `SIGNED`, and `NORMALIZE` (steinmarder
-`rs482_canonical_register_reference.md`; known(source)). Five registers are
+`rs482_canonical_register_reference.md`; known(source)). Four VAP registers are
 validated as CS-writable on the R2VB substrate: `VAP_VTE_CNTL` 0x20b0,
 `VAP_VTX_SIZE` 0x20b4, `VAP_VF_MAX_VTX_INDX` 0x2134, and `VAP_CLIP_CNTL` 0x221c
 with `CLIP_DISABLE` (steinmarder
@@ -269,9 +275,10 @@ per-fragment linear-blend unit reachable without an ALU instruction (steinmarder
 interpolator's fractional bit width is uncharacterized, so no exactness bound
 attaches to an interpolated value and an integer-cast falsifier remains open.
 Routing is set by `RS_INST_COUNT` 0x4304, `RS_IP_0..7` 0x4310-0x432C, and
-`RS_INST_0..` 0x4330, with swizzle selects X=0, Y=1, Z=2, W=3, `FP_ZERO`=4, and
-`FP_ONE`=5--the two constant selects give a compute kernel an operand-free
-zero and one (steinmarder `r300_raster_backend_state.tsv`; known(source)). The
+`RS_INST_0..` 0x4330 (`r300_reg.h:R300_RS_INST_COUNT`; known(source)), with
+swizzle selects X=0, Y=1, Z=2, W=3, `FP_ZERO`=4, and `FP_ONE`=5--the two
+constant selects give a compute kernel an operand-free zero and one (steinmarder
+`r300_raster_backend_state.tsv`; known(source)). The
 fragment stage accepts at most 10 inputs.
 
 Scissor, point size, and line width act as coverage masks rather than
@@ -286,13 +293,18 @@ field's own range in subpixel units.
 ## TX: the sampler
 
 The sampler is a typed random-access gather with one arithmetic function: a
-rank-1 bilinear outer product. Weights resolve to at least 6 bits--a sweep of
-the inter-texel span of a 0..255 ramp produced 65 distinct levels, so about 64
-weight steps--and corner taps round half-up as `(a + b + c + d + 2) >> 2`,
-exact in 27 of 27 cases (steinmarder
+rank-1 bilinear outer product. Weights resolve to at least 6 bits: a 64-wide
+0-to-1 weight sweep across a two-texel span read 64 distinct monotone levels,
+where a 4-bit weight would resolve at most 16 (steinmarder
 `2026-05-28-rs482-tx-bilinear-filter-weight-resolution-and-float-payload.md`;
-silicon). Float payloads are point-sampled rather than filtered on this chip
-(same finding; silicon), so an FP16 or FP32 texture gives a compute kernel exact
+silicon). The filter's UNORM8 conversion rounds half-up, matching 27 of 27
+measured lattice points against 9 for truncation and 22 for round-half-even, so
+the admissible integer kernel shape for a quarter sum is exactly
+`(a + b + c + d + 2) >> 2` (steinmarder
+`2026-06-12-rs482-log4-rounding-byteseq-calibration.md`; silicon). Float
+payloads are point-sampled rather than filtered on this chip
+(the bilinear weight finding; silicon), so an FP16 or FP32 texture gives a
+compute kernel exact
 texel delivery and no interpolation. `LOG4_BILINEAR_REDUCE` in the catalog uses
 one linear corner tap as a 2x2 sum-over-4, exact when the sum is divisible by 4
 under the UNORM8 carrier and quantized within one byte otherwise
@@ -406,9 +418,16 @@ width exceeding the FP24 window (steinmarder
 
 Dot products carry named exact domains
 (`r300_numeric_domain.c`; silicon): `U7_DOT`, unsigned 7-bit operands with
-`4 * 127^2 = 64516 < 2^17`, confirmed 6/6 on RS482 plus a 4/4 byte-exact Vulkan
-readback; `I8_MAG_DOT`, signed 8-bit magnitudes under the same bound, confirmed
-in the same probe including signed cancellation; `U7_CONV5`, a five-term 7-bit
+`4 * 127^2 = 64516 < 2^17`, hardware-confirmed with a 6/6 exact GL probe
+including the 64516 boundary and a 4/4 exact Vulkan readback (steinmarder
+`2026-06-05-rs482-low-precision-dp4-exactness.md`, bundle
+`rs482_dp4_uint7_int8_exactness_20260605`, and
+`2026-06-10-rs480-fourteen-carrier-algebras-falsification-decomposition.md`;
+silicon). `I8_MAG_DOT` puts signed 8-bit magnitudes under the same bound, and its
+arithmetic exactness follows from that bound by extension; the catalog holds it
+at carrier-pending because Mesa needs a signed byte carrier before dispatch
+readback can route it (`r300_numeric_domain.c` `DP4_INT8_SIGNED_CARRIER_PENDING`;
+known(source), theorem proven and dispatch unbuilt). `U7_CONV5`, a five-term 7-bit
 convolution column with `5 * 127^2 = 80645 < 2^17`, which is what makes a
 32-by-32-to-64-bit multiply exact when split into five 7-bit limbs, confirmed
 with `0xFFFFFFFF` squared bit-exact and a 1024/1024 exact Vulkan replay. The die
@@ -474,9 +493,10 @@ The blend unit is a read-modify-write reduction whose combine function is
 selected by `RB3D_BLENDCNTL` `COMB_FCN` bits 12-13 and whose operands come from
 `SRC_BLEND` bits 16-21 and `DST_BLEND` bits 24-29. Combine codes are
 `ADD_CLAMP` 0, `ADD_NOCLAMP` 1, `SUB_CLAMP` 2, `SUB_NOCLAMP` 3, `MIN` 4, `MAX`
-5, `RSUB_CLAMP` 6, and `RSUB_NOCLAMP` 7; factor codes include `GL_ZERO` 32,
-`GL_ONE` 33, `SRC_COLOR` 34, and `DST_COLOR` 36 (steinmarder
-`r300_output_op_encoding.tsv`; known(source)). Arithmetic is on the render
+5, `RSUB_CLAMP` 6, and `RSUB_NOCLAMP` 7 (steinmarder
+`r300_output_op_encoding.tsv`; known(source)); factor codes include `GL_ZERO` 32,
+`GL_ONE` 33, `SRC_COLOR` 34, and `DST_COLOR` 36
+(`r300_reg.h:R300_BLEND_GL_ZERO` and its neighbors; known(source)). Arithmetic is on the render
 target's format range, clamped or wrapped per format, so the domain's rounding
 model is clamp rather than an FP24 rule--the blend unit is a separate
 reduction stage downstream of the ALU, not an ALU operation
@@ -536,8 +556,13 @@ silicon). The 128-bit `ARGB32323232` path is validated as transport, and no FP32
 arithmetic identity is claimed for it; FP32 render targets are absent, the FP32
 color framebuffer reports incomplete, and `EXT_color_buffer_float` is not
 exposed, so an FP32 result leaves through a byte-encoded carrier
-(`r300_numeric_domain.c` FP32_STORAGE domain; silicon). CMASK is **refuted** on
-R3xx (steinmarder `rs482-rb3d-zb.4.md`).
+(`r300_numeric_domain.c` FP32_STORAGE domain; silicon). CMASK-like AA
+compression reads live-positive in the r300 debug output and its materialization
+is an open item rather than a closed one (steinmarder `rs482-rb3d-zb.4.md`;
+observation, open). What restricts it here is the driver and kernel layer:
+`r300.c:r300_packet0_check` rejects `RB3D_CCTL` `CMASK_ENABLE` unless the
+submitter owns cmask, and the family capability table sets `has_cmask` false for
+RS480 (steinmarder `r300_chip_family_caps.tsv`; known(source)).
 
 Publication runs through the destination cache control register.
 `RB3D_DSTCACHE_CTLSTAT` 0x4e4c reads `0x00000002` at rest and is read-safe only
@@ -692,7 +717,7 @@ splitting into limbs a unit does hold, rather than by a native datapath.
 |---|---|---|---|---|---|---|---|---|
 | int/uint 1 | `DATA_TYPE` decode into a 0/1 float, exact, known(source) | LUT texel, exact, known(source) | CMP/CND select on a 0/1 value, exact, silicon | affine blend of 0/1 is not boolean, none | MIN and MAX are silicon-confirmed reductions; reading them as AND and OR on 0/1 payloads is unprobed, hypothesized | any of 16 ops on the low bit; XOR silicon, rest hypothesized | stencil compare and `KIL` predicate, exact, silicon | `R2VB_BOOL1`, exact, known(source) |
 | int/uint 4 | packed in a wider element, exact, known(source) | `Y4X4` and `W4Z4Y4X4` texels, exact, known(source) | exact inside the FP24 window, silicon | none | `C2_4` target range, clamped, known(source) | nibble lanes of the target word, XOR silicon | none | packed inside the SINT/UINT carry, exact, known(source) |
-| int/uint 8 | `BYTE` and `D3DCOLOR` with signed and normalize flags, exact, known(source) | UNORM8 texels bilerped at 6-bit weight, biased rounding, silicon | exact inside the FP24 window; DP4 exact to the 7-bit limb (`U7_DOT`, `I8_MAG_DOT`), 8-bit 4-term dots go off-grid above 2^17, silicon | affine MAC, width uncharacterized, hypothesized | ADD, SUB clamp, MIN, MAX on the 8-bit target range, silicon | full-word logic on 8-bit channels; XOR silicon, rest hypothesized | 8-bit stencil automaton; INCR silicon, INVERT and DECR and wrap hypothesized | inside the SINT/UINT carry, exact, known(source) |
+| int/uint 8 | `BYTE` and `D3DCOLOR` with signed and normalize flags, exact, known(source) | UNORM8 texels bilerped at 6-bit weight, biased rounding, silicon | exact inside the FP24 window; DP4 exact to the 7-bit limb, `U7_DOT` silicon and `I8_MAG_DOT` carrier-pending; 8-bit 4-term dots go off-grid above 2^17, silicon | affine MAC, width uncharacterized, hypothesized | ADD, SUB clamp, MIN, MAX on the 8-bit target range, silicon | full-word logic on 8-bit channels; XOR silicon, rest hypothesized | 8-bit stencil automaton; INCR silicon, INVERT and DECR and wrap hypothesized | inside the SINT/UINT carry, exact, known(source) |
 | int/uint 16 | `SHORT_2` and `SHORT_4`, exact, known(source) | `X16` and `Y16X16` texels, exact, known(source) | exact inside the FP24 window; `Q16_16` two-limb add exact since `2*(2^16-1)+1 < 2^17`, carrier pending; the base-16 MAC path is silicon | none | 10-bit-per-channel integer target ceiling bounds it, known(source) | `C_11_11_10` and `C_2_10_10_10` channel widths, XOR silicon | none | inside the SINT/UINT carry to 131072, exact, known(source) |
 | int/uint 24 | packed in a 32-bit element, exact, known(source) | `Z11Y11X10` and `W2Z10Y10X10` approximate it, known(source) | above the exact window; composition through 7-bit limbs, silicon | none | none | 24 bits of the target word, XOR silicon | none | exceeds the 131072 carry bound, declines, known(source) |
 | int/uint 32 | `FLOAT_4` word transport, exact, silicon | `FL_I32` and `FL_R32G32B32A32` texels, exact, silicon | composition: five 7-bit limbs through `U7_CONV5`, `MULTILIMB7_U32_MUL` bit-exact for `0xFFFFFFFF` squared, silicon | none | none | 32-bit target word; XOR silicon, rest hypothesized | none | word transported through FP32x4, exact, silicon; typed carry declines above 131072 |
@@ -713,8 +738,9 @@ splitting into limbs a unit does hold, rather than by a native datapath.
 
 One distinction governs the whole table. A row's **operation** carries a silicon
 witness in the catalog whenever its status is hardware-confirmed; the row's **GPU
-route** is a dispatchable path under an exact gate, and thirteen of fifteen rows
-have no such route built. Absent route with a confirmed operation means the
+route** is a dispatchable path under an exact gate, and fourteen of fifteen rows
+have no such route built: `IDENTITY_MAP` alone runs both routes, and
+`BITWISE_NOT_MAP` runs its CPU route with its GPU route absent. Absent route with a confirmed operation means the
 arithmetic is proven and the plumbing is not, which is precisely what this atlas
 exists to unblock. `r300_compute_verb.c:r300_compute_verb_queue_conformant`
 therefore returns false against the full table, and only a gated claim can pass.
@@ -784,7 +810,7 @@ Ordered by what unblocks the most verb routes.
   `INDX_BUFFER`**: the kernel admits all three and the even-key table names none,
   so the decode is incomplete in a way that touches the packets the R2VB route
   depends on.
-- **VAP `FLOAT_8` and FLT16 ingestion**, currently blocked by Draw
+- **VAP `FLOAT_8` and FLT16 ingestion**, blocked by Draw
   normalization; widening the ingest morphism widens every carrier source format.
 - **Per-PTE against global GART snoop precedence**, which decides whether a host
   read of device output needs an explicit invalidate.
