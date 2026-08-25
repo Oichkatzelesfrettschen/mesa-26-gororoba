@@ -32,12 +32,27 @@ a dEQP framework abort with no case reported is
 `dmesg_hazard`; a DSO or source SHA other than the expected one refuses
 before launch.
 
+`--process-per-case` runs each case of the shard in its own dEQP
+process, sequentially, under the shard `--timeout` with `--case-timeout`
+as each process's own deadline.  The plan mechanism claims capture once
+per process and binds replay once per process, while dEQP creates one
+VkDevice per case inside one process, so a shard reaches plan capture
+and plan replay exactly when one case owns one process.  A declared
+`--env` value carries `{case}`, `{index}`, and `{nonce}`, which each
+case resolves before its process starts, giving that case its own
+transcript, plan, and session nonce; `{nonce}` resolves through the
+`--plan-nonce-file` TSV of case and 32 hex digits.  The result stays one
+shard receipt under one seal, one partition binding, and one journal
+cursor, with each case's status taken from its own process's log, its
+own artifacts digested under `cases/<case>/`, and its exit code, session
+closure, resolved values, and resolved-path presence recorded per case.
+
 Usage:
   r3v_conformance_runner.py run --deqp-binary BIN --icd MANIFEST \
       --caselist FILE --out DIR [--source-root DIR] [--build-root DIR] \
       [--expect-source-sha HEX] [--expect-dso-sha256 HEX] \
       [--timeout SEC] [--nonpass-ledger TSV] [--dmesg-command CMD] \
-      [--env KEY=VALUE]...
+      [--env KEY=VALUE]... [--process-per-case] [--plan-nonce-file TSV]
   r3v_conformance_runner.py verify-receipt --receipt receipt.json
   r3v_conformance_runner.py check-ledgers --nonpass-ledger TSV --slices TSV
   r3v_conformance_runner.py run ... --partition-manifest partition_manifest.json
@@ -97,6 +112,16 @@ DMESG_HAZARD_PATTERNS = [
 RS4XX_PCI_DEVICES = {"0x5954", "0x5955", "0x5974", "0x5975"}
 ARTIFACT_NAMES = ("run.qpa", "stdout.txt", "stderr.txt", "dmesg_delta.txt",
                   "caselist.txt", "runtime_event.json")
+# One process apiece puts each case's dEQP artifacts in that case's own
+# directory, and the shard keeps the artifacts the shard itself writes.
+CASE_ARTIFACT_NAMES = ("run.qpa", "stdout.txt", "stderr.txt", "caselist.txt")
+SHARD_ARTIFACT_NAMES = ("dmesg_delta.txt", "caselist.txt",
+                        "runtime_event.json")
+# A declared --env value carries these tokens, and each case resolves
+# them before its own process starts.
+ENV_CASE_TOKEN = re.compile(r"\{(case|index|nonce)\}")
+CASE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+PLAN_NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 LEDGER_HEADER = ["class", "status", "case_pattern", "detail_pattern",
                  "disposition", "authority", "witness"]
@@ -664,6 +689,202 @@ def read_caselist(path):
     return cases
 
 
+def sanitize_case_names(cases):
+    """The directory name each case's artifacts take: every character
+    outside the portable set becomes an underscore.  A collision
+    refuses, since two cases sharing one directory overwrite each
+    other's log, and the receipt seals the whole mapping so a reader
+    resolves a directory back to its case."""
+    mapping = {}
+    owner = {}
+    for case in cases:
+        name = CASE_NAME_UNSAFE.sub("_", case)
+        if name in owner:
+            raise RunnerRefusal(f"{case} and {owner[name]} both sanitize to "
+                                f"{name}; a shard holds one directory per "
+                                "case")
+        owner[name] = case
+        mapping[case] = name
+    return mapping
+
+
+def load_plan_nonces(path, cases):
+    """The per-case nonce a `{nonce}` token resolves through: a TSV of
+    case name and 32 lowercase hex digits, one row per case the shard
+    runs.  A nonce binds one plan to one replay session, so a shard
+    that resolves the token declares a nonce for every case it runs."""
+    nonces = {}
+    for n, line in enumerate(Path(path).read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        case, sep, nonce = line.partition("\t")
+        nonce = nonce.strip()
+        if not sep or not PLAN_NONCE_PATTERN.fullmatch(nonce):
+            raise RunnerRefusal(f"{path}:{n} is not a case name and 32 "
+                                "lowercase hex digits")
+        if case in nonces:
+            raise RunnerRefusal(f"{path}:{n} names {case} twice")
+        nonces[case] = nonce
+    if len(set(nonces.values())) != len(nonces):
+        raise RunnerRefusal(f"{path} reuses a nonce; one nonce binds one "
+                            "replay session, so two cases sharing one would "
+                            "let either plan bind the other's session")
+    missing = [c for c in cases if c not in nonces]
+    if missing:
+        raise RunnerRefusal(f"{path} declares no nonce for {len(missing)} "
+                            f"of the shard's cases, {missing[0]} first")
+    return nonces
+
+
+def templated_env_names(declared):
+    return [kv.partition("=")[0] for kv in declared or []
+            if ENV_CASE_TOKEN.search(kv.partition("=")[2])]
+
+
+def resolve_env_templates(declared, sanitized, index, width, nonce):
+    """The declared values this case resolves.  `{case}` takes the
+    sanitized case name, `{index}` the ordinal zero-padded to the width
+    of the shard's case count, and `{nonce}` the case's declared nonce,
+    so one declaration gives every case its own capture path, plan
+    file, and session nonce."""
+    resolved = {}
+    for kv in declared or []:
+        k, _, v = kv.partition("=")
+        if not ENV_CASE_TOKEN.search(v):
+            continue
+        resolved[k] = (v.replace("{case}", sanitized)
+                        .replace("{index}", f"{index:0{width}d}")
+                        .replace("{nonce}", nonce or ""))
+    return resolved
+
+
+def case_argv(args, caselist_file, log):
+    return [str(Path(args.deqp_binary).resolve()),
+            f"--deqp-caselist-file={caselist_file}",
+            f"--deqp-log-filename={log}",
+            "--deqp-watchdog=disable"] + (args.deqp_arg or [])
+
+
+def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
+    """Runs each case of the shard in its own dEQP process, in caselist
+    order, under the shard deadline with --case-timeout as each
+    process's own.  The plan mechanism claims capture once per process
+    and binds replay once per process, so a shard reaches capture and
+    replay exactly when one case owns one process; a case resolves its
+    declared `{case}`, `{index}`, and `{nonce}` values before its
+    process starts, which is what gives that case its own transcript,
+    plan, and session.  The shard deadline expiring mid-sequence leaves
+    the cases behind it not_run and names the shard's exit `timeout`.
+
+    The shard's session is the sequence of case processes: it closes
+    when every case ran to a reaped process, so one case's crash
+    classifies as that case's status and leaves the shard readable.
+
+    The kernel log is read after every case, and a hazard line stops the
+    sequence there: a lockup or a CS validation error makes every later
+    case's result a consequence of the first failure, so the shard names
+    the case the hazard followed and leaves the rest not_run."""
+    width = len(str(len(cases)))
+    results = {}
+    records = {}
+    unexpected = {}
+    session = {}
+    framework_abort = None
+    unknown_format = False
+    started = time.monotonic()
+    shard_exit = 0
+    argv = None
+    stop = None
+    for index, case in enumerate(cases, start=1):
+        remaining = args.timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            shard_exit = "timeout"
+            stop = {"after_case": cases[index - 2] if index > 1 else None,
+                    "index": index - 1,
+                    "reason": "shard deadline expired before this case"}
+            break
+        case_dir = out / "cases" / sanitized[case]
+        case_dir.mkdir(parents=True)
+        caselist_file = case_dir / "caselist.txt"
+        caselist_file.write_text(case + "\n")
+        log = case_dir / "run.qpa"
+        resolved = resolve_env_templates(args.env, sanitized[case], index,
+                                         width, nonces.get(case))
+        case_env = dict(env)
+        case_env.update(resolved)
+        # A resolved absolute path is a plan the case reads or a
+        # transcript it writes, so the receipt carries both whether it
+        # existed before the case ran and whether it exists after.  A
+        # case whose plan file is absent still runs: its device admits
+        # no submission, the case fails, and the receipt names why.
+        paths = {k: {"present_before": Path(v).exists()}
+                 for k, v in resolved.items() if v.startswith("/")}
+        argv = case_argv(args, caselist_file, log)
+        exit_code, _, stderr_text = supervise(
+            argv, Path(args.deqp_binary).resolve().parent, case_env, log,
+            case_dir / "stdout.txt", case_dir / "stderr.txt", remaining,
+            args.case_timeout)
+        for k, state in paths.items():
+            state["present_after"] = Path(resolved[k]).exists()
+        parsed = parse_qpa(log.read_text(errors="replace")) \
+            if log.is_file() else {"results": {}, "in_flight": None,
+                                   "session_closed": False, "session": {}}
+        if not session and parsed["session"]:
+            session = parsed["session"]
+        if parsed["session"].get("logFormatVersion") not in (None,
+                                                            QPA_LOG_FORMAT):
+            unknown_format = True
+        m = re.search(r"FATAL ERROR: [^\n]*", stderr_text)
+        if framework_abort is None and m:
+            framework_abort = m.group(0)
+        result = parsed["results"].get(case, {"status": "not_run",
+                                              "detail": ""})
+        unexpected.update({c: r for c, r in parsed["results"].items()
+                           if c != case})
+        # The single-case process leaves the case in flight exactly when
+        # its process died mid-case, so the shard classifies it the way
+        # the single-process runner classifies its in-flight case.
+        if parsed["in_flight"] == case:
+            if exit_code in ("timeout", "case_timeout"):
+                result = {"status": "timeout", "detail": ""}
+            elif isinstance(exit_code, int) and exit_code < 0:
+                result = {"status": "crash",
+                          "detail": f"signal {signal.Signals(-exit_code).name}"}
+            elif isinstance(exit_code, int) and exit_code != 0:
+                result = {"status": "crash", "detail": f"exit {exit_code}"}
+        results[case] = result
+        record = {"index": index, "directory": sanitized[case],
+                  "exit_code": exit_code,
+                  "session_closed": parsed["session_closed"]}
+        if resolved:
+            record["environment"] = resolved
+        if paths:
+            record["paths"] = paths
+        records[case] = record
+        # A kernel hazard ends the sequence where it appeared: the cases
+        # behind it would run on a wedged or reset GPU, so their results
+        # would describe the hazard rather than themselves.
+        hazard = hazard_probe()
+        if hazard:
+            stop = {"after_case": case, "index": index,
+                    "reason": "kernel hazard after this case",
+                    "hazard_lines": hazard}
+            break
+        # The shard's own deadline firing inside a case ends the shard;
+        # the case's deadline ends that case alone.
+        if exit_code == "timeout":
+            shard_exit = "timeout"
+            stop = {"after_case": case, "index": index,
+                    "reason": "shard deadline expired during this case"}
+            break
+    return {"results": results, "cases": records, "session": session,
+            "unexpected": unexpected,
+            "session_closed": len(records) == len(cases),
+            "framework_abort": framework_abort,
+            "unknown_format": unknown_format, "exit_code": shard_exit,
+            "argv": argv, "index_width": width, "stop": stop}
+
+
 def execute(args):
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
@@ -675,6 +896,21 @@ def execute(args):
         raise RunnerRefusal(f"{len(cases)} cases exceed the shard ceiling "
                             f"{args.max_cases}; regenerate the partition at "
                             "this ceiling")
+    # A `{case}` value names a per-case file, which one process apiece
+    # is what gives it; a token declared for a single-process shard
+    # would reach dEQP verbatim, so it refuses here.
+    templated = templated_env_names(args.env)
+    if templated and not args.process_per_case:
+        raise RunnerRefusal(f"--env {templated} carries a per-case token "
+                            "outside --process-per-case")
+    sanitized = sanitize_case_names(cases) if args.process_per_case else {}
+    wants_nonce = any("{nonce}" in kv.partition("=")[2]
+                      for kv in args.env or [])
+    if wants_nonce and not args.plan_nonce_file:
+        raise RunnerRefusal("--env declares {nonce} with no "
+                            "--plan-nonce-file to resolve it")
+    nonces = load_plan_nonces(args.plan_nonce_file, cases) \
+        if args.plan_nonce_file else {}
     partition, part_refusal = partition_identity(args.partition_manifest,
                                                  args.caselist)
     env, contaminating = build_environment(args.env, partition.get("hazard"))
@@ -688,6 +924,20 @@ def execute(args):
     queue_claim = queue_claim_identity(args.queue_report, env,
                                        args.expect_report_sha256)
     evidence, node = evidence_class(env, host, icd)
+    # A declared capture file on a submission-hazard slice under the
+    # drm-shim host model is a planning pass: it records the ordered
+    # submissions a later silicon replay binds to, and it states nothing
+    # about conformance, so it runs below the slice's required evidence
+    # and never reaches decision grade.  A capture session opens the CS
+    # ioctl with the hazard gate closed, which the host model alone
+    # answers, so the same declaration on silicon refuses.  On a
+    # hazard-free slice the declaration stays contamination, refused by
+    # name in build_environment.
+    capture_declared = any(kv.partition("=")[0] ==
+                           "R3V_NATIVE_PLAN_CAPTURE_FILE"
+                           for kv in args.env or [])
+    planning_pass = (capture_declared and evidence == "host-model" and
+                     partition.get("hazard") == "submission")
     receipt = {
         "receipt_version": RECEIPT_VERSION,
         "source": source_identity(args.source_root),
@@ -719,7 +969,13 @@ def execute(args):
         "timeouts": {"total_seconds": args.timeout,
                      "case_seconds": args.case_timeout},
         "max_cases": args.max_cases,
+        "process_per_case": bool(args.process_per_case),
+        "planning_pass": planning_pass,
     }
+    if args.process_per_case:
+        receipt["case_directories"] = sanitized
+        receipt["templated_env"] = templated
+        receipt["plan_nonce_file"] = args.plan_nonce_file
     refusal = part_refusal
     if refusal is None and contaminating:
         refusal = "gate_contamination"
@@ -738,8 +994,10 @@ def execute(args):
              runtime_event.get("sha256"))):
         if expected and expected != actual:
             refusal = refusal or f"wrong_{key.replace('_sha256', '')}"
+    if refusal is None and capture_declared and evidence == "silicon":
+        refusal = "capture_on_silicon"
     if refusal is None and partition.get("required_evidence") == "silicon" \
-            and evidence != "silicon":
+            and evidence != "silicon" and not planning_pass:
         refusal = "evidence_below_required"
     if refusal is None and partition.get("shard_max_cases") not in (
             None, args.max_cases):
@@ -761,7 +1019,14 @@ def execute(args):
         undeclared.append("runtime-event SHA-256")
     if not queue_claim["available"]:
         undeclared.append("queue-claim report")
-    if not src.get("available"):
+    # A planning pass carries its own reason ahead of the rest: it is
+    # never decision-grade whatever the source identity says, and the
+    # reason a reader needs is what the run is for.
+    if planning_pass:
+        grade, reason = False, ("planning pass captures transcripts on the "
+                                "host model and proves nothing about "
+                                "conformance")
+    elif not src.get("available"):
         grade, reason = False, "source identity unavailable"
     elif not src["clean"]:
         grade, reason = False, "source tree dirty"
@@ -781,20 +1046,59 @@ def execute(args):
               "session_closed": False, "session": {}}
     cursor = journal_cursor(args.journal_command)
     dmesg_before = None if cursor else read_dmesg(args.dmesg_command)
+
+    def hazard_probe():
+        """The hazard lines the kernel has logged since the shard's own
+        baseline, through whichever log source the run bound to."""
+        if cursor:
+            delta = journal_after(args.journal_command, cursor)
+        else:
+            delta, _ = dmesg_delta(dmesg_before,
+                                   read_dmesg(args.dmesg_command))
+        return hazard_lines(delta)
+
     log = out / "run.qpa"
     stderr_text = ""
+    artifact_names = list(ARTIFACT_NAMES)
     if refusal is None:
         caselist_file = out / "caselist.txt"
         caselist_file.write_text("\n".join(cases) + "\n")
-        argv = [str(Path(args.deqp_binary).resolve()),
-                f"--deqp-caselist-file={caselist_file}",
-                f"--deqp-log-filename={log}",
-                "--deqp-watchdog=disable"] + (args.deqp_arg or [])
         env["VK_DRIVER_FILES"] = receipt["icd"]["manifest"]
         env.pop("VK_ICD_FILENAMES", None)
         receipt["environment"] = environment_identity(env, args.env)
-        receipt["argv"] = argv
         started = time.monotonic()
+    if refusal is None and args.process_per_case:
+        shard = run_cases(args, out, cases, env, sanitized, nonces,
+                          hazard_probe)
+        receipt["wall_seconds"] = round(time.monotonic() - started, 3)
+        # Every case's argv differs from this one in the caselist and
+        # log paths alone, which name that case's own directory.
+        receipt["argv"] = shard["argv"]
+        receipt["cases"] = shard["cases"]
+        receipt["index_width"] = shard["index_width"]
+        results.update(shard["results"])
+        unexpected.update(shard["unexpected"])
+        if shard["stop"]:
+            receipt["stop"] = shard["stop"]
+            for case in cases:
+                if case not in shard["results"]:
+                    results[case]["detail"] = shard["stop"]["reason"]
+        exit_code = shard["exit_code"]
+        stderr_text = shard["framework_abort"] or ""
+        parsed = {"results": shard["results"], "in_flight": None,
+                  "partial_begin": False,
+                  "session_closed": shard["session_closed"],
+                  "session": shard["session"]}
+        if shard["unknown_format"]:
+            refusal = refusal or "unknown_log_format"
+        artifact_names = list(SHARD_ARTIFACT_NAMES)
+        artifact_names += [f"cases/{d}/{n}"
+                           for d in (shard["cases"][c]["directory"]
+                                     for c in cases if c in shard["cases"])
+                           for n in CASE_ARTIFACT_NAMES]
+    elif refusal is None:
+        argv = case_argv(args, caselist_file, log)
+        receipt["argv"] = argv
         exit_code, stdout_text, stderr_text = supervise(
             argv, Path(args.deqp_binary).resolve().parent, env, log,
             out / "stdout.txt", out / "stderr.txt", args.timeout,
@@ -854,7 +1158,7 @@ def execute(args):
     receipt["unexpected_cases"] = unexpected
     receipt["result_count"] = sum(counts.values())
     receipt["verdict"] = verdict_for(receipt)
-    receipt["artifacts"] = {n: sha256_file(out / n) for n in ARTIFACT_NAMES
+    receipt["artifacts"] = {n: sha256_file(out / n) for n in artifact_names
                             if (out / n).is_file()}
     receipt["seal_sha256"] = seal(receipt)
     (out / "receipt.json").write_text(json.dumps(receipt, indent=1,
@@ -1023,6 +1327,21 @@ elif mode == "late_abort":
 elif mode == "framework":
     sys.stderr.write("FATAL ERROR: No matching queue found: findQueueFamilyIndexWithCaps(requiredCaps=0x3, excludedCaps=0x0) at vktTestCase.cpp:508\n")
     sys.exit(1)
+elif mode == "per_case":
+    cap = os.environ.get("FAKE_CAPTURE_FILE", "")
+    if cap: open(cap, "w").write("transcript\n")
+    echo = os.environ.get("FAKE_ECHO_NAME", "")
+    if echo: open(os.path.join(os.path.dirname(log), "env_echo.txt"), "w").write(os.environ.get(echo, ""))
+    for c in cases:
+        if c == os.environ.get("FAKE_HAZARD_CASE", ""):
+            open(os.environ["FAKE_DMESG_FILE"], "a").write("[2.0] radeon 0000:01:05.0: GPU lockup\n")
+        if c == os.environ.get("FAKE_CRASH_CASE", ""):
+            f.write(f"#beginTestCaseResult {c}\n"); f.flush()
+            os.kill(os.getpid(), signal.SIGSEGV)
+        if c == os.environ.get("FAKE_SLOW_CASE", ""):
+            f.write(f"#beginTestCaseResult {c}\n"); f.flush()
+            time.sleep(30)
+        case(c, "Pass")
 elif mode == "replay":
     f.close()
     import shutil; shutil.copyfile(os.environ["FAKE_DEQP_REPLAY"], log)
@@ -1090,7 +1409,8 @@ def selftest(fixture_qpa):
                 replace_dmesg=False, runtime_event=None,
                 expect_runtime_event=None, outdir=None,
                 queue_report=None, expect_queue_claim=None,
-                expect_caselist=None):
+                expect_caselist=None, process_per_case=False,
+                plan_nonce_file=None, force_evidence=None):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
             os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
@@ -1114,12 +1434,16 @@ def selftest(fixture_qpa):
                 env=(env if env is not None else ["LD_PRELOAD=drm_shim"]) +
                     [f"FAKE_DEQP_MODE={mode}",
                      f"FAKE_DEQP_REPLAY={fixture_qpa or ''}"],
-                deqp_arg=None, partition_manifest=manifest_json)
+                deqp_arg=None, partition_manifest=manifest_json,
+                process_per_case=process_per_case,
+                plan_nonce_file=plan_nonce_file)
             if dmesg_after is not None:
                 orig = dmesg_file.read_text()
                 r = _run_with_dmesg_change(
                     args, dmesg_file, orig,
                     dmesg_after if replace_dmesg else orig + dmesg_after)
+            elif force_evidence:
+                r = _run_with_evidence(args, force_evidence)
             else:
                 r = execute(args)
             if r["verdict"] != expect:
@@ -1404,6 +1728,180 @@ def selftest(fixture_qpa):
             assert r["session"]["deviceID"] == "0x5974"
             assert "feature limits failed" in \
                 r["results"]["dEQP-VK.info.device_properties"]["detail"]
+        # One process apiece: the shard receipt stays one receipt, each
+        # case's status comes from its own process's log, and the
+        # per-case artifacts digest under that case's directory.
+        base_env = ["LD_PRELOAD=drm_shim"]
+        r = run("per_case", "pass", process_per_case=True, env=base_env)
+        assert r["process_per_case"] and r["counts"] == {"Pass": 5}
+        assert r["session_closed"] and r["exit_code"] == 0
+        assert r["case_directories"]["dEQP-VK.fake.a"] == "dEQP-VK.fake.a"
+        assert r["cases"]["dEQP-VK.fake.e"]["index"] == 5
+        assert "cases/dEQP-VK.fake.c/run.qpa" in r["artifacts"]
+        assert "run.qpa" not in r["artifacts"]
+        assert len(r["artifacts"]) == 5 * len(CASE_ARTIFACT_NAMES) + 1
+        # A case whose process dies keeps its own status, and the shard
+        # stays readable: the crash classifies as that case's result
+        # rather than truncating the shard.
+        r = run("per_case", "classified_nonpass", process_per_case=True,
+                env=base_env + ["FAKE_CRASH_CASE=dEQP-VK.fake.c"])
+        assert r["results"]["dEQP-VK.fake.c"]["status"] == "crash"
+        assert "SIGSEGV" in r["results"]["dEQP-VK.fake.c"]["detail"]
+        assert r["counts"] == {"Pass": 4, "crash": 1}, r["counts"]
+        assert r["session_closed"] and r["exit_code"] == 0
+        assert r["cases"]["dEQP-VK.fake.c"]["exit_code"] == -11
+        # The case deadline kills that case's process alone.
+        r = run("per_case", "classified_nonpass", process_per_case=True,
+                timeout=60.0, case_timeout=1.5,
+                env=base_env + ["FAKE_SLOW_CASE=dEQP-VK.fake.c"])
+        assert r["counts"] == {"Pass": 4, "timeout": 1}, r["counts"]
+        assert r["cases"]["dEQP-VK.fake.c"]["exit_code"] == "case_timeout"
+        # The shard deadline ends the sequence; the cases behind it
+        # never ran.
+        r = run("per_case", "runner_deadline", process_per_case=True,
+                timeout=3.0, case_timeout=60.0,
+                env=base_env + ["FAKE_SLOW_CASE=dEQP-VK.fake.b"])
+        assert r["counts"]["not_run"] == 3 and not r["session_closed"]
+        # A `{case}` value gives each case its own file: the receipt
+        # records the resolved value and whether it existed before and
+        # after the case ran, and the process reads the resolved value.
+        caps = d / "caps"
+        caps.mkdir()
+        plans = d / "plans"
+        plans.mkdir()
+        (plans / "dEQP-VK.fake.b.plan").write_text("plan\n")
+        templated_out = d / "out-templated"
+        r = run("per_case", "pass", process_per_case=True,
+                outdir=templated_out, env=base_env + [
+                    f"FAKE_CAPTURE_FILE={caps}/{{index}}-{{case}}.transcript",
+                    f"FAKE_PLAN_FILE={plans}/{{case}}.plan",
+                    "FAKE_ECHO_NAME=FAKE_CAPTURE_FILE"])
+        assert r["templated_env"] == ["FAKE_CAPTURE_FILE", "FAKE_PLAN_FILE"]
+        assert r["index_width"] == 1
+        rec = r["cases"]["dEQP-VK.fake.d"]
+        assert rec["environment"]["FAKE_CAPTURE_FILE"] == \
+            f"{caps}/4-dEQP-VK.fake.d.transcript"
+        assert rec["paths"]["FAKE_CAPTURE_FILE"] == \
+            {"present_before": False, "present_after": True}
+        # A case whose plan file is absent still runs; the receipt names
+        # which case resolved one that existed.
+        assert r["cases"]["dEQP-VK.fake.b"]["paths"]["FAKE_PLAN_FILE"][
+            "present_before"] is True
+        assert r["cases"]["dEQP-VK.fake.a"]["paths"]["FAKE_PLAN_FILE"][
+            "present_before"] is False
+        assert r["counts"] == {"Pass": 5}
+        assert (caps / "4-dEQP-VK.fake.d.transcript").is_file()
+        # The resolved value reaches the case's own process, which
+        # echoes it back into that case's directory.
+        assert (templated_out / "cases" / "dEQP-VK.fake.d" /
+                "env_echo.txt").read_text() == \
+            f"{caps}/4-dEQP-VK.fake.d.transcript"
+        # `{nonce}` resolves through the declared per-case nonce file.
+        nonce_tsv = d / "nonces.tsv"
+        nonce_tsv.write_text("".join(
+            f"dEQP-VK.fake.{c}\t{i:032x}\n"
+            for i, c in enumerate("abcde", start=1)))
+        nonce_out = d / "out-nonce"
+        r = run("per_case", "pass", process_per_case=True,
+                plan_nonce_file=str(nonce_tsv), outdir=nonce_out,
+                env=base_env + ["FAKE_NONCE={nonce}",
+                                "FAKE_ECHO_NAME=FAKE_NONCE"])
+        assert r["cases"]["dEQP-VK.fake.c"]["environment"]["FAKE_NONCE"] == \
+            f"{3:032x}"
+        assert r["plan_nonce_file"] == str(nonce_tsv)
+        assert (nonce_out / "cases" / "dEQP-VK.fake.c" /
+                "env_echo.txt").read_text() == f"{3:032x}"
+        # A nonce token with no file, a malformed nonce, and a case the
+        # file leaves out each refuse before dEQP starts.
+        for bad, text, message in (
+                ("no-file", None, "no --plan-nonce-file"),
+                ("short", "dEQP-VK.fake.a\tabcd\n", "32 lowercase hex"),
+                ("missing", f"dEQP-VK.fake.a\t{1:032x}\n",
+                 "declares no nonce"),
+                ("reused", "".join(f"dEQP-VK.fake.{c}\t{7:032x}\n"
+                                   for c in "abcde"), "reuses a nonce")):
+            path = None
+            if text is not None:
+                path = d / f"nonce-{bad}.tsv"
+                path.write_text(text)
+            try:
+                run("per_case", "pass", process_per_case=True,
+                    plan_nonce_file=str(path) if path else None,
+                    env=base_env + ["FAKE_NONCE={nonce}"])
+            except RunnerRefusal as e:
+                assert message in str(e), str(e)
+            else:
+                raise SystemExit(f"selftest: nonce defect {bad} admitted")
+        # A per-case token outside --process-per-case refuses: a single
+        # process would pass the token to dEQP verbatim.
+        try:
+            run("all_pass", "pass",
+                env=base_env + ["FAKE_CAPTURE_FILE=/x/{case}"])
+        except RunnerRefusal as e:
+            assert "outside --process-per-case" in str(e)
+        else:
+            raise SystemExit("selftest: a token reached a single process")
+        # Two cases sharing one directory name refuse before the shard
+        # runs; the second would overwrite the first's log.
+        clash = d / "clash.txt"
+        clash.write_text("dEQP-VK.fake.a b\ndEQP-VK.fake.a_b\n")
+        try:
+            run("per_case", "pass", cases=clash, process_per_case=True,
+                env=base_env)
+        except RunnerRefusal as e:
+            assert "one directory per case" in str(e)
+        else:
+            raise SystemExit("selftest: colliding case directories admitted")
+        # A kernel hazard stops the sequence where it appeared: the
+        # cases behind it never run, and each names why.
+        dmesg_file.write_text("[1.0] boot\n")
+        r = run("per_case", "dmesg_hazard", process_per_case=True,
+                env=base_env + ["FAKE_HAZARD_CASE=dEQP-VK.fake.b",
+                                f"FAKE_DMESG_FILE={dmesg_file}"])
+        assert r["hazard_lines"] and r["counts"] == {"Pass": 2,
+                                                     "not_run": 3}, r["counts"]
+        assert r["stop"]["after_case"] == "dEQP-VK.fake.b" and \
+            r["stop"]["index"] == 2
+        assert r["results"]["dEQP-VK.fake.e"]["detail"] == \
+            "kernel hazard after this case"
+        assert len(r["cases"]) == 2 and not r["session_closed"]
+        dmesg_file.write_text("[1.0] boot\n")
+        # A capture file declared on a submission-hazard slice under the
+        # host model is a planning pass: it runs below the slice's
+        # required evidence and reaches no decision grade.
+        r = run("per_case", "pass", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=base_env + [
+                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/p_{{case}}.t"])
+        assert r["planning_pass"] and r["decision_grade"] is False and \
+            r["decision_grade_reason"].startswith("planning pass captures")
+        assert r["partition"]["required_evidence"] == "silicon" and \
+            r["evidence_class"] == "host-model"
+        assert r["cases"]["dEQP-VK.fake.a"]["paths"][
+            "R3V_NATIVE_PLAN_CAPTURE_FILE"]["present_after"] is False
+        # The same slice without a capture file stays below its required
+        # evidence.
+        r = run("per_case", "evidence_below_required", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=base_env)
+        assert not r["planning_pass"] and "argv" not in r
+        # A capture file on a silicon run refuses: a capture session
+        # opens the CS ioctl with the hazard gate closed, which the
+        # drm-shim host model alone answers.
+        r = run("per_case", "capture_on_silicon", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, force_evidence="silicon",
+                env=base_env + [
+                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/s_{{case}}.t"])
+        assert not r["planning_pass"] and "argv" not in r
+        # The submission-gate allowlist holds under templating: a
+        # templated plan value on a hazard-free slice is contamination.
+        r = run("per_case", "gate_contamination", cases=pdir / "fake.txt",
+                manifest_json=mj, process_per_case=True,
+                env=base_env + [
+                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/{{case}}.t"])
+        assert "argv" not in r and \
+            r["contaminating_gates"] == ["R3V_NATIVE_PLAN_CAPTURE_FILE"]
         tampered = d / "out-1-all_pass-pass" / "receipt.json"
         body = json.loads(tampered.read_text())
         body["counts"]["Pass"] = 6
@@ -1426,10 +1924,32 @@ def selftest(fixture_qpa):
           "slices), used output directory, shard ceiling, kernel-log "
           "continuity, case deadline with its runner-deadline and "
           "kernel-hazard precedences, runtime-event join, and queue-claim "
-          "report (mode, eligibility, wrong mode, gateless, inconsistent) "
-          "fixtures "
-          "each "
-          "yield their verdict")
+          "report (mode, eligibility, wrong mode, gateless, inconsistent), "
+          "and one process apiece (shard receipt, a case's own crash and "
+          "case deadline, the shard deadline, per-case templating with "
+          "resolved-path presence, nonce-file resolution and its four "
+          "refusals, a token outside the mode, colliding case "
+          "directories, a kernel hazard stopping the sequence, the "
+          "planning pass with its silicon and hazard-free refusals, "
+          "templated gate contamination) fixtures each yield their "
+          "verdict")
+
+
+def _run_with_evidence(args, forced):
+    """The evidence class a run would carry on other hardware; the
+    selftest host answers no RS4xx render node, so the silicon branch
+    is reachable only by naming the class the classifier would give."""
+    global evidence_class
+    orig = evidence_class
+
+    def forced_class(env, host, icd):
+        return forced, None
+
+    evidence_class = forced_class
+    try:
+        return execute(args)
+    finally:
+        evidence_class = orig
 
 
 def _run_with_dmesg_change(args, dmesg_file, before, after):
@@ -1479,6 +1999,8 @@ def main():
     r.add_argument("--env", action="append")
     r.add_argument("--deqp-arg", action="append")
     r.add_argument("--partition-manifest")
+    r.add_argument("--process-per-case", action="store_true")
+    r.add_argument("--plan-nonce-file")
     s = sub.add_parser("selftest")
     s.add_argument("--fixture-qpa")
     c = sub.add_parser("check-ledgers")

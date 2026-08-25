@@ -350,7 +350,8 @@ if with_tests
       args : [files('tests/r3v_conformance_runner.py',
                     'tests/r3v_conformance_partition.py',
                     'tests/r3v_deqp_provision.py',
-                    'tests/r3v_native_plan_compose_check.py')],
+                    'tests/r3v_native_plan_compose_check.py',
+                    'tests/r3v_native_plan_compose_shard.py')],
       suite : ['r3v'],
     )
   endif
@@ -2370,6 +2371,23 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     prog_python,
     args : [files('tests/r3v_native_plan_compose_check.py'),
             r3v_native_plan_capture_harness, r3v_native_plan_tool],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 120,
+    suite : ['r3v'],
+  )
+  # A shard captured one process apiece leaves one transcript per case;
+  # the shard composer gives each its own nonce and evidence directory,
+  # since a replay session binds one nonce and creates session.state
+  # with O_EXCL under one empty directory.  The selftest composes the
+  # harness transcript under three case names and calibrates the
+  # damaged-transcript and short-nonce refusals.
+  test(
+    'r3v-native-plan-compose-shard-selftest',
+    prog_python,
+    args : [files('tests/r3v_native_plan_compose_shard.py'), 'selftest',
+            '--harness', r3v_native_plan_capture_harness,
+            '--tool', r3v_native_plan_tool],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 120,
