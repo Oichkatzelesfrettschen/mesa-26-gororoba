@@ -13,8 +13,8 @@ commit whose state a revision of this table describes.
 
 | Repository | Head | Subject |
 |---|---|---|
-| `mesa-26-gororoba` | `59b77649a80` | r3v: capture plan transcripts per device with a process ordinal |
-| `steinmarder-r300` | `d12f7bac` | r3v: retain the closed-gate run of submission slices 7-10 on RS482 |
+| `mesa-26-gororoba` | `fe55d59c955` | r3v: bind a shard-subset caselist to its shard in the conformance runner |
+| `steinmarder-r300` | `1248fe6f1` | r3v: retain the smoke-triangle one-case host-planning receipt and the kernel deployment reconciliation |
 | `steinmarder` (workspace index, cross-repo orchestration) | `77869e866` | tools/workspace-index-marker-and-trailer-retention |
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
 | `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
@@ -124,6 +124,46 @@ The preceding receipts are `r3v-command-slice-first-target-run-rs482`
 The robustness slice therefore has no plan to compose or replay; its next
 mechanism is the compute recognizer shape below.
 
+## Latest one-case host-planning receipt
+
+| Field | Value |
+|---|---|
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-smoke-triangle-host-planning-pass-workstation` |
+| Finding | `src/re/r300/findings/active/2026-08-25-r3v-smoke-triangle-host-planning-receipt-and-kernel-deployment-reconciliation.md` |
+| Case | `dEQP-VK.api.smoke.triangle`, `binding: shard_subset` of `command.0000` (851 cases), subset of 1 |
+| Verdict | `classified_nonpass` (`image_outside_executed_envelope`), `decision_grade` false, `evidence_class` host-planning, seal `6e3ed951359d` |
+| Source | Mesa `fe55d59c955e`, clean tree, build-tree DSO `de0fcee09883...` |
+| Outcome | `no_nonempty_ib`; refusal at `vkCreateImage` (`r3v_native_image.c`, usage classification); 0 CS ioctls |
+
+The runner binds a caselist that is a proper subset of one verified
+shard as that shard's subset (`r3v_conformance_partition.bind_caselist`),
+so a one-case planning or replay run keeps its slice, hazard, and
+evidence identity. The test's shape crosses the executed render family in
+five independent elements, each its own mechanism with its own silicon
+evidence: R8G8B8A8_UNORM lane order (B8G8R8A8_UNORM executed), a 256x256
+extent (64x64 and the frozen 64-pixel `RB3D_COLORPITCH0` executed),
+`TRANSFER_SRC` readback of a render-family image (the transfer and
+render families are disjoint in `r3v_CreateImage`), a magenta fragment
+constant (the qualified fragment binary is the solid-green write), and
+OPTIMAL tiling on the render family (an admission truth under the
+opaque-layout contract, the one element that adds no executed word).
+Every submitting graphics case of the command slice refuses at
+`vk.createImage` or `vk.endCommandBuffer`, so the first dEQP transcript
+waits on those elements; the one-case compose, replay, mutation, and
+silicon steps are open.
+
+## Kernel deployment reconciliation
+
+| Field | Value |
+|---|---|
+| Tool | `src/amd/r300/vulkan/tests/r3v_kernel_deployment_reconcile.py` with `r3v_kernel_deployment_delta_classification.tsv` |
+| Artifact | `kernel/kernel_deployment_reconciliation.json` in the bundle above, seal `02a89d5bfae8` |
+| Kernel head | `01aab9a` (size-segregated GTT placement) |
+| Deployed | `radeon-rs482-policy 0.8.11-1`, source checkpoint `3c5ccb3`, installed and running srcversion `727CE89E79FB2D14663C381` |
+| Delta | 9 files: `optimization_only` 3 (`radeon_object.c`, `radeon_object.h`, contract row `RADEON_BO_DOMAIN_PLACEMENT_ORDER`), `unrelated` 6 |
+| Pins | 14 of 14 hold at the head; the one placement-order row reads its pre-delta text at the checkpoint |
+| Verdict | `retain_deployed`: the first conformance-plan silicon replay binds to 0.8.11-1 and the optimization drift is recorded |
+
 ## DSO and queue-claim modes
 
 The DSO mode names which binary answered and how a run bound to it:
@@ -167,6 +207,15 @@ bit, the ledger claim, and the gate state disagree.
 
 P0 (blocks the next target run):
 
+- the first dEQP transcript: `dEQP-VK.api.smoke.triangle` is the
+  selected one-case bridge from dEQP semantics to the exact-plan hardware
+  gate, and it reaches a nonempty IB only after the five render-family
+  elements above land, each with its own silicon evidence (lane order,
+  extent and pitch, render-family transfer readback, fragment constant,
+  OPTIMAL admission); a transcript then needs compose, an independent
+  plan check, drm-shim replay, the six mutations (order, digest,
+  relocation, source identity, runtime ceiling, nonce) each refusing
+  before the transport, and the one-attempt silicon run on 0.8.11-1;
 - draw slice: a planning pass for `draw`, `synchronization`, and
   `transfer.0000-0001` that lands transcripts (rerun pending); a
   transcript-bearing shard needs compose, per-case plans, and the human
