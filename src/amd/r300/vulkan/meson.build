@@ -2307,6 +2307,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     args : [files('tests/r3v_kernel_memory_contract_pin.py')],
     suite : ['r3v'],
   )
+  # The kernel deployment reconciliation: before a plan-bound silicon
+  # run, the pins, the kernel head, the deployed package's source
+  # checkpoint, and the running module srcversion meet in one artifact
+  # whose every source difference is classified from the checked-in
+  # table (semantic_required, safety_required, optimization_only,
+  # unrelated).  The selftest calibrates each verdict and each refusal
+  # on a synthetic repository; the real reconciliation runs by hand
+  # against the kernel checkout and the target's modinfo.
+  test(
+    'r3v-kernel-deployment-reconcile-selftest',
+    prog_python,
+    args : [files('tests/r3v_kernel_deployment_reconcile.py'), '--selftest'],
+    suite : ['r3v'],
+  )
   # The memory-concurrency matrix: independent memory cycles across
   # threads keep the atomic cache-sync arithmetic closed (one sync at map
   # establishment, one at the unmap or free publication), empty
