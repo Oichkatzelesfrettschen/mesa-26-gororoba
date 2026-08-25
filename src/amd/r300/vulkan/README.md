@@ -345,7 +345,17 @@ passes `--timeout`; the receipt keeps the exit code that named the
 deadline; a runner `--max-cases` other than the manifest's shard
 ceiling refuses (`shard_ceiling_mismatch`); `--runtime-event` joins the
 target-side capture by digest and retains it beside the receipt.  The
-receipt records declared values verbatim and inherited values as
+declared caselist digest is the shard file's bytes, the value the
+partition manifest publishes per shard and `sha256sum` prints; a
+classified-nonpass verdict exits nonzero, so a strace witness wrapped
+around the runner (`r3v_cs_ioctl_trace.py trace --allow-tracee-failure`)
+declares that exit as expected or refuses every shard carrying a fail;
+and `dEQP-VK.api.device_init.create_instance_device_intentional_alloc_fail.basic`
+injects one allocation failure per allocation index of instance and
+device creation, 604 s on the RS482 host's K8 against the real device,
+so the `api-version-init` slice runs under a case ceiling above that
+(1800 s) while the other hazard-free slices finish every case inside
+120 s.  The receipt records declared values verbatim and inherited values as
 digests, so the operator's paths stay out of a retained receipt; a
 display-slice receipt therefore names `R3V_WSI_SW=1`, the xcb-shm
 CPU-copy present path, whenever that value was declared.  `--queue-report` runs
