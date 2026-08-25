@@ -190,7 +190,8 @@ def partition_identity(manifest_path, caselist_path):
     import r3v_conformance_partition as part
     try:
         manifest = part.verify_manifest(manifest_path)
-        s, shard = part.slice_for_caselist(manifest, caselist_path)
+        s, shard, subset = part.bind_caselist(manifest_path, manifest,
+                                              caselist_path)
     except part.PartitionRefusal as e:
         raise RunnerRefusal(f"partition manifest: {e}")
     ident = {"kind": manifest["kind"],
@@ -208,7 +209,15 @@ def partition_identity(manifest_path, caselist_path):
              "shard_max_cases": s["shard_max_cases"],
              "shard_index": shard["index"], "shard_count": s["shard_count"],
              "shard_case_count": shard["case_count"],
-             "shard_caselist_sha256": shard["caselist_sha256"]}
+             "shard_caselist_sha256": shard["caselist_sha256"],
+             # A caselist that is a proper subset of its shard keeps the
+             # shard identity above and records its own count and digest
+             # here; a whole-shard run binds with subset None.
+             "binding": "shard" if subset is None else "shard_subset",
+             "subset_case_count":
+                 None if subset is None else subset["case_count"],
+             "subset_caselist_sha256":
+                 None if subset is None else subset["caselist_sha256"]}
     # The hazard value itself opens execution; the stored flag is
     # derived for readers and verify_manifest holds it to the hazard.
     refusal = "blocked_slice" if s["hazard"] == "unknown" else None
@@ -1926,12 +1935,24 @@ def selftest(fixture_qpa):
                      "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1"])
         assert r["environment"]["R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL"] == "1"
         assert r["decision_grade_reason"] == "source identity unavailable"
+        # A proper subset of one shard binds as that shard's subset and
+        # records its own count and digest; a case outside every shard
+        # refuses under the manifest.
         subset = d / "subset.txt"
         subset.write_text("dEQP-VK.fake.a\n")
+        r = run("all_pass", "pass", cases=subset, manifest_json=mj)
+        assert r["partition"]["binding"] == "shard_subset" and \
+            r["partition"]["slice"] == "fake" and \
+            r["partition"]["subset_case_count"] == 1 and \
+            r["partition"]["subset_caselist_sha256"] == \
+            part.sha256_file(subset), r["partition"]
+        assert r["partition"]["shard_case_count"] > 1
+        stray = d / "stray.txt"
+        stray.write_text("dEQP-VK.fake.a\ndEQP-VK.nowhere\n")
         try:
-            run("all_pass", "pass", cases=subset, manifest_json=mj)
+            run("all_pass", "pass", cases=stray, manifest_json=mj)
         except RunnerRefusal as e:
-            assert "matches no manifest shard" in str(e)
+            assert "outside every manifest shard" in str(e)
         else:
             raise SystemExit("selftest: an unbound caselist was admitted "
                              "under a manifest")
