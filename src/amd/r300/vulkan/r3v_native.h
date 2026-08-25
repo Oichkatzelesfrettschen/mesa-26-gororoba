@@ -654,6 +654,12 @@ struct r3v_native_plan_capture {
    uint32_t capacity;
 };
 
+int r3v_native_plan_entry_from_submission(
+   struct r3v_native_plan_submission *e,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   const uint32_t *reference_indices, uint32_t completion_index,
+   uint64_t completion_size);
 bool r3v_native_plan_capture_host_model_present(void);
 int r3v_native_plan_capture_init(struct r3v_native_plan_capture *capture,
                                  const char *path);
@@ -675,6 +681,55 @@ int r3v_native_plan_capture_write(struct r3v_native_plan_capture *capture,
                                   uint32_t pci_device_id,
                                   const char *module_srcversion);
 
+/* Plan replay state: the parsed plan, the session consuming it, the
+ * evidence directory the plan names, and the hash chain over every
+ * admitted submission.
+ */
+struct r3v_native_plan_replay {
+   struct r3v_native_plan plan;
+   struct r3v_native_plan_session session;
+   char *evidence_dir;
+   char *nonce;
+   bool bound;
+   bool refused;
+   uint64_t bound_seconds;
+   enum r3v_native_plan_parse_result parse_result;
+   enum r3v_native_plan_bind_result bind_result;
+   char chain_hex[R3V_NATIVE_PLAN_HEX64 + 1];
+   char admitted_ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
+   char last_refusal[128];
+};
+
+int r3v_native_plan_replay_init(struct r3v_native_plan_replay *replay,
+                                const char *plan_path, const char *nonce);
+/* Binds the plan to the running identity at the first submission and
+ * occupies the evidence directory; returns the refusing bind result's
+ * name or NULL. */
+const char *r3v_native_plan_replay_bind(
+   struct r3v_native_plan_replay *replay,
+   const struct r3v_native_arming_provider *provider,
+   uint32_t pci_vendor_id, uint32_t pci_device_id);
+/* Admits the next submission against the plan and retains it; returns
+ * the refusal name or NULL.  A refusal latches the session. */
+const char *r3v_native_plan_replay_admit(
+   struct r3v_native_plan_replay *replay,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   const uint32_t *reference_indices, uint32_t completion_index,
+   uint64_t completion_size, uint32_t executable_count);
+/* Holds the IB at the ioctl boundary to the admitted entry's digest. */
+const char *r3v_native_plan_replay_check_ib(
+   struct r3v_native_plan_replay *replay, const uint32_t *ib,
+   uint32_t ib_size_dwords);
+/* Latches the session after a transport or completion failure, recording
+ * the failing step and its errno. */
+void r3v_native_plan_replay_fail(struct r3v_native_plan_replay *replay,
+                                 const char *why, int err);
+/* Proves exhaustion at device destruction; returns the recorded state. */
+const char *r3v_native_plan_replay_close(
+   struct r3v_native_plan_replay *replay);
+void r3v_native_plan_replay_finish(struct r3v_native_plan_replay *replay);
+
 struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
@@ -692,6 +747,14 @@ struct r3v_native_device {
     */
    struct r3v_native_plan_capture plan_capture;
    bool plan_capture_active;
+   /* Plan replay, read once at device creation from R3V_NATIVE_PLAN_FILE
+    * and R3V_NATIVE_PLAN_NONCE: the device opens the CS ioctl for the
+    * plan's ordered submissions alone, binding the plan to the running
+    * identity at the first submission.  A plan device and the hazard
+    * gate, an evidence directory, or a capture path refuse each other.
+    */
+   struct r3v_native_plan_replay plan_replay;
+   bool plan_replay_active;
    enum r3v_native_queue_status queue_status;
    /* The last submission's transport interval on the raw monotonic
     * clock: the reading immediately before DRM_RADEON_CS and the one

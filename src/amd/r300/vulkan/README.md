@@ -362,6 +362,22 @@ conformant mode makes a receipt `compute_claim_eligible`, a statement
 about the compute queue alone, so a gate-assisted run reads as its
 mode, and decision grade requires the report.
 
+A submission-bearing slice runs under a plan (`R3V_NATIVE_PLAN_FILE`
+and `R3V_NATIVE_PLAN_NONCE`): the planning pass under the drm-shim
+captures the shard's ordered submissions, `r3v_native_plan_tool
+compose` seals them with the run identities, and the device replays
+the plan alone, binding at the first submission to the DSO digest, the
+built source SHA prefix, the kernel and module identity, the RS482 PCI
+identity, the nonce, an empty evidence directory, and closed gates,
+admitting each submission's whole entry before any device-visible
+effect, holding the IB at the ioctl boundary to the admitted digest,
+retaining IBs content-addressed with a hash chain, and recording the
+session's bound, terminal, incomplete, or complete state.  The driver
+binds the binary; the clean-tree-at-declared-SHA proof lives outside
+it, in the runner receipt's source identity and the qualification
+worktree record, and the plan's dEQP, partition, and caselist digests
+are the runner's declarations verified against that receipt.
+
 `tests/r3v_conformance_partition.tsv` is the exhaustive partition of
 the pinned mustpass corpus (3,251,483 cases, of which 1,542,801 sit in
 executable slices; the rest wait in blocked slices):

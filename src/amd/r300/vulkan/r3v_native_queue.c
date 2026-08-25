@@ -1109,7 +1109,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
     * then reporting device loss on the disarmed second.
     */
    if (device->submit_hazard_accepted || device->manifest_dir != NULL ||
-       device->plan_capture_active) {
+       device->plan_capture_active || device->plan_replay_active) {
       uint32_t executable = 0;
       for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
          const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
@@ -1422,7 +1422,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * fails closed with application memory untouched: the deferred
        * draw's writes come after every gate below.
        */
-      if (!device->submit_hazard_accepted && !device->plan_capture_active) {
+      if (!device->submit_hazard_accepted && !device->plan_capture_active &&
+          !device->plan_replay_active) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -1439,6 +1440,36 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * (submit-object retention, arming, disarm) belongs to the open
        * gate and stays out of a capture session.
        */
+      /* Plan replay: the plan binds to the running identity at the
+       * first submission, and every submission's whole entry is admitted
+       * by the session before any device-visible effect; a refusal
+       * latches the session and loses the queue.
+       */
+      if (device->plan_replay_active) {
+         const char *refusal = NULL;
+         if (!device->plan_replay.bound) {
+            refusal = r3v_native_plan_replay_bind(
+               &device->plan_replay,
+               device->arming_provider != NULL
+                  ? device->arming_provider
+                  : r3v_native_arming_host_provider(),
+               device->pdevice->pci_vendor_id,
+               device->pdevice->pci_device_id);
+         }
+         if (refusal == NULL) {
+            refusal = r3v_native_plan_replay_admit(
+               &device->plan_replay, cmd_buffer, &relocs, reference_indices,
+               completion_index, completion.bo.size, 1);
+         }
+         if (refusal != NULL) {
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: plan replay refused the "
+                             "submission: %s", refusal);
+         }
+      }
       if (device->plan_capture_active) {
          int recorded = r3v_native_plan_capture_record(
             &device->plan_capture, cmd_buffer, &relocs, reference_indices,
@@ -1469,7 +1500,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * before the ioctl.  The exact ioctl payload retains before that gate,
        * and a retention failure refuses with nothing sent.
        */
-      if (!device->plan_capture_active &&
+      if (!device->plan_capture_active && !device->plan_replay_active &&
           r3v_native_queue_write_submit_object(
              device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,
              &cs, cmd_buffer->references, reference_indices,
@@ -1494,8 +1525,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * same evidence refuses even with the same environment.
        */
       enum r3v_native_arming_verdict arming =
-         device->plan_capture_active ? R3V_NATIVE_ARMING_ARMED
-                                     : r3v_native_arming_evaluate(&facts);
+         device->plan_capture_active || device->plan_replay_active
+            ? R3V_NATIVE_ARMING_ARMED
+            : r3v_native_arming_evaluate(&facts);
       if (arming != R3V_NATIVE_ARMING_ARMED) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -1557,7 +1589,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * serial bound before the ioctl, so a failed ioctl still consumes
        * its authorization.
        */
-      if (!device->plan_capture_active && !facts.attempt_token_present &&
+      if (!device->plan_capture_active && !device->plan_replay_active &&
+          !facts.attempt_token_present &&
           r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -1569,6 +1602,20 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       if (cmd_buffer->cell_kind ==
           R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL)
          device->serial_submissions_consumed++;
+
+      /* The IB at the ioctl boundary is the IB the session admitted. */
+      if (device->plan_replay_active) {
+         const char *rewritten = r3v_native_plan_replay_check_ib(
+            &device->plan_replay, cmd_buffer->ib, cmd_buffer->ib_size_dwords);
+         if (rewritten != NULL) {
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: plan replay refused the "
+                             "submission: %s", rewritten);
+         }
+      }
 
       int trace_result = r3v_native_submission_trace_emit(
          device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER);
@@ -1633,6 +1680,12 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       if (result != 0) {
          device->queue_status =
             r3v_native_queue_status_from_transport(ioctl_accepted, false);
+         if (device->plan_replay_active) {
+            r3v_native_plan_replay_fail(&device->plan_replay,
+                                        ioctl_accepted ? "completion"
+                                                       : "ioctl",
+                                        result);
+         }
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: submission or completion wait "
                           "failed: %d", result);
