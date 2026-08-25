@@ -2,21 +2,33 @@
 # SPDX-License-Identifier: MIT
 """Compose one sealed plan per case from a shard's captured transcripts.
 
-A capture shard run one process apiece leaves one transcript per case
-that submitted, named by that case's directory.  This composes each
-transcript into a plan through r3v_native_plan_tool, filling the shard's
-run identities and giving every plan its own nonce and its own evidence
-directory: plan replay binds a session to one nonce and creates
-`session.state` under its evidence directory with O_EXCL, so two cases
-sharing either one would refuse the second.  Every composed plan goes
-back through `check`, and `plans.json` records case, transcript digest,
-plan digest, entry count, and nonce.
+A capture shard run one process apiece leaves one transcript family per
+case, named by that case's directory: the driver assigns each device in
+a process its own ordinal, since a test creates devices freely (dEQP's
+own robustness cases create a device ahead of the one they drive), so a
+case's capture spans `<case>.transcript` (device ordinal 0) and, when
+the case created more devices, `<case>.transcript.N` for the Nth extra
+device.  This composes the one family member that carries entries into
+a plan through r3v_native_plan_tool, filling the shard's run identities
+and giving every plan its own nonce and its own evidence directory:
+plan replay binds a session to one nonce and creates `session.state`
+under its evidence directory with O_EXCL, so two cases sharing either
+one would refuse the second.  Every composed plan goes back through
+`check`, and `plans.json` records case, transcript digest, plan digest,
+entry count, nonce, and the submitting device's ordinal
+(`device_ordinal`, 0 for the base path).
 
-A transcript the tool cannot parse refuses the shard, since a plan
-composed from a damaged capture would replay a sequence the silicon
-never produced.  A transcript carrying no entries is skipped and listed:
-the driver writes no transcript for a device that never submitted, so a
-present-but-empty one names a case whose capture produced nothing.
+A transcript the tool cannot parse, or a transcript filename whose
+ordinal suffix does not parse as a strictly positive decimal integer,
+refuses the shard, since a plan composed from a damaged capture would
+replay a sequence the silicon never produced.  A case whose family
+carries no entries anywhere is skipped and listed: the driver writes no
+transcript for a device that never submitted, so an all-empty family
+names a case whose capture produced nothing.  A case whose family
+carries entries in more than one member is refused as
+`multiple_submitting_devices` and listed in `plans.json`, without
+refusing the rest of the shard: composing either member would silently
+drop the other device's submissions from the case's plan.
 
 Usage:
   r3v_native_plan_compose_shard.py compose --transcript-dir DIR \
@@ -65,27 +77,56 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def transcript_cases(transcript_dir):
-    """The case each transcript names, taken from its filename.  The
-    name reaches the plan as a component of that case's evidence
-    directory, so it carries the dEQP-VK prefix and survives
-    sanitizing unchanged; `..`, a separator, and any other traversal
-    character refuse here rather than escaping the evidence root."""
-    paths = sorted(Path(transcript_dir).glob("*" + TRANSCRIPT_SUFFIX))
+ORDINAL_SUFFIX = re.compile(r"^[1-9]\d*$")
+
+
+def transcript_members(transcript_dir):
+    """Every case's transcript family, grouped by case and sorted by
+    device ordinal.  The base `<case>.transcript` path names ordinal 0;
+    `<case>.transcript.N` names the driver's own ordinal for the Nth
+    extra device in the process.  A case name reaches the plan as a
+    component of that case's evidence directory, so it carries the
+    dEQP-VK prefix and survives sanitizing unchanged; `..`, a separator,
+    and any other traversal character refuse here rather than escaping
+    the evidence root.  A name whose final component is not all decimal
+    digits names no device at all -- `r3v_native_plan_capture_write`'s
+    own `<path>.tmp` staging name is exactly this shape -- and is
+    skipped rather than treated as a transcript.  A decimal suffix that
+    is not a strictly positive integer -- a leading zero, or the base
+    path's own implicit 0 spelled out -- refuses, since it is numeric
+    but names no ordinal the driver could have assigned."""
+    paths = sorted(Path(transcript_dir).glob("*" + TRANSCRIPT_SUFFIX)) + \
+        sorted(Path(transcript_dir).glob("*" + TRANSCRIPT_SUFFIX + ".*"))
     if not paths:
         raise ComposeRefusal(f"{transcript_dir} holds no *{TRANSCRIPT_SUFFIX}")
-    cases = []
+    members = {}
     for p in paths:
-        case = p.name[:-len(TRANSCRIPT_SUFFIX)]
+        name = p.name
+        if name.endswith(TRANSCRIPT_SUFFIX):
+            case, ordinal = name[:-len(TRANSCRIPT_SUFFIX)], 0
+        else:
+            base, _, suffix = name.rpartition(".")
+            if not base.endswith(TRANSCRIPT_SUFFIX) or not suffix.isdigit():
+                # Not an ordinal-suffixed transcript at all: a staging
+                # name like the capture write's own <path>.tmp, or an
+                # unrelated file the directory happens to hold.
+                continue
+            if not ORDINAL_SUFFIX.fullmatch(suffix):
+                raise ComposeRefusal(f"{name} names an ordinal suffix that "
+                                     "does not parse as a strictly positive "
+                                     "decimal integer")
+            case, ordinal = base[:-len(TRANSCRIPT_SUFFIX)], int(suffix)
         if not case.startswith(CASE_PREFIX):
-            raise ComposeRefusal(f"{p.name} names {case!r}, which carries no "
+            raise ComposeRefusal(f"{name} names {case!r}, which carries no "
                                  f"{CASE_PREFIX} prefix")
         if CASE_NAME_UNSAFE.sub("_", case) != case:
-            raise ComposeRefusal(f"{p.name} names {case!r}, which sanitizes "
+            raise ComposeRefusal(f"{name} names {case!r}, which sanitizes "
                                  "to a different name; a case name reaches "
                                  "the evidence directory as a path component")
-        cases.append((case, p))
-    return cases
+        members.setdefault(case, []).append((ordinal, p))
+    for case in members:
+        members[case].sort()
+    return members
 
 
 def generate_nonces(cases, path):
@@ -135,10 +176,11 @@ def entry_count(tool, path):
 
 
 def compose(args):
-    cases = transcript_cases(args.transcript_dir)
+    members = transcript_members(args.transcript_dir)
+    cases = sorted(members)
     if args.generate_nonces:
-        generate_nonces([c for c, _ in cases], args.nonce_file)
-    nonces = load_nonces(args.nonce_file, [c for c, _ in cases])
+        generate_nonces(cases, args.nonce_file)
+    nonces = load_nonces(args.nonce_file, cases)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     identity = []
@@ -146,11 +188,27 @@ def compose(args):
         identity += [f"--{option}", getattr(args, option.replace("-", "_"))]
     plans = []
     skipped = []
-    for case, transcript in cases:
-        entries = entry_count(args.tool, transcript)
-        if entries == 0:
+    refused = []
+    for case in cases:
+        # Every family member that carries entries: the driver writes
+        # no transcript for a device that never submitted, so a member
+        # with entries names the device that drove this case.
+        submitting = [(ordinal, path, entry_count(args.tool, path))
+                      for ordinal, path in members[case]]
+        submitting = [(o, p, n) for o, p, n in submitting if n > 0]
+        if not submitting:
             skipped.append(case)
             continue
+        if len(submitting) > 1:
+            # Composing either member would silently drop the other
+            # device's submissions from the case's plan, so the case
+            # refuses rather than picking one arbitrarily.
+            refused.append({
+                "case": case, "reason": "multiple_submitting_devices",
+                "members": [str(p) for _, p, _ in submitting],
+            })
+            continue
+        ordinal, transcript, entries = submitting[0]
         plan = out_dir / (case + ".plan")
         # Each plan names its own evidence directory: a replay session
         # creates session.state there with O_EXCL and binds to an empty
@@ -169,14 +227,17 @@ def compose(args):
         plans.append({"case": case, "transcript": str(transcript),
                       "transcript_sha256": sha256_file(transcript),
                       "plan": str(plan), "plan_sha256": sha256_file(plan),
-                      "entry_count": entries, "nonce": nonces[case]})
+                      "entry_count": entries, "nonce": nonces[case],
+                      "device_ordinal": ordinal})
     manifest = {"plan_count": len(plans), "skipped_cases": skipped,
+                "refused_cases": refused,
                 "entry_total": sum(p["entry_count"] for p in plans),
                 "plans": plans}
     (out_dir / "plans.json").write_text(json.dumps(manifest, indent=1,
                                                    sort_keys=True) + "\n")
     print(f"composed {len(plans)} plans over {manifest['entry_total']} "
-          f"submissions; {len(skipped)} transcripts carried no entries")
+          f"submissions; {len(skipped)} transcripts carried no entries; "
+          f"{len(refused)} cases refused (multiple submitting devices)")
     return manifest
 
 
@@ -230,6 +291,99 @@ def selftest(harness, tool):
                         f"/plan-evidence/{p['case']}\n" not in text:
                     raise SystemExit(f"selftest: {p['case']} carries neither "
                                      "its nonce nor its evidence directory")
+            # A case whose only transcript-family member is a device's
+            # extra ordinal composes with that ordinal recorded; the
+            # base path never existed, matching a device that claimed
+            # ordinal 0 but never submitted.
+            odir = d / "transcripts-ordinal-one"
+            odir.mkdir()
+            ordinal_case = "dEQP-VK.robustness.buffer_access.two_devices"
+            shutil.copyfile(transcript,
+                            odir / (ordinal_case + ".transcript.1"))
+            oargs = argparse.Namespace(
+                transcript_dir=str(odir), tool=tool,
+                out_dir=str(d / "plans-ordinal-one"),
+                nonce_file=str(d / "nonces-ordinal-one.tsv"),
+                generate_nonces=True, evidence_dir="/var/tmp/plan-evidence",
+                **SELFTEST_IDENTITY)
+            omanifest = compose(oargs)
+            if omanifest["plan_count"] != 1 or omanifest["skipped_cases"] or \
+                    omanifest["refused_cases"]:
+                raise SystemExit(f"selftest: ordinal-one case: {omanifest}")
+            if omanifest["plans"][0]["device_ordinal"] != 1:
+                raise SystemExit("selftest: ordinal-one case did not carry "
+                                 "device_ordinal 1")
+
+            # A case whose family carries entries in two members refuses
+            # as multiple_submitting_devices rather than composing one
+            # member and silently dropping the other device's entries.
+            tdir_two = d / "transcripts-two-devices"
+            tdir_two.mkdir()
+            two_case = "dEQP-VK.robustness.buffer_access.both_submit"
+            shutil.copyfile(transcript, tdir_two / (two_case + ".transcript"))
+            shutil.copyfile(transcript,
+                            tdir_two / (two_case + ".transcript.1"))
+            two_args = argparse.Namespace(
+                transcript_dir=str(tdir_two), tool=tool,
+                out_dir=str(d / "plans-two-devices"),
+                nonce_file=str(d / "nonces-two-devices.tsv"),
+                generate_nonces=True, evidence_dir="/var/tmp/plan-evidence",
+                **SELFTEST_IDENTITY)
+            two_manifest = compose(two_args)
+            if two_manifest["plan_count"] != 0 or \
+                    len(two_manifest["refused_cases"]) != 1 or \
+                    two_manifest["refused_cases"][0]["reason"] != \
+                        "multiple_submitting_devices" or \
+                    two_manifest["refused_cases"][0]["case"] != two_case:
+                raise SystemExit(f"selftest: two-devices case: "
+                                 f"{two_manifest}")
+
+            # A malformed ordinal suffix refuses the shard rather than
+            # composing a device ordinal the driver never assigned.
+            tdir_bad = d / "transcripts-bad-ordinal"
+            tdir_bad.mkdir()
+            bad_case = "dEQP-VK.robustness.buffer_access.bad_ordinal"
+            shutil.copyfile(transcript,
+                            tdir_bad / (bad_case + ".transcript.01"))
+            bad_args = argparse.Namespace(
+                transcript_dir=str(tdir_bad), tool=tool,
+                out_dir=str(d / "plans-bad-ordinal"),
+                nonce_file=str(d / "nonces-bad-ordinal.tsv"),
+                generate_nonces=True, evidence_dir="/var/tmp/plan-evidence",
+                **SELFTEST_IDENTITY)
+            try:
+                compose(bad_args)
+            except ComposeRefusal as e:
+                if "strictly positive decimal integer" not in str(e):
+                    raise SystemExit(f"selftest: bad ordinal: wrong "
+                                     f"refusal: {e}")
+            else:
+                raise SystemExit("selftest: a malformed ordinal composed")
+
+            # A leftover <path>.tmp staging file beside a real transcript
+            # names no device and is ignored, not treated as a malformed
+            # ordinal: r3v_native_plan_capture_write stages under this
+            # exact name before its rename, so a case interrupted between
+            # the two leaves one behind.
+            tdir_tmp = d / "transcripts-tmp-residue"
+            tdir_tmp.mkdir()
+            tmp_case = "dEQP-VK.robustness.buffer_access.tmp_residue"
+            shutil.copyfile(transcript, tdir_tmp / (tmp_case + ".transcript"))
+            (tdir_tmp / (tmp_case + ".transcript.tmp")).write_bytes(b"")
+            tmp_args = argparse.Namespace(
+                transcript_dir=str(tdir_tmp), tool=tool,
+                out_dir=str(d / "plans-tmp-residue"),
+                nonce_file=str(d / "nonces-tmp-residue.tsv"),
+                generate_nonces=True, evidence_dir="/var/tmp/plan-evidence",
+                **SELFTEST_IDENTITY)
+            tmp_manifest = compose(tmp_args)
+            if tmp_manifest["plan_count"] != 1 or \
+                    tmp_manifest["skipped_cases"] or \
+                    tmp_manifest["refused_cases"] or \
+                    tmp_manifest["plans"][0]["device_ordinal"] != 0:
+                raise SystemExit(f"selftest: tmp-residue case: "
+                                 f"{tmp_manifest}")
+
             # A damaged transcript refuses the shard.
             damaged = tdir / (names[0] + ".transcript")
             damaged.write_bytes(b"schema_version\t1\nsubmission_count\t9\n")
@@ -281,9 +435,13 @@ def selftest(harness, tool):
         os.remove(transcript)
         os.rmdir(os.path.dirname(transcript))
     print("compose-shard: three per-case plans sealed with distinct nonces "
-          "and their own evidence directories; a damaged transcript, four "
-          "case names that would escape the evidence root, and a short "
-          "nonce refused")
+          "and their own evidence directories; an ordinal-1-only family "
+          "composed with its device_ordinal recorded, a two-submitting-"
+          "member family refused as multiple_submitting_devices, a stale "
+          "<path>.tmp staging file ignored beside a real transcript, a "
+          "malformed ordinal suffix, a damaged transcript, four case "
+          "names that would escape the evidence root, and a short nonce "
+          "refused")
 
 
 def main():

@@ -40,12 +40,19 @@ r3v_native_plan_capture_host_model_present(void)
    return strcmp(base, "libradeon_noop_drm_shim.so") == 0;
 }
 
-/* One transcript per process: a second capture device would interleave
- * its submissions into the same file or start a second sequence under
- * the same path, so the process claims capture once, through an atomic
- * exchange since vkCreateDevice carries no external synchronization.
+/* One transcript per device, addressed by a process-wide ordinal: a
+ * dEQP case creates devices freely (vktRobustnessBufferAccessTests.cpp
+ * calls createRobustBufferAccessDevice for its own device ahead of the
+ * shared context device), so a fixed once-per-process claim would
+ * refuse the second vkCreateDevice outright.  The transcript's process
+ * identity the runner needs is the case, already carried by the
+ * `{case}` template in the declared capture path, so each device
+ * within that one process instead claims its own ordinal: the first
+ * writes the declared path verbatim, and the Nth (N >= 2) writes
+ * `<path>.<N-1>`.  atomic_fetch_add assigns the ordinal since
+ * vkCreateDevice carries no external synchronization.
  */
-static atomic_flag capture_claimed = ATOMIC_FLAG_INIT;
+static atomic_uint capture_next_ordinal = ATOMIC_VAR_INIT(0);
 
 /* Relocation roles by cell kind and reference slot, the slot enums the
  * cell emitters bind their references in; a slot past a kind's table is
@@ -115,27 +122,34 @@ r3v_native_plan_capture_init(struct r3v_native_plan_capture *capture,
    if (path == NULL || path[0] != '/' ||
        strlen(path) > R3V_NATIVE_PLAN_PATH_MAX)
       return -EINVAL;
+   /* The ordinal names this device's transcript path; a derived path
+    * past the schema ceiling refuses here rather than truncating.
+    */
+   unsigned ordinal = atomic_fetch_add(&capture_next_ordinal, 1);
+   char derived[R3V_NATIVE_PLAN_PATH_MAX + 16];
+   if (ordinal == 0)
+      snprintf(derived, sizeof(derived), "%s", path);
+   else
+      snprintf(derived, sizeof(derived), "%s.%u", path, ordinal);
+   if (strlen(derived) > R3V_NATIVE_PLAN_PATH_MAX)
+      return -ENAMETOOLONG;
    /* The transcript must land in a directory that exists before the
     * first submission, so a misdirected capture refuses at device
     * creation rather than after a shard ran.
     */
    char dir[R3V_NATIVE_PLAN_PATH_MAX + 1];
-   strcpy(dir, path);
+   strcpy(dir, derived);
    char *slash = strrchr(dir, '/');
    if (slash == dir)
       return -EINVAL;
    *slash = '\0';
    if (access(dir, W_OK | X_OK) != 0)
       return -errno;
-   if (access(path, F_OK) == 0)
+   if (access(derived, F_OK) == 0)
       return -EEXIST;
-   if (atomic_flag_test_and_set(&capture_claimed))
-      return -EBUSY;
-   capture->path = strdup(path);
-   if (capture->path == NULL) {
-      atomic_flag_clear(&capture_claimed);
+   capture->path = strdup(derived);
+   if (capture->path == NULL)
       return -ENOMEM;
-   }
    return 0;
 }
 

@@ -151,124 +151,30 @@ create(VkInstance *instance_out, VkDevice *device_out,
    return VK_SUCCESS;
 }
 
-int
-main(int argc, char **argv)
-{
-   const char *arm = argc > 1 ? argv[1] : "capture";
-   char dir[] = "/tmp/r3v-native-plan-capture-XXXXXX";
-   assert(mkdtemp(dir) != NULL);
-   char transcript[4096];
-   snprintf(transcript, sizeof(transcript), "%s/transcript.plan", dir);
-   setenv("R3V_NATIVE_PLAN_CAPTURE_FILE", transcript, 1);
-   unsetenv("R3V_NATIVE_MANIFEST_DIR");
-   unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
-   unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
-   unsetenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
-
-   VkInstance instance;
-   VkDevice device;
-   PFN_vkDestroyInstance destroy_instance;
-   if (strcmp(arm, "gate-open-refused") == 0) {
-      /* An open hazard gate and a capture path refuse each other. */
-      setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
-      VkResult r = create(&instance, &device, &destroy_instance);
-      assert(r == VK_ERROR_INITIALIZATION_FAILED && device == VK_NULL_HANDLE);
-      assert(access(transcript, F_OK) != 0);
-      destroy_instance(instance, NULL);
-      rmdir(dir);
-      printf("gate-open-refused: capture with an open gate refused\n");
-      return 0;
-   }
-   if (strcmp(arm, "manifest-dir-refused") == 0) {
-      /* A capture session and an attended-evidence directory refuse
-       * each other: the semantic-cell retention belongs to the open
-       * gate, and a capture pass must not occupy that directory.
-       */
-      setenv("R3V_NATIVE_MANIFEST_DIR", dir, 1);
-      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
-      VkResult r = create(&instance, &device, &destroy_instance);
-      assert(r == VK_ERROR_INITIALIZATION_FAILED && device == VK_NULL_HANDLE);
-      assert(access(transcript, F_OK) != 0);
-      destroy_instance(instance, NULL);
-      rmdir(dir);
-      printf("manifest-dir-refused: capture with an evidence directory "
-             "refused\n");
-      return 0;
-   }
-   if (strcmp(arm, "second-device-refused") == 0) {
-      /* One transcript per process: the claim is taken at device
-       * creation, so a second capture device refuses before the first
-       * has submitted anything.
-       */
-      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
-      assert(create(&instance, &device, &destroy_instance) == VK_SUCCESS);
-      VkInstance instance2;
-      VkDevice device2;
-      PFN_vkDestroyInstance destroy2;
-      char second[4096];
-      snprintf(second, sizeof(second), "%s/second.plan", dir);
-      setenv("R3V_NATIVE_PLAN_CAPTURE_FILE", second, 1);
-      VkResult r = create(&instance2, &device2, &destroy2);
-      assert(r == VK_ERROR_INITIALIZATION_FAILED && device2 == VK_NULL_HANDLE);
-      destroy2(instance2, NULL);
-      vkDestroyDevice(device, NULL);
-      destroy_instance(instance, NULL);
-      assert(access(transcript, F_OK) != 0 && access(second, F_OK) != 0);
-      rmdir(dir);
-      printf("second-device-refused: one transcript per process\n");
-      return 0;
-   }
-   if (strcmp(arm, "missing-directory-refused") == 0) {
-      setenv("R3V_NATIVE_PLAN_CAPTURE_FILE", "/nonexistent-r3v/x.plan", 1);
-      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
-      VkResult r = create(&instance, &device, &destroy_instance);
-      assert(r == VK_ERROR_INITIALIZATION_FAILED);
-      destroy_instance(instance, NULL);
-      rmdir(dir);
-      printf("missing-directory-refused: unreachable transcript refused\n");
-      return 0;
-   }
-   unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
-   if (strcmp(arm, "slot-roles") == 0) {
-      /* The role tables name each cell kind's reference slots: the
-       * public GPU producer rides the triangle slots with its carrier
-       * at the vertex slot, the fetched producer binds carrier, slot,
-       * and source, and a slot past a table is named by index.
-       */
-      char role[R3V_NATIVE_PLAN_NAME_MAX + 1];
-      struct {
-         enum r3v_native_cell_kind kind;
-         uint32_t slot;
-         const char *want;
-      } rows[] = {
-         {R3V_NATIVE_CELL_KIND_TRIANGLE, 0, "vertex"},
-         {R3V_NATIVE_CELL_KIND_TRIANGLE, 1, "color"},
-         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, 0, "carrier"},
-         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, 1, "color"},
-         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 0, "carrier"},
-         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 1, "slot"},
-         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 2, "source"},
-         {R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL, 2, "depth"},
-         {R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER, 1, "command1"},
-         {R3V_NATIVE_CELL_KIND_TRIANGLE, 5, "command5"},
-      };
-      for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
-         r3v_native_plan_capture_slot_role(rows[i].kind, rows[i].slot, role);
-         assert(strcmp(role, rows[i].want) == 0);
-      }
-      rmdir(dir);
-      printf("slot-roles: role tables name every cell kind's slots\n");
-      return 0;
-   }
-   assert(create(&instance, &device, &destroy_instance) == VK_SUCCESS);
-   struct r3v_native_device *native_device =
-      r3v_native_device_from_handle(device);
-   assert(native_device->plan_capture_active);
-
-   VkQueue queue = VK_NULL_HANDLE;
-   vkGetDeviceQueue(device, 0, 0, &queue);
-
+/* The image, buffer, pass, and pipeline one draw submits against; built
+ * once and reused across the draws a capture arm records, so the arm
+ * exercises the plan-capture path (not pipeline construction) between
+ * submissions.
+ */
+struct triangle_resources {
    VkImage image;
+   VkDeviceMemory image_memory;
+   VkImageView view;
+   VkDeviceMemory vertex_memory;
+   VkBuffer vertex_buffer;
+   VkRenderPass pass;
+   VkFramebuffer framebuffer;
+   VkPipelineLayout layout;
+   VkShaderModule vs, fs;
+   VkPipeline pipeline;
+   VkCommandPool pool;
+   VkMemoryRequirements image_reqs;
+};
+
+static struct triangle_resources
+create_triangle_resources(VkDevice device)
+{
+   struct triangle_resources r = { 0 };
    assert(vkCreateImage(
              device,
              &(VkImageCreateInfo){
@@ -284,25 +190,22 @@ main(int argc, char **argv)
                 .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
              },
-             NULL, &image) == VK_SUCCESS);
-   VkMemoryRequirements reqs;
-   vkGetImageMemoryRequirements(device, image, &reqs);
-   VkDeviceMemory image_memory;
+             NULL, &r.image) == VK_SUCCESS);
+   vkGetImageMemoryRequirements(device, r.image, &r.image_reqs);
    assert(vkAllocateMemory(device,
                            &(VkMemoryAllocateInfo){
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                              .allocationSize = reqs.size,
+                              .allocationSize = r.image_reqs.size,
                               .memoryTypeIndex = 0,
                            },
-                           NULL, &image_memory) == VK_SUCCESS);
-   assert(vkBindImageMemory(device, image, image_memory, 0) == VK_SUCCESS);
-   VkImageView view;
+                           NULL, &r.image_memory) == VK_SUCCESS);
+   assert(vkBindImageMemory(device, r.image, r.image_memory, 0) == VK_SUCCESS);
    assert(vkCreateImageView(
              device,
              &(VkImageViewCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image = image,
+                .image = r.image,
                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
                 .format = R3V_NATIVE_TARGET_FORMAT,
                 .subresourceRange = { .aspectMask =
@@ -310,8 +213,7 @@ main(int argc, char **argv)
                                       .levelCount = 1,
                                       .layerCount = 1 },
              },
-             NULL, &view) == VK_SUCCESS);
-   VkDeviceMemory vertex_memory;
+             NULL, &r.view) == VK_SUCCESS);
    assert(vkAllocateMemory(device,
                            &(VkMemoryAllocateInfo){
                               .sType =
@@ -319,8 +221,7 @@ main(int argc, char **argv)
                               .allocationSize = 4096,
                               .memoryTypeIndex = 0,
                            },
-                           NULL, &vertex_memory) == VK_SUCCESS);
-   VkBuffer vertex_buffer;
+                           NULL, &r.vertex_memory) == VK_SUCCESS);
    assert(vkCreateBuffer(device,
                          &(VkBufferCreateInfo){
                             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -328,16 +229,15 @@ main(int argc, char **argv)
                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                          },
-                         NULL, &vertex_buffer) == VK_SUCCESS);
-   assert(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0) ==
+                         NULL, &r.vertex_buffer) == VK_SUCCESS);
+   assert(vkBindBufferMemory(device, r.vertex_buffer, r.vertex_memory, 0) ==
           VK_SUCCESS);
    void *map = NULL;
-   assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+   assert(vkMapMemory(device, r.vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
           VK_SUCCESS);
    memcpy(map, ndc_triangle, sizeof(ndc_triangle));
-   vkUnmapMemory(device, vertex_memory);
+   vkUnmapMemory(device, r.vertex_memory);
 
-   VkRenderPass pass;
    assert(vkCreateRenderPass(
              device,
              &(VkRenderPassCreateInfo){
@@ -365,32 +265,29 @@ main(int argc, char **argv)
                          },
                    },
              },
-             NULL, &pass) == VK_SUCCESS);
-   VkFramebuffer framebuffer;
+             NULL, &r.pass) == VK_SUCCESS);
    assert(vkCreateFramebuffer(
              device,
              &(VkFramebufferCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                .renderPass = pass,
+                .renderPass = r.pass,
                 .attachmentCount = 1,
-                .pAttachments = &view,
+                .pAttachments = &r.view,
                 .width = R3V_NATIVE_TARGET_WIDTH,
                 .height = R3V_NATIVE_TARGET_HEIGHT,
                 .layers = 1,
              },
-             NULL, &framebuffer) == VK_SUCCESS);
-   VkPipelineLayout layout;
+             NULL, &r.framebuffer) == VK_SUCCESS);
    assert(vkCreatePipelineLayout(
              device,
              &(VkPipelineLayoutCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
              },
-             NULL, &layout) == VK_SUCCESS);
-   VkShaderModule vs = make_module(device, r3v_reference_vertex_spirv,
-                                   sizeof(r3v_reference_vertex_spirv));
-   VkShaderModule fs = make_module(device, r3v_reference_fragment_spirv,
-                                   sizeof(r3v_reference_fragment_spirv));
-   VkPipeline pipeline;
+             NULL, &r.layout) == VK_SUCCESS);
+   r.vs = make_module(device, r3v_reference_vertex_spirv,
+                      sizeof(r3v_reference_vertex_spirv));
+   r.fs = make_module(device, r3v_reference_fragment_spirv,
+                      sizeof(r3v_reference_fragment_spirv));
    assert(vkCreateGraphicsPipelines(
              device, VK_NULL_HANDLE, 1,
              &(VkGraphicsPipelineCreateInfo){
@@ -401,12 +298,12 @@ main(int argc, char **argv)
                       { .sType =
                            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                         .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                        .module = vs,
+                        .module = r.vs,
                         .pName = "main" },
                       { .sType =
                            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                        .module = fs,
+                        .module = r.fs,
                         .pName = "main" },
                    },
                 .pVertexInputState =
@@ -481,82 +378,295 @@ main(int argc, char **argv)
                                               VK_COLOR_COMPONENT_A_BIT,
                          },
                    },
-                .layout = layout,
-                .renderPass = pass,
+                .layout = r.layout,
+                .renderPass = r.pass,
              },
-             NULL, &pipeline) == VK_SUCCESS);
-
-   VkCommandPool pool;
+             NULL, &r.pipeline) == VK_SUCCESS);
    assert(vkCreateCommandPool(
              device,
              &(VkCommandPoolCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 .queueFamilyIndex = 0,
              },
-             NULL, &pool) == VK_SUCCESS);
-   VkCommandBuffer cmds[2];
+             NULL, &r.pool) == VK_SUCCESS);
+   return r;
+}
+
+static void
+destroy_triangle_resources(VkDevice device, struct triangle_resources *r)
+{
+   vkDestroyCommandPool(device, r->pool, NULL);
+   vkDestroyPipeline(device, r->pipeline, NULL);
+   vkDestroyShaderModule(device, r->vs, NULL);
+   vkDestroyShaderModule(device, r->fs, NULL);
+   vkDestroyPipelineLayout(device, r->layout, NULL);
+   vkDestroyFramebuffer(device, r->framebuffer, NULL);
+   vkDestroyRenderPass(device, r->pass, NULL);
+   vkDestroyBuffer(device, r->vertex_buffer, NULL);
+   vkFreeMemory(device, r->vertex_memory, NULL);
+   vkDestroyImageView(device, r->view, NULL);
+   vkDestroyImage(device, r->image, NULL);
+   vkFreeMemory(device, r->image_memory, NULL);
+}
+
+/* Records one draw of vertex_count vertices into an already-allocated,
+ * already-begun cmd, leaving it ended and ready to submit; factored out
+ * of submit_triangle_draw so the two-executable-buffers-refuse arm can
+ * record two real executable IBs without submitting them individually.
+ */
+static void
+record_triangle_draw(VkCommandBuffer cmd, struct triangle_resources *r,
+                     uint32_t vertex_count)
+{
+   vkCmdPipelineBarrier(
+      cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
+      &(VkImageMemoryBarrier){
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+         .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .image = r->image,
+         .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .levelCount = 1,
+                               .layerCount = 1 },
+      });
+   vkCmdBeginRenderPass(
+      cmd,
+      &(VkRenderPassBeginInfo){
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+         .renderPass = r->pass,
+         .framebuffer = r->framebuffer,
+         .renderArea = { .extent = { R3V_NATIVE_TARGET_WIDTH,
+                                     R3V_NATIVE_TARGET_HEIGHT } },
+         .clearValueCount = 1,
+         .pClearValues = &(VkClearValue){
+            .color = { .float32 = { CLEAR_SENTINEL, CLEAR_SENTINEL,
+                                    CLEAR_SENTINEL, CLEAR_SENTINEL } } },
+      },
+      VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pipeline);
+   vkCmdBindVertexBuffers(cmd, 0, 1, &r->vertex_buffer, &(VkDeviceSize){ 0 });
+   vkCmdDraw(cmd, vertex_count, 1, 0, 0);
+   vkCmdEndRenderPass(cmd);
+}
+
+/* Records and submits one draw of vertex_count vertices against r,
+ * waiting for it to complete; the command buffer allocates from r's
+ * pool and is not freed, matching the harness's single-shot arms.
+ */
+static void
+submit_triangle_draw(VkDevice device, VkQueue queue,
+                     struct triangle_resources *r, uint32_t vertex_count)
+{
+   VkCommandBuffer cmd;
    assert(vkAllocateCommandBuffers(
              device,
              &(VkCommandBufferAllocateInfo){
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .commandPool = pool,
+                .commandPool = r->pool,
                 .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                .commandBufferCount = 2,
+                .commandBufferCount = 1,
              },
-             cmds) == VK_SUCCESS);
+             &cmd) == VK_SUCCESS);
+   assert(vkBeginCommandBuffer(cmd, &(VkCommandBufferBeginInfo){
+                                       .sType =
+                                          VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                    }) == VK_SUCCESS);
+   record_triangle_draw(cmd, r, vertex_count);
+   assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+   assert(vkQueueSubmit(queue, 1,
+                        &(VkSubmitInfo){
+                           .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                           .commandBufferCount = 1,
+                           .pCommandBuffers = &cmd,
+                        },
+                        VK_NULL_HANDLE) == VK_SUCCESS);
+   assert(vkQueueWaitIdle(queue) == VK_SUCCESS);
+}
+
+int
+main(int argc, char **argv)
+{
+   const char *arm = argc > 1 ? argv[1] : "capture";
+   char dir[] = "/tmp/r3v-native-plan-capture-XXXXXX";
+   assert(mkdtemp(dir) != NULL);
+   char transcript[4096];
+   snprintf(transcript, sizeof(transcript), "%s/transcript.plan", dir);
+   setenv("R3V_NATIVE_PLAN_CAPTURE_FILE", transcript, 1);
+   unsetenv("R3V_NATIVE_MANIFEST_DIR");
+   unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+   unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
+   unsetenv("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
+
+   VkInstance instance;
+   VkDevice device;
+   PFN_vkDestroyInstance destroy_instance;
+   if (strcmp(arm, "gate-open-refused") == 0) {
+      /* An open hazard gate and a capture path refuse each other. */
+      setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+      VkResult r = create(&instance, &device, &destroy_instance);
+      assert(r == VK_ERROR_INITIALIZATION_FAILED && device == VK_NULL_HANDLE);
+      assert(access(transcript, F_OK) != 0);
+      destroy_instance(instance, NULL);
+      rmdir(dir);
+      printf("gate-open-refused: capture with an open gate refused\n");
+      return 0;
+   }
+   if (strcmp(arm, "manifest-dir-refused") == 0) {
+      /* A capture session and an attended-evidence directory refuse
+       * each other: the semantic-cell retention belongs to the open
+       * gate, and a capture pass must not occupy that directory.
+       */
+      setenv("R3V_NATIVE_MANIFEST_DIR", dir, 1);
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+      VkResult r = create(&instance, &device, &destroy_instance);
+      assert(r == VK_ERROR_INITIALIZATION_FAILED && device == VK_NULL_HANDLE);
+      assert(access(transcript, F_OK) != 0);
+      destroy_instance(instance, NULL);
+      rmdir(dir);
+      printf("manifest-dir-refused: capture with an evidence directory "
+             "refused\n");
+      return 0;
+   }
+   if (strcmp(arm, "second-device-ordinal") == 0) {
+      /* Two devices in one process, both under the same declared
+       * capture path: dEQP's own robustness cases create a device
+       * ahead of the one the case drives (createRobustBufferAccessDevice
+       * in vktRobustnessBufferAccessTests.cpp), so the first device
+       * claims ordinal 0 and the declared path but submits nothing,
+       * and the second claims ordinal 1 and its own draw lands at
+       * <path>.1.  The base path stays absent: the driver writes no
+       * transcript for a device that never submits.
+       */
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+      assert(create(&instance, &device, &destroy_instance) == VK_SUCCESS);
+      struct r3v_native_device *first = r3v_native_device_from_handle(device);
+      assert(first->plan_capture_active);
+
+      VkInstance instance2;
+      VkDevice device2;
+      PFN_vkDestroyInstance destroy2;
+      assert(create(&instance2, &device2, &destroy2) == VK_SUCCESS);
+      struct r3v_native_device *second =
+         r3v_native_device_from_handle(device2);
+      assert(second->plan_capture_active);
+
+      VkQueue queue2 = VK_NULL_HANDLE;
+      vkGetDeviceQueue(device2, 0, 0, &queue2);
+      struct triangle_resources res2 = create_triangle_resources(device2);
+      submit_triangle_draw(device2, queue2, &res2, 3);
+      destroy_triangle_resources(device2, &res2);
+
+      vkDestroyDevice(device2, NULL);
+      destroy2(instance2, NULL);
+      vkDestroyDevice(device, NULL);
+      destroy_instance(instance, NULL);
+
+      char ordinal_one[4096];
+      snprintf(ordinal_one, sizeof(ordinal_one), "%s.1", transcript);
+      assert(access(transcript, F_OK) != 0);
+      size_t n;
+      char *text = read_file(ordinal_one, &n);
+      struct r3v_native_plan p;
+      assert(r3v_native_plan_parse(text, n, &p) == R3V_NATIVE_PLAN_PARSE_OK);
+      assert(p.submission_count == 1);
+      r3v_native_plan_finish(&p);
+      free(text);
+      unlink(ordinal_one);
+      rmdir(dir);
+      printf("second-device-ordinal: base path absent, second device's "
+             "draw landed at %s\n", ordinal_one);
+      return 0;
+   }
+   if (strcmp(arm, "derived-path-exists-refused") == 0) {
+      /* The second device's own derived path is subject to the same
+       * pre-existence refusal as the declared path: a stale <path>.1
+       * from a prior run refuses the device that would claim it.
+       */
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+      assert(create(&instance, &device, &destroy_instance) == VK_SUCCESS);
+      char ordinal_one[4096];
+      snprintf(ordinal_one, sizeof(ordinal_one), "%s.1", transcript);
+      FILE *stale = fopen(ordinal_one, "wb");
+      assert(stale != NULL);
+      fclose(stale);
+      VkInstance instance2;
+      VkDevice device2;
+      PFN_vkDestroyInstance destroy2;
+      VkResult r = create(&instance2, &device2, &destroy2);
+      assert(r == VK_ERROR_INITIALIZATION_FAILED && device2 == VK_NULL_HANDLE);
+      destroy2(instance2, NULL);
+      vkDestroyDevice(device, NULL);
+      destroy_instance(instance, NULL);
+      unlink(ordinal_one);
+      assert(access(transcript, F_OK) != 0);
+      rmdir(dir);
+      printf("derived-path-exists-refused: a stale ordinal-1 path refused "
+             "the second device\n");
+      return 0;
+   }
+   if (strcmp(arm, "missing-directory-refused") == 0) {
+      setenv("R3V_NATIVE_PLAN_CAPTURE_FILE", "/nonexistent-r3v/x.plan", 1);
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+      VkResult r = create(&instance, &device, &destroy_instance);
+      assert(r == VK_ERROR_INITIALIZATION_FAILED);
+      destroy_instance(instance, NULL);
+      rmdir(dir);
+      printf("missing-directory-refused: unreachable transcript refused\n");
+      return 0;
+   }
+   unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+   if (strcmp(arm, "slot-roles") == 0) {
+      /* The role tables name each cell kind's reference slots: the
+       * public GPU producer rides the triangle slots with its carrier
+       * at the vertex slot, the fetched producer binds carrier, slot,
+       * and source, and a slot past a table is named by index.
+       */
+      char role[R3V_NATIVE_PLAN_NAME_MAX + 1];
+      struct {
+         enum r3v_native_cell_kind kind;
+         uint32_t slot;
+         const char *want;
+      } rows[] = {
+         {R3V_NATIVE_CELL_KIND_TRIANGLE, 0, "vertex"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE, 1, "color"},
+         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, 0, "carrier"},
+         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, 1, "color"},
+         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 0, "carrier"},
+         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 1, "slot"},
+         {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 2, "source"},
+         {R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL, 2, "depth"},
+         {R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER, 1, "command1"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE, 5, "command5"},
+      };
+      for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+         r3v_native_plan_capture_slot_role(rows[i].kind, rows[i].slot, role);
+         assert(strcmp(role, rows[i].want) == 0);
+      }
+      rmdir(dir);
+      printf("slot-roles: role tables name every cell kind's slots\n");
+      return 0;
+   }
+   assert(create(&instance, &device, &destroy_instance) == VK_SUCCESS);
+   struct r3v_native_device *native_device =
+      r3v_native_device_from_handle(device);
+   assert(native_device->plan_capture_active);
+
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(device, 0, 0, &queue);
+
+   struct triangle_resources res = create_triangle_resources(device);
+   VkMemoryRequirements reqs = res.image_reqs;
    /* Two distinct executable IBs: the retained three-vertex cell and the
     * two-triangle family member, which differs from it in exactly the
     * vertex-count dwords.
     */
    const uint32_t vertex_counts[2] = { 3, 6 };
    for (unsigned i = 0; i < 2; i++) {
-      VkCommandBuffer cmd = cmds[i];
-      assert(vkBeginCommandBuffer(cmd, &(VkCommandBufferBeginInfo){
-                                          .sType =
-                                             VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                       }) == VK_SUCCESS);
-      vkCmdPipelineBarrier(
-         cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
-         &(VkImageMemoryBarrier){
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                  .levelCount = 1,
-                                  .layerCount = 1 },
-         });
-      vkCmdBeginRenderPass(
-         cmd,
-         &(VkRenderPassBeginInfo){
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = pass,
-            .framebuffer = framebuffer,
-            .renderArea = { .extent = { R3V_NATIVE_TARGET_WIDTH,
-                                        R3V_NATIVE_TARGET_HEIGHT } },
-            .clearValueCount = 1,
-            .pClearValues = &(VkClearValue){
-               .color = { .float32 = { CLEAR_SENTINEL, CLEAR_SENTINEL,
-                                       CLEAR_SENTINEL, CLEAR_SENTINEL } } },
-         },
-         VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-      vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &(VkDeviceSize){ 0 });
-      vkCmdDraw(cmd, vertex_counts[i], 1, 0, 0);
-      vkCmdEndRenderPass(cmd);
-      assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
-      assert(vkQueueSubmit(queue, 1,
-                           &(VkSubmitInfo){
-                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                              .commandBufferCount = 1,
-                              .pCommandBuffers = &cmd,
-                           },
-                           VK_NULL_HANDLE) == VK_SUCCESS);
-      assert(vkQueueWaitIdle(queue) == VK_SUCCESS);
+      submit_triangle_draw(device, queue, &res, vertex_counts[i]);
       /* The transcript lands after every completed submission. */
       struct r3v_native_plan p;
       size_t n;
@@ -569,6 +679,24 @@ main(int argc, char **argv)
    /* Two executable buffers in one submit refuse under capture as under
     * the open gate: a plan entry is one submission.
     */
+   VkCommandBuffer cmds[2];
+   assert(vkAllocateCommandBuffers(
+             device,
+             &(VkCommandBufferAllocateInfo){
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = res.pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 2,
+             },
+             cmds) == VK_SUCCESS);
+   for (unsigned i = 0; i < 2; i++) {
+      assert(vkBeginCommandBuffer(cmds[i], &(VkCommandBufferBeginInfo){
+                                       .sType =
+                                          VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                    }) == VK_SUCCESS);
+      record_triangle_draw(cmds[i], &res, vertex_counts[i]);
+      assert(vkEndCommandBuffer(cmds[i]) == VK_SUCCESS);
+   }
    assert(vkQueueSubmit(queue, 1,
                         &(VkSubmitInfo){
                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -585,18 +713,7 @@ main(int argc, char **argv)
    r300_triangle_ib_digest_hex(two.ib, two.ib_size_dwords, two_digest);
    r300_tcl_bypass_triangle_release(&two);
 
-   vkDestroyCommandPool(device, pool, NULL);
-   vkDestroyPipeline(device, pipeline, NULL);
-   vkDestroyShaderModule(device, vs, NULL);
-   vkDestroyShaderModule(device, fs, NULL);
-   vkDestroyPipelineLayout(device, layout, NULL);
-   vkDestroyFramebuffer(device, framebuffer, NULL);
-   vkDestroyRenderPass(device, pass, NULL);
-   vkDestroyBuffer(device, vertex_buffer, NULL);
-   vkFreeMemory(device, vertex_memory, NULL);
-   vkDestroyImageView(device, view, NULL);
-   vkDestroyImage(device, image, NULL);
-   vkFreeMemory(device, image_memory, NULL);
+   destroy_triangle_resources(device, &res);
    vkDestroyDevice(device, NULL);
    destroy_instance(instance, NULL);
 
