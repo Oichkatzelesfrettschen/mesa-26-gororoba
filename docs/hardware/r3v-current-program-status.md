@@ -256,7 +256,16 @@ P0 (blocks the next target run):
   the bind and refuses at `vkCreateGraphicsPipelines` with
   `VK_ERROR_UNKNOWN` -- earlier in the case than the load-op clear the
   previous rerun predicted, so the clear admission is landed but
-  unwitnessed and the pipeline admission is the frontier.  A transcript
+  unwitnessed.  The refusing conjunct is
+  `fixed_state_matches_cell`'s `info->pTessellationState != NULL`
+  (`r3v_native_pipeline.c`): the case's shader stages, vertex input,
+  and zero-set pipeline layout all admit, and dEQP's
+  `makeGraphicsPipeline` supplies a tessellation-state pointer for
+  every pipeline, while the Vulkan rule is that `pTessellationState`
+  is read only when the stages include tessellation control and
+  evaluation.  Admitting a present pointer over stageless
+  tessellation state is the next mechanism, and it carries its own
+  RCA.  A transcript
   then needs compose, an independent plan check, drm-shim replay, the
   six mutations (order, digest, relocation, source identity, runtime
   ceiling, nonce) each refusing before the transport, and the

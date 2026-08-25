@@ -3363,7 +3363,17 @@ main(void)
     * vkEndCommandBuffer returns the error and the buffer never reaches
     * EXECUTABLE.
     */
+   /* The load-op clear reads pClearValues[0], so a pass declaring no
+    * clear value refuses ahead of that read.
+    */
    VkCommandBuffer bad_cmd = fresh_cmd();
+   VkRenderPassBeginInfo no_clear_value = begin_pass;
+   no_clear_value.clearValueCount = 0;
+   no_clear_value.pClearValues = NULL;
+   vkCmdBeginRenderPass(bad_cmd, &no_clear_value, VK_SUBPASS_CONTENTS_INLINE);
+   assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
+   bad_cmd = fresh_cmd();
    vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(bad_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
    vkCmdBindVertexBuffers(bad_cmd, 0, 1, &vertex_buffer,
