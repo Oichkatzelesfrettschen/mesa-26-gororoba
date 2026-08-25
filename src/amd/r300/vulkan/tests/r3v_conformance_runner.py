@@ -34,14 +34,17 @@ before launch.
 
 `--process-per-case` runs each case of the shard in its own dEQP
 process, sequentially, under the shard `--timeout` with `--case-timeout`
-as each process's own deadline.  The plan mechanism claims capture once
-per process and binds replay once per process, while dEQP creates one
-VkDevice per case inside one process, so a shard reaches plan capture
-and plan replay exactly when one case owns one process.  A declared
-`--env` value carries `{case}`, `{index}`, and `{nonce}`, which each
-case resolves before its process starts, giving that case its own
-transcript, plan, and session nonce; `{nonce}` resolves through the
-`--plan-nonce-file` TSV of case and 32 hex digits.  The result stays one
+as each process's own deadline.  Plan replay binds one session to one
+evidence directory, so a shard reaches plan replay exactly when one
+case owns one process; plan capture instead assigns each device in a
+process its own ordinal (dEQP creates devices freely, and a case's own
+robustness tests create one ahead of the one they drive), so a case
+that creates several devices still leaves that case's whole capture
+inside its own process.  A declared `--env` value carries `{case}`,
+`{index}`, and `{nonce}`, which each case resolves before its process
+starts, giving that case its own transcript family, plan, and session
+nonce; `{nonce}` resolves through the `--plan-nonce-file` TSV of case
+and 32 hex digits.  The result stays one
 shard receipt under one seal, one partition binding, and one journal
 cursor, with each case's status taken from its own process's log, its
 own artifacts digested under `cases/<case>/`, and its exit code, session
@@ -768,11 +771,13 @@ def case_argv(args, caselist_file, log):
 def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
     """Runs each case of the shard in its own dEQP process, in caselist
     order, under the shard deadline with --case-timeout as each
-    process's own.  The plan mechanism claims capture once per process
-    and binds replay once per process, so a shard reaches capture and
-    replay exactly when one case owns one process; a case resolves its
-    declared `{case}`, `{index}`, and `{nonce}` values before its
-    process starts, which is what gives that case its own transcript,
+    process's own.  Plan replay binds one session per process, so a
+    shard reaches replay exactly when one case owns one process; plan
+    capture assigns each device in a process its own ordinal instead,
+    so a case that creates several devices still keeps its whole
+    capture inside its own process.  A case resolves its declared
+    `{case}`, `{index}`, and `{nonce}` values before its process
+    starts, which is what gives that case its own transcript family,
     plan, and session.  The shard deadline expiring mid-sequence leaves
     the cases behind it not_run and names the shard's exit `timeout`.
 

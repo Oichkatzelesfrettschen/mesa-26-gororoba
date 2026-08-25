@@ -408,13 +408,21 @@ a statement about capture alone.  The same declaration on a silicon run
 refuses as `capture_on_silicon`, since a capture session opens the CS
 ioctl with the hazard gate closed and only the host model answers it,
 and on a hazard-free slice it stays gate contamination.  dEQP runs a
-whole caselist in one process while capture claims the process once and
-replay binds one session to one evidence directory, so a capturing or
-replaying shard runs `--process-per-case`, which also gives each case
-its own transcript, plan, and nonce through the `{case}`, `{index}`,
-and `{nonce}` tokens in a declared `--env` value.
+whole caselist in one process and creates devices freely -- one dEQP
+case may create several, ahead of the one it drives (its own robustness
+cases do this) -- so capture assigns each device in a process its own
+ordinal: the first lands at the declared path and the Nth (N >= 2)
+lands at `<path>.N-1`, and a device that never submits writes no
+transcript at all.  Replay still binds one session to one evidence
+directory, so a capturing or replaying shard runs `--process-per-case`,
+which gives each case its own transcript family, plan, and nonce
+through the `{case}`, `{index}`, and `{nonce}` tokens in a declared
+`--env` value.
 `tests/r3v_native_plan_compose_shard.py` composes one sealed plan per
-transcript, each with its own nonce and evidence directory.
+case from that case's transcript family, each with its own nonce and
+evidence directory; a family carrying entries in more than one member
+refuses that case as `multiple_submitting_devices` without refusing the
+rest of the shard.
 
 The `command` slice captures nothing on the host model today: over all
 851 cases under the drm-shim, zero transcripts carry an entry, because

@@ -2340,7 +2340,11 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # Plan capture under the shim: two distinct draws in separate submits
   # land two ordered transcript entries with the retained digests and
   # the whole relocation shape; a two-buffer submit refuses; an open
-  # hazard gate or an unreachable transcript refuses the device.
+  # hazard gate or an unreachable transcript refuses the device; a
+  # second device in the process lands its draw at the first's ordinal-1
+  # path while the first, submitting nothing, leaves the base path
+  # absent; a stale ordinal-1 path refuses the device that would claim
+  # it.
   r3v_native_plan_capture_harness = executable(
     'r3v_native_plan_capture_harness',
     files('tests/r3v_native_plan_capture_harness.c'),
@@ -2352,7 +2356,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     gnu_symbol_visibility : 'hidden',
   )
   foreach capture_arm : ['capture', 'slot-roles', 'gate-open-refused',
-                         'manifest-dir-refused', 'second-device-refused',
+                         'manifest-dir-refused', 'second-device-ordinal',
+                         'derived-path-exists-refused',
                          'missing-directory-refused']
     test(
       'r3v-native-plan-capture-@0@'.format(capture_arm),
