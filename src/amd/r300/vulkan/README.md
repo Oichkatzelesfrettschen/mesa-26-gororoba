@@ -17,15 +17,32 @@ records, shader admission, R300 command-stream construction, DRM submission,
 and completion are owned by r3v over `src/amd/radeon/drm_vk/`; the Gallium
 r300 driver shares only the API-neutral `src/amd/r300/common/` contracts.
 
-The implementation boundaries between the native implementation and complete
-Vulkan semantic/conformance coverage are documented in
+`docs/hardware/r3v-current-program-status.md` is the one program-status
+authority: repository heads, the target deployment, the active conformance
+partition, the latest target receipt, the DSO and queue-claim modes, and the
+open tasks. The implementation boundaries between the native implementation
+and complete Vulkan semantic/conformance coverage are documented in
 `docs/hardware/r3v-implementation-boundaries.md`.
 
-The driver is intentionally classified as experimental and nonconformant.
-R3xx silicon has no documented native compute-dispatch packet, and the current
-driver does not provide complete Vulkan command, memory, synchronization, WSI,
-or conformance semantics. `r3v_private.h` owns the canonical
-`R3V_CONFORMANCE_STATUS` classification.
+The driver is classified as experimental and nonconformant, and the
+classification is a queue-claim token with three fields:
+
+- default queue: graphics, with no conformant compute claim
+  (`queue_claim_mode` `default_graphics_only`);
+- gated queue: the experimental CPU/GPU compute subset behind the exact
+  `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in (`queue_claim_mode`
+  `experimental_compute_subset`);
+- conformance: false (`conformanceVersion` 0.0.0.0; only the
+  `conformant` mode, reached when every verb ledger row executes on both
+  routes, makes a receipt `compute_claim_eligible`).
+
+`r3v_private.h` owns the canonical `R3V_CONFORMANCE_STATUS` string, and the
+queue-claim receipt (`r3v_native_queue_claim_report`, run by the
+conformance runner's `--queue-report`) is the authority for the mode a
+given run advertised; the driver refuses when the advertised compute bit,
+the verb ledger's claim, and the gate state disagree, so the static
+classification here restates the receipt and never contradicts it. R3xx
+silicon has no documented native compute-dispatch packet.
 
 ## Hardware target
 
@@ -96,7 +113,8 @@ context, or resource takes part.
 `libvulkan_r3v.so` (manifest `r3v_icd.<cpu>.json`, `driverName` `r3v`)
 owns its Radeon DRM transport through `src/amd/radeon/drm_vk/` and links no
 Gallium runtime library; a separation-audit test enforces that boundary. The native library owns
-GEM-backed `VkDeviceMemory` (one BO per allocation, buffer-only), a queue
+GEM-backed `VkDeviceMemory` (one BO per allocation, bound to buffers and to
+the admitted image family through `r3v_BindImageMemory`), a queue
 whose submission path builds the three-chunk `DRM_RADEON_CS` object, and
 command-carrier objects. Fragment binaries are deep-copied into R3V-owned
 `r300_fragment_binary` storage with a content hash and structural validator.
@@ -122,9 +140,25 @@ precedes follows
 The public draw surface in `r3v_native_draw.c` lowers the qualified
 render-pass begin/end, pipeline and vertex-buffer binds, and draw into
 the fixed TCL-bypass cell; `r3v_native_recording.c` fail-closes every
-other core 1.0 `vkCmd*` entrypoint by poisoning the command buffer, so
-images, descriptors, transfers, and WSI remain outside the native
-surface.
+other core 1.0 `vkCmd*` entrypoint by poisoning the command buffer. The
+native surface outside that draw decomposes as follows:
+
+- images: bounded render and transfer families implemented
+  (`r3v_native_image.c` admits the executed 2D linear family for
+  color-attachment usage at the cell extent and for transfer usage to
+  the transfer bound; every other `VkImageCreateInfo` shape refuses);
+- descriptors: core object model implemented (layouts, pools, sets,
+  buffer views in `r3v_native_compute.c` and `r3v_native_object.c`);
+  the executing subsets are narrower -- the compute
+  route admits set 0 storage-buffer bindings alone, and the graphics
+  recording surface binds no descriptor outside the fixed cell;
+- transfers: synchronous host-mapped route implemented
+  (`r3v_native_transfer.c` fills, updates, and copies through the
+  mapped BO at submission);
+- WSI: the surface and query denominator is present
+  (`docs/hardware/r3v-wsi-denominator.md`); native swapchain and
+  presentation are incomplete, and `R3V_WSI_SW=1` selects the xcb-shm
+  CPU-copy present path.
 The drm-shim harness and offline kernel-parser replay carry the
 pre-hardware evidence; the attended-cell runner has carried one armed
 `DRM_RADEON_CS` submission on RS482 that the kernel accepted and retired
