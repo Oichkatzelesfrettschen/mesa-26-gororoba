@@ -153,6 +153,28 @@ r3v_native_plan_capture_init(struct r3v_native_plan_capture *capture,
    return 0;
 }
 
+/* A capture that recorded zero executable submissions writes no
+ * transcript, and a reader cannot tell that absence from a device that
+ * never reached destroy, so the device leaves an explicit marker beside
+ * the transcript path instead: `<path>.no_nonempty_ib`, one line, created
+ * exclusively.  The runner reads the marker as the case's outcome, and a
+ * suffix outside the digit ordinals keeps it out of a transcript family.
+ */
+int
+r3v_native_plan_capture_mark_empty(const struct r3v_native_plan_capture *c)
+{
+   char marker[R3V_NATIVE_PLAN_PATH_MAX + 32];
+   snprintf(marker, sizeof(marker), "%s.no_nonempty_ib", c->path);
+   int fd = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0644);
+   if (fd < 0)
+      return -errno;
+   static const char line[] = "no_nonempty_ib\n";
+   ssize_t n = write(fd, line, sizeof(line) - 1);
+   int saved = n == (ssize_t)(sizeof(line) - 1) ? 0 : (n < 0 ? -errno : -EIO);
+   close(fd);
+   return saved;
+}
+
 void
 r3v_native_plan_capture_finish(struct r3v_native_plan_capture *capture)
 {

@@ -161,6 +161,7 @@ ATTENDED_EVIDENCE_DIR = "R3V_NATIVE_MANIFEST_DIR"
 PLAN_REPLAY_NAMES = ("R3V_NATIVE_PLAN_FILE", "R3V_NATIVE_PLAN_NONCE")
 NO_TRANSCRIPT_MESSAGE = ("no executable submission ran; no plan transcript "
                          "written")
+EMPTY_CAPTURE_SUFFIX = ".no_nonempty_ib"
 CASE_STRACE_NAME = "ioctl.strace"
 PLANNING_OUTCOMES = ("transcript", "no_nonempty_ib", "unresolved")
 PLANNING_GRADE_REASON = ("host-planning disposition captures transcripts on "
@@ -436,16 +437,19 @@ def planning_tracer(declared):
 def planning_outcome(case_dir, capture_path, stderr_text):
     """One case's planning outcome from its own process: the transcripts
     the device wrote at the declared path and its `.N` ordinals, each
-    digested; `no_nonempty_ib` when the device logged that no executable
-    submission ran (r3v_native_plan_capture_write returns -ENOENT for
-    zero entries and writes nothing); `unresolved` otherwise, which
-    covers a device the driver refused and a process that died.  The
-    per-process strace gives the kernel-entering ioctl counts."""
+    digested; `no_nonempty_ib` when the device left its
+    `.no_nonempty_ib` marker (r3v_native_plan_capture_mark_empty, written
+    at destroy when zero entries were captured; vk_logw reaches stderr
+    only under debug logging, so the marker is the observation and the
+    message a fallback); `unresolved` otherwise, which covers a device
+    the driver refused and a process that died.  The per-process strace
+    gives the kernel-entering ioctl counts."""
     strace = case_dir / CASE_STRACE_NAME
     witnessed = strace.is_file()
     counts, unparsed = cs_trace.parse_strace(strace) if witnessed \
         else ({}, 0)
     transcripts = {}
+    markers = []
     if capture_path:
         base = Path(capture_path)
         members = [base] + sorted(
@@ -453,13 +457,16 @@ def planning_outcome(case_dir, capture_path, stderr_text):
             if re.fullmatch(r"\d+", q.name[len(base.name) + 1:]))
         transcripts = {str(q): sha256_file(q) for q in members
                        if q.is_file()}
+        markers = sorted(str(q) for q in base.parent.glob(
+            base.name + "*" + EMPTY_CAPTURE_SUFFIX) if q.is_file())
     if transcripts:
         outcome = "transcript"
-    elif NO_TRANSCRIPT_MESSAGE in stderr_text:
+    elif markers or NO_TRANSCRIPT_MESSAGE in stderr_text:
         outcome = "no_nonempty_ib"
     else:
         outcome = "unresolved"
     return {"outcome": outcome, "transcripts": transcripts,
+            "empty_markers": markers,
             "witnessed": witnessed,
             "cs_ioctls": counts.get(cs_trace.CS_REQUEST, 0),
             "total_ioctls": sum(counts.values()),
@@ -1520,6 +1527,7 @@ elif mode == "per_case":
     cap = os.environ.get("FAKE_CAPTURE_FILE", "")
     if cap: open(cap, "w").write("transcript\n")
     if os.environ.get("FAKE_NO_IB_MSG"): sys.stderr.write("MESA: warning: r3v-native: no executable submission ran; no plan transcript written\n")
+    if os.environ.get("FAKE_NO_IB_MARKER"): open(os.environ["R3V_NATIVE_PLAN_CAPTURE_FILE"] + ".no_nonempty_ib", "w").write("no_nonempty_ib\n")
     echo = os.environ.get("FAKE_ECHO_NAME", "")
     if echo: open(os.path.join(os.path.dirname(log), "env_echo.txt"), "w").write(os.environ.get(echo, ""))
     for c in cases:
@@ -2119,16 +2127,20 @@ def selftest(fixture_qpa):
         assert r["cases"]["dEQP-VK.fake.a"]["planning"]["outcome"] == \
             "transcript"
         # A device that captured no executable submission writes no
-        # transcript and says so; the receipt records no_nonempty_ib as
-        # the outcome rather than an absence.
-        plan_env, _ = plan_env_for_arm()
-        r = run("per_case", "pass", cases=sdir / "fake.txt",
-                manifest_json=str(sdir / "partition_manifest.json"),
-                process_per_case=True, env=plan_env + ["FAKE_NO_IB_MSG=1"])
-        assert r["evidence_class"] == PLANNING_EVIDENCE
-        assert r["planning"]["outcomes"] == {"transcript": 0,
-                                             "no_nonempty_ib": 5,
-                                             "unresolved": 0}
+        # transcript and leaves its marker; the receipt records
+        # no_nonempty_ib as the outcome rather than an absence, from the
+        # marker, and from the log line alone as the fallback.
+        for signal_env in (["FAKE_NO_IB_MARKER=1"], ["FAKE_NO_IB_MSG=1"]):
+            plan_env, root = plan_env_for_arm()
+            r = run("per_case", "pass", cases=sdir / "fake.txt",
+                    manifest_json=str(sdir / "partition_manifest.json"),
+                    process_per_case=True, env=plan_env + signal_env)
+            assert r["evidence_class"] == PLANNING_EVIDENCE
+            assert r["planning"]["outcomes"] == {"transcript": 0,
+                                                 "no_nonempty_ib": 5,
+                                                 "unresolved": 0}
+        assert r["cases"]["dEQP-VK.fake.a"]["planning"]["empty_markers"] \
+            == [] and (root / "p_dEQP-VK.fake.a.t").exists() is False
         assert r["cases"]["dEQP-VK.fake.a"]["paths"][
             "R3V_NATIVE_PLAN_CAPTURE_FILE"]["present_after"] is False
         # Neither a transcript nor the message is unresolved.
