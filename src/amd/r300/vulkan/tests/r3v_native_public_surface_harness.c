@@ -999,6 +999,46 @@ main(void)
       empty_color_map[i] = COLOR_SEED;
    vkUnmapMemory(device, color_memory);
 
+   /* The load-op clear realizes the pass's own VkClearColorValue: the
+    * attachment's format is UNORM, so the live member is float32 and
+    * the texel is that quadruple through the color buffer's UNORM8
+    * conversion under the image's lane order.  (0.25, 0.5, 0.75, 1)
+    * rounds to bytes 64, 128, 191, 255, which B8G8R8A8 stores as
+    * 0xff4080bf.
+    */
+   {
+      VkCommandBuffer color_clear_cmd = fresh_cmd();
+      VkRenderPassBeginInfo color_begin = begin_pass;
+      color_begin.pClearValues = &(VkClearValue){
+         .color = { .float32 = { 0.25f, 0.5f, 0.75f, 1.0f } },
+      };
+      vkCmdBeginRenderPass(color_clear_cmd, &color_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(color_clear_cmd);
+      assert(vkEndCommandBuffer(color_clear_cmd) == VK_SUCCESS);
+      assert(vkQueueSubmit(
+                queue, 1,
+                &(VkSubmitInfo){
+                   .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                   .commandBufferCount = 1,
+                   .pCommandBuffers = &color_clear_cmd,
+                },
+                VK_NULL_HANDLE) == VK_SUCCESS);
+      uint32_t *color_clear_map = NULL;
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&color_clear_map) == VK_SUCCESS);
+      assert(color_clear_map[0] == 0xff4080bfu);
+      assert(color_clear_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+             0xff4080bfu);
+      /* The fill stops at the image's declared footprint. */
+      assert(color_clear_map[R3V_NATIVE_TARGET_MEMORY_BYTES / 4] ==
+             COLOR_SEED);
+      for (unsigned i = 0; i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4;
+           i++)
+         color_clear_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
+   }
+
    /* In-pass attachment clears over a draw-less pass: each rectangle
     * lands after the load-op clear on the zero-IB path, exact bytes at
     * the rect corners and the sentinel outside; a rect past the render
@@ -3324,13 +3364,6 @@ main(void)
     * EXECUTABLE.
     */
    VkCommandBuffer bad_cmd = fresh_cmd();
-   VkRenderPassBeginInfo bad_begin = begin_pass;
-   bad_begin.pClearValues =
-      &(VkClearValue){ .color = { .float32 = { 0.0f, 0.0f, 0.0f, 1.0f } } };
-   vkCmdBeginRenderPass(bad_cmd, &bad_begin, VK_SUBPASS_CONTENTS_INLINE);
-   assert(vkEndCommandBuffer(bad_cmd) == R3V_NATIVE_REFUSAL_RESULT);
-
-   bad_cmd = fresh_cmd();
    vkCmdBeginRenderPass(bad_cmd, &begin_pass, VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(bad_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
    vkCmdBindVertexBuffers(bad_cmd, 0, 1, &vertex_buffer,

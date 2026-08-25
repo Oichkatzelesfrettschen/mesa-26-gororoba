@@ -27,24 +27,6 @@ poison(VkCommandBuffer commandBuffer, VkResult error)
    vk_command_buffer_set_error(cmd_buffer, error);
 }
 
-/* The clear value the cell realizes: the sentinel fill 0xa5a5a5a5,
- * which in B8G8R8A8_UNORM is 0xa5 in every channel.  The comparison is
- * exact against the identically evaluated expression: 165.0f/255.0f
- * rounds to one binary32 value, the application writes that same
- * expression, and both sides land on the same bits, so a different
- * clear color refuses rather than silently clearing to the sentinel.
- */
-static bool
-clear_is_sentinel(const VkClearValue *value)
-{
-   const float sentinel = (float)0xa5 / 255.0f;
-   for (unsigned c = 0; c < 4; c++) {
-      if (value->color.float32[c] != sentinel)
-         return false;
-   }
-   return true;
-}
-
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
                        const VkRenderPassBeginInfo *pRenderPassBegin,
@@ -91,11 +73,20 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
        area->offset.x != 0 || area->offset.y != 0 ||
        area->extent.width != view->image->width ||
        area->extent.height != view->image->height ||
-       pRenderPassBegin->clearValueCount < 1 ||
-       !clear_is_sentinel(&pRenderPassBegin->pClearValues[0])) {
+       pRenderPassBegin->clearValueCount < 1) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
+
+   /* The load-op clear realizes as a host fill of the target's
+    * footprint, so the pass's clear color travels as the one texel that
+    * fill writes: the attachment's format selects the live
+    * VkClearColorValue member, and the render family's formats are
+    * UNORM, so float32 through the color buffer's UNORM8 conversion and
+    * the image's lane order is the whole translation.
+    */
+   const uint32_t clear_dword = r300_tcl_bypass_triangle_pack_unorm8_dword(
+      view->image->lanes, pRenderPassBegin->pClearValues[0].color.float32);
 
    cmd_buffer->pass_target = view->image;
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
@@ -105,6 +96,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       .target_fill_bytes = r3v_native_render_footprint_bytes(
          view->image->row_pitch_bytes, view->image->height),
       .target_row_bytes = view->image->row_pitch_bytes,
+      .clear_dword = clear_dword,
       .target_width = view->image->width,
       .target_height = view->image->height,
    };
@@ -469,6 +461,11 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    }
 
    cmd_buffer->owned_carrier = carrier;
+   /* The pass's load-op clear was resolved at CmdBeginRenderPass; the
+    * draw record replaces the deferred draw whole, so the clear texel
+    * travels across that replacement.
+    */
+   const uint32_t clear_dword = cmd_buffer->deferred_draw.clear_dword;
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
       .pending = true,
       .stream_mask = pipeline->attribute_mask,
@@ -493,6 +490,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          cmd_buffer->pass_target->row_pitch_bytes,
          cmd_buffer->pass_target->height),
       .target_row_bytes = cmd_buffer->pass_target->row_pitch_bytes,
+      .clear_dword = clear_dword,
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
    };

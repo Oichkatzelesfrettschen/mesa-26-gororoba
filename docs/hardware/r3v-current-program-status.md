@@ -239,34 +239,39 @@ P0 (blocks the next target run):
   bit, and any FP24-lattice fragment constant, with a non-reference
   target lowered through `r300_tcl_bypass_triangle_render_shape_emit`
   and a copy out of a render target invalidating the unsnooped GTT
-  lines first.  The reference 64x64 B8G8R8A8 target keeps the cell
-  family and the oracle constant its retained CPU-route digest covers,
-  so at that one shape the executed constant is still the oracle color
-  rather than the module's; a receipt for the reference shape under the
-  module's constant closes that row.  The smoke.triangle host-planning
-  rerun (`smoke-triangle.run3`, seal `87eb34c46920`) now clears image
-  creation and refuses at `r3v_BindImageMemory`: the test binds at
-  `memoryRequirements.alignment`, and the render family admits offset
-  zero alone because the cell family carries no target offset.  The next
-  mechanism is a target-offset parameter on the cell family
-  (`RB3D_COLOROFFSET0` already rides an additive zero payload plus the
-  relocation, so the offset enters that payload), receipted by an eighth
-  arm, after which `clear_is_sentinel` (the load-op clear admits the
-  sentinel alone; the test clears to black) is the known next refusal;
-  a transcript then needs compose, an independent plan check, drm-shim
-  replay, the six mutations (order, digest, relocation, source identity,
-  runtime ceiling, nonce) each refusing before the transport, and the
+  lines first.  Every constant-color single-triangle draw now lowers
+  through `r300_tcl_bypass_triangle_render_shape_emit`, the reference
+  64x64 B8G8R8A8 target included, so the executed fragment constant is
+  the bound module's; the cell family keeps the varying record shape and
+  the host-expanded instance count at the reference target.  The
+  render shape also carries a target byte offset in its
+  `RB3D_COLOROFFSET0` payload, `r3v_BindImageMemory` admits the render
+  family at any page-aligned offset whose footprint fits, and the
+  load-op clear and the in-pass attachment clears realize any
+  `VkClearColorValue` through the target's lane order and the UNORM8
+  conversion.  Two receipts stay open: the reference shape under the
+  module's constant, and the offset arm of the attended render-shape
+  procedure.  The smoke.triangle host-planning rerun
+  (`smoke-triangle.run4`, seal `bb8e9571a044`) clears image creation and
+  the bind and refuses at `vkCreateGraphicsPipelines` with
+  `VK_ERROR_UNKNOWN` -- earlier in the case than the load-op clear the
+  previous rerun predicted, so the clear admission is landed but
+  unwitnessed and the pipeline admission is the frontier.  A transcript
+  then needs compose, an independent plan check, drm-shim replay, the
+  six mutations (order, digest, relocation, source identity, runtime
+  ceiling, nonce) each refusing before the transport, and the
   one-attempt silicon run on 0.8.11-1;
 - the fragment-constant identity: the executed cell's fragment block
   writes the byte-order oracle constant (0.125, 0.375, 0.625, 0.875),
-  interior dword `0xdf20609f`, while pipeline admission
+  interior dword `0xdf20609f`; pipeline admission
   (`r3v_native_pipeline.c`) accepts the module writing `vec4(0, 1, 0, 1)`
   and `r3v_native_reference_spirv.h` describes the route as solid green
-  (`0xff00ff00`).  An application binding the admitted module reads back
-  the oracle constant; the render-shape family carries the admitted
-  module's constant into the four `R300_PFS_PARAM_0` payloads, so the
-  first render-shape receipt closes this row and the admission then
-  binds the executed constant to the module's constant;
+  (`0xff00ff00`).  The public draw now carries the admitted module's
+  constant into the four `R300_PFS_PARAM_0` payloads at every target,
+  and `R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3` pins the stream that
+  produces; the retained CPU-route digest keeps naming the oracle-color
+  reference cell.  The row closes on a silicon receipt for the reference
+  shape under a non-oracle constant;
 - draw slice: a planning pass for `draw`, `synchronization`, and
   `transfer.0000-0001` that lands transcripts (rerun pending); a
   transcript-bearing shard needs compose, per-case plans, and the human

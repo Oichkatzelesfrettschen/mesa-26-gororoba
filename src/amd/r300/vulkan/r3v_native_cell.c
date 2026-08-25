@@ -47,9 +47,9 @@
    (R300_TRIANGLE_VARYING_VERTEX_DWORDS * sizeof(float))
 
 static VkResult
-sentinel_fill_color(struct r3v_native_device *device,
-                    struct r3v_native_memory *color_memory,
-                    uint64_t fill_offset, uint64_t fill_bytes);
+fill_color(struct r3v_native_device *device,
+           struct r3v_native_memory *color_memory, uint64_t fill_offset,
+           uint64_t fill_bytes, uint32_t dword);
 
 static VkResult
 record_triangle_cell_tail(struct r3v_native_device *device,
@@ -250,8 +250,8 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
    }
 
    VkResult result =
-      sentinel_fill_color(device, color_memory, 0,
-                          color_memory->bo.size);
+      fill_color(device, color_memory, 0, color_memory->bo.size,
+                 R300_TRIANGLE_COLOR_SENTINEL);
    if (result != VK_SUCCESS)
       return result;
 
@@ -287,18 +287,20 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
    return VK_SUCCESS;
 }
 
-/* Sentinel-fills fill_bytes of the color memory from fill_offset and
- * publishes them for the unsnooped GART, so the output oracle reads a
- * deterministic pre-draw state and any device write inside the filled
- * range is detectable.  The offset is the image's bind offset, where
- * render row 0 starts, and fill_bytes bounds the write to the caller's
- * declared footprint; content outside that window in the same
- * allocation stays untouched.
+/* Writes dword over fill_bytes of the color memory from fill_offset and
+ * publishes them for the unsnooped GART.  The offset is the image's
+ * bind offset, where render row 0 starts, and fill_bytes bounds the
+ * write to the caller's declared footprint; content outside that window
+ * in the same allocation stays untouched.  The load-op clear passes the
+ * pass's own packed color; the record-time delivery routes pass
+ * R300_TRIANGLE_COLOR_SENTINEL, the pre-draw state their output oracle
+ * reads, which differs from every draw color in each byte lane so any
+ * device write inside the range is detectable.
  */
 static VkResult
-sentinel_fill_color(struct r3v_native_device *device,
-                    struct r3v_native_memory *color_memory,
-                    uint64_t fill_offset, uint64_t fill_bytes)
+fill_color(struct r3v_native_device *device,
+           struct r3v_native_memory *color_memory, uint64_t fill_offset,
+           uint64_t fill_bytes, uint32_t dword)
 {
    bool owns_color_map = color_memory->map == NULL;
    if (owns_color_map &&
@@ -311,7 +313,7 @@ sentinel_fill_color(struct r3v_native_device *device,
    uint32_t *color_pixels =
       (uint32_t *)((uint8_t *)color_memory->map + fill_offset);
    for (uint64_t i = 0; i < fill_bytes / 4; i++)
-      color_pixels[i] = R300_TRIANGLE_COLOR_SENTINEL;
+      color_pixels[i] = dword;
    radeon_drm_vk_bo_cache_sync(&device->drm, color_pixels, fill_bytes);
    if (owns_color_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &color_memory->bo,
@@ -430,8 +432,8 @@ record_triangle_cell_tail(struct r3v_native_device *device,
       return role_result;
 
    VkResult result =
-      sentinel_fill_color(device, color_memory, 0,
-                          color_memory->bo.size);
+      fill_color(device, color_memory, 0, color_memory->bo.size,
+                 R300_TRIANGLE_COLOR_SENTINEL);
    if (result != VK_SUCCESS)
       return result;
    struct r300_triangle_render_shape shape;
@@ -513,9 +515,9 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * still realizes at queue submission.
     */
    if (draw->stream_mask == 0) {
-      VkResult clear_result = sentinel_fill_color(
-         device, draw->target_memory, draw->target_fill_offset,
-         draw->target_fill_bytes);
+      VkResult clear_result =
+         fill_color(device, draw->target_memory, draw->target_fill_offset,
+                    draw->target_fill_bytes, draw->clear_dword);
       if (clear_result != VK_SUCCESS || draw->clear_rect_count == 0)
          return clear_result;
       /* The recorded attachment clears land after the load-op clear,
@@ -683,9 +685,9 @@ r3v_native_cmd_buffer_execute_deferred_draw(
                                 owned_maps[i]->map);
          owned_maps[i]->map = NULL;
       }
-      return sentinel_fill_color(device, draw->target_memory,
-                                 draw->target_fill_offset,
-                                 draw->target_fill_bytes);
+      return fill_color(device, draw->target_memory,
+                        draw->target_fill_offset, draw->target_fill_bytes,
+                        draw->clear_dword);
    }
 
    /* The CPU route stages its records on the host and the carrier
@@ -942,17 +944,16 @@ r3v_native_cmd_buffer_execute_deferred_draw(
    if (result != VK_SUCCESS)
       return result;
 
-   /* The load-op clear realizes as the sentinel fill over the image's
-    * declared memory footprint alone; a larger allocation keeps its
+   /* The load-op clear realizes as the pass's packed color over the
+    * image's declared memory footprint alone; a larger allocation keeps its
     * remaining bytes, so a resource bound past the image survives the
     * draw.
     */
    /* pending stays set: every submission re-reads the stream and
     * re-clears, the execution-time semantics each submit carries.
     */
-   return sentinel_fill_color(device, draw->target_memory,
-                              draw->target_fill_offset,
-                              draw->target_fill_bytes);
+   return fill_color(device, draw->target_memory, draw->target_fill_offset,
+                     draw->target_fill_bytes, draw->clear_dword);
 }
 
 /* The producer footprint over the triangle's three records: the odd
@@ -2324,8 +2325,9 @@ r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
       carrier_memory->map = NULL;
    }
 
-   VkResult fill_result = sentinel_fill_color(device, color_memory, 0,
-                                              color_memory->bo.size);
+   VkResult fill_result = fill_color(device, color_memory, 0,
+                                     color_memory->bo.size,
+                                     R300_TRIANGLE_COLOR_SENTINEL);
    if (fill_result != VK_SUCCESS)
       return fill_result;
 
