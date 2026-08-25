@@ -129,6 +129,10 @@ enum r300_compute_verb {
    R300_COMPUTE_VERB_PARALLEL_4OUT_MAP,
    /* out[i] = ~in[i] on an 8-bit stencil plane (ZS_INVERT). */
    R300_COMPUTE_VERB_STENCIL_INVERT,
+   /* out[i] = ~in[i] over whole uint32 words on the host executor; the
+    * ROP INVERT logic op is the candidate raster carrier and holds the
+    * row's gate until its truth-table probe runs. */
+   R300_COMPUTE_VERB_BITWISE_NOT_MAP,
    R300_COMPUTE_VERB_COUNT,
 };
 

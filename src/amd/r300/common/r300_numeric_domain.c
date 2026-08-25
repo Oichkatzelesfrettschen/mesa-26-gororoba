@@ -983,6 +983,17 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "all 32-bit lanes",
       .implementation_label = NULL,
    },
+   {
+      OP(BITWISE_NOT_MAP),
+      .domain          = R300_NUM_DOMAIN_ROP_BOOL,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "out[gid] = ~in[gid]: the complement of a 32-bit "
+                         "word is exact in every bit position and needs no "
+                         "carrier arithmetic; the RB3D ROP INVERT logic op "
+                         "is the candidate raster carrier and awaits the "
+                         "ROP truth-table probe the ROP_BOOL domain names",
+      .implementation_label = NULL,
+   },
    /* NULL sentinel -- keep last */
    { .operation_id = R300_OPERATION_ID_NONE, .op_name = NULL },
 };

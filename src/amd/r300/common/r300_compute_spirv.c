@@ -50,6 +50,7 @@ enum {
    OP_IN_BOUNDS_ACCESS_CHAIN = 66,
    OP_DECORATE = 71,
    OP_MEMBER_DECORATE = 72,
+   OP_NOT = 200,
    OP_LABEL = 248,
    OP_RETURN = 253,
    OP_NO_LINE = 317,
@@ -113,6 +114,7 @@ enum id_kind {
    ID_PTR_SSBO_ELEM,
    ID_VAL_GID_X,
    ID_VAL_LOADED_WORD,
+   ID_VAL_COMPLEMENT_WORD,
 };
 
 struct id_info {
@@ -122,7 +124,8 @@ struct id_info {
     * ID_TYPE_RUNTIME_ARRAY: element type id (a), ArrayStride (b).
     * ID_TYPE_STRUCT: member-0 type id (a), member count (b), member-0
     * Offset (c).  ID_PTR_SSBO_ELEM: the SSBO variable id (a).
-    * ID_VAL_LOADED_WORD: the SSBO variable id it loaded from (a).
+    * ID_VAL_LOADED_WORD and ID_VAL_COMPLEMENT_WORD: the SSBO variable
+    * id the value came from (a).
     * ID_VAR_FUNCTION: the value kind the last recognized store left in
     * the variable (b).
     */
@@ -229,6 +232,8 @@ admit_module(const uint32_t *words, size_t word_count,
    uint32_t load_var = 0;
    uint32_t store_var = 0;
    uint32_t stored_value = 0;
+   bool complement_seen = false;
+   uint8_t job_op = R300_COMPUTE_JOB_OP_IDENTITY;
 
    size_t at = 5;
    while (at < word_count) {
@@ -414,7 +419,7 @@ admit_module(const uint32_t *words, size_t word_count,
       }
 
       case OP_TYPE_FLOAT:
-         return refuse(r, "float type outside the identity-map subset");
+         return refuse(r, "float type outside the elementwise-map subset");
 
       case OP_TYPE_VECTOR: {
          if (len != 4)
@@ -697,6 +702,30 @@ admit_module(const uint32_t *words, size_t word_count,
          break;
       }
 
+      case OP_NOT: {
+         /* The one arithmetic step the kernel grammar admits: the
+          * complement of the word the storage load produced, which the
+          * store then consumes.  One store consumes one value, so a
+          * second complement would leave a computed word unwritten.
+          */
+         if (len != 4 || !in_function || returned)
+            return refuse(r, "malformed bitwise complement");
+         if (complement_seen)
+            return refuse(r, "more than one bitwise complement");
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL)
+            return refuse(r, "malformed bitwise complement");
+         if (!id_is(r, w[1], ID_TYPE_INT32))
+            return refuse(r, "bitwise complement outside one 32-bit word");
+         const struct id_info *operand = info(r, w[3]);
+         if (operand == NULL || operand->kind != ID_VAL_LOADED_WORD)
+            return refuse(r, "bitwise complement outside the loaded word");
+         entry->kind = ID_VAL_COMPLEMENT_WORD;
+         entry->a = operand->a;
+         complement_seen = true;
+         break;
+      }
+
       case OP_STORE: {
          if ((len != 3 && len != 4) || !in_function || returned)
             return refuse(r, "malformed store");
@@ -715,8 +744,25 @@ admit_module(const uint32_t *words, size_t word_count,
          } else if (ptr->kind == ID_PTR_SSBO_ELEM) {
             if (store_var != 0)
                return refuse(r, "more than one storage store");
-            if (value->kind != ID_VAL_LOADED_WORD)
-               return refuse(r, "stored value is not the loaded word");
+            /* The complement, once computed, is the value the kernel
+             * exists to write: a store of the loaded word beside it
+             * would leave the complement unread, so the store names
+             * whichever value the module's single arithmetic step
+             * produced.
+             */
+            if (value->kind == ID_VAL_LOADED_WORD) {
+               if (complement_seen)
+                  return refuse(r,
+                                "stored value leaves the bitwise "
+                                "complement unread");
+               job_op = R300_COMPUTE_JOB_OP_IDENTITY;
+            } else if (value->kind == ID_VAL_COMPLEMENT_WORD) {
+               job_op = R300_COMPUTE_JOB_OP_BITWISE_NOT;
+            } else {
+               return refuse(r,
+                             "stored value outside the loaded word and "
+                             "its bitwise complement");
+            }
             store_var = ptr->a;
             stored_value = w[2];
          } else {
@@ -748,8 +794,8 @@ admit_module(const uint32_t *words, size_t word_count,
           * arithmetic, the scatter module's address math among it.
           */
          if (opcode >= 126 && opcode <= 141)
-            return refuse(r, "arithmetic outside the identity-map subset");
-         return refuse(r, "opcode outside the identity-map subset");
+            return refuse(r, "arithmetic outside the elementwise-map subset");
+         return refuse(r, "opcode outside the elementwise-map subset");
       }
    }
 
@@ -774,7 +820,7 @@ admit_module(const uint32_t *words, size_t word_count,
       return refuse(r, "load and store share one binding");
 
    memset(job, 0, sizeof(*job));
-   job->op = R300_COMPUTE_JOB_OP_IDENTITY;
+   job->op = job_op;
    job->input_binding = in_var->binding;
    job->output_binding = out_var->binding;
    job->local_size[0] = local_size[0];

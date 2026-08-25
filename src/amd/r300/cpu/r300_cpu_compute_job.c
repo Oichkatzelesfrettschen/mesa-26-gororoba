@@ -13,7 +13,8 @@ int r300_cpu_compute_job_validate(const struct r300_compute_job *job)
 {
    if (job == NULL)
       return -EINVAL;
-   if (job->op != R300_COMPUTE_JOB_OP_IDENTITY)
+   if (job->op != R300_COMPUTE_JOB_OP_IDENTITY &&
+       job->op != R300_COMPUTE_JOB_OP_BITWISE_NOT)
       return -EINVAL;
    if (job->local_size[0] == 0 || job->local_size[1] == 0 ||
        job->local_size[2] == 0)
@@ -71,14 +72,32 @@ int r300_cpu_compute_job_execute(const struct r300_compute_job *job,
       (uint64_t)invocations * R300_COMPUTE_JOB_ELEMENT_BYTES;
    if (input_bytes < bytes || output_bytes < bytes)
       return -ERANGE;
-   /* The identity is a bit copy, so overlapping ranges would make the
-    * result depend on copy order; the refusal keeps every admitted
-    * execution order-independent.
+   /* Both maps read every element before the write that would cover
+    * it, so overlapping ranges would make the result depend on element
+    * order; the refusal keeps every admitted execution
+    * order-independent.
     */
    const uintptr_t in_addr = (uintptr_t)input;
    const uintptr_t out_addr = (uintptr_t)output;
    if (in_addr < out_addr + bytes && out_addr < in_addr + bytes)
       return -EINVAL;
-   memcpy(output, input, bytes);
+   if (job->op == R300_COMPUTE_JOB_OP_IDENTITY) {
+      memcpy(output, input, bytes);
+      return 0;
+   }
+   /* The complement moves through memcpy at element granularity, so a
+    * mapped range at any alignment carries the same bit pattern the
+    * shader's 32-bit word type names.
+    */
+   const unsigned char *in_bytes = input;
+   unsigned char *out_bytes = output;
+   for (uint32_t i = 0; i < invocations; i++) {
+      uint32_t word;
+      memcpy(&word, in_bytes + (size_t)i * R300_COMPUTE_JOB_ELEMENT_BYTES,
+             sizeof(word));
+      word = ~word;
+      memcpy(out_bytes + (size_t)i * R300_COMPUTE_JOB_ELEMENT_BYTES, &word,
+             sizeof(word));
+   }
    return 0;
 }

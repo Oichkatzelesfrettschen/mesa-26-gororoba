@@ -8,7 +8,6 @@ WorkgroupSize constant disagrees with LocalSize
 access chain outside the Position member
 access chain outside the admitted bases
 access chain outside the bound
-arithmetic outside the identity-map subset
 arithmetic width outside the vec4 model
 array type outside the gl_PerVertex tail
 capability outside Shader
@@ -31,7 +30,6 @@ execution mode outside LocalSize
 execution mode outside the admitted grammar
 extended instruction outside GLSL.std.450 Fma
 extended-instruction import outside GLSL.std.450
-float type outside the identity-map subset
 float width outside 32 bits
 fragment input outside varying 0 as vec4
 fragment output outside color 0 as vec4
@@ -88,7 +86,6 @@ more than one shader output
 more than one storage load
 more than one storage store
 more than one vertex varying output
-opcode outside the identity-map subset
 opcode outside the vec4 straight line
 operand outside the admitted straight line
 operand outside the bound
@@ -106,7 +103,6 @@ storage class outside the admitted grammar
 storage layout outside the 4-byte word array
 store outside the admitted pointers
 store outside the bound
-stored value is not the loaded word
 struct type outside gl_PerVertex
 two vertex inputs at one location
 unrecognized module
@@ -128,3 +124,12 @@ int vertex input outside the VertexIndex and InstanceIndex builtins
 system value loaded outside its int type
 malformed conversion
 conversion outside a loaded system value to float
+arithmetic outside the elementwise-map subset
+bitwise complement outside one 32-bit word
+bitwise complement outside the loaded word
+float type outside the elementwise-map subset
+malformed bitwise complement
+opcode outside the elementwise-map subset
+stored value leaves the bitwise complement unread
+stored value outside the loaded word and its bitwise complement
+more than one bitwise complement

@@ -30,10 +30,18 @@ test_rows_well_formed(void)
       assert(r300_compute_verb_row((enum r300_compute_verb)i) == &rows[i]);
       assert(strncmp(rows[i].gpu_gate, "R3V_NATIVE_COMPUTE_", 19) == 0);
       assert(strstr(rows[i].gpu_gate, "_GPU_EXPERIMENTAL") != NULL);
-      assert(rows[i].evidence_scope ==
-             (i == R300_COMPUTE_VERB_IDENTITY_MAP
-                 ? R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL
-                 : R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL));
+      /* Evidence scope follows the route the row delivers: the
+       * identity map's retained native-route cell, the word
+       * complement's host executor, and a retained raster cell for
+       * every row whose GPU carrier is the evidence.
+       */
+      const enum r300_compute_verb_evidence_scope expected_scope =
+         i == R300_COMPUTE_VERB_IDENTITY_MAP
+            ? R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL
+            : i == R300_COMPUTE_VERB_BITWISE_NOT_MAP
+                 ? R300_COMPUTE_VERB_EVIDENCE_SCOPE_HOST_EXECUTOR
+                 : R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL;
+      assert(rows[i].evidence_scope == expected_scope);
    }
    assert(r300_compute_verb_row(R300_COMPUTE_VERB_COUNT) == NULL);
 }
@@ -99,6 +107,10 @@ static const struct catalog_binding_expectation catalog_bindings[] = {
    { R300_COMPUTE_VERB_STENCIL_INVERT,
      R300_OPERATION_ID_STENCIL_INVERT_NOT,
      R300_NUM_DOMAIN_U8_STENCIL, R300_COMPUTE_VERB_UNIT_ZB_STENCIL,
+     R300_COMPUTE_VERB_BIT_EXACT },
+   { R300_COMPUTE_VERB_BITWISE_NOT_MAP,
+     R300_OPERATION_ID_BITWISE_NOT_MAP,
+     R300_NUM_DOMAIN_ROP_BOOL, R300_COMPUTE_VERB_UNIT_HOST,
      R300_COMPUTE_VERB_BIT_EXACT },
 };
 
@@ -195,7 +207,7 @@ catalog_binding_valid(const struct r300_compute_verb_row *row,
 }
 
 /* Every compute verb names one catalog op, resolves exactly once, and all
- * fourteen joins agree on domain, unit, exactness, evidence, and route state. */
+ * fifteen joins agree on domain, unit, exactness, evidence, and route state. */
 static void
 test_catalog_binding(void)
 {
@@ -325,8 +337,8 @@ test_checker_calibration(void)
    assert(!r300_compute_verb_rows_valid(mutated, count - 1, &reason));
 
    /* The queue claim: the ledger today is not conformant (thirteen rows
-    * absent), so the claim follows the gate over the delivered CPU
-    * route; a table with every route executing claims without a gate;
+    * with both routes absent, one with the CPU route alone), so the
+    * claim follows the gate over the delivered CPU route; a table with every route executing claims without a gate;
     * a table whose only executing route is a GPU route claims nothing
     * through the gate; an empty table claims nothing.
     */
@@ -574,10 +586,11 @@ test_checker_calibration(void)
    assert(r300_compute_verb_rows_valid(mutated, count, &reason));
 }
 
-/* The precommitment the routes rest on: the identity map alone executes
- * on the CPU route and on a GPU route -- the R2VB carrier under the FP24
- * window, behind its exact gate -- every other GPU route is absent, and
- * the job op maps onto that row and onto nothing else. */
+/* The precommitment the routes rest on: the identity map is the one row
+ * whose GPU route executes -- the R2VB carrier under the FP24 window,
+ * behind its exact gate -- the word complement joins it on the CPU route
+ * through the host executor, every other route is absent, and each job
+ * op maps onto its own row. */
 static void
 test_precommitment(void)
 {
@@ -587,6 +600,9 @@ test_precommitment(void)
       if (i == R300_COMPUTE_VERB_IDENTITY_MAP) {
          assert(rows[i].cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
          assert(rows[i].gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
+      } else if (i == R300_COMPUTE_VERB_BITWISE_NOT_MAP) {
+         assert(rows[i].cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING);
+         assert(rows[i].gpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT);
       } else {
          assert(rows[i].cpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT);
          assert(rows[i].gpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT);
@@ -609,8 +625,25 @@ test_precommitment(void)
    assert(strcmp(identity->gpu_gate,
                  "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL") == 0);
 
+   const struct r300_compute_verb_row *complement =
+      &rows[R300_COMPUTE_VERB_BITWISE_NOT_MAP];
+   assert(complement->unit == R300_COMPUTE_VERB_UNIT_HOST);
+   assert(complement->exactness == R300_COMPUTE_VERB_BIT_EXACT);
+   assert(complement->operation_id == R300_OPERATION_ID_BITWISE_NOT_MAP);
+   assert(complement->implementation_id ==
+          R300_OPERATION_IMPLEMENTATION_NONE);
+   assert(complement->gpu_route_contract_id ==
+          R300_GPU_ROUTE_CONTRACT_NONE);
+   assert(complement->evidence == R300_COMPUTE_VERB_EVIDENCE_HOST);
+   assert(complement->evidence_scope ==
+          R300_COMPUTE_VERB_EVIDENCE_SCOPE_HOST_EXECUTOR);
+
    const struct r300_compute_job job = { .op = R300_COMPUTE_JOB_OP_IDENTITY };
    assert(r300_compute_verb_for_job(&job) == identity);
+   const struct r300_compute_job complement_job = {
+      .op = R300_COMPUTE_JOB_OP_BITWISE_NOT
+   };
+   assert(r300_compute_verb_for_job(&complement_job) == complement);
    const struct r300_compute_job outside = { .op = 0x7f };
    assert(r300_compute_verb_for_job(&outside) == NULL);
    assert(r300_compute_verb_for_job(NULL) == NULL);
