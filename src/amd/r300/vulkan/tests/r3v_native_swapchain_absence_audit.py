@@ -5,9 +5,9 @@
 WSI-dependent conformance case sits on top of: `KHR_swapchain` appears
 in no device extension table, no dEQP binding row, and defines no
 `r3v_CreateSwapchainKHR` route in the built driver, so `vkCreateSwapchainKHR`
-never reaches this ICD.  A partial edit -- an extension bit flipped on
+never reaches this ICD.  A partial edit--an extension bit flipped on
 without the route that would make it true, a binding row added ahead of
-the code, or a defined dispatch symbol with no advertised extension --
+the code, or a defined dispatch symbol with no advertised extension--
 breaks that denominator silently, because none of the three sources
 alone proves the others.  This audit reads all three together and fails
 the moment any one of them carries a `KHR_swapchain` signal the other

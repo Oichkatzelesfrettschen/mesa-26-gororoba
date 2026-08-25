@@ -5,20 +5,27 @@
 that `r3v_init_wsi` routes through the render-node fd (the DRM/DRI3
 path) by default and falls back to the Mesa common WSI software
 (xcb-shm CPU) route only when `R3V_WSI_SW` begins with `'1'`.  Three
-comment sites -- the block above `r3v_init_wsi` itself, the `wsi_device`
-field declaration, and the `KHR_surface` extension-table entry -- once
+comment sites--the block above `r3v_init_wsi` itself, the `wsi_device`
+field declaration, and the `KHR_surface` extension-table entry--once
 stated the opposite: software mode by default, unqualified by the
 environment variable that actually selects it.  This check pins that
 correction: a comment naming "software mode" or "the lavapipe pattern"
-at any of the three sites, in a file that nowhere names `R3V_WSI_SW`,
-is the same mismatch restated, and the check fails.
+at any of the three sites, with no `R3V_WSI_SW` in that same comment
+block, is the same mismatch restated, and the check fails.  The guard
+is read from the flagged comment itself, not the file at large, so a
+qualified comment elsewhere in the file (an unrelated `getenv` call, a
+different comment) does not launder an unqualified one back to a pass;
+phrase and guard matching both run on the comment text with its `/*
+*/` delimiters, `*` continuation leaders, and line breaks collapsed to
+single spaces, so a phrase split across a wrapped comment line still
+reads as one phrase.
 
 Usage:
   r3v_wsi_init_comment_parity_audit.py --physical-device C --header H \
       --instance C
   r3v_wsi_init_comment_parity_audit.py --selftest
-Exit 0 when every flagged phrase at the three sites sits in a file that
-also names R3V_WSI_SW.
+Exit 0 when every flagged phrase at the three sites sits in a comment
+that also names R3V_WSI_SW.
 """
 
 import argparse
@@ -74,23 +81,46 @@ def preceding_comment(text, anchor):
     return text[comment_start:comment_end + 2]
 
 
+def normalize_comment(comment):
+    """Collapse a C comment to one whitespace-normalized line: strip the
+    `/* */` delimiters, drop each line's leading `*` continuation
+    leader, and join on single spaces.  A phrase or the guard string
+    wrapped across a line break in the source reads as contiguous
+    text, exactly as a reader parses the comment's prose rather than
+    its line breaks."""
+    body = comment
+    if body.startswith("/*"):
+        body = body[2:]
+    if body.endswith("*/"):
+        body = body[:-2]
+    words = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("*"):
+            stripped = stripped[1:].strip()
+        if stripped:
+            words.append(stripped)
+    return re.sub(r"\s+", " ", " ".join(words)).strip()
+
+
 def site_violations(text, filename_label):
     violations = []
-    has_guard = GUARD_STRING in text
     for site, (anchor, description) in SITES.items():
         comment = preceding_comment(text, anchor)
         if not comment:
             continue
-        lowered = comment.lower()
+        normalized = normalize_comment(comment)
+        lowered = normalized.lower()
         hit = next((p for p in FLAGGED_PHRASES if p in lowered), None)
         if hit is None:
             continue
-        if not has_guard:
+        if GUARD_STRING not in normalized:
             violations.append(
                 f"{filename_label}: the comment above {description} "
-                f"names {hit!r} and the file names no {GUARD_STRING}, so "
-                f"the comment restates the software-mode-by-default "
-                f"mismatch this check pins closed")
+                f"names {hit!r} and that same comment names no "
+                f"{GUARD_STRING}, so the comment restates the "
+                f"software-mode-by-default mismatch this check pins "
+                f"closed")
     return violations
 
 
@@ -175,10 +205,62 @@ def selftest():
           refuses([("r3v_instance.c", reintroduced_instance)],
                   "KHR_surface extension entry"))
 
-    check("passes a file naming the phrase with the guard present",
-          audit([("r3v_physical_device.c",
-                  reintroduced_physical_device
-                  + "\n/* R3V_WSI_SW selects the fallback. */\n")]))
+    guarded_same_comment = (
+        "/* Mesa common WSI in software mode, the lavapipe pattern, "
+        "selected by R3V_WSI_SW: sw_device makes the swapchain "
+        "allocate CPU-reachable images and present through the "
+        "xcb-shm path. */\n"
+        "static VkResult\n"
+        "r3v_init_wsi(struct r3v_physical_device *device)\n"
+        "{\n"
+        "}\n")
+    check("passes a comment naming the phrase with the guard in the "
+          "same comment",
+          audit([("r3v_physical_device.c", guarded_same_comment)]))
+
+    check("refuses the guard sitting in an unrelated comment elsewhere "
+          "in the file rather than the flagged comment itself",
+          refuses([("r3v_physical_device.c",
+                    reintroduced_physical_device
+                    + "\n/* R3V_WSI_SW selects the fallback. */\n")],
+                  "r3v_init_wsi definition"))
+
+    # Known-bad mutation A: a guard occurring anywhere else in the
+    # file--a getenv("R3V_WSI_SW") call inside r3v_init_wsi's own
+    # body, an unrelated comment--does not qualify a flagged comment;
+    # only R3V_WSI_SW inside the flagged comment itself qualifies it.
+    mutation_a_file_scoped_guard_elsewhere = (
+        "/* Mesa common WSI in software mode, the lavapipe pattern: "
+        "sw_device makes the swapchain allocate CPU-reachable images "
+        "and present through the xcb-shm path. */\n"
+        "static VkResult\n"
+        "r3v_init_wsi(struct r3v_physical_device *device)\n"
+        "{\n"
+        "   const char *wsi_sw_env = getenv(\"R3V_WSI_SW\");\n"
+        "}\n")
+    check("refuses mutation A: R3V_WSI_SW present only in the function "
+          "body, not the flagged comment",
+          refuses([("r3v_physical_device.c",
+                    mutation_a_file_scoped_guard_elsewhere)],
+                  "r3v_init_wsi definition"))
+
+    # Known-bad mutation B: wrapping a flagged phrase across a comment
+    # continuation line ("software" / "* mode") still reads as the
+    # phrase once normalize_comment joins the lines; the comment
+    # carries no R3V_WSI_SW at all, so the wrap is the only thing
+    # standing between this fixture and a correct refusal.
+    mutation_b_phrase_wrapped_across_lines = (
+        "  /* backs presentation through Mesa's common WSI in software\n"
+        "   * mode ... X11 surfaces only; presentation runs through the\n"
+        "   * xcb-shm CPU path, no DRM modifiers or dma-buf involved, the\n"
+        "   * lavapipe\n"
+        "   * pattern this driver borrows the copy step from. */\n"
+        "  .KHR_surface = true,\n")
+    check("refuses mutation B: both flagged phrases wrapped across a "
+          "comment continuation line",
+          refuses([("r3v_instance.c",
+                    mutation_b_phrase_wrapped_across_lines)],
+                  "KHR_surface extension entry"))
 
     check("passes a file with neither anchor present",
           audit([("unrelated.c", "/* software mode, lavapipe pattern */\n"

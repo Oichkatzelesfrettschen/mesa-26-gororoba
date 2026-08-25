@@ -162,9 +162,9 @@ document's earlier sections cite.
 table (`r3v_native_device_extensions_supported`), the advertised-surface
 binding ledger (`tests/r3v_advertised_surface_deqp_binding.tsv`), and the
 built ICD's own symbol table (`nm libvulkan_r3v.so`) together, and fails the
-moment any one of the three carries a `KHR_swapchain` signal -- an
+moment any one of the three carries a `KHR_swapchain` signal--an
 advertised extension bit, a binding row, or a defined `r3v_CreateSwapchainKHR`
-route -- the other two do not corroborate, since this document's
+route--the other two do not corroborate, since this document's
 driver-callback table names no route for the extension at all.
 
 Falsifier, exercised by `--selftest` and confirmed against the real tree: the
@@ -206,8 +206,8 @@ documents the boundary.
 
 ### WSI-test registration-gate audit
 
-`tests/r3v_wsi_registration_gate_audit.py` parses `meson.build` as text --
-no configured build required -- tracks its `if`/`foreach` nesting, and
+`tests/r3v_wsi_registration_gate_audit.py` parses `meson.build` as text--no
+configured build required--tracks its `if`/`foreach` nesting, and
 asserts that the `r3v_native_wsi_surface_contract` target and its
 associated `r3v-xvfb-wrapper-passthrough-*`/`-infrastructure-refusal` tests
 sit inside the `if dep_xcb.found() and prog_xvfb.found()` block, while

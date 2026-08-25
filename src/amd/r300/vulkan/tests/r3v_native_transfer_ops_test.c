@@ -877,10 +877,10 @@ check_optimal_tiling(const struct fixture *f)
          "an OPTIMAL-tiled color-attachment request still refuses: the "
          "render family stays VK_IMAGE_TILING_LINEAR only");
 
-   /* A swapchain-shaped presentable image -- TRANSFER_DST for the
+   /* A swapchain-shaped presentable image--TRANSFER_DST for the
     * present blit plus COLOR_ATTACHMENT for the render target, OPTIMAL
     * tiling for scanout, an application-chosen extent above the
-    * render family's 64x64 ceiling -- carries no route through either
+    * render family's 64x64 ceiling--carries no route through either
     * admitted family: the usage mix fails the color-attachment
     * branch's usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT equality
     * and the transfer branch's usage-subset test alike
