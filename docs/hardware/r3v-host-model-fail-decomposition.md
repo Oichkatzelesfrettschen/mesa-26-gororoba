@@ -407,3 +407,56 @@ above, and a concurrent PR is landing `OpNot` admission in
 directly, which will need its own row (or the `driver_defect_open`
 default continues to cover it correctly until it lands, since the
 population is a real open defect either way).
+
+## Draw and robustness slices: 482 fails, five mechanisms
+
+The closed-gate host-model runs of the `draw` (371 Fail) and
+`robustness` (111 Fail) partition slices decompose by first refusal,
+found by reading each case's log against the driver
+(`rg --fixed-strings` on the refusal text; the two CTS-authored texts
+have no driver hit because the driver's own refusals are bare
+`vk_error(device, R3V_NATIVE_REFUSAL_RESULT)` calls, `r3v_native.h`):
+
+- 309 `dEQP-VK.draw.renderpass.*`: `r3v_CreateImage`
+  (`r3v_native_image.c`) refuses the base-class color attachment,
+  `VK_FORMAT_R8G8B8A8_UNORM` at the test's extent, against the executed
+  target `VK_FORMAT_B8G8R8A8_UNORM` at 64x64.  Class
+  `image_outside_executed_envelope`.
+- 30 `dEQP-VK.pipeline.monolithic.vertex_input.*`: the same function,
+  the same `R8G8B8A8_UNORM` format; the usage the test also carries
+  (`COLOR_ATTACHMENT|TRANSFER_SRC`) is the later check.  Class
+  `image_outside_executed_envelope`.
+- 111 `dEQP-VK.robustness.buffer_access.*_copy.*`:
+  `r300_compute_job_from_spirv` (`common/r300_compute_spirv.c`) refuses
+  the module at `storage access outside member 0 of the word array`:
+  the shaders load the storage index from a two-int uniform block
+  through a one-index `OpAccessChain`, and the recognizer admits only
+  the flattened GlobalInvocationID shape.  Class `driver_defect_open`.
+- 25 `output_location.array.{b10g11r11,r16g16,r32,r32g32b32a32,r8g8-uint}-*`,
+  `shuffle.inputs-outputs-mod`, `flat_b_sat_error`,
+  `depth_bias_triangle_list_fill`: the CTS pre-flight color-attachment
+  format check fails because `r3v_get_format_properties` grants those
+  formats no `COLOR_ATTACHMENT_BIT` under any tiling; a render target in
+  those formats is a silicon route the color backend has not executed.
+  Class `driver_defect_open`.
+- 7 `output_location.array.b8g8r8a8-unorm-*`, `shuffle.inputs-outputs`:
+  the same pre-flight check under `VK_IMAGE_TILING_OPTIMAL`, where the
+  executed format carries the bit on linear tiling alone; the fragment
+  shader then writes three color locations, which
+  `r3v_native_render_pass_matches_cell`'s one-attachment cell refuses.
+  Class `driver_defect_open`.
+
+A rung admitting the color-plus-transfer usage family and the
+optimal-tiling color-attachment bit on `B8G8R8A8_UNORM` was built and
+measured: 0 of the 42 targeted cases moved and 0 of 39,966 draw cases
+changed status, because each family stops at the format or the
+attachment count before usage or tiling is consulted, so the rung was
+not merged; a surface widening earns its place by a case it moves.  The
+host-provable rungs that remain are the `R8G8B8A8_UNORM` target
+(a channel order the CPU route writes as readily as `B8G8R8A8_UNORM`,
+while the extent stays receipt-pinned at 64x64) and the recognizer's
+uniform-indexed storage access; the 25 unlisted-format cases and the
+multi-attachment cases are silicon routes.  `driver_defect_open` is
+the ledger's last row (`dEQP-VK\..*`, no detail pattern), so it
+names the residue, not a mechanism: its 143 cases here are three
+unrelated refusals.
