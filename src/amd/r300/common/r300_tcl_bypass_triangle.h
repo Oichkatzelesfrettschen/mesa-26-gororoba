@@ -464,8 +464,20 @@ void r300_tcl_bypass_triangle_render_shape_vertices(
 uint32_t r300_tcl_bypass_triangle_render_shape_color_bytes(
    const struct r300_triangle_render_shape *shape);
 
-/* The dword an interior pixel holds: each channel rounded to UNORM8 and
- * placed by the lane order.
+/* The target dword a normalized RGBA quadruple stores: each channel
+ * clamped to [0, 1], rounded to its UNORM8 byte, and placed by the lane
+ * order.  The color buffer applies this conversion to the shaded value,
+ * and a Vulkan clear color reaches the same bytes through it -- a
+ * VkClearColorValue's live member follows the format's numeric type, so
+ * a UNORM target reads float32 and the conversion is the whole
+ * translation.  A NaN channel stores zero, the value the clamp of an
+ * unordered comparison leaves.
+ */
+uint32_t r300_tcl_bypass_triangle_pack_unorm8_dword(
+   enum r300_triangle_lane_order lanes, const float rgba[4]);
+
+/* The dword an interior pixel holds: the shape's constant through the
+ * conversion above.
  */
 uint32_t r300_tcl_bypass_triangle_render_shape_draw_dword(
    const struct r300_triangle_render_shape *shape);

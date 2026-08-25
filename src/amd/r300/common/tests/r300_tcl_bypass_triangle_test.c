@@ -1552,6 +1552,38 @@ test_render_shape_oracle_calibration(void)
           verdict.interior_samples == 0);
 }
 
+/* The shared UNORM8 packer: the conversion the color buffer applies to
+ * a shaded value, and the one a Vulkan clear color reaches its texel
+ * through.  Clamping and NaN handling are part of the contract, so the
+ * out-of-range and unordered inputs are calibrated beside the ordinary
+ * quarter-step one.
+ */
+static void
+test_pack_unorm8_dword(void)
+{
+   const float quarters[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+   assert(r300_tcl_bypass_triangle_pack_unorm8_dword(
+             R300_TRIANGLE_LANES_B8G8R8A8, quarters) == 0xff4080bfu);
+   assert(r300_tcl_bypass_triangle_pack_unorm8_dword(
+             R300_TRIANGLE_LANES_R8G8B8A8, quarters) == 0xffbf8040u);
+
+   /* Out of range clamps to the endpoints and a NaN channel stores
+    * zero, so every float32 quadruple has a defined texel.
+    */
+   const float extremes[4] = { -1.0f, 2.0f, 0.0f / 0.0f, 1.0f };
+   assert(r300_tcl_bypass_triangle_pack_unorm8_dword(
+             R300_TRIANGLE_LANES_R8G8B8A8, extremes) == 0xff00ff00u);
+
+   /* The shape's draw dword is the shape constant through this packer. */
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   float reference_rgba[4];
+   memcpy(reference_rgba, shape.color_bits, sizeof(reference_rgba));
+   assert(r300_tcl_bypass_triangle_pack_unorm8_dword(shape.lanes,
+                                                     reference_rgba) ==
+          r300_tcl_bypass_triangle_render_shape_draw_dword(&shape));
+}
+
 int
 main(void)
 {
@@ -1577,6 +1609,7 @@ main(void)
    test_extent_emit_deviates_in_scissor_words_alone();
    test_render_shape_deviates_per_parameter();
    test_render_shape_oracle_calibration();
+   test_pack_unorm8_dword();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }

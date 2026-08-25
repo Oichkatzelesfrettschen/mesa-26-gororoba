@@ -480,16 +480,13 @@ r3v_CmdClearAttachments(
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
-      uint32_t packed = 0;
-      static const unsigned lane_byte[4] = { 2, 1, 0, 3 };
-      for (unsigned c = 0; c < 4; c++) {
-         float f = att->clearValue.color.float32[c];
-         if (f != f)
-            f = 0.0f;
-         f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
-         const uint32_t unorm = (uint32_t)(f * 255.0f + 0.5f);
-         packed |= unorm << (lane_byte[c] * 8);
-      }
+      /* The attachment's format selects the live VkClearColorValue
+       * member and the render family's formats are UNORM, so the clear
+       * reaches its texel through the color buffer's own UNORM8
+       * conversion under the target's lane order.
+       */
+      const uint32_t packed = r300_tcl_bypass_triangle_pack_unorm8_dword(
+         cmd_buffer->pass_target->lanes, att->clearValue.color.float32);
       for (uint32_t r = 0; r < rectCount; r++) {
          const VkClearRect *rect = &pRects[r];
          const VkRect2D *area = &rect->rect;

@@ -495,6 +495,10 @@ struct r3v_native_deferred_draw {
    uint64_t target_fill_offset;
    uint64_t target_fill_bytes;
    uint32_t target_row_bytes;
+   /* The load-op clear's packed texel: the pass's VkClearColorValue
+    * through the target's lane order and the UNORM8 conversion.
+    */
+   uint32_t clear_dword;
    /* The pass target's extent: the viewport transform's window scale
     * at execution.
     */

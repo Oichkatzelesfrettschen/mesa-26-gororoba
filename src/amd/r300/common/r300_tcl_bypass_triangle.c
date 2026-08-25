@@ -1083,19 +1083,25 @@ r300_tcl_bypass_triangle_render_shape_color_bytes(
 }
 
 uint32_t
+r300_tcl_bypass_triangle_pack_unorm8_dword(enum r300_triangle_lane_order lanes,
+                                           const float rgba[4])
+{
+   uint32_t byte[4];
+   for (unsigned i = 0; i < 4; i++)
+      byte[i] = unorm8_round(rgba[i]);
+   const uint32_t r = byte[0], g = byte[1], b = byte[2], a = byte[3];
+   return lanes == R300_TRIANGLE_LANES_R8G8B8A8
+             ? (r | (g << 8) | (b << 16) | (a << 24))
+             : (b | (g << 8) | (r << 16) | (a << 24));
+}
+
+uint32_t
 r300_tcl_bypass_triangle_render_shape_draw_dword(
    const struct r300_triangle_render_shape *shape)
 {
-   uint32_t byte[4];
-   for (unsigned i = 0; i < 4; i++) {
-      float value;
-      memcpy(&value, &shape->color_bits[i], sizeof(value));
-      byte[i] = unorm8_round(value);
-   }
-   const uint32_t r = byte[0], g = byte[1], b = byte[2], a = byte[3];
-   return shape->lanes == R300_TRIANGLE_LANES_R8G8B8A8
-             ? (r | (g << 8) | (b << 16) | (a << 24))
-             : (b | (g << 8) | (r << 16) | (a << 24));
+   float rgba[4];
+   memcpy(rgba, shape->color_bits, sizeof(rgba));
+   return r300_tcl_bypass_triangle_pack_unorm8_dword(shape->lanes, rgba);
 }
 
 void
