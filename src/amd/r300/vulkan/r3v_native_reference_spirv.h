@@ -9,15 +9,18 @@
 
 #include <stdint.h>
 
-/* The word arrays are the module-identity contract: pipeline creation
- * admits a shader stage by byte equality with one of these blobs, so
- * the recorded lowering is the qualified cell for exactly the programs
- * whose semantics the cell realizes.  The GLSL sources live in
- * shaders/r3v_reference_triangle.{vert,frag}: the vertex program is
- * the pretransformed-position pass-through the TCL-bypass cell
- * implements, and the fragment program writes constant
- * vec4(0, 1, 0, 1), the cell's solid-green fragment binary in
- * B8G8R8A8_UNORM (interior pixels 0xff00ff00).  Regeneration is
+/* The word arrays are the reference modules the harnesses and the
+ * front-end parity tests read; pipeline creation admits a stage by the
+ * semantics its words carry (r300_vertex_job_from_spirv,
+ * r300_fragment_constant_color_from_spirv), so these blobs are one
+ * admitted specimen rather than the admission itself.  The GLSL sources
+ * live in shaders/r3v_reference_triangle.{vert,frag}: the vertex
+ * program is the pretransformed-position pass-through the TCL-bypass
+ * cell implements, and the fragment program writes constant
+ * vec4(0, 1, 0, 1).  The render-shape cell carries the constant the
+ * admitted module wrote into its four R300_PFS_PARAM_0 payloads, so
+ * this module renders 0xff00ff00 in a B8G8R8A8_UNORM target and
+ * 0xff0000ff in an R8G8B8A8_UNORM one.  Regeneration is
  * glslangValidator -V --target-env vulkan1.0; the checked-in words are
  * the authority and a regenerated blob replaces them only through this
  * header.

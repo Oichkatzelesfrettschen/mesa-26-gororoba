@@ -90,15 +90,18 @@ static bool
 r3v_native_image_layout_ok(const struct r3v_native_image *image,
                            VkImageLayout layout)
 {
-   if (image->transfer_family) {
-      if (layout == VK_IMAGE_LAYOUT_GENERAL)
-         return true;
-      return ((image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
-              r3v_native_transfer_source_layout_ok(layout)) ||
-             ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&
-              r3v_native_transfer_destination_layout_ok(layout));
-   }
-   return r3v_native_render_layout_ok(layout);
+   if (layout == VK_IMAGE_LAYOUT_GENERAL)
+      return true;
+   /* Each usage bit brings its own layouts, so a render target that also
+    * carries transfer usage reaches both vocabularies.
+    */
+   if ((image->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
+       r3v_native_render_layout_ok(layout))
+      return true;
+   return ((image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
+           r3v_native_transfer_source_layout_ok(layout)) ||
+          ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&
+           r3v_native_transfer_destination_layout_ok(layout));
 }
 
 /* The synchronous host executor has no hardware image-layout register:
@@ -229,6 +232,10 @@ r3v_native_copy_subresource_ok(const VkImageSubresourceLayers *sub)
 }
 
 /* The offset admits non-negative and the rectangle inside the image.
+ * Both families copy through the same host row walk over the image's own
+ * row pitch, so the rectangle rule is the family-independent one; the
+ * per-command usage-bit and layout checks decide which image each
+ * direction admits.
  * The region extent arrives from the application unbounded, so the
  * containment sums widen to 64 bits; a wrapping 32-bit sum would admit
  * an extent of 2^32 - 1 texels against a 16-texel image.  The image
@@ -239,8 +246,8 @@ static bool
 r3v_native_copy_rect_ok(const struct r3v_native_image *image,
                         VkOffset3D offset, VkExtent3D extent)
 {
-   return image != NULL && image->transfer_family &&
-          image->memory != NULL && offset.x >= 0 && offset.y >= 0 &&
+   return image != NULL && image->memory != NULL &&
+          offset.x >= 0 && offset.y >= 0 &&
           offset.z == 0 && extent.depth == 1 && extent.width >= 1 &&
           extent.height >= 1 &&
           (uint64_t)(uint32_t)offset.x + extent.width <= image->width &&

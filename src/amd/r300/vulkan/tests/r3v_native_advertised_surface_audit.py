@@ -61,12 +61,12 @@ LIMIT_RECEIPTS = {
         "whose creation ceiling the macro names"),
     "maxFramebufferWidth": (
         "R3V_MAX_RENDER_EXTENT",
-        "r3v-native-public-surface renders at the 64-pixel target "
-        "ceiling"),
+        "r3v-native-public-surface renders at the render-shape family's "
+        "extent ceiling"),
     "maxFramebufferHeight": (
         "R3V_MAX_RENDER_EXTENT",
-        "r3v-native-public-surface renders at the 64-pixel target "
-        "ceiling"),
+        "r3v-native-public-surface renders at the render-shape family's "
+        "extent ceiling"),
     "maxViewportDimensions[0]": (
         "R3V_MAX_RENDER_EXTENT",
         "the public-surface dynamic viewport legs hold the recorded "

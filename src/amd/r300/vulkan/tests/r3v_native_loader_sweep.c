@@ -576,15 +576,21 @@ check_image_query_alias(VkInstance alias_instance)
       { VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SUCCESS },
       { VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SUCCESS },
       { transfer_usage, VK_SUCCESS },
+      /* The render family takes the transfer bits alongside the
+       * attachment bit: their copies move the rendered bytes through
+       * the same host mapping the readback rides. */
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        VK_ERROR_FORMAT_NOT_SUPPORTED },
+        VK_SUCCESS },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        VK_ERROR_FORMAT_NOT_SUPPORTED },
+        VK_SUCCESS },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_SUCCESS },
+      /* Sampled usage has no route, so a mix naming it refuses. */
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_ERROR_FORMAT_NOT_SUPPORTED },
    };
 

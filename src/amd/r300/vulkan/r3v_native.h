@@ -12,6 +12,7 @@
 
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
@@ -871,13 +872,11 @@ struct r3v_native_buffer_view {
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer_view, base, VkBufferView,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
 
-/* The public recording surface's qualified render-target family:
- * B8G8R8A8_UNORM linear 2D color attachments at any extent inside the
- * 64x64 maximum, all sharing the maximum extent's row pitch.  The pitch
- * is a memory-layout property the cell's RB3D_COLORPITCH0 word freezes,
- * so the extent varies only the scissor-family dwords and the memory
- * footprint: pitch times height plus one oracle-headroom row past the
- * render extent.
+/* The reference render target the qualified cell renders: the 64x64
+ * B8G8R8A8_UNORM linear attachment at a 64-pixel row pitch whose
+ * emission is r300_tcl_bypass_triangle_reference_emit.  These name that
+ * one shape; the render family's admitted range is the render-shape
+ * family below.
  */
 #define R3V_NATIVE_TARGET_WIDTH 64
 #define R3V_NATIVE_TARGET_HEIGHT 64
@@ -886,10 +885,59 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer_view, base, VkBufferView,
 #define R3V_NATIVE_TARGET_MEMORY_BYTES \
    (R3V_NATIVE_TARGET_ROW_BYTES * (R3V_NATIVE_TARGET_HEIGHT + 1))
 
-static inline uint64_t
-r3v_native_image_footprint_bytes(uint32_t height)
+/* The public recording surface's render-target family, the target
+ * parameters r300_triangle_render_shape carries: 2D color attachments
+ * of either 32-bpp lane order at any extent inside
+ * R300_TRIANGLE_RENDER_MAX_EXTENT per axis.  Each parameter moves one
+ * named register class of the cell and nothing else, so the family
+ * shares the reference cell's construction: the extent moves the two
+ * scissor-family payloads, the pitch moves RB3D_COLORPITCH0, and the
+ * lane order moves the US_OUT_FMT_0 C*_SEL fields.
+ */
+#define R3V_NATIVE_RENDER_MAX_EXTENT R300_TRIANGLE_RENDER_MAX_EXTENT
+
+/* The linear 32-bpp row pitch r300g's surface layout emits: the width
+ * rounded up to eight pixels (r300_get_pixel_alignment, DIM_WIDTH,
+ * src/gallium/drivers/r300/r300_texture_desc.c), four bytes per pixel.
+ * The reference 64-pixel target is already aligned, so its row pitch
+ * stays 256 bytes.
+ */
+static inline uint32_t
+r3v_native_render_row_pitch_bytes(uint32_t width)
 {
-   return (uint64_t)R3V_NATIVE_TARGET_ROW_BYTES * (height + 1);
+   return ((width + 7u) & ~7u) * 4u;
+}
+
+/* The render family's two formats and the lane order each names: the
+ * cell's US_OUT_FMT_0 C*_SEL fields place the shader's components into
+ * target bytes, so a format outside this pair has no lane order to
+ * emit and takes no render target.  Returns false for every other
+ * format and leaves the caller's value untouched.
+ */
+static inline bool
+r3v_native_render_lane_order(VkFormat format,
+                             enum r300_triangle_lane_order *out)
+{
+   switch (format) {
+   case VK_FORMAT_B8G8R8A8_UNORM:
+      *out = R300_TRIANGLE_LANES_B8G8R8A8;
+      return true;
+   case VK_FORMAT_R8G8B8A8_UNORM:
+      *out = R300_TRIANGLE_LANES_R8G8B8A8;
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* The render family's memory contract: the row pitch times one row past
+ * the render extent, the oracle-headroom row that proves the device
+ * wrote inside the extent alone.
+ */
+static inline uint64_t
+r3v_native_render_footprint_bytes(uint32_t row_pitch_bytes, uint32_t height)
+{
+   return (uint64_t)row_pitch_bytes * (height + 1);
 }
 
 /* The linear transfer family: 2D images of a fixed-size color texel
@@ -950,14 +998,19 @@ struct r3v_native_image {
    uint32_t width;
    uint32_t height;
    /* Creation format and its texel size; the render family holds the
-    * one target format, the transfer family any format in the texel
-    * table.
+    * two 32-bpp lane orders the cell's US_OUT_FMT_0 payload places, the
+    * transfer family any format in the texel table.
     */
    VkFormat format;
    uint32_t texel_bytes;
-   /* Row layout in bytes: the fixed target pitch for the render
-    * family, the width-derived 64-byte-aligned pitch for the transfer
-    * family.
+   /* The render family's lane order, the US_OUT_FMT_0 C*_SEL fields the
+    * cell emits for this target; the transfer family moves bytes and
+    * leaves it at the B8G8R8A8 zero.
+    */
+   enum r300_triangle_lane_order lanes;
+   /* Row layout in bytes: the eight-pixel-aligned 32-bpp pitch for the
+    * render family (r3v_native_render_row_pitch_bytes), the
+    * width-derived 64-byte-aligned pitch for the transfer family.
     */
    uint32_t row_pitch_bytes;
    /* Creation usage; the copy recording admits each direction by its
@@ -1047,6 +1100,13 @@ struct r3v_native_pipeline {
     * cell over eight-dword records.
     */
    bool varying;
+   /* The constant-color fragment module's RGBA as four binary32 bit
+    * patterns on the FP24 lattice; the draw places them in the render
+    * shape, which emits them as the fragment block's R300_PFS_PARAM_0
+    * payloads.  A varying pipeline reads its color from the
+    * interpolator and leaves these zero.
+    */
+   uint32_t color_bits[4];
    /* The viewport/scissor extent creation admitted; the draw requires
     * it equal to the pass target's extent.  With the dynamic flag the
     * extent resolves from the recorded vkCmdSetViewport/SetScissor
@@ -1256,16 +1316,19 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
  * stores the varying, the position-only cell otherwise, over
  * triangle_count triangles (the draw's instances) -- against the
  * carrier and color references and installs it, with no memory writes.
- * The carrier holds 3 * triangle_count records.  The vertex gather and
- * the sentinel clear ride cmd_buffer->deferred_draw and execute at
- * queue submission.
+ * The target image carries the shape's extent, row pitch, and lane
+ * order and color_bits the constant-color program's RGBA, so the
+ * emitted cell renders the color the module wrote into the target the
+ * pass bound.  The carrier holds 3 * triangle_count records.  The
+ * vertex gather and the sentinel clear ride cmd_buffer->deferred_draw
+ * and execute at queue submission.
  */
 VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count);
+   uint32_t triangle_count, const uint32_t color_bits[4]);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

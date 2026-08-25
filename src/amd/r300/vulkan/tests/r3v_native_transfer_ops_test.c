@@ -870,31 +870,36 @@ check_optimal_tiling(const struct fixture *f)
       .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
    };
-   VkImage refused = VK_NULL_HANDLE;
+   /* The render family executes one linear span whichever tiling the
+    * application asks for, so an OPTIMAL color-attachment request
+    * creates and stops answering vkGetImageSubresourceLayout alone.
+    */
+   VkImage optimal_attachment = VK_NULL_HANDLE;
    CHECK(vkCreateImage(f->device, &optimal_attachment_info, NULL,
-                       &refused) != VK_SUCCESS &&
-            refused == VK_NULL_HANDLE,
-         "an OPTIMAL-tiled color-attachment request still refuses: the "
-         "render family stays VK_IMAGE_TILING_LINEAR only");
+                       &optimal_attachment) == VK_SUCCESS &&
+            optimal_attachment != VK_NULL_HANDLE,
+         "an OPTIMAL-tiled color-attachment request creates: the render "
+         "family executes the one linear span under either tiling");
+   vkDestroyImage(f->device, optimal_attachment, NULL);
 
    /* A swapchain-shaped presentable image--TRANSFER_DST for the
     * present blit plus COLOR_ATTACHMENT for the render target, OPTIMAL
-    * tiling for scanout, an application-chosen extent above the
-    * render family's 64x64 ceiling--carries no route through either
-    * admitted family: the usage mix fails the color-attachment
-    * branch's usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT equality
-    * and the transfer branch's usage-subset test alike
-    * (r3v_native_image.c r3v_CreateImage), so it falls to the shared
-    * refusal.  docs/hardware/r3v-wsi-denominator.md names this as the
-    * gate a swapchain-shaped image meets before any WSI callback
-    * executes; pinning it here holds that gate through future
-    * image-admission refactors.
+    * tiling for scanout, an application-chosen extent above the render
+    * family's R3V_NATIVE_RENDER_MAX_EXTENT ceiling--carries no route
+    * through either admitted family: the extent fails the
+    * color-attachment branch's ceiling and the usage mix fails the
+    * transfer branch's usage-subset test (r3v_native_image.c
+    * r3v_CreateImage), so it falls to the shared refusal.
+    * docs/hardware/r3v-wsi-denominator.md names this as the gate a
+    * swapchain-shaped image meets before any WSI callback executes;
+    * pinning it here holds that gate through future image-admission
+    * refactors.
     */
    const VkImageCreateInfo swapchain_shaped_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = VK_IMAGE_TYPE_2D,
       .format = VK_FORMAT_B8G8R8A8_UNORM,
-      .extent = { 128, 128, 1 },
+      .extent = { 512, 512, 1 },
       .mipLevels = 1,
       .arrayLayers = 1,
       .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -908,8 +913,8 @@ check_optimal_tiling(const struct fixture *f)
                        &swapchain_refused) != VK_SUCCESS &&
             swapchain_refused == VK_NULL_HANDLE,
          "a swapchain-shaped TRANSFER_DST|COLOR_ATTACHMENT OPTIMAL "
-         "image above the 64x64 render ceiling refuses: no WSI-aware "
-         "exception widens either admitted family");
+         "image above the render family's extent ceiling refuses: no "
+         "WSI-aware exception widens either admitted family");
 
    return check_optimal_subresource_layout_oracle(f);
 }

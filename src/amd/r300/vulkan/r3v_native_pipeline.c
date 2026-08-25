@@ -9,6 +9,7 @@
 
 #include "r3v_entrypoints.h"
 
+#include "amd/r300/common/r300_us_source_read.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/r300_vertex_spirv.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
@@ -21,8 +22,12 @@
 #include <string.h>
 
 /* The render-pass shape whose one subpass the cell realizes: a single
- * B8G8R8A8_UNORM single-sample color attachment, cleared on load and
- * stored, referenced as the one color output of the one subpass.
+ * single-sample color attachment in either render-family lane order,
+ * cleared on load and stored, referenced as the one color output of
+ * the one subpass.  The attachment format names a lane order; the
+ * framebuffer's view then binds the image whose own format
+ * r3v_CmdBeginRenderPass holds equal to it, so the emitted
+ * US_OUT_FMT_0 payload matches the target the pass declares.
  */
 bool
 r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
@@ -31,7 +36,9 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
        pass->subpass_count != 1)
       return false;
    const struct vk_render_pass_attachment *att = &pass->attachments[0];
-   if (att->format != R3V_NATIVE_TARGET_FORMAT || att->samples != 1 ||
+   enum r300_triangle_lane_order lanes;
+   if (!r3v_native_render_lane_order(att->format, &lanes) ||
+       att->samples != 1 ||
        att->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
        att->store_op != VK_ATTACHMENT_STORE_OP_STORE)
       return false;
@@ -62,13 +69,24 @@ stage_words(const VkPipelineShaderStageCreateInfo *stage,
    return (const uint32_t *)module->data;
 }
 
-/* The qualified fragment binary is the solid-green constant write, so
- * the semantic admission is a fragment program storing exactly
- * vec4(0, 1, 0, 1) to color output 0.
+/* The fragment binary carries its constant in four R300_PFS_PARAM_0
+ * payloads, and the register encodes an FP24 value, so the admitted
+ * constant is any RGBA whose four binary32 bit patterns already sit on
+ * the FP24 lattice: r300_fp24_quantize_bits clears the low seven
+ * mantissa bits, and a pattern it leaves unchanged reaches the register
+ * exactly, so the color the target holds is the color the module
+ * wrote.  An off-lattice pattern would round in the register and render
+ * a value the program never named, so it refuses.
  */
-static const uint32_t r3v_native_green_bits[4] = {
-   0, 0x3f800000u, 0, 0x3f800000u,
-};
+static bool
+constant_color_on_fp24_lattice(const uint32_t color_bits[4])
+{
+   for (unsigned c = 0; c < 4; c++) {
+      if (r300_fp24_quantize_bits(color_bits[c]) != color_bits[c])
+         return false;
+   }
+   return true;
+}
 
 /* The vertex-input freedom the CPU executor covers: per-vertex F32
  * records, each attribute the job reads at any offset the draw-time
@@ -176,7 +194,8 @@ vertex_input_admit(const VkPipelineVertexInputStateCreateInfo *vi,
  */
 static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
-                        struct r300_vertex_job *job, bool *varying)
+                        struct r300_vertex_job *job, bool *varying,
+                        uint32_t color_bits[4])
 {
    if (info->stageCount != 2)
       return false;
@@ -203,7 +222,6 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                                    &reason))
       return false;
 
-   uint32_t color_bits[4];
    size_t fs_words = 0;
    const uint32_t *fs_data = stage_words(fragment, &fs_words);
    if (fs_data == NULL)
@@ -215,8 +233,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    return r300_fragment_constant_color_from_spirv(fs_data, fs_words,
                                                   fragment->pName,
                                                   color_bits, &reason) &&
-          memcmp(color_bits, r3v_native_green_bits,
-                 sizeof(color_bits)) == 0;
+          constant_color_on_fp24_lattice(color_bits);
 }
 
 /* The viewport/scissor pair is the pipeline's target-extent claim: both
@@ -271,8 +288,8 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
       const VkRect2D *scissor = &vp->pScissors[0];
       width = scissor->extent.width;
       height = scissor->extent.height;
-      if (width < 1 || width > R3V_NATIVE_TARGET_WIDTH || height < 1 ||
-          height > R3V_NATIVE_TARGET_HEIGHT)
+      if (width < 1 || width > R3V_NATIVE_RENDER_MAX_EXTENT || height < 1 ||
+          height > R3V_NATIVE_RENDER_MAX_EXTENT)
          return false;
       if (viewport->x != 0.0f || viewport->y != 0.0f ||
           viewport->width != (float)width ||
@@ -374,8 +391,10 @@ create_pipeline(struct r3v_native_device *device,
    bool dynamic_viewport_scissor = false;
    struct r300_vertex_job job;
    bool varying = false;
+   uint32_t color_bits[4] = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
-   if (info->flags != 0 || !stages_build_vertex_job(info, &job, &varying) ||
+   if (info->flags != 0 ||
+       !stages_build_vertex_job(info, &job, &varying, color_bits) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
@@ -408,6 +427,7 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
    pipeline->varying = varying;
+   memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));
    /* GPU-route admission metadata: the qualified TCL-bypass cell
     * delivers the raw attribute stream, so only the identity job
     * (LOAD_INPUT of slot 0 feeding the position store) over a

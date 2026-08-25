@@ -237,7 +237,7 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->subPixelInterpolationOffsetBits = 4;
 
    /* The render pass admits the render family's extent alone, so the
-    * framebuffer limits advertise the executed 64-pixel ceiling. */
+    * framebuffer limits advertise the render-shape family's ceiling. */
    props->maxFramebufferWidth = R3V_MAX_RENDER_EXTENT;
    props->maxFramebufferHeight = R3V_MAX_RENDER_EXTENT;
    props->maxFramebufferLayers = 1;
@@ -717,32 +717,29 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
 
    /* The format capabilities are the public recording surface's accepted
     * subset, advertised exactly so a capability-aware application reaches
-    * the qualified route: the
-    * linear B8G8R8A8 color target and the F32-family vertex formats the
+    * the qualified route: the two 32-bpp lane orders the render-shape
+    * cell places into its target and the F32-family vertex formats the
     * CPU vertex executor gathers.
     */
    switch (vk_format) {
    case VK_FORMAT_B8G8R8A8_UNORM:
+   case VK_FORMAT_R8G8B8A8_UNORM:
       /* The render family's color-attachment grant plus the transfer
        * family's copy grant: the recorded vkCmdCopy* subset executes
-       * the transfer features through host mappings at submission. The
-       * format also sits in the transfer-image texel table below, so
-       * it carries the same texel-buffer grant. The render family
-       * stays VK_IMAGE_TILING_LINEAR only (its relocation-addressed
-       * cell has never executed any other layout), so
-       * optimalTilingFeatures carries the transfer bits alone:
-       * r3v_CreateImage admits VK_IMAGE_TILING_OPTIMAL on the transfer
-       * family, executing the identical linear layout under Vulkan's
-       * opaque OPTIMAL contract, but never on the color-attachment
-       * usage this format's render family requires.
+       * the transfer features through host mappings at submission. Each
+       * format names one US_OUT_FMT_0 lane order the cell emits
+       * (r3v_native_render_lane_order), so both carry the attachment
+       * bit. Both formats also sit in the transfer-image texel table
+       * below, so they carry the same texel-buffer grant. Both tilings
+       * execute the one linear span, VK_IMAGE_TILING_OPTIMAL under
+       * Vulkan's opaque layout contract, so the two tiling grants are
+       * equal.
        */
       properties->linearTilingFeatures =
          VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
-      properties->optimalTilingFeatures =
-         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      properties->optimalTilingFeatures = properties->linearTilingFeatures;
       /* tests/r3v_conformance_nonpass_ledger.tsv row
        * mandatory_format_feature_absent names the RS480 die's absent
        * storage-image and integer-format routes; the same silicon gap
@@ -751,7 +748,6 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        */
       properties->bufferFeatures = VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
       break;
-   case VK_FORMAT_R8G8B8A8_UNORM:
    case VK_FORMAT_R8G8B8A8_UINT:
    case VK_FORMAT_R16G16B16A16_UINT:
    case VK_FORMAT_R32G32B32A32_UINT:
@@ -873,12 +869,16 @@ r3v_get_image_format_properties(
    const bool r3v_native_transfer_query =
       info->usage != 0 &&
       (info->usage & ~r3v_native_transfer_usage) == 0;
+   const bool r3v_native_render_query =
+      (info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
+      (info->usage & ~(VkImageUsageFlags)(
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                         r3v_native_transfer_usage)) == 0;
    const VkImageCreateFlags r3v_native_admitted_flags =
       r3v_native_transfer_query ? VK_IMAGE_CREATE_ALIAS_BIT : 0;
    if (info->type != VK_IMAGE_TYPE_2D ||
        (info->flags & ~r3v_native_admitted_flags) ||
-       (info->usage != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT &&
-        !r3v_native_transfer_query))
+       (!r3v_native_render_query && !r3v_native_transfer_query))
       goto unsupported;
 
    VkFormatFeatureFlags2 image_features = 0;
@@ -916,16 +916,16 @@ r3v_get_image_format_properties(
       break;
    case VK_IMAGE_TYPE_2D:
       /* The reported ceiling follows the family the usage names --
-       * the qualified cell's fixed target for attachment usage, the
-       * linear transfer bound for transfer usage -- so vkCreateImage
-       * accepts exactly what this query admits for each.
+       * the render-shape family's extent for attachment usage, the
+       * linear transfer bound for transfer usage alone -- so
+       * vkCreateImage accepts exactly what this query admits for each.
        */
       max_extent =
          r3v_native_transfer_query
             ? (VkExtent3D){ R3V_NATIVE_TRANSFER_DIMENSION_MAX,
                             R3V_NATIVE_TRANSFER_DIMENSION_MAX, 1 }
-            : (VkExtent3D){ R3V_NATIVE_TARGET_WIDTH,
-                            R3V_NATIVE_TARGET_HEIGHT, 1 };
+            : (VkExtent3D){ R3V_NATIVE_RENDER_MAX_EXTENT,
+                            R3V_NATIVE_RENDER_MAX_EXTENT, 1 };
       max_mip_levels = 1;
       max_array_layers = 1;
       break;

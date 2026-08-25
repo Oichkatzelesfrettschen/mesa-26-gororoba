@@ -55,11 +55,12 @@ extern "C" {
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Y 128u
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z 64u
 /* The executed render ceiling: the render-target family and the
- * viewport/scissor admissions top out at the qualified cell's 64-pixel
- * extent, so the framebuffer and viewport limits advertise it; the
- * deviation from the Vulkan 1.0 4096 minimum rides the declared
- * nonconformance. */
-#define R3V_MAX_RENDER_EXTENT 64u
+ * viewport/scissor admissions top out at the render-shape family's
+ * extent (R300_TRIANGLE_RENDER_MAX_EXTENT, the largest target the
+ * delivered arms rendered), so the framebuffer and viewport limits
+ * advertise it; the deviation from the Vulkan 1.0 4096 minimum rides
+ * the declared nonconformance. */
+#define R3V_MAX_RENDER_EXTENT 256u
 /* Every image and pipeline admission executes single-sample alone, so
  * the limits advertise the one truthful bit; Vulkan 1.0's required
  * minimum includes VK_SAMPLE_COUNT_4_BIT, and this deviation is part
