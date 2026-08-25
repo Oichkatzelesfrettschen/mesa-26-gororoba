@@ -241,6 +241,65 @@ P1 (host-model rungs that move classified rows without a new gate):
 A refuted rung stays refuted: the image usage family plus OPTIMAL-tiling
 color feature moved zero cases and its branch is discarded.
 
+## Expansion ladder
+
+Conformance expands by executed mechanism, and each rung opens only after
+the rung before it holds silicon evidence. The one-case plan/replay chain
+above is rung zero; the ladder after it runs in this order:
+
+1. secondary command buffer execution, implemented or removed by name from
+   the first selected family; it is the largest identified
+   `pipeline_barrier_executing_route_gap` subpopulation;
+2. the bounded image-blit route;
+3. fragment sampling through a real descriptor-set binding;
+4. sampled-image shapes, admitted only as the executing routes in rungs 2
+   and 3 complete;
+5. image types, arrays, cube, depth, and larger render extents, each a
+   separate mechanism with its own receipt;
+6. the native 2x and 4x MSAA path before any sample-count limit rises;
+7. composed render and sampling surfaces before any core image or
+   framebuffer limit rises.
+
+A mandatory format feature the RS482 pixel pipe lacks stays classified as
+structural nonconformance; a software claim for it is fabricated
+capability and stays out.
+
+Direct-source ownership moves after the first conformance replay is
+frozen: direct SPIR-V readers and the delivery-route selector move to
+`src/amd/r300/vulkan` (the selector as policy), while the neutral job IR,
+numeric-domain rules, R2VB producer plans, PM4 emitters, carrier
+contracts, and compiler admission stay in `common/`. The carrier-policy
+registry wires into the production selector only where a real adapter and
+route exist, with liveness rows and known-bad selector mutations beside
+it. A mechanism already expressed in common code keeps that one
+implementation; the Vulkan layer binds to it.
+
+Every vertex route is one execution graph: source, then the selected
+executor (direct VAP, CPU, R2VB single, R2VB split), then the canonical
+carrier, publication, common VAP re-ingest, and the common raster tail.
+The CPU route is the semantic oracle and the small-draw default. R2VB
+executes only when the producer is admitted, the numeric domain holds, the
+source is GPU-visible, the measured total route cost wins, and every
+required BO exists before submission; after an ioctl or any device-visible
+side effect the route runs to completion, since a fallback there splits
+the graph.
+
+WSI waits for a stable headless submission ladder. Its preconditions:
+steinmarder issue #237 closed; Xorg server, DDX, package, kernel, and
+runtime identities pinned; the native swapchain image route; acquire,
+render, present, release, and reuse proven; the DRM/DRI3 route separated
+from the opt-in software XCB route; WSI slices executing under
+display-class evidence only.
+
+Diagnostic sidecars stay independent of the run they describe.
+`radeontool-gororoba` takes declared pre- and post-run safe snapshots;
+`radeontop-gororoba` runs only inside an explicit performance or
+engine-discrimination campaign; either launches during a conformance run
+only when its sampling and access effects are part of the precommitted
+experiment. The radeontool packaging route is `_staging_upstream/PKGBUILD`
+alone (the pld-linux RPM spec, which packaged pristine upstream 1.6.3, is
+retired).
+
 ## Superseded documents
 
 This table supersedes the status paragraphs of:
