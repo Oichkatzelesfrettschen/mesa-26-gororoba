@@ -1,21 +1,5 @@
 # mesa-26-gororoba Agent and Developer Reference
 
-## Instruction source
-
-`AGENTS.md` is the root instruction file for `mesa-26-gororoba` and owns the Mesa rules.
-
-All Mesa agents and contributors follow `AGENTS.md`. Codex, compatible agents, and human contributors read it directly. Other root agent files exist only to load it for tools that require a tool-specific filename.
-
-`CLAUDE.md` is a tracked repository-relative symbolic link to `AGENTS.md`, so
-Claude Code and other readers receive the canonical rules directly. `GEMINI.md`
-loads `@AGENTS.md`, spelled in that exact case because imports resolve literally
-on a case-sensitive filesystem, and exists only while Gemini CLI is part of the
-workflow.
-
-Root instruction paths are tracked repository entries. The `AGENTS.md` body
-lives in one place; `CLAUDE.md` resolves to that body, and loader files reference
-it without copying doctrine that can drift.
-
 ## Hard rules
 
 These rules are enforceable. Later sections explain mechanism or rationale and never weaken or contradict them.
