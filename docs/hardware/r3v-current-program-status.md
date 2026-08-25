@@ -13,8 +13,8 @@ commit whose state a revision of this table describes.
 
 | Repository | Head | Subject |
 |---|---|---|
-| `mesa-26-gororoba` | `fe55d59c955` | r3v: bind a shard-subset caselist to its shard in the conformance runner |
-| `steinmarder-r300` | `1248fe6f1` | r3v: retain the smoke-triangle one-case host-planning receipt and the kernel deployment reconciliation |
+| `mesa-26-gororoba` | `9f65f5f61e5` | r3v: reconcile the deployed kernel module with the contract pins before a plan replay |
+| `steinmarder-r300` | `61449545c` | r3v: retain the smoke-triangle one-case host-planning receipt and the kernel deployment reconciliation |
 | `steinmarder` (workspace index, cross-repo orchestration) | `77869e866` | tools/workspace-index-marker-and-trailer-retention |
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
 | `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
@@ -132,7 +132,7 @@ mechanism is the compute recognizer shape below.
 | Finding | `src/re/r300/findings/active/2026-08-25-r3v-smoke-triangle-host-planning-receipt-and-kernel-deployment-reconciliation.md` |
 | Case | `dEQP-VK.api.smoke.triangle`, `binding: shard_subset` of `command.0000` (851 cases), subset of 1 |
 | Verdict | `classified_nonpass` (`image_outside_executed_envelope`), `decision_grade` false, `evidence_class` host-planning, seal `6e3ed951359d` |
-| Source | Mesa `fe55d59c955e`, clean tree, build-tree DSO `de0fcee09883...` |
+| Source | Mesa `fe55d59c955e`, clean tree (tree `699807657a94`, the tree of main commit `1f91536e639`; the rebase merge renamed the commit and kept its content), build-tree DSO `de0fcee09883...` |
 | Outcome | `no_nonempty_ib`; refusal at `vkCreateImage` (`r3v_native_image.c`, usage classification); 0 CS ioctls |
 
 The runner binds a caselist that is a proper subset of one verified
