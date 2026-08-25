@@ -48,11 +48,10 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     * row_pitch_bytes * height from the bind offset, the same footprint
     * r3v_GetImageMemoryRequirements reports, so two such images over one
     * offset cover the same bytes texel for texel.  The render family
-    * reports a required dedicated allocation and binds at offset zero
-    * alone (the `!image->transfer_family && memoryOffset != 0` refusal
-    * in r3v_BindImageMemory), so its window starts where the allocation
-    * starts and a second render image over it would need the same base;
-    * the flag refuses there.  The transfer family's copies move bytes
+    * reports a required dedicated allocation, which holds one image per
+    * allocation whatever offset it binds at, so a second render image
+    * over the same range has no allocation to bind to and the flag
+    * refuses there.  The transfer family's copies move bytes
     * through host mappings of the bound allocation and the queue
     * completes each submission before vkQueueSubmit returns
     * (r3v_native_transfer.c, r3v_native_queue.c; rg --fixed-strings
@@ -227,10 +226,15 @@ r3v_GetImageSparseMemoryRequirements2(VkDevice _device,
    *pSparseMemoryRequirementCount = 0;
 }
 
-/* The render family binds at offset zero because its color reference names
- * the BO base and its dedicated-allocation requirement keeps that address
- * stable.  The transfer family binds any aligned suballocation whose
- * footprint fits and carries that offset into every host copy address.  The
+/* Both families bind any aligned suballocation whose footprint fits from
+ * the bind offset.  The render family carries that offset into the cell's
+ * RB3D_COLOROFFSET0 payload, which the kernel biases by the relocation
+ * base (r300_packet0_check, radeon r300.c), and into the host writes the
+ * load-op clear and the in-pass clears make; the transfer family carries
+ * it into every host copy address.  The alignment the requirement
+ * reports is one page, so an admitted offset already satisfies the
+ * register's 32-byte base granularity
+ * (R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT).  The
  * complete field consumer set is enumerated by `(rg --fixed-strings
  * memory_offset src/amd/r300/vulkan/)`.  Binding happens exactly once
  * per image, to the one host-visible type the requirement admits: the
@@ -257,7 +261,8 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
    if (image == NULL || memory == NULL || image->memory != NULL ||
        memory->vk.memory_type_index != 0 ||
        memoryOffset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
-       (!image->transfer_family && memoryOffset != 0) ||
+       (!image->transfer_family &&
+        memoryOffset > R300_TRIANGLE_MAX_TARGET_OFFSET) ||
        memoryOffset > memory->bo.size ||
        footprint > memory->bo.size - memoryOffset)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);

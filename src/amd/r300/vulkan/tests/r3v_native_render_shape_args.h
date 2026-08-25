@@ -104,14 +104,37 @@ r3v_render_shape_parse(char *const argv[], struct r300_triangle_render_shape *sh
    return true;
 }
 
+/* --offset <bytes>: the optional trailing pair naming where render row
+ * 0 sits inside the color allocation, the cell's RB3D_COLOROFFSET0
+ * payload.  Absent, the shape renders at the allocation base.  Returns
+ * true when the two tokens are that pair and the value is admitted.
+ */
+static inline bool
+r3v_render_shape_parse_offset(const char *flag, const char *value,
+                              struct r300_triangle_render_shape *shape)
+{
+   unsigned long offset;
+   if (strcmp(flag, "--offset") != 0 ||
+       !r3v_render_shape_parse_decimal(value, &offset) ||
+       offset > R300_TRIANGLE_MAX_TARGET_OFFSET ||
+       (offset % R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT) != 0) {
+      fprintf(stderr, "--offset takes a multiple of %u inside %u\n",
+              R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT,
+              R300_TRIANGLE_MAX_TARGET_OFFSET);
+      return false;
+   }
+   shape->target_offset = (uint32_t)offset;
+   return r300_tcl_bypass_triangle_render_shape_validate(shape) == 0;
+}
+
 static inline void
 r3v_render_shape_print(FILE *out, const struct r300_triangle_render_shape *s)
 {
-   fprintf(out, "%ux%u pitch %u %s 0x%08x 0x%08x 0x%08x 0x%08x",
+   fprintf(out, "%ux%u pitch %u %s 0x%08x 0x%08x 0x%08x 0x%08x offset %u",
            s->width, s->height, s->pitch_pixels,
            s->lanes == R300_TRIANGLE_LANES_R8G8B8A8 ? "rgba" : "bgra",
            s->color_bits[0], s->color_bits[1], s->color_bits[2],
-           s->color_bits[3]);
+           s->color_bits[3], s->target_offset);
 }
 
 #endif /* R3V_NATIVE_RENDER_SHAPE_ARGS_H */

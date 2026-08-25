@@ -50,6 +50,7 @@ deviation there names the session, not a parameter.
 | extent | `256 256 256 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000` | scissor pair, `RB3D_COLORPITCH0` | `0xdf20609f` over 256x256 |
 | composed | `256 256 256 rgba 0x3f800000 0x0 0x3f800000 0x3f800000` | all four classes | `0xffff00ff` |
 | composed-asym | `256 256 256 rgba 0x3f800000 0x0 0x0 0x3f800000` | all four classes | `0xff0000ff` |
+| offset | `64 64 64 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000 --offset 4096` | `RB3D_COLOROFFSET0` | `0xdf20609f` at byte 4096, the first 4096 bytes at the sentinel |
 
 The composed arm is the `dEQP-VK.api.smoke.triangle` target shape,
 whose magenta constant carries red equal to blue, so it witnesses
@@ -60,6 +61,15 @@ that the composed arm's symmetric constant cannot expose. The arms run
 in table order; a falsifier on a single-parameter arm stops the
 session before the composed arms, so a composed deviation never has to
 be decomposed after the fact.
+
+The offset arm renders the reference shape with row 0 at byte 4096 of
+the color allocation, the target a Vulkan attachment bound at a
+nonzero `memoryOffset` carries. The payload travels as the byte offset
+the kernel biases by the relocation base (`r300_packet0_check` writes
+`ib[idx] = idx_value + reloc->gpu_offset`), and
+`r100_cs_track_check` validates `offset + pitch * cpp * maxy` against
+the buffer size, so an admitted footprint passes that check with the
+canary row to spare.
 
 ## Preconditions
 
@@ -135,6 +145,10 @@ Recorded per arm before the run; the observation stands as made.
   parameters interact, and the interaction is the finding.
 - The composed-asym arm's interior is `0xffff0000`: the lane order did
   not compose with the other three parameters.
+- The offset arm renders at byte 0 rather than byte 4096, or leaves
+  writes in the first 4096 bytes: `RB3D_COLOROFFSET0` reaches the
+  color backend biased differently than the payload declares, and the
+  bind-offset admission stays closed.
 - Any `dmesg` CS validation error, reset, lockup, or host hang ends the
   session.
 
@@ -149,7 +163,7 @@ removal to restore the pre-run driver configuration.
 
 Per arm, the evidence directory and its mirror in the r300 evidence
 repository keep the attended-cell record plus `color_target.bin` at the
-shape's footprint (`pitch * (height + 1) * 4` bytes), the arming report
+shape's footprint (`offset + pitch * (height + 1) * 4` bytes), the arming report
 with the shape line, and the runner's console with the `[shape]` and
-`[oracle]` lines. A session bundle relates the six arms to the
+`[oracle]` lines. A session bundle relates the arms to the
 program-status row they close.

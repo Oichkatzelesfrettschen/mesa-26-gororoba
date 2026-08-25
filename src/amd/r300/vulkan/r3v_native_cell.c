@@ -49,7 +49,7 @@
 static VkResult
 sentinel_fill_color(struct r3v_native_device *device,
                     struct r3v_native_memory *color_memory,
-                    uint64_t fill_bytes);
+                    uint64_t fill_offset, uint64_t fill_bytes);
 
 static VkResult
 record_triangle_cell_tail(struct r3v_native_device *device,
@@ -250,7 +250,8 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
    }
 
    VkResult result =
-      sentinel_fill_color(device, color_memory, color_memory->bo.size);
+      sentinel_fill_color(device, color_memory, 0,
+                          color_memory->bo.size);
    if (result != VK_SUCCESS)
       return result;
 
@@ -286,17 +287,18 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
    return VK_SUCCESS;
 }
 
-/* Sentinel-fills the leading fill_bytes of the color memory and
+/* Sentinel-fills fill_bytes of the color memory from fill_offset and
  * publishes them for the unsnooped GART, so the output oracle reads a
  * deterministic pre-draw state and any device write inside the filled
- * range is detectable.  fill_bytes bounds the write to the caller's
- * declared footprint; content past it in the same allocation stays
- * untouched.
+ * range is detectable.  The offset is the image's bind offset, where
+ * render row 0 starts, and fill_bytes bounds the write to the caller's
+ * declared footprint; content outside that window in the same
+ * allocation stays untouched.
  */
 static VkResult
 sentinel_fill_color(struct r3v_native_device *device,
                     struct r3v_native_memory *color_memory,
-                    uint64_t fill_bytes)
+                    uint64_t fill_offset, uint64_t fill_bytes)
 {
    bool owns_color_map = color_memory->map == NULL;
    if (owns_color_map &&
@@ -306,11 +308,11 @@ sentinel_fill_color(struct r3v_native_device *device,
                        "r3v-native: triangle color memory is not "
                        "CPU-mappable");
    }
-   uint32_t *color_pixels = color_memory->map;
+   uint32_t *color_pixels =
+      (uint32_t *)((uint8_t *)color_memory->map + fill_offset);
    for (uint64_t i = 0; i < fill_bytes / 4; i++)
       color_pixels[i] = R300_TRIANGLE_COLOR_SENTINEL;
-   radeon_drm_vk_bo_cache_sync(&device->drm, color_memory->map,
-                               fill_bytes);
+   radeon_drm_vk_bo_cache_sync(&device->drm, color_pixels, fill_bytes);
    if (owns_color_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &color_memory->bo,
                              color_memory->map);
@@ -430,7 +432,8 @@ record_triangle_cell_tail(struct r3v_native_device *device,
       return role_result;
 
    VkResult result =
-      sentinel_fill_color(device, color_memory, color_memory->bo.size);
+      sentinel_fill_color(device, color_memory, 0,
+                          color_memory->bo.size);
    if (result != VK_SUCCESS)
       return result;
    struct r300_triangle_render_shape shape;
@@ -459,7 +462,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
       (uint64_t)triangle_count * (varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
                                           : R3V_TRIANGLE_VERTEX_BYTES);
    if (carrier_memory->bo.size < carrier_bytes ||
-       color_memory->bo.size <
+       color_memory->bo.size - target_image->memory_offset <
           r3v_native_render_footprint_bytes(target_image->row_pitch_bytes,
                                             target_image->height)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
@@ -481,6 +484,11 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    shape.height = target_image->height;
    shape.pitch_pixels = target_image->row_pitch_bytes / 4;
    shape.lanes = target_image->lanes;
+   /* The bind offset is where render row 0 starts, so it travels as the
+    * cell's RB3D_COLOROFFSET0 payload; r3v_BindImageMemory admitted it
+    * against the register's base granularity and the allocation bound.
+    */
+   shape.target_offset = (uint32_t)target_image->memory_offset;
    if (!varying)
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
@@ -508,12 +516,13 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     */
    if (draw->stream_mask == 0) {
       VkResult clear_result = sentinel_fill_color(
-         device, draw->target_memory, draw->target_fill_bytes);
+         device, draw->target_memory, draw->target_fill_offset,
+         draw->target_fill_bytes);
       if (clear_result != VK_SUCCESS || draw->clear_rect_count == 0)
          return clear_result;
       /* The recorded attachment clears land after the load-op clear,
-       * in API order, over the render family's fixed row pitch at
-       * bind offset zero.
+       * in API order, over the target's own row pitch from its bind
+       * offset.
        */
       struct r3v_native_memory *target = draw->target_memory;
       bool owns_map = target->map == NULL;
@@ -530,14 +539,17 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          for (uint32_t row = 0; row < rect->height; row++) {
             uint32_t *texels =
                (uint32_t *)((uint8_t *)target->map +
+                            draw->target_fill_offset +
                             (uint64_t)(rect->y + row) *
-                               R3V_NATIVE_TARGET_ROW_BYTES) +
+                               draw->target_row_bytes) +
                rect->x;
             for (uint32_t x = 0; x < rect->width; x++)
                texels[x] = rect->dword;
          }
       }
-      radeon_drm_vk_bo_cache_sync(&device->drm, target->map,
+      radeon_drm_vk_bo_cache_sync(&device->drm,
+                                  (uint8_t *)target->map +
+                                     draw->target_fill_offset,
                                   draw->target_fill_bytes);
       if (owns_map) {
          radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
@@ -674,6 +686,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
          owned_maps[i]->map = NULL;
       }
       return sentinel_fill_color(device, draw->target_memory,
+                                 draw->target_fill_offset,
                                  draw->target_fill_bytes);
    }
 
@@ -940,6 +953,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
     * re-clears, the execution-time semantics each submit carries.
     */
    return sentinel_fill_color(device, draw->target_memory,
+                              draw->target_fill_offset,
                               draw->target_fill_bytes);
 }
 
@@ -2312,7 +2326,7 @@ r3v_native_record_r2vb_reingest(VkCommandBuffer commandBuffer,
       carrier_memory->map = NULL;
    }
 
-   VkResult fill_result = sentinel_fill_color(device, color_memory,
+   VkResult fill_result = sentinel_fill_color(device, color_memory, 0,
                                               color_memory->bo.size);
    if (fill_result != VK_SUCCESS)
       return fill_result;

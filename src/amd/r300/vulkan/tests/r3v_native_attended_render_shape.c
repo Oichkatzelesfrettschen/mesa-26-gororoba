@@ -74,15 +74,29 @@ int
 main(int argc, char **argv)
 {
    struct r300_triangle_render_shape shape;
-   if (argc != 3 + R3V_RENDER_SHAPE_ARGC || strcmp(argv[1], "--shape") != 0 ||
+   int argi = 2 + R3V_RENDER_SHAPE_ARGC;
+   if (argc < 3 + R3V_RENDER_SHAPE_ARGC || strcmp(argv[1], "--shape") != 0 ||
        !r3v_render_shape_parse(&argv[2], &shape)) {
       fprintf(stderr,
               "usage: %s --shape <w> <h> <pitch> <bgra|rgba> <r> <g> <b> "
-              "<a> <evidence-directory>\n",
+              "<a> [--offset <bytes>] <evidence-directory>\n",
               argv[0]);
       return 2;
    }
-   const char *evidence_dir = argv[2 + R3V_RENDER_SHAPE_ARGC];
+   /* The optional offset arm renders at a bind offset inside the color
+    * allocation, the target shape a suballocated attachment carries.
+    */
+   if (argc >= argi + 2 && strcmp(argv[argi], "--offset") == 0) {
+      if (!r3v_render_shape_parse_offset(argv[argi], argv[argi + 1], &shape))
+         return 2;
+      argi += 2;
+   }
+   if (argc != argi + 1) {
+      fprintf(stderr, "usage: %s --shape <8 tokens> [--offset <bytes>] "
+              "<evidence-directory>\n", argv[0]);
+      return 2;
+   }
+   const char *evidence_dir = argv[argi];
    const uint32_t color_bytes =
       r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
    const uint32_t predicted_dword =
@@ -305,7 +319,12 @@ main(int argc, char **argv)
     * the shape's extent: width/2 horizontally, (height * 3) / 8
     * vertically.
     */
-   const uint32_t *pixels = color_map;
+   /* Render row 0 sits at the shape's target offset, so the samples
+    * index from there while the reported band below it stays the
+    * untouched prefix the canary reads.
+    */
+   const uint32_t *pixels =
+      (const uint32_t *)((const uint8_t *)color_map + shape.target_offset);
    const uint32_t cx = shape.width / 2, cy = (shape.height * 3) / 8;
    printf("[oracle] centroid (%u,%u)=0x%08x predicted 0x%08x exterior "
           "(0,0)=0x%08x canary row=0x%08x\n",

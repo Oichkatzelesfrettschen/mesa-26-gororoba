@@ -3157,10 +3157,34 @@ main(void)
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);
 
+   /* The render family binds at any page-aligned offset whose footprint
+    * closes inside the allocation: the offset travels as the cell's
+    * RB3D_COLOROFFSET0 payload and as the base of the host clear.  An
+    * offset whose footprint overruns the allocation refuses, and the
+    * image stays unbound for the layout-transition refusal below.
+    */
+   {
+      VkImage offset_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &image_info, NULL, &offset_image) ==
+             VK_SUCCESS);
+      VkDeviceMemory offset_memory = VK_NULL_HANDLE;
+      VkMemoryAllocateInfo offset_alloc = {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+         .allocationSize = 4096 + reqs.size,
+         .memoryTypeIndex = 0,
+      };
+      assert(vkAllocateMemory(device, &offset_alloc, NULL, &offset_memory) ==
+             VK_SUCCESS);
+      assert(vkBindImageMemory(device, offset_image, offset_memory, 4096) ==
+             VK_SUCCESS);
+      vkDestroyImage(device, offset_image, NULL);
+      vkFreeMemory(device, offset_memory, NULL);
+   }
+
    VkImage unbound_image = VK_NULL_HANDLE;
    assert(vkCreateImage(device, &image_info, NULL, &unbound_image) ==
           VK_SUCCESS);
-   assert(vkBindImageMemory(device, unbound_image, color_memory, 4096) ==
+   assert(vkBindImageMemory(device, unbound_image, color_memory, 8192) ==
           R3V_NATIVE_REFUSAL_RESULT);
 
    VkCommandBuffer unbound_layout_cmd = fresh_cmd();

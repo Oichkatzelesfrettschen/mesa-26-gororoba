@@ -101,8 +101,10 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
       .pending = true,
       .target_memory = view->image->memory,
+      .target_fill_offset = view->image->memory_offset,
       .target_fill_bytes = r3v_native_render_footprint_bytes(
          view->image->row_pitch_bytes, view->image->height),
+      .target_row_bytes = view->image->row_pitch_bytes,
       .target_width = view->image->width,
       .target_height = view->image->height,
    };
@@ -486,9 +488,11 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
+      .target_fill_offset = cmd_buffer->pass_target->memory_offset,
       .target_fill_bytes = r3v_native_render_footprint_bytes(
          cmd_buffer->pass_target->row_pitch_bytes,
          cmd_buffer->pass_target->height),
+      .target_row_bytes = cmd_buffer->pass_target->row_pitch_bytes,
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
    };
