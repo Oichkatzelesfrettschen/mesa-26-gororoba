@@ -232,9 +232,27 @@ P0 (blocks the next target run):
   `727CE89E79FB2D14663C381`), preflight 354 ok / 40 expected fail / 0
   fail; deviations: no fresh boot (uptime 10 h) and a concurrent Xorg
   session on the GPU; bundle steinmarder-r300
-  `r3v-render-shape-family-seven-arm-delivery-rs482`.  The four executed
-  render-family elements hold silicon evidence, so the admission widening
-  to the shape family and the smoke.triangle rerun follow;
+  `r3v-render-shape-family-seven-arm-delivery-rs482`.  The admission
+  widening landed on that evidence: the render family spans both 32-bpp
+  lane orders, extents to 256, LINEAR or OPTIMAL tiling, the
+  eight-pixel-aligned row pitch, transfer usage beside the attachment
+  bit, and any FP24-lattice fragment constant, with a non-reference
+  target lowered through `r300_tcl_bypass_triangle_render_shape_emit`
+  and a copy out of a render target invalidating the unsnooped GTT
+  lines first.  The reference 64x64 B8G8R8A8 target keeps the cell
+  family and the oracle constant its retained CPU-route digest covers,
+  so at that one shape the executed constant is still the oracle color
+  rather than the module's; a receipt for the reference shape under the
+  module's constant closes that row.  The smoke.triangle host-planning
+  rerun (`smoke-triangle.run3`, seal `87eb34c46920`) now clears image
+  creation and refuses at `r3v_BindImageMemory`: the test binds at
+  `memoryRequirements.alignment`, and the render family admits offset
+  zero alone because the cell family carries no target offset.  The next
+  mechanism is a target-offset parameter on the cell family
+  (`RB3D_COLOROFFSET0` already rides an additive zero payload plus the
+  relocation, so the offset enters that payload), receipted by an eighth
+  arm, after which `clear_is_sentinel` (the load-op clear admits the
+  sentinel alone; the test clears to black) is the known next refusal;
   a transcript then needs compose, an independent plan check, drm-shim
   replay, the six mutations (order, digest, relocation, source identity,
   runtime ceiling, nonce) each refusing before the transport, and the
