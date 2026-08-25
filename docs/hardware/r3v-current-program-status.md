@@ -19,7 +19,7 @@ commit whose state a revision of this table describes.
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
 | `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
 | `vostro1000-re` | `30e6c02e64` | docs/rank-content-description-precondition (PR #664) |
-| `deqp-vk-fork` | `43c65c132` | r3v/rename-retired-r300vk-spelling |
+| `deqp-vk-fork` | `43c65c132` | r3v: retire the pre-rename driver spelling from the fork |
 
 The Mesa head is the source SHA the latest target receipts declare
 (`00e3c5dd25d` at run time, advanced by `59b77649a80` without a rebuild
