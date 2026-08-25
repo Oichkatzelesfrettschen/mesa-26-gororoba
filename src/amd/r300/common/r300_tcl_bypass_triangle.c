@@ -6,6 +6,7 @@
 #include "r300_pm4_builder.h"
 #include "r300_r2vb_producer_fs_block.h"
 #include "r300_tcl_bypass_triangle_fs_block.h"
+#include "r300_us_source_read.h"
 
 #include "r300_reg.h"
 #include "util/macros.h"
@@ -541,6 +542,8 @@ triangle_edge_distance(float ax, float ay, float bx, float by, float px,
    return triangle_edgef(ax, ay, bx, by, px, py) / length;
 }
 
+static uint32_t unorm8_round(float value);
+
 struct triangle_geometry {
    /* Window-space vertices: the NDC reference payload through the
     * viewport transform at the oracle's extent.
@@ -605,30 +608,33 @@ triangle_pixel_candidate(float candidate_x, float candidate_y,
 }
 
 void
-r300_tcl_bypass_triangle_extent_oracle(
-   uint32_t width, uint32_t height, const uint32_t *pixels,
+r300_tcl_bypass_triangle_render_shape_oracle(
+   const struct r300_triangle_render_shape *shape, const uint32_t *pixels,
    uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict)
 {
-   /* The verdict producer admits the same domain the emitter admits: an
-    * extent outside it fails every pass with zero samples, so an
+   /* The verdict producer admits the same domain the emitter admits: a
+    * shape outside it fails every pass with zero samples, so an
     * inadmissible call reads as a failed verdict rather than dividing
     * by a zero edge length or wrapping the extent arithmetic.
     */
-   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
-       height > R300_TRIANGLE_TARGET_HEIGHT) {
+   if (shape == NULL ||
+       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0) {
       *verdict = (struct r300_triangle_oracle_verdict){ 0 };
       return;
    }
+   const uint32_t width = shape->width, height = shape->height;
+   const uint32_t pitch = shape->pitch_pixels;
+   const uint32_t draw_color =
+      r300_tcl_bypass_triangle_render_shape_draw_dword(shape);
 
    /* The verdict reads the full retained footprint: every rendered row
-    * at the fixed pitch plus the canary row past the render extent.  A
+    * at the pitch plus the canary row past the render extent.  A
     * buffer short of that footprint carries no observable canary band,
     * so the truncated call fails closed before any pass initializes
     * rather than leaving canary_pass vacuously true.
     */
    const uint64_t required_bytes =
-      (uint64_t)R300_TRIANGLE_TARGET_PITCH_PIXELS * (height + 1u) *
-      sizeof(uint32_t);
+      (uint64_t)pitch * (height + 1u) * sizeof(uint32_t);
    if (pixels == NULL || size_bytes < required_bytes) {
       *verdict = (struct r300_triangle_oracle_verdict){ 0 };
       return;
@@ -649,7 +655,6 @@ r300_tcl_bypass_triangle_extent_oracle(
          break;
       }
    }
-
    /* Interior candidates: the centroid and its midpoints toward each
     * vertex.  A candidate qualifies with the fill-rule margin inside
     * the triangle and inside the extent; the count is part of the
@@ -674,9 +679,9 @@ r300_tcl_bypass_triangle_extent_oracle(
              R300_TRIANGLE_ORACLE_MARGIN)
          continue;
       verdict->interior_samples++;
-      const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+      const uint32_t index = y * pitch + x;
       if (index >= pixel_count ||
-          pixels[index] != R300_TRIANGLE_DRAW_COLOR_B8G8R8A8)
+          pixels[index] != draw_color)
          verdict->interior_pass = false;
    }
    if (verdict->interior_samples == 0)
@@ -709,7 +714,7 @@ r300_tcl_bypass_triangle_extent_oracle(
              -R300_TRIANGLE_ORACLE_MARGIN)
          continue;
       verdict->exterior_samples++;
-      const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+      const uint32_t index = y * pitch + x;
       if (index >= pixel_count ||
           pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->exterior_pass = false;
@@ -721,19 +726,40 @@ r300_tcl_bypass_triangle_extent_oracle(
     * every row past the render extent, all at the sentinel.
     */
    for (uint32_t y = 0; y < height; y++) {
-      for (uint32_t x = width; x < R300_TRIANGLE_TARGET_PITCH_PIXELS;
-           x++) {
-         const uint32_t index = y * R300_TRIANGLE_TARGET_PITCH_PIXELS + x;
+      for (uint32_t x = width; x < pitch; x++) {
+         const uint32_t index = y * pitch + x;
          if (index < pixel_count &&
              pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
             verdict->canary_pass = false;
       }
    }
-   for (uint32_t i = R300_TRIANGLE_TARGET_PITCH_PIXELS * height;
+   for (uint32_t i = pitch * height;
         i < pixel_count; i++) {
       if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->canary_pass = false;
    }
+}
+
+void
+r300_tcl_bypass_triangle_extent_oracle(
+   uint32_t width, uint32_t height, const uint32_t *pixels,
+   uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict)
+{
+   /* The fixed-pitch oracle is the reference shape at this extent; its
+    * domain stays the extent emitter's, so an extent past 64 fails
+    * closed here even though the render-shape family admits it.
+    */
+   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
+       height > R300_TRIANGLE_TARGET_HEIGHT) {
+      *verdict = (struct r300_triangle_oracle_verdict){ 0 };
+      return;
+   }
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.width = width;
+   shape.height = height;
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, pixels, size_bytes,
+                                                verdict);
 }
 
 /* Rounds a normalized channel to its UNORM8 byte, the conversion the
@@ -859,6 +885,191 @@ const float r300_tcl_bypass_triangle_varying_vertices
    56.0f,  8.0f, 0.0f, 1.0f, 0.875f, 0.125f, 0.25f, 1.0f,
    32.0f, 56.0f, 0.0f, 1.0f, 0.5f,   0.875f, 0.25f, 1.0f,
 };
+
+static const uint32_t r300_triangle_reference_color_bits[4] = {
+   0x3e000000u, 0x3ec00000u, 0x3f200000u, 0x3f600000u,
+};
+
+void
+r300_tcl_bypass_triangle_render_shape_reference(
+   struct r300_triangle_render_shape *out)
+{
+   *out = (struct r300_triangle_render_shape){
+      .width = R300_TRIANGLE_TARGET_WIDTH,
+      .height = R300_TRIANGLE_TARGET_HEIGHT,
+      .pitch_pixels = R300_TRIANGLE_TARGET_PITCH_PIXELS,
+      .lanes = R300_TRIANGLE_LANES_B8G8R8A8,
+      .triangle_count = 1,
+   };
+   memcpy(out->color_bits, r300_triangle_reference_color_bits,
+          sizeof(out->color_bits));
+}
+
+int
+r300_tcl_bypass_triangle_render_shape_validate(
+   const struct r300_triangle_render_shape *shape)
+{
+   if (shape == NULL || shape->width < 1 || shape->height < 1 ||
+       shape->width > R300_TRIANGLE_RENDER_MAX_EXTENT ||
+       shape->height > R300_TRIANGLE_RENDER_MAX_EXTENT ||
+       shape->pitch_pixels < shape->width ||
+       shape->pitch_pixels > R300_TRIANGLE_RENDER_MAX_EXTENT ||
+       (shape->pitch_pixels & 1u) != 0 ||
+       (shape->lanes != R300_TRIANGLE_LANES_B8G8R8A8 &&
+        shape->lanes != R300_TRIANGLE_LANES_R8G8B8A8) ||
+       shape->triangle_count < 1 ||
+       shape->triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   /* The register holds the FP24 lattice value, so a constant off the
+    * lattice (a NaN included, which quantizes to max finite) would
+    * execute a value other than the one the oracle predicts.
+    */
+   for (unsigned i = 0; i < 4; i++) {
+      if (r300_fp24_quantize_bits(shape->color_bits[i]) !=
+          shape->color_bits[i])
+         return -EINVAL;
+   }
+   return 0;
+}
+
+/* Rewrites the fragment block's single four-payload PFS_PARAM_0 packet
+ * in place; a block carrying zero or several such packets leaves the
+ * constant ambiguous and refuses.
+ */
+static int
+rewrite_constant_payloads(uint32_t *block, uint32_t block_dwords,
+                          const uint32_t color_bits[4])
+{
+   uint32_t found = 0;
+   uint32_t i = 0;
+   while (i < block_dwords) {
+      const uint32_t header = block[i];
+      const uint32_t count = ((header >> 16) & 0x3fffu) + 1u;
+      const uint32_t reg = (header & 0x7fffu) << 2;
+      if (i + 1 + count > block_dwords)
+         return -EINVAL;
+      if (reg == R300_PFS_PARAM_0_X && count == 4) {
+         for (unsigned c = 0; c < 4; c++)
+            block[i + 1 + c] = r300_fp24_register_bits(color_bits[c]);
+         found++;
+      }
+      i += 1 + count;
+   }
+   return found == 1 ? 0 : -EINVAL;
+}
+
+int
+r300_tcl_bypass_triangle_render_shape_fs(
+   const struct r300_triangle_render_shape *shape,
+   struct r300_fragment_binary *fs)
+{
+   int rc = r300_tcl_bypass_triangle_render_shape_validate(shape);
+   if (rc != 0)
+      return rc;
+   uint32_t block[ARRAY_SIZE(r300_tcl_bypass_triangle_fs_block)];
+   memcpy(block, r300_tcl_bypass_triangle_fs_block, sizeof(block));
+   rc = rewrite_constant_payloads(block, ARRAY_SIZE(block),
+                                  shape->color_bits);
+   if (rc != 0)
+      return rc;
+   return r300_fragment_binary_init(
+      fs, block, ARRAY_SIZE(block),
+      R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC,
+      R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W,
+      "r300-tcl-bypass-triangle-compiled");
+}
+
+int
+r300_tcl_bypass_triangle_render_shape_emit(
+   const struct r300_triangle_render_shape *shape,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   memset(out, 0, sizeof(*out));
+   struct r300_fragment_binary fs;
+   int rc = r300_tcl_bypass_triangle_render_shape_fs(shape, &fs);
+   if (rc != 0)
+      return rc;
+
+   struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
+      .width = shape->width,
+      .height = shape->height,
+      .min_vtx_index = 0,
+      .max_vtx_index = 3 * shape->triangle_count - 1,
+      .texture_enabled = false,
+   };
+   struct r300_first_draw_contract contract;
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
+   if (rc == 0) {
+      const uint32_t lanes =
+         shape->lanes == R300_TRIANGLE_LANES_R8G8B8A8
+            ? (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_R | R300_C1_SEL_G |
+               R300_C2_SEL_B | R300_C3_SEL_A)
+            : (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
+               R300_C2_SEL_R | R300_C3_SEL_A);
+      rc = r300_first_draw_contract_set_us_out_fmt_0(&contract, lanes);
+   }
+   if (rc != 0) {
+      r300_fragment_binary_finish(&fs);
+      return rc;
+   }
+
+   const uint32_t pitch_word =
+      r300_rb3d_colorpitch0_pack_argb8888(shape->pitch_pixels);
+   if (pitch_word == 0) {
+      r300_fragment_binary_finish(&fs);
+      return -EINVAL;
+   }
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = pitch_word,
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+      .varying = false,
+      .triangle_count = shape->triangle_count,
+   };
+   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
+}
+
+void
+r300_tcl_bypass_triangle_render_shape_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_TRIANGLE_VERTEX_DWORDS])
+{
+   const struct triangle_geometry g =
+      triangle_geometry_at(shape->width, shape->height);
+   for (unsigned i = 0; i < 3; i++) {
+      out[i * 4 + 0] = g.v[i * 2 + 0];
+      out[i * 4 + 1] = g.v[i * 2 + 1];
+      out[i * 4 + 2] = 0.0f;
+      out[i * 4 + 3] = 1.0f;
+   }
+}
+
+uint32_t
+r300_tcl_bypass_triangle_render_shape_color_bytes(
+   const struct r300_triangle_render_shape *shape)
+{
+   return shape->pitch_pixels * (shape->height + 1u) * 4u;
+}
+
+uint32_t
+r300_tcl_bypass_triangle_render_shape_draw_dword(
+   const struct r300_triangle_render_shape *shape)
+{
+   uint32_t byte[4];
+   for (unsigned i = 0; i < 4; i++) {
+      float value;
+      memcpy(&value, &shape->color_bits[i], sizeof(value));
+      byte[i] = unorm8_round(value);
+   }
+   const uint32_t r = byte[0], g = byte[1], b = byte[2], a = byte[3];
+   return shape->lanes == R300_TRIANGLE_LANES_R8G8B8A8
+             ? (r | (g << 8) | (b << 16) | (a << 24))
+             : (b | (g << 8) | (r << 16) | (a << 24));
+}
 
 void
 r300_triangle_ib_serialize(const uint32_t *dwords, uint32_t count,

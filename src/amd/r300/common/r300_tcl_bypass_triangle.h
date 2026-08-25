@@ -331,11 +331,107 @@ void r300_tcl_bypass_triangle_varying_extent_oracle(
    const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_oracle_verdict *verdict);
 
+/* The render-shape family: the four target parameters a Vulkan render
+ * pass places on the qualified cell, each moving a named register class
+ * and nothing else.  The extent moves the two scissor-family payloads
+ * the first-draw contract resolves (r300_tcl_bypass_triangle_extent_emit
+ * documents the words); the pitch moves the RB3D_COLORPITCH0 payload
+ * alone, since pitch is a memory-layout property; the lane order moves
+ * the contract's US_OUT_FMT_0 payload alone, the four C*_SEL fields
+ * that place shader components into target bytes; the fragment constant
+ * moves the four R300_PFS_PARAM_0 payloads of the fragment block alone,
+ * the FP24 words the constant-color program reads.  The reference shape
+ * emits byte-identical to r300_tcl_bypass_triangle_reference_emit, so
+ * the qualified digest anchors the family, and the render-shape test
+ * pins the per-parameter dword deltas.
+ */
+#define R300_TRIANGLE_VERTEX_DWORDS 12
+
+enum r300_triangle_lane_order {
+   /* Target bytes [B, G, R, A]: VK_FORMAT_B8G8R8A8_UNORM. */
+   R300_TRIANGLE_LANES_B8G8R8A8 = 0,
+   /* Target bytes [R, G, B, A]: VK_FORMAT_R8G8B8A8_UNORM. */
+   R300_TRIANGLE_LANES_R8G8B8A8 = 1,
+};
+
+/* Extent and pitch ceiling of the family.  RB3D_COLORPITCH0 admits a
+ * pitch to 8190 pixels and the first-draw contract an extent to
+ * R300_FDS_MAX_EXTENT; the family's ceiling is the largest target a
+ * dEQP render case binds against this route, and every emitted word
+ * inside it is pinned by the same delta test, so the ceiling rises only
+ * with the retained silicon receipt for the larger footprint.
+ */
+#define R300_TRIANGLE_RENDER_MAX_EXTENT 256u
+
+struct r300_triangle_render_shape {
+   /* Render extent in pixels, 1..R300_TRIANGLE_RENDER_MAX_EXTENT. */
+   uint32_t width;
+   uint32_t height;
+   /* Row pitch in pixels: even, >= width, <= the extent ceiling. */
+   uint32_t pitch_pixels;
+   enum r300_triangle_lane_order lanes;
+   /* The fragment constant as four IEEE-754 binary32 bit patterns,
+    * RGBA, each on the FP24 lattice (r300_fp24_quantize_bits leaves it
+    * unchanged), so the register word is the value the oracle predicts.
+    */
+   uint32_t color_bits[4];
+   /* 1..R300_TRIANGLE_MAX_TRIANGLES, as r300_tcl_bypass_triangle_family_emit. */
+   uint32_t triangle_count;
+};
+
+/* The reference shape: 64x64 at pitch 64, B8G8R8A8 lanes, the
+ * byte-order oracle constant (0.125, 0.375, 0.625, 0.875), one triangle.
+ */
+void r300_tcl_bypass_triangle_render_shape_reference(
+   struct r300_triangle_render_shape *out);
+
+/* 0 for an admitted shape, -EINVAL otherwise. */
+int r300_tcl_bypass_triangle_render_shape_validate(
+   const struct r300_triangle_render_shape *shape);
+
+/* The reference fragment block with its R300_PFS_PARAM_0 payloads
+ * replaced by the shape's constant in the register's FP24 encoding.
+ * The caller finishes the binary.
+ */
+int r300_tcl_bypass_triangle_render_shape_fs(
+   const struct r300_triangle_render_shape *shape,
+   struct r300_fragment_binary *fs);
+
+int r300_tcl_bypass_triangle_render_shape_emit(
+   const struct r300_triangle_render_shape *shape,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The pretransformed vertex payload for the shape's extent: the NDC
+ * reference triangle through the viewport transform, z = 0, w = 1.
+ */
+void r300_tcl_bypass_triangle_render_shape_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_TRIANGLE_VERTEX_DWORDS]);
+
+/* The color BO footprint the oracle reads: pitch * (height + 1) pixels,
+ * the canary row included.
+ */
+uint32_t r300_tcl_bypass_triangle_render_shape_color_bytes(
+   const struct r300_triangle_render_shape *shape);
+
+/* The dword an interior pixel holds: each channel rounded to UNORM8 and
+ * placed by the lane order.
+ */
+uint32_t r300_tcl_bypass_triangle_render_shape_draw_dword(
+   const struct r300_triangle_render_shape *shape);
+
+/* The constant-color oracle over the shape's pitch, extent, and draw
+ * dword; every rule of r300_tcl_bypass_triangle_extent_oracle holds with
+ * the shape's pitch in place of the fixed 64.
+ */
+void r300_tcl_bypass_triangle_render_shape_oracle(
+   const struct r300_triangle_render_shape *shape, const uint32_t *pixels,
+   uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict);
+
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
  * BO.
  */
-#define R300_TRIANGLE_VERTEX_DWORDS 12
 extern const float
    r300_tcl_bypass_triangle_vertices[R300_TRIANGLE_VERTEX_DWORDS];
 

@@ -15,6 +15,7 @@
 #include "r300_fragment_binary.h"
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_us_source_read.h"
 #include "tests/r300_retained_route_digests.h"
 #include "tests/r300_varying_cell_digests.h"
 
@@ -1183,6 +1184,296 @@ test_family_emit_deviates_in_count_words_alone(void)
    }
 }
 
+/* Counts the dwords where two same-sized IBs differ and records the
+ * first R300_TRIANGLE_MAX_DWORDS of their indices.
+ */
+static uint32_t
+ib_deviating_dwords(const struct r300_tcl_bypass_triangle_ib *a,
+                    const struct r300_tcl_bypass_triangle_ib *b,
+                    uint32_t *indices, uint32_t max_indices)
+{
+   assert(a->ib_size_dwords == b->ib_size_dwords);
+   uint32_t n = 0;
+   for (uint32_t d = 0; d < a->ib_size_dwords; d++) {
+      if (a->ib[d] != b->ib[d]) {
+         if (n < max_indices)
+            indices[n] = d;
+         n++;
+      }
+   }
+   return n;
+}
+
+/* The register a single-register PACKET0 payload at dword index writes,
+ * read from the header one dword before it.
+ */
+static uint32_t
+payload_register(const struct r300_tcl_bypass_triangle_ib *ib,
+                 uint32_t payload_index)
+{
+   assert(payload_index >= 1);
+   const uint32_t header = ib->ib[payload_index - 1];
+   assert((header >> 30) == 0);
+   return (header & 0x7fffu) << 2;
+}
+
+/* The render-shape family: the reference shape is the reference cell
+ * byte for byte, and each parameter alone moves its named register
+ * class -- pitch the RB3D_COLORPITCH0 payload, lane order the
+ * US_OUT_FMT_0 payload, the fragment constant the four PFS_PARAM_0
+ * payloads, the extent the two scissor-family payloads -- so the
+ * qualified digest anchors every shape and a silicon arm per parameter
+ * isolates one register class.
+ */
+static void
+test_render_shape_deviates_per_parameter(void)
+{
+   struct r300_tcl_bypass_triangle_ib reference;
+   assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
+
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == 0);
+   assert(r300_tcl_bypass_triangle_render_shape_draw_dword(&shape) ==
+          R300_TRIANGLE_DRAW_COLOR_B8G8R8A8);
+   assert(r300_tcl_bypass_triangle_render_shape_color_bytes(&shape) ==
+          R300_TRIANGLE_COLOR_BYTES);
+   float vertices[R300_TRIANGLE_VERTEX_DWORDS];
+   r300_tcl_bypass_triangle_render_shape_vertices(&shape, vertices);
+   assert(memcmp(vertices, r300_tcl_bypass_triangle_vertices,
+                 sizeof(vertices)) == 0);
+
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   assert(cell.ib_size_dwords == reference.ib_size_dwords);
+   assert(memcmp(cell.ib, reference.ib,
+                 reference.ib_size_dwords * sizeof(uint32_t)) == 0);
+   r300_tcl_bypass_triangle_release(&cell);
+
+   uint32_t indices[8];
+
+   /* Pitch: one payload, RB3D_COLORPITCH0, carrying the packed pitch. */
+   shape.pitch_pixels = 256;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   assert(ib_deviating_dwords(&reference, &cell, indices, 8) == 1);
+   assert(payload_register(&cell, indices[0]) == R300_RB3D_COLORPITCH0);
+   assert(cell.ib[indices[0]] == r300_rb3d_colorpitch0_pack_argb8888(256));
+   assert(r300_tcl_bypass_triangle_render_shape_color_bytes(&shape) ==
+          256u * 65u * 4u);
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+
+   /* Lane order: one payload, US_OUT_FMT_0, red and blue selectors
+    * exchanged; the predicted dword exchanges bytes 0 and 2.
+    */
+   shape.lanes = R300_TRIANGLE_LANES_R8G8B8A8;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   assert(ib_deviating_dwords(&reference, &cell, indices, 8) == 1);
+   assert(payload_register(&cell, indices[0]) == R300_US_OUT_FMT_0);
+   assert(cell.ib[indices[0]] ==
+          (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_R | R300_C1_SEL_G |
+           R300_C2_SEL_B | R300_C3_SEL_A));
+   assert(r300_tcl_bypass_triangle_render_shape_draw_dword(&shape) ==
+          (R300_TRIANGLE_DRAW_COLOR_RED |
+           (R300_TRIANGLE_DRAW_COLOR_GREEN << 8) |
+           (R300_TRIANGLE_DRAW_COLOR_BLUE << 16) |
+           (R300_TRIANGLE_DRAW_COLOR_ALPHA << 24)));
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+
+   /* Fragment constant: the four PFS_PARAM_0 payloads, in the FP24
+    * register encoding, and nothing else; magenta predicts 0xffff00ff
+    * in B8G8R8A8.
+    */
+   const uint32_t magenta[4] = { 0x3f800000u, 0, 0x3f800000u, 0x3f800000u };
+   memcpy(shape.color_bits, magenta, sizeof(magenta));
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   assert(ib_deviating_dwords(&reference, &cell, indices, 8) == 4);
+   for (unsigned c = 0; c < 4; c++) {
+      assert(indices[c] == indices[0] + c);
+      assert(cell.ib[indices[c]] == r300_fp24_register_bits(magenta[c]));
+   }
+   assert(payload_register(&cell, indices[0]) == R300_PFS_PARAM_0_X);
+   assert(r300_fp24_register_bits(0x3f800000u) == 0x003f0000u);
+   assert(r300_fp24_register_bits(0x3e000000u) == 0x003c0000u);
+   assert(r300_fp24_register_bits(0x3ec00000u) == 0x003d8000u);
+   assert(r300_tcl_bypass_triangle_render_shape_draw_dword(&shape) ==
+          0xffff00ffu);
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+
+   /* Extent past the fixed family's 64: the two scissor-family payloads,
+    * as the extent family, with the pitch word untouched.
+    */
+   shape.width = 256;
+   shape.height = 256;
+   shape.pitch_pixels = 256;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   assert(ib_deviating_dwords(&reference, &cell, indices, 8) == 3);
+   uint32_t scissor_words = 0;
+   for (unsigned i = 0; i < 3; i++) {
+      const uint32_t reg = payload_register(&cell, indices[i]);
+      if (reg == R300_RB3D_COLORPITCH0)
+         continue;
+      assert(reg == R300_SC_SCISSORS_BR || reg == R300_SC_CLIPRECT_BR_0);
+      scissor_words++;
+   }
+   assert(scissor_words == 2);
+   r300_tcl_bypass_triangle_render_shape_vertices(&shape, vertices);
+   assert(vertices[0] == 32.0f && vertices[1] == 32.0f &&
+          vertices[4] == 224.0f && vertices[9] == 224.0f);
+   r300_tcl_bypass_triangle_release(&cell);
+
+   /* Admission refusals: odd pitch, pitch under width, extent past the
+    * ceiling, a constant off the FP24 lattice, and a NaN constant.
+    */
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.pitch_pixels = 65;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.pitch_pixels = 62;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.width = R300_TRIANGLE_RENDER_MAX_EXTENT + 1;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.color_bits[1] = 0x3e000001u;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.color_bits[1] = 0x7fc00000u;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) ==
+          -EINVAL);
+   assert(cell.ib == NULL);
+
+   r300_tcl_bypass_triangle_release(&reference);
+}
+
+/* Paints the analytic triangle for a shape at pixel centers over a
+ * sentinel target at the shape's pitch.
+ */
+static void
+paint_shape(const struct r300_triangle_render_shape *shape,
+            uint32_t *target, uint32_t dwords)
+{
+   float v[R300_TRIANGLE_VERTEX_DWORDS];
+   r300_tcl_bypass_triangle_render_shape_vertices(shape, v);
+   const uint32_t color =
+      r300_tcl_bypass_triangle_render_shape_draw_dword(shape);
+   for (uint32_t i = 0; i < dwords; i++)
+      target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   for (uint32_t y = 0; y < shape->height; y++) {
+      for (uint32_t x = 0; x < shape->width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         const float e0 = (v[4] - v[0]) * (py - v[1]) -
+                          (v[5] - v[1]) * (px - v[0]);
+         const float e1 = (v[8] - v[4]) * (py - v[5]) -
+                          (v[9] - v[5]) * (px - v[4]);
+         const float e2 = (v[0] - v[8]) * (py - v[9]) -
+                          (v[1] - v[9]) * (px - v[8]);
+         if (e0 > 0.0f && e1 > 0.0f && e2 > 0.0f)
+            target[y * shape->pitch_pixels + x] = color;
+      }
+   }
+}
+
+/* The render-shape oracle's calibration on a dEQP-shaped target
+ * (256x200 at pitch 256, R8G8B8A8) with an asymmetric constant, so a
+ * lane exchange is observable: the synthesized witness passes; a
+ * lane-swapped witness, a reference-color witness, a 64-pitch witness,
+ * a padding-band write, and a canary-row write each fail their verdict.
+ */
+static void
+test_render_shape_oracle_calibration(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.width = 256;
+   shape.height = 200;
+   shape.pitch_pixels = 256;
+   shape.lanes = R300_TRIANGLE_LANES_R8G8B8A8;
+   /* (1, 0, 0.5, 1): R8G8B8A8 bytes [ff, 00, 80, ff]. */
+   const uint32_t color[4] = { 0x3f800000u, 0, 0x3f000000u, 0x3f800000u };
+   memcpy(shape.color_bits, color, sizeof(color));
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == 0);
+   assert(r300_tcl_bypass_triangle_render_shape_draw_dword(&shape) ==
+          0xff8000ffu);
+
+   const uint32_t bytes =
+      r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
+   assert(bytes == 256u * 201u * 4u);
+   static uint32_t target[256 * 201];
+   struct r300_triangle_oracle_verdict verdict;
+
+   paint_shape(&shape, target, ARRAY_SIZE(target));
+   assert(target[100 * 256 + 128] == 0xff8000ffu);
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+   assert(verdict.interior_samples == 4 && verdict.exterior_samples >= 8);
+
+   /* The truncated footprint fails closed. */
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes - 4,
+                                                &verdict);
+   assert(!verdict.executed && !verdict.canary_pass &&
+          verdict.interior_samples == 0);
+
+   /* The witness a B8G8R8A8 lane placement writes for the same
+    * constant fails the interior alone.
+    */
+   struct r300_triangle_render_shape swapped = shape;
+   swapped.lanes = R300_TRIANGLE_LANES_B8G8R8A8;
+   paint_shape(&swapped, target, ARRAY_SIZE(target));
+   assert(target[100 * 256 + 128] == 0xffff0080u);
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && !verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+
+   /* A witness at the reference color fails the interior. */
+   struct r300_triangle_render_shape wrong_color;
+   r300_tcl_bypass_triangle_render_shape_reference(&wrong_color);
+   wrong_color.width = shape.width;
+   wrong_color.height = shape.height;
+   wrong_color.pitch_pixels = shape.pitch_pixels;
+   wrong_color.lanes = shape.lanes;
+   paint_shape(&wrong_color, target, ARRAY_SIZE(target));
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && !verdict.interior_pass);
+
+   /* A witness rendered at pitch 64 into a pitch-256 footprint lands
+    * its rows in the wrong place: interior samples miss and the canary
+    * band carries writes.
+    */
+   struct r300_triangle_render_shape narrow = shape;
+   narrow.width = 64;
+   narrow.height = 64;
+   narrow.pitch_pixels = 64;
+   paint_shape(&narrow, target, ARRAY_SIZE(target));
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && !verdict.interior_pass);
+
+   /* A padding-band write and a canary-row write each fail the canary. */
+   paint_shape(&shape, target, ARRAY_SIZE(target));
+   shape.width = 240;
+   paint_shape(&shape, target, ARRAY_SIZE(target));
+   target[7 * 256 + 250] = 0xffff00ffu;
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && verdict.interior_pass && !verdict.canary_pass);
+   target[7 * 256 + 250] = R300_TRIANGLE_COLOR_SENTINEL;
+   target[200 * 256 + 1] = 1u;
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && verdict.interior_pass && !verdict.canary_pass);
+   target[200 * 256 + 1] = R300_TRIANGLE_COLOR_SENTINEL;
+   r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+}
+
 int
 main(void)
 {
@@ -1206,6 +1497,8 @@ main(void)
    test_output_oracle_rejects_bounding_box_overdraw();
    test_extent_oracle_calibration();
    test_extent_emit_deviates_in_scissor_words_alone();
+   test_render_shape_deviates_per_parameter();
+   test_render_shape_oracle_calibration();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }

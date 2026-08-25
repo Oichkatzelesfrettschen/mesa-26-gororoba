@@ -104,6 +104,30 @@ r300_fp24_quantize_bits(uint32_t f32_bits)
    return sign | magnitude;
 }
 
+/* The R300 US constant register encoding of a lattice value: sign in
+ * bit 23, a 7-bit exponent biased by 62 against the frexp exponent
+ * (binary32 exponent field minus 64) in bits 22:16, and the top 16
+ * mantissa bits below, the packing r300_emit.c applies to every
+ * fragment constant.  Zero encodes as zero; a magnitude whose exponent
+ * leaves the 1..127 field flushes to zero below and saturates above,
+ * so a caller that wants exact semantics passes lattice values inside
+ * the register's range.
+ */
+static inline uint32_t
+r300_fp24_register_bits(uint32_t f32_bits)
+{
+   const uint32_t sign = (f32_bits >> 31) << 23;
+   const uint32_t magnitude = f32_bits & 0x7FFFFFFFu;
+   if (magnitude == 0)
+      return 0;
+   const int exponent = (int)((magnitude >> 23) & 0xFFu) - 64;
+   if (exponent < 1)
+      return 0;
+   if (exponent > 127)
+      return sign | (127u << 16) | 0xFFFFu;
+   return sign | ((uint32_t)exponent << 16) | ((magnitude & 0x7FFFFFu) >> 7);
+}
+
 /* Immediately preceding FP24 lattice magnitude toward zero.  The caller
  * passes a lattice magnitude (sign bit clear); min normal steps to zero
  * because FP24 has no subnormals. */
