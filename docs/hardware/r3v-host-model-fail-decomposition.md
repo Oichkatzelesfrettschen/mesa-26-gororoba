@@ -269,6 +269,141 @@ before `dEQP-VK.memory.pipeline_barrier.*` moves off `Fail:100`.
 The `numExtensions == properties.size()` race (1 case, outside every
 mechanism above) and the general non-pass ledger having no rows yet for
 any of these `Fail` texts (`tests/r3v_conformance_nonpass_ledger.tsv`)
-are both out of scope for this decomposition; each PR above adds its own
-ledger rows as part of landing, per `check-ledgers`' requirement that
-every row carry a witness case.
+were both out of scope for the original decomposition pass; the four
+ledger rows and the corrected model below close that gap for every
+residual class named above.
+
+## Ledger classification: the residue is four mechanisms, not five
+
+`tests/r3v_conformance_nonpass_ledger.tsv` carries four new rows, each
+inserted ahead of the broad `image_outside_executed_envelope`,
+`descriptor_outside_executed_subset`, and `driver_defect_open` catch-alls
+so the specific mechanism wins under `classify()`'s first-match-wins
+order. Every row's witness is a literal `dEQP-VK.` case from
+`external/vulkancts/mustpass/main/vk-default/{api,memory}.txt`, and each
+carries the exact refusal text observed on this build
+(`4653e691f1692ad7c7e37835316e6cf7d82fc7bc`-derived worktree,
+own Meson build directory mirroring
+`mesa-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache`, run
+against the drm-shim host model, `RADEON_GPU_ID=0x5974`,
+`R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1`).
+
+**The five `object_management` image sub-populations are one root
+cause, not five.** Table 1 originally listed 1D, 3D, cube, multi-layer
+sampled 2D, and oversized/depth framebuffer as five materially
+different `VkImageCreateInfo` shapes needing five separate admission
+cells. They are, but every one of them requests
+`VK_IMAGE_USAGE_SAMPLED_BIT` (directly, or through the combined
+`SAMPLED_BIT|COLOR_ATTACHMENT_BIT` usage `image_2d`/`image_view_2d*`
+carry) against `VK_FORMAT_R8G8B8A8_UNORM`, and `r3v_get_format_properties`
+withholds `VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT` for that format
+unconditionally (the `mandatory_format_feature_absent` ledger row,
+`dEQP-VK.api.info.format_properties.r8_uint` and siblings): no admitted
+`r3v_native_image.c` cell samples an image at all, on any format. Widening
+`imageType`, `flags`, or `extent` alone therefore closes nothing; each of
+the five sub-populations still refuses at the same `usage` check even
+after its own shape-specific field is admitted, because the driver has
+no executed sampled-image route to bind. This reclassifies the residue
+from "five creation cells" to one mechanism (a sampled-image route) that
+gates all five, plus the five cells themselves as a second, independent
+mechanism layered on top -- closing the sampled-image route does not by
+itself admit `imageType=1D`, and admitting `imageType=1D` does not by
+itself close the sampled-image gate. `sampled_image_format_feature_withheld`
+(90 cases, host-model run seal `959264ee4799`) carries this reading.
+
+**`pipeline_barrier` is an executing-route family, not a creation-cell
+family.** The Rung 1 correction above already traced this: 56 cases
+poison on `r3v_CmdExecuteCommands` (no secondary-command-buffer route),
+4 poison on `r3v_CmdBlitImage` (no blit route), 16 refuse at
+`vkCreateImage` on the same withheld sampled/storage-image usage as the
+row above, and the rest resolve inside the admitted transfer cell and
+still poison downstream. `pipeline_barrier_executing_route_gap` (100 of
+104 cases classified Fail, host-model run seal `cc497bd8e6e5`) covers
+the family as one class since every sub-mechanism needs a materially
+larger executing route -- secondary command buffers, blit, or a sampled/
+storage image -- before any case in the group can pass; none of the
+three is a creation-cell fix.
+
+**Immutable samplers and the one-set descriptor layout are one missing
+route, not two.** `GraphicsPipeline::Resources`
+(`vktApiObjectManagementTests.cpp:1905-1906`) fails at
+`vkCreateDescriptorSetLayout` because `r3v_CreateDescriptorSetLayout`
+(`r3v_native_compute.c:59-79`) refuses any `pImmutableSamplers` binding
+outright (10 `object_management.*.graphics_pipeline` cases across the
+ten object-management groups). `descriptor_set.descriptor_set_layout_
+lifetime.graphics` fails one layer up, at `vkCreateGraphicsPipelines`,
+because `create_pipeline` (`r3v_native_pipeline.c:378-386`) refuses any
+non-empty descriptor set layout regardless of what it contains. Both
+refusals gate the same missing mechanism: a fragment shader sampling a
+bound descriptor. `sampling_fragment_route_absent` (10+1 cases, host-
+model run seals `959264ee4799` and `cc497bd8e6e5`) carries this reading.
+
+**The `numExtensions == properties.size()` case is a loader-level race,
+not an r3v defect.** `multithreadedCreatePerThreadResourcesTest<Instance>`
+runs `Instance::create` from several concurrent threads, each of which
+calls the CTS two-call enumeration idiom
+(`enumerateInstanceExtensionProperties`, `vkQueryUtil.cpp:507-515`)
+against the pre-instance, loader-resolved
+`vkEnumerateInstanceExtensionProperties`. `r3v_EnumerateInstanceExtensionProperties`
+(`r3v_instance.c:64-72`) forwards to
+`vk_enumerate_instance_extension_properties` (`vk_instance.c:273-295`),
+which iterates the file-scope `static const`
+`r3v_instance_extensions_supported` table with no mutable state; two
+calls into the driver in the same process return the identical count by
+construction. Five direct host-model reruns of the single case
+(`--deqp-case`, no partition filtering) split 2 `Runtime check failed:
+'(size_t)numExtensions == properties.size()'` at `vkQueryUtil.cpp:515`,
+2 `VK_INCOMPLETE` at `vkQueryUtil.cpp:514`, and 1 `Pass` -- the count a
+thread's own fill call sees differs from the count its own preceding
+size call saw, which only the layer above the ICD trampoline (the
+Khronos Vulkan-Loader's manifest scan and instance-extension merge) can
+introduce. This host carries `MangoHud`, `vkBasalt`,
+`VkLayer_FROG_gamescope_wsi`, `VkLayer_MESA_anti_lag`,
+`VkLayer_MESA_device_select`, and the Steam overlay/fossilize implicit
+layers under `/usr/share/vulkan/implicit_layer.d`; the loader merges
+every enabled implicit layer's extension list into the enumerated
+result on each call, and re-evaluates layer enablement on each scan.
+`loader_instance_extension_enumeration_race` (1 case, host-model run
+seal `959264ee4799`) records this as a loader-and-host-configuration
+race outside `src/amd/r300/vulkan/`, not an open r3v driver defect; the
+Vulkan-Loader source is not vendored in this repository, so the exact
+loader code path is a hypothesis pinned by exclusion (the driver side is
+provably deterministic) and the reproduced count divergence, not by a
+loader source citation.
+
+Measured receipts (own Meson build directory, `--dmesg-command ""`,
+`R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1`, evidence class host-model,
+`decision_grade: False`): the `api.object_management` family (457
+cases, caselist drawn directly from
+`external/vulkancts/mustpass/main/vk-default/api.txt` rather than the
+partition tool's `generate --mustpass-dir` path: the CTS checkout's
+mustpass directory carries `vk-fraction-mandatory-tests.txt`, which
+relists `dEQP-VK.info.build` beside `info.txt`, and the exact-cover
+tool refuses a corpus with a duplicate case, so it takes the pinned
+bundle's file list alone)
+classifies as `{Pass: 240, Fail: 120, QualityWarning: 4, NotSupported:
+93}` with zero `unclassified`, seal `959264ee4799`; the `Fail` split is
+`sampled_image_format_feature_withheld: 90`,
+`sampling_fragment_route_absent: 10`,
+`loader_instance_extension_enumeration_race: 1`, and
+`driver_defect_open: 19` (the buffer-view and `OpNot`/compute-pipeline
+populations, still generic pending their own PRs). The `memory.
+pipeline_barrier` plus `api.descriptor_set` family (110 cases, same
+direct-mustpass caselist method) classifies as `{Pass: 5, NotSupported:
+1, Fail: 104}` with zero `unclassified`, seal `cc497bd8e6e5`; the `Fail`
+split is `pipeline_barrier_executing_route_gap: 100`,
+`sampling_fragment_route_absent: 1`, and `driver_defect_open: 3` (two
+`OpNot`-gated `descriptor_set` cases plus one more). `r3v_conformance_
+runner.py check-ledgers` (against `r3v_conformance_slices.tsv`, the
+file the `r3v-conformance-ledgers` Meson test actually names) and
+`selftest` both pass, and `meson test --suite r3v` is green (219 pass,
+37 expected-fail, 0 fail, 6 skip) under `env -u R3V_NATIVE_MANIFEST_DIR`.
+
+The `OpNot` compute-instruction population (12 cases total, 10 in
+`object_management` and 2 in `descriptor_set`) is not given its own
+ledger row here: it falls into the generic `driver_defect_open` bucket
+above, and a concurrent PR is landing `OpNot` admission in
+`r300_compute_spirv.c`/`r300_compute_verb.c`/`r300_cpu_compute_job.c`
+directly, which will need its own row (or the `driver_defect_open`
+default continues to cover it correctly until it lands, since the
+population is a real open defect either way).
