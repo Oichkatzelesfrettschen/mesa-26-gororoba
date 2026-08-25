@@ -699,8 +699,11 @@ def execute(args):
         "evidence_class": evidence,
         "render_node": node,
         "case_count": len(cases),
-        "caselist_sha256": hashlib.sha256(
-            "\n".join(cases).encode()).hexdigest(),
+        # The digest covers the caselist file's bytes, the form the
+        # partition manifest publishes per shard and sha256sum prints, so
+        # one declared value binds the receipt, the manifest, and the
+        # file.
+        "caselist_sha256": sha256_file(args.caselist),
         "partition": partition,
         "runtime_event": runtime_event,
         "queue_claim": queue_claim,
@@ -1086,7 +1089,8 @@ def selftest(fixture_qpa):
                 case_timeout=120.0, max_cases=MAX_SHARD_CASES,
                 replace_dmesg=False, runtime_event=None,
                 expect_runtime_event=None, outdir=None,
-                queue_report=None, expect_queue_claim=None):
+                queue_report=None, expect_queue_claim=None,
+                expect_caselist=None):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
             os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
@@ -1097,7 +1101,8 @@ def selftest(fixture_qpa):
                 caselist=str(cases), out=str(outdir), source_root=None,
                 build_root=None, expect_source_sha=None,
                 expect_dso_sha256=dso, expect_deqp_sha256=None,
-                expect_caselist_sha256=None, expect_partition_sha256=None,
+                expect_caselist_sha256=expect_caselist,
+                expect_partition_sha256=None,
                 expect_runtime_event_sha256=expect_runtime_event,
                 runtime_event=runtime_event, timeout=timeout,
                 case_timeout=case_timeout, max_cases=max_cases,
@@ -1153,6 +1158,14 @@ def selftest(fixture_qpa):
             assert "not empty" in str(e)
         else:
             raise SystemExit("selftest: a used output directory was admitted")
+        # The declared caselist digest is the file's bytes, the value the
+        # partition manifest and sha256sum publish; the digest of the
+        # parsed names alone names a different artifact and refuses.
+        run("all_pass", "pass", expect_caselist=sha256_file(caselist))
+        joined = hashlib.sha256(
+            "\n".join(read_caselist(caselist)).encode()).hexdigest()
+        r = run("all_pass", "wrong_caselist", expect_caselist=joined)
+        assert r["caselist_sha256"] == sha256_file(caselist) != joined
         # A caselist above the shard ceiling refuses.
         try:
             run("all_pass", "pass", max_cases=2)
