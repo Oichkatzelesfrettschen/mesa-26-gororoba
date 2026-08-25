@@ -218,15 +218,24 @@ P0 (blocks the next target run):
   arm per parameter plus the composed smoke shape earns all three; the
   render-family transfer readback is a host route over the linear color
   BO with no executed change; OPTIMAL admission is a pure admission fact.
-  The attended render-shape session is staged:
-  `docs/hardware/r3v-native-attended-render-shape-procedure.md` names six
-  arms (reference control, lanes, pitch, constant, extent, composed
-  smoke shape) with their moved payloads and predicted interior dwords;
-  `r3v_native_attended_render_shape --shape` submits an arm under the
-  `triangle_render_shape` cell kind, `r3v_native_arming_runner --shape`
-  reports its digest, and `r3v-native-triangle-cell-shape` rehearses the
-  composed arm through the drm-shim.  The session itself waits on the
-  operator; a transcript then needs compose, an independent plan check, drm-shim
+  The attended render-shape session ran on RS482
+  (`docs/hardware/r3v-native-attended-render-shape-procedure.md`): seven
+  arms in table order (reference control, lanes, pitch, constant,
+  extent, composed smoke shape, composed-asym), each armed under its own
+  digest and `triangle_render_shape` cell kind, `vkQueueSubmit` 0, every
+  oracle pass true with the centroid at the predicted dword (reference
+  `0xdf20609f`, lanes `0xdf9f6020`, pitch-256 `0xdf20609f`, magenta
+  `0xffff00ff`, 256x256 `0xdf20609f`, composed `0xffff00ff`,
+  composed-asym `0xff0000ff`), dmesg delta zero, retained `ib.bin`
+  byte-identical to the emitter, on Mesa `300a7555716`, kernel
+  7.1.8-1-cachyos with `radeon-rs482-policy 0.8.11-1` (srcversion
+  `727CE89E79FB2D14663C381`), preflight 354 ok / 40 expected fail / 0
+  fail; deviations: no fresh boot (uptime 10 h) and a concurrent Xorg
+  session on the GPU; bundle steinmarder-r300
+  `r3v-render-shape-family-seven-arm-delivery-rs482`.  The four executed
+  render-family elements hold silicon evidence, so the admission widening
+  to the shape family and the smoke.triangle rerun follow;
+  a transcript then needs compose, an independent plan check, drm-shim
   replay, the six mutations (order, digest, relocation, source identity,
   runtime ceiling, nonce) each refusing before the transport, and the
   one-attempt silicon run on 0.8.11-1;
