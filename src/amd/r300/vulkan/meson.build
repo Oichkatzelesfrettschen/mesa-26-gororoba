@@ -249,6 +249,84 @@ if with_tests
             '--source', files('r3v_physical_device.c')],
     suite : ['r3v'],
   )
+  # docs/hardware/r3v-wsi-denominator.md "Retained checks that pin the
+  # denominator": the device extension table, the advertised-surface
+  # binding ledger, and the built ICD's own symbol table must agree
+  # that KHR_swapchain is absent, so a partial edit to any one of the
+  # three fails closed rather than silently promising a route the
+  # other two do not carry.
+  test(
+    'r3v-native-swapchain-absence-selftest',
+    prog_python,
+    args : [files('tests/r3v_native_swapchain_absence_audit.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  swapchain_absence_args = [
+    files('tests/r3v_native_swapchain_absence_audit.py'),
+    '--device-extensions', files('r3v_physical_device.c'),
+    '--binding-tsv', files('tests/r3v_advertised_surface_deqp_binding.tsv'),
+  ]
+  if prog_nm_r3v.found()
+    test(
+      'r3v-native-swapchain-absence',
+      prog_python,
+      args : swapchain_absence_args + [
+        '--library', libvulkan_r3v.full_path(),
+        '--nm-binary', prog_nm_r3v.full_path(),
+      ],
+      depends : libvulkan_r3v,
+      suite : ['r3v'],
+    )
+  else
+    test(
+      'r3v-native-swapchain-absence',
+      prog_python,
+      args : swapchain_absence_args,
+      suite : ['r3v'],
+    )
+  endif
+  # docs/hardware/r3v-wsi-denominator.md "Default present route": the
+  # three comment sites that once stated software-mode-by-default must
+  # each name R3V_WSI_SW wherever they still say "software mode" or
+  # "the lavapipe pattern", so the mismatch the document corrected
+  # cannot silently reappear.
+  test(
+    'r3v-wsi-init-comment-parity-selftest',
+    prog_python,
+    args : [files('tests/r3v_wsi_init_comment_parity_audit.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-wsi-init-comment-parity',
+    prog_python,
+    args : [files('tests/r3v_wsi_init_comment_parity_audit.py'),
+            '--physical-device', files('r3v_physical_device.c'),
+            '--header', files('r3v_physical_device.h'),
+            '--instance', files('r3v_instance.c')],
+    suite : ['r3v'],
+  )
+  # docs/hardware/r3v-wsi-denominator.md "Per-host-class dEQP
+  # applicability": the WSI surface-contract registrations must sit
+  # inside the dep_xcb.found() and prog_xvfb.found() guard, so a host
+  # missing either dependency registers zero test binaries rather than
+  # a run-time skip; parsed from meson.build text, so it needs no
+  # configured build to check either guard direction.
+  test(
+    'r3v-wsi-registration-gate-selftest',
+    prog_python,
+    args : [files('tests/r3v_wsi_registration_gate_audit.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-wsi-registration-gate',
+    prog_python,
+    args : [files('tests/r3v_wsi_registration_gate_audit.py'),
+            '--meson-build', files('meson.build')],
+    suite : ['r3v'],
+  )
   # The Vulkan 1.0 requirement inventory: feature and limit member
   # identity from the registry, the advertised extension surface with
   # its dependency closure evaluated at core 1.0 (unknown, disabled,

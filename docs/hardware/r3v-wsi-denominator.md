@@ -147,68 +147,82 @@ alone would not open slice 18, because the group's non-headless cases still
 need `KHR_swapchain`, which is a device-level extension with no code path in
 this ICD.
 
-## Proposed work
+## Retained checks that pin the denominator
 
-Each item names its mechanism, the check it adds, and the falsifier that
-would close it. None of these change the presentation surface; each pins
-the denominator itself so a future extension can be measured against a known
-baseline instead of an assumed one.
+Each item names its mechanism, the retained check that landed for it, and
+the falsifier that check runs against itself. None of these change the
+presentation surface; each pins the denominator itself so a future
+extension can be measured against a known baseline instead of an assumed
+one. Every check registers in `suite : ['r3v']` beside the audits this
+document's earlier sections cite.
 
 ### Swapchain-extension-absence audit
 
-Add a retained check (`tests/`, mirroring `r3v_native_advertised_surface_audit.py`'s
-source-vs-binding-table comparison) that fails when `VK_KHR_swapchain`
-appears in `r3v_native_device_extensions_supported`,
-`r3v_advertised_surface_deqp_binding.tsv`, or any `vkCreateSwapchainKHR`-shaped
-entry point in the generated dispatch table, without a corresponding row in
-this document's driver-callback table above.
+`tests/r3v_native_swapchain_absence_audit.py` reads the device extension
+table (`r3v_native_device_extensions_supported`), the advertised-surface
+binding ledger (`tests/r3v_advertised_surface_deqp_binding.tsv`), and the
+built ICD's own symbol table (`nm libvulkan_r3v.so`) together, and fails the
+moment any one of the three carries a `KHR_swapchain` signal -- an
+advertised extension bit, a binding row, or a defined `r3v_CreateSwapchainKHR`
+route -- the other two do not corroborate, since this document's
+driver-callback table names no route for the extension at all.
 
-Falsifier: the audit passes on the current tree (no `KHR_swapchain`
-anywhere) and fails when a synthetic device-extension-table edit adds
-`.KHR_swapchain = true` with no matching `r3v_CreateSwapchainKHR` symbol in
-`nm`.
+Falsifier, exercised by `--selftest` and confirmed against the real tree: the
+audit passes on the current tree (no `KHR_swapchain` signal anywhere) and
+fails when a synthetic device-extension-table edit adds `.KHR_swapchain =
+true` with no matching binding row or defined `r3v_CreateSwapchainKHR`
+symbol in `nm`.
 
 ### WSI-init comment/code parity
 
-Add the comment-hygiene-style structural check (`ast-grep` or a small `rg`
-script) that flags a comment adjacent to `r3v_init_wsi`, the `wsi_device`
-field declaration, or the `KHR_surface` extension entry whose text contains
-"software mode" or "lavapipe pattern" without the file also containing the
-string `R3V_WSI_SW`, so a future edit cannot reintroduce the
+`tests/r3v_wsi_init_comment_parity_audit.py` locates the comment
+immediately above `r3v_init_wsi`, the `wsi_device` field declaration, and
+the `KHR_surface` extension entry, and fails when any of the three names
+"software mode" or "lavapipe pattern" in a file that nowhere names
+`R3V_WSI_SW`, so a future edit cannot reintroduce the
 default-value/comment mismatch named in Default present route above.
 
-Falsifier: the check fails against a synthetic reintroduction of the
-original wording at any of the three sites, and passes on the corrected
-tree.
+Falsifier, exercised by `--selftest` and confirmed against the real tree:
+the check fails against a synthetic reintroduction of the original wording
+at any of the three sites (with the `R3V_WSI_SW` guard removed from that
+site's file), and passes on the corrected tree.
 
 ### Swapchain-image-shape refusal pins
 
-Add unit cases to the existing `r3v_CreateImage` test coverage that construct
-a `VkImageCreateInfo` shaped like a typical swapchain image (`TRANSFER_DST |
-COLOR_ATTACHMENT` usage, `VK_IMAGE_TILING_OPTIMAL`, an application-chosen
-extent above 64x64) and assert `R3V_NATIVE_REFUSAL_RESULT`, pinning the
-refusal path this document's driver-callback table documents so it survives
-future image-admission refactors.
+`tests/r3v_native_transfer_ops_test.c`'s `check_optimal_tiling` now
+constructs a `VkImageCreateInfo` shaped like a typical swapchain image
+(`TRANSFER_DST | COLOR_ATTACHMENT` usage, `VK_IMAGE_TILING_OPTIMAL`, a
+128x128 extent above the render family's 64x64 ceiling) and asserts
+`R3V_NATIVE_REFUSAL_RESULT`, pinning the refusal path this document's
+driver-callback table documents so it survives future image-admission
+refactors.
 
-Falsifier: the new case fails (returns `VK_SUCCESS`) only if a future change
-widens `r3v_CreateImage`'s admission gate without an explicit WSI decision;
-until then it passes and documents the boundary.
+Falsifier, confirmed on drm-shim silicon-shape hardware evidence: widening
+`r3v_CreateImage`'s admission gate to accept the color-attachment usage bit
+inside the transfer branch's usage mask makes the new case return
+`VK_SUCCESS` and the test fail; reverting the gate restores the pass. Until
+a future change makes an explicit WSI decision, the case passes and
+documents the boundary.
 
 ### WSI-test registration-gate audit
 
-Add a check that runs `meson introspect --tests` (or parses `meson.build`
-directly) against a build configured with `-Dxcb=disabled` and asserts that
-`r3v_native_wsi_surface_contract` and the `r3v-xvfb-wrapper-*` targets do not
-appear, and a second run with `xcb` enabled but `Xvfb` unavailable
-(`PATH` scrubbed) asserting the same, closing the "registers nothing" gap
-this document's per-host-class table names as distinct from a run-time skip.
+`tests/r3v_wsi_registration_gate_audit.py` parses `meson.build` as text --
+no configured build required -- tracks its `if`/`foreach` nesting, and
+asserts that the `r3v_native_wsi_surface_contract` target and its
+associated `r3v-xvfb-wrapper-passthrough-*`/`-infrastructure-refusal` tests
+sit inside the `if dep_xcb.found() and prog_xvfb.found()` block, while
+`r3v-xvfb-wrapper-signal-cleanup` (which exercises the wrapper script's own
+signal-cleanup logic against plain `true`/`false` commands, needing neither
+`libxcb` nor a real `Xvfb` display) sits outside it, closing the "registers
+nothing" gap this document's per-host-class table names as distinct from a
+run-time skip.
 
-Falsifier: a mutated `meson.build` that drops the `dep_xcb.found() and
-prog_xvfb.found()` guard so the targets register unconditionally makes the
-audit fail, because the `-Dxcb=disabled` run now finds
-`r3v_native_wsi_surface_contract` in `meson introspect --tests`. The audit
-catches a silently deregistered gate and a silently over-registered one by
-the same mechanism, and it passes again once the guard is restored.
+Falsifier, exercised by `--selftest` and confirmed against the real tree: a
+mutated `meson.build` that drops the `if dep_xcb.found() and
+prog_xvfb.found()`/`endif` pair while keeping the body makes the audit fail,
+because none of the tracked `if`-blocks names both guard tokens any more.
+The audit catches a dropped guard and a misplaced unconditional test by the
+same line-range mechanism, and it passes again once the guard is restored.
 
 ## Dropped claims
 
