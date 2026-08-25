@@ -210,12 +210,31 @@ P0 (blocks the next target run):
 - the first dEQP transcript: `dEQP-VK.api.smoke.triangle` is the
   selected one-case bridge from dEQP semantics to the exact-plan hardware
   gate, and it reaches a nonempty IB only after the five render-family
-  elements above land, each with its own silicon evidence (lane order,
-  extent and pitch, render-family transfer readback, fragment constant,
-  OPTIMAL admission); a transcript then needs compose, an independent
-  plan check, drm-shim replay, the six mutations (order, digest,
-  relocation, source identity, runtime ceiling, nonce) each refusing
-  before the transport, and the one-attempt silicon run on 0.8.11-1;
+  elements above land.  Those elements decompose into three evidence
+  classes rather than five silicon receipts: the lane order, the extent
+  with its pitch, and the fragment constant are each one register class
+  of the qualified triangle cell (`r300_triangle_render_shape`,
+  `common/r300_tcl_bypass_triangle.h`), so one attended session with one
+  arm per parameter plus the composed smoke shape earns all three; the
+  render-family transfer readback is a host route over the linear color
+  BO with no executed change; OPTIMAL admission is a pure admission fact.
+  The attended render-shape session needs a cell kind whose frozen
+  geometry is the declared shape, a `--shape` arming runner emitting the
+  arm's digest, and a procedure naming the four arms' predictions;
+  a transcript then needs compose, an independent plan check, drm-shim
+  replay, the six mutations (order, digest, relocation, source identity,
+  runtime ceiling, nonce) each refusing before the transport, and the
+  one-attempt silicon run on 0.8.11-1;
+- the fragment-constant identity: the executed cell's fragment block
+  writes the byte-order oracle constant (0.125, 0.375, 0.625, 0.875),
+  interior dword `0xdf20609f`, while pipeline admission
+  (`r3v_native_pipeline.c`) accepts the module writing `vec4(0, 1, 0, 1)`
+  and `r3v_native_reference_spirv.h` describes the route as solid green
+  (`0xff00ff00`).  An application binding the admitted module reads back
+  the oracle constant; the render-shape family carries the admitted
+  module's constant into the four `R300_PFS_PARAM_0` payloads, so the
+  first render-shape receipt closes this row and the admission then
+  binds the executed constant to the module's constant;
 - draw slice: a planning pass for `draw`, `synchronization`, and
   `transfer.0000-0001` that lands transcripts (rerun pending); a
   transcript-bearing shard needs compose, per-case plans, and the human
