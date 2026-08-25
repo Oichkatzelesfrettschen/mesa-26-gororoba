@@ -26,6 +26,17 @@ enum r300_tcl_bypass_triangle_slot {
 struct r300_tcl_bypass_triangle_params {
    /* Byte offset of the first vertex inside the vertex BO. */
    uint32_t vertex_offset;
+   /* RB3D_COLOROFFSET0 payload: the byte offset inside the color BO
+    * where render row 0 starts.  r300_packet0_check (radeon, r300.c)
+    * writes ib[idx] = idx_value + reloc->gpu_offset, so the payload
+    * travels as the offset the kernel biases by the BO base, and
+    * r100_cs_track_check validates offset + pitch * cpp * maxy against
+    * the BO size.  The offset carries no alignment mask through that
+    * path -- R300_COLOROFFSET_MASK (0xffffffe0, r300_reg.h) names the
+    * register's reserved low five bits -- so the admission below is
+    * what keeps an unaligned base off the hardware.
+    */
+   uint32_t color_offset;
    /* RB3D_COLORPITCH0 value: pitch in pixels plus format and endian
     * fields, chosen by the caller from the color BO's layout.
     */
@@ -389,7 +400,31 @@ struct r300_triangle_render_shape {
     * other than 1 would claim a draw the vertex writer never produces.
     */
    uint32_t triangle_count;
+   /* Byte offset inside the color BO where render row 0 starts: the
+    * RB3D_COLOROFFSET0 payload, a multiple of
+    * R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT inside
+    * R300_TRIANGLE_MAX_TARGET_OFFSET.  The reference shape carries 0,
+    * so a target bound at the allocation base emits the reference
+    * bytes.
+    */
+   uint32_t target_offset;
 };
+
+/* RB3D_COLOROFFSET holds the base in its bits 31:5
+ * (R300_COLOROFFSET_MASK = 0xffffffe0, r300_reg.h), so a base carrying
+ * any of the reserved low five bits names an address the register
+ * cannot encode.  The kernel's packet check adds the relocation base
+ * without masking, so the driver's admission is the one gate against
+ * that address reaching the hardware.
+ */
+#define R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT 32u
+/* The offset ceiling keeps offset plus the largest admitted footprint
+ * -- R300_TRIANGLE_RENDER_MAX_EXTENT pitch over one row past the
+ * maximum extent -- inside 32 bits, so
+ * r300_tcl_bypass_triangle_render_shape_color_bytes returns an exact
+ * uint32_t sum for every admitted shape.
+ */
+#define R300_TRIANGLE_MAX_TARGET_OFFSET (1u << 24)
 
 /* The reference shape: 64x64 at pitch 64, B8G8R8A8 lanes, the
  * byte-order oracle constant (0.125, 0.375, 0.625, 0.875), one triangle.
@@ -420,8 +455,11 @@ void r300_tcl_bypass_triangle_render_shape_vertices(
    const struct r300_triangle_render_shape *shape,
    float out[R300_TRIANGLE_VERTEX_DWORDS]);
 
-/* The color BO footprint the oracle reads: pitch * (height + 1) pixels,
- * the canary row included.
+/* The color BO footprint the oracle reads: the target offset plus
+ * pitch * (height + 1) pixels, the canary row included.  This sizes the
+ * allocation the shape needs; the offset-relative rendered footprint,
+ * the quantity a bind admission compares against the remaining bytes of
+ * a suballocation, is this value less the offset.
  */
 uint32_t r300_tcl_bypass_triangle_render_shape_color_bytes(
    const struct r300_triangle_render_shape *shape);
@@ -434,7 +472,11 @@ uint32_t r300_tcl_bypass_triangle_render_shape_draw_dword(
 
 /* The constant-color oracle over the shape's pitch, extent, and draw
  * dword; every rule of r300_tcl_bypass_triangle_extent_oracle holds with
- * the shape's pitch in place of the fixed 64.
+ * the shape's pitch in place of the fixed 64.  pixels addresses the
+ * whole color BO and render row 0 sits at the shape's target offset, so
+ * the canary additionally demands the sentinel in every dword below
+ * that offset: a device write under the rendered rows is as observable
+ * as one past them.
  */
 void r300_tcl_bypass_triangle_render_shape_oracle(
    const struct r300_triangle_render_shape *shape, const uint32_t *pixels,

@@ -183,6 +183,12 @@ main(int argc, char **argv)
          return 2;
       cell_render_shape = true;
       argi += 1 + R3V_RENDER_SHAPE_ARGC;
+      if (argc >= argi + 2 && strcmp(argv[argi], "--offset") == 0) {
+         if (!r3v_render_shape_parse_offset(argv[argi], argv[argi + 1],
+                                            &render_shape))
+            return 2;
+         argi += 2;
+      }
    }
    if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
       /* Authorization input parses fail-closed: the value is judged in
@@ -246,7 +252,8 @@ main(int argc, char **argv)
    if (argc != argi + 1) {
       fprintf(stderr,
               "usage: %s [--varying|--compute-identity|--shape <w> <h> "
-              "<pitch> <bgra|rgba> <r> <g> <b> <a>] [--extent <w> <h>] "
+              "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
+              "[--extent <w> <h>] "
               "<evidence-directory> | [--varying|--compute-identity|"
               "--shape ...] [--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);

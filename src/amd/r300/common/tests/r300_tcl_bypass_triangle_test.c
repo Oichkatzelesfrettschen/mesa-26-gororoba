@@ -1324,6 +1324,32 @@ test_render_shape_deviates_per_parameter(void)
           vertices[4] == 224.0f && vertices[9] == 224.0f);
    r300_tcl_bypass_triangle_release(&cell);
 
+   /* Target offset: one payload, RB3D_COLOROFFSET0, carrying the byte
+    * offset the kernel biases by the relocation base
+    * (r300_packet0_check writes ib[idx] = idx_value + reloc->gpu_offset,
+    * radeon r300.c), and the footprint grows by exactly that offset.
+    */
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.target_offset = 4096;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == 0);
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   assert(ib_deviating_dwords(&reference, &cell, indices, 8) == 1);
+   assert(payload_register(&cell, indices[0]) == R300_RB3D_COLOROFFSET0);
+   assert(cell.ib[indices[0]] == 4096u);
+   assert(r300_tcl_bypass_triangle_render_shape_color_bytes(&shape) ==
+          4096u + R300_TRIANGLE_COLOR_BYTES);
+   r300_tcl_bypass_triangle_release(&cell);
+
+   /* An offset carrying a reserved low bit of RB3D_COLOROFFSET refuses:
+    * the kernel adds the relocation base without masking, so the
+    * driver's admission is the gate.
+    */
+   shape.target_offset = 16;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.target_offset = R300_TRIANGLE_MAX_TARGET_OFFSET +
+                         R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+
    /* Admission refusals: odd pitch, pitch under width, a pitch not a
     * multiple of 8, extent past the ceiling, a triangle count other
     * than 1, a constant off the FP24 lattice, and a NaN constant.
@@ -1366,6 +1392,7 @@ paint_shape(const struct r300_triangle_render_shape *shape,
       r300_tcl_bypass_triangle_render_shape_draw_dword(shape);
    for (uint32_t i = 0; i < dwords; i++)
       target[i] = R300_TRIANGLE_COLOR_SENTINEL;
+   uint32_t *rows = target + shape->target_offset / 4u;
    for (uint32_t y = 0; y < shape->height; y++) {
       for (uint32_t x = 0; x < shape->width; x++) {
          const float px = (float)x + 0.5f, py = (float)y + 0.5f;
@@ -1376,7 +1403,7 @@ paint_shape(const struct r300_triangle_render_shape *shape,
          const float e2 = (v[0] - v[8]) * (py - v[9]) -
                           (v[1] - v[9]) * (px - v[8]);
          if (e0 > 0.0f && e1 > 0.0f && e2 > 0.0f)
-            target[y * shape->pitch_pixels + x] = color;
+            rows[y * shape->pitch_pixels + x] = color;
       }
    }
 }
@@ -1478,6 +1505,51 @@ test_render_shape_oracle_calibration(void)
                                                 &verdict);
    assert(verdict.executed && verdict.interior_pass &&
           verdict.exterior_pass && verdict.canary_pass);
+
+   /* The offset witness: a target whose render row 0 sits 4096 bytes
+    * into the allocation.  The painted witness passes; a write in the
+    * band below the offset fails the canary, so the bytes the render
+    * never addresses are held to the sentinel as the canary row is.
+    */
+   struct r300_triangle_render_shape offset_shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&offset_shape);
+   offset_shape.target_offset = 4096;
+   const uint32_t offset_bytes =
+      r300_tcl_bypass_triangle_render_shape_color_bytes(&offset_shape);
+   assert(offset_bytes == 4096u + R300_TRIANGLE_COLOR_BYTES);
+   static uint32_t offset_target[(4096 + R300_TRIANGLE_COLOR_BYTES) / 4];
+   paint_shape(&offset_shape, offset_target, ARRAY_SIZE(offset_target));
+   assert(offset_target[1024 + 32 * 64 + 32] ==
+          R300_TRIANGLE_DRAW_COLOR_B8G8R8A8);
+   r300_tcl_bypass_triangle_render_shape_oracle(
+      &offset_shape, offset_target, offset_bytes, &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && verdict.canary_pass);
+
+   offset_target[1023] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+   r300_tcl_bypass_triangle_render_shape_oracle(
+      &offset_shape, offset_target, offset_bytes, &verdict);
+   assert(verdict.executed && verdict.interior_pass &&
+          verdict.exterior_pass && !verdict.canary_pass);
+   offset_target[1023] = R300_TRIANGLE_COLOR_SENTINEL;
+
+   /* The same painted bytes read at offset zero miss every interior
+    * sample, so the oracle reads the offset rather than scanning for
+    * the rendered rows.
+    */
+   struct r300_triangle_render_shape unshifted = offset_shape;
+   unshifted.target_offset = 0;
+   r300_tcl_bypass_triangle_render_shape_oracle(
+      &unshifted, offset_target,
+      r300_tcl_bypass_triangle_render_shape_color_bytes(&unshifted),
+      &verdict);
+   assert(verdict.executed && !verdict.interior_pass);
+
+   /* The truncated footprint fails closed at the offset too. */
+   r300_tcl_bypass_triangle_render_shape_oracle(
+      &offset_shape, offset_target, offset_bytes - 4, &verdict);
+   assert(!verdict.executed && !verdict.canary_pass &&
+          verdict.interior_samples == 0);
 }
 
 int

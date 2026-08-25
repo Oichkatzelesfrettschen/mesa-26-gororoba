@@ -206,7 +206,7 @@ r300_tcl_bypass_triangle_emit_into(
     */
    r300_pm4_reg(&b, R300_RB3D_CCTL, 0);
    r300_pm4_reg(&b, R300_ZB_CNTL, 0);
-   r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, 0);
+   r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, params->color_offset);
    write_reloc(&b, out, R300_TRIANGLE_SLOT_COLOR);
    r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
 
@@ -634,11 +634,20 @@ r300_tcl_bypass_triangle_render_shape_oracle(
     * rather than leaving canary_pass vacuously true.
     */
    const uint64_t required_bytes =
+      (uint64_t)shape->target_offset +
       (uint64_t)pitch * (height + 1u) * sizeof(uint32_t);
    if (pixels == NULL || size_bytes < required_bytes) {
       *verdict = (struct r300_triangle_oracle_verdict){ 0 };
       return;
    }
+
+   /* Render row 0 sits at the target offset, so the rendered rows index
+    * from there while the dwords below it stay part of the untouched
+    * band the canary reads.
+    */
+   const uint32_t offset_dwords = shape->target_offset / 4u;
+   const uint32_t *rows = pixels + offset_dwords;
+   const uint32_t row_count = size_bytes / 4u - offset_dwords;
 
    const struct triangle_geometry g = triangle_geometry_at(width, height);
 
@@ -648,8 +657,8 @@ r300_tcl_bypass_triangle_render_shape_oracle(
       .canary_pass = true,
    };
 
-   const uint32_t pixel_count = size_bytes / 4;
-   for (uint32_t i = 0; i < pixel_count; i++) {
+   const uint32_t pixel_count = row_count;
+   for (uint32_t i = 0; i < size_bytes / 4u; i++) {
       if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL) {
          verdict->executed = true;
          break;
@@ -681,7 +690,7 @@ r300_tcl_bypass_triangle_render_shape_oracle(
       verdict->interior_samples++;
       const uint32_t index = y * pitch + x;
       if (index >= pixel_count ||
-          pixels[index] != draw_color)
+          rows[index] != draw_color)
          verdict->interior_pass = false;
    }
    if (verdict->interior_samples == 0)
@@ -716,26 +725,30 @@ r300_tcl_bypass_triangle_render_shape_oracle(
       verdict->exterior_samples++;
       const uint32_t index = y * pitch + x;
       if (index >= pixel_count ||
-          pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
+          rows[index] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->exterior_pass = false;
    }
    if (verdict->exterior_samples == 0)
       verdict->exterior_pass = false;
 
-   /* Canary: the sub-pitch padding band of every rendered row, then
-    * every row past the render extent, all at the sentinel.
+   /* Canary: every dword below the target offset, the sub-pitch
+    * padding band of every rendered row, then every row past the render
+    * extent, all at the sentinel.
     */
+   for (uint32_t i = 0; i < offset_dwords; i++) {
+      if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
+         verdict->canary_pass = false;
+   }
    for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = width; x < pitch; x++) {
          const uint32_t index = y * pitch + x;
          if (index < pixel_count &&
-             pixels[index] != R300_TRIANGLE_COLOR_SENTINEL)
+             rows[index] != R300_TRIANGLE_COLOR_SENTINEL)
             verdict->canary_pass = false;
       }
    }
-   for (uint32_t i = pitch * height;
-        i < pixel_count; i++) {
-      if (pixels[i] != R300_TRIANGLE_COLOR_SENTINEL)
+   for (uint32_t i = pitch * height; i < pixel_count; i++) {
+      if (rows[i] != R300_TRIANGLE_COLOR_SENTINEL)
          verdict->canary_pass = false;
    }
 }
@@ -922,7 +935,14 @@ r300_tcl_bypass_triangle_render_shape_validate(
         * a shape claiming more than one triangle would draw records the
         * writer never emits.
         */
-       shape->triangle_count != 1)
+       shape->triangle_count != 1 ||
+       /* RB3D_COLOROFFSET encodes the base in bits 31:5 and the kernel
+        * packet check adds the relocation base without masking, so a
+        * base carrying a reserved low bit would reach the hardware as
+        * an address the register cannot name.
+        */
+       (shape->target_offset % R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT) != 0 ||
+       shape->target_offset > R300_TRIANGLE_MAX_TARGET_OFFSET)
       return -EINVAL;
    /* The register holds the FP24 lattice value, so a constant off the
     * lattice (a NaN included, which quantizes to max finite) would
@@ -1026,6 +1046,7 @@ r300_tcl_bypass_triangle_render_shape_emit(
    }
    struct r300_tcl_bypass_triangle_params params = {
       .vertex_offset = 0,
+      .color_offset = shape->target_offset,
       .color_pitch_format = pitch_word,
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
@@ -1056,8 +1077,9 @@ uint32_t
 r300_tcl_bypass_triangle_render_shape_color_bytes(
    const struct r300_triangle_render_shape *shape)
 {
-   return shape->pitch_pixels * (shape->height + R300_TRIANGLE_CANARY_ROWS) *
-          4u;
+   return shape->target_offset +
+          shape->pitch_pixels * (shape->height + R300_TRIANGLE_CANARY_ROWS) *
+             4u;
 }
 
 uint32_t

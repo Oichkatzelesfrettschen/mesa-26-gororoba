@@ -487,10 +487,14 @@ struct r3v_native_deferred_draw {
    uint32_t clear_rect_count;
    struct r3v_native_pass_clear_rect
       clear_rects[R3V_NATIVE_PASS_CLEAR_RECT_MAX];
-   /* The pass target's declared footprint: the load-op clear's exact
-    * byte bound at execution.
+   /* The pass target's window inside its bound memory: the bind offset
+    * where render row 0 starts, the declared footprint from there --
+    * the load-op clear's exact byte bound at execution -- and the row
+    * pitch every in-pass clear rectangle steps by.
     */
+   uint64_t target_fill_offset;
    uint64_t target_fill_bytes;
+   uint32_t target_row_bytes;
    /* The pass target's extent: the viewport transform's window scale
     * at execution.
     */

@@ -52,10 +52,13 @@ VkResult r3v_native_record_tcl_bypass_triangle_render_shape(
  * smoke shape -- 256x256 at pitch 256, R8G8B8A8, magenta -- through the
  * same recorder, arming, submission, and retention path as the
  * reference cell, so the shim run proves the new cell kind arms under
- * its own digest and retains its own stream.
+ * its own digest and retains its own stream.  The shape-offset mode is
+ * that shape with render row 0 at 4096 bytes into the color
+ * allocation, so the retained stream carries the RB3D_COLOROFFSET0
+ * payload a suballocated attachment binds at.
  */
 static bool shape_mode;
-static const struct r300_triangle_render_shape harness_shape = {
+static struct r300_triangle_render_shape harness_shape = {
    .width = 256,
    .height = 256,
    .pitch_pixels = 256,
@@ -224,12 +227,17 @@ main(int argc, char **argv)
         strcmp(argv[1], "poison") != 0 &&
         strcmp(argv[1], "multi") != 0 &&
         strcmp(argv[1], "empty") != 0 &&
-        strcmp(argv[1], "shape") != 0)) {
-      fprintf(stderr, "usage: %s closed|open|poison|multi|empty|shape\n",
+        strcmp(argv[1], "shape") != 0 &&
+        strcmp(argv[1], "shape-offset") != 0)) {
+      fprintf(stderr,
+              "usage: %s closed|open|poison|multi|empty|shape|shape-offset\n",
               argv[0]);
       return 2;
    }
-   shape_mode = strcmp(argv[1], "shape") == 0;
+   shape_mode = strcmp(argv[1], "shape") == 0 ||
+                strcmp(argv[1], "shape-offset") == 0;
+   if (strcmp(argv[1], "shape-offset") == 0)
+      harness_shape.target_offset = 4096;
 
    check_cell_emitter_error_mapping();
 
