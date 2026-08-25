@@ -43,7 +43,9 @@ Important boundary: this repo can reference sibling `steinmarder` evidence, but 
 
 ## Key conventions in this codebase
 
-1. `AGENTS.md` is the canonical AI/developer policy. `CLAUDE.md` and `GEMINI.md` are thin wrappers that import `AGENTS.md`; do not duplicate or diverge rules across wrappers.
+1. `AGENTS.md` is the canonical AI/developer policy. `CLAUDE.md` is its tracked
+   repository-relative symbolic link, and `GEMINI.md` is the thin wrapper that
+   imports it; do not duplicate or diverge rules across instruction paths.
 2. Keep the Meson/Make split intact: Meson handles project configuration and Ninja generation; `build-infra/Makefile` handles profile/host orchestration and audits.
 3. Use durable mechanism naming in branches/commit subjects/PR titles/comments (no phase/wave/session naming).
 4. For source comments, document mechanism constraints (spec/kernel/hardware behavior), not workflow history. Avoid task IDs, private paths, or time-relative wording in source comments.

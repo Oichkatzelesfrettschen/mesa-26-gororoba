@@ -6,9 +6,15 @@
 
 All Mesa agents and contributors follow `AGENTS.md`. Codex, compatible agents, and human contributors read it directly. Other root agent files exist only to load it for tools that require a tool-specific filename.
 
-`CLAUDE.md` loads `@AGENTS.md`, spelled in that exact case because imports resolve literally on a case-sensitive filesystem, and may add Claude-specific loading notes after the load line. `GEMINI.md` follows the same pattern and exists only while Gemini CLI is part of the workflow.
+`CLAUDE.md` is a tracked repository-relative symbolic link to `AGENTS.md`, so
+Claude Code and other readers receive the canonical rules directly. `GEMINI.md`
+loads `@AGENTS.md`, spelled in that exact case because imports resolve literally
+on a case-sensitive filesystem, and exists only while Gemini CLI is part of the
+workflow.
 
-Root agent files are regular tracked files. The `AGENTS.md` body lives in one place; loader files reference it, add tool-specific loading notes only, and carry one doctrine -- this file's -- since copied text drifts into conflicting instructions.
+Root instruction paths are tracked repository entries. The `AGENTS.md` body
+lives in one place; `CLAUDE.md` resolves to that body, and loader files reference
+it without copying doctrine that can drift.
 
 ## Hard rules
 
@@ -31,7 +37,9 @@ Seven principles generate the rules in this file. A case no rule names resolves 
 - Mesa normal flows -- build, install, test, source-comment, upstream intake, and owned-origin publication -- stand complete inside this repository. `steinmarder` supplies evidence only; its bundles and findings live in `steinmarder`, and Mesa driver changes live in Mesa.
 - Paths in checked-in work are repository-relative, generated native files, PATH-resolved tools, or explicit user roots; discover the repository root with `repo_root=$(git rev-parse --show-toplevel)`.
 - Local absolute paths, private host FQDNs, per-user toolchains, raw IP literals, and worktree names are workspace-local facts and live outside the tree.
-- Instruction files are regular tracked files; each loader holds the `@AGENTS.md` reference plus tool-specific notes, and doctrine lives in `AGENTS.md` alone.
+- Instruction paths are tracked repository entries; `CLAUDE.md` is the
+  repository-relative symbolic link to `AGENTS.md`, loaders reference the
+  canonical body, and doctrine lives in `AGENTS.md` alone.
 
 ### Root cause, evidence, and conformance
 
@@ -169,7 +177,10 @@ Work at hardware/software reverse-engineering depth: exact chips, exact paths, e
 
 Use the priority order from `Project scope and priorities` as a hard constraint. Label any non-conforming workaround with its conformance cost, containment, and removal path.
 
-Treat warnings as defects. Hardcoded shortcuts, symlinks, and local FQDNs stay out. Keep documentation precise enough for later maintainers to verify.
+Treat warnings as defects. Hardcoded shortcuts, unrelated symlinks, and local
+FQDNs stay out. The root `CLAUDE.md` instruction alias is the explicit symlink
+that keeps Claude Code policy identical to `AGENTS.md`. Keep documentation
+precise enough for later maintainers to verify.
 
 ### Work sequence
 
