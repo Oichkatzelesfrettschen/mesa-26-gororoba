@@ -1194,6 +1194,20 @@ VkResult r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
                                                VkDeviceMemory vertexMemory,
                                                VkDeviceMemory colorMemory);
 
+/* Render-shape recorder, linked by the attended render-shape runner:
+ * writes the shape's pretransformed vertices into vertexMemory,
+ * sentinel-fills colorMemory, and installs the render-shape cell with
+ * the two relocations under R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE.
+ * A shape the family refuses, or a memory short of the shape's vertex
+ * or color footprint, returns VK_ERROR_INITIALIZATION_FAILED before any
+ * write.
+ */
+struct r300_triangle_render_shape;
+VkResult r3v_native_record_tcl_bypass_triangle_render_shape(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory,
+   const struct r300_triangle_render_shape *shape);
+
 /* One application-shaped vertex source for carrier delivery: host
  * records in the little-endian component encoding the VAP fetches,
  * bounded by size_bytes, with format_id naming an

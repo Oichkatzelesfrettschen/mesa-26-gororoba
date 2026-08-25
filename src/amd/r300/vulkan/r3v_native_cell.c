@@ -47,6 +47,11 @@
    (R300_TRIANGLE_VARYING_VERTEX_DWORDS * sizeof(float))
 
 static VkResult
+sentinel_fill_color(struct r3v_native_device *device,
+                    struct r3v_native_memory *color_memory,
+                    uint64_t fill_bytes);
+
+static VkResult
 record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_cmd_buffer *cmd_buffer,
                           struct r3v_native_memory *vertex_memory,
@@ -193,6 +198,92 @@ r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
 
    return record_triangle_cell_tail(device, cmd_buffer, vertex_memory,
                                     color_memory);
+}
+
+VkResult
+r3v_native_record_tcl_bypass_triangle_render_shape(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory,
+   const struct r300_triangle_render_shape *shape)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   if (r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: render shape outside the family");
+   const uint32_t color_bytes =
+      r300_tcl_bypass_triangle_render_shape_color_bytes(shape);
+   if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
+       color_memory->bo.size < color_bytes) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: render shape needs %zu vertex bytes "
+                       "and %u color bytes",
+                       (size_t)R3V_TRIANGLE_VERTEX_BYTES, color_bytes);
+   }
+   VkResult role_result = validate_triangle_memory_roles(
+      device, vertex_memory, color_memory);
+   if (role_result != VK_SUCCESS)
+      return role_result;
+
+   float vertices[R300_TRIANGLE_VERTEX_DWORDS];
+   r300_tcl_bypass_triangle_render_shape_vertices(shape, vertices);
+   bool owns_map = vertex_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &vertex_memory->bo,
+                            &vertex_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: render shape vertex memory is not "
+                       "CPU-mappable");
+   }
+   memcpy(vertex_memory->map, vertices, sizeof(vertices));
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                               sizeof(vertices));
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                             vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+
+   VkResult result =
+      sentinel_fill_color(device, color_memory, color_memory->bo.size);
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct r300_tcl_bypass_triangle_ib cell;
+   int emit_result = r300_tcl_bypass_triangle_render_shape_emit(shape, &cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+   struct r3v_native_bo_reference *references =
+      calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_tcl_bypass_triangle_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[R300_TRIANGLE_SLOT_VERTEX] = (struct r3v_native_bo_reference){
+      .handle = vertex_memory->bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .write_domain = 0,
+      .memory = vertex_memory,
+   };
+   references[R300_TRIANGLE_SLOT_COLOR] = (struct r3v_native_bo_reference){
+      .handle = color_memory->bo.handle,
+      .read_domains = 0,
+      .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .memory = color_memory,
+   };
+   r3v_native_cmd_buffer_install_ib(cmd_buffer,
+                                    R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    R300_TRIANGLE_SLOT_COUNT);
+   cell.ib = NULL;
+   r300_tcl_bypass_triangle_release(&cell);
+   return VK_SUCCESS;
 }
 
 /* Sentinel-fills the leading fill_bytes of the color memory and

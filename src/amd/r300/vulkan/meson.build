@@ -817,6 +817,24 @@ r3v_native_attended_cell = executable(
   install : false,
 )
 
+# Attended render-shape cell: performs a live DRM_RADEON_CS on RS482
+# silicon under the authorization and procedure in
+# docs/hardware/r3v-native-attended-render-shape-procedure.md.  It takes
+# the shape on its command line in the arming runner's --shape form, so
+# the digest the runner reports names the cell this program submits.
+r3v_native_attended_render_shape = executable(
+  'r3v_native_attended_render_shape',
+  files('tests/r3v_native_attended_render_shape.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended direct-write control: performs a live DRM_RADEON_CS on RS482
 # silicon under the authorization and procedure in
 # docs/hardware/r3v-native-direct-write-attended-procedure.md.  The
@@ -1243,7 +1261,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # surface the runner records through stands behind it.
   r3v_native_compute_record_env = environment(
     r3v_native_cell_vars + {'R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL' : '1'})
-  foreach cell_mode : ['closed', 'open']
+  foreach cell_mode : ['closed', 'open', 'shape']
     test(
       'r3v-native-triangle-cell-@0@'.format(cell_mode),
       r3v_native_triangle_cell_harness,

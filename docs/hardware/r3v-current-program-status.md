@@ -218,10 +218,15 @@ P0 (blocks the next target run):
   arm per parameter plus the composed smoke shape earns all three; the
   render-family transfer readback is a host route over the linear color
   BO with no executed change; OPTIMAL admission is a pure admission fact.
-  The attended render-shape session needs a cell kind whose frozen
-  geometry is the declared shape, a `--shape` arming runner emitting the
-  arm's digest, and a procedure naming the four arms' predictions;
-  a transcript then needs compose, an independent plan check, drm-shim
+  The attended render-shape session is staged:
+  `docs/hardware/r3v-native-attended-render-shape-procedure.md` names six
+  arms (reference control, lanes, pitch, constant, extent, composed
+  smoke shape) with their moved payloads and predicted interior dwords;
+  `r3v_native_attended_render_shape --shape` submits an arm under the
+  `triangle_render_shape` cell kind, `r3v_native_arming_runner --shape`
+  reports its digest, and `r3v-native-triangle-cell-shape` rehearses the
+  composed arm through the drm-shim.  The session itself waits on the
+  operator; a transcript then needs compose, an independent plan check, drm-shim
   replay, the six mutations (order, digest, relocation, source identity,
   runtime ceiling, nonce) each refusing before the transport, and the
   one-attempt silicon run on 0.8.11-1;

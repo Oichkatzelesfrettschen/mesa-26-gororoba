@@ -12,6 +12,7 @@
 #include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "r3v_native_render_shape_args.h"
 
 #include "util/mesa-blake3.h"
 
@@ -37,10 +38,18 @@ static bool cell_varying = false;
  * its own digest and cell kind.
  */
 static bool cell_compute_identity = false;
+/* --shape selects the render-shape triangle cell: the qualified cell
+ * over a declared extent, pitch, lane order, and fragment constant,
+ * with its own digest and cell kind.
+ */
+static bool cell_render_shape = false;
+static struct r300_triangle_render_shape render_shape;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (cell_render_shape)
+      return r300_tcl_bypass_triangle_render_shape_emit(&render_shape, cell);
    return cell_varying
              ? r300_tcl_bypass_triangle_varying_extent_emit(cell_width,
                                                             cell_height, cell)
@@ -167,6 +176,12 @@ main(int argc, char **argv)
               strcmp(argv[argi], "--compute-identity") == 0) {
       cell_compute_identity = true;
       argi += 1;
+   } else if (argc >= argi + 1 + R3V_RENDER_SHAPE_ARGC &&
+              strcmp(argv[argi], "--shape") == 0) {
+      if (!r3v_render_shape_parse(&argv[argi + 1], &render_shape))
+         return 2;
+      cell_render_shape = true;
+      argi += 1 + R3V_RENDER_SHAPE_ARGC;
    }
    if (argc >= argi + 3 && strcmp(argv[argi], "--extent") == 0) {
       /* Authorization input parses fail-closed: the value is judged in
@@ -229,9 +244,10 @@ main(int argc, char **argv)
     */
    if (argc != argi + 1) {
       fprintf(stderr,
-              "usage: %s [--varying|--compute-identity] [--extent <w> <h>] "
-              "<evidence-directory> | [--varying|--compute-identity] "
-              "[--extent <w> <h>] --emit-ib <path>\n",
+              "usage: %s [--varying|--compute-identity|--shape <w> <h> "
+              "<pitch> <bgra|rgba> <r> <g> <b> <a>] [--extent <w> <h>] "
+              "<evidence-directory> | [--varying|--compute-identity|"
+              "--shape ...] [--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);
       return 2;
    }
@@ -262,11 +278,20 @@ main(int argc, char **argv)
    r3v_native_arming_collect(&facts, vendor_id, device_id,
                              cell_compute_identity
                                 ? R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER
+                             : cell_render_shape
+                                ? R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE
                                 : R3V_NATIVE_CELL_KIND_TRIANGLE,
                              digest, evidence_dir, kernel, sizeof(kernel),
                              module, sizeof(module));
 
    printf("r3v native arming report\n");
+   if (cell_render_shape) {
+      printf("  render shape           ");
+      r3v_render_shape_print(stdout, &render_shape);
+      printf("  draw dword 0x%08x color bytes %u\n",
+             r300_tcl_bypass_triangle_render_shape_draw_dword(&render_shape),
+             r300_tcl_bypass_triangle_render_shape_color_bytes(&render_shape));
+   }
    printf("  cell                   %u IB dwords, blake3 %s\n", ib_dwords,
           digest);
    printf("  %-22s declared=%-34s observed=%-34s %s\n", "hazard gate",
