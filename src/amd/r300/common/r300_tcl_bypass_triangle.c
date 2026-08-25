@@ -914,11 +914,15 @@ r300_tcl_bypass_triangle_render_shape_validate(
        shape->height > R300_TRIANGLE_RENDER_MAX_EXTENT ||
        shape->pitch_pixels < shape->width ||
        shape->pitch_pixels > R300_TRIANGLE_RENDER_MAX_EXTENT ||
-       (shape->pitch_pixels & 1u) != 0 ||
+       (shape->pitch_pixels % 8u) != 0 ||
        (shape->lanes != R300_TRIANGLE_LANES_B8G8R8A8 &&
         shape->lanes != R300_TRIANGLE_LANES_R8G8B8A8) ||
-       shape->triangle_count < 1 ||
-       shape->triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+       /* The vertex writer (r300_tcl_bypass_triangle_render_shape_vertices)
+        * writes one triangle's three records regardless of this field, so
+        * a shape claiming more than one triangle would draw records the
+        * writer never emits.
+        */
+       shape->triangle_count != 1)
       return -EINVAL;
    /* The register holds the FP24 lattice value, so a constant off the
     * lattice (a NaN included, which quantizes to max finite) would
@@ -1052,7 +1056,8 @@ uint32_t
 r300_tcl_bypass_triangle_render_shape_color_bytes(
    const struct r300_triangle_render_shape *shape)
 {
-   return shape->pitch_pixels * (shape->height + 1u) * 4u;
+   return shape->pitch_pixels * (shape->height + R300_TRIANGLE_CANARY_ROWS) *
+          4u;
 }
 
 uint32_t

@@ -1324,16 +1324,22 @@ test_render_shape_deviates_per_parameter(void)
           vertices[4] == 224.0f && vertices[9] == 224.0f);
    r300_tcl_bypass_triangle_release(&cell);
 
-   /* Admission refusals: odd pitch, pitch under width, extent past the
-    * ceiling, a constant off the FP24 lattice, and a NaN constant.
+   /* Admission refusals: odd pitch, pitch under width, a pitch not a
+    * multiple of 8, extent past the ceiling, a triangle count other
+    * than 1, a constant off the FP24 lattice, and a NaN constant.
     */
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    shape.pitch_pixels = 65;
    assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
    shape.pitch_pixels = 62;
    assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.pitch_pixels = 66;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    shape.width = R300_TRIANGLE_RENDER_MAX_EXTENT + 1;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.triangle_count = 2;
    assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    shape.color_bits[1] = 0x3e000001u;
