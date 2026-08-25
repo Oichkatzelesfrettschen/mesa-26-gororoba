@@ -49,7 +49,7 @@ deviation there names the session, not a parameter.
 | constant | `64 64 64 bgra 0x3f800000 0x0 0x3f800000 0x3f800000` | four `PFS_PARAM_0` | `0xffff00ff` |
 | extent | `256 256 256 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000` | scissor pair, `RB3D_COLORPITCH0` | `0xdf20609f` over 256x256 |
 | composed | `256 256 256 rgba 0x3f800000 0x0 0x3f800000 0x3f800000` | all four classes | `0xffff00ff` |
-| composed-asym | `256 256 256 rgba 0x3f800000 0x0 0x0 0x3f800000` | all four classes | `0xffff0000` |
+| composed-asym | `256 256 256 rgba 0x3f800000 0x0 0x0 0x3f800000` | all four classes | `0xff0000ff` |
 
 The composed arm is the `dEQP-VK.api.smoke.triangle` target shape,
 whose magenta constant carries red equal to blue, so it witnesses
@@ -133,7 +133,7 @@ Recorded per arm before the run; the observation stands as made.
   256x256 raster or its scissor pair differs from the 64x64 model.
 - The composed arm deviates after every single arm passed: the
   parameters interact, and the interaction is the finding.
-- The composed-asym arm's interior is `0xff0000ff`: the lane order did
+- The composed-asym arm's interior is `0xffff0000`: the lane order did
   not compose with the other three parameters.
 - Any `dmesg` CS validation error, reset, lockup, or host hang ends the
   session.
