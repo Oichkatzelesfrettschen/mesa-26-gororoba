@@ -18,6 +18,7 @@ product identity and are not tokens here.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -56,20 +57,34 @@ STATUS_USAGE = 2
 
 
 def scan_files(root: Path):
-    for entry in SCAN_ROOTS:
-        start = root / entry
-        if start.is_file():
-            yield start
+    """Every tracked text file under the scan roots.  The ratchet judges
+    the repository's content, so the enumeration is git's index rather
+    than the filesystem: ignored build directories, retained evidence
+    residue, and other workspace-local files stay outside the verdict."""
+    listing = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--", *SCAN_ROOTS],
+        capture_output=True)
+    if listing.returncode == 0:
+        candidates = [root / rel
+                      for rel in sorted(listing.stdout.decode().split("\0"))
+                      if rel]
+    else:
+        # A root outside any repository (the selftest's fixture trees)
+        # scans its filesystem under the same roots.
+        candidates = []
+        for entry in SCAN_ROOTS:
+            start = root / entry
+            if start.is_file():
+                candidates.append(start)
+            elif start.is_dir():
+                candidates.extend(sorted(start.rglob("*")))
+    for path in candidates:
+        if not path.is_file():
             continue
-        if not start.is_dir():
+        if any(part in SKIP_DIRS for part in path.parts):
             continue
-        for path in sorted(start.rglob("*")):
-            if not path.is_file():
-                continue
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
-            if path.name == "PKGBUILD" or path.suffix in TEXT_SUFFIXES:
-                yield path
+        if path.name == "PKGBUILD" or path.suffix in TEXT_SUFFIXES:
+            yield path
 
 
 def find_hits(root: Path) -> dict[tuple[str, str], list[int]]:
