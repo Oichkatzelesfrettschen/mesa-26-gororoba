@@ -60,9 +60,11 @@ struct r3v_physical_device {
     * is the binary sync, slot 1 the timeline emulation above. */
    const struct vk_sync_type *sync_types[3];
 
-   /* Mesa common WSI in software mode (the lavapipe pattern): swapchain
-    * images are CPU-reachable and presentation runs the xcb-shm path, so no
-    * dma-buf, DRM modifier, or external-memory support is required of the
+   /* r3v_init_wsi routes this device through the render-node fd by
+    * default, the DRM/DRI3 path; R3V_WSI_SW=1 switches it to the Mesa
+    * common WSI software mode (the lavapipe pattern), CPU-reachable
+    * swapchain images presented through the xcb-shm path with no
+    * dma-buf, DRM modifier, or external-memory support required of the
     * radeon winsys.  vk.wsi_device points here after r3v_init_wsi. */
    struct wsi_device wsi_device;
 };
@@ -75,6 +77,14 @@ VkResult r3v_physical_device_try_create_for_drm(struct vk_instance *instance,
                                                    struct vk_physical_device **out);
 
 void r3v_physical_device_destroy(struct vk_physical_device *device);
+
+/* The format-feature grant switch: r3v_GetPhysicalDeviceFormatProperties2
+ * and r3v_CreateBufferView (r3v_native_object.c) both read this table, so
+ * a format's queried bufferFeatures and its buffer-view admission stay
+ * derived from the same source. */
+void r3v_get_format_properties(const struct r3v_physical_device *device,
+                                VkFormat vk_format,
+                                VkFormatProperties3 *properties);
 
 #ifdef __cplusplus
 }

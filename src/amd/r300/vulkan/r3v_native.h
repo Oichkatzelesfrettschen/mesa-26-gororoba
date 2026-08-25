@@ -44,6 +44,19 @@
  * the 16-bit vertex count and index bound). */
 #define R3V_NATIVE_MAX_DRAW_INSTANCES 21845u
 
+/* VkPhysicalDeviceLimits::minTexelBufferOffsetAlignment; the buffer-view
+ * offset admission below enforces the same bound the physical device
+ * publishes.
+ */
+#define R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT 16u
+
+/* VkPhysicalDeviceLimits::maxTexelBufferElements; the buffer-view range
+ * admission below enforces the same texel-count ceiling the physical
+ * device publishes (R3xx has no native texel buffer object, so this is
+ * the Vulkan 1.4 floor rather than a silicon count).
+ */
+#define R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS 65536u
+
 /* The result every native refusal returns.  Each command's registry entry
  * fixes the results it may return, and VK_ERROR_UNKNOWN is the one error the
  * whole native refusal set shares: the other universal member,
@@ -641,6 +654,12 @@ struct r3v_native_plan_capture {
    uint32_t capacity;
 };
 
+int r3v_native_plan_entry_from_submission(
+   struct r3v_native_plan_submission *e,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   const uint32_t *reference_indices, uint32_t completion_index,
+   uint64_t completion_size);
 bool r3v_native_plan_capture_host_model_present(void);
 int r3v_native_plan_capture_init(struct r3v_native_plan_capture *capture,
                                  const char *path);
@@ -662,6 +681,55 @@ int r3v_native_plan_capture_write(struct r3v_native_plan_capture *capture,
                                   uint32_t pci_device_id,
                                   const char *module_srcversion);
 
+/* Plan replay state: the parsed plan, the session consuming it, the
+ * evidence directory the plan names, and the hash chain over every
+ * admitted submission.
+ */
+struct r3v_native_plan_replay {
+   struct r3v_native_plan plan;
+   struct r3v_native_plan_session session;
+   char *evidence_dir;
+   char *nonce;
+   bool bound;
+   bool refused;
+   uint64_t bound_seconds;
+   enum r3v_native_plan_parse_result parse_result;
+   enum r3v_native_plan_bind_result bind_result;
+   char chain_hex[R3V_NATIVE_PLAN_HEX64 + 1];
+   char admitted_ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
+   char last_refusal[128];
+};
+
+int r3v_native_plan_replay_init(struct r3v_native_plan_replay *replay,
+                                const char *plan_path, const char *nonce);
+/* Binds the plan to the running identity at the first submission and
+ * occupies the evidence directory; returns the refusing bind result's
+ * name or NULL. */
+const char *r3v_native_plan_replay_bind(
+   struct r3v_native_plan_replay *replay,
+   const struct r3v_native_arming_provider *provider,
+   uint32_t pci_vendor_id, uint32_t pci_device_id);
+/* Admits the next submission against the plan and retains it; returns
+ * the refusal name or NULL.  A refusal latches the session. */
+const char *r3v_native_plan_replay_admit(
+   struct r3v_native_plan_replay *replay,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   const uint32_t *reference_indices, uint32_t completion_index,
+   uint64_t completion_size, uint32_t executable_count);
+/* Holds the IB at the ioctl boundary to the admitted entry's digest. */
+const char *r3v_native_plan_replay_check_ib(
+   struct r3v_native_plan_replay *replay, const uint32_t *ib,
+   uint32_t ib_size_dwords);
+/* Latches the session after a transport or completion failure, recording
+ * the failing step and its errno. */
+void r3v_native_plan_replay_fail(struct r3v_native_plan_replay *replay,
+                                 const char *why, int err);
+/* Proves exhaustion at device destruction; returns the recorded state. */
+const char *r3v_native_plan_replay_close(
+   struct r3v_native_plan_replay *replay);
+void r3v_native_plan_replay_finish(struct r3v_native_plan_replay *replay);
+
 struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
@@ -679,6 +747,14 @@ struct r3v_native_device {
     */
    struct r3v_native_plan_capture plan_capture;
    bool plan_capture_active;
+   /* Plan replay, read once at device creation from R3V_NATIVE_PLAN_FILE
+    * and R3V_NATIVE_PLAN_NONCE: the device opens the CS ioctl for the
+    * plan's ordered submissions alone, binding the plan to the running
+    * identity at the first submission.  A plan device and the hazard
+    * gate, an evidence directory, or a capture path refuse each other.
+    */
+   struct r3v_native_plan_replay plan_replay;
+   bool plan_replay_active;
    enum r3v_native_queue_status queue_status;
    /* The last submission's transport interval on the raw monotonic
     * clock: the reading immediately before DRM_RADEON_CS and the one
@@ -775,6 +851,23 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_memory, vk.base, VkDeviceMemory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
+
+/* A buffer view over the admitted texel table
+ * (r3v_native_transfer_texel_bytes): the view is a recorded object with
+ * no executing route past creation and destruction, so it carries the
+ * validated offset and range alone, in texel-table bytes, for a
+ * future descriptor-binding route to read.
+ */
+struct r3v_native_buffer_view {
+   struct vk_object_base base;
+   struct r3v_native_buffer *buffer;
+   VkFormat format;
+   VkDeviceSize offset;
+   VkDeviceSize range;
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer_view, base, VkBufferView,
+                               VK_OBJECT_TYPE_BUFFER_VIEW)
 
 /* The public recording surface's qualified render-target family:
  * B8G8R8A8_UNORM linear 2D color attachments at any extent inside the

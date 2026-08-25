@@ -16,7 +16,7 @@ static unsigned failures;
 
 enum mutation_mode {
    MUTATION_NONE,
-   MUTATION_UNIFORM_TEXEL_BUFFER,
+   MUTATION_STORAGE_TEXEL_BUFFER,
    MUTATION_PROPERTIES2_DISAGREEMENT,
 };
 
@@ -48,11 +48,21 @@ check_format_features(
    };
    properties2_query(physical_device, format, &properties2);
 
-   if (mutation == MUTATION_UNIFORM_TEXEL_BUFFER &&
-       format == VK_FORMAT_R32_SFLOAT) {
-      legacy.bufferFeatures |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+   /* The known-bad targets VK_FORMAT_R32_UINT, an admitted texel
+    * format, rather than an unadmitted one: injecting the withheld
+    * VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT here is the exact
+    * over-grant r3v_get_format_properties must never make (the RS480
+    * die lacks the storage-texel-buffer route, tests/
+    * r3v_conformance_nonpass_ledger.tsv row
+    * mandatory_format_feature_absent), so this calibration observes
+    * the driver's real admitted-table grant rather than a format the
+    * grant never touches.
+    */
+   if (mutation == MUTATION_STORAGE_TEXEL_BUFFER &&
+       format == VK_FORMAT_R32_UINT) {
+      legacy.bufferFeatures |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
       properties2.formatProperties.bufferFeatures |=
-         VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+         VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
    } else if (mutation == MUTATION_PROPERTIES2_DISAGREEMENT &&
               format == VK_FORMAT_R32_SFLOAT) {
       properties2.formatProperties.bufferFeatures |=
@@ -75,14 +85,14 @@ check_format_features(
 int
 main(int argc, char **argv)
 {
-   if (argc == 2 && strcmp(argv[1], "--inject-uniform-texel-buffer") == 0) {
-      mutation = MUTATION_UNIFORM_TEXEL_BUFFER;
+   if (argc == 2 && strcmp(argv[1], "--inject-storage-texel-buffer") == 0) {
+      mutation = MUTATION_STORAGE_TEXEL_BUFFER;
    } else if (argc == 2 &&
               strcmp(argv[1], "--inject-properties2-disagreement") == 0) {
       mutation = MUTATION_PROPERTIES2_DISAGREEMENT;
    } else if (argc != 1) {
       fprintf(stderr,
-              "usage: %s [--inject-uniform-texel-buffer | "
+              "usage: %s [--inject-storage-texel-buffer | "
               "--inject-properties2-disagreement]\n",
               argv[0]);
       return 2;
@@ -215,6 +225,40 @@ main(int argc, char **argv)
                transfer_formats[i], legacy.linearTilingFeatures,
                legacy.optimalTilingFeatures, legacy.bufferFeatures);
       }
+      /* r3v_CreateBufferView (r3v_native_object.c) queries
+       * r3v_get_format_properties directly for its admission gate, so
+       * an exact bufferFeatures match here on every admitted texel
+       * format observes that gate rather than the transfer-bit
+       * agreement above alone: each of these six formats grants
+       * VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT and nothing else --
+       * the storage-texel-buffer bit stays withheld on every format
+       * (tests/r3v_conformance_nonpass_ledger.tsv row
+       * mandatory_format_feature_absent).
+       */
+      check_format_features(physical_device, legacy_query, properties2_query,
+                            VK_FORMAT_B8G8R8A8_UNORM,
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
+                            "B8G8R8A8_UNORM texel buffer");
+      check_format_features(physical_device, legacy_query, properties2_query,
+                            VK_FORMAT_R8G8B8A8_UNORM,
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
+                            "R8G8B8A8_UNORM texel buffer");
+      check_format_features(physical_device, legacy_query, properties2_query,
+                            VK_FORMAT_R8G8B8A8_UINT,
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
+                            "R8G8B8A8_UINT texel buffer");
+      check_format_features(physical_device, legacy_query, properties2_query,
+                            VK_FORMAT_R16G16B16A16_UINT,
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
+                            "R16G16B16A16_UINT texel buffer");
+      check_format_features(physical_device, legacy_query, properties2_query,
+                            VK_FORMAT_R32G32B32A32_UINT,
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
+                            "R32G32B32A32_UINT texel buffer");
+      check_format_features(physical_device, legacy_query, properties2_query,
+                            VK_FORMAT_R32_UINT,
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
+                            "R32_UINT texel buffer");
       /* B8G8R8A8_UNORM carries the render family's color-attachment
        * grant on the linear layout alone (the render family stays
        * VK_IMAGE_TILING_LINEAR only), plus the transfer family's copy

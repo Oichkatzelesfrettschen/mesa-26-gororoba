@@ -92,8 +92,9 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->maxImageArrayLayers = 256;
 
    /* Texel buffer size: R3xx has no native texel buffer object.  The
-    * Vulkan 1.4 minimum is 65536. */
-   props->maxTexelBufferElements = 65536;
+    * Vulkan 1.4 minimum is 65536; r3v_CreateBufferView enforces the same
+    * ceiling on the recorded range. */
+   props->maxTexelBufferElements = R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS;
 
    /* PS constant store: R300_PFS_PARAM_0..31 yields 32 vec4 slots, or
     * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16 KiB,
@@ -222,7 +223,8 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->viewportSubPixelBits = 0;
 
    props->minMemoryMapAlignment = 64;
-   props->minTexelBufferOffsetAlignment = 16;
+   props->minTexelBufferOffsetAlignment =
+      R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT;
    props->minUniformBufferOffsetAlignment = 16;
    props->minStorageBufferOffsetAlignment = 16;
 
@@ -424,11 +426,15 @@ r3v_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
    return vk_instance_get_proc_addr_unchecked(pdevice->vk.instance, pName);
 }
 
-/* Mesa common WSI in software mode, the lavapipe pattern: sw_device makes the
- * swapchain allocate CPU-reachable images and present through the xcb-shm
- * path, so the radeon winsys needs no dma-buf, modifier, or external-memory
- * support.  wants_linear keeps the swapchain images row-major, the layout the
- * present copy reads and the one r3v's single-tile linear images provide. */
+/* sw_device follows R3V_WSI_SW.  A value beginning with '1' sets sw_device
+ * true and passes -1 for the fd, the Mesa common WSI software mode (the
+ * lavapipe pattern): CPU-reachable swapchain images presented through the
+ * xcb-shm path, no dma-buf, modifier, or external-memory support required
+ * of the radeon winsys.  Every other value--unset, empty, or any other
+ * leading byte--routes wsi_device_init through the render-node fd, the
+ * DRM/DRI3 path.  wants_linear keeps the swapchain images row-major in
+ * both routes, the layout the present copy reads and the one r3v's
+ * single-tile linear images provide. */
 static VkResult
 r3v_init_wsi(struct r3v_physical_device *device)
 {
@@ -696,7 +702,12 @@ r3v_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    }
 }
 
-static void
+/* Non-static: r3v_CreateBufferView (r3v_native_object.c) queries this
+ * table directly, so the format-feature grant and the buffer-view
+ * admission it gates read from one function rather than two mirrored
+ * switches.
+ */
+void
 r3v_get_format_properties(const struct r3v_physical_device *const device,
                              VkFormat vk_format,
                              VkFormatProperties3 *const properties)
@@ -714,14 +725,16 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    case VK_FORMAT_B8G8R8A8_UNORM:
       /* The render family's color-attachment grant plus the transfer
        * family's copy grant: the recorded vkCmdCopy* subset executes
-       * the transfer features through host mappings at submission.
-       * The render family stays VK_IMAGE_TILING_LINEAR only (its
-       * relocation-addressed cell has never executed any other
-       * layout), so optimalTilingFeatures carries the transfer bits
-       * alone: r3v_CreateImage admits VK_IMAGE_TILING_OPTIMAL on the
-       * transfer family, executing the identical linear layout under
-       * Vulkan's opaque OPTIMAL contract, but never on the
-       * color-attachment usage this format's render family requires.
+       * the transfer features through host mappings at submission. The
+       * format also sits in the transfer-image texel table below, so
+       * it carries the same texel-buffer grant. The render family
+       * stays VK_IMAGE_TILING_LINEAR only (its relocation-addressed
+       * cell has never executed any other layout), so
+       * optimalTilingFeatures carries the transfer bits alone:
+       * r3v_CreateImage admits VK_IMAGE_TILING_OPTIMAL on the transfer
+       * family, executing the identical linear layout under Vulkan's
+       * opaque OPTIMAL contract, but never on the color-attachment
+       * usage this format's render family requires.
        */
       properties->linearTilingFeatures =
          VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
@@ -730,6 +743,13 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
       properties->optimalTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      /* tests/r3v_conformance_nonpass_ledger.tsv row
+       * mandatory_format_feature_absent names the RS480 die's absent
+       * storage-image and integer-format routes; the same silicon gap
+       * withholds VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT, so the
+       * grant is the uniform texel-buffer bit alone.
+       */
+      properties->bufferFeatures = VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
       break;
    case VK_FORMAT_R8G8B8A8_UNORM:
    case VK_FORMAT_R8G8B8A8_UINT:
@@ -742,6 +762,9 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        * and identically on VK_IMAGE_TILING_OPTIMAL since
        * r3v_CreateImage executes both tilings as the one linear span
        * (r3v_native_transfer_footprint_bytes) for this family.
+       * r3v_CreateBufferView queries this same table for the uniform
+       * texel-buffer admission; the storage bit stays withheld for the
+       * reason above.
        */
       properties->linearTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
@@ -749,6 +772,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
       properties->optimalTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      properties->bufferFeatures = VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
       break;
    case VK_FORMAT_R32_SFLOAT:
    case VK_FORMAT_R32G32_SFLOAT:

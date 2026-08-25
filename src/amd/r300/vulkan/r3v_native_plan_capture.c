@@ -147,38 +147,21 @@ r3v_native_plan_capture_finish(struct r3v_native_plan_capture *capture)
    memset(capture, 0, sizeof(*capture));
 }
 
-/* Records one executable submission as the plan entry a live replay must
- * present: the IB digest and dword count, the cell kind, the emitter,
- * and every relocation as role, domains, size, and direction; the
- * completion reference is the last relocation.  Returns 0 or a negative
- * errno; a refusal here refuses the submission before the ioctl.
+/* Builds the plan entry a submission presents: the IB digest and dword
+ * count, the cell kind, the emitter, and every relocation as role from
+ * the cell's slot order, domains, size, and direction, the completion
+ * object last.  Returns 0 or a negative errno.
  */
 int
-r3v_native_plan_capture_record(struct r3v_native_plan_capture *capture,
-                               const struct r3v_native_cmd_buffer *cmd_buffer,
-                               const struct radeon_drm_vk_reloc_list *relocs,
-                               const uint32_t *reference_indices,
-                               uint32_t completion_index,
-                               uint64_t completion_size)
+r3v_native_plan_entry_from_submission(
+   struct r3v_native_plan_submission *e,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   const uint32_t *reference_indices, uint32_t completion_index,
+   uint64_t completion_size)
 {
-   /* An entry above the per-entry relocation ceiling is outside the
-    * schema whatever the shard; a capture at the submission ceiling is
-    * full and the shard splits.
-    */
    if (relocs->count == 0 || relocs->count > R3V_NATIVE_PLAN_RELOC_MAX)
       return -EMSGSIZE;
-   if (capture->count == R3V_NATIVE_PLAN_SUBMISSION_MAX)
-      return -E2BIG;
-   if (capture->count == capture->capacity) {
-      uint32_t next = capture->capacity == 0 ? 16 : capture->capacity * 2;
-      struct r3v_native_plan_submission *grown =
-         realloc(capture->entries, (size_t)next * sizeof(*grown));
-      if (grown == NULL)
-         return -ENOMEM;
-      capture->entries = grown;
-      capture->capacity = next;
-   }
-   struct r3v_native_plan_submission *e = &capture->entries[capture->count];
    memset(e, 0, sizeof(*e));
    r300_triangle_ib_digest_hex(cmd_buffer->ib, cmd_buffer->ib_size_dwords,
                                e->ib_blake3);
@@ -223,6 +206,39 @@ r3v_native_plan_capture_record(struct r3v_native_plan_capture *capture,
       if (r->size == 0)
          return -EINVAL;
    }
+   return 0;
+}
+
+int
+r3v_native_plan_capture_record(struct r3v_native_plan_capture *capture,
+                               const struct r3v_native_cmd_buffer *cmd_buffer,
+                               const struct radeon_drm_vk_reloc_list *relocs,
+                               const uint32_t *reference_indices,
+                               uint32_t completion_index,
+                               uint64_t completion_size)
+{
+   /* An entry above the per-entry relocation ceiling is outside the
+    * schema whatever the shard; a capture at the submission ceiling is
+    * full and the shard splits.
+    */
+   if (relocs->count == 0 || relocs->count > R3V_NATIVE_PLAN_RELOC_MAX)
+      return -EMSGSIZE;
+   if (capture->count == R3V_NATIVE_PLAN_SUBMISSION_MAX)
+      return -E2BIG;
+   if (capture->count == capture->capacity) {
+      uint32_t next = capture->capacity == 0 ? 16 : capture->capacity * 2;
+      struct r3v_native_plan_submission *grown =
+         realloc(capture->entries, (size_t)next * sizeof(*grown));
+      if (grown == NULL)
+         return -ENOMEM;
+      capture->entries = grown;
+      capture->capacity = next;
+   }
+   int built = r3v_native_plan_entry_from_submission(
+      &capture->entries[capture->count], cmd_buffer, relocs,
+      reference_indices, completion_index, completion_size);
+   if (built != 0)
+      return built;
    capture->count++;
    return 0;
 }

@@ -8,6 +8,7 @@
 #include "r3v_native.h"
 
 #include "r3v_entrypoints.h"
+#include "r3v_physical_device.h"
 
 #include "vk_log.h"
 
@@ -23,21 +24,42 @@
  * exist.  A command that reads or writes an object of an unconstructable
  * type refuses on the same grounds as its creation command.
  *
- * Two exceptions construct: VkDeviceMemory, whose r3v_AllocateMemory
+ * Three exceptions construct: VkDeviceMemory, whose r3v_AllocateMemory
  * builds a real GEM buffer object so the mapped-range commands below
- * validate and execute, and VkSampler, whose creation depends on no
+ * validate and execute; VkSampler, whose creation depends on no
  * format or route so the object records state and the descriptor
- * surface refuses its use.
+ * surface refuses its use; and VkBufferView over the admitted texel
+ * table, whose object records the validated offset and range and
+ * carries no executing route beyond its own lifetime.
  *
  * The definitions follow those shapes in order: creation, destruction,
  * access, then the device-memory commands.
  */
 
-/* A buffer view requires a format whose buffer features contain the
- * view's texel-buffer bit, and the format table advertises
- * VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT alone, so no format a valid
- * program can present admits a view and creation refuses with a
- * cleared handle.
+/* Admission is exact, keyed on the queried format rather than a
+ * duplicated table: a buffer created with
+ * VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT needs
+ * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT from
+ * r3v_get_format_properties for pCreateInfo->format, and one created
+ * with VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT needs the matching
+ * storage bit, which every format withholds -- the RS480 die lacks the
+ * storage-texel-buffer and integer-format routes
+ * tests/r3v_conformance_nonpass_ledger.tsv row
+ * mandatory_format_feature_absent names, so a storage-usage buffer
+ * never admits a view.  r3v_native_transfer_texel_bytes supplies the
+ * format's texel size for the range math below; the two tables share
+ * one format set by construction; a zero texel size only guards the
+ * division that follows.  The offset is a multiple of
+ * R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT
+ * (VUID-VkBufferViewCreateInfo-offset-00926) and sits strictly inside
+ * the buffer (VUID-VkBufferViewCreateInfo-offset-00925).  VK_WHOLE_SIZE
+ * resolves to the remainder from offset to the buffer's end, rounded
+ * down to the nearest multiple of the texel size (VkBufferViewCreateInfo
+ * prose; no VU covers this rounding); an explicit range is instead a
+ * positive multiple of the texel size that closes inside that
+ * remainder.  The resulting element count holds
+ * R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS.  A request outside that
+ * admitted envelope returns a cleared handle.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateBufferView(VkDevice _device,
@@ -46,8 +68,69 @@ r3v_CreateBufferView(VkDevice _device,
                      VkBufferView *pView)
 {
    VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VK_FROM_HANDLE(r3v_native_buffer, buffer, pCreateInfo->buffer);
+
    *pView = VK_NULL_HANDLE;
-   return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   if (pCreateInfo->flags != 0 || buffer == NULL)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   const uint32_t texel_bytes =
+      r3v_native_transfer_texel_bytes(pCreateInfo->format);
+   if (texel_bytes == 0)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   VkFormatProperties3 format_properties;
+   r3v_get_format_properties(device->pdevice, pCreateInfo->format,
+                             &format_properties);
+
+   const VkBufferUsageFlags usage = buffer->vk.usage;
+   const bool wants_uniform =
+      (usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) != 0;
+   const bool wants_storage =
+      (usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT) != 0;
+   if (!wants_uniform && !wants_storage)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (wants_uniform &&
+       !(format_properties.bufferFeatures &
+         VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT))
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (wants_storage &&
+       !(format_properties.bufferFeatures &
+         VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT))
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   if (pCreateInfo->offset %
+             R3V_NATIVE_MIN_TEXEL_BUFFER_OFFSET_ALIGNMENT != 0 ||
+       pCreateInfo->offset >= buffer->vk.size)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   const VkDeviceSize remaining = buffer->vk.size - pCreateInfo->offset;
+   VkDeviceSize range = pCreateInfo->range;
+   if (range == VK_WHOLE_SIZE) {
+      range = (remaining / texel_bytes) * texel_bytes;
+      if (range == 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   } else if (range == 0 || range % texel_bytes != 0 || range > remaining) {
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   }
+
+   if (range / texel_bytes > R3V_NATIVE_MAX_TEXEL_BUFFER_ELEMENTS)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   struct r3v_native_buffer_view *view =
+      vk_object_zalloc(&device->vk, pAllocator, sizeof(*view),
+                       VK_OBJECT_TYPE_BUFFER_VIEW);
+   if (view == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   view->buffer = buffer;
+   view->format = pCreateInfo->format;
+   view->offset = pCreateInfo->offset;
+   view->range = range;
+
+   *pView = r3v_native_buffer_view_to_handle(view);
+   return VK_SUCCESS;
 }
 
 /* Sampler creation binds to no format or route, so a valid program may
@@ -139,15 +222,23 @@ r3v_CreateQueryPool(VkDevice _device,
    return VK_SUCCESS;
 }
 
-/* Destruction of the null handle is a specified no-op, and the creation
- * commands above hand back no other handle, so each of these performs the
- * no-op for every input a valid program can present.
+/* Destruction of the null handle is a specified no-op, and every refusing
+ * creation command above hands back no other handle, so each of these
+ * performs the no-op for every input a valid program presents to a refused
+ * type.  VkBufferView constructs for the admitted texel table, so its
+ * destroy frees the recorded object like VkSampler's below.
  */
 
 VKAPI_ATTR void VKAPI_CALL
-r3v_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
+r3v_DestroyBufferView(VkDevice _device, VkBufferView _bufferView,
                       const VkAllocationCallbacks *pAllocator)
 {
+   VK_FROM_HANDLE(r3v_native_device, device, _device);
+   VK_FROM_HANDLE(r3v_native_buffer_view, view, _bufferView);
+
+   if (view == NULL)
+      return;
+   vk_object_free(&device->vk, pAllocator, view);
 }
 
 VKAPI_ATTR void VKAPI_CALL

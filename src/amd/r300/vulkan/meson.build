@@ -98,6 +98,7 @@ r3v_native_files = files(
   'r3v_native_pipeline.c',
   'r3v_native_plan.c',
   'r3v_native_plan_capture.c',
+  'r3v_native_plan_replay.c',
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
@@ -134,7 +135,7 @@ endforeach
 
 libr3v_native_impl = static_library(
   'r3v_native_impl',
-  [r3v_loader_base_files, r3v_native_files, r3v_entrypoints],
+  [r3v_loader_base_files, r3v_native_files, r3v_entrypoints, sha1_h],
   include_directories : r3v_native_inc,
   dependencies : r3v_native_compile_deps,
   link_with : [libradeon_drm_vk, libr300_common, libr300_cpu],
@@ -1571,7 +1572,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     test(
       'r3v-native-format-features-known-bad-texel-buffer',
       r3v_native_format_features_test,
-      args : ['--inject-uniform-texel-buffer'],
+      args : ['--inject-storage-texel-buffer'],
       env : r3v_native_loader_env,
       depends : [libradeon_noop_drm_shim, libvulkan_r3v,
                  _dev_icd],
@@ -2303,6 +2304,38 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  # Plan replay under the shim: a captured two-draw transcript composes
+  # into a plan bound to this process's identity; the replay arm consumes
+  # it to exhaustion with the IB store and hash chain retained, and each
+  # defect arm refuses by name and latches.
+  r3v_native_plan_replay_harness = executable(
+    'r3v_native_plan_replay_harness',
+    [files('tests/r3v_native_plan_replay_harness.c'), sha1_h],
+    include_directories : r3v_native_inc,
+    dependencies : r3v_native_deps,
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach replay_arm : ['replay', 'reordered', 'duplicated', 'extra',
+                        'missing-terminal', 'missing-terminal-entry',
+                        'mutated-entry', 'two-buffers', 'deadline',
+                        'ioctl-failure-then-continue', 'wrong-nonce',
+                        'wrong-kernel', 'wrong-dso', 'wrong-pci',
+                        'wrong-source', 'used-evidence-dir',
+                        'gate-contamination', 'truncated-plan',
+                        'hazard-gate-open', 'capture-and-plan']
+    test(
+      'r3v-native-plan-replay-@0@'.format(replay_arm),
+      r3v_native_plan_replay_harness,
+      args : [replay_arm],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # Plan capture under the shim: two distinct draws in separate submits
   # land two ordered transcript entries with the retained digests and
   # the whole relocation shape; a two-buffer submit refuses; an open
@@ -2353,6 +2386,25 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     depends : [libradeon_noop_drm_shim],
     should_fail : true,
     timeout : 60,
+    suite : ['r3v'],
+  )
+
+  # The independent witness that a run entered the kernel with no
+  # command submission, calibrated over its parser, every refusal its
+  # verdict carries, and the shim arms that bound its scope; the
+  # README's conformance ladder carries the mechanism.  The selftest
+  # skips itself when strace is absent or cannot attach.
+  test(
+    'r3v-cs-ioctl-trace-selftest',
+    prog_python,
+    args : [
+      files('tests/r3v_cs_ioctl_trace.py'),
+      'selftest',
+      '--harness', r3v_native_submit_order_harness.full_path(),
+      '--shim', libradeon_noop_drm_shim.full_path(),
+    ],
+    depends : [r3v_native_submit_order_harness, libradeon_noop_drm_shim],
+    timeout : 120,
     suite : ['r3v'],
   )
 
