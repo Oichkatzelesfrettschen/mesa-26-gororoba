@@ -175,16 +175,23 @@ main(int argc, char **argv)
          VK_FORMAT_R32_SFLOAT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
          "R32_SFLOAT vertex fetch");
       /* The transfer family's texel table grants the two transfer bits
-       * on the linear layout through both queries; the required
-       * optimal-tiling features of these formats (sampled, color
-       * attachment, blit, storage) are a recorded conformance deviation
-       * and stay ungranted until their routes execute.
+       * on both the linear and the optimal layout through both
+       * queries: r3v_CreateImage executes VK_IMAGE_TILING_OPTIMAL over
+       * the transfer family as the identical linear span
+       * (r3v_native_transfer_footprint_bytes), so the format-property
+       * grant matches what vkCreateImage actually admits. The required
+       * optimal-tiling features these formats lack (sampled, blit,
+       * storage) are a recorded conformance deviation and stay
+       * ungranted until their routes execute.
        */
       static const VkFormat transfer_formats[] = {
          VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT,
          VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R32G32B32A32_UINT,
          VK_FORMAT_R32_UINT,
       };
+      const VkFormatFeatureFlags transfer_bits =
+         VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+         VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
       for (unsigned i = 0;
            i < sizeof(transfer_formats) / sizeof(transfer_formats[0]); i++) {
          VkFormatProperties legacy;
@@ -194,18 +201,39 @@ main(int argc, char **argv)
          };
          properties2_query(physical_device, transfer_formats[i],
                            &properties2);
-         CHECK((legacy.linearTilingFeatures &
-                (VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-                 VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) ==
-                     (VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-                      VK_FORMAT_FEATURE_TRANSFER_DST_BIT) &&
+         CHECK((legacy.linearTilingFeatures & transfer_bits) ==
+                     transfer_bits &&
+                  (legacy.optimalTilingFeatures & transfer_bits) ==
+                     transfer_bits &&
                   properties2.formatProperties.linearTilingFeatures ==
-                     legacy.linearTilingFeatures,
+                     legacy.linearTilingFeatures &&
+                  properties2.formatProperties.optimalTilingFeatures ==
+                     legacy.optimalTilingFeatures,
                "transfer-family texel format %u grants the two transfer "
-               "bits on the linear layout (linear 0x%08x optimal "
-               "0x%08x buffer 0x%08x)",
+               "bits on the linear and optimal layout (linear 0x%08x "
+               "optimal 0x%08x buffer 0x%08x)",
                transfer_formats[i], legacy.linearTilingFeatures,
                legacy.optimalTilingFeatures, legacy.bufferFeatures);
+      }
+      /* B8G8R8A8_UNORM carries the render family's color-attachment
+       * grant on the linear layout alone (the render family stays
+       * VK_IMAGE_TILING_LINEAR only), plus the transfer family's copy
+       * grant on both layouts, matching r3v_CreateImage's admission
+       * that this format's color-attachment usage refuses OPTIMAL
+       * while its transfer usage accepts it.
+       */
+      {
+         VkFormatProperties legacy;
+         legacy_query(physical_device, VK_FORMAT_B8G8R8A8_UNORM, &legacy);
+         CHECK((legacy.linearTilingFeatures &
+                (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | transfer_bits)) ==
+                     (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                      transfer_bits) &&
+                  legacy.optimalTilingFeatures == transfer_bits,
+               "B8G8R8A8_UNORM keeps color-attachment linear-only and "
+               "grants the transfer bits on both layouts (linear "
+               "0x%08x optimal 0x%08x)",
+               legacy.linearTilingFeatures, legacy.optimalTilingFeatures);
       }
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_R8_UNORM, 0,

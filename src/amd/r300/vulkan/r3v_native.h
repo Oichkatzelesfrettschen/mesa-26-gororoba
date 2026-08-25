@@ -873,6 +873,13 @@ struct r3v_native_image {
     * render pass, or attachment path admits the image.
     */
    bool transfer_family;
+   /* Set when created with VK_IMAGE_TILING_OPTIMAL; only the transfer
+    * family admits it, executing the same linear layout under
+    * Vulkan's opaque OPTIMAL contract, so r3v_GetImageSubresourceLayout
+    * refuses it (Vulkan 1.0 section 12.6: only LINEAR images have a
+    * queryable subresource layout).
+    */
+   bool optimal_tiling;
 };
 
 struct r3v_native_image_view {

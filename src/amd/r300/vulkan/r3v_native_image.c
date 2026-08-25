@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: MIT
  *
  * Native R3V image surface: the qualified linear render-target family
- * with its identity view, and the linear transfer family.
+ * with its identity view, and the transfer family, which executes one
+ * linear layout under either VK_IMAGE_TILING_LINEAR or
+ * VK_IMAGE_TILING_OPTIMAL.
  */
 
 #include "r3v_native.h"
@@ -12,6 +14,7 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
+#include <assert.h>
 #include <string.h>
 
 /* Creation admits two linear families over one common shape -- 2D,
@@ -62,16 +65,33 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
        pCreateInfo->arrayLayers != 1 ||
        pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT ||
-       pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR ||
+       (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR &&
+        pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
        pCreateInfo->sharingMode != VK_SHARING_MODE_EXCLUSIVE)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
+   /* VK_IMAGE_TILING_OPTIMAL grants the implementation an opaque byte
+    * layout (Vulkan 1.0 section 12.6): only a LINEAR image's layout is
+    * application-queryable, and the spec forbids the application from
+    * assuming anything about an OPTIMAL image's bytes beyond that. The
+    * transfer family already executes its bytes as one linear span
+    * over the GEM BO (r3v_native_transfer_footprint_bytes), so an
+    * OPTIMAL request over that family's usage and extent vocabulary is
+    * the same executing layout under the opaque contract; the image
+    * only stops answering r3v_GetImageSubresourceLayout, matching the
+    * families a LINEAR-only implementation may legally decline to
+    * answer for OPTIMAL. The render family keeps its dedicated
+    * relocation-addressed cell LINEAR-only: it has never executed any
+    * other layout, and admitting OPTIMAL there would advertise a
+    * capability this driver has not built.
+    */
    const VkImageUsageFlags transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    bool transfer_family;
    uint32_t row_pitch_bytes;
    if (pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
       if (pCreateInfo->flags != 0 ||
+          pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR ||
           pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
           pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
           pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT)
@@ -103,6 +123,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->row_pitch_bytes = row_pitch_bytes;
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
+   image->optimal_tiling = pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL;
    image->memory = NULL;
    image->memory_offset = 0;
    *pImage = r3v_native_image_to_handle(image);
@@ -264,6 +285,16 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
                               VkSubresourceLayout *pLayout)
 {
    VK_FROM_HANDLE(r3v_native_image, image, _image);
+
+   /* Vulkan 1.0 section 12.6 defines a subresource layout only for a
+    * VK_IMAGE_TILING_LINEAR image; calling this entry on an OPTIMAL
+    * image is invalid usage the validation layers catch
+    * (VUID-vkGetImageSubresourceLayout-image-07790), not a case the
+    * driver reports through a return value, since the entry point is
+    * void. The assert holds the same refusal for a debug build that
+    * runs without validation.
+    */
+   assert(!image->optimal_tiling);
 
    *pLayout = (VkSubresourceLayout){
       .offset = 0,

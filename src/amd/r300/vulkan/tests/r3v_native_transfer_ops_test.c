@@ -8,11 +8,14 @@
  * transport.
  */
 
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <vulkan/vulkan.h>
 
@@ -306,6 +309,55 @@ create_transfer_image(const struct fixture *f, uint32_t width,
                                        VK_FORMAT_B8G8R8A8_UNORM, out);
 }
 
+/* An OPTIMAL-tiled transfer image executes the identical linear span
+ * over the GEM BO as the LINEAR cell (r3v_native_transfer_footprint_bytes),
+ * so this fixture derives the row pitch from the same 64-byte-aligned
+ * formula instead of vkGetImageSubresourceLayout, which the driver
+ * refuses to answer for a VK_IMAGE_TILING_OPTIMAL image (Vulkan 1.0
+ * section 12.6: only LINEAR images carry a queryable layout).
+ */
+static int
+create_transfer_image_optimal(const struct fixture *f, uint32_t width,
+                              uint32_t height, struct transfer_image *out)
+{
+   const VkImageCreateInfo image_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .extent = { width, height, 1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   REQUIRE(vkCreateImage(f->device, &image_info, NULL, &out->image) ==
+              VK_SUCCESS,
+           "optimal-tiled transfer image creation");
+   VkMemoryRequirements requirements;
+   vkGetImageMemoryRequirements(f->device, out->image, &requirements);
+   const VkMemoryAllocateInfo allocate_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = requirements.size,
+      .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &allocate_info, NULL,
+                            &out->memory) == VK_SUCCESS,
+           "optimal-tiled transfer image memory");
+   REQUIRE(vkBindImageMemory(f->device, out->image, out->memory, 0) ==
+              VK_SUCCESS,
+           "optimal-tiled transfer image bind");
+   out->row_pitch = (width * 4u + 63u) & ~63u;
+   void *map = NULL;
+   REQUIRE(vkMapMemory(f->device, out->memory, 0, VK_WHOLE_SIZE, 0,
+                       &map) == VK_SUCCESS,
+           "optimal-tiled transfer image map");
+   out->map = map;
+   return 0;
+}
+
 static void
 destroy_transfer_image(const struct fixture *f, struct transfer_image *img)
 {
@@ -562,6 +614,149 @@ check_texel_formats(const struct fixture *f)
    return 0;
 }
 
+/* An OPTIMAL-tiled transfer image round-trips buffer->image->buffer
+ * byte for byte, matching the LINEAR cell's contract, and vkCreateImage
+ * still refuses an OPTIMAL request over the render family's
+ * color-attachment usage (r3v_native_image.c admits OPTIMAL on the
+ * transfer family alone). vkGetImageSubresourceLayout on the OPTIMAL
+ * image aborts the debug assert (Vulkan 1.0 section 12.6), so a forked
+ * child isolates that known-bad call from the rest of this fixture.
+ */
+static int
+check_optimal_tiling(const struct fixture *f)
+{
+   struct transfer_image img;
+   if (create_transfer_image_optimal(f, 16, 12, &img))
+      return 1;
+   struct staging src, dst;
+   const uint32_t w = 16, h = 12, tb = 4;
+   if (create_staging(f, (VkDeviceSize)w * h * tb,
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &src) ||
+       create_staging(f, (VkDeviceSize)w * h * tb,
+                      VK_BUFFER_USAGE_TRANSFER_DST_BIT, &dst))
+      return 1;
+   for (uint32_t b = 0; b < w * h * tb; b++) {
+      src.map[b] = (uint8_t)(b * 11u + 5u);
+      dst.map[b] = 0xcc;
+   }
+   const VkBufferImageCopy region = {
+      .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+      .imageExtent = { w, h, 1 },
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, src.buffer, img.image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+   vkCmdCopyImageToBuffer(f->cmd, img.image,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer,
+                          1, &region);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "optimal-tiled round-trip recording");
+   if (submit(f))
+      return 1;
+   CHECK(memcmp(src.map, dst.map, (size_t)w * h * tb) == 0,
+         "the optimal-tiled buffer->image->buffer round trip moved the "
+         "bytes");
+   destroy_staging(f, &src);
+   destroy_staging(f, &dst);
+   destroy_transfer_image(f, &img);
+
+   const VkImageCreateInfo optimal_attachment_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_B8G8R8A8_UNORM,
+      .extent = { 16, 16, 1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkImage refused = VK_NULL_HANDLE;
+   CHECK(vkCreateImage(f->device, &optimal_attachment_info, NULL,
+                       &refused) != VK_SUCCESS &&
+            refused == VK_NULL_HANDLE,
+         "an OPTIMAL-tiled color-attachment request still refuses: the "
+         "render family stays VK_IMAGE_TILING_LINEAR only");
+
+   /* The known-bad leg aborts the debug assert (Vulkan 1.0 section
+    * 12.6), so it runs in a forked child with its own fresh instance
+    * and device: reusing the parent's live device across fork risks
+    * the drm-shim mock's per-process handle bookkeeping, which this
+    * probe does not need to share.
+    */
+   pid_t child = fork();
+   REQUIRE(child >= 0, "fork for the subresource-layout known-bad leg");
+   if (child == 0) {
+      VkInstance instance = VK_NULL_HANDLE;
+      const VkApplicationInfo app_info = {
+         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+         .apiVersion = VK_API_VERSION_1_0,
+      };
+      const VkInstanceCreateInfo instance_info = {
+         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+         .pApplicationInfo = &app_info,
+      };
+      if (vkCreateInstance(&instance_info, NULL, &instance) != VK_SUCCESS)
+         _exit(2);
+      uint32_t count = 1;
+      VkPhysicalDevice pdev = VK_NULL_HANDLE;
+      VkResult enumerated = vkEnumeratePhysicalDevices(instance, &count,
+                                                        &pdev);
+      if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) ||
+          count != 1)
+         _exit(3);
+      const float priority = 1.0f;
+      const VkDeviceQueueCreateInfo queue_info = {
+         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+         .queueFamilyIndex = 0,
+         .queueCount = 1,
+         .pQueuePriorities = &priority,
+      };
+      const VkDeviceCreateInfo device_info = {
+         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+         .queueCreateInfoCount = 1,
+         .pQueueCreateInfos = &queue_info,
+      };
+      VkDevice device = VK_NULL_HANDLE;
+      if (vkCreateDevice(pdev, &device_info, NULL, &device) != VK_SUCCESS)
+         _exit(4);
+      const VkImageCreateInfo probe_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+         .imageType = VK_IMAGE_TYPE_2D,
+         .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .extent = { 4, 4, 1 },
+         .mipLevels = 1,
+         .arrayLayers = 1,
+         .samples = VK_SAMPLE_COUNT_1_BIT,
+         .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      };
+      VkImage probe_image = VK_NULL_HANDLE;
+      if (vkCreateImage(device, &probe_info, NULL, &probe_image) !=
+          VK_SUCCESS)
+         _exit(5);
+      const VkImageSubresource subresource = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      };
+      VkSubresourceLayout layout;
+      vkGetImageSubresourceLayout(device, probe_image, &subresource,
+                                  &layout);
+      _exit(0);
+   }
+   int status = 0;
+   REQUIRE(waitpid(child, &status, 0) == child,
+           "waiting for the subresource-layout known-bad child");
+   CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+         "vkGetImageSubresourceLayout on an OPTIMAL image aborts the "
+         "debug assert instead of answering a layout (status 0x%x)",
+         status);
+   return 0;
+}
+
 static int
 create_fixture(struct fixture *f)
 {
@@ -635,7 +830,8 @@ main(int argc, char **argv)
    if (create_fixture(&f))
       return 1;
    int fatal = check_fill_and_update(&f) || check_copy_overlap(&f) ||
-               check_blit(&f) || check_texel_formats(&f);
+               check_blit(&f) || check_texel_formats(&f) ||
+               check_optimal_tiling(&f);
    vkDestroyCommandPool(f.device, f.cmd_pool, NULL);
    vkDestroyDevice(f.device, NULL);
    vkDestroyInstance(f.instance, NULL);
