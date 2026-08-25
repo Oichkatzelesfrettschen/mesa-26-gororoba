@@ -2,7 +2,12 @@
 
 ## Status
 
-The current-source statements in this document describe
+`docs/hardware/r3v-current-program-status.md` is the one program-status
+authority: repository heads, target deployment, active conformance
+partition, latest target receipt, DSO and queue-claim modes, and open
+tasks live there, and this document keeps the completion criteria, the
+mechanism boundaries, and the source-authority queries. The
+current-source statements in this document describe
 `mesa-26-gororoba` at the commit that carries this document revision;
 `git log -1 -- docs/hardware/r3v-implementation-boundaries.md` names it.
 
