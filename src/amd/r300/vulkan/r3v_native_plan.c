@@ -51,6 +51,7 @@ static const struct {
     "r2vb_gpu_producer_fetched"},
    {R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER,
     "compute_identity_carrier"},
+   {R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE, "triangle_render_shape"},
 };
 
 const char *

@@ -43,6 +43,43 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 VkResult r3v_native_record_tcl_bypass_triangle(VkCommandBuffer commandBuffer,
                                                VkDeviceMemory vertexMemory,
                                                VkDeviceMemory colorMemory);
+VkResult r3v_native_record_tcl_bypass_triangle_render_shape(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory,
+   const struct r300_triangle_render_shape *shape);
+
+/* The shape mode records the render-shape cell over the composed dEQP
+ * smoke shape -- 256x256 at pitch 256, R8G8B8A8, magenta -- through the
+ * same recorder, arming, submission, and retention path as the
+ * reference cell, so the shim run proves the new cell kind arms under
+ * its own digest and retains its own stream.
+ */
+static bool shape_mode;
+static const struct r300_triangle_render_shape harness_shape = {
+   .width = 256,
+   .height = 256,
+   .pitch_pixels = 256,
+   .lanes = R300_TRIANGLE_LANES_R8G8B8A8,
+   .color_bits = { 0x3f800000u, 0, 0x3f800000u, 0x3f800000u },
+   .triangle_count = 1,
+};
+
+static VkResult
+record_render_shape_cell(VkCommandBuffer commandBuffer,
+                         VkDeviceMemory vertexMemory,
+                         VkDeviceMemory colorMemory)
+{
+   return r3v_native_record_tcl_bypass_triangle_render_shape(
+      commandBuffer, vertexMemory, colorMemory, &harness_shape);
+}
+
+static uint32_t
+harness_color_bytes(void)
+{
+   return shape_mode
+             ? r300_tcl_bypass_triangle_render_shape_color_bytes(&harness_shape)
+             : R300_TRIANGLE_COLOR_BYTES;
+}
 
 static unsigned failures;
 
@@ -173,6 +210,9 @@ read_whole_file(const char *dir, const char *name, void **data_out,
 static int
 build_reference_ib(struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (shape_mode)
+      return r300_tcl_bypass_triangle_render_shape_emit(&harness_shape,
+                                                        cell) != 0;
    return r300_tcl_bypass_triangle_reference_emit(cell) != 0;
 }
 
@@ -183,17 +223,20 @@ main(int argc, char **argv)
        (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0 &&
         strcmp(argv[1], "poison") != 0 &&
         strcmp(argv[1], "multi") != 0 &&
-        strcmp(argv[1], "empty") != 0)) {
-      fprintf(stderr, "usage: %s closed|open|poison|multi|empty\n", argv[0]);
+        strcmp(argv[1], "empty") != 0 &&
+        strcmp(argv[1], "shape") != 0)) {
+      fprintf(stderr, "usage: %s closed|open|poison|multi|empty|shape\n",
+              argv[0]);
       return 2;
    }
+   shape_mode = strcmp(argv[1], "shape") == 0;
 
    check_cell_emitter_error_mapping();
 
    const bool multi_mode = strcmp(argv[1], "multi") == 0;
    const bool empty_manifest_mode = strcmp(argv[1], "empty") == 0;
    const bool open_gate = strcmp(argv[1], "open") == 0 || multi_mode ||
-                          empty_manifest_mode;
+                          empty_manifest_mode || shape_mode;
    /* The poison mode ends at the recording surface: refusing a submission
     * marks the queue lost, so the calibration owns its own device rather
     * than sharing one with a cell that submits afterward.
@@ -274,7 +317,9 @@ main(int argc, char **argv)
    }
 
    icd_gipa_fn gipa = vk_icdGetInstanceProcAddr;
-   record_cell_fn record_cell = r3v_native_record_tcl_bypass_triangle;
+   record_cell_fn record_cell = shape_mode
+                                   ? record_render_shape_cell
+                                   : r3v_native_record_tcl_bypass_triangle;
 
    VkInstance instance = VK_NULL_HANDLE;
    PFN_vkCreateInstance create_instance =
@@ -355,7 +400,7 @@ main(int argc, char **argv)
    result = vkAllocateMemory(device, &alloc_info, NULL, &vertex_memory);
    CHECK(result == VK_SUCCESS, "vertex vkAllocateMemory: %d", result);
 
-   alloc_info.allocationSize = R300_TRIANGLE_COLOR_BYTES;
+   alloc_info.allocationSize = harness_color_bytes();
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    void *color_map = NULL;
    VkDeviceMemory aliased_memory = VK_NULL_HANDLE;
@@ -452,7 +497,7 @@ main(int argc, char **argv)
     * role, so the command buffer remains empty and no duplicate-handle
     * reference list reaches the queue.
     */
-   alloc_info.allocationSize = R300_TRIANGLE_COLOR_BYTES;
+   alloc_info.allocationSize = harness_color_bytes();
    result = vkAllocateMemory(device, &alloc_info, NULL, &aliased_memory);
    CHECK(result == VK_SUCCESS, "aliased vkAllocateMemory: %d", result);
    if (aliased_memory != VK_NULL_HANDLE) {
@@ -629,13 +674,48 @@ main(int argc, char **argv)
             "submit_manifest.json names the submit object");
       free(submit_manifest);
 
+      /* The retained ib.bin is the recorded cell's canonical
+       * serialization, so it equals the direct emitter's stream for the
+       * mode's cell: the reference cell, or the render shape.
+       */
+      struct r300_tcl_bypass_triangle_ib emitted;
+      CHECK(build_reference_ib(&emitted) == 0, "direct emitter builds");
+      void *retained_ib = NULL;
+      size_t retained_ib_size = 0;
+      CHECK(read_whole_file(manifest_dir, "ib.bin", &retained_ib,
+                            &retained_ib_size) == 0,
+            "open-gate ib.bin is retained");
+      if (retained_ib != NULL) {
+         uint8_t *emitted_bytes =
+            malloc(emitted.ib_size_dwords * sizeof(uint32_t));
+         CHECK(emitted_bytes != NULL, "emitted serialization buffer");
+         if (emitted_bytes != NULL) {
+            r300_triangle_ib_serialize(emitted.ib, emitted.ib_size_dwords,
+                                       emitted_bytes);
+            CHECK(retained_ib_size ==
+                        emitted.ib_size_dwords * sizeof(uint32_t) &&
+                     memcmp(retained_ib, emitted_bytes,
+                            retained_ib_size) == 0,
+                  "open-gate ib.bin is byte-identical to the direct "
+                  "emitter stream (%zu bytes, emitter %u dwords)",
+                  retained_ib_size, emitted.ib_size_dwords);
+            free(emitted_bytes);
+         }
+         free(retained_ib);
+      }
+      r300_tcl_bypass_triangle_release(&emitted);
+
       /* The shim absorbs the submission without executing it, so the
        * honest oracle verdict is a sentinel-intact target: no execution
        * evidence, exterior and canary untouched.
        */
       struct r300_triangle_oracle_verdict oracle;
-      r300_tcl_bypass_triangle_oracle(color_map, R300_TRIANGLE_COLOR_BYTES,
-                                      &oracle);
+      if (shape_mode)
+         r300_tcl_bypass_triangle_render_shape_oracle(
+            &harness_shape, color_map, harness_color_bytes(), &oracle);
+      else
+         r300_tcl_bypass_triangle_oracle(color_map, R300_TRIANGLE_COLOR_BYTES,
+                                         &oracle);
       CHECK(!oracle.executed && !oracle.interior_pass &&
                oracle.exterior_pass && oracle.canary_pass,
             "shim run leaves the sentinel intact (executed %d interior %d "

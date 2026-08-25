@@ -79,6 +79,7 @@ r3v_native_plan_capture_slot_role(enum r3v_native_cell_kind kind,
 #define TABLE(t) do { table = t; count = sizeof(t) / sizeof(t[0]); } while (0)
    switch (kind) {
    case R3V_NATIVE_CELL_KIND_TRIANGLE:
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE:
       TABLE(triangle_roles);
       break;
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC:

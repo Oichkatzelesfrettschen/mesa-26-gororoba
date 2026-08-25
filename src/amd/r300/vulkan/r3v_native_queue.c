@@ -157,6 +157,23 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
                  R3V_NATIVE_TARGET_WIDTH ||
               cmd_buffer->deferred_draw.target_height !=
                  R3V_NATIVE_TARGET_HEIGHT);
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE: {
+      /* The declared shape is the geometry and the digest carries it;
+       * the frozen facts are the fixed-cell binding: two relocations,
+       * the vertex page device-read and the color target device-written,
+       * with no deferred public draw riding the kind.
+       */
+      if (cmd_buffer->deferred_draw.pending ||
+          cmd_buffer->reference_count != R300_TRIANGLE_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *vertex =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
+      const struct r3v_native_bo_reference *color =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_COLOR];
+      return vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             vertex->write_domain != 0 || color->read_domains != 0 ||
+             color->write_domain != RADEON_GEM_DOMAIN_GTT;
+   }
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC: {
       /* The composed cell renders the consumer's maximum public extent
        * and crosses the carrier through both engines, so the vertex

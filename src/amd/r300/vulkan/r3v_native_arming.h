@@ -93,6 +93,13 @@ enum r3v_native_cell_kind {
     * verb's own gate.  The geometry contract is three relocations: the
     * output written, the slot and input arrays read. */
    R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER,
+   /* The render-shape triangle: the qualified cell over a declared
+    * extent, pitch, lane order, and fragment constant
+    * (r300_triangle_render_shape).  The digest binds every parameter,
+    * so the geometry contract is the declared shape itself, and the
+    * recorder refuses a shape the family's admission refuses.
+    */
+   R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the
