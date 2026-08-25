@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: MIT
  *
  * Native R3V image surface: the qualified linear render-target family
- * with its identity view, and the linear transfer family.
+ * with its identity view, and the transfer family, which executes one
+ * linear layout under either VK_IMAGE_TILING_LINEAR or
+ * VK_IMAGE_TILING_OPTIMAL.
  */
 
 #include "r3v_native.h"
@@ -12,20 +14,23 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
+#include <assert.h>
 #include <string.h>
 
-/* Creation admits two linear families over one common shape -- 2D,
- * B8G8R8A8_UNORM, one mip, one layer, one sample, linear, exclusive.
- * The render family carries color-attachment usage alone at any extent
- * inside the 64x64 maximum over the fixed 64-pixel row pitch; readback
- * of the rendered pixels rides the host mapping of the bound memory.
- * The transfer family carries transfer usage alone at any extent
- * inside 2048 per axis over a width-derived 64-byte-aligned pitch; its
+/* Creation admits two families over one common shape -- 2D, one mip,
+ * one layer, one sample, exclusive sharing. The render family carries
+ * color-attachment usage alone at any extent inside the 64x64 maximum
+ * over the fixed 64-pixel row pitch, tiled VK_IMAGE_TILING_LINEAR
+ * only; readback of the rendered pixels rides the host mapping of the
+ * bound memory. The transfer family carries transfer usage alone at
+ * any extent inside 2048 per axis over a width-derived 64-byte-aligned
+ * pitch, admitting either VK_IMAGE_TILING_LINEAR or
+ * VK_IMAGE_TILING_OPTIMAL as the same executing linear span; its
  * copies execute through host mappings, and the attachment paths never
  * see it because usage without the color-attachment bit admits no
- * view.  Usage mixing the families refuses: a render target the copy
+ * view. Usage mixing the families refuses: a render target the copy
  * commands could write would put two writers on the qualified cell's
- * output.  Every other shape refuses with a cleared handle, so no
+ * output. Every other shape refuses with a cleared handle, so no
  * image exists whose lowering the implementation cannot record.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -62,16 +67,31 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
        pCreateInfo->arrayLayers != 1 ||
        pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT ||
-       pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR ||
+       (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR &&
+        pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
        pCreateInfo->sharingMode != VK_SHARING_MODE_EXCLUSIVE)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
+   /* VK_IMAGE_TILING_OPTIMAL grants the implementation an opaque byte
+    * layout the application makes no assumptions about
+    * (VUID-vkGetImageSubresourceLayout-image-07790, cited in full at
+    * r3v_GetImageSubresourceLayout below). The transfer family already
+    * executes its bytes as one linear span over the GEM BO
+    * (r3v_native_transfer_footprint_bytes), so an OPTIMAL request over
+    * that family's usage and extent vocabulary is the same executing
+    * layout under the opaque contract; the image only stops answering
+    * r3v_GetImageSubresourceLayout. The render family keeps its
+    * dedicated relocation-addressed cell LINEAR-only: it has never
+    * executed any other layout, and admitting OPTIMAL there would
+    * advertise a capability this driver has not built.
+    */
    const VkImageUsageFlags transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    bool transfer_family;
    uint32_t row_pitch_bytes;
    if (pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
       if (pCreateInfo->flags != 0 ||
+          pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR ||
           pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
           pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
           pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT)
@@ -103,6 +123,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->row_pitch_bytes = row_pitch_bytes;
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
+   image->optimal_tiling = pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL;
    image->memory = NULL;
    image->memory_offset = 0;
    *pImage = r3v_native_image_to_handle(image);
@@ -264,6 +285,20 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
                               VkSubresourceLayout *pLayout)
 {
    VK_FROM_HANDLE(r3v_native_image, image, _image);
+
+   /* VUID-vkGetImageSubresourceLayout-image-07790: calling this entry
+    * on a VK_IMAGE_TILING_OPTIMAL image is invalid usage the
+    * validation layers catch; the entry point is void, so the driver
+    * has no return value to report it through. The assert holds the
+    * same refusal in a debug build (b_ndebug=false) that runs without
+    * validation; a release build (NDEBUG, assert() a no-op) computes
+    * the transfer family's linear-span layout below regardless of
+    * tiling, since VK_IMAGE_TILING_OPTIMAL executes that identical
+    * span (r3v_native_transfer_footprint_bytes) -- the answer is
+    * correct for the bytes this driver actually writes, even though
+    * the call remains invalid application usage under the spec.
+    */
+   assert(!image->optimal_tiling);
 
    *pLayout = (VkSubresourceLayout){
       .offset = 0,

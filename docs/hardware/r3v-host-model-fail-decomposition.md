@@ -133,7 +133,7 @@ population plausibly does.
 
 | Refusal site (file:line) | Cases | Trigger shape | Admitting mechanism | Hazard |
 |---|---|---|---|---|
-| `r3v_native_image.c:65` (`tiling`, main guard, universal) and `:75` (`format`, `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` branch only, lines 73-78) | up to 100 (`pipeline_barrier`); 0 of the 90 `object_management` cases close on this alone | `findMaxRGBA8ImageSize` always requests `VK_IMAGE_TILING_OPTIMAL` and `VK_FORMAT_R8G8B8A8_UNORM` against a `VK_IMAGE_TYPE_2D`, one-mip, one-layer, `flags=0` image; the admitted cells require `VK_IMAGE_TILING_LINEAR` universally (line 65), plus `R3V_NATIVE_TARGET_FORMAT` (`VK_FORMAT_B8G8R8A8_UNORM`, line 75) only inside the color-attachment-usage branch--the transfer-usage branch (lines 81-88) never re-checks format, and `r3v_native_transfer_texel_bytes` already accepts `R8G8B8A8_UNORM`, so a `TRANSFER_SRC\|DST`-usage probe blocks on `tiling` alone | Admit a second, `OPTIMAL`-tiled cell at the same fixed extent and usage vocabulary the `LINEAR` cells already admit (`COLOR_ATTACHMENT_BIT` alone, or `TRANSFER_SRC\|DST` alone, the latter already `R8G8B8A8_UNORM`-capable); confirming this closes all 100 first needs the exact `usage` `findMaxRGBA8ImageSize`'s `vertex_buffer_stride` callers pass (not traced here) | Host-provable: pure `VkImageCreateInfo` field comparison, no submission |
+| `r3v_native_image.c:65` (`tiling`, main guard, universal) and `:75` (`format`, `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` branch only, lines 73-78) | up to 100 (`pipeline_barrier`); 0 of the 90 `object_management` cases close on this alone | `findMaxRGBA8ImageSize` always requests `VK_IMAGE_TILING_OPTIMAL` and `VK_FORMAT_R8G8B8A8_UNORM` against a `VK_IMAGE_TYPE_2D`, one-mip, one-layer, `flags=0` image; the admitted cells require `VK_IMAGE_TILING_LINEAR` universally (line 65), plus `R3V_NATIVE_TARGET_FORMAT` (`VK_FORMAT_B8G8R8A8_UNORM`, line 75) only inside the color-attachment-usage branch--the transfer-usage branch (lines 81-88) never re-checks format, and `r3v_native_transfer_texel_bytes` already accepts `R8G8B8A8_UNORM`, so a `TRANSFER_SRC\|DST`-usage probe blocks on `tiling` alone | Admit a second, `OPTIMAL`-tiled cell at the same fixed extent and usage vocabulary the `LINEAR` cells already admit (`COLOR_ATTACHMENT_BIT` alone, or `TRANSFER_SRC\|DST` alone, the latter already `R8G8B8A8_UNORM`-capable); landed in PR #1779 -- necessary but not sufficient, see "Rung 1 correction" below | Host-provable: pure `VkImageCreateInfo` field comparison, no submission |
 | `r3v_native_image.c:59-67` `r3v_CreateImage`, `imageType`/`flags`/`usage`/`extent` fields | 90 (`object_management`), across five disjoint sub-populations (see above) | 1D/3D `imageType`, `CUBE_COMPATIBLE_BIT` `flags`, `SAMPLED_BIT` combined usage with `arrayLayers>1`, a 256x256 extent past the 64x64 admitted cell, and depth-usage images--five distinct unadmitted shapes, detailed above | Each sub-population needs its own new admitted shape (1D support, 3D support, cube support, multi-layer sampled support, a larger or second extent cell, depth-format support); none is a single small PR | Host-provable, but not one mechanism--see the per-population breakdown above |
 | `r3v_native_object.c:43-50` `r3v_CreateBufferView` | 18 (object_management only) | Every call: the function is `return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);` unconditionally | Implement buffer-view admission over the existing transfer-family buffer route: bind `VkBufferViewCreateInfo.format` to a texel size the transfer path already knows (`r3v_native_transfer_texel_bytes`), range and offset bounded by the parent buffer's `r3v_native_transfer_footprint_bytes` | Host-provable: object bookkeeping, no submission |
 | `r300_compute_spirv.c:744-752`, `default:` arm of the instruction-opcode walk | 12 (10 in object_management, 2 in descriptor_set) | The CTS `ComputePipeline` shader (`vktApiObjectManagementTests.cpp:1357-1364`) is `dataOut[i] = ~dataIn[i]`; SPIR-V `OpNot` (opcode 200) is outside the walk's admitted opcode set (`OpVariable`/`OpLoad`/`OpStore`/`OpAccessChain`/`OpLabel`/`OpFunction*`/`OpReturn`, plus arithmetic opcodes 126-141) and outside the 126-141 arithmetic range the `default:` arm special-cases, so it falls to `"opcode outside the identity-map subset"`; `r300_compute_job_from_spirv` (`r3v_native_compute.c:500-505`) returns this reason and `create_pipeline` maps it straight to `R3V_NATIVE_REFUSAL_RESULT` before the verb ledger (`r300_compute_verb.c:153-161`) is ever consulted, since `r300_compute_verb_for_job` only recognizes `R300_COMPUTE_JOB_OP_IDENTITY` and returns `NULL` for every other job op | Extend the front-end grammar to admit one bitwise-NOT instruction between the load and the store (`OpNot`, opcode 200), classify the resulting job as a new `R300_COMPUTE_JOB_OP_BITWISE_NOT`, and give `r300_compute_verb_for_job` a case for it pointing at a new or the existing `BITWISE_LOGICOP_MAP` row with `cpu_route` flipped to `EXECUTING` (`r300_compute_verb.c:57-61` already carries that row with `cpu_route=ABSENT`; whether it is the right row for a unary NOT or a new row is needed is itself a design question, not resolved here) | Host-provable: the refusal itself is host-checkable; the front-end and verb-table change needs a positive/negative pair on the buffer contents, still no submission |
@@ -145,7 +145,7 @@ population plausibly does.
 
 | Rank | Mechanism | Cases closed | dEQP groups touched |
 |---|---|---|---|
-| 1 | `OPTIMAL`-tiled `R8G8B8A8_UNORM` image cell in `r3v_CreateImage` | up to 100, pending the unconfirmed `usage` field | `dEQP-VK.memory.pipeline_barrier.*` |
+| 1 | `OPTIMAL`-tiled `R8G8B8A8_UNORM` image cell in `r3v_CreateImage` | 0 measured (landed PR #1779; necessary, not sufficient -- see "Rung 1 correction" below) | `dEQP-VK.memory.pipeline_barrier.*` |
 | 2 | Buffer-view admission in `r3v_CreateBufferView` | 18 | `dEQP-VK.api.object_management.*` |
 | 3 | `OpNot` admission in the compute SPIR-V front-end plus a CPU route for the resulting job | 12 | `dEQP-VK.api.object_management.*` (10), `dEQP-VK.api.descriptor_set.*` (2) |
 | 4 | Immutable-sampler binding in `r3v_CreateDescriptorSetLayout` | 10 | `dEQP-VK.api.object_management.*` |
@@ -178,7 +178,7 @@ admitted cell, expected to keep refusing) beside the positive one, per
 
 | Order | PR | Mechanism | Target dEQP group | Cases closed | Negative fixture |
 |---|---|---|---|---|---|
-| 1 | `r3v: admit an OPTIMAL-tiled R8G8B8A8_UNORM image cell in CreateImage` | Second fixed `VkImageCreateInfo` cell (Table 1, row 1); first traces the exact `usage` `findMaxRGBA8ImageSize`'s `vertex_buffer_stride` callers pass, so the cell's admitted usage set is evidence-grounded rather than guessed | `dEQP-VK.memory.pipeline_barrier.all*` and `.all_device*` `vertex_buffer_stride` cases | up to 100 | An image request combining the new cell's usage bits with a third, unadmitted format still refuses |
+| 1 | `r3v: admit an OPTIMAL-tiled R8G8B8A8_UNORM image cell in CreateImage` (landed, PR #1779) | Second fixed `VkImageCreateInfo` cell (Table 1, row 1) | `dEQP-VK.memory.pipeline_barrier.*` (104-case filtered shard) | 0 of 104 measured -- see "Rung 1 correction" below | An image request combining the new cell's usage bits with a third, unadmitted format still refuses |
 | 2 | `r3v: admit buffer views over the existing transfer buffer route` | `r3v_CreateBufferView` (Table 1, row 3) | `dEQP-VK.api.object_management.*` (`buffer_view_storage_*`, `buffer_view_uniform_*`) | 18 | A `VkBufferViewCreateInfo` whose `range` exceeds the parent buffer's transfer footprint still refuses |
 | 3 | `r300: admit OpNot and land the CPU route it needs` | `r300_compute_spirv.c` opcode walk plus `r300_compute_verb.c` row plus a `r300_cpu_compute_job.c` kernel (Table 1, row 4) | `dEQP-VK.api.object_management.*compute_pipeline*`, `dEQP-VK.api.descriptor_set.descriptor_set_layout_binding.update_subsequent_binding`, `.descriptor_set_layout_lifetime.compute` | 12 | A second unary opcode (e.g. `OpSNegate`, already in the 126-141 arithmetic band but still refused) stays outside the admitted grammar and still refuses at the front end |
 | 4 | `r3v: admit one immutable-sampler binding in descriptor set layouts` | `r3v_CreateDescriptorSetLayout` (Table 1, row 5) | `dEQP-VK.api.object_management.*graphics_pipeline*` | 10 | Two bindings each carrying `pImmutableSamplers` still refuse (the cell binds exactly one sampler slot) |
@@ -193,6 +193,74 @@ admitted `imageType`, `flags`, or `usage`/`extent` shape) before it is a
 PR-sized rung, and bundling any of them into PR 1 would put a
 transfer-image fix and an unrelated image-capability expansion in one
 review.
+
+## Rung 1 correction: OPTIMAL tiling is necessary, not sufficient
+
+PR #1779 (`r3v: admit VK_IMAGE_TILING_OPTIMAL on the linear transfer
+image family`) landed Table 1 row 1's mechanism and measured its
+`dEQP-VK.memory.pipeline_barrier.*` movement directly, correcting this
+document's original estimate ("up to 100... pending the unconfirmed
+`usage` field").
+
+Own Meson build directory mirroring
+`mesa-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache`
+(`-Dbuildtype=debugoptimized -Db_ndebug=false -Dwerror=true
+-Dvulkan-drivers=ati_r300 -Dgallium-drivers=r300,zink`), full tree
+clean, zero warnings. `r3v_conformance_partition.py generate --kind
+exhaustive` against the same pinned corpus (digest `9cbcaff30025`)
+reproduces the `command` slice's 851-case shard; filtering it to
+`dEQP-VK.memory.pipeline_barrier.*` yields the same 104 cases this
+document's `command` filtered run covers. `r3v_conformance_runner.py
+run` against that 104-case caselist, same ICD/drm-shim/env vocabulary
+as this document's original runs: before the OPTIMAL-tiling commit,
+`Fail:100 Pass:4` (seal `9a4f99414d8e`); after, `Fail:100 Pass:4` (seal
+`2e00e7ddbb93`). Zero of 104 cases move Fail to Pass.
+
+A single-case probe
+(`dEQP-VK.memory.pipeline_barrier.host_read_transfer_dst.1024`)
+confirms the mechanism itself is correct and reaches the CTS: before
+the commit, `vkCreateImage` throws `VK_ERROR_UNKNOWN` during the
+CTS harness's memory-type probe phase (`findMaxRGBA8ImageSize`,
+`vktMemoryPipelineBarrierTests.cpp:873`); after, that call succeeds,
+and the same case instead fails later, at `vkEndCommandBuffer`, on a
+poisoned command buffer. A `backtrace()`/`dladdr` census (built with
+`#pragma clang optimize off` on `r3v_native_recording.c` to defeat
+tail-call elimination that otherwise collapses the calling frame, kept
+out of the landed patch) over every `r3v_native_cmd_poison` call
+across a full run of the 104-case caselist attributes:
+
+- 56 poison events to `r3v_CmdExecuteCommands`: `createHostCommand`'s
+  op-selection logic
+  (`vktMemoryPipelineBarrierTests.cpp:8266`,
+  `ops.push_back(OP_SECONDARY_COMMAND_BUFFER_BEGIN)`) makes a
+  secondary command buffer an available random choice on nearly every
+  op-selection round of the randomized command sequence these test
+  cases record, and R3V has no secondary-command-buffer route --
+  `r3v_CmdExecuteCommands` is one of the many core-1.0 entrypoints
+  `r3v_native_recording.c` poisons unconditionally.
+- 4 poison events to `r3v_CmdBlitImage`: unimplemented image blit,
+  independently selectable by the same op-generation logic.
+- 16 of the 104 cases (the `all` and `all_device` usage subgroups)
+  still refuse at `vkCreateImage` itself: `usageToImageUsageFlags`
+  (`vktMemoryPipelineBarrierTests.cpp:385`) resolves those groups'
+  usage to `TRANSFER_SRC|TRANSFER_DST|SAMPLED|STORAGE`, and no
+  admitted cell grants `SAMPLED_BIT` or `STORAGE_BIT`.
+- The remaining cases (`transfer_dst_vertex_buffer`,
+  `transfer_src_transfer_dst`, `host_write_transfer_src`,
+  `host_read_transfer_dst`, and the five `transfer_dst_*_buffer`
+  groups) resolve to `imageUsage` values within the newly admitted
+  transfer cell (a subset of `TRANSFER_SRC|TRANSFER_DST`), so
+  `vkCreateImage` now succeeds for every one of them; every failure
+  among them traces to the secondary-command-buffer or blit gate
+  above, not to image tiling.
+
+Table 1 row 1, Table 2 rank 1, and Table 3 PR 1 above are corrected in
+place to point here rather than restate the original prediction.
+Closing any case in this family needs secondary-command-buffer
+support, image blit, or sampled/storage-image admission as a separate,
+materially larger mechanism than an image-creation cell; none of those
+three is scoped by this decomposition, and each needs its own rung
+before `dEQP-VK.memory.pipeline_barrier.*` moves off `Fail:100`.
 
 ## Residual
 

@@ -725,12 +725,22 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    case VK_FORMAT_B8G8R8A8_UNORM:
       /* The render family's color-attachment grant plus the transfer
        * family's copy grant: the recorded vkCmdCopy* subset executes
-       * the transfer features through host mappings at submission.
-       * The format also sits in the transfer-image texel table below,
-       * so it carries the same texel-buffer grant.
+       * the transfer features through host mappings at submission. The
+       * format also sits in the transfer-image texel table below, so
+       * it carries the same texel-buffer grant. The render family
+       * stays VK_IMAGE_TILING_LINEAR only (its relocation-addressed
+       * cell has never executed any other layout), so
+       * optimalTilingFeatures carries the transfer bits alone:
+       * r3v_CreateImage admits VK_IMAGE_TILING_OPTIMAL on the transfer
+       * family, executing the identical linear layout under Vulkan's
+       * opaque OPTIMAL contract, but never on the color-attachment
+       * usage this format's render family requires.
        */
       properties->linearTilingFeatures =
          VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      properties->optimalTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       /* tests/r3v_conformance_nonpass_ledger.tsv row
@@ -748,12 +758,18 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    case VK_FORMAT_R32_UINT:
       /* The transfer family's texel table: the copies move these
        * texels by size through host mappings and never interpret them,
-       * so the grant is the two transfer bits on the linear layout.
+       * so the grant is the two transfer bits on the linear layout,
+       * and identically on VK_IMAGE_TILING_OPTIMAL since
+       * r3v_CreateImage executes both tilings as the one linear span
+       * (r3v_native_transfer_footprint_bytes) for this family.
        * r3v_CreateBufferView queries this same table for the uniform
        * texel-buffer admission; the storage bit stays withheld for the
        * reason above.
        */
       properties->linearTilingFeatures =
+         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      properties->optimalTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->bufferFeatures = VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
