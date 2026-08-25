@@ -64,7 +64,11 @@ the first eleven by hazard:
 
 Counts read Pass/NotSupported/Fail. Every Fail is classified against
 `r3v_conformance_nonpass_ledger.tsv` (19 rows); an unclassified row
-refuses decision grade. The eight slices after the eleventh
+refuses decision grade. The machine-readable frontier over the 19
+slices -- counts, hazard, evidence status, blocking non-pass classes
+joined to their ledger rows, and the next admitting mechanism -- is
+`steinmarder-r300/src/re/r300/corpora/rs482_r3v_conformance_frontier_v1/frontier.jsonl`,
+regenerated from this partition, the ledger, and the retained bundles. The eight slices after the eleventh
 (`api-unclassified`, `feature-extensions`, `memory-unclassified`,
 `pipeline-monolithic`, `pipeline-variants`, `robustness-extended`,
 `shader-execution`, `wsi-presentation`) carry no target run.
@@ -104,8 +108,13 @@ The DSO mode names which binary answered and how a run bound to it:
   `icd.dso_sha256` and refuses a run whose digest differs from the
   expected one (`wrong_icd`);
 - host-model: the same DSO under the Radeon drm-shim preload, evidence
-  class `host-model`, never decision grade; a planning pass captures
-  submission transcripts here;
+  class `host-model`, never decision grade;
+- host-planning: a planning pass on a submission-hazard slice under the
+  radeon drm-shim with every gate closed, one process apiece, and a
+  per-process strace witnessing zero kernel-entering CS ioctls; the
+  runner admits it as evidence class `host-planning`, never decision
+  grade, and seals each case's outcome (`transcript` with digests, or
+  `no_nonempty_ib`); the slice's silicon requirement stands;
 - plan-bound: a submission-hazard silicon run replays a composed plan
   that binds at the first submission to the DSO BLAKE3, the built source
   SHA prefix, the kernel and module identity, the RS482 PCI identity, and
