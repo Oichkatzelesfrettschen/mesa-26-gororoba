@@ -50,12 +50,31 @@ cursor, with each case's status taken from its own process's log, its
 own artifacts digested under `cases/<case>/`, and its exit code, session
 closure, resolved values, and resolved-path presence recorded per case.
 
+The host-planning disposition is the planning pass admitted as its own
+evidence class, `host-planning`, never decision-grade.  It opens on
+exact conditions alone: the slice hazard is `submission`, the radeon
+drm-shim (`libradeon_noop_drm_shim.so`) is in the preload path so it
+interposes ioctl, `R3V_NATIVE_PLAN_CAPTURE_FILE` is declared,
+`R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED` is closed (unset, empty, or `0`),
+no attended evidence directory (`R3V_NATIVE_MANIFEST_DIR`) and no
+replay plan (`R3V_NATIVE_PLAN_FILE`, `R3V_NATIVE_PLAN_NONCE`) is
+declared, the shard runs one process apiece, and the per-process
+strace witness counts zero kernel-entering DRM_IOCTL_RADEON_CS.  A
+failed condition refuses the run by name
+(`planning_disposition_refused`, `planning_witness_unavailable`,
+`planning_cs_witnessed`, `planning_unwitnessed`), and the sealed receipt
+records each case's outcome: `transcript` with the digest of every
+transcript the device wrote, `no_nonempty_ib` when the device reported
+that no executable submission ran, or `unresolved`.  The slice's
+required evidence stays silicon whatever the disposition records.
+
 Usage:
   r3v_conformance_runner.py run --deqp-binary BIN --icd MANIFEST \
       --caselist FILE --out DIR [--source-root DIR] [--build-root DIR] \
       [--expect-source-sha HEX] [--expect-dso-sha256 HEX] \
       [--timeout SEC] [--nonpass-ledger TSV] [--dmesg-command CMD] \
-      [--env KEY=VALUE]... [--process-per-case] [--plan-nonce-file TSV]
+      [--env KEY=VALUE]... [--process-per-case] [--plan-nonce-file TSV] \
+      [--strace-binary PATH]
   r3v_conformance_runner.py verify-receipt --receipt receipt.json
   r3v_conformance_runner.py check-ledgers --nonpass-ledger TSV --slices TSV
   r3v_conformance_runner.py run ... --partition-manifest partition_manifest.json
@@ -75,6 +94,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import r3v_cs_ioctl_trace as cs_trace  # noqa: E402
 
 RECEIPT_VERSION = 3
 
@@ -125,6 +147,26 @@ SHARD_ARTIFACT_NAMES = ("dmesg_delta.txt", "caselist.txt",
 ENV_CASE_TOKEN = re.compile(r"\{(case|index|nonce)\}")
 CASE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 PLAN_NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
+
+# The host-planning disposition: the planning pass as its own evidence
+# class.  The shim basename is the one r3v_native_plan_capture_host_model_present
+# resolves the ioctl symbol to; the gate names are the ones
+# r3v_native_device.c reads at device creation; the message is the one
+# the device logs at destroy when it captured no executable submission.
+PLANNING_EVIDENCE = "host-planning"
+RADEON_DRM_SHIM_BASENAME = "libradeon_noop_drm_shim.so"
+CAPTURE_FILE_NAME = "R3V_NATIVE_PLAN_CAPTURE_FILE"
+SUBMIT_HAZARD_GATE = "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"
+ATTENDED_EVIDENCE_DIR = "R3V_NATIVE_MANIFEST_DIR"
+PLAN_REPLAY_NAMES = ("R3V_NATIVE_PLAN_FILE", "R3V_NATIVE_PLAN_NONCE")
+NO_TRANSCRIPT_MESSAGE = ("no executable submission ran; no plan transcript "
+                         "written")
+CASE_STRACE_NAME = "ioctl.strace"
+PLANNING_OUTCOMES = ("transcript", "no_nonempty_ib", "unresolved")
+PLANNING_GRADE_REASON = ("host-planning disposition captures transcripts on "
+                         "the host model and proves nothing about "
+                         "conformance; the slice's silicon requirement "
+                         "stands")
 
 LEDGER_HEADER = ["class", "status", "case_pattern", "detail_pattern",
                  "disposition", "authority", "witness"]
@@ -346,6 +388,82 @@ def evidence_class(env, host, icd):
     if node and icd["library_basename"] == R3V_ICD_BASENAME:
         return "silicon", node
     return "host-unknown", None
+
+
+def radeon_drm_shim_interposes(env):
+    """The radeon drm-shim in the preload path by exact basename, the
+    same test the driver's capture admission makes on the resolved
+    ioctl symbol; any other preload leaves the CS ioctl unanswered."""
+    return any(Path(p).name == RADEON_DRM_SHIM_BASENAME
+               for p in re.split(r"[:\s]+", env.get("LD_PRELOAD", ""))
+               if p)
+
+
+def gate_closed(value):
+    """Unset, empty, and zero are the closed gate values; the driver
+    opens on the exact value 1 alone."""
+    return value in (None, "", "0")
+
+
+def planning_conditions(env, evidence, hazard, process_per_case):
+    """The pre-run conditions of the host-planning disposition, each
+    named so a refusal states which one failed; the kernel-entering
+    CS count joins after the run from the per-process strace."""
+    return {
+        "slice_hazard_submission": hazard == "submission",
+        "radeon_drm_shim_interposes_ioctl":
+            evidence == "host-model" and radeon_drm_shim_interposes(env),
+        "plan_capture_file_declared": bool(env.get(CAPTURE_FILE_NAME)),
+        "submit_hazard_gate_closed": gate_closed(env.get(SUBMIT_HAZARD_GATE)),
+        "attended_evidence_directory_absent":
+            not env.get(ATTENDED_EVIDENCE_DIR),
+        "replay_plan_absent": not any(env.get(n) for n in PLAN_REPLAY_NAMES),
+        "one_process_per_case": bool(process_per_case),
+    }
+
+
+def planning_tracer(declared):
+    """The strace the planning witness runs each case under: the
+    declared binary when it exists and executes, else the one
+    r3v_cs_ioctl_trace proves can attach."""
+    if declared:
+        if Path(declared).is_file() and os.access(declared, os.X_OK):
+            return declared, None
+        return None, f"{declared} is not an executable file"
+    return cs_trace.strace_available()
+
+
+def planning_outcome(case_dir, capture_path, stderr_text):
+    """One case's planning outcome from its own process: the transcripts
+    the device wrote at the declared path and its `.N` ordinals, each
+    digested; `no_nonempty_ib` when the device logged that no executable
+    submission ran (r3v_native_plan_capture_write returns -ENOENT for
+    zero entries and writes nothing); `unresolved` otherwise, which
+    covers a device the driver refused and a process that died.  The
+    per-process strace gives the kernel-entering ioctl counts."""
+    strace = case_dir / CASE_STRACE_NAME
+    witnessed = strace.is_file()
+    counts, unparsed = cs_trace.parse_strace(strace) if witnessed \
+        else ({}, 0)
+    transcripts = {}
+    if capture_path:
+        base = Path(capture_path)
+        members = [base] + sorted(
+            q for q in base.parent.glob(base.name + ".*")
+            if re.fullmatch(r"\d+", q.name[len(base.name) + 1:]))
+        transcripts = {str(q): sha256_file(q) for q in members
+                       if q.is_file()}
+    if transcripts:
+        outcome = "transcript"
+    elif NO_TRANSCRIPT_MESSAGE in stderr_text:
+        outcome = "no_nonempty_ib"
+    else:
+        outcome = "unresolved"
+    return {"outcome": outcome, "transcripts": transcripts,
+            "witnessed": witnessed,
+            "cs_ioctls": counts.get(cs_trace.CS_REQUEST, 0),
+            "total_ioctls": sum(counts.values()),
+            "unparsed_ioctl_lines": unparsed}
 
 
 def read_dmesg(command):
@@ -768,7 +886,8 @@ def case_argv(args, caselist_file, log):
             "--deqp-watchdog=disable"] + (args.deqp_arg or [])
 
 
-def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
+def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe,
+              tracer=None, planning=False):
     """Runs each case of the shard in its own dEQP process, in caselist
     order, under the shard deadline with --case-timeout as each
     process's own.  Plan replay binds one session per process, so a
@@ -788,7 +907,11 @@ def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
     The kernel log is read after every case, and a hazard line stops the
     sequence there: a lockup or a CS validation error makes every later
     case's result a consequence of the first failure, so the shard names
-    the case the hazard followed and leaves the rest not_run."""
+    the case the hazard followed and leaves the rest not_run.
+
+    With a tracer, each case's process runs under strace so the
+    kernel-entering ioctl census of that case alone lands in its own
+    directory, and a planning shard records each case's outcome."""
     width = len(str(len(cases)))
     results = {}
     records = {}
@@ -825,8 +948,12 @@ def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
         paths = {k: {"present_before": Path(v).exists()}
                  for k, v in resolved.items() if v.startswith("/")}
         argv = case_argv(args, caselist_file, log)
+        launch = argv
+        if tracer:
+            launch = [tracer] + cs_trace.STRACE_ARGS + \
+                ["-o", str(case_dir / CASE_STRACE_NAME), "--"] + argv
         exit_code, _, stderr_text = supervise(
-            argv, Path(args.deqp_binary).resolve().parent, case_env, log,
+            launch, Path(args.deqp_binary).resolve().parent, case_env, log,
             case_dir / "stdout.txt", case_dir / "stderr.txt", remaining,
             args.case_timeout)
         for k, state in paths.items():
@@ -865,6 +992,9 @@ def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
             record["environment"] = resolved
         if paths:
             record["paths"] = paths
+        if planning:
+            record["planning"] = planning_outcome(
+                case_dir, resolved.get(CAPTURE_FILE_NAME), stderr_text)
         records[case] = record
         # A kernel hazard ends the sequence where it appeared: the cases
         # behind it would run on a wedged or reset GPU, so their results
@@ -930,19 +1060,32 @@ def execute(args):
                                        args.expect_report_sha256)
     evidence, node = evidence_class(env, host, icd)
     # A declared capture file on a submission-hazard slice under the
-    # drm-shim host model is a planning pass: it records the ordered
-    # submissions a later silicon replay binds to, and it states nothing
-    # about conformance, so it runs below the slice's required evidence
-    # and never reaches decision grade.  A capture session opens the CS
+    # drm-shim host model is a planning candidate: it records the
+    # ordered submissions a later silicon replay binds to and states
+    # nothing about conformance, so it runs below the slice's required
+    # evidence and never reaches decision grade.  The candidate earns the
+    # host-planning disposition when every named condition holds and the
+    # per-process strace witnesses zero kernel-entering CS ioctls; a
+    # failed condition refuses by name.  A capture session opens the CS
     # ioctl with the hazard gate closed, which the host model alone
     # answers, so the same declaration on silicon refuses.  On a
     # hazard-free slice the declaration stays contamination, refused by
     # name in build_environment.
-    capture_declared = any(kv.partition("=")[0] ==
-                           "R3V_NATIVE_PLAN_CAPTURE_FILE"
-                           for kv in args.env or [])
-    planning_pass = (capture_declared and evidence == "host-model" and
-                     partition.get("hazard") == "submission")
+    capture_declared = bool(env.get(CAPTURE_FILE_NAME))
+    planning_candidate = (capture_declared and evidence == "host-model" and
+                          partition.get("hazard") == "submission")
+    conditions = planning_conditions(env, evidence, partition.get("hazard"),
+                                     args.process_per_case)
+    planning = {"candidate": planning_candidate, "disposition": None,
+                "decision_grade": False, "conditions": conditions,
+                "refused_conditions": [n for n, ok in conditions.items()
+                                       if not ok]}
+    tracer = None
+    if planning_candidate:
+        tracer, tracer_error = planning_tracer(args.strace_binary)
+        planning["tracer"] = {"binary": tracer, "error": tracer_error,
+                              "strace_args": cs_trace.STRACE_ARGS,
+                              "witness_scope": "syscall_boundary"}
     receipt = {
         "receipt_version": RECEIPT_VERSION,
         "source": source_identity(args.source_root),
@@ -975,7 +1118,7 @@ def execute(args):
                      "case_seconds": args.case_timeout},
         "max_cases": args.max_cases,
         "process_per_case": bool(args.process_per_case),
-        "planning_pass": planning_pass,
+        "planning": planning,
     }
     if args.process_per_case:
         receipt["case_directories"] = sanitized
@@ -1001,8 +1144,13 @@ def execute(args):
             refusal = refusal or f"wrong_{key.replace('_sha256', '')}"
     if refusal is None and capture_declared and evidence == "silicon":
         refusal = "capture_on_silicon"
+    if refusal is None and planning_candidate and \
+            planning["refused_conditions"]:
+        refusal = "planning_disposition_refused"
+    if refusal is None and planning_candidate and tracer is None:
+        refusal = "planning_witness_unavailable"
     if refusal is None and partition.get("required_evidence") == "silicon" \
-            and evidence != "silicon" and not planning_pass:
+            and evidence != "silicon" and not planning_candidate:
         refusal = "evidence_below_required"
     if refusal is None and partition.get("shard_max_cases") not in (
             None, args.max_cases):
@@ -1024,13 +1172,11 @@ def execute(args):
         undeclared.append("runtime-event SHA-256")
     if not queue_claim["available"]:
         undeclared.append("queue-claim report")
-    # A planning pass carries its own reason ahead of the rest: it is
-    # never decision-grade whatever the source identity says, and the
+    # A planning candidate carries its own reason ahead of the rest: it
+    # is never decision-grade whatever the source identity says, and the
     # reason a reader needs is what the run is for.
-    if planning_pass:
-        grade, reason = False, ("planning pass captures transcripts on the "
-                                "host model and proves nothing about "
-                                "conformance")
+    if planning_candidate:
+        grade, reason = False, PLANNING_GRADE_REASON
     elif not src.get("available"):
         grade, reason = False, "source identity unavailable"
     elif not src["clean"]:
@@ -1074,7 +1220,8 @@ def execute(args):
         started = time.monotonic()
     if refusal is None and args.process_per_case:
         shard = run_cases(args, out, cases, env, sanitized, nonces,
-                          hazard_probe)
+                          hazard_probe, tracer=tracer,
+                          planning=planning_candidate and refusal is None)
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
         # Every case's argv differs from this one in the caselist and
         # log paths alone, which name that case's own directory.
@@ -1097,10 +1244,47 @@ def execute(args):
         if shard["unknown_format"]:
             refusal = refusal or "unknown_log_format"
         artifact_names = list(SHARD_ARTIFACT_NAMES)
+        case_names = list(CASE_ARTIFACT_NAMES)
+        if tracer:
+            case_names.append(CASE_STRACE_NAME)
         artifact_names += [f"cases/{d}/{n}"
                            for d in (shard["cases"][c]["directory"]
                                      for c in cases if c in shard["cases"])
-                           for n in CASE_ARTIFACT_NAMES]
+                           for n in case_names]
+        # The disposition closes on the run's own witness: every case
+        # traced, every trace line parsed, and zero kernel-entering CS
+        # ioctls over the shard; anything else refuses and the evidence
+        # class stays host-model.
+        if planning_candidate and refusal is None:
+            per = {c: rec["planning"] for c, rec in shard["cases"].items()}
+            unwitnessed = sorted(c for c, o in per.items()
+                                 if not o["witnessed"])
+            cs_total = sum(o["cs_ioctls"] for o in per.values())
+            unparsed = sum(o["unparsed_ioctl_lines"] for o in per.values())
+            planning["cs_witness"] = {
+                "witness_scope": "syscall_boundary",
+                "cs_ioctls": cs_total,
+                "total_ioctls": sum(o["total_ioctls"] for o in per.values()),
+                "unparsed_ioctl_lines": unparsed,
+                "unwitnessed_cases": unwitnessed}
+            planning["outcomes"] = {
+                o: sum(1 for r in per.values() if r["outcome"] == o)
+                for o in PLANNING_OUTCOMES}
+            planning["transcripts"] = {
+                c: r["transcripts"] for c, r in per.items()
+                if r["transcripts"]}
+            zero = bool(per) and not unwitnessed and unparsed == 0 and \
+                cs_total == 0
+            conditions["kernel_entering_cs_zero"] = zero
+            if zero:
+                planning["disposition"] = PLANNING_EVIDENCE
+                evidence = PLANNING_EVIDENCE
+                receipt["evidence_class"] = evidence
+            else:
+                planning["refused_conditions"].append(
+                    "kernel_entering_cs_zero")
+                refusal = "planning_cs_witnessed" if cs_total else \
+                    "planning_unwitnessed"
     elif refusal is None:
         argv = case_argv(args, caselist_file, log)
         receipt["argv"] = argv
@@ -1335,6 +1519,7 @@ elif mode == "framework":
 elif mode == "per_case":
     cap = os.environ.get("FAKE_CAPTURE_FILE", "")
     if cap: open(cap, "w").write("transcript\n")
+    if os.environ.get("FAKE_NO_IB_MSG"): sys.stderr.write("MESA: warning: r3v-native: no executable submission ran; no plan transcript written\n")
     echo = os.environ.get("FAKE_ECHO_NAME", "")
     if echo: open(os.path.join(os.path.dirname(log), "env_echo.txt"), "w").write(os.environ.get(echo, ""))
     for c in cases:
@@ -1366,6 +1551,22 @@ if [ "$mode" = inconsistent ]; then mode=conformant; consistent=0; fi
 printf 'queue_family_count\t1\nqueue_flags\t0\t0x%x\tcount\t1\ttimestamp_bits\t0\n' $((bit ? 3 : 1))
 printf 'compute_bit\t%s\nqueue_claim_mode\t%s\nqueue_claim_gate\t%s\n' "$bit" "$mode" "$gate"
 printf 'verb_table_blake3\t%s\nclaim_consistent\t%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef "$consistent"
+'''
+
+# A stand-in tracer: it writes the census the real strace would (one
+# GEM_CREATE line, then FAKE_STRACE_CS lines of DRM_IOCTL_RADEON_CS in
+# the raw form r3v_cs_ioctl_trace parses) and executes the tracee, so
+# the planning arms calibrate on a known-good zero and a known-bad count.
+FAKE_STRACE = '''#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2;; --) shift; break;; *) shift;; esac
+done
+n="${FAKE_STRACE_CS:-0}"
+{ printf 'ioctl(3, 0xc020645d, 0x1) = 0\n'; i=0
+  while [ "$i" -lt "$n" ]; do printf 'ioctl(3, 0xc0206466, 0x1) = 0\n'; i=$((i+1)); done
+} > "$out"
+exec "$@"
 '''
 
 FAKE_DMESG = '''#!/bin/sh
@@ -1405,6 +1606,9 @@ def selftest(fixture_qpa):
         dmesg_cmd = d / "dmesg.sh"
         dmesg_cmd.write_text(FAKE_DMESG)
         dmesg_cmd.chmod(0o755)
+        fake_strace = d / "strace"
+        fake_strace.write_text(FAKE_STRACE)
+        fake_strace.chmod(0o755)
 
         run_index = [0]
 
@@ -1415,7 +1619,8 @@ def selftest(fixture_qpa):
                 expect_runtime_event=None, outdir=None,
                 queue_report=None, expect_queue_claim=None,
                 expect_caselist=None, process_per_case=False,
-                plan_nonce_file=None, force_evidence=None):
+                plan_nonce_file=None, force_evidence=None,
+                strace_binary=str(fake_strace)):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
             os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
@@ -1441,7 +1646,8 @@ def selftest(fixture_qpa):
                      f"FAKE_DEQP_REPLAY={fixture_qpa or ''}"],
                 deqp_arg=None, partition_manifest=manifest_json,
                 process_per_case=process_per_case,
-                plan_nonce_file=plan_nonce_file)
+                plan_nonce_file=plan_nonce_file,
+                strace_binary=strace_binary)
             if dmesg_after is not None:
                 orig = dmesg_file.read_text()
                 r = _run_with_dmesg_change(
@@ -1871,25 +2077,129 @@ def selftest(fixture_qpa):
             "kernel hazard after this case"
         assert len(r["cases"]) == 2 and not r["session_closed"]
         dmesg_file.write_text("[1.0] boot\n")
-        # A capture file declared on a submission-hazard slice under the
-        # host model is a planning pass: it runs below the slice's
-        # required evidence and reaches no decision grade.
+        # The host-planning disposition: a capture file declared on a
+        # submission-hazard slice under the radeon drm-shim, gates closed,
+        # one process apiece, and a per-process witness of zero
+        # kernel-entering CS ioctls.  The receipt carries the evidence
+        # class host-planning, no decision grade, each case's outcome, and
+        # every transcript's digest.
+        shim_env = [f"LD_PRELOAD={d}/{RADEON_DRM_SHIM_BASENAME}"]
+        arm_index = [0]
+
+        def plan_env_for_arm():
+            """Each arm gets its own capture root, so a transcript one
+            arm wrote never answers for the next."""
+            arm_index[0] += 1
+            root = caps / f"arm{arm_index[0]}"
+            root.mkdir()
+            return shim_env + [
+                f"R3V_NATIVE_PLAN_CAPTURE_FILE={root}/p_{{case}}.t"], root
+
+        plan_env, root = plan_env_for_arm()
         r = run("per_case", "pass", cases=sdir / "fake.txt",
                 manifest_json=str(sdir / "partition_manifest.json"),
-                process_per_case=True, env=base_env + [
-                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/p_{{case}}.t"])
-        assert r["planning_pass"] and r["decision_grade"] is False and \
-            r["decision_grade_reason"].startswith("planning pass captures")
-        assert r["partition"]["required_evidence"] == "silicon" and \
-            r["evidence_class"] == "host-model"
+                process_per_case=True, env=plan_env + [
+                    f"FAKE_CAPTURE_FILE={root}/p_{{case}}.t"])
+        pl = r["planning"]
+        assert r["evidence_class"] == PLANNING_EVIDENCE and \
+            pl["disposition"] == PLANNING_EVIDENCE and pl["candidate"]
+        assert r["decision_grade"] is False and \
+            r["decision_grade_reason"] == PLANNING_GRADE_REASON
+        assert r["partition"]["required_evidence"] == "silicon"
+        assert all(pl["conditions"].values()) and \
+            pl["refused_conditions"] == [], pl
+        assert pl["cs_witness"]["cs_ioctls"] == 0 and \
+            pl["cs_witness"]["total_ioctls"] == 5 and \
+            pl["cs_witness"]["unwitnessed_cases"] == []
+        assert pl["outcomes"] == {"transcript": 5, "no_nonempty_ib": 0,
+                                  "unresolved": 0}, pl["outcomes"]
+        assert f"{root}/p_dEQP-VK.fake.a.t" in \
+            pl["transcripts"]["dEQP-VK.fake.a"]
+        assert "cases/dEQP-VK.fake.a/ioctl.strace" in r["artifacts"]
+        assert r["cases"]["dEQP-VK.fake.a"]["planning"]["outcome"] == \
+            "transcript"
+        # A device that captured no executable submission writes no
+        # transcript and says so; the receipt records no_nonempty_ib as
+        # the outcome rather than an absence.
+        plan_env, _ = plan_env_for_arm()
+        r = run("per_case", "pass", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=plan_env + ["FAKE_NO_IB_MSG=1"])
+        assert r["evidence_class"] == PLANNING_EVIDENCE
+        assert r["planning"]["outcomes"] == {"transcript": 0,
+                                             "no_nonempty_ib": 5,
+                                             "unresolved": 0}
         assert r["cases"]["dEQP-VK.fake.a"]["paths"][
             "R3V_NATIVE_PLAN_CAPTURE_FILE"]["present_after"] is False
+        # Neither a transcript nor the message is unresolved.
+        plan_env, _ = plan_env_for_arm()
+        r = run("per_case", "pass", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=plan_env)
+        assert r["planning"]["outcomes"]["unresolved"] == 5
+        # Known-bad witness: one kernel-entering CS ioctl refuses the
+        # disposition and the evidence class stays host-model.
+        plan_env, _ = plan_env_for_arm()
+        r = run("per_case", "planning_cs_witnessed", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=plan_env + ["FAKE_STRACE_CS=1"])
+        assert r["evidence_class"] == "host-model" and \
+            r["planning"]["disposition"] is None
+        assert r["planning"]["cs_witness"]["cs_ioctls"] == 5 and \
+            r["planning"]["refused_conditions"] == ["kernel_entering_cs_zero"]
+        assert r["decision_grade"] is False
+        # Each pre-run condition refuses by name.
+        for extra, failed in (
+                (["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1"],
+                 "submit_hazard_gate_closed"),
+                ([f"R3V_NATIVE_MANIFEST_DIR={d}"],
+                 "attended_evidence_directory_absent"),
+                ([f"R3V_NATIVE_PLAN_FILE={d}/x.plan"], "replay_plan_absent"),
+                (["R3V_NATIVE_PLAN_NONCE=" + "0" * 32], "replay_plan_absent")):
+            r = run("per_case", "planning_disposition_refused",
+                    cases=sdir / "fake.txt",
+                    manifest_json=str(sdir / "partition_manifest.json"),
+                    process_per_case=True, env=plan_env + extra)
+            assert r["planning"]["refused_conditions"] == [failed], \
+                (extra, r["planning"]["refused_conditions"])
+            assert "argv" not in r and r["evidence_class"] == "host-model"
+        # A zero-valued gate is closed.
+        plan_env, _ = plan_env_for_arm()
+        r = run("per_case", "pass", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=plan_env + [
+                    "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=0"])
+        assert r["evidence_class"] == PLANNING_EVIDENCE
+        # A preload other than the radeon drm-shim is host-model without
+        # the interposer the capture session needs.
+        r = run("per_case", "planning_disposition_refused",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=[
+                    "LD_PRELOAD=drm_shim",
+                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/q_{{case}}.t"])
+        assert r["planning"]["refused_conditions"] == \
+            ["radeon_drm_shim_interposes_ioctl"]
+        # One process for the whole shard gives no per-case capture.
+        r = run("per_case", "planning_disposition_refused",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                env=shim_env + [f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/one.t"])
+        assert r["planning"]["refused_conditions"] == ["one_process_per_case"]
+        # No usable tracer leaves the CS count unwitnessed, which refuses.
+        r = run("per_case", "planning_witness_unavailable",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=plan_env,
+                strace_binary=str(d / "absent-strace"))
+        assert r["planning"]["tracer"]["binary"] is None and \
+            "argv" not in r
         # The same slice without a capture file stays below its required
         # evidence.
         r = run("per_case", "evidence_below_required", cases=sdir / "fake.txt",
                 manifest_json=str(sdir / "partition_manifest.json"),
                 process_per_case=True, env=base_env)
-        assert not r["planning_pass"] and "argv" not in r
+        assert not r["planning"]["candidate"] and "argv" not in r
         # A capture file on a silicon run refuses: a capture session
         # opens the CS ioctl with the hazard gate closed, which the
         # drm-shim host model alone answers.
@@ -1898,7 +2208,7 @@ def selftest(fixture_qpa):
                 process_per_case=True, force_evidence="silicon",
                 env=base_env + [
                     f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/s_{{case}}.t"])
-        assert not r["planning_pass"] and "argv" not in r
+        assert not r["planning"]["candidate"] and "argv" not in r
         # The submission-gate allowlist holds under templating: a
         # templated plan value on a hazard-free slice is contamination.
         r = run("per_case", "gate_contamination", cases=pdir / "fake.txt",
@@ -1935,7 +2245,11 @@ def selftest(fixture_qpa):
           "resolved-path presence, nonce-file resolution and its four "
           "refusals, a token outside the mode, colliding case "
           "directories, a kernel hazard stopping the sequence, the "
-          "planning pass with its silicon and hazard-free refusals, "
+          "host-planning disposition (transcript, no_nonempty_ib, and "
+          "unresolved outcomes, a witnessed CS ioctl, each gate condition "
+          "refusing by name, a zero-valued gate closed, a foreign preload, "
+          "a single-process shard, an absent tracer) with the planning "
+          "candidate's silicon and hazard-free refusals, "
           "templated gate contamination) fixtures each yield their "
           "verdict")
 
@@ -2006,6 +2320,7 @@ def main():
     r.add_argument("--partition-manifest")
     r.add_argument("--process-per-case", action="store_true")
     r.add_argument("--plan-nonce-file")
+    r.add_argument("--strace-binary")
     s = sub.add_parser("selftest")
     s.add_argument("--fixture-qpa")
     c = sub.add_parser("check-ledgers")

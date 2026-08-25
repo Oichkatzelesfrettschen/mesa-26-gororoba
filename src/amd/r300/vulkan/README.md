@@ -433,15 +433,36 @@ worktree record, and the plan's dEQP, partition, and caselist digests
 are the runner's declarations verified against that receipt.
 
 A planning pass captures transcripts on the host model and proves
-nothing about conformance.  The runner admits one when a
-submission-hazard slice declares `R3V_NATIVE_PLAN_CAPTURE_FILE` and the
-drm-shim preload makes the evidence class `host-model`: the receipt
-carries `planning_pass`, the decision grade stays false with that
-reason, and the verdict keeps its ordinary vocabulary while standing as
-a statement about capture alone.  The same declaration on a silicon run
-refuses as `capture_on_silicon`, since a capture session opens the CS
-ioctl with the hazard gate closed and only the host model answers it,
-and on a hazard-free slice it stays gate contamination.  dEQP runs a
+nothing about conformance.  The runner admits it as the host-planning
+disposition, evidence class `host-planning` with `decision_grade` false,
+on exact conditions alone: the slice hazard is `submission`, the radeon
+drm-shim `libradeon_noop_drm_shim.so` is in the preload path so it
+interposes ioctl (the same basename the driver's capture admission
+resolves the ioctl symbol to), `R3V_NATIVE_PLAN_CAPTURE_FILE` is
+declared, `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED` is closed (unset, empty,
+or `0`), no attended evidence directory (`R3V_NATIVE_MANIFEST_DIR`) and
+no replay plan (`R3V_NATIVE_PLAN_FILE`, `R3V_NATIVE_PLAN_NONCE`) is
+declared, the shard runs `--process-per-case`, and the per-process
+strace witness (`--strace-binary`, or the strace `r3v_cs_ioctl_trace`
+proves can attach) counts zero kernel-entering `DRM_IOCTL_RADEON_CS`
+over the shard with every case traced and every line parsed.  A failed
+condition refuses the run by name (`planning_disposition_refused` with
+the condition listed under `planning.refused_conditions`,
+`planning_witness_unavailable`, `planning_cs_witnessed`,
+`planning_unwitnessed`), and the evidence class then stays
+`host-model`.  The sealed receipt's `planning` object records the
+conditions, the tracer, the shard's ioctl census, each case's outcome
+(`transcript` with the digest of every transcript the device wrote at
+the declared path and its `.N` ordinals; `no_nonempty_ib` when the
+device logged that no executable submission ran and wrote nothing;
+`unresolved` otherwise), and each case's `ioctl.strace` among the
+digested artifacts.  The disposition changes nothing about the slice:
+its required evidence stays silicon, and the receipt's verdict keeps
+its ordinary vocabulary while standing as a statement about capture
+alone.  The same declaration on a silicon run refuses as
+`capture_on_silicon`, since a capture session opens the CS ioctl with
+the hazard gate closed and only the host model answers it, and on a
+hazard-free slice it stays gate contamination.  dEQP runs a
 whole caselist in one process and creates devices freely -- one dEQP
 case may create several, ahead of the one it drives (its own robustness
 cases do this) -- so capture assigns each device in a process its own
