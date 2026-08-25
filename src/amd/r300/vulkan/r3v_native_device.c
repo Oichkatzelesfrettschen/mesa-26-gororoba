@@ -263,9 +263,11 @@ r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
          &device->plan_capture, device->pdevice->pci_vendor_id,
          device->pdevice->pci_device_id, NULL);
       if (written == -ENOENT) {
+         int marked = r3v_native_plan_capture_mark_empty(&device->plan_capture);
          vk_logw(VK_LOG_OBJS(&device->vk.base),
                  "r3v-native: no executable submission ran; no plan "
-                 "transcript written");
+                 "transcript written%s%s", marked == 0 ? "" : "; marker: ",
+                 marked == 0 ? "" : strerror(-marked));
       } else if (written != 0) {
          vk_logw(VK_LOG_OBJS(&device->vk.base),
                  "r3v-native: plan transcript write at destroy failed: %s",
