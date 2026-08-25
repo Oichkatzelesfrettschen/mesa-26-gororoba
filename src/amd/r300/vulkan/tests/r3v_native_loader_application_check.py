@@ -42,7 +42,18 @@ def main() -> int:
             recorded = handle.read()
 
         reference_path = os.path.join(manifest_dir, "reference-ib.bin")
-        emit = subprocess.run([runner, "--emit-ib", reference_path])
+        # The public draw records the render-shape cell with the bound
+        # module's fragment constant, so the reference emission names
+        # that shape: the reference geometry with the reference
+        # fragment module's vec4(0, 1, 0, 1).
+        emit = subprocess.run(
+            [
+                runner,
+                "--shape", "64", "64", "64", "bgra",
+                "0x00000000", "0x3f800000", "0x00000000", "0x3f800000",
+                "--emit-ib", reference_path,
+            ]
+        )
         if emit.returncode != 0:
             print("reference emission failed", file=sys.stderr)
             return 2
@@ -58,7 +69,7 @@ def main() -> int:
 
     if len(recorded) == 0 or recorded != reference:
         print(
-            f"recorded IB deviates from the reference cell: "
+            f"recorded IB deviates from the module-constant cell: "
             f"{len(recorded)} recorded bytes, {len(reference)} reference",
             file=sys.stderr,
         )

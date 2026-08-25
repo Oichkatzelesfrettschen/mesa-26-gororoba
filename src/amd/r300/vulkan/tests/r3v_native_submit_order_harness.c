@@ -23,6 +23,7 @@
 #include "amd/r300/common/r300_r2vb_fetched_producer.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/tests/r300_fetched_route_digests.h"
 #include "amd/r300/common/tests/r300_retained_route_digests.h"
 #include "amd/r300/common/tests/r300_varying_cell_digests.h"
@@ -437,6 +438,68 @@ check_target(VkDevice device, const struct target *target, bool cleared,
    assert(deviations == 0);
 }
 
+/* The cell the public draw records at the reference geometry: the
+ * render-shape emitter carrying the bound fragment module's constant.
+ */
+static void
+module_constant_cell(struct r300_tcl_bypass_triangle_ib *out)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   const uint32_t module_color[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
+   memcpy(shape.color_bits, module_color, sizeof(module_color));
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, out) == 0);
+}
+
+/* The composed fetched route the driver submits for a width: the
+ * reference producer prefix ahead of the module-constant consumer.  The
+ * reference composition is built first and its digest held to the
+ * retained silicon pin, so the producer half stays bound to the RS482
+ * receipt; the consumer half alone is replaced, which is the half the
+ * recorded fragment constant moves.
+ */
+static void
+module_constant_route_digest(int format_id, const char *producer_pin,
+                             char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1],
+                             uint32_t *out_dwords)
+{
+   struct r300_r2vb_fetched_route_ib route;
+   assert(r300_r2vb_fetched_route_reference_compose(format_id, &route) == 0);
+   char reference_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords, reference_hex);
+   assert(strcmp(reference_hex, producer_pin) == 0);
+
+   struct r300_tcl_bypass_triangle_ib consumer;
+   module_constant_cell(&consumer);
+   assert(route.ib_size_dwords - route.consumer_start_dwords ==
+          consumer.ib_size_dwords);
+   memcpy(route.ib + route.consumer_start_dwords, consumer.ib,
+          (size_t)consumer.ib_size_dwords * sizeof(uint32_t));
+   r300_tcl_bypass_triangle_release(&consumer);
+
+   r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords, out);
+   *out_dwords = route.ib_size_dwords;
+   r300_r2vb_fetched_route_release(&route);
+}
+
+/* The width each fetched arm composes and the silicon pin its producer
+ * prefix carries.
+ */
+static void
+arm_fetched_route(enum arm arm, int *format_id, const char **producer_pin)
+{
+   if (arm == ARM_GPU_FETCHED_COMPOSED_F32_3) {
+      *format_id = R300_VERTEX_FORMAT_F32_3;
+      *producer_pin = R300_FETCHED_F32_3_ROUTE_IB_BLAKE3;
+   } else if (arm == ARM_GPU_FETCHED_COMPOSED_F32_2) {
+      *format_id = R300_VERTEX_FORMAT_F32_2;
+      *producer_pin = R300_FETCHED_F32_2_ROUTE_IB_BLAKE3;
+   } else {
+      *format_id = R300_VERTEX_FORMAT_F32_4;
+      *producer_pin = R300_FETCHED_F32_4_ROUTE_IB_BLAKE3;
+   }
+}
+
 static int
 run_arm(enum arm arm, const char *name)
 {
@@ -526,6 +589,8 @@ run_arm(enum arm arm, const char *name)
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
    const bool varying_cell_arm = arm == ARM_VARYING_ARMED || multi_arm;
+   char route_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1] = { 0 };
+   uint32_t route_dwords = 0;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
       char wrong[BLAKE3_OUT_LEN * 2 + 1];
       memcpy(wrong, reference_digest, sizeof(wrong));
@@ -533,7 +598,14 @@ run_arm(enum arm arm, const char *name)
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", wrong, 1);
    } else if (arm == ARM_GPU_FETCHED_WRONG_DIGEST) {
       /* The immediate route's retained identity, declared against the
-       * fetched composition. */
+       * fetched composition.  The composed identity is resolved here
+       * too, so the retention check below reads the stream the arm
+       * actually retained. */
+      int format_id;
+      const char *producer_pin;
+      arm_fetched_route(arm, &format_id, &producer_pin);
+      module_constant_route_digest(format_id, producer_pin, route_digest,
+                                   &route_dwords);
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
              R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
    } else if (varying_cell_arm) {
@@ -542,19 +614,23 @@ run_arm(enum arm arm, const char *name)
    } else if (two_triangle_arm) {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", two_triangle_digest, 1);
    } else if (fetched_arm) {
-      /* The offline no-submit composition identity of the fetched route
-       * over this arm's exact geometry: one-page source at offset zero,
-       * the width's record size as stride, one-page slot BO, the
-       * reference consumer. */
-      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
-             arm == ARM_GPU_FETCHED_COMPOSED_F32_3
-                ? R300_FETCHED_F32_3_ROUTE_IB_BLAKE3
-             : arm == ARM_GPU_FETCHED_COMPOSED_F32_2
-                ? R300_FETCHED_F32_2_ROUTE_IB_BLAKE3
-                : R300_FETCHED_F32_4_ROUTE_IB_BLAKE3,
-             1);
+      /* The composition identity of the fetched route over this arm's
+       * exact geometry: one-page source at offset zero, the width's
+       * record size as stride, one-page slot BO, and the recorded
+       * consumer, whose fragment constant is the bound module's. */
+      int format_id;
+      const char *producer_pin;
+      arm_fetched_route(arm, &format_id, &producer_pin);
+      module_constant_route_digest(format_id, producer_pin, route_digest,
+                                   &route_dwords);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", route_digest, 1);
    } else {
-      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", reference_digest, 1);
+      /* The single-triangle constant-color draw records the
+       * render-shape cell, so the authorized identity is the
+       * module-constant stream rather than the emitter's oracle
+       * color. */
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
+             R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3, 1);
    }
    struct utsname host;
    assert(uname(&host) == 0);
@@ -1325,10 +1401,15 @@ run_arm(enum arm arm, const char *name)
          assert(native_cmd->ib_size_dwords == two_triangle_dwords);
          assert(strcmp(recorded_digest, two_triangle_digest) == 0);
       } else {
+         /* The single-triangle constant-color draw records the
+          * render-shape cell, so the executed fragment constant is the
+          * bound module's and the stream is the module-constant
+          * identity rather than the emitter's oracle color.
+          */
          assert(native_cmd->ib_size_dwords ==
-                R300_RETAINED_CPU_ROUTE_IB_DWORDS);
-         assert(strcmp(recorded_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) ==
-                0);
+                R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
+         assert(strcmp(recorded_digest,
+                       R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3) == 0);
       }
    }
    /* The carrier snapshots cover the varying record span; the
@@ -1758,8 +1839,8 @@ run_arm(enum arm arm, const char *name)
       assert(ib_retained);
 
    /* The bytes the armed submit retained and handed to the ioctl are the
-    * retained CPU route identity, so the re-sequenced submit path moves
-    * no dword of the reference cell. */
+    * module-constant identity the recording installed, so the
+    * re-sequenced submit path moves no dword of the recorded cell. */
    if (arm == ARM_ARMED || arm == ARM_INDEXED_ARMED ||
        arm == ARM_INDEXED_PERMUTED_ARMED ||
        arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED ||
@@ -1767,8 +1848,9 @@ run_arm(enum arm arm, const char *name)
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
-      assert(submitted_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
-      assert(strcmp(submitted_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
+      assert(submitted_dwords == R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
+      assert(strcmp(submitted_digest,
+                    R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3) == 0);
    }
    /* The two-instance armed arms submitted the two-triangle family
     * member the recording installed. */
@@ -1782,7 +1864,9 @@ run_arm(enum arm arm, const char *name)
    }
    /* The fetched arms that reached retention retained the submit-time
     * composition, and its bytes are the offline no-submit composition's
-    * -- the digest the composed arm's gate matched and the wrong-digest
+    * -- the reference producer prefix, itself held to the retained
+    * silicon pin, ahead of the recorded module-constant consumer; that
+    * is the digest the composed arm's gate matched and the wrong-digest
     * arm's gate refused against the immediate route's identity. */
    if (arm == ARM_GPU_FETCHED_COMPOSED ||
        arm == ARM_GPU_FETCHED_COMPOSED_F32_3 ||
@@ -1791,13 +1875,9 @@ run_arm(enum arm arm, const char *name)
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
-      const char *pin = arm == ARM_GPU_FETCHED_COMPOSED_F32_3
-                           ? R300_FETCHED_F32_3_ROUTE_IB_BLAKE3
-                        : arm == ARM_GPU_FETCHED_COMPOSED_F32_2
-                           ? R300_FETCHED_F32_2_ROUTE_IB_BLAKE3
-                           : R300_FETCHED_F32_4_ROUTE_IB_BLAKE3;
       assert(submitted_dwords == R300_FETCHED_F32_4_ROUTE_IB_DWORDS);
-      assert(strcmp(submitted_digest, pin) == 0);
+      assert(route_dwords == submitted_dwords);
+      assert(strcmp(submitted_digest, route_digest) == 0);
       assert(strcmp(submitted_digest, R300_RETAINED_GPU_ROUTE_IB_BLAKE3) != 0);
       /* The three widths are three cells: one stream geometry, three
        * digests. */
