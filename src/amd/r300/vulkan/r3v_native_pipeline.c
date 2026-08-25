@@ -363,8 +363,12 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
         ds->stencilTestEnable != VK_FALSE))
       return false;
 
-   if (info->pTessellationState != NULL)
-      return false;
+   /* pTessellationState is read only when the stages include both
+    * tessellation shaders (VkGraphicsPipelineCreateInfo: the pointer is
+    * ignored otherwise), and the stage admission above binds a vertex
+    * and a fragment stage alone, so a supplied pointer carries no state
+    * here and stays unread.
+    */
 
    /* The out-parameters publish on the single success return, so a
     * refused pipeline never leaves a validated-looking extent behind;
