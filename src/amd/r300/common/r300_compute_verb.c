@@ -1,5 +1,11 @@
 /*
  * SPDX-License-Identifier: MIT
+ *
+ * Compute verb ledger: each row binds one operation to the pipeline unit that
+ * realizes it, its exactness bound, and its route state.
+ * docs/hardware/rs482-gpu-compute-substrate-atlas.md is the design authority
+ * for a row's GPU route, holding the per-unit arithmetic and the probe each
+ * row still owes.
  */
 
 #include "r300_compute_verb.h"

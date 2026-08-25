@@ -164,6 +164,16 @@ reaches an unmatched no-op.  With the opt-in unset, compute pipeline creation
 refuses.  The exposure remains experimental and nonconformant; widening it
 means more admitted kernel shapes and a GPU raster-carrier route.
 
+The design authority for those raster-carrier routes is
+`docs/hardware/rs482-gpu-compute-substrate-atlas.md`.  It names, for every unit
+from the PM4 command stream through the color backend, the arithmetic the unit
+performs, its numeric domains and exactness bounds, and the evidence class
+behind each statement, and it binds every row of the compute verb ledger
+(`src/amd/r300/common/r300_compute_verb.c`) to the unit whose arithmetic
+realizes it plus the probe that row still owes.  A GPU verb route is designed
+against a named unit and a named bound there; the CPU direct-SPIR-V route stays
+the oracle every GPU result is measured against.
+
 ## R2VB source-format work
 
 r300g's live R2VB producer admits `R32G32B32_FLOAT` and
