@@ -725,6 +725,10 @@ def load_plan_nonces(path, cases):
         if case in nonces:
             raise RunnerRefusal(f"{path}:{n} names {case} twice")
         nonces[case] = nonce
+    if len(set(nonces.values())) != len(nonces):
+        raise RunnerRefusal(f"{path} reuses a nonce; one nonce binds one "
+                            "replay session, so two cases sharing one would "
+                            "let either plan bind the other's session")
     missing = [c for c in cases if c not in nonces]
     if missing:
         raise RunnerRefusal(f"{path} declares no nonce for {len(missing)} "
@@ -761,7 +765,7 @@ def case_argv(args, caselist_file, log):
             "--deqp-watchdog=disable"] + (args.deqp_arg or [])
 
 
-def run_cases(args, out, cases, env, sanitized, nonces):
+def run_cases(args, out, cases, env, sanitized, nonces, hazard_probe):
     """Runs each case of the shard in its own dEQP process, in caselist
     order, under the shard deadline with --case-timeout as each
     process's own.  The plan mechanism claims capture once per process
@@ -774,7 +778,12 @@ def run_cases(args, out, cases, env, sanitized, nonces):
 
     The shard's session is the sequence of case processes: it closes
     when every case ran to a reaped process, so one case's crash
-    classifies as that case's status and leaves the shard readable."""
+    classifies as that case's status and leaves the shard readable.
+
+    The kernel log is read after every case, and a hazard line stops the
+    sequence there: a lockup or a CS validation error makes every later
+    case's result a consequence of the first failure, so the shard names
+    the case the hazard followed and leaves the rest not_run."""
     width = len(str(len(cases)))
     results = {}
     records = {}
@@ -785,10 +794,14 @@ def run_cases(args, out, cases, env, sanitized, nonces):
     started = time.monotonic()
     shard_exit = 0
     argv = None
+    stop = None
     for index, case in enumerate(cases, start=1):
         remaining = args.timeout - (time.monotonic() - started)
         if remaining <= 0:
             shard_exit = "timeout"
+            stop = {"after_case": cases[index - 2] if index > 1 else None,
+                    "index": index - 1,
+                    "reason": "shard deadline expired before this case"}
             break
         case_dir = out / "cases" / sanitized[case]
         case_dir.mkdir(parents=True)
@@ -848,17 +861,28 @@ def run_cases(args, out, cases, env, sanitized, nonces):
         if paths:
             record["paths"] = paths
         records[case] = record
+        # A kernel hazard ends the sequence where it appeared: the cases
+        # behind it would run on a wedged or reset GPU, so their results
+        # would describe the hazard rather than themselves.
+        hazard = hazard_probe()
+        if hazard:
+            stop = {"after_case": case, "index": index,
+                    "reason": "kernel hazard after this case",
+                    "hazard_lines": hazard}
+            break
         # The shard's own deadline firing inside a case ends the shard;
         # the case's deadline ends that case alone.
         if exit_code == "timeout":
             shard_exit = "timeout"
+            stop = {"after_case": case, "index": index,
+                    "reason": "shard deadline expired during this case"}
             break
     return {"results": results, "cases": records, "session": session,
             "unexpected": unexpected,
             "session_closed": len(records) == len(cases),
             "framework_abort": framework_abort,
             "unknown_format": unknown_format, "exit_code": shard_exit,
-            "argv": argv, "index_width": width}
+            "argv": argv, "index_width": width, "stop": stop}
 
 
 def execute(args):
@@ -900,6 +924,20 @@ def execute(args):
     queue_claim = queue_claim_identity(args.queue_report, env,
                                        args.expect_report_sha256)
     evidence, node = evidence_class(env, host, icd)
+    # A declared capture file on a submission-hazard slice under the
+    # drm-shim host model is a planning pass: it records the ordered
+    # submissions a later silicon replay binds to, and it states nothing
+    # about conformance, so it runs below the slice's required evidence
+    # and never reaches decision grade.  A capture session opens the CS
+    # ioctl with the hazard gate closed, which the host model alone
+    # answers, so the same declaration on silicon refuses.  On a
+    # hazard-free slice the declaration stays contamination, refused by
+    # name in build_environment.
+    capture_declared = any(kv.partition("=")[0] ==
+                           "R3V_NATIVE_PLAN_CAPTURE_FILE"
+                           for kv in args.env or [])
+    planning_pass = (capture_declared and evidence == "host-model" and
+                     partition.get("hazard") == "submission")
     receipt = {
         "receipt_version": RECEIPT_VERSION,
         "source": source_identity(args.source_root),
@@ -932,6 +970,7 @@ def execute(args):
                      "case_seconds": args.case_timeout},
         "max_cases": args.max_cases,
         "process_per_case": bool(args.process_per_case),
+        "planning_pass": planning_pass,
     }
     if args.process_per_case:
         receipt["case_directories"] = sanitized
@@ -955,8 +994,10 @@ def execute(args):
              runtime_event.get("sha256"))):
         if expected and expected != actual:
             refusal = refusal or f"wrong_{key.replace('_sha256', '')}"
+    if refusal is None and capture_declared and evidence == "silicon":
+        refusal = "capture_on_silicon"
     if refusal is None and partition.get("required_evidence") == "silicon" \
-            and evidence != "silicon":
+            and evidence != "silicon" and not planning_pass:
         refusal = "evidence_below_required"
     if refusal is None and partition.get("shard_max_cases") not in (
             None, args.max_cases):
@@ -978,7 +1019,14 @@ def execute(args):
         undeclared.append("runtime-event SHA-256")
     if not queue_claim["available"]:
         undeclared.append("queue-claim report")
-    if not src.get("available"):
+    # A planning pass carries its own reason ahead of the rest: it is
+    # never decision-grade whatever the source identity says, and the
+    # reason a reader needs is what the run is for.
+    if planning_pass:
+        grade, reason = False, ("planning pass captures transcripts on the "
+                                "host model and proves nothing about "
+                                "conformance")
+    elif not src.get("available"):
         grade, reason = False, "source identity unavailable"
     elif not src["clean"]:
         grade, reason = False, "source tree dirty"
@@ -998,6 +1046,17 @@ def execute(args):
               "session_closed": False, "session": {}}
     cursor = journal_cursor(args.journal_command)
     dmesg_before = None if cursor else read_dmesg(args.dmesg_command)
+
+    def hazard_probe():
+        """The hazard lines the kernel has logged since the shard's own
+        baseline, through whichever log source the run bound to."""
+        if cursor:
+            delta = journal_after(args.journal_command, cursor)
+        else:
+            delta, _ = dmesg_delta(dmesg_before,
+                                   read_dmesg(args.dmesg_command))
+        return hazard_lines(delta)
+
     log = out / "run.qpa"
     stderr_text = ""
     artifact_names = list(ARTIFACT_NAMES)
@@ -1009,7 +1068,8 @@ def execute(args):
         receipt["environment"] = environment_identity(env, args.env)
         started = time.monotonic()
     if refusal is None and args.process_per_case:
-        shard = run_cases(args, out, cases, env, sanitized, nonces)
+        shard = run_cases(args, out, cases, env, sanitized, nonces,
+                          hazard_probe)
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
         # Every case's argv differs from this one in the caselist and
         # log paths alone, which name that case's own directory.
@@ -1018,6 +1078,11 @@ def execute(args):
         receipt["index_width"] = shard["index_width"]
         results.update(shard["results"])
         unexpected.update(shard["unexpected"])
+        if shard["stop"]:
+            receipt["stop"] = shard["stop"]
+            for case in cases:
+                if case not in shard["results"]:
+                    results[case]["detail"] = shard["stop"]["reason"]
         exit_code = shard["exit_code"]
         stderr_text = shard["framework_abort"] or ""
         parsed = {"results": shard["results"], "in_flight": None,
@@ -1268,6 +1333,8 @@ elif mode == "per_case":
     echo = os.environ.get("FAKE_ECHO_NAME", "")
     if echo: open(os.path.join(os.path.dirname(log), "env_echo.txt"), "w").write(os.environ.get(echo, ""))
     for c in cases:
+        if c == os.environ.get("FAKE_HAZARD_CASE", ""):
+            open(os.environ["FAKE_DMESG_FILE"], "a").write("[2.0] radeon 0000:01:05.0: GPU lockup\n")
         if c == os.environ.get("FAKE_CRASH_CASE", ""):
             f.write(f"#beginTestCaseResult {c}\n"); f.flush()
             os.kill(os.getpid(), signal.SIGSEGV)
@@ -1343,7 +1410,7 @@ def selftest(fixture_qpa):
                 expect_runtime_event=None, outdir=None,
                 queue_report=None, expect_queue_claim=None,
                 expect_caselist=None, process_per_case=False,
-                plan_nonce_file=None):
+                plan_nonce_file=None, force_evidence=None):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
             os.environ["FAKE_DEQP_REPLAY"] = str(fixture_qpa or "")
@@ -1375,6 +1442,8 @@ def selftest(fixture_qpa):
                 r = _run_with_dmesg_change(
                     args, dmesg_file, orig,
                     dmesg_after if replace_dmesg else orig + dmesg_after)
+            elif force_evidence:
+                r = _run_with_evidence(args, force_evidence)
             else:
                 r = execute(args)
             if r["verdict"] != expect:
@@ -1748,7 +1817,9 @@ def selftest(fixture_qpa):
                 ("no-file", None, "no --plan-nonce-file"),
                 ("short", "dEQP-VK.fake.a\tabcd\n", "32 lowercase hex"),
                 ("missing", f"dEQP-VK.fake.a\t{1:032x}\n",
-                 "declares no nonce")):
+                 "declares no nonce"),
+                ("reused", "".join(f"dEQP-VK.fake.{c}\t{7:032x}\n"
+                                   for c in "abcde"), "reuses a nonce")):
             path = None
             if text is not None:
                 path = d / f"nonce-{bad}.tsv"
@@ -1781,6 +1852,48 @@ def selftest(fixture_qpa):
             assert "one directory per case" in str(e)
         else:
             raise SystemExit("selftest: colliding case directories admitted")
+        # A kernel hazard stops the sequence where it appeared: the
+        # cases behind it never run, and each names why.
+        dmesg_file.write_text("[1.0] boot\n")
+        r = run("per_case", "dmesg_hazard", process_per_case=True,
+                env=base_env + ["FAKE_HAZARD_CASE=dEQP-VK.fake.b",
+                                f"FAKE_DMESG_FILE={dmesg_file}"])
+        assert r["hazard_lines"] and r["counts"] == {"Pass": 2,
+                                                     "not_run": 3}, r["counts"]
+        assert r["stop"]["after_case"] == "dEQP-VK.fake.b" and \
+            r["stop"]["index"] == 2
+        assert r["results"]["dEQP-VK.fake.e"]["detail"] == \
+            "kernel hazard after this case"
+        assert len(r["cases"]) == 2 and not r["session_closed"]
+        dmesg_file.write_text("[1.0] boot\n")
+        # A capture file declared on a submission-hazard slice under the
+        # host model is a planning pass: it runs below the slice's
+        # required evidence and reaches no decision grade.
+        r = run("per_case", "pass", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=base_env + [
+                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/p_{{case}}.t"])
+        assert r["planning_pass"] and r["decision_grade"] is False and \
+            r["decision_grade_reason"].startswith("planning pass captures")
+        assert r["partition"]["required_evidence"] == "silicon" and \
+            r["evidence_class"] == "host-model"
+        assert r["cases"]["dEQP-VK.fake.a"]["paths"][
+            "R3V_NATIVE_PLAN_CAPTURE_FILE"]["present_after"] is False
+        # The same slice without a capture file stays below its required
+        # evidence.
+        r = run("per_case", "evidence_below_required", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, env=base_env)
+        assert not r["planning_pass"] and "argv" not in r
+        # A capture file on a silicon run refuses: a capture session
+        # opens the CS ioctl with the hazard gate closed, which the
+        # drm-shim host model alone answers.
+        r = run("per_case", "capture_on_silicon", cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True, force_evidence="silicon",
+                env=base_env + [
+                    f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/s_{{case}}.t"])
+        assert not r["planning_pass"] and "argv" not in r
         # The submission-gate allowlist holds under templating: a
         # templated plan value on a hazard-free slice is contamination.
         r = run("per_case", "gate_contamination", cases=pdir / "fake.txt",
@@ -1814,10 +1927,29 @@ def selftest(fixture_qpa):
           "report (mode, eligibility, wrong mode, gateless, inconsistent), "
           "and one process apiece (shard receipt, a case's own crash and "
           "case deadline, the shard deadline, per-case templating with "
-          "resolved-path presence, nonce-file resolution and its three "
+          "resolved-path presence, nonce-file resolution and its four "
           "refusals, a token outside the mode, colliding case "
-          "directories, templated gate contamination) fixtures each "
-          "yield their verdict")
+          "directories, a kernel hazard stopping the sequence, the "
+          "planning pass with its silicon and hazard-free refusals, "
+          "templated gate contamination) fixtures each yield their "
+          "verdict")
+
+
+def _run_with_evidence(args, forced):
+    """The evidence class a run would carry on other hardware; the
+    selftest host answers no RS4xx render node, so the silicon branch
+    is reachable only by naming the class the classifier would give."""
+    global evidence_class
+    orig = evidence_class
+
+    def forced_class(env, host, icd):
+        return forced, None
+
+    evidence_class = forced_class
+    try:
+        return execute(args)
+    finally:
+        evidence_class = orig
 
 
 def _run_with_dmesg_change(args, dmesg_file, before, after):

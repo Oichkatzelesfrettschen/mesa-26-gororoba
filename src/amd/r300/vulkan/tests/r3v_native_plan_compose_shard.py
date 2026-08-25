@@ -42,6 +42,12 @@ from pathlib import Path
 
 TRANSCRIPT_SUFFIX = ".transcript"
 NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
+# The case name a transcript carries becomes a path component of that
+# plan's evidence directory, so it passes the runner's own allowlist:
+# a dEQP-VK case name whose every character is already filesystem-safe,
+# which sanitizing to itself decides.
+CASE_PREFIX = "dEQP-VK."
+CASE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 SUBMISSION_COUNT = re.compile(r"^plan: (\d+) submissions", re.M)
 # The identities the plan tool takes verbatim; the nonce and the
 # evidence directory are per case, so they stay off this list.
@@ -60,10 +66,26 @@ def sha256_file(path):
 
 
 def transcript_cases(transcript_dir):
+    """The case each transcript names, taken from its filename.  The
+    name reaches the plan as a component of that case's evidence
+    directory, so it carries the dEQP-VK prefix and survives
+    sanitizing unchanged; `..`, a separator, and any other traversal
+    character refuse here rather than escaping the evidence root."""
     paths = sorted(Path(transcript_dir).glob("*" + TRANSCRIPT_SUFFIX))
     if not paths:
         raise ComposeRefusal(f"{transcript_dir} holds no *{TRANSCRIPT_SUFFIX}")
-    return [(p.name[:-len(TRANSCRIPT_SUFFIX)], p) for p in paths]
+    cases = []
+    for p in paths:
+        case = p.name[:-len(TRANSCRIPT_SUFFIX)]
+        if not case.startswith(CASE_PREFIX):
+            raise ComposeRefusal(f"{p.name} names {case!r}, which carries no "
+                                 f"{CASE_PREFIX} prefix")
+        if CASE_NAME_UNSAFE.sub("_", case) != case:
+            raise ComposeRefusal(f"{p.name} names {case!r}, which sanitizes "
+                                 "to a different name; a case name reaches "
+                                 "the evidence directory as a path component")
+        cases.append((case, p))
+    return cases
 
 
 def generate_nonces(cases, path):
@@ -220,6 +242,28 @@ def selftest(harness, tool):
                     raise SystemExit(f"selftest: wrong refusal: {e}")
             else:
                 raise SystemExit("selftest: a damaged transcript composed")
+            # A transcript whose derived case name would escape the
+            # evidence root refuses before any plan is composed: the
+            # name reaches the plan as a path component.
+            for name, message in (
+                    (".._.._escape", "carries no dEQP-VK. prefix"),
+                    ("notadeqpcase.x", "carries no dEQP-VK. prefix"),
+                    ("dEQP-VK.a b", "sanitizes to a different name"),
+                    ("dEQP-VK.a:b", "sanitizes to a different name")):
+                evil = tdir / (name + ".transcript")
+                shutil.copyfile(transcript, evil)
+                args.out_dir = str(d / ("plans-" + name.replace(" ", "_")
+                                        .replace(":", "_")))
+                try:
+                    compose(args)
+                except ComposeRefusal as e:
+                    if message not in str(e):
+                        raise SystemExit(f"selftest: {name}: wrong "
+                                         f"refusal: {e}")
+                else:
+                    raise SystemExit(f"selftest: {name} composed")
+                evil.unlink()
+            args.generate_nonces = False
             # A nonce of the wrong length refuses before any plan is
             # written.
             shutil.copyfile(transcript, damaged)
@@ -237,8 +281,9 @@ def selftest(harness, tool):
         os.remove(transcript)
         os.rmdir(os.path.dirname(transcript))
     print("compose-shard: three per-case plans sealed with distinct nonces "
-          "and their own evidence directories; a damaged transcript and a "
-          "short nonce refused")
+          "and their own evidence directories; a damaged transcript, four "
+          "case names that would escape the evidence root, and a short "
+          "nonce refused")
 
 
 def main():

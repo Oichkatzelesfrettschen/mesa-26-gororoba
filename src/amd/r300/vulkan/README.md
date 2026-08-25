@@ -388,6 +388,31 @@ it, in the runner receipt's source identity and the qualification
 worktree record, and the plan's dEQP, partition, and caselist digests
 are the runner's declarations verified against that receipt.
 
+A planning pass captures transcripts on the host model and proves
+nothing about conformance.  The runner admits one when a
+submission-hazard slice declares `R3V_NATIVE_PLAN_CAPTURE_FILE` and the
+drm-shim preload makes the evidence class `host-model`: the receipt
+carries `planning_pass`, the decision grade stays false with that
+reason, and the verdict keeps its ordinary vocabulary while standing as
+a statement about capture alone.  The same declaration on a silicon run
+refuses as `capture_on_silicon`, since a capture session opens the CS
+ioctl with the hazard gate closed and only the host model answers it,
+and on a hazard-free slice it stays gate contamination.  dEQP runs a
+whole caselist in one process while capture claims the process once and
+replay binds one session to one evidence directory, so a capturing or
+replaying shard runs `--process-per-case`, which also gives each case
+its own transcript, plan, and nonce through the `{case}`, `{index}`,
+and `{nonce}` tokens in a declared `--env` value.
+`tests/r3v_native_plan_compose_shard.py` composes one sealed plan per
+transcript, each with its own nonce and evidence directory.
+
+The `command` slice captures nothing on the host model today: over all
+851 cases under the drm-shim, zero transcripts carry an entry, because
+every submitting case refuses at image creation before the driver emits
+an IB and `r3v_native_plan_capture_record` sees only command buffers
+whose `ib_size_dwords` the cell emitters set.  A target run of that
+slice therefore submits nothing under closed gates.
+
 `tests/r3v_conformance_partition.tsv` is the exhaustive partition of
 the pinned mustpass corpus (3,251,483 cases, of which 1,542,801 sit in
 executable slices; the rest wait in blocked slices):
