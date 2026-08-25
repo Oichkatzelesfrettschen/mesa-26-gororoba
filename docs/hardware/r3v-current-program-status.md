@@ -251,21 +251,20 @@ P0 (blocks the next target run):
   `VkClearColorValue` through the target's lane order and the UNORM8
   conversion.  Two receipts stay open: the reference shape under the
   module's constant, and the offset arm of the attended render-shape
-  procedure.  The smoke.triangle host-planning rerun
-  (`smoke-triangle.run4`, seal `bb8e9571a044`) clears image creation and
-  the bind and refuses at `vkCreateGraphicsPipelines` with
-  `VK_ERROR_UNKNOWN` -- earlier in the case than the load-op clear the
-  previous rerun predicted, so the clear admission is landed but
-  unwitnessed.  The refusing conjunct is
-  `fixed_state_matches_cell`'s `info->pTessellationState != NULL`
-  (`r3v_native_pipeline.c`): the case's shader stages, vertex input,
-  and zero-set pipeline layout all admit, and dEQP's
-  `makeGraphicsPipeline` supplies a tessellation-state pointer for
-  every pipeline, while the Vulkan rule is that `pTessellationState`
-  is read only when the stages include tessellation control and
-  evaluation.  Admitting a present pointer over stageless
-  tessellation state is the next mechanism, and it carries its own
-  RCA.  A transcript
+  procedure.  The smoke.triangle host-planning rerun reached the first
+  transcript (`smoke-triangle.run7`, receipt seal `1be4dc1b5db1`, plan
+  seal `777c6a36a5df...`): one submission of 231 IB dwords with three
+  relocations (vertex read, color write, completion write), after the
+  cell family gained a color-target byte offset, the pipeline stopped
+  reading `pTessellationState` on a vertex-plus-fragment pipeline (the
+  rule reads it only with both tessellation stages present), load-op
+  and attachment clears admit any color, and copies execute in record
+  order around the deferred draw (pre-draw copies, then the clear, the
+  IB, and the bounded completion wait, then post-draw copies with the
+  render target invalidated after completion).  The dEQP verdict under
+  the noop drm-shim stays Fail on image comparison, since the shim
+  rasterizes nothing.  Open silicon receipts: the offset arm and the
+  reference shape under the module's constant.  The transcript
   then needs compose, an independent plan check, drm-shim replay, the
   six mutations (order, digest, relocation, source identity, runtime
   ceiling, nonce) each refusing before the transport, and the
