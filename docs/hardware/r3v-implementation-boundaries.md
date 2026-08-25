@@ -92,20 +92,21 @@ requires an implementation that exposes graphics to expose at least one
 family supporting both graphics and compute. The one family reports
 `VK_QUEUE_GRAPHICS_BIT`, and `VK_QUEUE_COMPUTE_BIT` only behind the exact
 `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in, under which
-`r3v_native_compute.c` admits the identity-map kernel from SPIR-V words into
-the common compute job and executes it on the CPU route at submission while
-every other module refuses at pipeline creation; with the opt-in unset,
+`r3v_native_compute.c` admits the identity-map and bitwise-complement kernels
+from SPIR-V words into the common compute job and executes them on the CPU
+route at submission while every other module refuses at pipeline creation; with the opt-in unset,
 `r3v_CreateComputePipelines` returns `R3V_NATIVE_REFUSAL_RESULT`. This is an
 experimental nonconformant surface rather than a Vulkan 1.0 capability claim,
 and promotion stays blocked until the compute route stands without its
 opt-in. The compute admission consults the precommitted verb ledger
-`src/amd/r300/common/r300_compute_verb.h`: fourteen kernel shapes, each
+`src/amd/r300/common/r300_compute_verb.h`: fifteen kernel shapes, each
 naming its `r300_virtual_op_catalog` row where one exists, its
 invocation-index class (the FP24 exact-index guards of `r300_grid_fold.h`
 bound a GPU route, never the CPU ceiling), and the raster unit that executes
 it (TX fetch plus RB3D export, the
 FP24 US ALU, the RB3D blend combiner, the RB3D ROP logic op, the ZB stencil
-unit, or the R2VB producer carrier), an exactness class (bit-exact, the FP24
+unit, the R2VB producer carrier, or the host executor where the row's raster
+carrier awaits its probe), an exactness class (bit-exact, the FP24
 exact window, or a declared FP24 tolerance), a CPU and a GPU route status,
 an evidence class, and its own exact GPU gate; five refusal classes name
 what the substrate cannot lower (scatter, image store, shared memory or
@@ -114,9 +115,12 @@ route: refuse at admission, exact gate per verb, no fallback after submit,
 refuse before write, oracle divergence quarantines, advertise after silicon.
 The device reads every row's gate at creation into one table (the literal
 `1` opens; `0`, empty, any other value, and unset stay closed; an open gate
-on a row without an executing GPU route selects nothing). The identity map
-is the one verb whose CPU route executes, and the one whose GPU route
-executes: under the compute gate and its own exact gate
+on a row without an executing GPU route selects nothing). The word complement
+(`out[i] = ~in[i]` over whole 32-bit elements, exact in every bit position)
+executes on the CPU route through the host executor, its ROP INVERT carrier
+held behind `R3V_NATIVE_COMPUTE_BITWISE_NOT_GPU_EXPERIMENTAL` until the ROP
+truth-table probe runs. The identity map is the other verb whose CPU route
+executes, and the one whose GPU route executes: under the compute gate and its own exact gate
 `R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL=1`, a dispatch of whole F32_4
 records (at most 1024, input and output in distinct buffer objects, input
 offset dword-granular, output offset 32-byte aligned, every input word

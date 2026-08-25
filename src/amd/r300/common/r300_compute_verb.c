@@ -87,6 +87,16 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
        NONE, ZB_STENCIL, BIT_EXACT, 0.0f,
        ABSENT, ABSENT, SILICON_RETAINED, RASTER_CELL,
        "R3V_NATIVE_COMPUTE_STENCIL_INVERT_GPU_EXPERIMENTAL"),
+   /* The word complement is exact in every bit, so the host executor
+    * realizes it outright and the row's evidence is that executor.
+    * The ROP INVERT carrier the RB3D ROP domain names still awaits its
+    * truth-table probe, so the GPU route stays absent and the unit is
+    * the host.
+    */
+   ROW(BITWISE_NOT_MAP, "bitwise_not_map", BITWISE_NOT_MAP, NONE, NONE,
+       LINEAR, HOST, BIT_EXACT, 0.0f,
+       EXECUTING, ABSENT, HOST, HOST_EXECUTOR,
+       "R3V_NATIVE_COMPUTE_BITWISE_NOT_GPU_EXPERIMENTAL"),
 };
 
 #undef ROW
@@ -157,6 +167,8 @@ r300_compute_verb_for_job(const struct r300_compute_job *job)
    switch ((enum r300_compute_job_op)job->op) {
    case R300_COMPUTE_JOB_OP_IDENTITY:
       return &rows[R300_COMPUTE_VERB_IDENTITY_MAP];
+   case R300_COMPUTE_JOB_OP_BITWISE_NOT:
+      return &rows[R300_COMPUTE_VERB_BITWISE_NOT_MAP];
    }
    return NULL;
 }

@@ -30,6 +30,11 @@ enum r300_compute_job_op {
     * over 32-bit elements.
     */
    R300_COMPUTE_JOB_OP_IDENTITY = 0,
+
+   /* out[i] = ~in[i] for each flattened invocation i: the bitwise
+    * complement of the 32-bit element, every bit flipped.
+    */
+   R300_COMPUTE_JOB_OP_BITWISE_NOT = 1,
 };
 
 /* One admitted compute kernel: the op, the two storage-buffer bindings
