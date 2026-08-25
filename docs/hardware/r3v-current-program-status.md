@@ -19,7 +19,7 @@ commit whose state a revision of this table describes.
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
 | `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
 | `vostro1000-re` | `30e6c02e64` | docs/rank-content-description-precondition (PR #664) |
-| `deqp-vk-fork` | `43c65c132` | r3v/rename-retired-r300vk-spelling |
+| `deqp-vk-fork` | `43c65c132` | r3v: retire the pre-rename driver spelling from the fork |
 
 The Mesa head is the source SHA the latest target receipts declare
 (`00e3c5dd25d` at run time, advanced by `59b77649a80` without a rebuild
@@ -44,9 +44,16 @@ box-side run.
 ## Active conformance partition
 
 `src/amd/r300/vulkan/tests/r3v_conformance_partition.tsv` is the
-exact-cover partition of the pinned Vulkan 1.0 mustpass corpus: 19 slices,
-3,251,483 cases, 1,542,801 executable. `r3v_conformance_slices.tsv` orders
-the first eleven by hazard:
+exact-cover partition of the pinned Vulkan 1.0 mustpass corpus: 21 slices,
+3,251,483 cases, 3,251,483 executable. Every group's CTS source now
+resolves to a hazard: `submission` when the group's dEQP-VK module
+reaches `vk::queueSubmit`, `vk::queueSubmit2`, or `submitCommandsAndWait`
+on any path (a group entirely gated by an unadvertised extension still
+takes `submission` when its file carries a reachable submit site,
+fail-closed conservative), `none` with `host-model` evidence when the
+group only queries properties, features, or object-management state and
+never submits. `r3v_conformance_slices.tsv` orders the first eleven by
+hazard:
 
 | Order | Slice | Hazard | Evidence class | Target state |
 |---|---|---|---|---|
@@ -68,10 +75,14 @@ refuses decision grade. The machine-readable frontier over the 19
 slices -- counts, hazard, evidence status, blocking non-pass classes
 joined to their ledger rows, and the next admitting mechanism -- is
 `steinmarder-r300/src/re/r300/corpora/rs482_r3v_conformance_frontier_v1/frontier.jsonl`,
-regenerated from this partition, the ledger, and the retained bundles. The eight slices after the eleventh
-(`api-unclassified`, `feature-extensions`, `memory-unclassified`,
-`pipeline-monolithic`, `pipeline-variants`, `robustness-extended`,
-`shader-execution`, `wsi-presentation`) carry no target run.
+regenerated from this partition, the ledger, and the retained bundles;
+the frontier's 19-slice shape predates the `api-query-surface` and
+`memory-query-surface` split and regenerates to 21 rows on its next
+run. The ten slices after the eleventh (`api-unclassified`,
+`api-query-surface`, `feature-extensions`, `memory-unclassified`,
+`memory-query-surface`, `pipeline-monolithic`, `pipeline-variants`,
+`robustness-extended`, `shader-execution`, `wsi-presentation`) carry no
+target run.
 
 Under closed submission gates no case in slices 6-10 reaches an IB: the
 per-case status of every silicon shard equals its drm-shim host-model

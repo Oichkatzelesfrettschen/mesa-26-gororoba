@@ -504,8 +504,9 @@ unavailable` in stderr, a host artifact the rerun of those cases alone
 resolves.
 
 `tests/r3v_conformance_partition.tsv` is the exhaustive partition of
-the pinned mustpass corpus (3,251,483 cases, of which 1,542,801 sit in
-executable slices; the rest wait in blocked slices):
+the pinned mustpass corpus (3,251,483 cases in 21 slices, all executable
+once every group's CTS source resolved to a `none` or `submission`
+hazard):
 `tests/r3v_conformance_partition.py` reads every corpus file once, assigns each
 case to the one slice whose group prefixes it, and refuses an uncovered
 case, a case two slices claim, a group claiming nothing, and a case a

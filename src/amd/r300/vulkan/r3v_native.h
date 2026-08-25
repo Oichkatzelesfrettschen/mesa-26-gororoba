@@ -661,6 +661,8 @@ int r3v_native_plan_entry_from_submission(
    const uint32_t *reference_indices, uint32_t completion_index,
    uint64_t completion_size);
 bool r3v_native_plan_capture_host_model_present(void);
+int r3v_native_plan_capture_mark_empty(
+   const struct r3v_native_plan_capture *capture);
 int r3v_native_plan_capture_init(struct r3v_native_plan_capture *capture,
                                  const char *path);
 void r3v_native_plan_capture_finish(struct r3v_native_plan_capture *capture);
