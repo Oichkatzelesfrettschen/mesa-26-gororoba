@@ -209,7 +209,12 @@ int r300_tcl_bypass_triangle_family_emit(
 #define R300_TRIANGLE_TARGET_WIDTH 64u
 #define R300_TRIANGLE_TARGET_HEIGHT 64u
 #define R300_TRIANGLE_TARGET_PITCH_PIXELS 64u
-#define R300_TRIANGLE_ALLOCATION_ROWS 65u
+/* One row past the render extent, the row the output oracle reads as its
+ * canary.
+ */
+#define R300_TRIANGLE_CANARY_ROWS 1u
+#define R300_TRIANGLE_ALLOCATION_ROWS \
+   (R300_TRIANGLE_TARGET_HEIGHT + R300_TRIANGLE_CANARY_ROWS)
 #define R300_TRIANGLE_COLOR_BYTES \
    (R300_TRIANGLE_TARGET_PITCH_PIXELS * R300_TRIANGLE_ALLOCATION_ROWS * 4u)
 
@@ -367,7 +372,11 @@ struct r300_triangle_render_shape {
    /* Render extent in pixels, 1..R300_TRIANGLE_RENDER_MAX_EXTENT. */
    uint32_t width;
    uint32_t height;
-   /* Row pitch in pixels: even, >= width, <= the extent ceiling. */
+   /* Row pitch in pixels: >= width, <= the extent ceiling, and a multiple
+    * of 8, the linear 32-bpp width alignment r300g's surface layout
+    * emits (r300_get_pixel_alignment, DIM_WIDTH, src/gallium/drivers/
+    * r300/r300_texture_desc.c).
+    */
    uint32_t pitch_pixels;
    enum r300_triangle_lane_order lanes;
    /* The fragment constant as four IEEE-754 binary32 bit patterns,
@@ -375,7 +384,10 @@ struct r300_triangle_render_shape {
     * unchanged), so the register word is the value the oracle predicts.
     */
    uint32_t color_bits[4];
-   /* 1..R300_TRIANGLE_MAX_TRIANGLES, as r300_tcl_bypass_triangle_family_emit. */
+   /* Pinned to 1: r300_tcl_bypass_triangle_render_shape_vertices writes
+    * one triangle's three records regardless of this field, so a value
+    * other than 1 would claim a draw the vertex writer never produces.
+    */
    uint32_t triangle_count;
 };
 

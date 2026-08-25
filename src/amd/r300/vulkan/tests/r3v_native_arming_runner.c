@@ -131,13 +131,14 @@ report(const char *factor, const char *declared, const char *observed)
           state);
 }
 
-/* Writes the reference cell's serialized bytes, the independent
- * comparison source for a recorded-IB manifest: the emission is the
- * direct reference construction, so equality with a retained ib.bin
- * proves the recording route reproduced the qualified cell.
+/* Writes the selected cell's serialized bytes -- reference cell, varying
+ * cell, compute identity carrier, or render shape, per cell_words -- the
+ * independent comparison source for a recorded-IB manifest: the emission
+ * is the direct reference construction, so equality with a retained
+ * ib.bin proves the recording route reproduced the qualified cell.
  */
 static int
-emit_reference_ib(const char *path)
+emit_selected_ib(const char *path)
 {
    uint32_t *words = NULL;
    uint32_t count = 0;
@@ -229,7 +230,7 @@ main(int argc, char **argv)
    }
 
    if (argc == argi + 2 && strcmp(argv[argi], "--emit-ib") == 0)
-      return emit_reference_ib(argv[argi + 1]);
+      return emit_selected_ib(argv[argi + 1]);
 
    if (cell_width != R300_TRIANGLE_TARGET_WIDTH ||
        cell_height != R300_TRIANGLE_TARGET_HEIGHT) {

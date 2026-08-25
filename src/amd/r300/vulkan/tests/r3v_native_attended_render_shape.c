@@ -300,9 +300,13 @@ main(int argc, char **argv)
           verdict.exterior_samples);
    /* The centroid pixel, the corner, and the first canary-row pixel:
     * one sample per oracle region, so a deviation names its region.
+    * (cx, cy) is the true centroid of the NDC reference triangle
+    * (triangle_geometry_at) mapped through the viewport transform to
+    * the shape's extent: width/2 horizontally, (height * 3) / 8
+    * vertically.
     */
    const uint32_t *pixels = color_map;
-   const uint32_t cx = shape.width / 2, cy = (shape.height * 5) / 12;
+   const uint32_t cx = shape.width / 2, cy = (shape.height * 3) / 8;
    printf("[oracle] centroid (%u,%u)=0x%08x predicted 0x%08x exterior "
           "(0,0)=0x%08x canary row=0x%08x\n",
           cx, cy, pixels[cy * shape.pitch_pixels + cx], predicted_dword,
