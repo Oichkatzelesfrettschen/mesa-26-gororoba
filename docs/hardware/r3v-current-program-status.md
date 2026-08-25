@@ -66,7 +66,7 @@ hazard:
 | 7 | transfer | submission | silicon | shut-gate silicon run, 589/309,726/6 |
 | 8 | draw | submission | silicon | shut-gate silicon run, 0/39,595/371 |
 | 9 | synchronization | submission | silicon | shut-gate silicon run, 211/64,382/278 |
-| 10 | robustness | submission | silicon | shut-gate silicon run, 0/1,101/111 |
+| 10 | robustness | submission | silicon | shut-gate silicon run, 0/1,101/111; host-planning pass: 1,212/1,212 `no_nonempty_ib`, nothing to replay |
 | 11 | wsi | display | silicon | open |
 
 Counts read Pass/NotSupported/Fail. Every Fail is classified against
@@ -109,6 +109,20 @@ The preceding receipts are `r3v-command-slice-first-target-run-rs482`
 (seal `faeb93f267cc`, same source and DSO) and
 `r3v-hazard-free-conformance-slices-first-target-run-rs482` (seal
 `638e57a44286`, Mesa `d78bf73c847`, DSO `60e1c7d28216...a263a`).
+
+## Latest host-planning receipt
+
+| Field | Value |
+|---|---|
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-robustness-slice-host-planning-pass-workstation` |
+| Finding | `src/re/r300/findings/active/2026-08-25-r3v-robustness-slice-host-planning-pass.md` |
+| Verdict | `classified_nonpass`, `decision_grade` false, `evidence_class` host-planning |
+| Source | Mesa `fb709b391ec5`, clean tree, build-tree DSO `8e5492954a6c...` |
+| Outcomes | `no_nonempty_ib` 1,212 of 1,212 (138 cases create a second device), 0 transcripts |
+| CS witness | 0 `DRM_IOCTL_RADEON_CS` at the syscall boundary in 1,212 per-case straces |
+
+The robustness slice therefore has no plan to compose or replay; its next
+mechanism is the compute recognizer shape below.
 
 ## DSO and queue-claim modes
 
@@ -164,7 +178,7 @@ P0 (blocks the next target run):
 
 P1 (host-model rungs that move classified rows without a new gate):
 
-- the compute recognizer index-from-UBO shape (111 robustness cases);
+- the compute recognizer index-from-UBO shape (111 robustness cases; the host-planning pass proves no robustness case reaches an IB before it);
 - `pipeline_barrier_executing_route_gap` (100 cases) needs secondary
   command buffers, image blit, or sampled/storage-image admission, each a
   larger mechanism than an image cell;
