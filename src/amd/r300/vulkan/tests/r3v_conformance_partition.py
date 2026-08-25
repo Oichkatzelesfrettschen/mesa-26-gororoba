@@ -353,6 +353,52 @@ def slice_for_caselist(manifest, caselist_path):
                            "digest")
 
 
+def bind_caselist(manifest_path, manifest, caselist_path):
+    """The slice, shard, and subset identity a caselist binds to.  A
+    caselist whose digest equals a shard's binds as that whole shard
+    (subset None).  Otherwise every case of the caselist must belong to
+    one shard of the verified manifest, and the caselist binds as a
+    proper subset of that shard: a one-case planning or replay run keeps
+    the slice's hazard, evidence requirement, and corpus identity while
+    the receipt records the subset's own count and digest.  An empty
+    caselist, a duplicated case, a case outside every shard, and a
+    caselist spanning two shards each refuse by name; the shard files
+    are read beside the manifest, whose verification already proved
+    their digests."""
+    try:
+        return (*slice_for_caselist(manifest, caselist_path), None)
+    except PartitionRefusal:
+        pass
+    lines = [x for x in Path(caselist_path).read_text().splitlines() if x]
+    if not lines:
+        raise PartitionRefusal(f"{caselist_path} is empty")
+    if len(set(lines)) != len(lines):
+        raise PartitionRefusal(f"{caselist_path} repeats a case")
+    wanted = set(lines)
+    root = Path(manifest_path).parent
+    owner = None
+    for s in manifest["slices"]:
+        for sh in s.get("shards", []):
+            members = set(x for x in (root / sh["caselist"]).read_text()
+                          .splitlines() if x)
+            hit = wanted & members
+            if not hit:
+                continue
+            if owner is not None:
+                raise PartitionRefusal(
+                    f"{caselist_path} spans shards "
+                    f"{owner[1]['caselist']} and {sh['caselist']}")
+            owner = (s, sh)
+            wanted -= hit
+    if owner is None or wanted:
+        stray = sorted(wanted)[0] if wanted else lines[0]
+        raise PartitionRefusal(f"{caselist_path}: case {stray} is outside "
+                               "every manifest shard")
+    subset = {"case_count": len(lines),
+              "caselist_sha256": sha256_file(caselist_path)}
+    return owner[0], owner[1], subset
+
+
 def report(manifest):
     print(f"{manifest['kind']} partition: {manifest['corpus_case_count']} "
           f"corpus cases, {manifest['covered_case_count']} covered in "
@@ -448,6 +494,40 @@ def selftest():
                "at least 1")
         expect(lambda: slice_for_caselist(v, corpus / "a.txt"),
                "matches no manifest shard")
+        # A subset of one shard binds to that shard with its own count
+        # and digest; a whole shard binds with no subset; an empty, a
+        # repeated, a stray, and a shard-spanning caselist each refuse.
+        sub = d / "sub.txt"
+        sub.write_text("dEQP-VK.api.smoke.triangle\n")
+        bs, shs, subset = bind_caselist(
+            out / "partition_manifest.json", v, sub)
+        if bs["slice"] != "api" or shs["index"] != 0 or \
+                subset != {"case_count": 1,
+                           "caselist_sha256": sha256_file(sub)}:
+            raise SystemExit("selftest: subset did not bind to its shard")
+        if bind_caselist(out / "partition_manifest.json", v,
+                         out / "api.txt")[2] is not None:
+            raise SystemExit("selftest: a whole shard bound as a subset")
+        sub.write_text("")
+        expect(lambda: bind_caselist(out / "partition_manifest.json", v,
+                                     sub), "is empty")
+        sub.write_text("dEQP-VK.api.smoke.triangle\n"
+                       "dEQP-VK.api.smoke.triangle\n")
+        expect(lambda: bind_caselist(out / "partition_manifest.json", v,
+                                     sub), "repeats a case")
+        sub.write_text("dEQP-VK.api.smoke.triangle\ndEQP-VK.nowhere\n")
+        expect(lambda: bind_caselist(out / "partition_manifest.json", v,
+                                     sub), "outside every manifest shard")
+        sub.write_text("dEQP-VK.api.smoke.triangle\ndEQP-VK.info.build\n")
+        expect(lambda: bind_caselist(out / "partition_manifest.json", v,
+                                     sub), "spans shards")
+        # Under the sharded manifest the two smoke cases sit in different
+        # shards (api.0001.txt is tampered above, so the triangle sits in
+        # no shard on disk and the pair refuses as stray).
+        sub.write_text("dEQP-VK.api.smoke.asm\ndEQP-VK.api.smoke.triangle\n")
+        expect(lambda: bind_caselist(
+            out / "sharded" / "partition_manifest.json", vs, sub),
+            "outside every manifest shard")
         if (out / "api.txt").read_text() != \
                 "dEQP-VK.api.smoke.asm\ndEQP-VK.api.smoke.triangle\n":
             raise SystemExit("selftest: caselist is not the sorted slice")
