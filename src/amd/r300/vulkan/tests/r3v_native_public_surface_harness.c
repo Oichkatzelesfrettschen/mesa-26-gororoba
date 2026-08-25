@@ -188,7 +188,7 @@ check_timeline_wait_consumption(void)
    f(vkCmdClearAttachments) f(vkCmdSetViewport) f(vkCmdSetScissor)          \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
-   f(vkCmdCopyImageToBuffer)                                               \
+   f(vkCmdCopyImageToBuffer) f(vkCmdFillBuffer)                            \
    f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
    f(vkCreateFence) f(vkDestroyFence) f(vkGetFenceStatus)                   \
    f(vkWaitForFences) f(vkCreateSemaphore) f(vkDestroySemaphore)            \
@@ -1990,7 +1990,13 @@ main(void)
                                  .pCommandBuffers = &ordered_cmd,
                               },
                               VK_NULL_HANDLE) == VK_SUCCESS);
-         assert(native_device->drm.cache_sync_count > ordered_sync_before);
+         /* Nine syncs: each of the three copies establishes its two
+          * mappings, each of the two render-target reads invalidates its
+          * source, and the load-op clear publishes the target.  The count
+          * is exact, so a dropped source invalidate lands at seven.
+          */
+         assert(native_device->drm.cache_sync_count ==
+                ordered_sync_before + 9);
 
          uint32_t *readback_map = NULL;
          assert(vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0,
@@ -3257,42 +3263,12 @@ main(void)
       wide_begin.renderPass = wide_pass;
       wide_begin.framebuffer = wide_framebuffer;
       wide_begin.renderArea = (VkRect2D){ .extent = { wide, wide } };
-      VkCommandBuffer wide_cmd = fresh_cmd();
-      vkCmdBeginRenderPass(wide_cmd, &wide_begin,
-                           VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(wide_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        wide_pipeline);
-      vkCmdBindVertexBuffers(wide_cmd, 0, 1, &vertex_buffer,
-                             &(VkDeviceSize){ 0 });
-      vkCmdDraw(wide_cmd, 3, 1, 0, 0);
-      vkCmdEndRenderPass(wide_cmd);
-      assert(vkEndCommandBuffer(wide_cmd) == VK_SUCCESS);
-
-      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_wide, wide_cmd);
-      struct r300_triangle_render_shape wide_shape;
-      r300_tcl_bypass_triangle_render_shape_reference(&wide_shape);
-      wide_shape.width = wide;
-      wide_shape.height = wide;
-      wide_shape.pitch_pixels = wide_pitch_bytes / 4;
-      wide_shape.lanes = R300_TRIANGLE_LANES_R8G8B8A8;
-      wide_shape.color_bits[0] = 0;
-      wide_shape.color_bits[1] = 0x3f000000u;
-      wide_shape.color_bits[2] = 0;
-      wide_shape.color_bits[3] = 0x3f000000u;
-      struct r300_tcl_bypass_triangle_ib wide_expected;
-      assert(r300_tcl_bypass_triangle_render_shape_emit(
-                &wide_shape, &wide_expected) == 0);
-      assert(native_wide->ib_size_dwords == wide_expected.ib_size_dwords);
-      assert(memcmp(native_wide->ib, wide_expected.ib,
-                    wide_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
-      r300_tcl_bypass_triangle_release(&wide_expected);
-
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
-                native_device, native_wide) == VK_SUCCESS);
-
       /* Readback through the transfer bit the render family carries:
        * one row of the target lands in a buffer, and the bytes are the
-       * deferred clear's sentinel because no device wrote here.
+       * deferred clear's sentinel because no device wrote here.  The
+       * buffer is created ahead of the recording so the same command
+       * buffer can carry a fill before the pass and the readback after
+       * it.
        */
       VkDeviceMemory readback_memory = VK_NULL_HANDLE;
       assert(vkAllocateMemory(device,
@@ -3316,9 +3292,26 @@ main(void)
       assert(vkBindBufferMemory(device, readback_buffer, readback_memory,
                                 0) == VK_SUCCESS);
 
-      VkCommandBuffer copy_cmd = fresh_cmd();
+      /* One draw-carrying command buffer holds both groups: the fill
+       * ahead of the pass and the render-target readback after it.  The
+       * groups execute in the queue's order below, so the readback row
+       * carries the clear the draw published rather than the fill
+       * pattern a reversed order would leave.
+       */
+      const uint32_t fill_pattern = 0xdeadbeefu;
+      VkCommandBuffer wide_cmd = fresh_cmd();
+      vkCmdFillBuffer(wide_cmd, readback_buffer, 0, VK_WHOLE_SIZE,
+                      fill_pattern);
+      vkCmdBeginRenderPass(wide_cmd, &wide_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(wide_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        wide_pipeline);
+      vkCmdBindVertexBuffers(wide_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(wide_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(wide_cmd);
       vkCmdCopyImageToBuffer(
-         copy_cmd, wide_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         wide_cmd, wide_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
          readback_buffer, 1,
          &(VkBufferImageCopy){
             .imageSubresource =
@@ -3328,11 +3321,54 @@ main(void)
                },
             .imageExtent = { wide, 1, 1 },
          });
-      assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
-      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_copy, copy_cmd);
+      assert(vkEndCommandBuffer(wide_cmd) == VK_SUCCESS);
+
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_wide, wide_cmd);
+      struct r300_triangle_render_shape wide_shape;
+      r300_tcl_bypass_triangle_render_shape_reference(&wide_shape);
+      wide_shape.width = wide;
+      wide_shape.height = wide;
+      wide_shape.pitch_pixels = wide_pitch_bytes / 4;
+      wide_shape.lanes = R300_TRIANGLE_LANES_R8G8B8A8;
+      wide_shape.color_bits[0] = 0;
+      wide_shape.color_bits[1] = 0x3f000000u;
+      wide_shape.color_bits[2] = 0;
+      wide_shape.color_bits[3] = 0x3f000000u;
+      struct r300_tcl_bypass_triangle_ib wide_expected;
+      assert(r300_tcl_bypass_triangle_render_shape_emit(
+                &wide_shape, &wide_expected) == 0);
+      assert(native_wide->ib_size_dwords == wide_expected.ib_size_dwords);
+      assert(memcmp(native_wide->ib, wide_expected.ib,
+                    wide_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
+      r300_tcl_bypass_triangle_release(&wide_expected);
+
+      /* Copies are host-only, so the recorded IB is the cell the render
+       * shape emits whichever group the buffer carries.
+       */
+      assert(native_wide->deferred_copy_count == 2);
+      assert(native_wide->deferred_copies[0].group ==
+             R3V_NATIVE_COPY_GROUP_BEFORE_DRAW);
+      assert(native_wide->deferred_copies[1].group ==
+             R3V_NATIVE_COPY_GROUP_AFTER_DRAW);
+
+      /* The queue's order on the transport path: pre-draw group, the
+       * deferred draw, post-draw group.
+       */
       assert(r3v_native_cmd_buffer_execute_deferred_copies(
-                native_device, native_copy,
+                native_device, native_wide,
                 R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) == VK_SUCCESS);
+      uint32_t *fill_map = NULL;
+      assert(vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&fill_map) == VK_SUCCESS);
+      assert(fill_map[0] == fill_pattern);
+      vkUnmapMemory(device, readback_memory);
+
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_wide) == VK_SUCCESS);
+
+      assert(r3v_native_cmd_buffer_execute_deferred_copies(
+                native_device, native_wide,
+                R3V_NATIVE_COPY_GROUP_AFTER_DRAW) == VK_SUCCESS);
 
       uint32_t *readback_map = NULL;
       assert(vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0,
