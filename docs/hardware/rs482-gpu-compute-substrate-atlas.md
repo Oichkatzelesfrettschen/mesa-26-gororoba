@@ -305,7 +305,13 @@ per-channel swizzle on the fetch (`rs482_gfx_3_0_0.reg`; known(source)). Per-axi
 address mode comes from `CLAMP_S`, `CLAMP_T`, and `CLAMP_R` in `TX_FILTER0_n`.
 The kernel's own format table bounds what reaches silicon: 1, 2, 4, 8, and 16
 bytes per texel across the named codes, with `FL_R32G32B32A32` at 16 and
-`FL_I32` at 4 (`r300.c:r300_packet0_check`; known(source)).
+`FL_I32` at 4 (`r300.c:r300_packet0_check`; known(source)). The two compressed
+formats split by layer: ATI1N rides `TX_FORMAT2` bit 14, which the `>=
+CHIP_RV515` gate rejects outright on this chip, while ATI2N clears the `>=
+CHIP_R420` gate and the validator admits it. Mesa's own texture-format surface
+still marks ATI2N experimental, so that restriction is a driver decision rather
+than a validator rejection (steinmarder `r300_texture_format_surface.tsv`;
+known(source)).
 
 Sixteen texture units exist across the family
 (`r300_chipset.c`; known(source)). Dimension ceilings separate by role: the
@@ -684,10 +690,10 @@ splitting into limbs a unit does hold, rather than by a native datapath.
 
 | Type | fetch (VAP) | sample (TX) | ALU (US) | interpolate (RS) | reduce/blend (CB) | logic (ROP) | count/compare (ZB) | carry (R2VB) |
 |---|---|---|---|---|---|---|---|---|
-| int/uint 1 | `DATA_TYPE` decode into a 0/1 float, exact, known(source) | LUT texel, exact, known(source) | CMP/CND select on a 0/1 value, exact, silicon | affine blend of 0/1 is not boolean, none | blend MIN/MAX act as AND/OR on 0/1, exact, silicon | any of 16 ops on the low bit; XOR silicon, rest hypothesized | stencil compare and `KIL` predicate, exact, silicon | `R2VB_BOOL1`, exact, known(source) |
+| int/uint 1 | `DATA_TYPE` decode into a 0/1 float, exact, known(source) | LUT texel, exact, known(source) | CMP/CND select on a 0/1 value, exact, silicon | affine blend of 0/1 is not boolean, none | MIN and MAX are silicon-confirmed reductions; reading them as AND and OR on 0/1 payloads is unprobed, hypothesized | any of 16 ops on the low bit; XOR silicon, rest hypothesized | stencil compare and `KIL` predicate, exact, silicon | `R2VB_BOOL1`, exact, known(source) |
 | int/uint 4 | packed in a wider element, exact, known(source) | `Y4X4` and `W4Z4Y4X4` texels, exact, known(source) | exact inside the FP24 window, silicon | none | `C2_4` target range, clamped, known(source) | nibble lanes of the target word, XOR silicon | none | packed inside the SINT/UINT carry, exact, known(source) |
 | int/uint 8 | `BYTE` and `D3DCOLOR` with signed and normalize flags, exact, known(source) | UNORM8 texels bilerped at 6-bit weight, biased rounding, silicon | exact inside the FP24 window; DP4 exact to the 7-bit limb (`U7_DOT`, `I8_MAG_DOT`), 8-bit 4-term dots go off-grid above 2^17, silicon | affine MAC, width uncharacterized, hypothesized | ADD, SUB clamp, MIN, MAX on the 8-bit target range, silicon | full-word logic on 8-bit channels; XOR silicon, rest hypothesized | 8-bit stencil automaton; INCR silicon, INVERT and DECR and wrap hypothesized | inside the SINT/UINT carry, exact, known(source) |
-| int/uint 16 | `SHORT_2` and `SHORT_4`, exact, known(source) | `X16` and `Y16X16` texels, exact, known(source) | exact inside the FP24 window; `Q16_16` two-limb add exact since `2*(2^16-1)+1 < 2^17`, silicon for the MAC path | none | 10-bit-per-channel integer target ceiling bounds it, known(source) | `C_11_11_10` and `C_2_10_10_10` channel widths, XOR silicon | none | inside the SINT/UINT carry to 131072, exact, known(source) |
+| int/uint 16 | `SHORT_2` and `SHORT_4`, exact, known(source) | `X16` and `Y16X16` texels, exact, known(source) | exact inside the FP24 window; `Q16_16` two-limb add exact since `2*(2^16-1)+1 < 2^17`, carrier pending; the base-16 MAC path is silicon | none | 10-bit-per-channel integer target ceiling bounds it, known(source) | `C_11_11_10` and `C_2_10_10_10` channel widths, XOR silicon | none | inside the SINT/UINT carry to 131072, exact, known(source) |
 | int/uint 24 | packed in a 32-bit element, exact, known(source) | `Z11Y11X10` and `W2Z10Y10X10` approximate it, known(source) | above the exact window; composition through 7-bit limbs, silicon | none | none | 24 bits of the target word, XOR silicon | none | exceeds the 131072 carry bound, declines, known(source) |
 | int/uint 32 | `FLOAT_4` word transport, exact, silicon | `FL_I32` and `FL_R32G32B32A32` texels, exact, silicon | composition: five 7-bit limbs through `U7_CONV5`, `MULTILIMB7_U32_MUL` bit-exact for `0xFFFFFFFF` squared, silicon | none | none | 32-bit target word; XOR silicon, rest hypothesized | none | word transported through FP32x4, exact, silicon; typed carry declines above 131072 |
 | int/uint 64 | none | none | composition of 32-bit limb products through the same column law, hypothesized | none | none | none | none | none |
