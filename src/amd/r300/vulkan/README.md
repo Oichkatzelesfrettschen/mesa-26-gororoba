@@ -465,6 +465,23 @@ an IB and `r3v_native_plan_capture_record` sees only command buffers
 whose `ib_size_dwords` the cell emitters set.  A target run of that
 slice therefore submits nothing under closed gates.
 
+The `transfer`, `draw`, `synchronization`, and `robustness` slices
+capture nothing either: over all 416,370 cases in their 23 shards, run
+one process per case under the drm-shim with capture declared, zero
+transcripts carry an entry, and a closed-gate target run of the same
+shards on RS482 reproduces the host model's status on every case
+(0 of 24,206 witnessed ioctls are `DRM_IOCTL_RADEON_CS`).  Two recipe
+facts from those passes: the transcript path is bounded by
+`R3V_NATIVE_PLAN_PATH_MAX` (255 bytes) including the case name a
+`{case}` template appends and the `.N` ordinal a second device adds, so
+the capture root stays short (a 268-byte path refuses at device
+creation as `VK_ERROR_INITIALIZATION_FAILED` from the first case whose
+name crosses the ceiling); and a per-case pass forks one dEQP process
+per case, so several passes side by side on one host exhaust the
+process budget and leave cases `not_run` with `Resource temporarily
+unavailable` in stderr, a host artifact the rerun of those cases alone
+resolves.
+
 `tests/r3v_conformance_partition.tsv` is the exhaustive partition of
 the pinned mustpass corpus (3,251,483 cases, of which 1,542,801 sit in
 executable slices; the rest wait in blocked slices):
