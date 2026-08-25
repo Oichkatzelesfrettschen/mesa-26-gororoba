@@ -181,8 +181,22 @@ enum r3v_native_copy_kind {
    R3V_NATIVE_COPY_UPDATE_BUFFER,
 };
 
+/* A copy's position relative to the command buffer's deferred draw,
+ * fixed at record time from deferred_draw.pending: a copy recorded
+ * before the pass begins belongs to the pre-draw group the queue
+ * executes ahead of the load-op clear and the IB, and a copy recorded
+ * once the pass carries its draw record belongs to the post-draw group
+ * the queue executes after the completion wait, where a read of the
+ * render target observes the device output.
+ */
+enum r3v_native_copy_group {
+   R3V_NATIVE_COPY_GROUP_BEFORE_DRAW,
+   R3V_NATIVE_COPY_GROUP_AFTER_DRAW,
+};
+
 struct r3v_native_deferred_copy {
    enum r3v_native_copy_kind kind;
+   enum r3v_native_copy_group group;
    struct r3v_native_buffer *buffer;
    struct r3v_native_buffer *src_buffer;
    struct r3v_native_buffer *dst_buffer;
@@ -570,11 +584,11 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_memory *owned_slot;
    struct r3v_native_deferred_draw deferred_draw;
-   /* Recorded transfer copies, executed in order at submission through
-    * host mappings of the bound memory.  A command buffer carries
-    * either the qualified render pass or transfer copies; the
-    * recording refuses the mix, so execution order between the two
-    * never arises.
+   /* Recorded transfer copies, executed in recorded order at submission
+    * through host mappings of the bound memory.  Each copy carries the
+    * group its record position places it in, so a command buffer holding
+    * the qualified render pass and copies executes the pre-draw group,
+    * then the clear and the IB, then the post-draw group.
     */
    /* Command-pool storage grows with the recorded operation count and is
     * released by r3v_native_cmd_buffer_release_recording.
@@ -1343,13 +1357,16 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
  * and sentinel-clears the target image's declared memory footprint, each
  * published for the unsnooped GART while its mapping is live.
  */
-/* Executes the command buffer's recorded transfer copies in order at
- * submission, each through host mappings of the bound memory with the
- * destination published for the unsnooped GART.
+/* Executes one group of the command buffer's recorded transfer copies in
+ * recorded order, each through host mappings of the bound memory with the
+ * destination published for the unsnooped GART.  The queue calls it once
+ * per group around the deferred draw, so a post-draw copy reading the
+ * render target maps and invalidates after the completion wait.
  */
 VkResult r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_device *device,
-   struct r3v_native_cmd_buffer *cmd_buffer);
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   enum r3v_native_copy_group group);
 
 VkResult r3v_native_cmd_buffer_execute_deferred_draw(
    struct r3v_native_device *device,

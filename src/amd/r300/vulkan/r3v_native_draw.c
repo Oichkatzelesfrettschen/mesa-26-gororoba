@@ -40,7 +40,8 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    /* The bounded contract is one pass with at most one draw per command
     * buffer; a second pass would need a second clear and draw lowering the
     * cell does not carry, so it refuses instead of recording a pass whose
-    * load op never executes.
+    * load op never executes.  Copies already recorded are the pre-draw
+    * group the queue executes ahead of this pass, so they stand.
     */
    /* An active occlusion query's zero count is exact only while no
     * fragment-producing span records, so the pass refuses inside one.
@@ -48,7 +49,6 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
        cmd_buffer->active_query_pool != NULL ||
        cmd_buffer->deferred_draw.pending ||
-       cmd_buffer->deferred_copy_count != 0 ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
        framebuffer->layers != 1 || framebuffer->attachment_count != 1) {
