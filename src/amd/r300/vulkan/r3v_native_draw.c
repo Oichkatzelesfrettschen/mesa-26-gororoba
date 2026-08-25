@@ -77,12 +77,15 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    /* The framebuffer and render area name the attached image's own
     * extent in full: the load-op clear realizes over the image
     * footprint, so a partial render area would clear more than it
-    * declares.
+    * declares.  The pass's attachment format names the lane order the
+    * cell emits into US_OUT_FMT_0, so it holds equal to the attached
+    * image's own format.
     */
    VK_FROM_HANDLE(r3v_native_image_view, view, framebuffer->attachments[0]);
    const VkRect2D *area = &pRenderPassBegin->renderArea;
    if (view == NULL || view->image == NULL ||
        view->image->memory == NULL ||
+       pass->attachments[0].format != view->image->format ||
        framebuffer->width != view->image->width ||
        framebuffer->height != view->image->height ||
        area->offset.x != 0 || area->offset.y != 0 ||
@@ -98,8 +101,8 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
       .pending = true,
       .target_memory = view->image->memory,
-      .target_fill_bytes =
-         r3v_native_image_footprint_bytes(view->image->height),
+      .target_fill_bytes = r3v_native_render_footprint_bytes(
+         view->image->row_pitch_bytes, view->image->height),
       .target_width = view->image->width,
       .target_height = view->image->height,
    };
@@ -222,7 +225,8 @@ stream_overlaps_target(const struct r3v_native_memory *memory, uint64_t lo,
       return false;
    const uint64_t target_lo = target->memory_offset;
    const uint64_t target_hi =
-      target_lo + r3v_native_image_footprint_bytes(target->height);
+      target_lo + r3v_native_render_footprint_bytes(target->row_pitch_bytes,
+                                                   target->height);
    return lo < target_hi && target_lo < lo + bytes;
 }
 
@@ -326,8 +330,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       claim_height = scissor->extent.height;
       if (!cmd_buffer->viewport_set || !cmd_buffer->scissor_set ||
           scissor->offset.x != 0 || scissor->offset.y != 0 ||
-          claim_width < 1 || claim_width > R3V_NATIVE_TARGET_WIDTH ||
-          claim_height < 1 || claim_height > R3V_NATIVE_TARGET_HEIGHT ||
+          claim_width < 1 || claim_width > R3V_NATIVE_RENDER_MAX_EXTENT ||
+          claim_height < 1 || claim_height > R3V_NATIVE_RENDER_MAX_EXTENT ||
           viewport->x != 0.0f || viewport->y != 0.0f ||
           viewport->width != (float)claim_width ||
           viewport->height != (float)claim_height ||
@@ -453,7 +457,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
       pipeline->varying,
-      (args->vertex_count / 3) * args->instance_count);
+      (args->vertex_count / 3) * args->instance_count,
+      pipeline->color_bits);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
@@ -481,8 +486,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
-      .target_fill_bytes =
-         r3v_native_image_footprint_bytes(cmd_buffer->pass_target->height),
+      .target_fill_bytes = r3v_native_render_footprint_bytes(
+         cmd_buffer->pass_target->row_pitch_bytes,
+         cmd_buffer->pass_target->height),
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
    };

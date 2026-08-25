@@ -1,9 +1,9 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Native R3V image surface: the qualified linear render-target family
- * with its identity view, and the transfer family, which executes one
- * linear layout under either VK_IMAGE_TILING_LINEAR or
+ * Native R3V image surface: the render-shape target family with its
+ * identity view, and the transfer family.  Both execute one linear
+ * layout under either VK_IMAGE_TILING_LINEAR or
  * VK_IMAGE_TILING_OPTIMAL.
  */
 
@@ -19,19 +19,19 @@
 
 /* Creation admits two families over one common shape -- 2D, one mip,
  * one layer, one sample, exclusive sharing. The render family carries
- * color-attachment usage alone at any extent inside the 64x64 maximum
- * over the fixed 64-pixel row pitch, tiled VK_IMAGE_TILING_LINEAR
- * only; readback of the rendered pixels rides the host mapping of the
- * bound memory. The transfer family carries transfer usage alone at
- * any extent inside 2048 per axis over a width-derived 64-byte-aligned
- * pitch, admitting either VK_IMAGE_TILING_LINEAR or
- * VK_IMAGE_TILING_OPTIMAL as the same executing linear span; its
- * copies execute through host mappings, and the attachment paths never
- * see it because usage without the color-attachment bit admits no
- * view. Usage mixing the families refuses: a render target the copy
- * commands could write would put two writers on the qualified cell's
- * output. Every other shape refuses with a cleared handle, so no
- * image exists whose lowering the implementation cannot record.
+ * the color-attachment bit at either 32-bpp lane order, at any extent
+ * inside R3V_NATIVE_RENDER_MAX_EXTENT per axis over the eight-pixel
+ * aligned 32-bpp row pitch, under either tiling; the render-shape cell
+ * places each of those parameters through one named register class, so
+ * every admitted shape emits from the reference cell's construction.
+ * The family also takes the transfer bits, and their copies move the
+ * rendered bytes through the same host mapping the readback rides. The
+ * transfer family carries transfer usage alone at any extent inside
+ * 2048 per axis over a width-derived 64-byte-aligned pitch; its copies
+ * execute through host mappings, and the attachment paths never see it
+ * because usage without the color-attachment bit admits no view. Every
+ * other shape refuses with a cleared handle, so no image exists whose
+ * lowering the implementation cannot record.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
@@ -80,24 +80,29 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     * (r3v_native_transfer_footprint_bytes), so an OPTIMAL request over
     * that family's usage and extent vocabulary is the same executing
     * layout under the opaque contract; the image only stops answering
-    * r3v_GetImageSubresourceLayout. The render family keeps its
-    * dedicated relocation-addressed cell LINEAR-only: it has never
-    * executed any other layout, and admitting OPTIMAL there would
-    * advertise a capability this driver has not built.
+    * r3v_GetImageSubresourceLayout. The render family's cell addresses
+    * its target through one RB3D_COLORPITCH0 word over the same linear
+    * span (r3v_native_render_footprint_bytes), so OPTIMAL is that
+    * identical layout there too and the image likewise stops answering
+    * r3v_GetImageSubresourceLayout.
     */
    const VkImageUsageFlags transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    bool transfer_family;
    uint32_t row_pitch_bytes;
-   if (pCreateInfo->usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
+   enum r300_triangle_lane_order lanes = R300_TRIANGLE_LANES_B8G8R8A8;
+   if (pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
       if (pCreateInfo->flags != 0 ||
-          pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR ||
-          pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
-          pCreateInfo->extent.width > R3V_NATIVE_TARGET_WIDTH ||
-          pCreateInfo->extent.height > R3V_NATIVE_TARGET_HEIGHT)
+          (pCreateInfo->usage &
+           ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                transfer_usage)) != 0 ||
+          !r3v_native_render_lane_order(pCreateInfo->format, &lanes) ||
+          pCreateInfo->extent.width > R3V_NATIVE_RENDER_MAX_EXTENT ||
+          pCreateInfo->extent.height > R3V_NATIVE_RENDER_MAX_EXTENT)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       transfer_family = false;
-      row_pitch_bytes = R3V_NATIVE_TARGET_ROW_BYTES;
+      row_pitch_bytes =
+         r3v_native_render_row_pitch_bytes(pCreateInfo->extent.width);
    } else if (pCreateInfo->usage != 0 &&
               (pCreateInfo->usage & ~transfer_usage) == 0) {
       if (pCreateInfo->extent.width > R3V_NATIVE_TRANSFER_DIMENSION_MAX ||
@@ -120,6 +125,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->height = pCreateInfo->extent.height;
    image->format = pCreateInfo->format;
    image->texel_bytes = texel_bytes;
+   image->lanes = lanes;
    image->row_pitch_bytes = row_pitch_bytes;
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
@@ -165,7 +171,8 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
                  ? r3v_native_transfer_footprint_bytes(image->width,
                                                        image->height,
                                                        image->texel_bytes)
-                 : r3v_native_image_footprint_bytes(image->height),
+                 : r3v_native_render_footprint_bytes(image->row_pitch_bytes,
+                                                    image->height),
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
    };
@@ -244,7 +251,8 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
                ? r3v_native_transfer_footprint_bytes(image->width,
                                                      image->height,
                                                      image->texel_bytes)
-               : r3v_native_image_footprint_bytes(image->height))
+               : r3v_native_render_footprint_bytes(image->row_pitch_bytes,
+                                                  image->height))
          : 0;
    if (image == NULL || memory == NULL || image->memory != NULL ||
        memory->vk.memory_type_index != 0 ||
@@ -335,7 +343,7 @@ r3v_CreateImageView(VkDevice _device,
    if (image == NULL || image->transfer_family ||
        pCreateInfo->flags != 0 ||
        pCreateInfo->viewType != VK_IMAGE_VIEW_TYPE_2D ||
-       pCreateInfo->format != R3V_NATIVE_TARGET_FORMAT ||
+       pCreateInfo->format != image->format ||
        !swizzle_is_identity(pCreateInfo->components.r,
                             VK_COMPONENT_SWIZZLE_R) ||
        !swizzle_is_identity(pCreateInfo->components.g,

@@ -328,7 +328,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_cmd_buffer *cmd_buffer,
                                struct r3v_native_memory *vertex_memory,
                                struct r3v_native_memory *color_memory,
-                               uint32_t width, uint32_t height,
+                               const struct r300_triangle_render_shape *shape,
                                bool varying, uint32_t triangle_count)
 {
    VkResult role_result = validate_triangle_memory_roles(
@@ -339,13 +339,39 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    /* The recorded cell is self-contained: the emission opens with the
     * first-draw contract prefix resolved at the target extent, so the
     * result does not ride whatever state the previous client left in
-    * the pipeline; at the maximum extent the construction is the
+    * the pipeline; at the reference shape the construction is the
     * byte-identical reference cell backing the arming digest and the
     * manifest.
+    *
+    * Two emitters cover the recorded draws.  The reference target --
+    * the reference pitch and lane order at an extent inside the
+    * reference cell's own -- is the target a retained route receipt
+    * names, and it renders the fragment constant that receipt covers,
+    * so the parameterized cell family emits it and a varying record
+    * shape or a host-expanded instance count is emittable there.  Any
+    * other target lies outside every retained receipt, so it takes the
+    * render-shape emitter, which places extent, pitch, lane order, and
+    * the fragment constant the admitted module wrote, each through its
+    * one register class; that emitter carries one triangle of a
+    * position-only record shape, and a draw at such a target needing a
+    * varying shape or several triangles has no emitter and refuses.
     */
+   struct r300_triangle_render_shape reference;
+   r300_tcl_bypass_triangle_render_shape_reference(&reference);
+   const bool reference_target =
+      shape->pitch_pixels == reference.pitch_pixels &&
+      shape->lanes == reference.lanes &&
+      shape->width <= reference.width && shape->height <= reference.height;
    struct r300_tcl_bypass_triangle_ib cell;
-   int emit_result = r300_tcl_bypass_triangle_family_emit(
-      width, height, varying, triangle_count, &cell);
+   int emit_result;
+   if (reference_target) {
+      emit_result = r300_tcl_bypass_triangle_family_emit(
+         shape->width, shape->height, varying, triangle_count, &cell);
+   } else if (!varying && triangle_count == 1) {
+      emit_result = r300_tcl_bypass_triangle_render_shape_emit(shape, &cell);
+   } else {
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   }
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -407,10 +433,10 @@ record_triangle_cell_tail(struct r3v_native_device *device,
       sentinel_fill_color(device, color_memory, color_memory->bo.size);
    if (result != VK_SUCCESS)
       return result;
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
-                                         color_memory,
-                                         R3V_NATIVE_TARGET_WIDTH,
-                                         R3V_NATIVE_TARGET_HEIGHT, false, 1);
+                                         color_memory, &shape, false, 1);
 }
 
 VkResult
@@ -419,7 +445,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count)
+   uint32_t triangle_count, const uint32_t color_bits[4])
 {
    struct r3v_native_memory *color_memory = target_image->memory;
    VkResult role_result = validate_triangle_memory_roles(
@@ -434,16 +460,31 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                           : R3V_TRIANGLE_VERTEX_BYTES);
    if (carrier_memory->bo.size < carrier_bytes ||
        color_memory->bo.size <
-          r3v_native_image_footprint_bytes(target_image->height)) {
+          r3v_native_render_footprint_bytes(target_image->row_pitch_bytes,
+                                            target_image->height)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %" PRIu64
                        " vertex bytes and the target image's declared "
                        "footprint",
                        carrier_bytes);
    }
+
+   /* The target image and the bound pipeline carry the shape between
+    * them: the image holds the extent, the row pitch, and the lane
+    * order, and the pipeline holds the fragment constant.  A varying
+    * program writes no constant, so its shape takes the reference
+    * one the family emitter uses.
+    */
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.width = target_image->width;
+   shape.height = target_image->height;
+   shape.pitch_pixels = target_image->row_pitch_bytes / 4;
+   shape.lanes = target_image->lanes;
+   if (!varying)
+      memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
-                                         color_memory, target_image->width,
-                                         target_image->height, varying,
+                                         color_memory, &shape, varying,
                                          triangle_count);
 }
 

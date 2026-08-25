@@ -447,8 +447,9 @@ struct image_usage_case {
 
 /* Query and creation are separate public entry points, so exercise the
  * complete image-family matrix through both dispatch paths.  The native
- * transfer mask is exactly the two transfer bits; color is its own exclusive
- * family, and zero or a mixed color/transfer mask refuses at both boundaries.
+ * transfer mask is exactly the two transfer bits; the render family takes
+ * the color-attachment bit with either transfer bit beside it, and zero
+ * or a mask naming any other usage refuses at both boundaries.
  */
 static void
 check_image_usage_surface(
@@ -466,13 +467,15 @@ check_image_usage_surface(
       { transfer_usage, VK_SUCCESS, VK_SUCCESS },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+        VK_SUCCESS, VK_SUCCESS },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+        VK_SUCCESS, VK_SUCCESS },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_SUCCESS, VK_SUCCESS },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
    };
 
@@ -2719,11 +2722,11 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
    }
 
-   /* The extent family through the public route: a 48x20 target's
-    * footprint follows the fixed 256-byte pitch, its recorded IB
-    * deviates from the reference cell in the two scissor-family dwords
-    * alone, and the deferred clear covers exactly the declared
-    * footprint.
+   /* The render-shape family through the public route: a 48x20 target
+    * carries its own eight-pixel-aligned row pitch, its recorded IB is
+    * the render-shape emission of exactly that target and the bound
+    * pipeline's constant, and the deferred clear covers exactly the
+    * declared footprint.
     */
    {
       const uint32_t sub_w = 48, sub_h = 20;
@@ -2735,8 +2738,10 @@ main(void)
              VK_SUCCESS);
       VkMemoryRequirements sub_reqs;
       vkGetImageMemoryRequirements(device, sub_image, &sub_reqs);
-      assert(sub_reqs.size ==
-             (VkDeviceSize)R3V_NATIVE_TARGET_ROW_BYTES * (sub_h + 1));
+      const uint32_t sub_pitch_bytes =
+         r3v_native_render_row_pitch_bytes(sub_w);
+      assert(sub_pitch_bytes == 192);
+      assert(sub_reqs.size == (VkDeviceSize)sub_pitch_bytes * (sub_h + 1));
 
       VkDeviceMemory sub_memory = VK_NULL_HANDLE;
       assert(vkAllocateMemory(
@@ -2805,17 +2810,27 @@ main(void)
       vkCmdEndRenderPass(sub_cmd);
       assert(vkEndCommandBuffer(sub_cmd) == VK_SUCCESS);
 
+      /* The target leaves the reference pitch, so the draw lowers
+       * through the render-shape emitter carrying the module's own
+       * constant; the recorded stream is that emission byte for byte.
+       */
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_sub, sub_cmd);
-      struct r300_tcl_bypass_triangle_ib sub_reference;
-      assert(r300_tcl_bypass_triangle_reference_emit(&sub_reference) == 0);
-      assert(native_sub->ib_size_dwords == sub_reference.ib_size_dwords);
-      uint32_t deviating = 0;
-      for (uint32_t d = 0; d < sub_reference.ib_size_dwords; d++) {
-         if (native_sub->ib[d] != sub_reference.ib[d])
-            deviating++;
-      }
-      assert(deviating == 2);
-      r300_tcl_bypass_triangle_release(&sub_reference);
+      struct r300_triangle_render_shape sub_render_shape;
+      r300_tcl_bypass_triangle_render_shape_reference(&sub_render_shape);
+      sub_render_shape.width = sub_w;
+      sub_render_shape.height = sub_h;
+      sub_render_shape.pitch_pixels = sub_pitch_bytes / 4;
+      sub_render_shape.color_bits[0] = 0;
+      sub_render_shape.color_bits[1] = 0x3f800000u;
+      sub_render_shape.color_bits[2] = 0;
+      sub_render_shape.color_bits[3] = 0x3f800000u;
+      struct r300_tcl_bypass_triangle_ib sub_expected;
+      assert(r300_tcl_bypass_triangle_render_shape_emit(
+                &sub_render_shape, &sub_expected) == 0);
+      assert(native_sub->ib_size_dwords == sub_expected.ib_size_dwords);
+      assert(memcmp(native_sub->ib, sub_expected.ib,
+                    sub_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
+      r300_tcl_bypass_triangle_release(&sub_expected);
 
       assert(r3v_native_cmd_buffer_execute_deferred_draw(
                 native_device, native_sub) == VK_SUCCESS);
@@ -2852,6 +2867,233 @@ main(void)
       vkFreeMemory(device, sub_memory, NULL);
    }
 
+   /* The widened render family end to end: an R8G8B8A8_UNORM target at
+    * the family's maximum extent under VK_IMAGE_TILING_OPTIMAL, with a
+    * transfer-source bit beside the attachment bit, bound to a pipeline
+    * whose fragment module writes a lattice constant other than the
+    * reference one.  The recorded stream is the render-shape emission
+    * of exactly that target and constant, and the recorded
+    * vkCmdCopyImageToBuffer moves the target's own rows into a buffer.
+    * The command stream never reaches the device here, so the copy
+    * carries the deferred clear's sentinel.
+    */
+   {
+      const uint32_t wide = R3V_NATIVE_RENDER_MAX_EXTENT;
+      VkImageCreateInfo wide_info = image_info;
+      wide_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+      wide_info.extent.width = wide;
+      wide_info.extent.height = wide;
+      wide_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+      wide_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      VkImage wide_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &wide_info, NULL, &wide_image) ==
+             VK_SUCCESS);
+
+      const uint32_t wide_pitch_bytes =
+         r3v_native_render_row_pitch_bytes(wide);
+      assert(wide_pitch_bytes == wide * 4);
+      VkMemoryRequirements wide_reqs;
+      vkGetImageMemoryRequirements(device, wide_image, &wide_reqs);
+      assert(wide_reqs.size == (VkDeviceSize)wide_pitch_bytes * (wide + 1));
+
+      VkDeviceMemory wide_memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = wide_reqs.size,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &wide_memory) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, wide_image, wide_memory, 0) ==
+             VK_SUCCESS);
+
+      VkImageView wide_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(
+                device,
+                &(VkImageViewCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .image = wide_image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                   .format = VK_FORMAT_R8G8B8A8_UNORM,
+                   .subresourceRange =
+                      {
+                         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                         .levelCount = 1,
+                         .layerCount = 1,
+                      },
+                },
+                NULL, &wide_view) == VK_SUCCESS);
+
+      VkRenderPass wide_pass = VK_NULL_HANDLE;
+      assert(vkCreateRenderPass(
+                device,
+                &(VkRenderPassCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                   .attachmentCount = 1,
+                   .pAttachments =
+                      &(VkAttachmentDescription){
+                         .format = VK_FORMAT_R8G8B8A8_UNORM,
+                         .samples = VK_SAMPLE_COUNT_1_BIT,
+                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                         .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+                      },
+                   .subpassCount = 1,
+                   .pSubpasses =
+                      &(VkSubpassDescription){
+                         .pipelineBindPoint =
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                         .colorAttachmentCount = 1,
+                         .pColorAttachments =
+                            &(VkAttachmentReference){
+                               .attachment = 0,
+                               .layout = VK_IMAGE_LAYOUT_GENERAL,
+                            },
+                      },
+                },
+                NULL, &wide_pass) == VK_SUCCESS);
+
+      VkFramebuffer wide_framebuffer = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(
+                device,
+                &(VkFramebufferCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                   .renderPass = wide_pass,
+                   .attachmentCount = 1,
+                   .pAttachments = &wide_view,
+                   .width = wide,
+                   .height = wide,
+                   .layers = 1,
+                },
+                NULL, &wide_framebuffer) == VK_SUCCESS);
+
+      /* The reference module's 1.0 constant carried to 0.5: another
+       * value the FP24 lattice holds exactly, so the register word is
+       * the value the program named.
+       */
+      uint32_t half_fs[sizeof(r3v_reference_fragment_spirv) / 4];
+      memcpy(half_fs, r3v_reference_fragment_spirv, sizeof(half_fs));
+      bool half_constant = false;
+      for (size_t word_index = 0; word_index < ARRAY_SIZE(half_fs);
+           word_index++) {
+         if (half_fs[word_index] == 0x3f800000u) {
+            half_fs[word_index] = 0x3f000000u;
+            half_constant = true;
+            break;
+         }
+      }
+      assert(half_constant);
+
+      struct pipeline_shape wide_pipeline_shape = contract_shape;
+      wide_pipeline_shape.fragment_words = half_fs;
+      wide_pipeline_shape.fragment_bytes = sizeof(half_fs);
+      wide_pipeline_shape.extent_width = wide;
+      wide_pipeline_shape.extent_height = wide;
+      VkPipeline wide_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&wide_pipeline_shape, wide_pass, layout,
+                           &wide_pipeline) == VK_SUCCESS);
+
+      VkRenderPassBeginInfo wide_begin = begin_pass;
+      wide_begin.renderPass = wide_pass;
+      wide_begin.framebuffer = wide_framebuffer;
+      wide_begin.renderArea = (VkRect2D){ .extent = { wide, wide } };
+      VkCommandBuffer wide_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(wide_cmd, &wide_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(wide_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        wide_pipeline);
+      vkCmdBindVertexBuffers(wide_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(wide_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(wide_cmd);
+      assert(vkEndCommandBuffer(wide_cmd) == VK_SUCCESS);
+
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_wide, wide_cmd);
+      struct r300_triangle_render_shape wide_shape;
+      r300_tcl_bypass_triangle_render_shape_reference(&wide_shape);
+      wide_shape.width = wide;
+      wide_shape.height = wide;
+      wide_shape.pitch_pixels = wide_pitch_bytes / 4;
+      wide_shape.lanes = R300_TRIANGLE_LANES_R8G8B8A8;
+      wide_shape.color_bits[0] = 0;
+      wide_shape.color_bits[1] = 0x3f000000u;
+      wide_shape.color_bits[2] = 0;
+      wide_shape.color_bits[3] = 0x3f000000u;
+      struct r300_tcl_bypass_triangle_ib wide_expected;
+      assert(r300_tcl_bypass_triangle_render_shape_emit(
+                &wide_shape, &wide_expected) == 0);
+      assert(native_wide->ib_size_dwords == wide_expected.ib_size_dwords);
+      assert(memcmp(native_wide->ib, wide_expected.ib,
+                    wide_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
+      r300_tcl_bypass_triangle_release(&wide_expected);
+
+      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+                native_device, native_wide) == VK_SUCCESS);
+
+      /* Readback through the transfer bit the render family carries:
+       * one row of the target lands in a buffer, and the bytes are the
+       * deferred clear's sentinel because no device wrote here.
+       */
+      VkDeviceMemory readback_memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = wide_pitch_bytes,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &readback_memory) == VK_SUCCESS);
+      VkBuffer readback_buffer = VK_NULL_HANDLE;
+      assert(vkCreateBuffer(device,
+                            &(VkBufferCreateInfo){
+                               .sType =
+                                  VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = wide_pitch_bytes,
+                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            },
+                            NULL, &readback_buffer) == VK_SUCCESS);
+      assert(vkBindBufferMemory(device, readback_buffer, readback_memory,
+                                0) == VK_SUCCESS);
+
+      VkCommandBuffer copy_cmd = fresh_cmd();
+      vkCmdCopyImageToBuffer(
+         copy_cmd, wide_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+         readback_buffer, 1,
+         &(VkBufferImageCopy){
+            .imageSubresource =
+               {
+                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                  .layerCount = 1,
+               },
+            .imageExtent = { wide, 1, 1 },
+         });
+      assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_copy, copy_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_copies(
+                native_device, native_copy) == VK_SUCCESS);
+
+      uint32_t *readback_map = NULL;
+      assert(vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&readback_map) == VK_SUCCESS);
+      assert(readback_map[0] == R300_TRIANGLE_COLOR_SENTINEL);
+      assert(readback_map[wide - 1] == R300_TRIANGLE_COLOR_SENTINEL);
+      vkUnmapMemory(device, readback_memory);
+
+      vkDestroyBuffer(device, readback_buffer, NULL);
+      vkFreeMemory(device, readback_memory, NULL);
+      vkDestroyPipeline(device, wide_pipeline, NULL);
+      vkDestroyFramebuffer(device, wide_framebuffer, NULL);
+      vkDestroyRenderPass(device, wide_pass, NULL);
+      vkDestroyImageView(device, wide_view, NULL);
+      vkDestroyImage(device, wide_image, NULL);
+      vkFreeMemory(device, wide_memory, NULL);
+   }
+
    /* Creation refusals: each deviation clears the handle and reports
     * the refusal result, so the negative legs calibrate the contract
     * checks the positive leg rode through.
@@ -2863,18 +3105,25 @@ main(void)
              R3V_NATIVE_REFUSAL_RESULT &&
           refused == VK_NULL_HANDLE);
 
+   /* An off-lattice fragment constant refuses: the R300_PFS_PARAM_0
+    * register encodes FP24, so a pattern with mantissa bits below the
+    * lattice would round in the register and render a value the
+    * program never named.  0x3e000001 carries one such bit;
+    * r300_fp24_quantize_bits clears it, so the admission rejects the
+    * module.
+    */
    uint32_t mutated_fs[sizeof(r3v_reference_fragment_spirv) / 4];
    memcpy(mutated_fs, r3v_reference_fragment_spirv, sizeof(mutated_fs));
-   bool mutated_green_constant = false;
+   bool mutated_off_lattice_constant = false;
    for (size_t word_index = 0; word_index < ARRAY_SIZE(mutated_fs);
         word_index++) {
       if (mutated_fs[word_index] == 0x3f800000u) {
-         mutated_fs[word_index] = 0x3f000000u;
-         mutated_green_constant = true;
+         mutated_fs[word_index] = 0x3e000001u;
+         mutated_off_lattice_constant = true;
          break;
       }
    }
-   assert(mutated_green_constant);
+   assert(mutated_off_lattice_constant);
    bad_shape = contract_shape;
    bad_shape.fragment_words = mutated_fs;
    bad_shape.fragment_bytes = sizeof(mutated_fs);
@@ -2894,7 +3143,7 @@ main(void)
    assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);
-   bad_image_info.extent.width = R3V_NATIVE_TARGET_WIDTH + 1;
+   bad_image_info.extent.width = R3V_NATIVE_RENDER_MAX_EXTENT + 1;
    assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);
@@ -2903,7 +3152,7 @@ main(void)
    assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);
-   bad_image_info.extent.height = R3V_NATIVE_TARGET_HEIGHT + 1;
+   bad_image_info.extent.height = R3V_NATIVE_RENDER_MAX_EXTENT + 1;
    assert(vkCreateImage(device, &bad_image_info, NULL, &bad_image) ==
              R3V_NATIVE_REFUSAL_RESULT &&
           bad_image == VK_NULL_HANDLE);
@@ -3000,9 +3249,21 @@ main(void)
                 R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);
 
+      /* The render family takes the transfer bits beside the
+       * attachment bit and executes their copies over its own row
+       * pitch; a usage naming anything else refuses.
+       */
       VkImageCreateInfo mixed_info = image_info;
       mixed_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      VkImage mixed_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &mixed_info, NULL, &mixed_image) ==
+                VK_SUCCESS &&
+             mixed_image != VK_NULL_HANDLE);
+      vkDestroyImage(device, mixed_image, NULL);
+
+      mixed_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_SAMPLED_BIT;
       assert(vkCreateImage(device, &mixed_info, NULL, &refused_image) ==
                 R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);

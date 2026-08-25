@@ -205,6 +205,17 @@ execute_copy(struct r3v_native_device *device,
       return result;
    }
 
+   /* A source image the render pass drew into holds device output in an
+    * unsnooped GTT mapping, so the host read invalidates the cache
+    * lines covering it first; CLFLUSH writes back and invalidates, so
+    * the same primitive that publishes host writes serves the read
+    * direction, and a mapping the application already holds keeps its
+    * pending writes.
+    */
+   if (op->src_image != NULL)
+      radeon_drm_vk_bo_cache_sync(&device->drm, src_map,
+                                  src_memory->bo.size);
+
    const uint64_t row_bytes =
       (uint64_t)op->width * (op->dst_image != NULL ? op->dst_image->texel_bytes
                                                    : op->src_image->texel_bytes);

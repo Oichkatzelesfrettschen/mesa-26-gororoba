@@ -150,7 +150,25 @@ static bool
 cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
 {
    switch (cmd_buffer->cell_kind) {
-   case R3V_NATIVE_CELL_KIND_TRIANGLE:
+   case R3V_NATIVE_CELL_KIND_TRIANGLE: {
+      /* The render-shape family is the geometry the delivered arms
+       * cover: an extent inside R3V_NATIVE_RENDER_MAX_EXTENT on both
+       * axes over a row pitch that is a multiple of eight pixels and at
+       * least the width.  The recorded cell places each of those
+       * through one register class, so a shape inside the family is
+       * geometry the emission already froze.
+       */
+      if (!cmd_buffer->deferred_draw.pending)
+         return false;
+      const uint32_t width = cmd_buffer->deferred_draw.target_width;
+      const uint32_t height = cmd_buffer->deferred_draw.target_height;
+      const uint32_t pitch_pixels =
+         r3v_native_render_row_pitch_bytes(width) / 4;
+      return width < 1 || width > R3V_NATIVE_RENDER_MAX_EXTENT ||
+             height < 1 || height > R3V_NATIVE_RENDER_MAX_EXTENT ||
+             pitch_pixels < width || pitch_pixels % 8 != 0 ||
+             pitch_pixels > R3V_NATIVE_RENDER_MAX_EXTENT;
+   }
    case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
       return cmd_buffer->deferred_draw.pending &&
              (cmd_buffer->deferred_draw.target_width !=

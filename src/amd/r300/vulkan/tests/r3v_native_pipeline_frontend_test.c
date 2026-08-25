@@ -83,8 +83,9 @@ static void test_reference_fragment_module(void)
    assert(color[0] == 0 && color[1] == 0x3f800000u && color[2] == 0 &&
           color[3] == 0x3f800000u);
 
-   /* A non-green constant reads back with its own bits: the green gate
-    * is the pipeline's, not the admitter's.  The red module is the
+   /* Another constant reads back with its own bits: the admitter
+    * reports what the module wrote, and the pipeline's own gate is the
+    * FP24 lattice the register encodes.  The red module is the
     * reference module with its composite constant's lanes reordered,
     * located by the OpConstantComposite word (opcode 44, length 7).
     */

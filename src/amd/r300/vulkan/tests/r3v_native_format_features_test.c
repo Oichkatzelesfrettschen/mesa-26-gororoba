@@ -192,16 +192,14 @@ main(int argc, char **argv)
        * grant matches what vkCreateImage actually admits. The required
        * optimal-tiling features these formats lack (sampled, color
        * attachment, blit, storage) are a recorded conformance
-       * deviation and stay ungranted until their routes execute --
-       * R8G8B8A8_UNORM's mandatory optimal COLOR_ATTACHMENT bit is
-       * among them, since the render family that carries
-       * COLOR_ATTACHMENT usage admits only B8G8R8A8_UNORM, linear
-       * tiling alone.
+       * deviation and stay ungranted until their routes execute.  The
+       * two UNORM8 formats the render-shape cell places into a target
+       * leave this list: each names one US_OUT_FMT_0 lane order, so
+       * both carry the color-attachment bit on both layouts.
        */
       static const VkFormat transfer_formats[] = {
-         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT,
-         VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R32G32B32A32_UINT,
-         VK_FORMAT_R32_UINT,
+         VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R16G16B16A16_UINT,
+         VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R32_UINT,
       };
       const VkFormatFeatureFlags transfer_bits =
          VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
@@ -261,25 +259,28 @@ main(int argc, char **argv)
                             VK_FORMAT_R32_UINT,
                             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
                             "R32_UINT texel buffer");
-      /* B8G8R8A8_UNORM carries the render family's color-attachment
-       * grant on the linear layout alone (the render family stays
-       * VK_IMAGE_TILING_LINEAR only), plus the transfer family's copy
-       * grant on both layouts, matching r3v_CreateImage's admission
-       * that this format's color-attachment usage refuses OPTIMAL
-       * while its transfer usage accepts it.
+      /* The two render-family lane orders carry the color-attachment
+       * grant plus the transfer family's copy grant, identically on
+       * both layouts: r3v_CreateImage executes VK_IMAGE_TILING_OPTIMAL
+       * as the one linear span for both usages, so the two tiling
+       * grants are equal.
        */
-      {
+      static const VkFormat render_formats[] = {
+         VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
+      };
+      for (unsigned i = 0;
+           i < sizeof(render_formats) / sizeof(render_formats[0]); i++) {
+         const VkFormatFeatureFlags render_bits =
+            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | transfer_bits;
          VkFormatProperties legacy;
-         legacy_query(physical_device, VK_FORMAT_B8G8R8A8_UNORM, &legacy);
-         CHECK((legacy.linearTilingFeatures &
-                (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | transfer_bits)) ==
-                     (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-                      transfer_bits) &&
-                  legacy.optimalTilingFeatures == transfer_bits,
-               "B8G8R8A8_UNORM keeps color-attachment linear-only and "
-               "grants the transfer bits on both layouts (linear "
+         legacy_query(physical_device, render_formats[i], &legacy);
+         CHECK((legacy.linearTilingFeatures & render_bits) == render_bits &&
+                  legacy.optimalTilingFeatures == legacy.linearTilingFeatures,
+               "render-family format %u grants color attachment and the "
+               "transfer bits identically on both layouts (linear "
                "0x%08x optimal 0x%08x)",
-               legacy.linearTilingFeatures, legacy.optimalTilingFeatures);
+               (unsigned)render_formats[i], legacy.linearTilingFeatures,
+               legacy.optimalTilingFeatures);
       }
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_R8_UNORM, 0,
