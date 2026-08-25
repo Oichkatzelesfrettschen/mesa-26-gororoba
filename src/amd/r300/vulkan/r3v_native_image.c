@@ -17,18 +17,20 @@
 #include <assert.h>
 #include <string.h>
 
-/* Creation admits two linear families over one common shape -- 2D,
- * B8G8R8A8_UNORM, one mip, one layer, one sample, linear, exclusive.
- * The render family carries color-attachment usage alone at any extent
- * inside the 64x64 maximum over the fixed 64-pixel row pitch; readback
- * of the rendered pixels rides the host mapping of the bound memory.
- * The transfer family carries transfer usage alone at any extent
- * inside 2048 per axis over a width-derived 64-byte-aligned pitch; its
+/* Creation admits two families over one common shape -- 2D, one mip,
+ * one layer, one sample, exclusive sharing. The render family carries
+ * color-attachment usage alone at any extent inside the 64x64 maximum
+ * over the fixed 64-pixel row pitch, tiled VK_IMAGE_TILING_LINEAR
+ * only; readback of the rendered pixels rides the host mapping of the
+ * bound memory. The transfer family carries transfer usage alone at
+ * any extent inside 2048 per axis over a width-derived 64-byte-aligned
+ * pitch, admitting either VK_IMAGE_TILING_LINEAR or
+ * VK_IMAGE_TILING_OPTIMAL as the same executing linear span; its
  * copies execute through host mappings, and the attachment paths never
  * see it because usage without the color-attachment bit admits no
- * view.  Usage mixing the families refuses: a render target the copy
+ * view. Usage mixing the families refuses: a render target the copy
  * commands could write would put two writers on the qualified cell's
- * output.  Every other shape refuses with a cleared handle, so no
+ * output. Every other shape refuses with a cleared handle, so no
  * image exists whose lowering the implementation cannot record.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -71,19 +73,17 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    /* VK_IMAGE_TILING_OPTIMAL grants the implementation an opaque byte
-    * layout (Vulkan 1.0 section 12.6): only a LINEAR image's layout is
-    * application-queryable, and the spec forbids the application from
-    * assuming anything about an OPTIMAL image's bytes beyond that. The
-    * transfer family already executes its bytes as one linear span
-    * over the GEM BO (r3v_native_transfer_footprint_bytes), so an
-    * OPTIMAL request over that family's usage and extent vocabulary is
-    * the same executing layout under the opaque contract; the image
-    * only stops answering r3v_GetImageSubresourceLayout, matching the
-    * families a LINEAR-only implementation may legally decline to
-    * answer for OPTIMAL. The render family keeps its dedicated
-    * relocation-addressed cell LINEAR-only: it has never executed any
-    * other layout, and admitting OPTIMAL there would advertise a
-    * capability this driver has not built.
+    * layout the application makes no assumptions about
+    * (VUID-vkGetImageSubresourceLayout-image-07790, cited in full at
+    * r3v_GetImageSubresourceLayout below). The transfer family already
+    * executes its bytes as one linear span over the GEM BO
+    * (r3v_native_transfer_footprint_bytes), so an OPTIMAL request over
+    * that family's usage and extent vocabulary is the same executing
+    * layout under the opaque contract; the image only stops answering
+    * r3v_GetImageSubresourceLayout. The render family keeps its
+    * dedicated relocation-addressed cell LINEAR-only: it has never
+    * executed any other layout, and admitting OPTIMAL there would
+    * advertise a capability this driver has not built.
     */
    const VkImageUsageFlags transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -286,13 +286,17 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
 {
    VK_FROM_HANDLE(r3v_native_image, image, _image);
 
-   /* Vulkan 1.0 section 12.6 defines a subresource layout only for a
-    * VK_IMAGE_TILING_LINEAR image; calling this entry on an OPTIMAL
-    * image is invalid usage the validation layers catch
-    * (VUID-vkGetImageSubresourceLayout-image-07790), not a case the
-    * driver reports through a return value, since the entry point is
-    * void. The assert holds the same refusal for a debug build that
-    * runs without validation.
+   /* VUID-vkGetImageSubresourceLayout-image-07790: calling this entry
+    * on a VK_IMAGE_TILING_OPTIMAL image is invalid usage the
+    * validation layers catch; the entry point is void, so the driver
+    * has no return value to report it through. The assert holds the
+    * same refusal in a debug build (b_ndebug=false) that runs without
+    * validation; a release build (NDEBUG, assert() a no-op) computes
+    * the transfer family's linear-span layout below regardless of
+    * tiling, since VK_IMAGE_TILING_OPTIMAL executes that identical
+    * span (r3v_native_transfer_footprint_bytes) -- the answer is
+    * correct for the bytes this driver actually writes, even though
+    * the call remains invalid application usage under the spec.
     */
    assert(!image->optimal_tiling);
 

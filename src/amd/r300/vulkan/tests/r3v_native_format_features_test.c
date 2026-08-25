@@ -190,9 +190,13 @@ main(int argc, char **argv)
        * the transfer family as the identical linear span
        * (r3v_native_transfer_footprint_bytes), so the format-property
        * grant matches what vkCreateImage actually admits. The required
-       * optimal-tiling features these formats lack (sampled, blit,
-       * storage) are a recorded conformance deviation and stay
-       * ungranted until their routes execute.
+       * optimal-tiling features these formats lack (sampled, color
+       * attachment, blit, storage) are a recorded conformance
+       * deviation and stay ungranted until their routes execute --
+       * R8G8B8A8_UNORM's mandatory optimal COLOR_ATTACHMENT bit is
+       * among them, since the render family that carries
+       * COLOR_ATTACHMENT usage admits only B8G8R8A8_UNORM, linear
+       * tiling alone.
        */
       static const VkFormat transfer_formats[] = {
          VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT,
@@ -211,17 +215,15 @@ main(int argc, char **argv)
          };
          properties2_query(physical_device, transfer_formats[i],
                            &properties2);
-         CHECK((legacy.linearTilingFeatures & transfer_bits) ==
-                     transfer_bits &&
-                  (legacy.optimalTilingFeatures & transfer_bits) ==
-                     transfer_bits &&
+         CHECK(legacy.linearTilingFeatures == transfer_bits &&
+                  legacy.optimalTilingFeatures == transfer_bits &&
                   properties2.formatProperties.linearTilingFeatures ==
                      legacy.linearTilingFeatures &&
                   properties2.formatProperties.optimalTilingFeatures ==
                      legacy.optimalTilingFeatures,
-               "transfer-family texel format %u grants the two transfer "
-               "bits on the linear and optimal layout (linear 0x%08x "
-               "optimal 0x%08x buffer 0x%08x)",
+               "transfer-family texel format %u grants exactly the two "
+               "transfer bits on the linear and optimal layout, nothing "
+               "more (linear 0x%08x optimal 0x%08x buffer 0x%08x)",
                transfer_formats[i], legacy.linearTilingFeatures,
                legacy.optimalTilingFeatures, legacy.bufferFeatures);
       }

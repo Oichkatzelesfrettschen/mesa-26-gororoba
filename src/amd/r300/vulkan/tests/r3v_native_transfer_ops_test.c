@@ -8,6 +8,7 @@
  * transport.
  */
 
+#include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -313,8 +314,9 @@ create_transfer_image(const struct fixture *f, uint32_t width,
  * over the GEM BO as the LINEAR cell (r3v_native_transfer_footprint_bytes),
  * so this fixture derives the row pitch from the same 64-byte-aligned
  * formula instead of vkGetImageSubresourceLayout, which the driver
- * refuses to answer for a VK_IMAGE_TILING_OPTIMAL image (Vulkan 1.0
- * section 12.6: only LINEAR images carry a queryable layout).
+ * refuses to answer for a VK_IMAGE_TILING_OPTIMAL image in a debug
+ * build (VUID-vkGetImageSubresourceLayout-image-07790; see
+ * check_optimal_tiling below for the branched oracle).
  */
 static int
 create_transfer_image_optimal(const struct fixture *f, uint32_t width,
@@ -614,13 +616,208 @@ check_texel_formats(const struct fixture *f)
    return 0;
 }
 
+static volatile sig_atomic_t wait_timed_out;
+
+static void
+mark_wait_timeout(int signum)
+{
+   (void)signum;
+   wait_timed_out = 1;
+}
+
+/* Child setup exit codes, distinct from the oracle result: 2 is
+ * vkCreateInstance, 3 is vkEnumeratePhysicalDevices, 4 is
+ * vkCreateDevice, 5 is vkCreateImage. A setup failure means this
+ * fixture could not reach the known-bad call at all, and it reports
+ * as its own defect rather than folding into the oracle check.
+ */
+static const char *
+optimal_probe_setup_step(int code)
+{
+   switch (code) {
+   case 2: return "vkCreateInstance";
+   case 3: return "vkEnumeratePhysicalDevices";
+   case 4: return "vkCreateDevice";
+   case 5: return "vkCreateImage";
+   default: return NULL;
+   }
+}
+
+/* vkGetImageSubresourceLayout on a VK_IMAGE_TILING_OPTIMAL image is
+ * invalid application usage (VUID-vkGetImageSubresourceLayout-image-
+ * 07790); r3v_native_image.c enforces it with assert(), which is live
+ * only when this build's b_ndebug leaves NDEBUG undefined. The known-
+ * bad oracle branches at compile time on the same macro the driver
+ * checks, since the test binary shares the project-wide b_ndebug
+ * setting: a live assert must abort, and a compiled-out assert must
+ * fall through to the same linear-span layout the transfer family
+ * already executes for VK_IMAGE_TILING_LINEAR (r3v_native_transfer_
+ * footprint_bytes) -- a driver that answered anything else there
+ * would be the real defect. The call runs in a forked child with its
+ * own fresh instance and device, since reusing the parent's live
+ * device across fork risks the drm-shim mock's per-process handle
+ * bookkeeping, which this probe does not need to share; the wait is
+ * bounded by SIGALRM because the child re-enters the loader and
+ * driver after fork.
+ */
+static int
+check_optimal_subresource_layout_oracle(const struct fixture *f)
+{
+   (void)f;
+   int pipefd[2];
+   REQUIRE(pipe(pipefd) == 0,
+           "pipe for the subresource-layout known-bad leg");
+
+   pid_t child = fork();
+   REQUIRE(child >= 0, "fork for the subresource-layout known-bad leg");
+   if (child == 0) {
+      close(pipefd[0]);
+      VkInstance instance = VK_NULL_HANDLE;
+      const VkApplicationInfo app_info = {
+         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+         .apiVersion = VK_API_VERSION_1_0,
+      };
+      const VkInstanceCreateInfo instance_info = {
+         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+         .pApplicationInfo = &app_info,
+      };
+      if (vkCreateInstance(&instance_info, NULL, &instance) != VK_SUCCESS)
+         _exit(2);
+      uint32_t count = 1;
+      VkPhysicalDevice pdev = VK_NULL_HANDLE;
+      VkResult enumerated = vkEnumeratePhysicalDevices(instance, &count,
+                                                        &pdev);
+      if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) ||
+          count != 1)
+         _exit(3);
+      const float priority = 1.0f;
+      const VkDeviceQueueCreateInfo queue_info = {
+         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+         .queueFamilyIndex = 0,
+         .queueCount = 1,
+         .pQueuePriorities = &priority,
+      };
+      const VkDeviceCreateInfo device_info = {
+         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+         .queueCreateInfoCount = 1,
+         .pQueueCreateInfos = &queue_info,
+      };
+      VkDevice device = VK_NULL_HANDLE;
+      if (vkCreateDevice(pdev, &device_info, NULL, &device) != VK_SUCCESS)
+         _exit(4);
+      const VkImageCreateInfo probe_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+         .imageType = VK_IMAGE_TYPE_2D,
+         .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .extent = { 4, 4, 1 },
+         .mipLevels = 1,
+         .arrayLayers = 1,
+         .samples = VK_SAMPLE_COUNT_1_BIT,
+         .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      };
+      VkImage probe_image = VK_NULL_HANDLE;
+      if (vkCreateImage(device, &probe_info, NULL, &probe_image) !=
+          VK_SUCCESS)
+         _exit(5);
+      const VkImageSubresource subresource = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      };
+      VkSubresourceLayout layout;
+      vkGetImageSubresourceLayout(device, probe_image, &subresource,
+                                  &layout);
+      /* Reached only when NDEBUG compiles the assert out; report the
+       * computed layout so the parent can check it against the
+       * transfer family's linear span. */
+      ssize_t written = write(pipefd[1], &layout, sizeof(layout));
+      (void)written;
+      _exit(0);
+   }
+   close(pipefd[1]);
+
+   struct sigaction alarm_action = { .sa_handler = mark_wait_timeout };
+   struct sigaction old_action;
+   sigemptyset(&alarm_action.sa_mask);
+   sigaction(SIGALRM, &alarm_action, &old_action);
+   wait_timed_out = 0;
+   alarm(5);
+   int status = 0;
+   pid_t waited = waitpid(child, &status, 0);
+   int wait_errno = errno;
+   alarm(0);
+   sigaction(SIGALRM, &old_action, NULL);
+
+   if (waited != child) {
+      if (wait_timed_out || wait_errno == EINTR) {
+         kill(child, SIGKILL);
+         waitpid(child, &status, 0);
+         CHECK(false,
+               "the subresource-layout known-bad child did not exit "
+               "within 5s; killed");
+      } else {
+         CHECK(false,
+               "waiting for the subresource-layout known-bad child "
+               "failed: errno %d", wait_errno);
+      }
+      close(pipefd[0]);
+      return 0;
+   }
+
+   const char *setup_step =
+      WIFEXITED(status) ? optimal_probe_setup_step(WEXITSTATUS(status))
+                        : NULL;
+   if (setup_step != NULL) {
+      CHECK(false,
+            "the subresource-layout known-bad child's setup failed at "
+            "%s (exit code %d) before reaching the oracle", setup_step,
+            WEXITSTATUS(status));
+      close(pipefd[0]);
+      return 0;
+   }
+
+#ifdef NDEBUG
+   CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+         "under NDEBUG (assert compiled out), the known-bad child "
+         "exits cleanly instead of terminating on the oracle call "
+         "(status 0x%x)", status);
+   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+      VkSubresourceLayout layout = { 0 };
+      ssize_t n = read(pipefd[0], &layout, sizeof(layout));
+      CHECK(n == (ssize_t)sizeof(layout),
+            "the known-bad child reports its computed layout (read %zd "
+            "of %zu bytes)", n, sizeof(layout));
+      if (n == (ssize_t)sizeof(layout)) {
+         const uint32_t expect_row_pitch = (4u * 4u + 63u) & ~63u;
+         const VkDeviceSize expect_size =
+            (VkDeviceSize)expect_row_pitch * 4u;
+         CHECK(layout.offset == 0 && layout.rowPitch == expect_row_pitch &&
+                  layout.size == expect_size,
+               "under NDEBUG, vkGetImageSubresourceLayout on the "
+               "OPTIMAL image falls through to the transfer family's "
+               "linear span (offset %llu rowPitch %u size %llu, "
+               "expected offset 0 rowPitch %u size %llu)",
+               (unsigned long long)layout.offset, layout.rowPitch,
+               (unsigned long long)layout.size, expect_row_pitch,
+               (unsigned long long)expect_size);
+      }
+   }
+#else
+   CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+         "vkGetImageSubresourceLayout on an OPTIMAL image aborts the "
+         "live debug assert (VUID-vkGetImageSubresourceLayout-image-"
+         "07790) instead of answering a layout (status 0x%x)", status);
+#endif
+   close(pipefd[0]);
+   return 0;
+}
+
 /* An OPTIMAL-tiled transfer image round-trips buffer->image->buffer
  * byte for byte, matching the LINEAR cell's contract, and vkCreateImage
  * still refuses an OPTIMAL request over the render family's
  * color-attachment usage (r3v_native_image.c admits OPTIMAL on the
- * transfer family alone). vkGetImageSubresourceLayout on the OPTIMAL
- * image aborts the debug assert (Vulkan 1.0 section 12.6), so a forked
- * child isolates that known-bad call from the rest of this fixture.
+ * transfer family alone).
  */
 static int
 check_optimal_tiling(const struct fixture *f)
@@ -680,81 +877,7 @@ check_optimal_tiling(const struct fixture *f)
          "an OPTIMAL-tiled color-attachment request still refuses: the "
          "render family stays VK_IMAGE_TILING_LINEAR only");
 
-   /* The known-bad leg aborts the debug assert (Vulkan 1.0 section
-    * 12.6), so it runs in a forked child with its own fresh instance
-    * and device: reusing the parent's live device across fork risks
-    * the drm-shim mock's per-process handle bookkeeping, which this
-    * probe does not need to share.
-    */
-   pid_t child = fork();
-   REQUIRE(child >= 0, "fork for the subresource-layout known-bad leg");
-   if (child == 0) {
-      VkInstance instance = VK_NULL_HANDLE;
-      const VkApplicationInfo app_info = {
-         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-         .apiVersion = VK_API_VERSION_1_0,
-      };
-      const VkInstanceCreateInfo instance_info = {
-         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-         .pApplicationInfo = &app_info,
-      };
-      if (vkCreateInstance(&instance_info, NULL, &instance) != VK_SUCCESS)
-         _exit(2);
-      uint32_t count = 1;
-      VkPhysicalDevice pdev = VK_NULL_HANDLE;
-      VkResult enumerated = vkEnumeratePhysicalDevices(instance, &count,
-                                                        &pdev);
-      if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) ||
-          count != 1)
-         _exit(3);
-      const float priority = 1.0f;
-      const VkDeviceQueueCreateInfo queue_info = {
-         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-         .queueFamilyIndex = 0,
-         .queueCount = 1,
-         .pQueuePriorities = &priority,
-      };
-      const VkDeviceCreateInfo device_info = {
-         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-         .queueCreateInfoCount = 1,
-         .pQueueCreateInfos = &queue_info,
-      };
-      VkDevice device = VK_NULL_HANDLE;
-      if (vkCreateDevice(pdev, &device_info, NULL, &device) != VK_SUCCESS)
-         _exit(4);
-      const VkImageCreateInfo probe_info = {
-         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-         .imageType = VK_IMAGE_TYPE_2D,
-         .format = VK_FORMAT_R8G8B8A8_UNORM,
-         .extent = { 4, 4, 1 },
-         .mipLevels = 1,
-         .arrayLayers = 1,
-         .samples = VK_SAMPLE_COUNT_1_BIT,
-         .tiling = VK_IMAGE_TILING_OPTIMAL,
-         .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-      };
-      VkImage probe_image = VK_NULL_HANDLE;
-      if (vkCreateImage(device, &probe_info, NULL, &probe_image) !=
-          VK_SUCCESS)
-         _exit(5);
-      const VkImageSubresource subresource = {
-         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-      };
-      VkSubresourceLayout layout;
-      vkGetImageSubresourceLayout(device, probe_image, &subresource,
-                                  &layout);
-      _exit(0);
-   }
-   int status = 0;
-   REQUIRE(waitpid(child, &status, 0) == child,
-           "waiting for the subresource-layout known-bad child");
-   CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
-         "vkGetImageSubresourceLayout on an OPTIMAL image aborts the "
-         "debug assert instead of answering a layout (status 0x%x)",
-         status);
-   return 0;
+   return check_optimal_subresource_layout_oracle(f);
 }
 
 static int
