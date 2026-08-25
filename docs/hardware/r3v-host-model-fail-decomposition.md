@@ -374,10 +374,11 @@ Measured receipts (own Meson build directory, `--dmesg-command ""`,
 `decision_grade: False`): the `api.object_management` family (457
 cases, caselist drawn directly from
 `external/vulkancts/mustpass/main/vk-default/api.txt` rather than the
-partition tool's `generate --mustpass-dir` path, which currently
-refuses on an unrelated pre-existing duplicate listing of
-`dEQP-VK.info.build` across `info.txt` and
-`vk-fraction-mandatory-tests.txt` in the vendored mustpass corpus)
+partition tool's `generate --mustpass-dir` path: the CTS checkout's
+mustpass directory carries `vk-fraction-mandatory-tests.txt`, which
+relists `dEQP-VK.info.build` beside `info.txt`, and the exact-cover
+tool refuses a corpus with a duplicate case, so it takes the pinned
+bundle's file list alone)
 classifies as `{Pass: 240, Fail: 120, QualityWarning: 4, NotSupported:
 93}` with zero `unclassified`, seal `959264ee4799`; the `Fail` split is
 `sampled_image_format_feature_withheld: 90`,
