@@ -159,12 +159,13 @@ r3v_native_image_barrier_layouts_ok(const VkImageMemoryBarrier *barrier)
 }
 
 /* Transfer-copy recording over the linear families.  A copy records
- * only into a command buffer with no render-pass record -- the buffer
- * holds either the qualified pass or copies, so execution order between
- * the two never arises -- and each region admits at record time: the
- * color aspect's single mip and layer, offsets and extents inside the
- * image, the buffer byte footprint inside the buffer's created size, and
- * the usage bit of each direction.  A refused region, an overflowing op
+ * while no render pass is open, and its record position relative to the
+ * deferred draw fixes the group the queue executes it in, so the pass
+ * and copies share one command buffer under recorded order.  Each
+ * region admits at record time: the color aspect's single mip and
+ * layer, offsets and extents inside the image, the buffer byte
+ * footprint inside the buffer's created size, and the usage bit of each
+ * direction.  A refused region, an overflowing op
  * list, or a mixed buffer poisons the recording.
  */
 static struct r3v_native_deferred_copy *
@@ -172,16 +173,17 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   /* EndRenderPass clears pass_target while the load-op clear remains in
-    * deferred_draw until submission.  Refuse transfers while that record
-    * is pending so the clear and copies keep separate command buffers.
+   /* A copy inside an open pass has no place in the render family's
+    * lowering, so an open pass_target refuses.  r3v_CmdEndRenderPass
+    * clears pass_target while the load-op clear stays in deferred_draw
+    * until submission, so deferred_draw.pending is exactly the record
+    * position that puts a copy after the draw.
     * Symbol discovery uses (rg --fixed-strings r3v_CmdEndRenderPass
     * src/amd/r300/vulkan/; rg --fixed-strings pass_target
     * src/amd/r300/vulkan/; rg --fixed-strings deferred_draw.pending
     * src/amd/r300/vulkan/).
     */
-   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
-       cmd_buffer->deferred_draw.pending) {
+   if (cmd_buffer->pass_target != NULL) {
       r3v_native_cmd_poison(commandBuffer);
       return NULL;
    }
@@ -221,6 +223,18 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
    }
 
    return &cmd_buffer->deferred_copies[cmd_buffer->deferred_copy_count];
+}
+
+/* The record position that fixes a copy's execution group: a pending
+ * deferred draw means the pass already recorded its load-op clear, so
+ * the copy follows the draw; every earlier copy precedes it.
+ */
+static enum r3v_native_copy_group
+r3v_native_copy_group_at_record(const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   return cmd_buffer->deferred_draw.pending
+             ? R3V_NATIVE_COPY_GROUP_AFTER_DRAW
+             : R3V_NATIVE_COPY_GROUP_BEFORE_DRAW;
 }
 
 static bool
@@ -435,6 +449,7 @@ r3v_CmdBlitImage(
          return;
       }
       *op = (struct r3v_native_deferred_copy){
+         .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
          .src_image = src,
          .dst_image = dst,
@@ -601,6 +616,7 @@ r3v_CmdClearColorImage(
          return;
       }
       *op = (struct r3v_native_deferred_copy){
+         .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_CLEAR_IMAGE,
          .dst_image = image,
          .width = image->width,
@@ -660,6 +676,7 @@ r3v_CmdCopyBuffer(
          return;
       }
       *op = (struct r3v_native_deferred_copy){
+         .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_BUFFER_TO_BUFFER,
          .src_buffer = src,
          .dst_buffer = dst,
@@ -703,6 +720,7 @@ r3v_CmdCopyBufferToImage(
          return;
       }
       *op = (struct r3v_native_deferred_copy){
+         .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_BUFFER_TO_IMAGE,
          .buffer = buffer,
          .dst_image = image,
@@ -760,6 +778,7 @@ r3v_CmdCopyImage(
          return;
       }
       *op = (struct r3v_native_deferred_copy){
+         .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
          .src_image = src,
          .dst_image = dst,
@@ -806,6 +825,7 @@ r3v_CmdCopyImageToBuffer(
          return;
       }
       *op = (struct r3v_native_deferred_copy){
+         .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_IMAGE_TO_BUFFER,
          .buffer = buffer,
          .src_image = image,
@@ -962,6 +982,7 @@ r3v_CmdFillBuffer(
       return;
    }
    *op = (struct r3v_native_deferred_copy){
+      .group = r3v_native_copy_group_at_record(cmd_buffer),
       .kind = R3V_NATIVE_COPY_FILL_BUFFER,
       .dst_buffer = dst,
       .dst_offset = dstOffset,
@@ -1273,6 +1294,7 @@ r3v_CmdUpdateBuffer(
    }
    memcpy(data, pData, dataSize);
    *op = (struct r3v_native_deferred_copy){
+      .group = r3v_native_copy_group_at_record(cmd_buffer),
       .kind = R3V_NATIVE_COPY_UPDATE_BUFFER,
       .dst_buffer = dst,
       .dst_offset = dstOffset,

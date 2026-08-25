@@ -1241,12 +1241,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
-      /* Recorded transfer copies execute here, per submission, through
-       * host mappings -- Vulkan's execution-time ordering, the same
-       * contract the deferred draw holds below.  The recording refuses
-       * a buffer mixing copies with the pass, so a copy-carrying
-       * buffer has no IB and finishes at the continue.
-       */
       /* Recorded query transitions publish here, in recorded order:
        * an end makes its query available with the exact zero count,
        * a reset returns its range to unavailable.
@@ -1278,24 +1272,28 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
-      VkResult copies =
-         r3v_native_cmd_buffer_execute_deferred_copies(device, cmd_buffer);
-      if (copies != VK_SUCCESS) {
-         /* The runtime folds every driver_submit failure through
+      /* A zero-IB command buffer can still carry a deferred load-op clear
+       * from an empty render pass, recorded transfer copies, or a
+       * recorded dispatch on the CPU compute route.  Execute that
+       * host-side work before treating the buffer as having no transport
+       * submission.
+       */
+      if (cmd_buffer->ib_size_dwords == 0) {
+         /* Recorded transfer copies execute per submission through host
+          * mappings -- Vulkan's execution-time ordering, the same
+          * contract the deferred draw holds.  The pre-draw group runs
+          * ahead of the load-op clear it was recorded before.  The
+          * runtime folds every driver_submit failure through
           * vk_queue_set_lost, so the application observes device loss
           * whatever code returns here; the loss is the honest verdict
           * for a submission whose earlier copies may already have
           * landed.
           */
-         return vk_error(device, VK_ERROR_DEVICE_LOST);
-      }
+         if (r3v_native_cmd_buffer_execute_deferred_copies(
+                device, cmd_buffer,
+                R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) != VK_SUCCESS)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
 
-      /* A zero-IB command buffer can still carry a deferred load-op clear
-       * from an empty render pass, or a recorded dispatch on the CPU
-       * compute route.  Execute that host-side work before treating the
-       * buffer as having no transport submission.
-       */
-      if (cmd_buffer->ib_size_dwords == 0) {
          VkResult dispatched =
             r3v_native_cmd_buffer_execute_deferred_dispatch(device,
                                                             cmd_buffer);
@@ -1314,6 +1312,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                return vk_error(device, VK_ERROR_DEVICE_LOST);
             return deferred;
          }
+
+         /* The post-draw group reads what the clear published, so it
+          * follows the deferred draw on this path as it follows the
+          * completion wait on the transport path.
+          */
+         if (r3v_native_cmd_buffer_execute_deferred_copies(
+                device, cmd_buffer,
+                R3V_NATIVE_COPY_GROUP_AFTER_DRAW) != VK_SUCCESS)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
          continue;
       }
 
@@ -1572,6 +1579,20 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           r3v_native_arming_verdict_name(arming));
       }
 
+      /* The pre-draw copies land with the draw's own writes, past every
+       * gate and ahead of the publish loop below, so a copy into a BO the
+       * IB references reaches memory before the ioctl and a refused
+       * submission leaves application memory untouched.
+       */
+      if (r3v_native_cmd_buffer_execute_deferred_copies(
+             device, cmd_buffer,
+             R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) != VK_SUCCESS) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      }
+
       /* The public draw's vertex reads and load-op clear execute here,
        * per submission, so the stream bytes the carrier travels with are
        * the ones live at submit -- Vulkan's execution-time ordering.
@@ -1736,6 +1757,16 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             r3v_native_deferred_dispatch_verify_gpu(device, cmd_buffer);
       if (gpu_verdict != VK_SUCCESS)
          return gpu_verdict;
+
+      /* The post-draw copies read the completed submission: execution
+       * here is past the completion wait, and execute_copy's own source
+       * invalidate drops the stale lines over the mapping it takes, so a
+       * read of the render target observes the device output.
+       */
+      if (r3v_native_cmd_buffer_execute_deferred_copies(
+             device, cmd_buffer,
+             R3V_NATIVE_COPY_GROUP_AFTER_DRAW) != VK_SUCCESS)
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
       /* The transcript lands on the capture cadence after a completed
        * submission, so a planning pass cut short keeps the entries that
        * landed; a write failure loses the queue, since a plan missing an

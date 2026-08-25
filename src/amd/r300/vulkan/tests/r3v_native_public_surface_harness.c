@@ -1455,21 +1455,36 @@ main(void)
          .size = copy_w * copy_h * sizeof(uint32_t),
       };
 
-      /* An empty render pass retains its load-op clear after EndRenderPass.
-       * A transfer recorded after that pass would execute before the clear
-       * on the zero-IB queue path, so recording refuses the mixed buffer.
+      /* An empty render pass retains its load-op clear after
+       * EndRenderPass, and a transfer recorded on either side of it
+       * admits under the group its record position fixes: the copy
+       * before the pass joins the pre-draw group, the copy after it the
+       * post-draw group, and a second pass still refuses.
        */
-      VkCommandBuffer empty_pass_copy_cmd = fresh_cmd();
-      vkCmdBeginRenderPass(empty_pass_copy_cmd, &begin_pass,
+      VkCommandBuffer ordered_copy_cmd = fresh_cmd();
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_ordered_copy,
+                     ordered_copy_cmd);
+      vkCmdCopyBuffer(ordered_copy_cmd, staging, staging, 1, &buffer_copy);
+      assert(native_ordered_copy->deferred_copy_count == 1);
+      assert(native_ordered_copy->deferred_copies[0].group ==
+             R3V_NATIVE_COPY_GROUP_BEFORE_DRAW);
+      vkCmdBeginRenderPass(ordered_copy_cmd, &begin_pass,
                            VK_SUBPASS_CONTENTS_INLINE);
-      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_empty_pass_copy,
-                     empty_pass_copy_cmd);
-      vkCmdEndRenderPass(empty_pass_copy_cmd);
-      vkCmdCopyBuffer(empty_pass_copy_cmd, staging, staging, 1,
-                      &buffer_copy);
-      assert(native_empty_pass_copy->deferred_draw.pending);
-      assert(native_empty_pass_copy->deferred_copy_count == 0);
-      assert(vkEndCommandBuffer(empty_pass_copy_cmd) ==
+      vkCmdEndRenderPass(ordered_copy_cmd);
+      vkCmdCopyBuffer(ordered_copy_cmd, staging, staging, 1, &buffer_copy);
+      assert(native_ordered_copy->deferred_draw.pending);
+      assert(native_ordered_copy->deferred_copy_count == 2);
+      assert(native_ordered_copy->deferred_copies[1].group ==
+             R3V_NATIVE_COPY_GROUP_AFTER_DRAW);
+      assert(vkEndCommandBuffer(ordered_copy_cmd) == VK_SUCCESS);
+
+      VkCommandBuffer second_pass_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(second_pass_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(second_pass_cmd);
+      vkCmdBeginRenderPass(second_pass_cmd, &begin_pass,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      assert(vkEndCommandBuffer(second_pass_cmd) ==
              R3V_NATIVE_REFUSAL_RESULT);
 
       vkCmdCopyBuffer(copy_cmd, staging, staging, 1, &buffer_copy);
@@ -1823,6 +1838,188 @@ main(void)
       assert(pixel_map[transfer_image_base_word + 16 + 2] ==
              (0x40000000u | 0));
       vkUnmapMemory(device, mem_a);
+
+      /* Execution order around the deferred draw, through the queue:
+       * one command buffer records a buffer-to-image upload, an
+       * image-to-buffer read of the render target, the pass carrying
+       * its load-op clear, and a second image-to-buffer read of the
+       * same target.  The two reads land in separate readback rows, so
+       * the row the pre-draw group wrote holds the target's seed and
+       * the row the post-draw group wrote holds the clear texel: the
+       * clear separates them, and either group executing on the wrong
+       * side of it lands the other row's bytes.  Each image source read
+       * runs its own cache invalidate at execution, so the sync count
+       * advances over the submission.
+       */
+      {
+         const uint32_t ordered_seed = 0xa1a1a1a1u;
+         VkImageCreateInfo ordered_info = image_info;
+         ordered_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+         VkImage ordered_image = VK_NULL_HANDLE;
+         assert(vkCreateImage(device, &ordered_info, NULL,
+                              &ordered_image) == VK_SUCCESS);
+         VkDeviceMemory ordered_memory = VK_NULL_HANDLE;
+         assert(vkAllocateMemory(
+                   device,
+                   &(VkMemoryAllocateInfo){
+                      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                      .allocationSize = R3V_NATIVE_TARGET_MEMORY_BYTES,
+                      .memoryTypeIndex = 0,
+                   },
+                   NULL, &ordered_memory) == VK_SUCCESS);
+         assert(vkBindImageMemory(device, ordered_image, ordered_memory,
+                                  0) == VK_SUCCESS);
+         uint32_t *ordered_map = NULL;
+         assert(vkMapMemory(device, ordered_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&ordered_map) == VK_SUCCESS);
+         for (unsigned i = 0; i < R3V_NATIVE_TARGET_MEMORY_BYTES / 4; i++)
+            ordered_map[i] = ordered_seed;
+         vkUnmapMemory(device, ordered_memory);
+
+         VkImageView ordered_view = VK_NULL_HANDLE;
+         assert(vkCreateImageView(
+                   device,
+                   &(VkImageViewCreateInfo){
+                      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                      .image = ordered_image,
+                      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                      .format = R3V_NATIVE_TARGET_FORMAT,
+                      .subresourceRange =
+                         {
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .levelCount = 1,
+                            .layerCount = 1,
+                         },
+                   },
+                   NULL, &ordered_view) == VK_SUCCESS);
+         VkFramebuffer ordered_framebuffer = VK_NULL_HANDLE;
+         assert(vkCreateFramebuffer(
+                   device,
+                   &(VkFramebufferCreateInfo){
+                      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                      .renderPass = pass,
+                      .attachmentCount = 1,
+                      .pAttachments = &ordered_view,
+                      .width = R3V_NATIVE_TARGET_WIDTH,
+                      .height = R3V_NATIVE_TARGET_HEIGHT,
+                      .layers = 1,
+                   },
+                   NULL, &ordered_framebuffer) == VK_SUCCESS);
+
+         /* (0.25, 0.5, 0.75, 1) reaches bytes 64, 128, 191, 255, which
+          * B8G8R8A8 stores as 0xff4080bf.
+          */
+         const uint32_t ordered_clear_dword = 0xff4080bfu;
+         VkRenderPassBeginInfo ordered_begin = begin_pass;
+         ordered_begin.framebuffer = ordered_framebuffer;
+         ordered_begin.pClearValues = &(VkClearValue){
+            .color = { .float32 = { 0.25f, 0.5f, 0.75f, 1.0f } },
+         };
+
+         VkBuffer readback = VK_NULL_HANDLE;
+         assert(vkCreateBuffer(
+                   device,
+                   &(VkBufferCreateInfo){
+                      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                      .size = 2 * R3V_NATIVE_TARGET_ROW_BYTES,
+                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                   },
+                   NULL, &readback) == VK_SUCCESS);
+         VkDeviceMemory readback_memory = VK_NULL_HANDLE;
+         assert(vkAllocateMemory(
+                   device,
+                   &(VkMemoryAllocateInfo){
+                      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                      .allocationSize = 2 * R3V_NATIVE_TARGET_ROW_BYTES,
+                      .memoryTypeIndex = 0,
+                   },
+                   NULL, &readback_memory) == VK_SUCCESS);
+         assert(vkBindBufferMemory(device, readback, readback_memory, 0) ==
+                VK_SUCCESS);
+
+         VkBufferImageCopy row_read = {
+            .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .layerCount = 1 },
+            .imageExtent = { R3V_NATIVE_TARGET_WIDTH, 1, 1 },
+         };
+
+         /* The transfer image returns to the sentinel, so the upload
+          * this submission carries is the one the assert reads.
+          */
+         uint32_t *reseed_map = NULL;
+         assert(vkMapMemory(device, mem_a, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&reseed_map) == VK_SUCCESS);
+         for (uint32_t t = 0; t < transfer_allocation_words; t++)
+            reseed_map[t] = R300_TRIANGLE_COLOR_SENTINEL;
+         vkUnmapMemory(device, mem_a);
+
+         VkCommandBuffer ordered_cmd = fresh_cmd();
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_ordered, ordered_cmd);
+         vkCmdCopyBufferToImage(ordered_cmd, staging, img_a,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                &upload);
+         vkCmdCopyImageToBuffer(ordered_cmd, ordered_image,
+                                VK_IMAGE_LAYOUT_GENERAL, readback, 1,
+                                &row_read);
+         vkCmdBeginRenderPass(ordered_cmd, &ordered_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdEndRenderPass(ordered_cmd);
+         row_read.bufferOffset = R3V_NATIVE_TARGET_ROW_BYTES;
+         vkCmdCopyImageToBuffer(ordered_cmd, ordered_image,
+                                VK_IMAGE_LAYOUT_GENERAL, readback, 1,
+                                &row_read);
+         assert(vkEndCommandBuffer(ordered_cmd) == VK_SUCCESS);
+         assert(native_ordered->ib_size_dwords == 0);
+         assert(native_ordered->deferred_copy_count == 3);
+         assert(native_ordered->deferred_copies[0].group ==
+                R3V_NATIVE_COPY_GROUP_BEFORE_DRAW);
+         assert(native_ordered->deferred_copies[1].group ==
+                R3V_NATIVE_COPY_GROUP_BEFORE_DRAW);
+         assert(native_ordered->deferred_copies[2].group ==
+                R3V_NATIVE_COPY_GROUP_AFTER_DRAW);
+
+         const uint64_t ordered_sync_before =
+            native_device->drm.cache_sync_count;
+         assert(vkQueueSubmit(queue, 1,
+                              &(VkSubmitInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                 .commandBufferCount = 1,
+                                 .pCommandBuffers = &ordered_cmd,
+                              },
+                              VK_NULL_HANDLE) == VK_SUCCESS);
+         assert(native_device->drm.cache_sync_count > ordered_sync_before);
+
+         uint32_t *readback_map = NULL;
+         assert(vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&readback_map) == VK_SUCCESS);
+         assert(readback_map[0] == ordered_seed);
+         assert(readback_map[R3V_NATIVE_TARGET_WIDTH - 1] == ordered_seed);
+         assert(readback_map[R3V_NATIVE_TARGET_WIDTH] ==
+                ordered_clear_dword);
+         assert(readback_map[2 * R3V_NATIVE_TARGET_WIDTH - 1] ==
+                ordered_clear_dword);
+         vkUnmapMemory(device, readback_memory);
+
+         /* The upload the pre-draw group carried landed in the transfer
+          * image the pass never touches.
+          */
+         uint32_t *upload_map = NULL;
+         assert(vkMapMemory(device, mem_a, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&upload_map) == VK_SUCCESS);
+         assert(upload_map[transfer_image_base_word + 16 + 2] ==
+                (0x40000000u | 0));
+         vkUnmapMemory(device, mem_a);
+
+         vkDestroyBuffer(device, readback, NULL);
+         vkFreeMemory(device, readback_memory, NULL);
+         vkDestroyFramebuffer(device, ordered_framebuffer, NULL);
+         vkDestroyImageView(device, ordered_view, NULL);
+         vkDestroyImage(device, ordered_image, NULL);
+         vkFreeMemory(device, ordered_memory, NULL);
+      }
 
       /* Whole-image clear on a padded-pitch image: a 3-texel row rides
        * a 16-texel pitch, so the fill's row walk is observable -- the
@@ -3134,7 +3331,8 @@ main(void)
       assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_copy, copy_cmd);
       assert(r3v_native_cmd_buffer_execute_deferred_copies(
-                native_device, native_copy) == VK_SUCCESS);
+                native_device, native_copy,
+                R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) == VK_SUCCESS);
 
       uint32_t *readback_map = NULL;
       assert(vkMapMemory(device, readback_memory, 0, VK_WHOLE_SIZE, 0,

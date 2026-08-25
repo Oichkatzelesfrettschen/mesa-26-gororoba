@@ -207,7 +207,12 @@ execute_copy(struct r3v_native_device *device,
 
    /* A source image the render pass drew into holds device output in an
     * unsnooped GTT mapping, so the host read invalidates the cache
-    * lines covering it first; CLFLUSH writes back and invalidates, so
+    * lines covering it first.  The invalidate runs here, at execution,
+    * and the queue executes the post-draw group after the completion
+    * wait, so the lines dropped are the ones the completed submission
+    * left stale; the queue's own post-completion sync reaches only the
+    * mappings the application already holds, and this one covers the
+    * mapping the copy takes.  CLFLUSH writes back and invalidates, so
     * the same primitive that publishes host writes serves the read
     * direction, and a mapping the application already holds keeps its
     * pending writes.
@@ -241,11 +246,15 @@ execute_copy(struct r3v_native_device *device,
 VkResult
 r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_device *device,
-   struct r3v_native_cmd_buffer *cmd_buffer)
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   enum r3v_native_copy_group group)
 {
    for (uint32_t i = 0; i < cmd_buffer->deferred_copy_count; i++) {
-      VkResult result =
-         execute_copy(device, &cmd_buffer->deferred_copies[i]);
+      const struct r3v_native_deferred_copy *op =
+         &cmd_buffer->deferred_copies[i];
+      if (op->group != group)
+         continue;
+      VkResult result = execute_copy(device, op);
       if (result != VK_SUCCESS)
          return result;
    }
