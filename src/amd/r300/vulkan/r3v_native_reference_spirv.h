@@ -20,11 +20,20 @@
  * vec4(0, 1, 0, 1).  The render-shape cell carries the constant the
  * admitted module wrote into its four R300_PFS_PARAM_0 payloads, so
  * this module renders 0xff00ff00 in a B8G8R8A8_UNORM target and
- * 0xff0000ff in an R8G8B8A8_UNORM one.  Regeneration is
+ * 0xff0000ff in an R8G8B8A8_UNORM one.  The constant appears below as
+ * R3V_REFERENCE_FRAGMENT_COLOR_BITS, the four binary32 bit patterns a
+ * consumer predicting this module's stream reads.  Regeneration is
  * glslangValidator -V --target-env vulkan1.0; the checked-in words are
  * the authority and a regenerated blob replaces them only through this
  * header.
  */
+
+/* vec4(0, 1, 0, 1) as the four RGBA binary32 bit patterns the fragment
+ * module writes; each lies on the FP24 lattice, so the render-shape
+ * cell's R300_PFS_PARAM_0 payloads carry it exactly.
+ */
+#define R3V_REFERENCE_FRAGMENT_COLOR_BITS \
+   { 0x00000000u, 0x3f800000u, 0x00000000u, 0x3f800000u }
 
 static const uint32_t r3v_reference_vertex_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000015,

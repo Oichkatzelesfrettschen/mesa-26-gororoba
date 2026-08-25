@@ -20,6 +20,22 @@
 #define R300_RETAINED_CPU_ROUTE_IB_BLAKE3 \
    "ddbb5e9e38257994a5433a3e0af1cf0da094acb8fd6c1b7d7f09916fa3d41821"
 
+/* The public draw surface's own stream at the reference target: the
+ * render-shape cell over the reference geometry with the constant the
+ * admitted fragment module wrote -- the reference module's
+ * vec4(0, 1, 0, 1) -- so the executed constant is the pipeline's rather
+ * than the emitter's baked oracle color.  The stream differs from the
+ * retained CPU route in the four R300_PFS_PARAM_0 payloads alone and
+ * keeps its dword count.  The constant mechanism -- the four payloads
+ * the shape writes and the UNORM8 value they render -- carries the
+ * attended render-shape procedure's constant arm as its silicon
+ * witness; this stream's own identity is the host composition below.
+ */
+#define R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS \
+   R300_RETAINED_CPU_ROUTE_IB_DWORDS
+#define R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3 \
+   "3a3443902879a0c86e30bc6e1d2ba69c933a306902838040363239b80bd60030"
+
 /* GPU route: the composed public R2VB producer stream from
  * r300_r2vb_public_route_reference_compose(), producer then consumer. */
 #define R300_RETAINED_GPU_ROUTE_IB_DWORDS 547u

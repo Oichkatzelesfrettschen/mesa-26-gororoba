@@ -345,34 +345,32 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * byte-identical reference cell backing the arming digest and the
     * manifest.
     *
-    * Two emitters cover the recorded draws.  The reference target --
-    * the reference pitch and lane order at an extent inside the
-    * reference cell's own -- is the target a retained route receipt
-    * names, and it renders the fragment constant that receipt covers,
-    * so the parameterized cell family emits it and a varying record
-    * shape or a host-expanded instance count is emittable there.  Any
-    * other target lies outside every retained receipt, so it takes the
-    * render-shape emitter, which places extent, pitch, lane order, and
-    * the fragment constant the admitted module wrote, each through its
-    * one register class; that emitter carries one triangle of a
-    * position-only record shape, and a draw at such a target needing a
-    * varying shape or several triangles has no emitter and refuses.
+    * Two emitters cover the recorded draws.  Every constant-color
+    * single-triangle draw takes the render-shape emitter, which places
+    * extent, pitch, lane order, target offset, and the fragment
+    * constant the admitted module wrote, each through its one register
+    * class, so the constant that executes is the pipeline's own at
+    * every target including the reference one.  A varying record shape
+    * and a host-expanded instance count have their emitter in the
+    * parameterized cell family alone, which carries the reference
+    * pitch, lane order, and base offset, so those two shapes execute
+    * at the reference target and refuse elsewhere.
     */
    struct r300_triangle_render_shape reference;
    r300_tcl_bypass_triangle_render_shape_reference(&reference);
    const bool reference_target =
       shape->pitch_pixels == reference.pitch_pixels &&
-      shape->lanes == reference.lanes &&
+      shape->lanes == reference.lanes && shape->target_offset == 0 &&
       shape->width <= reference.width && shape->height <= reference.height;
    struct r300_tcl_bypass_triangle_ib cell;
    int emit_result;
-   if (reference_target) {
+   if (varying || triangle_count != 1) {
+      if (!reference_target)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       emit_result = r300_tcl_bypass_triangle_family_emit(
          shape->width, shape->height, varying, triangle_count, &cell);
-   } else if (!varying && triangle_count == 1) {
-      emit_result = r300_tcl_bypass_triangle_render_shape_emit(shape, &cell);
    } else {
-      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      emit_result = r300_tcl_bypass_triangle_render_shape_emit(shape, &cell);
    }
    if (emit_result != 0)
       return vk_error(device,

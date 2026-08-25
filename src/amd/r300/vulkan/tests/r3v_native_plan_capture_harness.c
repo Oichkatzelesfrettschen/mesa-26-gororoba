@@ -728,8 +728,9 @@ main(int argc, char **argv)
    assert(r3v_native_plan_parse(text, n, &p) == R3V_NATIVE_PLAN_PARSE_OK);
    assert(p.submission_count == 2 && p.max_submissions == 2);
    assert(strcmp(p.submissions[0].ib_blake3,
-                 R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
-   assert(p.submissions[0].ib_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+                 R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3) == 0);
+   assert(p.submissions[0].ib_dwords ==
+          R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
    assert(strcmp(p.submissions[1].ib_blake3, two_digest) == 0);
    assert(strcmp(p.submissions[0].ib_blake3, p.submissions[1].ib_blake3) != 0);
    for (unsigned i = 0; i < 2; i++) {
@@ -751,7 +752,7 @@ main(int argc, char **argv)
       }
       assert(command_bytes == reqs.size + 4096);
    }
-   assert(p.max_ib_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
+   assert(p.max_ib_dwords == R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
    assert(p.max_relocs == 3);
    assert(p.max_cumulative_bytes == 2 * (reqs.size + 4096 + 4));
    struct utsname host;

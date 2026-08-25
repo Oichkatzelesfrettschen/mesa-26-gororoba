@@ -1245,12 +1245,18 @@ main(void)
 
    /* The harness links the implementation, so the installed IB and the
     * owned carrier are directly readable: the public route records the
-    * reference cell's exact dwords over the reference vertex bytes.
+    * render-shape cell at the reference geometry carrying the bound
+    * fragment module's constant, over the reference vertex bytes.
     */
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cmd, cmd);
    VK_FROM_HANDLE(r3v_native_device, native_device, device);
+   struct r300_triangle_render_shape module_shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&module_shape);
+   const uint32_t module_color[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
+   memcpy(module_shape.color_bits, module_color, sizeof(module_color));
    struct r300_tcl_bypass_triangle_ib reference;
-   assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&module_shape,
+                                                     &reference) == 0);
    assert(native_cmd->ib_size_dwords == reference.ib_size_dwords);
    assert(memcmp(native_cmd->ib, reference.ib,
                  reference.ib_size_dwords * sizeof(uint32_t)) == 0);
@@ -2429,6 +2435,10 @@ main(void)
              expected_producer.ib_size_dwords);
       assert(native_gpu->ib_size_dwords ==
              expected_producer.ib_size_dwords + consumer_dwords);
+      struct r300_tcl_bypass_triangle_ib module_shape_cell;
+      assert(r300_tcl_bypass_triangle_render_shape_emit(
+                &module_shape, &module_shape_cell) == 0);
+      assert(module_shape_cell.ib_size_dwords == consumer_dwords);
       assert(memcmp(native_gpu->ib, expected_producer.ib,
                     expected_producer.ib_size_dwords * 4) == 0);
       assert(native_gpu->references[R300_TRIANGLE_SLOT_VERTEX]
@@ -2451,9 +2461,18 @@ main(void)
       assert(authorized.ib_size_dwords == native_gpu->ib_size_dwords);
       assert(authorized.consumer_start_dwords ==
              native_gpu->deferred_draw.gpu_producer_dwords);
+      /* The producer prefix is the offline composition's byte for
+       * byte; the consumer slice carries the bound module's fragment
+       * constant, so it equals the render-shape cell at the reference
+       * geometry with that constant.
+       */
       assert(memcmp(authorized.ib, native_gpu->ib,
-                    authorized.ib_size_dwords * 4) == 0);
+                    authorized.consumer_start_dwords * 4) == 0);
+      assert(memcmp(module_shape_cell.ib,
+                    native_gpu->ib + authorized.consumer_start_dwords,
+                    module_shape_cell.ib_size_dwords * 4) == 0);
       r300_r2vb_public_route_release(&authorized);
+      r300_tcl_bypass_triangle_release(&module_shape_cell);
 
       assert(radeon_drm_vk_bo_map(&native_device->drm,
                                   &native_gpu->owned_carrier->bo,
