@@ -2736,3 +2736,120 @@ r3v_native_record_r2vb_status_load_burst_float4_model(
    return record_status_load_burst_width(commandBuffer, carrierMemory,
                                          vertexMemory, draws, true);
 }
+
+/* Records the composed render-then-sample cell: one stream renders the
+ * first shape into the render target, publishes it through the
+ * destination-cache flush the render half closes with, then invalidates
+ * the texture tags and samples that target into the second target.  The
+ * first target fills two slots, so the reference array is built merged
+ * -- one entry per buffer object, in slot order, the shared entry
+ * carrying both the write domain the render half needs and the read
+ * domain the sample half's texture check needs -- and the cell's
+ * relocation payloads are bound to that array's own positions.  The
+ * queue merges by handle again over the same list, which is then
+ * idempotent, so the indices the digest covers are the indices the
+ * kernel reads.
+ */
+VkResult
+r3v_native_record_composed_render_sample(
+   VkCommandBuffer commandBuffer, VkDeviceMemory renderVertexMemory,
+   VkDeviceMemory renderColorMemory, VkDeviceMemory sampleVertexMemory,
+   VkDeviceMemory sampleColorMemory,
+   const struct r300_triangle_composed_render_sample *composed)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, render_vertex, renderVertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, render_color, renderColorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, sample_vertex, sampleVertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, sample_color, sampleColorMemory);
+
+   if (cmd_buffer == NULL || render_vertex == NULL || render_color == NULL ||
+       sample_vertex == NULL || sample_color == NULL || composed == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   /* The four roles the cell fills: the two vertex arrays, the shared
+    * first target, and the second target.  A handle repeated across two
+    * of them would merge entries the payload binding cannot separate,
+    * since a merged entry carries one domain pair for both roles.
+    */
+   struct r3v_native_memory *const role[4] = { render_vertex, render_color,
+                                               sample_vertex, sample_color };
+   for (unsigned a = 0; a < 4; a++) {
+      for (unsigned b = a + 1; b < 4; b++) {
+         if (role[a]->bo.handle == role[b]->bo.handle)
+            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                             "r3v-native: composed cell roles require "
+                             "distinct GEM objects");
+      }
+   }
+
+   struct r3v_tcl_bypass_composed_slot {
+      struct r3v_native_memory *memory;
+      uint32_t read_domains;
+      uint32_t write_domain;
+   };
+   const struct r3v_tcl_bypass_composed_slot slots[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = { render_vertex, RADEON_GEM_DOMAIN_GTT, 0 },
+      [R300_TRIANGLE_SLOT_COLOR] = { render_color, 0, RADEON_GEM_DOMAIN_GTT },
+      [R300_TRIANGLE_SLOT_TEXTURE] = { render_color, RADEON_GEM_DOMAIN_GTT, 0 },
+      [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = { sample_vertex,
+                                               RADEON_GEM_DOMAIN_GTT, 0 },
+      [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = { sample_color, 0,
+                                              RADEON_GEM_DOMAIN_GTT },
+   };
+
+   struct r3v_native_bo_reference *references =
+      calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));
+   if (references == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   /* One merge, by the winsys rule: first-add order, one entry per
+    * handle, domains ORed.  The map reads back the array's own
+    * positions, so the payloads and the entries cannot drift apart.
+    */
+   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t reference_count = 0;
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+      uint32_t found = reference_count;
+      for (uint32_t i = 0; i < reference_count; i++) {
+         if (references[i].handle == slots[slot].memory->bo.handle) {
+            found = i;
+            break;
+         }
+      }
+      if (found == reference_count) {
+         references[reference_count++] = (struct r3v_native_bo_reference){
+            .handle = slots[slot].memory->bo.handle,
+            .memory = slots[slot].memory,
+         };
+      }
+      references[found].read_domains |= slots[slot].read_domains;
+      references[found].write_domain |= slots[slot].write_domain;
+      slot_index[slot] = found;
+   }
+
+   struct r300_tcl_bypass_triangle_ib cell;
+   int emit_result =
+      r300_tcl_bypass_triangle_composed_render_sample_emit(composed, &cell);
+   if (emit_result == 0) {
+      emit_result = r300_tcl_bypass_triangle_bind_reloc_indices(
+         &cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
+      if (emit_result != 0)
+         r300_tcl_bypass_triangle_release(&cell);
+   }
+   if (emit_result != 0) {
+      free(references);
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+   }
+
+   r3v_native_cmd_buffer_install_ib(
+      cmd_buffer, R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE,
+      cell.ib, cell.ib_size_dwords, references, reference_count);
+   cell.ib = NULL;
+   r300_tcl_bypass_triangle_release(&cell);
+   return VK_SUCCESS;
+}

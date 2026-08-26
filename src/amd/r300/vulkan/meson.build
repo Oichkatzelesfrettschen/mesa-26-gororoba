@@ -1446,6 +1446,27 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # Direct-write control harness on the same shim fixture: the 2D
   # solid-fill cell through the same recorder/queue/retention path,
   # armed by the control's own digest in the open leg.
+  # Composed render-then-sample recorder on the same shim fixture: the
+  # record-time relocation contract, where five slots reach four buffer
+  # objects and the payloads name the merged indices.
+  r3v_native_composed_cell_harness = executable(
+    'r3v_native_composed_cell_harness',
+    files('tests/r3v_native_composed_cell_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r3v-native-composed-cell-reloc-contract',
+    r3v_native_composed_cell_harness,
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   r3v_native_direct_write_harness = executable(
     'r3v_native_direct_write_harness',
     files('tests/r3v_native_direct_write_harness.c'),
