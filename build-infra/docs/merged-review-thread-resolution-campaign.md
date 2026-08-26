@@ -203,8 +203,8 @@ mutation journal records an ordered resolution prefix after every successful
 mutation and becomes complete only after the all-ID postflight.  The run began
 at `2026-08-26T21:33:23Z`; the final live verification completed at
 `2026-08-26T21:34:09Z`.  The terminal frontier and ledger contain 50 closed,
-re-verified rows.  The batch registry remains
-`resolved-pending-ledger-merge` until those artifacts merge to `main`.
+re-verified rows.  The batch registry remains the canonical owner of terminal
+campaign state and closure merge identity.
 
 ## Verification
 
