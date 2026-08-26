@@ -912,13 +912,13 @@ r3v_CmdEndQuery(
    cmd_buffer->active_query_pool = NULL;
 }
 
-/* Executing a secondary buffer replays its recorded sequence, and the
- * one sequence the native recording admits into a secondary is the
- * empty one, so the execute is exact as a no-op: each listed buffer
- * must be a secondary whose recording left no observable state --
- * no IB, no deferred draw, copies, or query ops, and no dynamic
- * viewport/scissor -- and the call itself runs outside a pass and
- * outside an active query span like the work it replays.
+/* The execute appends the secondary's host-executed ops to the primary
+ * in recorded order: each copy takes the group the primary's record
+ * position fixes, and event and query ops publish with the primary's
+ * own at submission.  A secondary holding state the append cannot
+ * carry -- an IB, a deferred draw or dispatch, dynamic
+ * viewport/scissor, an open query span -- or a poisoned recording
+ * refuses.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdExecuteCommands(
@@ -938,14 +938,38 @@ r3v_CmdExecuteCommands(
       VK_FROM_HANDLE(r3v_native_cmd_buffer, secondary, pCommandBuffers[i]);
       if (secondary == NULL ||
           secondary->vk.level != VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
+          secondary->vk.record_result != VK_SUCCESS ||
           secondary->ib_size_dwords != 0 ||
           secondary->deferred_draw.pending || secondary->draw_recorded ||
-          secondary->deferred_copy_count != 0 ||
-          secondary->query_op_count != 0 ||
+          secondary->deferred_dispatch.pending ||
           secondary->active_query_pool != NULL ||
           secondary->viewport_set || secondary->scissor_set) {
          r3v_native_cmd_poison(commandBuffer);
          return;
+      }
+      if (cmd_buffer->event_op_count + secondary->event_op_count >
+             R3V_NATIVE_EVENT_OP_MAX ||
+          cmd_buffer->query_op_count + secondary->query_op_count >
+             R3V_NATIVE_QUERY_OP_MAX) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      for (uint32_t c = 0; c < secondary->deferred_copy_count; c++) {
+         struct r3v_native_deferred_copy *op =
+            r3v_native_copy_slot(commandBuffer);
+         if (op == NULL)
+            return;
+         *op = secondary->deferred_copies[c];
+         op->group = r3v_native_copy_group_at_record(cmd_buffer);
+         cmd_buffer->deferred_copy_count++;
+      }
+      for (uint32_t e = 0; e < secondary->event_op_count; e++) {
+         cmd_buffer->event_ops[cmd_buffer->event_op_count++] =
+            secondary->event_ops[e];
+      }
+      for (uint32_t q = 0; q < secondary->query_op_count; q++) {
+         cmd_buffer->query_ops[cmd_buffer->query_op_count++] =
+            secondary->query_ops[q];
       }
    }
 }
