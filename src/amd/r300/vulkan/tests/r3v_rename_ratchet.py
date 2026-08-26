@@ -17,6 +17,8 @@ product identity and are not tokens here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -44,6 +46,15 @@ LEDGER = "docs/r3v-rename-allowlist.txt"
 # The ratchet names the tokens it scans for.
 SELF = "src/amd/r300/vulkan/tests/r3v_rename_ratchet.py"
 SKIP_DIRS = {".git", "__pycache__"}
+# Retained review-thread evidence: raw GraphQL responses recorded verbatim
+# from the forge, which quote whatever spelling a pull request carried at
+# the time.  The ratchet governs maintained source and documentation, so
+# these bytes leave the token scan and take an integrity check instead --
+# the sibling manifest.json pins each one by SHA-256, so a raw file that
+# changed fails here rather than passing as evidence.
+IMMUTABLE_EVIDENCE = re.compile(
+    r"^build-infra/docs/review-thread-frontiers/[^/]+/raw/")
+EVIDENCE_MANIFEST = "manifest.json"
 TEXT_SUFFIXES = {
     ".build", ".options", ".c", ".h", ".py", ".sh", ".md", ".txt", ".rst",
     ".json", ".tsv", ".meson", ".install", ".in", ".cfg", ".yml", ".yaml",
@@ -87,11 +98,47 @@ def scan_files(root: Path):
             yield path
 
 
+def immutable_evidence(root: Path) -> list[Path]:
+    return [path for path in scan_files(root)
+            if IMMUTABLE_EVIDENCE.match(path.relative_to(root).as_posix())]
+
+
+def check_evidence_integrity(root: Path) -> list[str]:
+    """Every immutable raw file matches the digest its bundle manifest
+    pins.  A file the manifest does not name cannot be shown immutable,
+    so it fails the same way a modified one does."""
+    failures: list[str] = []
+    manifests: dict[Path, dict[str, str]] = {}
+    for path in immutable_evidence(root):
+        rel = path.relative_to(root).as_posix()
+        bundle = path.parent.parent
+        if bundle not in manifests:
+            manifest = bundle / EVIDENCE_MANIFEST
+            try:
+                manifests[bundle] = json.loads(
+                    manifest.read_text(encoding="utf-8")).get("files", {})
+            except (OSError, ValueError):
+                manifests[bundle] = {}
+        key = f"raw/{path.name}"
+        pinned = manifests[bundle].get(key)
+        if pinned is None:
+            failures.append(
+                f"{rel}: immutable evidence outside the bundle manifest; "
+                f"{EVIDENCE_MANIFEST} pins no {key}")
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != pinned:
+            failures.append(
+                f"{rel}: immutable evidence modified; manifest pins "
+                f"{pinned[:16]} and the file hashes {digest[:16]}")
+    return failures
+
+
 def find_hits(root: Path) -> dict[tuple[str, str], list[int]]:
     hits: dict[tuple[str, str], list[int]] = {}
     for path in scan_files(root):
         rel = path.relative_to(root).as_posix()
-        if rel in (LEDGER, SELF):
+        if rel in (LEDGER, SELF) or IMMUTABLE_EVIDENCE.match(rel):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -129,6 +176,7 @@ def check(root: Path, ledger_text: str) -> list[str]:
         rows = read_ledger(ledger_text)
     except ValueError as error:
         return [str(error)]
+    failures.extend(check_evidence_integrity(root))
     hits = find_hits(root)
     allowed = {(row["path"], row["token"]) for row in rows}
     seen_rows: set[tuple[str, str]] = set()
@@ -207,6 +255,33 @@ def selftest() -> int:
             "struct x; /* libvulkan_r3v_native */\n", encoding="utf-8")
         expect("identity-hit", check(root, good), True,
                "libvulkan_r3v_native spelling outside")
+        (root / "src/c.c").unlink()
+
+        # Immutable retained evidence: the same forbidden spelling that
+        # fails in maintained source passes here, and the manifest is
+        # what decides the file is the evidence it claims to be.
+        bundle = root / ("build-infra/docs/review-thread-frontiers/"
+                         "merged-thread-frontier-fixture")
+        raw = bundle / "raw"
+        raw.mkdir(parents=True)
+        evidence = raw / "merged-prs-0001.json"
+        evidence.write_text('{"body": "r300vk"}\n', encoding="utf-8")
+        manifest = bundle / EVIDENCE_MANIFEST
+
+        def pin(text: str) -> None:
+            manifest.write_text(json.dumps({"files": {
+                "raw/merged-prs-0001.json":
+                    hashlib.sha256(text.encode()).hexdigest()}}),
+                encoding="utf-8")
+
+        pin(evidence.read_text(encoding="utf-8"))
+        expect("immutable-evidence-ignored", check(root, good), False)
+        pin("different bytes\n")
+        expect("immutable-evidence-modified", check(root, good), True,
+               "immutable evidence modified")
+        manifest.write_text(json.dumps({"files": {}}), encoding="utf-8")
+        expect("immutable-evidence-unpinned", check(root, good), True,
+               "outside the bundle manifest")
 
     failed = [label for label, ok in checks if not ok]
     for label, ok in checks:
