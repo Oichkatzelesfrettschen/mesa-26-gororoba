@@ -13,8 +13,8 @@ commit whose state a revision of this table describes.
 
 | Repository | Head | Subject |
 |---|---|---|
-| `mesa-26-gororoba` | `9f65f5f61e5` | r3v: reconcile the deployed kernel module with the contract pins before a plan replay |
-| `steinmarder-r300` | `61449545c` | r3v: retain the smoke-triangle one-case host-planning receipt and the kernel deployment reconciliation |
+| `mesa-26-gororoba` | `3bfafd1e35a` | r3v: bound the render family's layer count by the color-offset ceiling |
+| `steinmarder-r300` | `3c7cfecc4` | r3v: retain the layered and height-one texture silicon receipt |
 | `steinmarder` (workspace index, cross-repo orchestration) | `77869e866` | tools/workspace-index-marker-and-trailer-retention |
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
 | `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
@@ -417,12 +417,18 @@ above is rung zero; the ladder after it runs in this order:
    family admits answers to the cell's `RB3D_COLOROFFSET0` ceiling,
    which the creation admission and the format query both name, while
    the sampling family reaches the reported device limit because
-   `TX_OFFSET_0` carries the full span.  Open inside the rung: the
-   silicon receipt is outstanding, and the attended arms `layer`,
-   `row1`, and `wide` (`r3v_native_sampled_arms.h`) are staged with
-   digests `4afc72c0`, `83063087`, and `575c6747` to earn it for a
-   nonzero `TX_OFFSET_0`, the height-one texture, and a 256x256
-   texture; the
+   `TX_OFFSET_0` carries the full span.  The sampling family holds the
+   silicon receipt: the attended arms `layer`, `row1`, and `wide`
+   (`r3v_native_sampled_arms.h`, digests `4afc72c0`, `83063087`, and
+   `575c6747`) each submitted one live `DRM_RADEON_CS` on RS482 and read
+   the dword its prediction named, with every dmesg delta empty.  The
+   layered arm's two unselected layers hold a decoy texel, so a dropped
+   `TX_OFFSET_0` stride reads layer 0 and lands on the named falsifier
+   rather than on a value the predicted dword absorbs (bundle
+   steinmarder-r300
+   `r3v-native-layered-and-height-one-texture-silicon-pass-rs482`).
+   Open inside the rung: the render family's own layer ceiling answers
+   to the creation gate rather than to a run; the
    volume type and its view (18 cases) need a TX volume route, the
    cube-compatible creation flag and cube view (9 cases) need a cube
    route, and the array view types (18 cases) index a layer from the
