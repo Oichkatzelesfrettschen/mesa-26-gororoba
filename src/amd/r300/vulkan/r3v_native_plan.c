@@ -52,6 +52,7 @@ static const struct {
    {R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER,
     "compute_identity_carrier"},
    {R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE, "triangle_render_shape"},
+   {R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED, "triangle_sampled"},
 };
 
 const char *

@@ -175,6 +175,36 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
                  R3V_NATIVE_TARGET_WIDTH ||
               cmd_buffer->deferred_draw.target_height !=
                  R3V_NATIVE_TARGET_HEIGHT);
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED: {
+      /* The sampled cell rides the render family's extent contract with
+       * a third relocation: vertex and texture device-read, color
+       * device-written.
+       */
+      if (!cmd_buffer->deferred_draw.pending ||
+          cmd_buffer->reference_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT)
+         return true;
+      const uint32_t s_width = cmd_buffer->deferred_draw.target_width;
+      const uint32_t s_height = cmd_buffer->deferred_draw.target_height;
+      const uint32_t s_pitch =
+         r3v_native_render_row_pitch_bytes(s_width) / 4;
+      if (s_width < 1 || s_width > R3V_NATIVE_RENDER_MAX_EXTENT ||
+          s_height < 1 || s_height > R3V_NATIVE_RENDER_MAX_EXTENT ||
+          s_pitch < s_width || s_pitch % 8 != 0 ||
+          s_pitch > R3V_NATIVE_RENDER_MAX_EXTENT)
+         return true;
+      const struct r3v_native_bo_reference *s_vertex =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
+      const struct r3v_native_bo_reference *s_color =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_COLOR];
+      const struct r3v_native_bo_reference *s_texture =
+         &cmd_buffer->references[R300_TRIANGLE_SLOT_TEXTURE];
+      return s_vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             s_vertex->write_domain != 0 ||
+             s_color->read_domains != 0 ||
+             s_color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+             s_texture->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             s_texture->write_domain != 0;
+   }
    case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE: {
       /* The declared shape is the geometry and the digest carries it;
        * the frozen facts are the fixed-cell binding: two relocations,

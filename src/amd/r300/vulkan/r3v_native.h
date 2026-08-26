@@ -1365,12 +1365,24 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
  * vertex gather and the sentinel clear ride cmd_buffer->deferred_draw
  * and execute at queue submission.
  */
+/* The sampled cell's texture binding: the bound image's memory and
+ * offset with the declared linear geometry the TX block programs.
+ */
+struct r3v_native_sampled_texture {
+   struct r3v_native_memory *memory;
+   uint32_t texture_offset;
+   uint32_t texture_width;
+   uint32_t texture_height;
+   uint32_t texture_pitch_texels;
+};
+
 VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count, const uint32_t color_bits[4]);
+   uint32_t triangle_count, const uint32_t color_bits[4],
+   const struct r3v_native_sampled_texture *sampled);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

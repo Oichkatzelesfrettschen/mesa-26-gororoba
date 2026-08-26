@@ -333,7 +333,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *vertex_memory,
                                struct r3v_native_memory *color_memory,
                                const struct r300_triangle_render_shape *shape,
-                               bool varying, uint32_t triangle_count)
+                               bool varying, uint32_t triangle_count,
+                               const struct r3v_native_sampled_texture
+                                  *sampled)
 {
    VkResult role_result = validate_triangle_memory_roles(
       device, vertex_memory, color_memory);
@@ -366,7 +368,17 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       shape->width <= reference.width && shape->height <= reference.height;
    struct r300_tcl_bypass_triangle_ib cell;
    int emit_result;
-   if (varying || triangle_count != 1) {
+   if (sampled != NULL) {
+      /* The sampled cell rides the varying family's reference-target
+       * constraint and adds the TX block over the declared texture.
+       */
+      if (!reference_target || !varying)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      emit_result = r300_tcl_bypass_triangle_sampled_emit(
+         shape->width, shape->height, triangle_count,
+         sampled->texture_offset, sampled->texture_width,
+         sampled->texture_height, sampled->texture_pitch_texels, &cell);
+   } else if (varying || triangle_count != 1) {
       if (!reference_target)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       emit_result = r300_tcl_bypass_triangle_family_emit(
@@ -385,8 +397,11 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * list reaches the queue, so deduplication cannot leave a slot payload
     * outside the relocation chunk.
     */
+   const uint32_t slot_count = sampled != NULL
+                                  ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
+                                  : R300_TRIANGLE_RENDER_SLOT_COUNT;
    struct r3v_native_bo_reference *references =
-      calloc(R300_TRIANGLE_RENDER_SLOT_COUNT, sizeof(*references));
+      calloc(slot_count, sizeof(*references));
    if (references == NULL) {
       r300_tcl_bypass_triangle_release(&cell);
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -403,11 +418,22 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       .write_domain = RADEON_GEM_DOMAIN_GTT,
       .memory = color_memory,
    };
+   if (sampled != NULL) {
+      references[R300_TRIANGLE_SLOT_TEXTURE] =
+         (struct r3v_native_bo_reference){
+            .handle = sampled->memory->bo.handle,
+            .read_domains = RADEON_GEM_DOMAIN_GTT,
+            .write_domain = 0,
+            .memory = sampled->memory,
+         };
+   }
 
    r3v_native_cmd_buffer_install_ib(cmd_buffer,
-                                    R3V_NATIVE_CELL_KIND_TRIANGLE, cell.ib,
-                                    cell.ib_size_dwords, references,
-                                    R300_TRIANGLE_RENDER_SLOT_COUNT);
+                                    sampled != NULL
+                                       ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
+                                       : R3V_NATIVE_CELL_KIND_TRIANGLE,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    slot_count);
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_tcl_bypass_triangle_release(&cell);
@@ -439,7 +465,8 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    struct r300_triangle_render_shape shape;
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
-                                         color_memory, &shape, false, 1);
+                                         color_memory, &shape, false, 1,
+                                         NULL);
 }
 
 VkResult
@@ -448,7 +475,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count, const uint32_t color_bits[4])
+   uint32_t triangle_count, const uint32_t color_bits[4],
+   const struct r3v_native_sampled_texture *sampled)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
    VkResult role_result = validate_triangle_memory_roles(
@@ -493,7 +521,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, varying,
-                                         triangle_count);
+                                         triangle_count, sampled);
 }
 
 /* Submission-time execution of the public render pass: an empty pass applies
