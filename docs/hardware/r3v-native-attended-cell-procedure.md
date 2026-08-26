@@ -208,10 +208,13 @@ The run proceeds only when all of the following hold.
   ```
 
   A loaded module, watchdog node, and sysctl posture prove deployment and
-  registration only; they do not prove GPU reset or silicon recovery.
-  `sb600-guard` remains an attended recovery backstop and is not invoked by
-  this preflight. A missing identity, a nonzero `radeon.lockup_timeout`, or a
-  missing watchdog/recovery setting blocks the run.
+  registration only; they do not prove GPU reset or silicon recovery. An
+  inactive `/dev/watchdog0` reboots nothing after a wedge, so registration
+  admits preparation and offline verification and leaves hardware
+  submission closed; `Watchdog gate` below carries the arming a submission
+  requires, and this preflight arms nothing. A missing identity, a nonzero
+  `radeon.lockup_timeout`, or a missing watchdog/recovery setting blocks the
+  run.
 - `r3v_native_arming_runner` reports `armed` for the exact evidence
   directory the run will use.
 - The host has an off-box log path (netconsole or serial), because a
@@ -240,7 +243,7 @@ loaded behavior differs by what the build compiled in.
 | Development package, even with every hazard arm zero | Refuse; require production transition and reboot |
 | Production package but stale dev profile override present | Refuse |
 | Package identity and loaded module disagree | Refuse |
-| Watchdog registered but not armed | Admit build and replay preparation; refuse hardware submission |
+| Watchdog registered but inactive | Admit build and replay preparation; refuse hardware submission, per `Watchdog gate` |
 | Watchdog absent | Refuse hardware submission |
 
 When the development package is loaded, stop before arming. Select the
@@ -263,19 +266,100 @@ correction to the substrate rather than a bypass.
 
 Establish the recovery mechanism in the production boot alone. Loading
 `sp5100_tco` in a development boot proves nothing about the boot the
-submission runs in, so the watchdog is registered after the reboot and
-its state is recorded at the level the submit gate requires:
+submission runs in, so the watchdog is registered after the reboot, and
+`Watchdog gate` states what registration then admits.
+
+## Watchdog gate
+
+The SB600 TCO watchdog reboots this machine after a wedge only while it
+is counting. These are the measured properties of that counter on the
+Vostro 1000, from the retained tick measurement
+(`sb600-watchdog-tick-32768hz-pet-ineffective`):
+
+- `WatchDogCount` ticks at 32.768 kHz.
+- The count is 16 bits, so a full count is an approximately 2.0-second
+  maximum window.
+- The operational grace is 1.7 seconds, leaving roughly 0.3 second for a
+  disarm to land ahead of the fire.
+- `WDIOC_KEEPALIVE` does not reload the counter, so the window admits no
+  extension and a guarded interval closes inside it or the machine
+  reboots.
+- `sp5100_tco` loads with `heartbeat=65535` so the count holds 0xffff at
+  probe and the first open counts from the full window.
+- PM index 0x69 bit 0 (`WatchDogTimerDisable`) is the confirmed disarm.
+
+The gate follows from those properties:
 
 ```text
-watchdog_module_loaded
-watchdog_node_present
-watchdog_opened_by_keepalive
-watchdog_timeout_readback
-watchdog_keepalive_verified
+Watchdog registered but inactive:
+    admits preparation and offline verification;
+    refuses hardware submission.
+
+Watchdog armed around a measured sub-1.7-second hazardous interval:
+    admits one hardware submission.
+
+Hazardous interval not isolatable or not bounded below 1.7 seconds:
+    refuses submission unless the human operator explicitly waives
+    automatic recovery and accepts manual power-cycle recovery.
 ```
 
-Registration is not arming, and a device node alone proves only
-registration.
+The hazardous interval is `DRM_IOCTL_RADEON_CS` through fence
+completion, because a ring wedge becomes observable while waiting for
+completion rather than at the ioctl return. `vkQueueSubmit` is a wider
+interval than that: it also carries the deferred copies, the relocation
+list, the completion allocation, the reference cache publication, and
+the `attempt.token` write, so a filesystem stall inside it would fire
+the watchdog on a healthy submission and spend the attempt. The driver
+already brackets the exact interval through the optional submission
+trace, whose events are `R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER`,
+`..._CS_IOCTL_RETURN`, `..._COMPLETION_WAIT_BEGIN`, and
+`..._COMPLETION_WAIT_RETURN`; a runner installs the hook, so the arming
+mechanism stays outside driver source.
+
+The runner therefore separates into three phases, and the watchdog
+covers the second alone:
+
+1. Preparation: allocation, poisoning, recording, parser replay, and
+   digest verification. The watchdog is registered and inactive.
+2. Guarded execution: arm at `CS_IOCTL_ENTER`, hold across the ioctl and
+   the completion wait, and disarm at `COMPLETION_WAIT_RETURN`, or at
+   `CS_IOCTL_RETURN` when the ioctl refuses and no wait follows.
+3. Post-completion: disarm first, then read back, score, and seal. A
+   reboot after a good submission but before retention destroys the
+   result and spends the attempt, so the disarm precedes the first
+   target read.
+
+Bound the interval before the attempt by submitting an already-qualified
+control cell with the trace hook installed and reading its transport
+bracket, whose enter and return timestamps the runner reports. The
+retained route timings bound the regime at roughly 102 to 115
+microseconds per submission, four orders of magnitude under the grace;
+those cells carry fewer relocation sites and no texture fetch, so they
+bound the regime rather than this cell, and the control run measures
+this one.
+
+Record these fields:
+
+```text
+watchdog.driver
+watchdog.device
+watchdog.tick_hz
+watchdog.counter_bits
+watchdog.measured_max_window_ms
+watchdog.operational_grace_ms
+watchdog.keepalive_reload_effective = false
+watchdog.reset_path_verified
+watchdog.guarded_interval
+watchdog.armed_before_submit
+watchdog.completion_observed
+watchdog.disarm_result
+```
+
+`watchdog.reset_path_verified` reports what the run can show. Firing the
+counter is the only demonstration that the reset path works, and an
+attended submission does not fire it, so this field carries forward the
+guard's own qualification evidence or reads `unverified` with the
+reason.
 
 Verify the production boot in this order before the preflight runs: a
 new boot ID; `radeon-unified-dkms` installed and `radeon-unified-dkms-dev`
