@@ -510,19 +510,31 @@ above is rung zero; the ladder after it runs in this order:
    samples while the fragment supplies coverage alone.
    `AARESOLVE_CTL.AARESOLVE_ALPHA_SAMPLE0` and `AARESOLVE_ALPHA_AVERAGE`
    corroborate it: both derive the resolve output's alpha from the
-   samples.  The reading rests on driver source and a consistency
-   argument rather than on a register statement, so the first emitter
-   still carries a resolve-half fragment color no multisample sample
-   holds, and the destination showing that color falsifies the reading
-   in one submit.  The destination byte order stays the falsifier
+   samples.  The argument bounds itself.  `r300_emit_fb_state`
+   (r300_emit.c) emits `RB3D_COLOROFFSET0` for the bound surface from
+   its own atom whether or not the AA atom sits in resolve mode, so the
+   color backend holds a bound color offset and a resolve offset at
+   once, and the source establishes that the fragment color reaches no
+   destination rather than that the mode retargets the write.  A
+   destination receiving a mixture stays live under that reading.  The
+   first emitter therefore carries a resolve-half fragment color no
+   multisample sample holds and a predicted dword for each of the three
+   outcomes -- the downsampled samples, the fragment color, and the
+   mixture -- so one submit classifies the semantics instead of
+   confirming them.  The destination byte order stays the falsifier
    already recorded, and both readings of it -- linear order and the
    tiled swizzle of the same bytes -- take their predicted dwords before
    the run.  A third destination content is named before the arm runs:
    a mixture, if the fragment write and the sample downsample both
    reach the destination order-dependently, which reads as a finding
-   rather than a defect.  The multisample surface is never CPU-read, so
-   it takes a device-local allocation while the resolve destination
-   stays host-visible for readback;
+   rather than a defect.  The multisample surface is never CPU-read and
+   `r300_texture_initial_domain` places an `nr_samples > 1` resource in
+   `RADEON_DOMAIN_VRAM` alone, so it takes a device-local allocation
+   while the resolve destination stays host-visible for readback.  The
+   sample count multiplies the layer size and leaves the stride alone
+   (`r300_texture_desc.c`: `layer_size *= base->nr_samples`), so a 2x or
+   4x surface at the reference extent is that multiple of the
+   single-sample layer with its pitch unchanged;
 7. composed render and sampling surfaces before any core image or
    framebuffer limit rises.  The rung depends on the usage union in
    rung 5 rather than on rung 6, so it runs when its own mechanisms
