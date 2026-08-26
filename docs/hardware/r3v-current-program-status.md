@@ -13,8 +13,8 @@ commit whose state a revision of this table describes.
 
 | Repository | Head | Subject |
 |---|---|---|
-| `mesa-26-gororoba` | `3bfafd1e35a` | r3v: bound the render family's layer count by the color-offset ceiling |
-| `steinmarder-r300` | `3c7cfecc4` | r3v: retain the layered and height-one texture silicon receipt |
+| `mesa-26-gororoba` | `13701e61540` | r3v: record the composed cell over merged references |
+| `steinmarder-r300` | `2ae932526` | r3v: read the varying interpolation out of the 256x256 target |
 | `steinmarder` (workspace index, cross-repo orchestration) | `77869e866` | tools/workspace-index-marker-and-trailer-retention |
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
 | `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
@@ -494,12 +494,21 @@ above is rung zero; the ladder after it runs in this order:
    buffer they were not emitted for.
    `r300_tcl_bypass_triangle_bind_reloc_indices` binds the payloads to
    the merged indices, and its test derives the merged map by the winsys
-   rule and pins the disagreement before binding.  Open: a recorder that
-   deduplicates the cell's buffer objects, binds, and installs; the
-   silicon receipt, whose digest is the bound cell's rather than
-   `7e1eeb21`; and a recording contract admitting a second render pass
-   and a second deferred draw per command buffer, which the one-pass
-   bound refuses today (`r3v_CmdBeginRenderPass`).
+   rule and pins the disagreement before binding.
+   `r3v_native_record_composed_render_sample` records the cell over that
+   contract: it builds the reference array merged in one pass, the first
+   target's entry carrying the write domain the render half needs beside
+   the read domain the kernel's texture check needs, and binds the
+   payloads to that array's own positions, so the queue's own merge is
+   idempotent and the indices the arming digest covers are the indices
+   the kernel reads.  Its harness runs on the drm-shim and is calibrated
+   against a recorder that skips the binding and one that leaves the
+   array unmerged.  Open: the attended runner and the silicon receipt,
+   whose digest is the bound cell's rather than `7e1eeb21`; and a
+   recording contract admitting a second render pass and a second
+   deferred draw per command buffer, which the one-pass bound refuses
+   today (`r3v_CmdBeginRenderPass`), so a conformance case reaches the
+   path.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated
