@@ -37,6 +37,14 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 #define R3V_SAMPLED_TEXEL_B 0xa0
 #define R3V_SAMPLED_TEXEL_A 0xe0
 
+/* The rows arm's lower-half texel: distinct from the upper texel, the
+ * clear, and the seeds in every byte lane.
+ */
+#define R3V_SAMPLED_LOWER_R 0x90
+#define R3V_SAMPLED_LOWER_G 0x50
+#define R3V_SAMPLED_LOWER_B 0x10
+#define R3V_SAMPLED_LOWER_A 0xd0
+
 static void
 stage(const char *name)
 {
@@ -70,16 +78,24 @@ write_target(const char *dir, const void *data, size_t size)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2 && !(argc == 3 && strcmp(argv[2], "bgra") == 0)) {
-      fprintf(stderr, "usage: %s <evidence-directory> [bgra]\n", argv[0]);
+   if (argc != 2 && !(argc == 3 && (strcmp(argv[2], "bgra") == 0 ||
+                                    strcmp(argv[2], "rows") == 0))) {
+      fprintf(stderr, "usage: %s <evidence-directory> [bgra|rows]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
    /* The optional bgra arm binds the same texel values through the
     * B8G8R8A8 memory order; the predicted target dword is unchanged,
-    * and unrouted selects would instead replicate byte X (0xa0).
+    * and unrouted selects would instead replicate byte X (0xa0).  The
+    * rows arm splits the 16x16 texture into halves -- rows 0-7 the
+    * upper texel, rows 8-15 the lower -- so the two oracle pixels
+    * prove address-dependent fetch: the varying TEX0 interpolation
+    * puts pixel (32,24) at texel row 6 and pixel (32,44) at row 11,
+    * each at least 1.8 texels from the half boundary.
     */
-   const bool texture_bgra = argc == 3;
+   const bool texture_bgra = argc == 3 && strcmp(argv[2], "bgra") == 0;
+   const bool texture_rows = argc == 3 && strcmp(argv[2], "rows") == 0;
    const VkFormat texture_format =
       texture_bgra ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
 
@@ -98,11 +114,23 @@ main(int argc, char **argv)
       r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
    const uint32_t predicted_dword =
       r300_tcl_bypass_triangle_pack_unorm8_dword(shape.lanes, texel_rgba);
-   printf("[shape] sampled reference 64x64, %s uniform texel "
+   const float lower_rgba[4] = {
+      R3V_SAMPLED_LOWER_R / 255.0f, R3V_SAMPLED_LOWER_G / 255.0f,
+      R3V_SAMPLED_LOWER_B / 255.0f, R3V_SAMPLED_LOWER_A / 255.0f,
+   };
+   const uint32_t predicted_lower_dword =
+      r300_tcl_bypass_triangle_pack_unorm8_dword(shape.lanes, lower_rgba);
+   printf("[shape] sampled reference 64x64, %s %s texel "
           "(%02x,%02x,%02x,%02x), predicted interior 0x%08x\n",
-          texture_bgra ? "B8G8R8A8" : "R8G8B8A8", R3V_SAMPLED_TEXEL_R,
+          texture_bgra ? "B8G8R8A8" : "R8G8B8A8",
+          texture_rows ? "split-rows upper" : "uniform", R3V_SAMPLED_TEXEL_R,
           R3V_SAMPLED_TEXEL_G, R3V_SAMPLED_TEXEL_B, R3V_SAMPLED_TEXEL_A,
           predicted_dword);
+   if (texture_rows)
+      printf("[shape] lower texel (%02x,%02x,%02x,%02x), predicted lower "
+             "0x%08x at (32,44)\n",
+             R3V_SAMPLED_LOWER_R, R3V_SAMPLED_LOWER_G, R3V_SAMPLED_LOWER_B,
+             R3V_SAMPLED_LOWER_A, predicted_lower_dword);
    fflush(stdout);
 
    const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
@@ -273,12 +301,15 @@ main(int argc, char **argv)
       CHECK(vkMapMemory(device, tex_memory, 0, VK_WHOLE_SIZE, 0, &map));
       uint8_t *texels = map;
       for (size_t t = 0; t < tex_reqs.size / 4; t++) {
-         texels[4 * t + 0] =
-            texture_bgra ? R3V_SAMPLED_TEXEL_B : R3V_SAMPLED_TEXEL_R;
-         texels[4 * t + 1] = R3V_SAMPLED_TEXEL_G;
-         texels[4 * t + 2] =
-            texture_bgra ? R3V_SAMPLED_TEXEL_R : R3V_SAMPLED_TEXEL_B;
-         texels[4 * t + 3] = R3V_SAMPLED_TEXEL_A;
+         const bool lower = texture_rows && (t / 16) >= 8;
+         const uint8_t r = lower ? R3V_SAMPLED_LOWER_R : R3V_SAMPLED_TEXEL_R;
+         const uint8_t g = lower ? R3V_SAMPLED_LOWER_G : R3V_SAMPLED_TEXEL_G;
+         const uint8_t b = lower ? R3V_SAMPLED_LOWER_B : R3V_SAMPLED_TEXEL_B;
+         const uint8_t a = lower ? R3V_SAMPLED_LOWER_A : R3V_SAMPLED_TEXEL_A;
+         texels[4 * t + 0] = texture_bgra ? b : r;
+         texels[4 * t + 1] = g;
+         texels[4 * t + 2] = texture_bgra ? r : b;
+         texels[4 * t + 3] = a;
       }
       vkUnmapMemory(device, tex_memory);
    }
@@ -717,8 +748,15 @@ main(int argc, char **argv)
           cx, cy, pixels[cy * shape.pitch_pixels + cx], predicted_dword,
           pixels[0]);
    fflush(stdout);
-   const bool centroid_pass =
+   bool centroid_pass =
       pixels[cy * shape.pitch_pixels + cx] == predicted_dword;
+   if (texture_rows) {
+      const uint32_t lower_read = pixels[44 * shape.pitch_pixels + 32];
+      printf("[oracle] lower (32,44)=0x%08x predicted 0x%08x\n", lower_read,
+             predicted_lower_dword);
+      fflush(stdout);
+      centroid_pass = centroid_pass && lower_read == predicted_lower_dword;
+   }
 
    stage("teardown");
    vkDestroyCommandPool(device, pool, NULL);
