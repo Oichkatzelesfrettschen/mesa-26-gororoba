@@ -1375,6 +1375,23 @@ VkResult r3v_native_record_tcl_bypass_triangle_render_shape(
    VkDeviceMemory colorMemory,
    const struct r300_triangle_render_shape *shape);
 
+/* Records the composed render-then-sample cell.  The first target is
+ * both the render half's color slot and the sample half's texture slot,
+ * so the installed reference array holds one entry per buffer object --
+ * four for the cell's five slots -- with the shared entry carrying the
+ * write domain the render half needs beside the read domain the
+ * kernel's texture check needs, and the cell's relocation payloads bound
+ * to that array's positions.  The four memories name four distinct GEM
+ * objects; a repeat among them merges entries whose roles carry
+ * different domains and refuses.
+ */
+struct r300_triangle_composed_render_sample;
+VkResult r3v_native_record_composed_render_sample(
+   VkCommandBuffer commandBuffer, VkDeviceMemory renderVertexMemory,
+   VkDeviceMemory renderColorMemory, VkDeviceMemory sampleVertexMemory,
+   VkDeviceMemory sampleColorMemory,
+   const struct r300_triangle_composed_render_sample *composed);
+
 /* One application-shaped vertex source for carrier delivery: host
  * records in the little-endian component encoding the VAP fetches,
  * bounded by size_bytes, with format_id naming an
