@@ -24,6 +24,7 @@
 #include "terakan_shader.h"
 
 #include "nir/terakan_nir.h"
+#include "nir/terakan_nir_wide_phi.h"
 #include "terakan_env.h"
 #include "terakan_bo.h"
 #include "terakan_command_buffer.h"
@@ -649,12 +650,6 @@ terakan_get_experimental_early_wide_phi_segment(unsigned * const segment_size_ou
 }
 
 static bool
-terakan_wide_phi_auto_segment_enabled(void)
-{
-   return getenv("TERAKAN_WIDE_PHI_AUTO_SEGMENT") != NULL;
-}
-
-static bool
 terakan_def_is_scalar_load_const(nir_def * const def, unsigned const bit_size,
                                  nir_const_value * const value_out)
 {
@@ -748,28 +743,6 @@ terakan_collect_wide_phi_const_chain(nir_def *def, nir_const_value * const value
    return true;
 }
 
-static nir_def *
-terakan_find_wide_phi_selector(nir_function_impl * const impl, unsigned const case_count)
-{
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         if (instr->type != nir_instr_type_alu)
-            continue;
-
-         nir_alu_instr * const alu = nir_instr_as_alu(instr);
-         if (alu->op != nir_op_umod || alu->def.num_components != 1 ||
-             alu->def.bit_size != 32)
-            continue;
-
-         nir_const_value const * const divisor = nir_src_as_const_value(alu->src[1].src);
-         if (divisor != NULL && divisor->u32 == case_count)
-            return &alu->def;
-      }
-   }
-
-   return NULL;
-}
-
 static bool
 terakan_debug_wide_phi_shape_enabled(void)
 {
@@ -838,7 +811,8 @@ terakan_debug_wide_phi_shape(nir_shader const * const nir,
          if (value_count > widest_uav_value_phi_chain) {
             widest_uav_value_phi_chain = value_count;
             widest_uav_value_bit_size = bit_size;
-            widest_selector_found = terakan_find_wide_phi_selector(impl, value_count) != NULL;
+            widest_selector_found =
+               terakan_nir_wide_phi_selector(intrin->src[2].ssa, value_count) != NULL;
          }
       }
    }
@@ -997,7 +971,8 @@ terakan_segment_wide_phi_impl(nir_function_impl * const impl, unsigned const seg
              value_count <= segment_size)
             continue;
 
-         nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
+         nir_def * const selector =
+            terakan_nir_wide_phi_selector(intrin->src[2].ssa, value_count);
          if (selector == NULL)
             continue;
 
@@ -1068,7 +1043,7 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
                 candidate_value_count <= segment_size)
                continue;
 
-            if (terakan_find_wide_phi_selector(impl, candidate_value_count) == NULL)
+            if (terakan_nir_wide_phi_selector(&phi->def, candidate_value_count) == NULL)
                continue;
 
             root_phi = phi;
@@ -1080,7 +1055,8 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
       break;
 
    found:;
-      nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
+      nir_def * const selector =
+         terakan_nir_wide_phi_selector(&root_phi->def, value_count);
       if (selector == NULL)
          break;
 
@@ -1263,7 +1239,7 @@ terakan_shader_lower_and_optimize_post_link(
       early_segment_wide_phi_min_cases =
          early_segment_wide_phi_size < UINT_MAX ? early_segment_wide_phi_size + 1 : UINT_MAX;
       early_segment_wide_phi_label = "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT";
-   } else if (terakan_wide_phi_auto_segment_enabled()) {
+   } else if (terakan_nir_wide_phi_auto_segment_enabled()) {
       /* The 512-way Vulkan 1.0 opPhi.wide shape exceeds normal and physical
        * SFN register budgets, while the balanced early segment rewrite lowers
        * its measured pressure from 133 to 22.  The automatic predicate remains
