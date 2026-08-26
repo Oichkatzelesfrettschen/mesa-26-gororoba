@@ -502,6 +502,7 @@ review-thread-frontier-check:
 		--batch-size 50 \
 		--repo-root $(CURDIR)/.. \
 		--main-ref origin/main \
+		--candidate-ref HEAD \
 		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
 
 review-thread-frontier-live-check:

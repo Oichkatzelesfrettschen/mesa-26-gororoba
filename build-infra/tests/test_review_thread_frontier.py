@@ -213,7 +213,7 @@ def test_merged_evidence_rejects_stale_owner_blob(tmp_path: Path) -> None:
     run_git(tmp_path, "add", "evidence.txt")
     run_git(tmp_path, "commit", "-m", "change evidence owner")
     run_git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
-    with pytest.raises(review_thread_frontier.FrontierError, match="changed after"):
+    with pytest.raises(review_thread_frontier.FrontierError, match="changed"):
         review_thread_frontier.verify_merged_evidence(
             [evidence_row(evidence_commit)], tmp_path, "origin/main"
         )
@@ -228,6 +228,44 @@ def test_merged_evidence_accepts_unrelated_future_commit(tmp_path: Path) -> None
     review_thread_frontier.verify_merged_evidence(
         [evidence_row(evidence_commit)], tmp_path, "origin/main"
     )
+
+
+def test_evidence_slice_accepts_candidate_change_outside_range(tmp_path: Path) -> None:
+    evidence_commit = initialize_evidence_repository(tmp_path)
+    row = evidence_row(evidence_commit)
+    row["canonical_data_target"] = "evidence.txt#L1-L1"
+    (tmp_path / "evidence.txt").write_text(
+        "fixed mechanism\nunrelated mechanism\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "change unrelated source slice")
+    review_thread_frontier.verify_merged_evidence(
+        [row], tmp_path, "origin/main", "HEAD"
+    )
+
+
+def test_evidence_slice_rejects_candidate_change_inside_range(tmp_path: Path) -> None:
+    evidence_commit = initialize_evidence_repository(tmp_path)
+    row = evidence_row(evidence_commit)
+    row["canonical_data_target"] = "evidence.txt#L1-L1"
+    (tmp_path / "evidence.txt").write_text(
+        "regressed mechanism\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "change governed source slice")
+    with pytest.raises(review_thread_frontier.FrontierError, match="changed"):
+        review_thread_frontier.verify_merged_evidence(
+            [row], tmp_path, "origin/main", "HEAD"
+        )
+
+
+def test_frontier_rejects_reversed_evidence_slice() -> None:
+    rows = frontier_rows()
+    rows[0]["canonical_data_target"] = "evidence.txt#L2-L1"
+    with pytest.raises(review_thread_frontier.FrontierError, match="reversed"):
+        review_thread_frontier.validate_frontier(rows, 2)
 
 
 def test_read_tsv_rejects_missing_trailing_cell(tmp_path: Path) -> None:

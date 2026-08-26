@@ -92,11 +92,14 @@ is still unresolved.  Immediately afterward, query the same ID and require
 resolution time, verification time, and mechanism note in the ledger.
 The offline validator requires every declared evidence commit to be an ancestor
 of `origin/main` and requires each semicolon-delimited `canonical_data_target`
-blob to match between that evidence commit and current main.  A change to an
-evidence owner therefore forces re-audit and an evidence-commit refresh, while
-an unrelated main commit leaves the proof valid.  Refresh the remote-tracking
-ref before relying on that verdict.  The live target binds every exact GraphQL
-thread ID to its discussion URL, outdated state, and resolution state.
+to match between that evidence commit and candidate `HEAD`.  A target may name
+a complete path blob or an inclusive source slice such as
+`build-infra/Makefile#L121-L126` when one large control file owns unrelated
+mechanisms.  A change to the declared owner content therefore forces re-audit
+and an evidence-commit refresh, while unrelated candidate changes leave the
+proof valid.  Refresh the remote-tracking ref before relying on that verdict.
+The live target binds every exact GraphQL thread ID to its discussion URL,
+outdated state, and resolution state.
 
 Static source and Git history establish only code-state facts.  Build, runtime,
 conformance, and silicon claims require their respective executed gates and
