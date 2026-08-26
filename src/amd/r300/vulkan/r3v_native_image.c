@@ -123,6 +123,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
           pCreateInfo->extent.width > extent_max ||
           pCreateInfo->extent.height > extent_max)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      if (pCreateInfo->arrayLayers > R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       transfer_family = false;
       row_pitch_bytes =
          sampled ? r3v_native_transfer_row_pitch_bytes(
@@ -301,8 +303,14 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
    if (image == NULL || memory == NULL || image->memory != NULL ||
        memory->vk.memory_type_index != 0 ||
        memoryOffset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
+       /* The render cell places the last layer's base in
+        * RB3D_COLOROFFSET0, so the bind offset plus that layer's stride
+        * answers to the register's ceiling, not the bind offset alone.
+        */
        (!image->transfer_family &&
-        memoryOffset > R300_TRIANGLE_MAX_TARGET_OFFSET) ||
+        memoryOffset + (uint64_t)image->layer_pitch_bytes *
+                          (image->array_layers - 1) >
+           R300_TRIANGLE_MAX_TARGET_OFFSET) ||
        memoryOffset > memory->bo.size ||
        footprint > memory->bo.size - memoryOffset)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);

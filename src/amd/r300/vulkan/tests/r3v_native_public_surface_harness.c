@@ -3662,9 +3662,32 @@ main(void)
              layered_view == VK_NULL_HANDLE);
       vkDestroyImage(device, layered_image, NULL);
 
-      layered_info.arrayLayers = R3V_NATIVE_MAX_ARRAY_LAYERS + 1;
+      /* The render family's layer count answers to the cell's
+       * RB3D_COLOROFFSET0 ceiling, which is below the device limit the
+       * sampling family reaches.
+       */
+      layered_info.arrayLayers = R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS;
+      assert(vkCreateImage(device, &layered_info, NULL, &layered_image) ==
+                VK_SUCCESS);
+      vkDestroyImage(device, layered_image, NULL);
+
+      layered_info.arrayLayers = R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS + 1;
       assert(vkCreateImage(device, &layered_info, NULL, &refused_image) ==
                 R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      /* The sampling family reaches the device limit, since TX_OFFSET_0
+       * carries the full span. */
+      VkImageCreateInfo sampled_layers_info = layered_info;
+      sampled_layers_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+      sampled_layers_info.arrayLayers = R3V_NATIVE_MAX_ARRAY_LAYERS;
+      assert(vkCreateImage(device, &sampled_layers_info, NULL,
+                           &layered_image) == VK_SUCCESS);
+      vkDestroyImage(device, layered_image, NULL);
+
+      sampled_layers_info.arrayLayers = R3V_NATIVE_MAX_ARRAY_LAYERS + 1;
+      assert(vkCreateImage(device, &sampled_layers_info, NULL,
+                           &refused_image) == R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);
 
       /* The 1D type is the height-one member of the same layout; its

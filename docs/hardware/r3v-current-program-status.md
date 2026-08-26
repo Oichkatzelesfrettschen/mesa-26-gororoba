@@ -413,10 +413,16 @@ above is rung zero; the ladder after it runs in this order:
    `r3v-layered-1d-image-conformance-movement-host-model`, seals
    `ef21bc535a06` and `48a5de9734a0`).  Eighteen array-view cases moved
    their refusal from `vkCreateImage` to `vkCreateImageView`, which the
-   ledger row `layered_view_type_route_absent` now carries.  Open inside
-   the rung: the attended arms `layer`, `row1`, and `wide`
-   (`r3v_native_sampled_arms.h`) hold the silicon receipt for a nonzero
-   `TX_OFFSET_0`, the height-one texture, and a 256x256 texture; the
+   ledger row `layered_view_type_route_absent` now carries.  The layer count the render
+   family admits answers to the cell's `RB3D_COLOROFFSET0` ceiling,
+   which the creation admission and the format query both name, while
+   the sampling family reaches the reported device limit because
+   `TX_OFFSET_0` carries the full span.  Open inside the rung: the
+   silicon receipt is outstanding, and the attended arms `layer`,
+   `row1`, and `wide` (`r3v_native_sampled_arms.h`) are staged with
+   digests `4afc72c0`, `83063087`, and `575c6747` to earn it for a
+   nonzero `TX_OFFSET_0`, the height-one texture, and a 256x256
+   texture; the
    volume type and its view (18 cases) need a TX volume route, the
    cube-compatible creation flag and cube view (9 cases) need a cube
    route, and the array view types (18 cases) index a layer from the
