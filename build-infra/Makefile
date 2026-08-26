@@ -160,6 +160,9 @@ override REVIEW_THREAD_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-
 override REVIEW_THREAD_CAPTURE_TOOL := $(CURDIR)/scripts/review_thread_batch_capture.py
 override REVIEW_THREAD_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-pr93-pr161/assessments.tsv
 override REVIEW_THREAD_CLASSIFICATION_TOOL := $(CURDIR)/scripts/review_thread_classification.py
+override REVIEW_THREAD_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-pr93-pr161/pre-resolution-frontier.tsv
+override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-pr93-pr161/resolution-observation.json
+override REVIEW_THREAD_RESOLUTION_TOOL := $(CURDIR)/scripts/review_thread_resolution.py
 override REVIEW_THREAD_ARCHIVE_FRONTIER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/action-frontier.tsv
 override REVIEW_THREAD_ARCHIVE_LEDGER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/resolution-ledger.tsv
 override REVIEW_THREAD_ARCHIVE_COMMIT := d6661faf431e4998f5e7d1879b1d6d6eb3c7bf7c
@@ -510,6 +513,11 @@ review-thread-frontier-check:
 		--output $(REVIEW_THREAD_FRONTIER) \
 		--batch-id merged-review-thread-closure-batch-0002 \
 		--batch-size 50
+	python3 $(REVIEW_THREAD_RESOLUTION_TOOL) check \
+		--frontier $(REVIEW_THREAD_PRE_RESOLUTION_FRONTIER) \
+		--journal $(REVIEW_THREAD_RESOLUTION_JOURNAL) \
+		--ledger $(REVIEW_THREAD_LEDGER) \
+		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
 	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_ARCHIVE_FRONTIER) \
 		--ledger $(REVIEW_THREAD_ARCHIVE_LEDGER) \
@@ -534,7 +542,8 @@ review-thread-frontier-unit-test:
 		python3 -m pytest -q \
 			$(CURDIR)/tests/test_review_thread_frontier.py \
 			$(CURDIR)/tests/test_review_thread_batch_capture.py \
-			$(CURDIR)/tests/test_review_thread_classification.py
+			$(CURDIR)/tests/test_review_thread_classification.py \
+			$(CURDIR)/tests/test_review_thread_resolution.py
 
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"

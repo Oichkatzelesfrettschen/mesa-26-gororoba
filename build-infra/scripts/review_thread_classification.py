@@ -57,6 +57,7 @@ COMPLETION_DISPOSITIONS = {
     "superseded-on-main": "superseded",
     "invalid-on-main": "invalid",
 }
+CLOSED_DISPOSITIONS = {"fixed", "superseded", "invalid"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,11 +100,16 @@ def assessment_map(
             raise FrontierError(f"assessment row {row_number}: duplicate {thread_id}")
         completion_state = assessment["completion_state"]
         expected_disposition = COMPLETION_DISPOSITIONS.get(completion_state)
-        if expected_disposition is None:
+        if completion_state == "closed":
+            if assessment["disposition"] not in CLOSED_DISPOSITIONS:
+                raise FrontierError(
+                    f"assessment row {row_number}: invalid closed disposition"
+                )
+        elif expected_disposition is None:
             raise FrontierError(
                 f"assessment row {row_number}: invalid completion_state"
             )
-        if assessment["disposition"] != expected_disposition:
+        elif assessment["disposition"] != expected_disposition:
             raise FrontierError(
                 f"assessment row {row_number}: disposition does not match state"
             )
@@ -195,7 +201,11 @@ def build_rows(
                 "merged_evidence_commit": (
                     "" if merged_evidence == "none" else merged_evidence
                 ),
-                "resolution_state": "unresolved",
+                "resolution_state": (
+                    "resolved"
+                    if assessment["completion_state"] == "closed"
+                    else "unresolved"
+                ),
             }
         )
     validate_frontier(output, batch_size)
