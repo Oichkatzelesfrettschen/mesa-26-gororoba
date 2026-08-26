@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current staging retry can follow cs_validate failure after the reservation was sized for the pre-flush dirty set. No merged regression proves that the retry reserves capacity for the re-armed atom set before emission. I leave this row unresolved pending a retry reservation contract and test.",
+              "commit": {
+                "oid": "991b8a82caa10251c41be9e83a7956f3a9b3428a"
+              },
+              "createdAt": "2026-08-12T17:34:55Z",
+              "databaseId": 3768794041,
+              "id": "PRRC_kwDOR3YK5M7gozu5",
+              "originalCommit": {
+                "oid": "991b8a82caa10251c41be9e83a7956f3a9b3428a"
+              },
+              "updatedAt": "2026-08-12T17:34:55Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1168#discussion_r3768794041"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1NVrO4KM7uQ==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6SKo_m"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wNy0yMFQwNzowOTozNVrO11L3yg==",
+    "threadId": "PRRT_kwDOR3YK5M6SKo_m"
+  }
+}

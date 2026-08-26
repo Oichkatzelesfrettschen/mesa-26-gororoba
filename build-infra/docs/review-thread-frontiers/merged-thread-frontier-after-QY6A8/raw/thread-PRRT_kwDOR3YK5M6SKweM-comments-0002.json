@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current capture helper still runs RADEON_FLUSH_NOOP from the r300_flush call path. No merged transaction proves that an already-populated caller CS survives that no-submit reset and still reaches the normal fence path. I leave this row unresolved pending an explicit preserve or restore contract.",
+              "commit": {
+                "oid": "353b44c552a3a5f7ba8c9a1432bdc3601f461c25"
+              },
+              "createdAt": "2026-08-12T17:34:56Z",
+              "databaseId": 3768794158,
+              "id": "PRRC_kwDOR3YK5M7gozwu",
+              "originalCommit": {
+                "oid": "353b44c552a3a5f7ba8c9a1432bdc3601f461c25"
+              },
+              "updatedAt": "2026-08-12T17:34:56Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1169#discussion_r3768794158"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1NlrO4KM8Lg==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6SKweM"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wNy0yMFQwNzoxOToxOVrO11OYCw==",
+    "threadId": "PRRT_kwDOR3YK5M6SKweM"
+  }
+}

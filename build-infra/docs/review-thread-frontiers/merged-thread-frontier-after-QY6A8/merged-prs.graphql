@@ -1,0 +1,46 @@
+
+query($owner:String!, $repo:String!, $cursor:String) {
+  repository(owner:$owner, name:$repo) {
+    defaultBranchRef { name target { ... on Commit { oid } } }
+    pullRequests(
+      first:100
+      after:$cursor
+      states:MERGED
+      orderBy:{field:CREATED_AT,direction:ASC}
+    ) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        url
+        createdAt
+        mergedAt
+        reviewThreads(first:100) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            isResolved
+            isOutdated
+            path
+            line
+            originalLine
+            comments(first:1) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                id
+                databaseId
+                author { login }
+                body
+                createdAt
+                updatedAt
+                url
+                commit { oid }
+                originalCommit { oid }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

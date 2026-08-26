@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current output check still uses the resource-level format and dimensions while the framebuffer atom emits the bound surface view. Nonzero mip or view offsets therefore remain outside a complete proof. I leave this row unresolved pending view-level validation and a focused non-base-level test.",
+              "commit": {
+                "oid": "aa015f46d8eeaedb7f6814d7182ccab719ff153a"
+              },
+              "createdAt": "2026-08-12T17:34:54Z",
+              "databaseId": 3768793924,
+              "id": "PRRC_kwDOR3YK5M7goztE",
+              "originalCommit": {
+                "oid": "aa015f46d8eeaedb7f6814d7182ccab719ff153a"
+              },
+              "updatedAt": "2026-08-12T17:34:54Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1166#discussion_r3768793924"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1NFrO4KM7RA==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6SKFQr"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wNy0yMFQwNjoxODowNFrO10_r8g==",
+    "threadId": "PRRT_kwDOR3YK5M6SKFQr"
+  }
+}

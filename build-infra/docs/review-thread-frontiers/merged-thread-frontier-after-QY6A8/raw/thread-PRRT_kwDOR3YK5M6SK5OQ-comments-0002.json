@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current capture path still has a reserve-triggered flush boundary between dirty-state suppression and producer staging. The flush helper re-arms atoms globally, and no merged test proves the synthetic framebuffer and parallel fb_cbufs state remain coherent across that retry. I leave this state-lifetime row unresolved pending a complete transaction-safe repair and regression.",
+              "commit": {
+                "oid": "6ffc2d8e5fcdc8396167bdd7b5c124f7962c4979"
+              },
+              "createdAt": "2026-08-12T17:34:51Z",
+              "databaseId": 3768793588,
+              "id": "PRRC_kwDOR3YK5M7gozn0",
+              "originalCommit": {
+                "oid": "6ffc2d8e5fcdc8396167bdd7b5c124f7962c4979"
+              },
+              "updatedAt": "2026-08-12T17:34:51Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1170#discussion_r3768793588"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1MVrO4KM59A==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6SK5OQ"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wNy0yMFQwNzozMDo1M1rO11RWzg==",
+    "threadId": "PRRT_kwDOR3YK5M6SK5OQ"
+  }
+}
