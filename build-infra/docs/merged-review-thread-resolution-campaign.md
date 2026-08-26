@@ -130,6 +130,19 @@ Cayman is Northern Islands.  Static source and Git history support these
 dispositions.  Runtime, conformance, performance, and silicon claims remain
 outside this classification.
 
+All 50 exact thread IDs were resolved after PR 1867 merged.  The resumable
+mutation journal records an ordered resolution prefix after every successful
+mutation and becomes complete only after the all-ID postflight.  The run began
+at `2026-08-26T20:35:01Z`; the final live verification completed at
+`2026-08-26T20:35:53Z`.  The active frontier and ledger now contain 50 closed,
+re-verified rows.  The batch registry remains
+`resolved-pending-ledger-merge` until those artifacts merge to `main`.
+
+`../scripts/review_thread_resolution.py` owns preflight, resumable exact-ID
+mutation, postflight, journal replay, and deterministic ledger generation.
+Its journal binds the immutable pre-resolution frontier hash so later closed
+state cannot rewrite the mutation denominator.
+
 ## Verification
 
 Run the offline contract with:

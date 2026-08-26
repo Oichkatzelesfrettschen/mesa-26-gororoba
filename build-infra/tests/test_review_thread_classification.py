@@ -86,10 +86,10 @@ def test_classification_rejects_duplicate_assessment() -> None:
 def test_classification_rejects_state_disposition_mismatch() -> None:
     capture_rows, assessment_rows = retained_inputs()
     mutated = [dict(row) for row in assessment_rows]
-    mutated[0]["disposition"] = "superseded"
+    mutated[0]["disposition"] = "requires-change"
     with pytest.raises(
         review_thread_classification.FrontierError,
-        match="disposition does not match state",
+        match="invalid closed disposition",
     ):
         build_rows(capture_rows, mutated)
 
