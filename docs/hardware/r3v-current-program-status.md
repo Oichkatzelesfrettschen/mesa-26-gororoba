@@ -361,7 +361,10 @@ above is rung zero; the ladder after it runs in this order:
    falsifying first run exposed that `R300_TX_FORMAT1` channel selects
    default to X (finding
    `rs482-tx-format1-channel-selects-default-to-x`), fixed by the
-   identity-select composition;
+   identity-select composition; the rung moves the two sampled
+   `pipeline_barrier` subgroups, 8 cases, taking the family to 28 Pass
+   (host-model seal `209685514115`, bundle steinmarder-r300
+   `r3v-sampled-rung-conformance-movement-host-model`);
 4. sampled-image shapes, admitted only as the executing routes in rungs 2
    and 3 complete -- first shape closed: the B8G8R8A8_UNORM sampled lane
    order rides the swapped TX_FORMAT1 select set and rendered the
@@ -373,8 +376,16 @@ above is rung zero; the ladder after it runs in this order:
    on RS482, so the TX unit addresses rows from the varying and the T
    axis runs in texture order (bundle steinmarder-r300
    `r3v-native-sampled-split-row-addressing-silicon-pass-rs482`);
-   extents past the reference texture geometry and the filter and wrap
-   modes outside nearest plus clamp-to-edge stay open;
+   the rung's conformance movement is zero: the `pipeline_barrier`
+   family stands at 28 Pass before and after both shapes, so they widen
+   the executed envelope and carry no case.  The `object_management`
+   sampled population stays at 90 `vkCreateImage` refusals because its
+   `img2D` shape requests `arraySize = 12` together with
+   `SAMPLED_BIT | COLOR_ATTACHMENT_BIT`, so multi-layer arrays and the
+   sampled-plus-color usage union each leave the other refusing; texture
+   extents past the reference geometry stay open, and the filter and
+   wrap modes outside nearest plus clamp-to-edge are sampler state
+   rather than an image shape and take their own rung position;
 5. image types, arrays, cube, depth, and larger render extents, each a
    separate mechanism with its own receipt;
 6. the native 2x and 4x MSAA path before any sample-count limit rises;
