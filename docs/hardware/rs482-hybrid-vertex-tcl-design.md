@@ -232,22 +232,25 @@ classes:
   posts `VAP_PVS_VTX_TIMEOUT_REG` -- so the window is written on the bypass path
   even though it is never read.
 
-The earlier read-reachability inventory
-(`external sibling repository `steinmarder` (r300 reverse-engineering lane; not in this Mesa tree) src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`)
+The earlier read-reachability inventory in the external `steinmarder` r300
+reverse-engineering lane,
+`src/re/r300/docs/rs482-register-read-reachability-and-reader-inventory.md`,
 extrapolated the single `0x221c` proof to lump `0x2080`/`0x2140` into one excluded
 `radeon_rs480_candidate_vap_regs` group; the later hardware-confirmed asymmetry
 finding narrows it to the port window above, and this design follows the narrowed
-boundary. The practical rule is unchanged for correctness -- program VAP state,
-read only `0x2080`/`0x2140` for progress, never read `0x2200+` -- but the reason is
-transaction type (non-posted read completion), not a blanket domain-wide gate.
+boundary. The probe allowlist remains `0x2080`/`0x2140` for progress. The
+hardware-proven unconditional read wedge is the PVS/SE_TCL port window
+`0x2200-0x22dc`; offsets outside the allowlist remain uncharacterized rather
+than inheriting that verdict. The reason is transaction type (non-posted read
+completion), not a blanket domain-wide gate.
 
 Three RS482 vertex-path failures carry three distinct signatures, and conflating
-them mis-diagnoses the frontend. They stay separate:
+them misdiagnoses the frontend. They stay separate:
 
 | Failure | Signature |
 | --- | --- |
 | Front-end fetch / VAP progression stall -- the `fbo-clearmipmap` clear-quad wedge (HBTCL-01/02): the VAP is stuck assembling a vertex stream whose descriptor does not match the frontend | `RBBM_STATUS` latched `0x8411c100`, `VAP_BUSY = GA_BUSY = 100%`, backend (`RB3D`/`RE`/`TAM`/`PB`/`E2`) idle |
-| Under-fed output tuple -- the SOLVED R2VB re-ingest defect: `VAP_VTX_SIZE` trailed the wider `VAP_OUTPUT_VTX_FMT` tuple (8 vs 12 dwords), so the GA latched waiting for the missing dwords per vertex. Fixed by per-output reconstruction (`VAP_VTX_SIZE 0x08 -> 0x0c`, mesa PR#1040/#1041) | `GA_BUSY = 100%`, `VAP_BUSY = 0`, `CP`/`RE`/`RB3D` idle |
+| Under-fed output tuple -- the SOLVED R2VB re-ingest defect: `VAP_VTX_SIZE` trailed the wider `VAP_OUTPUT_VTX_FMT` tuple (8 vs 12 dwords), so the GA latched waiting for the missing dwords per vertex. Per-output reconstruction (`317205b427c`) and source-format dword derivation (`e7159360150`) change `VAP_VTX_SIZE 0x08 -> 0x0c`; the retained `r2vb-output-reingest-fix-rs482` bundle records the byte-identical retiring result | `GA_BUSY = 100%`, `VAP_BUSY = 0`, `CP`/`RE`/`RB3D` idle |
 | PVS-port MMIO read wedge: a read into `0x2200-0x22dc` waits forever for a non-posted completion and stalls the reset-less K8 northbridge below core level | host/NB completion failure, no NMI, no ordinary GFX-pipeline `RBBM_STATUS` shape; costs a physical power cycle |
 
 The bypass shape converges away from the first. The second is closed. The third
@@ -266,8 +269,9 @@ run on RS482:
    "Fast Algorithms for 3D-Graphics" (1994) -- done in the *linear* domain
    before any divide (see below).
 3. **Perspective divide** `x_ndc = x_clip / w_clip` (and y, z). A per-vertex
-   scalar reciprocal -- **SW-safe**; feeding pre-divided window-space vertices
-   is exactly the `VAP_VTE_CNTL` bypass mode.
+   scalar reciprocal -- **GPU-safe** on the fragment ALU or the VTE. Gallivm
+   remains the CPU fallback and reference; feeding pre-divided window-space
+   vertices is exactly the `VAP_VTE_CNTL` bypass mode.
 4. **Viewport / assembly** window-space scale and bias, primitive assembly.
    **HW-safe** in the VAP/GA frontend, which is what the bypass draw uses.
 
@@ -323,7 +327,7 @@ a value must round-trip as an integer index, never the transformed coordinates.
 | object | `(x,y,z,w)` FP24: app `w` when the position attribute has four components, else `w=1` | app VBO / producer `DRAW_IMMD` payload | the MVP multiply in the producer | object attributes enter the **producer** as embedded IMMD (or later TAM); they are not the re-ingest `3D_LOAD_VBPNTR` stream |
 | clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation, or clip-space VAP re-ingest | may be handed to the bypass VAP when `VTX_W0_FMT` enables the VTE reciprocal (see below) |
 | collineation (`*`) | Glaeser `(lambda*x, lambda*y, k*lambda*z)`, lines stay lines | the linear companion map | SW clip classify + edge gen (04c/04d) | pure SW; frontend never sees it |
-| NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | SW perspective divide (04b) or VTE `1/w` | viewport scale/bias | divide is either software or VTE-owned |
+| NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | fragment-ALU perspective divide (04b), VTE `1/w`, or gallivm fallback | viewport scale/bias | the admitted GPU route uses the fragment ALU or VTE; CPU divide is fallback-only |
 | window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VTX_XY_FMT`/`VTX_Z_FMT` (pre-divided) with `VPORT_*_ENA` off, or NDC + `VPORT_*_ENA` |
 
 `VAP_VTE_CNTL` selects **coordinate interpretation**, not the VBO fetch path.
@@ -398,8 +402,11 @@ standing vertex path:
 - **Never**: reach `r300_emit_vs_state`, set `has_tcl = true`, clear
   `TCL_BYPASS`, or read the `0x2200-0x22dc` PVS/SE_TCL port window. Progress
   reads stay on the demonstrated-safe front-end status words `VAP_CNTL`
-  (`0x2080`) and `VAP_CNTL_STATUS` (`0x2140`); a read at or above `0x2200` is
-  the non-posted-completion wedge (posted writes into that window stay safe).
+  (`0x2080`) and `VAP_CNTL_STATUS` (`0x2140`); a read in the proven
+  `0x2200-0x22dc` PVS/SE_TCL port window is the non-posted-completion wedge
+  (posted writes into that window stay safe). The separate `0x4000+` read
+  black hole requires a compounding active-3D wedge and carries no unconditional
+  equivalence to the PVS/SE_TCL window.
   Each forbidden action re-enters the unrecoverable wedge class.
 
 The fix and the redesign are the same insight at two scales: the RS482 vertex
@@ -461,7 +468,7 @@ silicon or a bounded next increment from two demonstrated pieces.
 | E2/RB2D/CBA2D (2D blit) | Move transformed vertices GART->VAP-input, or scatter/gather vertex streams, instead of a CPU copy + `cb_flush` | unexplored: the 2D engine appears once in the corpus (H.264 block-copy), never probed for vertices (HBTCL-10) |
 | VAP (frontend, bypass) | Assemble and output-format-map pre-transformed vertices; idle `VAP_PROG_STREAM_CNTL_1..7` (`0x2154-0x216c`) give headroom for more synthesized attribute channels | demonstrated; never engages the absent PVS |
 | GA / RE / SC | Primitive assembly, setup, rasterization, and a rectangular screen-space reject via `SC_SCISSORS`/`SC_CLIPRECT` (already in the demonstrated-safe bypass shape, outside the wedge window) | demonstrated |
-| CPU (minimal) | The branchy stages only: clip classification in the linear domain (per Glaeser), edge generation and attribute interpolation, topology decomposition/gather, and the admission/fallback decision. The perspective divide runs on the fragment ALU (`r2vb_divide_position`) or the VTE, not the CPU. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | demonstrated (measured) |
+| CPU (minimal) | The branchy stages only: clip classification in the linear domain (per Glaeser), edge generation and attribute interpolation, topology decomposition/gather, and the admission/fallback decision. The admitted hybrid route runs perspective divide on the fragment ALU (`r2vb_divide_position`) or the VTE; CPU owns the divide only after admission declines to the gallivm reference path. The transform + barrier + re-ingest already run in one IB for the passthrough class -- no mid-draw CPU round-trip -- at about 0.023 us/vertex versus 0.83 us/vertex for gallivm (~36x), and the re-ingest raster is bit-identical to gallivm | demonstrated (measured) |
 
 ### Do not re-derive (measured dead ends)
 
@@ -588,30 +595,32 @@ instructions but a live temporary does not survive the 64-slot bank boundary,
 so banking is not a dependent-chain escape. The plan generalizes the engine
 into the standing vertex route.
 
+The `HBTCL-NN` tokens are secondary registry labels for this tracker; the
+load-bearing identity of each row is the mechanism in the description column
+(durable mechanism names for branches, commits, and findings).
+
 | Task | Work | Depends on |
 | --- | --- | --- |
-The `HBTCL-NN` tokens are secondary registry labels for this tracker; the load-bearing identity of each row is the mechanism in the description column (durable mechanism names for branches, commits, and findings).
-
 | HBTCL-01 | No-submit PM4 decode of the clear-quad IB vs a working r3v triangle IB: capture with in-tree `R300_TRACE` / `RADEON_DUMP_PATCHED_IB` (and, when present, the external `steinmarder` r300 retained-IB decode tools), then compare the VAP frontend words; name the single diverging register among `VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE` | -- |
 | HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
-| HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the typed one-`vec4` budget escape. Perspective divide (04b) and geometric clipping (04c-04e) are landed and byte-identical on RS482; the residual is algebraic compaction and multi-carry transport (04f.4-04f.5) plus standing-route promotion (HBTCL-08) | -- |
+| HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the typed one-`vec4` budget escape. Perspective divide (04b), geometric clipping (04c-04e), and the bounded standing-route promotion (HBTCL-08) are landed; the residual is algebraic compaction and multi-carry transport (04f.4-04f.5) plus the points-topology RCA (HBTCL-07) | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
 | HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
 | HBTCL-04c | DONE: clip classification in the raw clip-space domain -- Draw-parity clip codes, accept/reject/partial/fallback classes (`r300_r2vb_clip.h`), FP24 clip-BO oracle, conservative gated route action; 9/9 corpus classes byte-identical on RS482 | HBTCL-04b |
 | HBTCL-04d | DONE: edge generation -- Sutherland-Hodgman intersection of PARTIAL triangles in clip space (`t = d_out / (d_out - d_in)` blends), attribute interpolation, fan retriangulation; 10/10 corpus cases byte-identical on RS482 | HBTCL-04c |
 | HBTCL-04e | DONE: topology gather -- strips, fans, indexed draws, primitive restart resolved to a triangle-index list before classification; 14/14 corpus cases byte-identical on RS482; points and lines stay excluded (points gate on HBTCL-07, lines need a 2-vertex clip variant) | HBTCL-04d |
 | HBTCL-04f.1 | DONE: admission on actual emitted RC slots (a throwaway backend compile reads the emitted `alu.length`, memoized per VS), so a dense kernel the backend packs under 64 slots is admitted even when its scalar NIR count exceeds 64 | HBTCL-03 |
-| HBTCL-04f.2 | DONE: producer split carrying one FP32 `vec4` float-carry through an R2VB buffer; VAP_VTX_SIZE under-feed root-caused and fixed by per-output reconstruction, corpus green on RS482 (mesa PR#1040-#1044) | HBTCL-04f.1 |
-| HBTCL-04f.3 | Host-tested primitive; production-route integration is 04f.3R. The one-FP32-`vec4` split classifier distinguishes float, signed integer, unsigned integer, and boolean carries; an integer component enters only when NIR range analysis proves an exact R300 FP24 conversion plus FP32 storage round trip (`abs(sint) <= 2^17`, `uint <= 2^17`) and every post-cut consumer agrees with the producer's logical type. Pass B reconstructs signed and unsigned flat carries directly as `ftrunc` and `ffloor`, outside the interpolation-only float-to-integer epsilon adjustment. The classifier and the pass builders are proven by direct host construction of a fragment-stage producer (#1119) and mirrored on the host (F3-CLASSIFIER-01). On silicon the typed T0-T9 corpus renders through gallivm and admits no split (F3-R0, stein PR#110): `r300_vs_nir_is_fragment_aluable`'s float-only whitelist rejects every typed application VS (`f2i32`, `i2f32`, `flt`, `b2f32`, `imin`/`imax`) before the route reaches `r300_r2vb_split_admitted`, so the primitive is unreachable through the production draw route. Transport wider than one `vec4` remains HBTCL-04f.5 | HBTCL-04f.2 |
-| HBTCL-04f.3c | DONE (mesa PR#1126, commit 19eaf0ec242): flat-input typed-source semantic parity. The fragment compile applies `r300_nir_lower_f2i_epsilon` (`x * (1 + 2^-15)`, an away-from-zero nudge compensating interpolated-varying error) before `f2i32`/`f2u32`; the direct Draw VS path `r300_draw_init_vertex_shader` lowers integers with `nir_lower_int_to_float` and omits that nudge. An R2VB producer's generated point attributes are flat, so the fragment epsilon can push a fractional value across the truncation boundary relative to gallivm. An `r300_fs_input_semantics` distinction (`INTERPOLATED` vs `R2VB_FLAT_VERTEX`) skips the epsilon for flat R2VB producer conversions; a host oracle covers a fractional `f2i` case just below and above an integer boundary | HBTCL-04f.3 |
-| HBTCL-04f.3R | DONE, DIAGNOSTIC-ONLY (mesa PR#1137, commit 8b475779ef2): the typed split is wired so a controlled corpus can reach it. The admission gate builds the restaged position FS (`r300_r2vb_build_restaged_fs_nir`, the plan consumer in `rs482-producer-alu-compaction-design.md`) and preflight-compiles it, so the backend verdict (`REJECT` unsupported, `OVER_ALU_BUDGET` split-eligible) decides ALU-lowering capability. The pre-lowering `r300_nir_op_is_fragment_aluable` whitelist scan narrows to the structural facts that survive lowering: single-block control flow, plain I/O and uniform/UBO intrinsics, a `gl_Position` output, and a bounded set of position-feeding inputs (up to `R300_R2VB_MAX_PRODUCER_INPUTS`) mapped in the producer's `VARYING_SLOT_VAR0 + location-rank` order, each representable by the producer input contract. Under the exact `R300_R2VB_TYPED_SPLIT=1` diagnostic gate, a narrow typed-source shape reaches the split (Boolean `flt -> b2f32`, signed `f2i32` + constant clamp `-> i2f32`, unsigned `max(x,0)` + `f2u32` + constant clamp `-> u2f32`); `r300_r2vb_typed_split_gate_value` accepts only the string `1`, while unset, empty, `0`, padded, and every other value keep the route closed. An under-budget typed producer declines (`TYPED_SINGLE_PASS_UNPROVEN`). This gate proves the mechanism on a controlled corpus and stays diagnostic-only: it establishes carry transport exactness (04f.3), not source-conversion equivalence (04f.3e), so it is not a production-safe route. Requires a new executable SHA | HBTCL-04f.3, HBTCL-04f.3c, HBTCL-04f.3e, COMP-PLAN-01 |
-| HBTCL-04f.3e | OPEN, PRODUCTION BLOCKER: typed source-domain equivalence. The exact-carry proof (04f.3) shows an integer within `+-2^17` round-trips FP24->FP32 exactly; it does not show the FP24 producer's `f2i32`/`f2u32` produced the same integer as the gallivm/Draw software VS, since a runtime float can quantize differently in FP24 before truncation (a value just below `2` truncates to `1` in software but rounds to `2` in FP24 first). The production contract needs two independent predicates: source conversion equivalence (the FP24 producer's typed value equals the Draw reference value) and carry transport exactness (04f.3). An arbitrary `f2i32(attribute)` + clamp bounds the output without proving the conversion matched the reference, so it declines `R300_R2VB_REJECT_TYPED_SOURCE_DOMAIN_UNPROVEN`. Automatic typed selection (HBTCL-08) stays blocked until a static source-domain predicate exists (exact integral floats within `+-2^17`; documented integer system streams; range-contracted integer uniform/push values; Boolean compares with proven threshold separation) | HBTCL-04f.3R |
+| HBTCL-04f.2 | DONE: producer split carrying one FP32 `vec4` float-carry through an R2VB buffer; `r2vb-output-reingest-fix-rs482` root-causes the `VAP_VTX_SIZE` under-feed, commits `317205b427c`, `e7159360150`, `b3ce4f5a26b`, and `8799e951771` establish per-output reconstruction as the sole delivery, and `r2vb-spill1-acceptance-fixed-delivery-rs482` records the green RS482 corpus | HBTCL-04f.1 |
+| HBTCL-04f.3 | Host-tested primitive; production-route integration is 04f.3R. The one-FP32-`vec4` split classifier distinguishes float, signed integer, unsigned integer, and boolean carries; an integer component enters only when NIR range analysis proves an exact R300 FP24 conversion plus FP32 storage round trip (`abs(sint) <= 2^17`, `uint <= 2^17`) and every post-cut consumer agrees with the producer's logical type. Pass B reconstructs signed and unsigned flat carries directly as `ftrunc` and `ffloor`, outside the interpolation-only float-to-integer epsilon adjustment. Commit `69bae642ad7` proves the classifier and pass builders by direct host construction of a fragment-stage producer; F3-CLASSIFIER-01 mirrors the classifier independently. The retained `2026-07-14-r2vb-typed-carry-production-route-unreachable-aluable-gate` finding records the F3-R0 silicon result: the typed T0-T9 corpus renders through gallivm and admits no split because `r300_vs_nir_is_fragment_aluable`'s float-only whitelist rejects every typed application VS (`f2i32`, `i2f32`, `flt`, `b2f32`, `imin`/`imax`) before the route reaches `r300_r2vb_split_admitted`. Transport wider than one `vec4` remains HBTCL-04f.5 | HBTCL-04f.2 |
+| HBTCL-04f.3c | DONE (commit `19eaf0ec242`): flat-input typed-source semantic parity. The fragment compile applies `r300_nir_lower_f2i_epsilon` (`x * (1 + 2^-15)`, an away-from-zero nudge compensating interpolated-varying error) before `f2i32`/`f2u32`; the direct Draw VS path `r300_draw_init_vertex_shader` lowers integers with `nir_lower_int_to_float` and omits that nudge. An R2VB producer's generated point attributes are flat, so the fragment epsilon can push a fractional value across the truncation boundary relative to gallivm. An `r300_fs_input_semantics` distinction (`INTERPOLATED` vs `R2VB_FLAT_VERTEX`) skips the epsilon for flat R2VB producer conversions; a host oracle covers a fractional `f2i` case just below and above an integer boundary | HBTCL-04f.3 |
+| HBTCL-04f.3R | DONE, DIAGNOSTIC-ONLY (commit `8b475779ef2`): the typed split is wired so a controlled corpus can reach it. The admission gate builds the restaged position FS (`r300_r2vb_build_restaged_fs_nir`, the plan consumer in `rs482-producer-alu-compaction-design.md`) and preflight-compiles it, so the backend verdict (`REJECT` unsupported, `OVER_ALU_BUDGET` split-eligible) decides ALU-lowering capability. The pre-lowering `r300_nir_op_is_fragment_aluable` whitelist scan narrows to the structural facts that survive lowering: single-block control flow; plain I/O, uniform/UBO, push-constant, and constant-data intrinsics; a `gl_Position` output; and a bounded set of position-feeding inputs (up to `R300_R2VB_MAX_PRODUCER_INPUTS`) mapped in the producer's `VARYING_SLOT_VAR0 + location-rank` order, each representable by the producer input contract. Under the exact `R300_R2VB_TYPED_SPLIT=1` diagnostic gate, a narrow typed-source shape reaches the split (Boolean `flt -> b2f32`, signed `f2i32` + constant clamp `-> i2f32`, unsigned `max(x,0)` + `f2u32` + constant clamp `-> u2f32`); `r300_r2vb_typed_split_gate_value` accepts only the string `1`, while unset, empty, `0`, padded, and every other value keep the route closed. An under-budget typed producer declines (`TYPED_SINGLE_PASS_UNPROVEN`). This gate proves the mechanism on a controlled corpus and stays diagnostic-only: it establishes carry transport exactness (04f.3), not source-conversion equivalence (04f.3e), so it is not a production-safe route | HBTCL-04f.3, HBTCL-04f.3c, HBTCL-04f.3e, COMP-PLAN-01 |
+| HBTCL-04f.3e | OPEN, PRODUCTION BLOCKER: typed source-domain equivalence. The exact-carry proof (04f.3) shows an integer within `+-2^17` round-trips FP24->FP32 exactly; it does not show the FP24 producer's `f2i32`/`f2u32` produced the same integer as the gallivm/Draw software VS, since a runtime float can quantize differently in FP24 before truncation (a value just below `2` truncates to `1` in software but rounds to `2` in FP24 first). The production contract needs two independent predicates: source conversion equivalence (the FP24 producer's typed value equals the Draw reference value) and carry transport exactness (04f.3). An arbitrary `f2i32(attribute)` + clamp bounds the output without proving the conversion matched the reference, so it declines `R300_R2VB_REJECT_TYPED_SOURCE_DOMAIN_UNPROVEN`. Typed-source expansion of the HBTCL-08 standing route stays blocked until a static source-domain predicate exists (exact integral floats within `+-2^17`; documented integer system streams; range-contracted integer uniform/push values; Boolean compares with proven threshold separation) | HBTCL-04f.3R |
 | HBTCL-04f.4 | PARKED, DEMAND-GATED: standing-route telemetry over real workloads found no over-budget producer population, so implementation waits on measured demand. Semantics-preserving algebraic compaction of the over-budget producer -- designed in `rs482-producer-alu-compaction-design.md` (two-proof certified-rewrite pipeline over the emitted resource vector, shared producer plan with the split; the multiply-minimization family is gated off as a DP4-regime loss). Implementation gated on PROOF-FP24-01 (the FP24 exact-integer window is 2^17, not 2^24) and a real-workload mine; the affine closed form is contract-restricted and `recur90` stays a split stress case | HBTCL-04f.2 |
 | HBTCL-04f.5 | OPEN, NOT ACTIVE: no measured multi-carry workload demand. Multi-carry / MRT transport for producers whose escape needs more than one carry stream; gallivm fallback for every unsupported shape. R400 code banks stay diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-04f.2 |
-| HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200+` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
+| HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200-0x22dc` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
 | HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
-| HBTCL-08 | Promote the generalized R2VB collineation engine to the standing r300 SW-TCL vertex route (gated first); validate on RS482 across topologies + a piglit GL2.1 subset under the poller with no VAP/GA stall | HBTCL-02, HBTCL-04, HBTCL-07 |
+| HBTCL-08 | DONE, BOUNDED (commit `7ff312da4a8`): exact `R300_R2VB_STANDING=1` arms the measured route only on the RS480 family and only for the packed-FP32 source and delivery domain pinned by `ffc78065325`; every unsupported point, computed-varying, typed-source, or source-format row declines to gallivm with a reason. HBTCL-07 remains the independent points-topology RCA rather than an unproven expansion of this bounded route | HBTCL-02, HBTCL-04 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |
 | HBTCL-10 | Probe E2/RB2D/CBA2D vertex-buffer movement as a possible GART-to-VAP-input mover, using the same hazard-governed no-submit/attended style as the rest of RS482 work | HBTCL-03 |
 
@@ -622,7 +631,8 @@ the host-tested typed split primitive whose diagnostic route reachability landed
 (04f.3R, ahead of it the landed flat-input epsilon parity 04f.3c) and whose
 production admission blocks on source-domain equivalence (04f.3e), 04f.4 parked
 on measured demand and 04f.5 open but inactive for the same reason;
-HBTCL-07/08 build the fix out into the standing hybrid; HBTCL-05/06/09/10 are
+HBTCL-08 lands the bounded packed-FP32 standing route while HBTCL-07 retains the
+points-topology RCA; HBTCL-05/06/09/10 are
 the register-table, lighting, MRT-export, and movement extensions. All hardware
 steps run on the parked, hang-for-inspection box under the wedge-forensics
 poller; the decode steps submit nothing.
@@ -640,9 +650,11 @@ poller; the decode steps submit nothing.
   application VS against a float-only whitelist, so a typed carry op declines the
   route before restaging (F3-R0). The fragment backend lowers those ops
   (`r300_nir_lower_bitwise_to_arith`, `nir_lower_int_to_float`, bool-to-float)
-  before RC emission, so diagnostic route reachability (04f.3R, mesa PR#1137)
+  before RC emission, so diagnostic route reachability (04f.3R, commit
+  `8b475779ef2`)
   builds and preflights the restaged FS instead of the pre-lowering VS, and
-  flat-input epsilon parity (04f.3c, mesa PR#1126) landed ahead of it. Production admission blocks further on
+  flat-input epsilon parity (04f.3c, commit `19eaf0ec242`) landed ahead of it.
+  Production admission blocks further on
   source-domain equivalence (04f.3e): the exact-carry proof establishes transport
   exactness, not that the FP24 producer's float-to-integer conversion matches the
   software reference, so the diagnostic gate proves the mechanism without making
