@@ -479,7 +479,9 @@ source-root-check:
 
 source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q $(CURDIR)/tests/test_source_root_control.py
+		python3 -m pytest -q \
+		$(CURDIR)/tests/test_source_root_control.py \
+		$(CURDIR)/tests/test_mount_boundary_calibration.py
 
 # Driver-root gate: each AMD GPU family's Vulkan driver keeps its source root
 # at the family's vulkan/ directory, and the build graph enters it there.
@@ -2019,6 +2021,7 @@ source-root-selection-test:
 	if command -v unshare >/dev/null 2>&1 && \
 		command -v mount >/dev/null 2>&1 && \
 		unshare --user --map-root-user --mount true >/dev/null 2>&1; then \
+		caller_mount_namespace="$$(readlink /proc/self/ns/mnt)"; \
 		if [ -e /opt/local ]; then \
 			opt_local_before="present:$$(stat -c '%d:%i:%f:%u:%g' /opt/local)"; \
 		else \
@@ -2026,6 +2029,7 @@ source-root-selection-test:
 		fi; \
 		mount_boundary_output="$$( \
 			GOROROBA_MOUNT_BOUNDARY_CALIBRATION=1 \
+			GOROROBA_CALLER_MOUNT_NAMESPACE="$$caller_mount_namespace" \
 			unshare --user --map-root-user --mount bash -c '\
 				set -euo pipefail; \
 				mount --make-rprivate /; \
