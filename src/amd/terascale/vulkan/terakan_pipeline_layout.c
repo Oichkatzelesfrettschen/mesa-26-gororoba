@@ -57,10 +57,11 @@ void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command
 #include <stdio.h>
 #include <string.h>
 
-/* Update robustness write-guard metadata for a UAV slot in KCACHE bank 14.
- * Routes SSBO bounds to uav_byte_sizes[] and texel buffer element counts to
- * texel_buffer_element_counts[]; zeros the complementary array for
- * defense-in-depth. Pass bound=0 for unbound UAVs.
+/* Record descriptor-derived bank-14 metadata by mutable-resource identity.
+ * Draw and dispatch compact this shadow through the active shader's metadata
+ * consumer bitset. SSBO bounds and texel-buffer element counts occupy
+ * separate fields so interpreting either descriptor class as the other
+ * produces a zero bound. Pass bound=0 for unbound descriptors.
  *
  * base_array_layer is routed to
  * uav_base_array_layers[] (bank 14, dwords 28..39) only when
@@ -70,16 +71,23 @@ void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command
  * not have baseArrayLayer added, else MEM_RAT targets a slice beyond
  * the allocation boundary and corrupts adjacent suballocations. */
 static inline void
-update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
-                               uint8_t const uav_idx, bool const is_texel,
-                               uint32_t const bound,
-                               uint32_t const base_array_layer,
-                               bool const inject_base_array_layer)
+update_uav_robustness_metadata_shadow(
+   struct terakan_gfx_command_writer * const cw,
+   bool const is_compute,
+   uint8_t const mutable_resource_index,
+   bool const is_texel,
+   uint32_t const bound,
+   uint32_t const base_array_layer,
+   bool const inject_base_array_layer)
 {
-   if (uav_idx >= TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT)
+   if (mutable_resource_index >=
+       TERAKAN_ROBUSTNESS_METADATA_MUTABLE_RESOURCE_COUNT)
       return;
-   cw->robustness_metadata.uav_byte_sizes[uav_idx] = is_texel ? 0 : bound;
-   cw->robustness_metadata.texel_buffer_element_counts[uav_idx] = is_texel ? bound : 0;
+   struct terakan_robustness_metadata_source * const source =
+      &cw->robustness_metadata.mutable_resources[is_compute ? 1 : 0]
+                                                [mutable_resource_index];
+   source->buffer_byte_size = is_texel ? 0 : bound;
+   source->texel_buffer_element_count = is_texel ? bound : 0;
    {
       uint32_t bal_value =
          inject_base_array_layer ? base_array_layer : 0u;
@@ -95,31 +103,11 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
          static unsigned probe_bo_call_count = 0;
          bal_value = 0xDEADBE00u + (probe_bo_call_count++ & 0xFFu);
          fprintf(stderr,
-            "TERAKAN_PROBE_BO_MARKER: uav_idx=%u writing 0x%08x\n",
-            uav_idx, bal_value);
+            "TERAKAN_PROBE_BO_MARKER: mutable_resource_index=%u writing 0x%08x\n",
+            mutable_resource_index, bal_value);
       }
-      cw->robustness_metadata.uav_base_array_layers[uav_idx] = bal_value;
+      source->base_array_layer = bal_value;
    }
-   cw->robustness_metadata.dirty = true;
-}
-
-static unsigned
-terakan_uav_metadata_index_from_mutable_resource(
-   struct terakan_gfx_command_writer const * const command_writer,
-   BITSET_WORD const * const uavs_used, uint8_t const mutable_resource_index,
-   bool const is_compute)
-{
-   unsigned uav_index = is_compute
-      ? 0
-      : command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps
-           .fs_uav_index_base;
-   unsigned const first_word = BITSET_BITWORD(mutable_resource_index);
-   for (unsigned word_index = 0; word_index < first_word; ++word_index) {
-      uav_index += util_bitcount(uavs_used[word_index]);
-   }
-   uav_index += util_bitcount(uavs_used[first_word] &
-                              (BITSET_BIT(mutable_resource_index) - 1));
-   return uav_index;
 }
 
 static VkDescriptorType
@@ -489,14 +477,10 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   bool const inject_layer =
                      (uav->view_flags &
                       TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE) != 0;
-                  if (used) {
-                     unsigned const uav_metadata_idx =
-                        terakan_uav_metadata_index_from_mutable_resource(
-                           command_writer, uavs_used, idx, is_compute);
-                     update_uav_robustness_metadata(command_writer, uav_metadata_idx,
-                                                    uav->is_texel_buffer, bound,
-                                                    uav->base_array_layer, inject_layer);
-                  }
+                  update_uav_robustness_metadata_shadow(
+                     command_writer, is_compute, idx,
+                     uav->is_texel_buffer, bound,
+                     uav->base_array_layer, inject_layer);
 
                   /* A layer change can select a different compute shader
                    * binary, so the compute state must be re-emitted even when
@@ -517,13 +501,8 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      terakan_state_draw_set_pending(&command_writer->state_draw,
                                                     TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                   BITSET_CLEAR(uavs_not_null, idx);
-                  if (used) {
-                     unsigned const uav_metadata_idx =
-                        terakan_uav_metadata_index_from_mutable_resource(
-                           command_writer, uavs_used, idx, is_compute);
-                     update_uav_robustness_metadata(command_writer, uav_metadata_idx, false, 0,
-                                                    0, false);
-                  }
+                  update_uav_robustness_metadata_shadow(
+                     command_writer, is_compute, idx, false, 0, 0, false);
                   if (is_compute && idx == 0 &&
                       command_writer->storage_image_variant_layer != INT32_MIN) {
                      command_writer->storage_image_variant_layer = INT32_MIN;

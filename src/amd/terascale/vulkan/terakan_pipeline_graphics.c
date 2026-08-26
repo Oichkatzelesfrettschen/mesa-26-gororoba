@@ -1968,6 +1968,7 @@ terakan_pipeline_graphics_compile_shaders(
          fs_nir, pipeline_layout, fs_local->resources_needed,
          &fs_local->samplers_needed,
          fs_local->uavs_for_mutable_resources_needed,
+         fs_local->robustness_metadata_for_mutable_resources_needed,
          &fs_local->push_constants_usage.driver_constants,
          &fs_local->kcache_needed,
          &fs_local->fs.fragment_data_uncompacted_locations,
@@ -2020,6 +2021,7 @@ terakan_pipeline_graphics_compile_shaders(
             nir, pipeline_layout, local->resources_needed,
             &local->samplers_needed,
             local->uavs_for_mutable_resources_needed,
+            local->robustness_metadata_for_mutable_resources_needed,
             &local->push_constants_usage.driver_constants,
             &local->kcache_needed,
             NULL, /* Not FS: no fragment data locations */

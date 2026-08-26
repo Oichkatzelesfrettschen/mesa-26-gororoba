@@ -365,6 +365,37 @@ terakan_nir_get_binding(nir_src const src, VkDescriptorType const expected_type,
 }
 
 static bool
+terakan_nir_mark_binding_range(
+   nir_builder * const b, nir_src const src,
+   VkDescriptorType const expected_type,
+   BITSET_WORD * const needed,
+   struct terakan_nir_lower_bindings_state * const state)
+{
+   struct terakan_nir_binding binding;
+   if (unlikely(!terakan_nir_get_binding(src, expected_type, state->layout,
+                                         b->shader, &binding)))
+      return false;
+
+   unsigned mutable_resource_first =
+      binding.set->first_shader_resources[b->shader->info.stage] +
+      binding.set_binding->first_shader_resources[b->shader->info.stage] -
+      TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
+   if (binding.array_index == NULL ||
+       nir_def_instr(binding.array_index)->type == nir_instr_type_load_const) {
+      if (binding.array_index != NULL) {
+         mutable_resource_first +=
+            nir_instr_as_load_const(nir_def_instr(binding.array_index))->value[0].u32;
+      }
+      BITSET_SET(needed, mutable_resource_first);
+   } else {
+      BITSET_SET_RANGE(needed, mutable_resource_first,
+                       mutable_resource_first + binding.array_index_range_last);
+   }
+
+   return true;
+}
+
+static bool
 terakan_nir_gather_uavs_needed_instr(nir_builder * const b, nir_instr * const instr,
                                      void * const cb_data)
 {
@@ -413,36 +444,106 @@ terakan_nir_gather_uavs_needed_instr(nir_builder * const b, nir_instr * const in
       return false;
    }
    assert(expected_type != VK_DESCRIPTOR_TYPE_MAX_ENUM);
-   struct terakan_nir_binding binding;
-   if (unlikely(!terakan_nir_get_binding(src, expected_type, state->layout, b->shader, &binding))) {
+   terakan_nir_mark_binding_range(b, src, expected_type,
+                                  state->uavs_for_mutable_resources_needed, state);
+   return false;
+}
+
+static bool
+terakan_nir_gather_robustness_metadata_needed_instr(
+   nir_builder * const b, nir_instr * const instr, void * const cb_data)
+{
+   struct terakan_nir_lower_bindings_state * const state = cb_data;
+   if (instr->type != nir_instr_type_intrinsic)
       return false;
-   }
-   uint8_t mutable_resource_first =
-      binding.set->first_shader_resources[b->shader->info.stage] +
-      binding.set_binding->first_shader_resources[b->shader->info.stage] -
-      TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
-   /* The array index logic must be consistent with the assumptions in terakan_nir_get_binding_uav.
-    */
-   if (binding.array_index == NULL ||
-       nir_def_instr(binding.array_index)->type == nir_instr_type_load_const) {
-      /* Constant index - mark only one resource as needing a UAV, and expect this constant index to
-       * be added before retrieving the UAV index for the resource index.
-       */
-      if (binding.array_index != NULL) {
-         mutable_resource_first +=
-            nir_instr_as_load_const(nir_def_instr(binding.array_index))->value[0].u32;
+
+   nir_intrinsic_instr * const intrin = nir_instr_as_intrinsic(instr);
+   nir_src src = NIR_SRC_INIT;
+   VkDescriptorType expected_type = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+
+   switch (intrin->intrinsic) {
+   case nir_intrinsic_load_ssbo:
+      if (state->robust_buffer_access) {
+         src = intrin->src[0];
+         expected_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
       }
-      BITSET_SET(state->uavs_for_mutable_resources_needed, mutable_resource_first);
-   } else {
-      /* Non-constant index - demand the whole array, starting from index 0 (disregarding
-       * array_index_range_first even if at some point more precise estimation is added to avoid
-       * offsetting the index at runtime).
-       */
-      BITSET_SET_RANGE(state->uavs_for_mutable_resources_needed, mutable_resource_first,
-                       mutable_resource_first + binding.array_index_range_last);
+      break;
+   case nir_intrinsic_get_ssbo_size:
+      src = intrin->src[0];
+      expected_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      break;
+   case nir_intrinsic_store_ssbo:
+      if (state->robust_buffer_access) {
+         src = intrin->src[1];
+         expected_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      }
+      break;
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+      if (state->robust_buffer_access) {
+         src = intrin->src[0];
+         expected_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      }
+      break;
+   case nir_intrinsic_image_deref_load:
+      if (nir_intrinsic_image_dim(intrin) != GLSL_SAMPLER_DIM_BUF &&
+          !(nir_intrinsic_access(intrin) & ACCESS_NON_WRITEABLE)) {
+         src = intrin->src[0];
+         expected_type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      }
+      break;
+   case nir_intrinsic_image_deref_store:
+   case nir_intrinsic_image_deref_atomic:
+   case nir_intrinsic_image_deref_atomic_swap:
+      if (nir_intrinsic_image_dim(intrin) != GLSL_SAMPLER_DIM_BUF ||
+          state->robust_buffer_access) {
+         src = intrin->src[0];
+         expected_type =
+            terakan_nir_image_descriptor_type(nir_intrinsic_image_dim(intrin));
+      }
+      break;
+   default:
+      break;
    }
 
+   if (src.ssa != NULL) {
+      terakan_nir_mark_binding_range(
+         b, src, expected_type,
+         state->robustness_metadata_for_mutable_resources_needed, state);
+   }
    return false;
+}
+
+void
+terakan_nir_gather_robustness_metadata_needed(
+   nir_shader * const shader,
+   struct terakan_nir_lower_bindings_state * const state)
+{
+   if (state->robustness_metadata_for_mutable_resources_needed == NULL)
+      return;
+
+   nir_shader_instructions_pass(
+      shader, terakan_nir_gather_robustness_metadata_needed_instr,
+      nir_metadata_none, state);
+
+   unsigned const mutable_resource_count =
+      shader->info.stage == MESA_SHADER_FRAGMENT
+         ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+         : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
+   unsigned metadata_count = 0;
+   unsigned mutable_resource_index;
+   BITSET_FOREACH_SET (
+      mutable_resource_index,
+      state->robustness_metadata_for_mutable_resources_needed,
+      mutable_resource_count) {
+      if (metadata_count == TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+         BITSET_CLEAR_RANGE(
+            state->robustness_metadata_for_mutable_resources_needed,
+            mutable_resource_index, mutable_resource_count - 1);
+         break;
+      }
+      ++metadata_count;
+   }
 }
 
 /* Returns UINT_MAX if there are no UAVs exceeding the limit. */
@@ -574,6 +675,58 @@ terakan_nir_get_binding_uav(struct terakan_nir_binding const * const binding,
 
    *apply_array_index_out = apply_array_index;
    return uav_index;
+}
+
+unsigned
+terakan_nir_get_binding_robustness_metadata(
+   struct terakan_nir_binding const * const binding,
+   struct terakan_nir_lower_bindings_state const * const state,
+   mesa_shader_stage const stage, bool * const apply_array_index_out)
+{
+   if (state->robustness_metadata_for_mutable_resources_needed == NULL)
+      return UINT_MAX;
+
+   unsigned mutable_resource_first =
+      binding->set->first_shader_resources[stage] +
+      binding->set_binding->first_shader_resources[stage] -
+      TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
+   unsigned mutable_resource_last;
+   bool apply_array_index;
+   if (binding->array_index == NULL ||
+       nir_def_instr(binding->array_index)->type == nir_instr_type_load_const) {
+      if (binding->array_index != NULL) {
+         mutable_resource_first +=
+            nir_instr_as_load_const(nir_def_instr(binding->array_index))->value[0].u32;
+      }
+      mutable_resource_last = mutable_resource_first;
+      apply_array_index = false;
+   } else {
+      mutable_resource_last =
+         mutable_resource_first + binding->array_index_range_last;
+      apply_array_index = true;
+   }
+
+   for (unsigned mutable_resource_index = mutable_resource_first;
+        mutable_resource_index <= mutable_resource_last;
+        ++mutable_resource_index) {
+      if (!BITSET_TEST(
+             state->robustness_metadata_for_mutable_resources_needed,
+             mutable_resource_index))
+         return UINT_MAX;
+   }
+
+   unsigned const mutable_resource_count =
+      stage == MESA_SHADER_FRAGMENT
+         ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+         : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
+   unsigned const metadata_index = terakan_robustness_metadata_index(
+      state->robustness_metadata_for_mutable_resources_needed,
+      mutable_resource_first, mutable_resource_count);
+   if (metadata_index == UINT32_MAX)
+      return UINT_MAX;
+
+   *apply_array_index_out = apply_array_index;
+   return metadata_index;
 }
 
 /* Returns 0 in case of an error. */

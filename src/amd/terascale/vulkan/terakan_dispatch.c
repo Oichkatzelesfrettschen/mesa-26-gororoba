@@ -2338,7 +2338,7 @@ terakan_cmd_dispatch_base(VkCommandBuffer const commandBuffer,
             }
             if (use_workgroup_z_cached) {
                uint32_t const start_z =
-                  command_writer->robustness_metadata.uav_base_array_layers[0];
+                  command_writer->robustness_metadata.payload.uav_base_array_layers[0];
                uint32_t *p = terakan_gfx_command_writer_emit(
                   command_writer,
                   TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);

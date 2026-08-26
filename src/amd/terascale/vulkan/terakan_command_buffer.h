@@ -32,6 +32,7 @@
 #include "terakan_instance.h"
 #include "terakan_physical_device.h"
 #include "terakan_push_constants.h"
+#include "terakan_robustness_metadata.h"
 
 struct terakan_pipeline_compute;
 struct terakan_pipeline_graphics;
@@ -399,42 +400,16 @@ struct terakan_gfx_command_writer {
    /* Modifies hw_state_sqc. */
    struct terakan_push_constants_state push_constants_state;
 
-   /* Robustness metadata for UAV write guards (KCACHE bank 14).
-    * Populated by terakan_pipeline_layout_bind_descriptor_sets() from the
-    * effective bound of each bound buffer UAV.  Uploaded to GPU memory
-    * and bound to KCACHE bank 14 at draw/dispatch time by
-    * terakan_robustness_metadata_apply().
-    *
-    * Index = physical CB_COLOR UAV slot (0-based relative to UAV base).
-    * Value = effective bound after dynamic offset adjustment:
-    *   STORAGE_BUFFER: byte count from VkDescriptorBufferInfo.range.
-    *   STORAGE_TEXEL_BUFFER: element count from VkBufferView.
-    *   (A slot is never both types simultaneously.)
-    * Unbound / image-only slots are zero (disabling all writes via guard).
-    */
+   /* KCACHE bank-14 metadata has two identities. Descriptor binding writes
+    * the graphics or compute shadow by mutable-resource index regardless of
+    * the pipeline binding order. Draw or dispatch compacts that shadow
+    * through the active fragment or compute shader's consumer-derived
+    * metadata bitset into the twelve hardware payload slots. RAT allocation
+    * and the graphics RTV base do not participate in this mapping. */
    struct {
-      uint32_t uav_byte_sizes[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
-      /* Texel buffer element counts — separate from uav_byte_sizes for
-       * defense-in-depth.  If a slot is STORAGE_TEXEL_BUFFER, the element
-       * count goes here (dwords 16..27 in bank 14); uav_byte_sizes for
-       * that slot is zeroed.  If STORAGE_BUFFER, this array is zeroed
-       * for that slot instead.  Prevents misinterpretation if a driver
-       * bug routes the wrong type to the wrong array. */
-      uint32_t texel_buffer_element_counts[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
-      /* Per-UAV baseArrayLayer for MEM_RAT STORE_TYPED slice addressing.
-       * The TeraScale CB exporter reads
-       * R3.z as the absolute physical slice index for TEXTURE2DARRAY
-       * resources and does NOT consult CB_COLOR_VIEW.SLICE_START.  For
-       * non-array views (VK_IMAGE_VIEW_TYPE_1D/2D/CUBE) over multi-
-       * layer VkImage backings, the shader's coord-z lowers to literal
-       * 0, so writes collapse to slice 0 regardless of baseArrayLayer.
-       * Upload the per-UAV baseArrayLayer here (bank 14, dwords 28..39)
-       * so terakan_nir_image_uav_coord can emit
-       *   R3.z = nir_iadd(load_kcache(bank=14, dword=28+uav_idx),
-       *                   shader_provided_z_or_zero).
-       * Non-image UAVs (SSBO, texel buffer) and array-view images
-       * populate zero -- nir_iadd with zero is optimized out. */
-      uint32_t uav_base_array_layers[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
+      struct terakan_robustness_metadata_payload payload;
+      struct terakan_robustness_metadata_source
+         mutable_resources[2][TERAKAN_ROBUSTNESS_METADATA_MUTABLE_RESOURCE_COUNT];
       /* Per-sampler-binding VkComponentMapping for the
        * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD Evergreen-Family
        * ISA Chapter 6 (Texture Cache Clauses): the TEX_WORD1 DST_SEL field

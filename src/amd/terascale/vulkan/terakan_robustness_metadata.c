@@ -60,6 +60,8 @@
 #include "terakan_command_buffer.h"
 #include "terakan_descriptor.h"
 #include "terakan_hw_state.h"
+#include "terakan_pipeline_compute.h"
+#include "terakan_pipeline_graphics.h"
 
 #include "util/u_debug.h"
 
@@ -70,6 +72,42 @@ terakan_robustness_metadata_apply(
    struct terakan_gfx_command_writer * const command_writer,
    bool const is_compute)
 {
+   BITSET_DECLARE(zero_needed,
+                  TERAKAN_ROBUSTNESS_METADATA_MUTABLE_RESOURCE_COUNT) = {0};
+   BITSET_WORD const *needed = zero_needed;
+   unsigned mutable_resource_count =
+      TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
+   if (is_compute) {
+      if (command_writer->bound_compute_pipeline != NULL) {
+         needed = command_writer->bound_compute_pipeline->shader
+                     .robustness_metadata_for_mutable_resources_needed;
+      }
+   } else {
+      mutable_resource_count =
+         TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL;
+      if (command_writer->bound_graphics_pipeline != NULL &&
+          (command_writer->bound_graphics_pipeline->shader_stages &
+           VK_SHADER_STAGE_FRAGMENT_BIT)) {
+         needed = command_writer->bound_graphics_pipeline
+                     ->shaders[MESA_SHADER_FRAGMENT]
+                     .robustness_metadata_for_mutable_resources_needed;
+      }
+   }
+
+   struct terakan_robustness_metadata_payload compacted_payload;
+   bool const compacted = terakan_robustness_metadata_compact(
+      needed, mutable_resource_count,
+      command_writer->robustness_metadata
+         .mutable_resources[is_compute ? 1 : 0],
+      &compacted_payload);
+   if (unlikely(!compacted))
+      memset(&compacted_payload, 0, sizeof(compacted_payload));
+   if (memcmp(&command_writer->robustness_metadata.payload,
+              &compacted_payload, sizeof(compacted_payload)) != 0) {
+      command_writer->robustness_metadata.payload = compacted_payload;
+      command_writer->robustness_metadata.dirty = true;
+   }
+
    if (!command_writer->robustness_metadata.dirty &&
        command_writer->robustness_metadata.bo != NULL) {
       /* Data unchanged since last upload — just ensure KCACHE is bound to
@@ -106,33 +144,33 @@ terakan_robustness_metadata_apply(
 
       /* Dwords 0..11: SSBO byte sizes. */
       memcpy(mapping,
-             command_writer->robustness_metadata.uav_byte_sizes,
-             sizeof(command_writer->robustness_metadata.uav_byte_sizes));
+             command_writer->robustness_metadata.payload.uav_byte_sizes,
+             sizeof(command_writer->robustness_metadata.payload.uav_byte_sizes));
       if (debug_get_bool_option("TERAKAN_DEBUG_ROBUSTNESS_METADATA", false)) {
          fprintf(stderr, "terakan/robustness_metadata: uav_byte_sizes[0..5] = %u %u %u %u %u %u\n",
-                 command_writer->robustness_metadata.uav_byte_sizes[0],
-                 command_writer->robustness_metadata.uav_byte_sizes[1],
-                 command_writer->robustness_metadata.uav_byte_sizes[2],
-                 command_writer->robustness_metadata.uav_byte_sizes[3],
-                 command_writer->robustness_metadata.uav_byte_sizes[4],
-                 command_writer->robustness_metadata.uav_byte_sizes[5]);
+                 command_writer->robustness_metadata.payload.uav_byte_sizes[0],
+                 command_writer->robustness_metadata.payload.uav_byte_sizes[1],
+                 command_writer->robustness_metadata.payload.uav_byte_sizes[2],
+                 command_writer->robustness_metadata.payload.uav_byte_sizes[3],
+                 command_writer->robustness_metadata.payload.uav_byte_sizes[4],
+                 command_writer->robustness_metadata.payload.uav_byte_sizes[5]);
          fprintf(stderr,
                  "terakan/robustness_metadata: uav_base_array_layers[0..5] = %u %u %u %u %u %u\n",
-                 command_writer->robustness_metadata.uav_base_array_layers[0],
-                 command_writer->robustness_metadata.uav_base_array_layers[1],
-                 command_writer->robustness_metadata.uav_base_array_layers[2],
-                 command_writer->robustness_metadata.uav_base_array_layers[3],
-                 command_writer->robustness_metadata.uav_base_array_layers[4],
-                 command_writer->robustness_metadata.uav_base_array_layers[5]);
+                 command_writer->robustness_metadata.payload.uav_base_array_layers[0],
+                 command_writer->robustness_metadata.payload.uav_base_array_layers[1],
+                 command_writer->robustness_metadata.payload.uav_base_array_layers[2],
+                 command_writer->robustness_metadata.payload.uav_base_array_layers[3],
+                 command_writer->robustness_metadata.payload.uav_base_array_layers[4],
+                 command_writer->robustness_metadata.payload.uav_base_array_layers[5]);
       }
       /* Dwords 16..27: texel buffer element counts. */
       memcpy(mapping + 16,
-             command_writer->robustness_metadata.texel_buffer_element_counts,
-             sizeof(command_writer->robustness_metadata.texel_buffer_element_counts));
+             command_writer->robustness_metadata.payload.texel_buffer_element_counts,
+             sizeof(command_writer->robustness_metadata.payload.texel_buffer_element_counts));
       /* Dwords 28..39: per-UAV baseArrayLayer for slice-coordinate lowering. */
       memcpy(mapping + 28,
-             command_writer->robustness_metadata.uav_base_array_layers,
-             sizeof(command_writer->robustness_metadata.uav_base_array_layers));
+             command_writer->robustness_metadata.payload.uav_base_array_layers,
+             sizeof(command_writer->robustness_metadata.payload.uav_base_array_layers));
       /* Dwords 40..51: per-sampler-binding VkComponentMapping pack
        * (two bindings per dword, 16 bits each).  Consumed by
        * terakan_nir_lower_tg4_view_swizzle to pre-map the gather

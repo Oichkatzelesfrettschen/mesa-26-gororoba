@@ -220,10 +220,15 @@ terakan_nir_uav_immed_index(nir_builder * const b,
 }
 
 static nir_def *
+terakan_nir_load_robustness_slot_u32(nir_builder *b, uint32_t base_slot,
+                                     nir_def *array_index);
+
+static nir_def *
 terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
                             enum glsl_sampler_dim const dim, bool const is_array,
                             struct terakan_nir_lower_bindings_state * const state,
-                            unsigned const uav_index_zero_based)
+                            unsigned const robustness_metadata_index,
+                            nir_def * const robustness_metadata_array_index)
 {
    /* Buffers need separate handling due to the UAV base granularity offset. */
    assert(dim != GLSL_SAMPLER_DIM_BUF);
@@ -285,8 +290,8 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
     * and use Z for the absolute backing-array layer, matching the
     * TEXTURE1DARRAY resource path.
     */
-   if (dim != GLSL_SAMPLER_DIM_BUF &&
-       state != NULL && uav_index_zero_based < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+   if (dim != GLSL_SAMPLER_DIM_BUF && state != NULL &&
+       robustness_metadata_index < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
       static int base_array_layer_cached = -1;
       if (base_array_layer_cached < 0) {
          base_array_layer_cached =
@@ -323,20 +328,12 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
                nir_def * const wg_id = nir_load_workgroup_id(b);
                base_array_layer_load = nir_channel(b, wg_id, 2);
             } else {
-               /* Bank 14 dword 28 starts uav_base_array_layers[]. */
-               uint32_t const layer_dword = 28u + uav_index_zero_based;
-               uint32_t const layer_vec4_index = layer_dword / 4u;
-               uint32_t const layer_component = layer_dword % 4u;
-
                *state->kcache_needed |=
                   (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
 
-               base_array_layer_load = nir_load_kcache_r600(
-                  b, 1, 32, nir_imm_zero(b, 1, 32),
-                  .access = ACCESS_CAN_REORDER,
-                  .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-                  .base = layer_vec4_index,
-                  .component = layer_component);
+               base_array_layer_load = terakan_nir_load_robustness_slot_u32(
+                  b, 28u + robustness_metadata_index,
+                  robustness_metadata_array_index);
             }
 
             if (uav_coord_num_components < 3) {
@@ -353,25 +350,6 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
    }
 
    return nir_vec(b, uav_coord_components, uav_coord_num_components);
-}
-
-
-static uint32_t
-terakan_nir_binding_mutable_resource_index(
-   struct terakan_nir_binding const * const binding,
-   mesa_shader_stage const stage)
-{
-   uint32_t index = binding->set->first_shader_resources[stage] +
-                    binding->set_binding->first_shader_resources[stage] -
-                    TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
-   if (binding->array_index != NULL) {
-      nir_const_value const * const array_index =
-         nir_src_as_const_value(nir_src_for_ssa(binding->array_index));
-      if (array_index != NULL) {
-         index += array_index->u32;
-      }
-   }
-   return index;
 }
 
 
@@ -1039,24 +1017,23 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
     * get_ssbo_size to zero out-of-range SSBO reads in shader ALU.
     */
    if (state->robust_buffer_access) {
-      uint32_t const metadata_index_base =
-         binding.set->first_shader_resources[stage] +
-         binding.set_binding->first_shader_resources[stage] -
-         TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
-      unsigned const mutable_resource_count =
-         stage == MESA_SHADER_FRAGMENT
-            ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
-            : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
-      if (unlikely(metadata_index_base + binding.array_index_range_last >=
-                   mutable_resource_count)) {
+      bool apply_metadata_array_index;
+      unsigned const metadata_index_base =
+         terakan_nir_get_binding_robustness_metadata(
+            &binding, state, stage, &apply_metadata_array_index);
+      if (unlikely(metadata_index_base == UINT_MAX)) {
          terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
          return;
       }
+      nir_def * const metadata_array_index =
+         apply_metadata_array_index
+            ? binding.array_index
+            : nir_imm_zero(b, 1, 32);
 
       *state->kcache_needed |=
          (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
       nir_def * const byte_size = terakan_nir_load_robustness_slot_u32(
-         b, metadata_index_base, binding.array_index);
+         b, metadata_index_base, metadata_array_index);
 
       uint32_t const read_size_bytes =
          intrin->num_components * (intrin->def.bit_size / 8u);
@@ -1100,13 +1077,13 @@ terakan_nir_lower_bindings_instr_get_ssbo_size(
       return;
    }
 
-   uint32_t const mutable_resource_index =
-      terakan_nir_binding_mutable_resource_index(&binding, b->shader->info.stage);
-   unsigned const mutable_resource_count =
-      b->shader->info.stage == MESA_SHADER_FRAGMENT
-         ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
-         : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
-   if (unlikely(mutable_resource_index >= mutable_resource_count)) {
+   bool apply_metadata_array_index;
+   unsigned const metadata_index =
+      terakan_nir_get_binding_robustness_metadata(
+         &binding, state, b->shader->info.stage,
+         &apply_metadata_array_index);
+   if (unlikely(metadata_index == UINT_MAX ||
+                apply_metadata_array_index)) {
       terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
       return;
    }
@@ -1114,13 +1091,13 @@ terakan_nir_lower_bindings_instr_get_ssbo_size(
    *state->kcache_needed |=
       (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
 
-   /* Descriptor binding routes STORAGE_BUFFER byte sizes to bank 14 using
-    * the mutable resource index. NIR's runtime-array length math consumes
+   /* Descriptor binding compacts STORAGE_BUFFER byte sizes into bank 14
+    * using the consumer-derived metadata identity. NIR's runtime-array length math consumes
     * get_ssbo_size as a byte size and applies the member offset and array
     * stride division afterwards.
     */
    nir_def * const byte_size = terakan_nir_load_robustness_slot_u32(
-      b, mutable_resource_index, nir_imm_zero(b, 1, 32));
+      b, metadata_index, nir_imm_zero(b, 1, 32));
    nir_def_rewrite_uses(&intrin->def, byte_size);
    nir_instr_remove(&intrin->instr);
 }
@@ -1161,9 +1138,6 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
 
    nir_def * const uav_array_index =
       apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
-   uint32_t const robustness_metadata_index =
-      terakan_nir_binding_mutable_resource_index(&binding,
-                                                 b->shader->info.stage);
 
    enum gl_access_qualifier const access = nir_intrinsic_access(intrin);
 
@@ -1190,9 +1164,22 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
     * exceeds the UAV's declared byte size. */
    bool const guarded = state->robust_buffer_access;
    if (guarded) {
+      bool apply_metadata_array_index;
+      unsigned const robustness_metadata_index =
+         terakan_nir_get_binding_robustness_metadata(
+            &binding, state, b->shader->info.stage,
+            &apply_metadata_array_index);
+      if (unlikely(robustness_metadata_index == UINT_MAX)) {
+         terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+         return;
+      }
+      nir_def * const metadata_array_index =
+         apply_metadata_array_index
+            ? binding.array_index
+            : nir_imm_zero(b, 1, 32);
       nir_def *in_bounds = terakan_nir_emit_write_guard(
          b, intrin->src[2].ssa, bytes_per_component,
-         robustness_metadata_index, uav_array_index, state);
+         robustness_metadata_index, metadata_array_index, state);
       nir_push_if(b, in_bounds);
    }
 
@@ -1252,9 +1239,6 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
    }
    nir_def * const uav_array_index =
       apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
-   uint32_t const robustness_metadata_index =
-      terakan_nir_binding_mutable_resource_index(&binding,
-                                                 b->shader->info.stage);
 
    unsigned const uav_op = terakan_nir_atomic_uav_op(nir_intrinsic_atomic_op(intrin), result_used);
    if (unlikely(uav_op == 0)) {
@@ -1291,9 +1275,22 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
     * atomics that need zero on the OOB path). */
    bool const guarded = state->robust_buffer_access;
    if (guarded) {
+      bool apply_metadata_array_index;
+      unsigned const robustness_metadata_index =
+         terakan_nir_get_binding_robustness_metadata(
+            &binding, state, b->shader->info.stage,
+            &apply_metadata_array_index);
+      if (unlikely(robustness_metadata_index == UINT_MAX)) {
+         terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+         return;
+      }
+      nir_def * const metadata_array_index =
+         apply_metadata_array_index
+            ? binding.array_index
+            : nir_imm_zero(b, 1, 32);
       nir_def *in_bounds = terakan_nir_emit_write_guard(
          b, intrin->src[1].ssa, 4 /* atomic is always 4 bytes */,
-         robustness_metadata_index, uav_array_index, state);
+         robustness_metadata_index, metadata_array_index, state);
       nir_push_if(b, in_bounds);
    }
 
@@ -1428,6 +1425,18 @@ terakan_nir_lower_bindings_instr_image_deref_load(
 
    nir_def * const uav_array_index =
       apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
+   bool apply_metadata_array_index;
+   unsigned const robustness_metadata_index =
+      terakan_nir_get_binding_robustness_metadata(
+         &binding, state, stage, &apply_metadata_array_index);
+   if (unlikely(robustness_metadata_index == UINT_MAX)) {
+      terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+      return;
+   }
+   nir_def * const metadata_array_index =
+      apply_metadata_array_index
+         ? binding.array_index
+         : nir_imm_zero(b, 1, 32);
    nir_def * const immed_index =
       terakan_nir_uav_immed_index(b, &container_of(state->layout->vk.base.device->physical,
                                                    struct terakan_physical_device const, vk)
@@ -1442,7 +1451,8 @@ terakan_nir_lower_bindings_instr_image_deref_load(
          terakan_nir_build_uav_returning_instr_r600(
             b, intrin->def.num_components, 32, uav_array_index,
             terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim, image_is_array,
-                                        state, uav_index_zero_based), undef,
+                                        state, robustness_metadata_index,
+                                        metadata_array_index), undef,
             undef, immed_index, V_RAT_INST_NOP_RTN, access,
             state->uav_base + uav_index_zero_based,
             (b->shader->info.stage == MESA_SHADER_FRAGMENT
@@ -1500,6 +1510,23 @@ terakan_nir_lower_bindings_instr_image_deref_store(
     * the last valid element rather than being dropped. */
    bool const guarded =
       state->robust_buffer_access && image_dim == GLSL_SAMPLER_DIM_BUF;
+   bool const metadata_needed =
+      guarded || image_dim != GLSL_SAMPLER_DIM_BUF;
+   unsigned robustness_metadata_index = UINT_MAX;
+   nir_def *metadata_array_index = nir_imm_zero(b, 1, 32);
+   if (metadata_needed) {
+      bool apply_metadata_array_index;
+      robustness_metadata_index =
+         terakan_nir_get_binding_robustness_metadata(
+            &binding, state, b->shader->info.stage,
+            &apply_metadata_array_index);
+      if (unlikely(robustness_metadata_index == UINT_MAX)) {
+         terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+         return;
+      }
+      if (apply_metadata_array_index)
+         metadata_array_index = binding.array_index;
+   }
    if (guarded) {
       nir_def * const raw_element_index =
          nir_channel(b, intrin->src[1].ssa, 0);
@@ -1514,8 +1541,8 @@ terakan_nir_lower_bindings_instr_image_deref_store(
        * region, not bank-strided -- see
        * terakan_nir_load_robustness_slot_u32. */
       nir_def * const element_count =
-         terakan_nir_load_robustness_slot_u32(b, 16u + uav_index_zero_based,
-                                              uav_array_index);
+         terakan_nir_load_robustness_slot_u32(
+            b, 16u + robustness_metadata_index, metadata_array_index);
 
       nir_def * const in_bounds = nir_ult(b, raw_element_index, element_count);
       nir_push_if(b, in_bounds);
@@ -1529,7 +1556,8 @@ terakan_nir_lower_bindings_instr_image_deref_store(
    } else {
       coord = terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim,
                                           nir_intrinsic_image_array(intrin),
-                                          state, uav_index_zero_based);
+                                          state, robustness_metadata_index,
+                                          metadata_array_index);
    }
 
    nir_def * const undef = nir_undef(b, 1, 32);
@@ -1593,7 +1621,7 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          uint32_t probe_dword;
          if ((unsigned)probe_bank
                  == TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA) {
-            probe_dword = 28u + uav_index_zero_based;
+            probe_dword = 28u + robustness_metadata_index;
          } else {
             probe_dword = 0u;
          }
@@ -1852,6 +1880,25 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
    }
    nir_def * const uav_array_index =
       apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
+   bool const guarded =
+      state->robust_buffer_access && image_dim == GLSL_SAMPLER_DIM_BUF;
+   bool const metadata_needed =
+      guarded || image_dim != GLSL_SAMPLER_DIM_BUF;
+   unsigned robustness_metadata_index = UINT_MAX;
+   nir_def *metadata_array_index = nir_imm_zero(b, 1, 32);
+   if (metadata_needed) {
+      bool apply_metadata_array_index;
+      robustness_metadata_index =
+         terakan_nir_get_binding_robustness_metadata(
+            &binding, state, b->shader->info.stage,
+            &apply_metadata_array_index);
+      if (unlikely(robustness_metadata_index == UINT_MAX)) {
+         terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+         return;
+      }
+      if (apply_metadata_array_index)
+         metadata_array_index = binding.array_index;
+   }
 
    unsigned const uav_op = terakan_nir_atomic_uav_op(nir_intrinsic_atomic_op(intrin), result_used);
    if (unlikely(uav_op == 0)) {
@@ -1869,7 +1916,8 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
    } else {
       coord = terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim,
                                           nir_intrinsic_image_array(intrin),
-                                          state, uav_index_zero_based);
+                                          state, robustness_metadata_index,
+                                          metadata_array_index);
    }
 
    /* For INC/DEC, the hardware instruction accepts the maximum possible value. */
@@ -1895,8 +1943,6 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
     *
     * The element index is extracted from src[1].x BEFORE coord processing
     * to avoid the coordinate clamp in terakan_nir_buffer_uav_coord(). */
-   bool const guarded =
-      state->robust_buffer_access && image_dim == GLSL_SAMPLER_DIM_BUF;
    if (guarded) {
       nir_def * const raw_element_index =
          nir_channel(b, intrin->src[1].ssa, 0);
@@ -1911,8 +1957,8 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
        * region, not bank-strided -- see
        * terakan_nir_load_robustness_slot_u32. */
       nir_def * const element_count =
-         terakan_nir_load_robustness_slot_u32(b, 16u + uav_index_zero_based,
-                                              uav_array_index);
+         terakan_nir_load_robustness_slot_u32(
+            b, 16u + robustness_metadata_index, metadata_array_index);
 
       nir_def * const in_bounds = nir_ult(b, raw_element_index, element_count);
       nir_push_if(b, in_bounds);
