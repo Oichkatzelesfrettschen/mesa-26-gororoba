@@ -1937,11 +1937,114 @@ test_coverage_oracle_calibration(void)
    free(pixels);
 }
 
+
+/* The composed cell names its first target twice -- the render half
+ * writes it, the sample half reads it as the texture -- and a winsys
+ * that merges duplicate handles gives that buffer one relocation entry,
+ * so the slot-numbered payloads the emitter writes stop naming the
+ * buffers they were emitted for.  The merge rule here mirrors
+ * radeon_drm_vk_reloc_list_add: first-add order, one entry per handle.
+ */
+static void
+test_composed_reloc_payloads_bind_to_merged_indices(void)
+{
+   struct r300_triangle_composed_render_sample composed;
+   r300_tcl_bypass_triangle_render_shape_reference(&composed.render);
+   r300_tcl_bypass_triangle_render_shape_reference(&composed.sample);
+   composed.sample.target_offset = 0;
+   struct r300_tcl_bypass_triangle_ib ib;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(&composed,
+                                                              &ib) == 0);
+
+   /* One handle per slot, with the render half's color and the sample
+    * half's texture sharing handle 7.
+    */
+   uint32_t handle_of_slot[R300_TRIANGLE_SLOT_COUNT];
+   handle_of_slot[R300_TRIANGLE_SLOT_VERTEX] = 5;
+   handle_of_slot[R300_TRIANGLE_SLOT_COLOR] = 7;
+   handle_of_slot[R300_TRIANGLE_SLOT_TEXTURE] = 7;
+   handle_of_slot[R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 9;
+   handle_of_slot[R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 11;
+
+   uint32_t merged[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t merged_handles[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t merged_count = 0;
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+      uint32_t found = merged_count;
+      for (uint32_t i = 0; i < merged_count; i++) {
+         if (merged_handles[i] == handle_of_slot[slot]) {
+            found = i;
+            break;
+         }
+      }
+      if (found == merged_count)
+         merged_handles[merged_count++] = handle_of_slot[slot];
+      merged[slot] = found;
+   }
+   /* Five slots over four buffer objects, so the texture shares the
+    * color's entry and every later slot shifts down one.
+    */
+   assert(merged_count == 4);
+   assert(merged[R300_TRIANGLE_SLOT_TEXTURE] ==
+          merged[R300_TRIANGLE_SLOT_COLOR]);
+   assert(merged[R300_TRIANGLE_SLOT_COMPOSED_COLOR] == 3);
+
+   /* The emitted payload names the slot, which the merged chunk no
+    * longer agrees with at three of the five sites.
+    */
+   uint32_t disagreements = 0;
+   for (uint32_t i = 0; i < ib.reloc_site_count; i++) {
+      const uint32_t slot = ib.reloc_sites[i].slot;
+      if (ib.ib[ib.reloc_sites[i].ib_index] != merged[slot] * 4u)
+         disagreements++;
+   }
+   assert(disagreements == 3);
+
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &ib, merged, R300_TRIANGLE_SLOT_COUNT) == 0);
+   for (uint32_t i = 0; i < ib.reloc_site_count; i++) {
+      const uint32_t slot = ib.reloc_sites[i].slot;
+      assert(ib.ib[ib.reloc_sites[i].ib_index] == merged[slot] * 4u);
+   }
+   /* Binding leaves the emitted form behind, so a second bind refuses
+    * rather than remapping indices that already name the merged chunk.
+    */
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &ib, merged, R300_TRIANGLE_SLOT_COUNT) != 0);
+   r300_tcl_bypass_triangle_release(&ib);
+
+   /* A cell whose slots name distinct buffers takes the identity map,
+    * where binding is the emitted form itself and the sites still
+    * validate.
+    */
+   struct r300_tcl_bypass_triangle_ib plain;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&composed.render,
+                                                     &plain) == 0);
+   const uint32_t identity[R300_TRIANGLE_SLOT_COUNT] = { 0, 1, 2, 3, 4 };
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &plain, identity, R300_TRIANGLE_SLOT_COUNT) == 0);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&plain) == 0);
+
+   /* A map short of the slots the cell references refuses, so a caller
+    * that forgot the composed slots cannot leave a payload unbound.
+    */
+   struct r300_tcl_bypass_triangle_ib composed_again;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(
+             &composed, &composed_again) == 0);
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(&composed_again, merged,
+                                                      3u) == -EINVAL);
+   /* The refusal left every payload in its emitted form. */
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&composed_again) == 0);
+   r300_tcl_bypass_triangle_release(&composed_again);
+   r300_tcl_bypass_triangle_release(&plain);
+}
+
 int
 main(void)
 {
    test_sampled_cell_stream_and_refusals();
    test_composed_render_sample_cell();
+   test_composed_reloc_payloads_bind_to_merged_indices();
    test_family_emit_deviates_in_count_words_alone();
    test_contract_cell_size_and_digest_are_pinned();
    test_varying_cell_tuple_and_digest_are_pinned();

@@ -1375,6 +1375,35 @@ composed_sample_emit(const struct r300_triangle_composed_render_sample *c,
 }
 
 int
+r300_tcl_bypass_triangle_bind_reloc_indices(
+   struct r300_tcl_bypass_triangle_ib *ib, const uint32_t *slot_indices,
+   uint32_t slot_index_count)
+{
+   if (ib == NULL || ib->ib == NULL || slot_indices == NULL ||
+       slot_index_count > R300_TRIANGLE_SLOT_COUNT)
+      return -EINVAL;
+   /* The emitted form is the precondition: the validator proves every
+    * site sits behind a relocation NOP and carries its own slot's
+    * payload, so a cell already bound, or one whose sites were edited,
+    * refuses here rather than taking a second remap.
+    */
+   const int valid = r300_tcl_bypass_triangle_validate_reloc_sites(ib);
+   if (valid != 0)
+      return valid;
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      if (ib->reloc_sites[i].slot >= slot_index_count)
+         return -EINVAL;
+   }
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      const struct r300_tcl_bypass_triangle_reloc_site *site =
+         &ib->reloc_sites[i];
+      ib->ib[site->ib_index] =
+         R300_TRIANGLE_RELOC_PAYLOAD(slot_indices[site->slot]);
+   }
+   return 0;
+}
+
+int
 r300_tcl_bypass_triangle_composed_render_sample_emit(
    const struct r300_triangle_composed_render_sample *composed,
    struct r300_tcl_bypass_triangle_ib *out)
