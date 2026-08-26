@@ -835,6 +835,24 @@ r3v_native_attended_render_shape = executable(
   install : false,
 )
 
+# Attended sampled cell: drives the public sampling surface (varying
+# vertex module, sampled fragment module, set-0 combined image sampler
+# over a one-color texture) to a live DRM_RADEON_CS on RS482 silicon
+# under the render-shape attended procedure; the uniform texture makes
+# the interior equal one texel whatever the interpolated coordinates.
+r3v_native_attended_sampled = executable(
+  'r3v_native_attended_sampled',
+  files('tests/r3v_native_attended_sampled.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended direct-write control: performs a live DRM_RADEON_CS on RS482
 # silicon under the authorization and procedure in
 # docs/hardware/r3v-native-direct-write-attended-procedure.md.  The
