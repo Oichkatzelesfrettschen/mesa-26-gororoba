@@ -140,6 +140,10 @@ The run proceeds only when all of the following hold.
   -- the correspondence gate passed and the ELF's SHA-256 matches the
   recorded hash -- rather than trusting a binary handed to it by name
   alone. Any drm-shim residue matches the calibrated signature.
+- The loaded Radeon substrate is the production package built at the
+  production compiled profile, and its identity agrees with the loaded
+  module. `Substrate admission` below carries the decision table and the
+  transition this check refuses without.
 - The RS482 recovery stack is registered before the hazard gate opens. The
   Radeon module is the deployed `radeon-unified-dkms` build, the SB600 TCO
   module is registered as `sp5100_tco`, the watchdog device and
@@ -213,6 +217,75 @@ The run proceeds only when all of the following hold.
 - The host has an off-box log path (netconsole or serial), because a
   hard lockup takes the on-box journal with it.
 - The operator is physically at the machine and able to power-cycle it.
+
+## Substrate admission
+
+A development module with all mutation controls disarmed is still a
+development substrate. Do not substitute its current knob state for the
+production module's compiled-profile identity. The runtime knobs state
+what is armed; the compiled profile states what the module can expose,
+and an attended submission rests on the second.
+
+`radeon-unified-dkms` and `radeon-unified-dkms-dev` come from one signed
+source pin and carry the same virtual driver identity
+(`Provides: radeon-unified=<version>`), and they conflict with each
+other, so the transition between them is explicit and mutually
+exclusive. A `Provides` match therefore satisfies a dependency solver
+and not this gate: the packages are separate deployment substrates whose
+loaded behavior differs by what the build compiled in.
+
+| Loaded substrate | Result |
+| --- | --- |
+| Production package, production build profile, matching source identity | Admit preflight |
+| Development package, even with every hazard arm zero | Refuse; require production transition and reboot |
+| Production package but stale dev profile override present | Refuse |
+| Package identity and loaded module disagree | Refuse |
+| Watchdog registered but not armed | Admit build and replay preparation; refuse hardware submission |
+| Watchdog absent | Refuse hardware submission |
+
+When the development package is loaded, stop before arming. Select the
+off profile, replace development with production atomically, reboot,
+verify the loaded production module, then establish the watchdog. The
+replacement runs as one `pacman -U` transaction over the driver and the
+policy package together, so no boot carries a driver from one
+transaction beside a policy from another:
+
+```sh
+sudo radeon-profile-dev select off
+sudo pacman -U -- \
+  ./radeon-unified-dkms-<version>-*.pkg.tar.zst \
+  ./radeon-rs482-policy-<version>-*.pkg.tar.zst
+```
+
+The production-admission hook refuses while a foreign development
+override remains. That refusal is the gate working; it takes a
+correction to the substrate rather than a bypass.
+
+Establish the recovery mechanism in the production boot alone. Loading
+`sp5100_tco` in a development boot proves nothing about the boot the
+submission runs in, so the watchdog is registered after the reboot and
+its state is recorded at the level the submit gate requires:
+
+```text
+watchdog_module_loaded
+watchdog_node_present
+watchdog_opened_by_keepalive
+watchdog_timeout_readback
+watchdog_keepalive_verified
+```
+
+Registration is not arming, and a device node alone proves only
+registration.
+
+Verify the production boot in this order before the preflight runs: a
+new boot ID; `radeon-unified-dkms` installed and `radeon-unified-dkms-dev`
+absent; the loaded module reporting the production build profile; the
+loaded `srcversion` matching the installed module; the source commit,
+driver tree, and policy digest matching the package manifest; any
+remaining `profile_dev` parameter reading off; `lockup_timeout` at 0;
+every hazard arm absent or zero; `rs480_safe_regs` at its
+policy-qualified value; the PCI identity still `1002:5974`; and no new
+kernel or display anomaly.
 
 ## Arming
 
