@@ -75,6 +75,10 @@ CANONICAL_TARGET_PATTERN = re.compile(
     r"^(?P<path>[A-Za-z0-9_./+-]+)"
     r"(?:#L(?P<first>[1-9][0-9]*)-L(?P<last>[1-9][0-9]*))?$"
 )
+DIFF_HUNK_PATTERN = re.compile(
+    r"^@@ -(?P<old_start>[0-9]+)(?:,(?P<old_count>[0-9]+))? "
+    r"\+(?P<new_start>[0-9]+)(?:,(?P<new_count>[0-9]+))? @@"
+)
 REVIEW_URL_PATTERN = re.compile(
     r"^https://github[.]com/Oichkatzelesfrettschen/mesa-26-gororoba/"
     r"pull/([1-9][0-9]*)#discussion_r[1-9][0-9]*$"
@@ -380,6 +384,58 @@ def evidence_target_identity(
     return "\n".join(lines[target.first_line - 1 : target.last_line])
 
 
+def evidence_slice_changed(
+    repository_root: Path,
+    evidence_commit: str,
+    candidate_commit: str,
+    target: EvidenceTarget,
+) -> bool:
+    """Return whether a diff changes the evidence commit's bounded slice."""
+    if target.first_line is None or target.last_line is None:
+        raise FrontierError(
+            f"{target.declaration}: bounded evidence slice has no line range"
+        )
+
+    # Validate the declared range against its evidence epoch before interpreting
+    # zero-context diff coordinates. Candidate coordinates may shift freely when
+    # unrelated source is inserted or removed before the governed range.
+    evidence_target_identity(repository_root, evidence_commit, target)
+    diff = run_git(
+        repository_root,
+        "diff",
+        "--unified=0",
+        "--no-ext-diff",
+        "--no-textconv",
+        evidence_commit,
+        candidate_commit,
+        "--",
+        target.path,
+        strip=False,
+    )
+    for line in diff.splitlines():
+        if not line.startswith("@@"):
+            continue
+        hunk_match = DIFF_HUNK_PATTERN.match(line)
+        if hunk_match is None:
+            raise FrontierError(
+                f"{target.declaration}: cannot parse zero-context diff hunk {line!r}"
+            )
+        old_start = int(hunk_match.group("old_start"))
+        old_count_text = hunk_match.group("old_count")
+        old_count = int(old_count_text) if old_count_text is not None else 1
+        if old_count == 0:
+            # Git locates an insertion after old_start. Insertions between two
+            # governed lines change the bounded slice; boundary insertions only
+            # move it and remain outside the evidence owner.
+            if target.first_line <= old_start < target.last_line:
+                return True
+            continue
+        old_last = old_start + old_count - 1
+        if old_start <= target.last_line and old_last >= target.first_line:
+            return True
+    return False
+
+
 def verify_merged_evidence(
     frontier_rows: list[dict[str, str]],
     repository_root: Path,
@@ -415,6 +471,7 @@ def verify_merged_evidence(
             f"candidate {candidate_commit} does not contain merged ref {main_commit}"
         )
     target_identities: dict[tuple[str, EvidenceTarget], str] = {}
+    slice_changes: dict[tuple[str, str, EvidenceTarget], bool] = {}
     checked_commits: set[str] = set()
     for row_number, frontier_row in enumerate(frontier_rows, start=2):
         evidence_commit = frontier_row["merged_evidence_commit"]
@@ -445,21 +502,36 @@ def verify_merged_evidence(
         for target in canonical_targets(
             frontier_row["canonical_data_target"], row_number
         ):
-            evidence_key = (evidence_commit, target)
-            if evidence_key not in target_identities:
-                target_identities[evidence_key] = evidence_target_identity(
-                    repository_root,
-                    evidence_commit,
-                    target,
+            target_changed = False
+            if target.first_line is not None:
+                slice_key = (evidence_commit, candidate_commit, target)
+                if slice_key not in slice_changes:
+                    slice_changes[slice_key] = evidence_slice_changed(
+                        repository_root,
+                        evidence_commit,
+                        candidate_commit,
+                        target,
+                    )
+                target_changed = slice_changes[slice_key]
+            else:
+                evidence_key = (evidence_commit, target)
+                if evidence_key not in target_identities:
+                    target_identities[evidence_key] = evidence_target_identity(
+                        repository_root,
+                        evidence_commit,
+                        target,
+                    )
+                candidate_key = (candidate_commit, target)
+                if candidate_key not in target_identities:
+                    target_identities[candidate_key] = evidence_target_identity(
+                        repository_root,
+                        candidate_commit,
+                        target,
+                    )
+                target_changed = (
+                    target_identities[evidence_key] != target_identities[candidate_key]
                 )
-            candidate_key = (candidate_commit, target)
-            if candidate_key not in target_identities:
-                target_identities[candidate_key] = evidence_target_identity(
-                    repository_root,
-                    candidate_commit,
-                    target,
-                )
-            if target_identities[evidence_key] != target_identities[candidate_key]:
+            if target_changed:
                 thread_id = frontier_row["thread_id"]
                 raise FrontierError(
                     f"{thread_id}: evidence owner {target.declaration} changed "

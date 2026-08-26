@@ -268,6 +268,86 @@ def test_evidence_slice_accepts_candidate_change_outside_range(tmp_path: Path) -
     )
 
 
+def test_evidence_slice_accepts_candidate_line_shift_before_range(
+    tmp_path: Path,
+) -> None:
+    initialize_evidence_repository(tmp_path)
+    (tmp_path / "evidence.txt").write_text(
+        "leading mechanism\nfixed mechanism\ntrailing mechanism\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "bound middle evidence slice")
+    evidence_commit = run_git(tmp_path, "rev-parse", "HEAD")
+    run_git(tmp_path, "update-ref", "refs/remotes/origin/main", evidence_commit)
+    row = evidence_row(evidence_commit)
+    row["canonical_data_target"] = "evidence.txt#L2-L2"
+
+    (tmp_path / "evidence.txt").write_text(
+        "new leading mechanism\nleading mechanism\nfixed mechanism\n"
+        "trailing mechanism\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "shift middle evidence slice")
+    review_thread_frontier.verify_merged_evidence(
+        [row], tmp_path, "origin/main", "HEAD"
+    )
+
+
+def test_evidence_slice_accepts_candidate_line_shift_after_deletion(
+    tmp_path: Path,
+) -> None:
+    initialize_evidence_repository(tmp_path)
+    (tmp_path / "evidence.txt").write_text(
+        "leading mechanism\nfixed mechanism\ntrailing mechanism\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "bound middle evidence slice")
+    evidence_commit = run_git(tmp_path, "rev-parse", "HEAD")
+    run_git(tmp_path, "update-ref", "refs/remotes/origin/main", evidence_commit)
+    row = evidence_row(evidence_commit)
+    row["canonical_data_target"] = "evidence.txt#L2-L2"
+
+    (tmp_path / "evidence.txt").write_text(
+        "fixed mechanism\ntrailing mechanism\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "shift evidence after leading deletion")
+    review_thread_frontier.verify_merged_evidence(
+        [row], tmp_path, "origin/main", "HEAD"
+    )
+
+
+def test_evidence_slice_rejects_candidate_insertion_inside_range(
+    tmp_path: Path,
+) -> None:
+    initialize_evidence_repository(tmp_path)
+    (tmp_path / "evidence.txt").write_text(
+        "first governed line\nsecond governed line\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "add multi-line evidence slice")
+    evidence_commit = run_git(tmp_path, "rev-parse", "HEAD")
+    run_git(tmp_path, "update-ref", "refs/remotes/origin/main", evidence_commit)
+    row = evidence_row(evidence_commit)
+    row["canonical_data_target"] = "evidence.txt#L1-L2"
+
+    (tmp_path / "evidence.txt").write_text(
+        "first governed line\ninserted governed line\nsecond governed line\n",
+        encoding="utf-8",
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "change evidence slice interior")
+    with pytest.raises(review_thread_frontier.FrontierError, match="changed"):
+        review_thread_frontier.verify_merged_evidence(
+            [row], tmp_path, "origin/main", "HEAD"
+        )
+
+
 def test_evidence_slice_rejects_candidate_change_inside_range(tmp_path: Path) -> None:
     evidence_commit = initialize_evidence_repository(tmp_path)
     row = evidence_row(evidence_commit)
