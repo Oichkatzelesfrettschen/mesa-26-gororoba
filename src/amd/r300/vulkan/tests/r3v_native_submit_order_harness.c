@@ -130,6 +130,11 @@ enum arm {
     * sampler, recording the sampled cell with the texture BO on its
     * third relocation. */
    ARM_SAMPLED_ARMED,
+   /* The same pipeline over a three-layer texture whose view selects
+    * the last layer: the recorded cell's TX_OFFSET_0 carries that
+    * layer's stride, so the stream differs from the layer-zero arm by
+    * exactly the addressed layer. */
+   ARM_SAMPLED_LAYER_ARMED,
    /* The two-attribute module (location 0 position, location 1 color
     * passed to the varying) on the CPU route: over two bindings (F32_4
     * positions at stride 16, F32_3 colors at stride 12) and over one
@@ -247,6 +252,7 @@ static const struct {
    { "varying-fragment-mismatch", ARM_VARYING_FRAGMENT_MISMATCH },
    { "varying-missing", ARM_VARYING_MISSING },
    { "sampled-armed", ARM_SAMPLED_ARMED },
+   { "sampled-layer-armed", ARM_SAMPLED_LAYER_ARMED },
    { "multi-attribute-armed", ARM_MULTI_ATTRIBUTE_ARMED },
    { "multi-attribute-interleaved-armed",
      ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED },
@@ -599,8 +605,16 @@ run_arm(enum arm arm, const char *name)
    r300_tcl_bypass_triangle_release(&two_triangles);
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
-   const bool varying_cell_arm = arm == ARM_VARYING_ARMED ||
-                                 arm == ARM_SAMPLED_ARMED || multi_arm;
+   const bool sampled_arm =
+      arm == ARM_SAMPLED_ARMED || arm == ARM_SAMPLED_LAYER_ARMED;
+   /* The layered arm's texture holds three 16x16 layers over the
+    * sampling family's 64-byte row pitch, so the selected last layer
+    * starts 2048 bytes in. */
+   const uint32_t sampled_layers = arm == ARM_SAMPLED_LAYER_ARMED ? 3 : 1;
+   const uint32_t sampled_view_layer = sampled_layers - 1;
+   const uint32_t sampled_texture_offset = sampled_view_layer * 16 * 16 * 4;
+   const bool varying_cell_arm =
+      arm == ARM_VARYING_ARMED || sampled_arm || multi_arm;
    char route_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1] = { 0 };
    uint32_t route_dwords = 0;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
@@ -620,13 +634,14 @@ run_arm(enum arm arm, const char *name)
                                    &route_dwords);
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
              R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
-   } else if (arm == ARM_SAMPLED_ARMED) {
+   } else if (sampled_arm) {
       /* The sampled cell's authorized identity is its own offline
        * emission at this arm's parameters. */
       struct r300_tcl_bypass_triangle_ib sampled_cell;
       assert(r300_tcl_bypass_triangle_sampled_emit(
-                R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1, 0, 16,
-                16, 16, R300_TRIANGLE_LANES_R8G8B8A8, &sampled_cell) == 0);
+                R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
+                sampled_texture_offset, 16, 16, 16,
+                R300_TRIANGLE_LANES_R8G8B8A8, &sampled_cell) == 0);
       r300_triangle_ib_digest_hex(sampled_cell.ib,
                                   sampled_cell.ib_size_dwords, route_digest);
       r300_tcl_bypass_triangle_release(&sampled_cell);
@@ -1073,7 +1088,7 @@ run_arm(enum arm arm, const char *name)
    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
    VkDescriptorPool desc_pool = VK_NULL_HANDLE;
    VkDescriptorSet desc_set = VK_NULL_HANDLE;
-   if (arm == ARM_SAMPLED_ARMED) {
+   if (sampled_arm) {
       assert(vkCreateImage(
                 device,
                 &(VkImageCreateInfo){
@@ -1082,7 +1097,7 @@ run_arm(enum arm arm, const char *name)
                    .format = VK_FORMAT_R8G8B8A8_UNORM,
                    .extent = { 16, 16, 1 },
                    .mipLevels = 1,
-                   .arrayLayers = 1,
+                   .arrayLayers = sampled_layers,
                    .samples = VK_SAMPLE_COUNT_1_BIT,
                    .tiling = VK_IMAGE_TILING_LINEAR,
                    .usage = VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -1112,6 +1127,7 @@ run_arm(enum arm arm, const char *name)
                    .subresourceRange = { .aspectMask =
                                             VK_IMAGE_ASPECT_COLOR_BIT,
                                          .levelCount = 1,
+                                         .baseArrayLayer = sampled_view_layer,
                                          .layerCount = 1 },
                 },
                 NULL, &tex_view) == VK_SUCCESS);
@@ -1191,14 +1207,14 @@ run_arm(enum arm arm, const char *name)
              device,
              &(VkPipelineLayoutCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                .setLayoutCount = arm == ARM_SAMPLED_ARMED ? 1 : 0,
+                .setLayoutCount = sampled_arm ? 1 : 0,
                 .pSetLayouts =
-                   arm == ARM_SAMPLED_ARMED ? &set_layout : NULL,
+                   sampled_arm ? &set_layout : NULL,
              },
              NULL, &layout) == VK_SUCCESS);
    const bool varying_vs = arm == ARM_VARYING_ARMED ||
                            arm == ARM_VARYING_FRAGMENT_MISMATCH ||
-                           arm == ARM_SAMPLED_ARMED;
+                           sampled_arm;
    const bool varying_fs = arm == ARM_VARYING_ARMED || arm == ARM_VARYING_MISSING;
    VkShaderModule vs =
       multi_arm
@@ -1219,7 +1235,7 @@ run_arm(enum arm arm, const char *name)
          : make_module(device, r3v_reference_vertex_spirv,
                        sizeof(r3v_reference_vertex_spirv));
    VkShaderModule fs =
-      arm == ARM_SAMPLED_ARMED
+      sampled_arm
          ? make_module(device, r3v_reference_fragment_sampled_spirv,
                        sizeof(r3v_reference_fragment_sampled_spirv))
       : varying_fs || multi_arm
@@ -1463,7 +1479,7 @@ run_arm(enum arm arm, const char *name)
       },
       VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-   if (arm == ARM_SAMPLED_ARMED)
+   if (sampled_arm)
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
                               0, 1, &desc_set, 0, NULL);
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer,
@@ -1548,14 +1564,16 @@ run_arm(enum arm arm, const char *name)
       char recorded_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       r300_triangle_ib_digest_hex(native_cmd->ib, native_cmd->ib_size_dwords,
                                   recorded_digest);
-      if (arm == ARM_SAMPLED_ARMED) {
+      if (sampled_arm) {
          /* The sampled cell's identity is its own offline emission at
           * the recorded parameters: the reference 64x64 target and the
-          * bound 16x16 texture at offset 0 over the 16-texel pitch. */
+          * bound 16x16 texture at the selected layer's stride over the
+          * 16-texel pitch. */
          struct r300_tcl_bypass_triangle_ib offline;
          assert(r300_tcl_bypass_triangle_sampled_emit(
-                   R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1, 0,
-                   16, 16, 16, R300_TRIANGLE_LANES_R8G8B8A8, &offline) == 0);
+                   R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
+                   sampled_texture_offset, 16, 16, 16,
+                   R300_TRIANGLE_LANES_R8G8B8A8, &offline) == 0);
          char offline_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
          r300_triangle_ib_digest_hex(offline.ib, offline.ib_size_dwords,
                                      offline_digest);
@@ -1603,10 +1621,10 @@ run_arm(enum arm arm, const char *name)
       native_device->gpu_producer_compose_inject_errno = -ENOMEM;
    const uint32_t references_before = native_cmd->reference_count;
    const enum r3v_native_cell_kind kind_before = native_cmd->cell_kind;
-   assert(references_before == (arm == ARM_SAMPLED_ARMED
+   assert(references_before == (sampled_arm
                                    ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
                                    : R300_TRIANGLE_RENDER_SLOT_COUNT));
-   assert(kind_before == (arm == ARM_SAMPLED_ARMED
+   assert(kind_before == (sampled_arm
                              ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
                              : R3V_NATIVE_CELL_KIND_TRIANGLE));
    assert(native_cmd->owned_slot == NULL);
@@ -1802,6 +1820,7 @@ run_arm(enum arm arm, const char *name)
       assert(token);
       break;
    case ARM_SAMPLED_ARMED:
+   case ARM_SAMPLED_LAYER_ARMED:
       /* The sampled cell recorded: the varying carrier executed on the
        * CPU route, and the cell binds three relocations with the
        * texture read beside the vertex and color slots. */

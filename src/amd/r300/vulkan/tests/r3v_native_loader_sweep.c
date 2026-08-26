@@ -589,8 +589,13 @@ check_image_query_alias(VkInstance alias_instance)
            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SUCCESS },
-      /* Sampled usage has no route, so a mix naming it refuses. */
+      /* The sampled bit joins either family over one row layout the TX
+       * block fetches; storage has no route, so a mix naming it
+       * refuses. */
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_SUCCESS },
+      { VK_IMAGE_USAGE_SAMPLED_BIT, VK_SUCCESS },
+      { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
         VK_ERROR_FORMAT_NOT_SUPPORTED },
    };
 

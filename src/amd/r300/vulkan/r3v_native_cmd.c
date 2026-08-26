@@ -70,6 +70,7 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->deferred_copies = NULL;
    cmd_buffer->deferred_copy_capacity = 0;
    cmd_buffer->pass_target = NULL;
+   cmd_buffer->pass_target_layer_offset = 0;
    cmd_buffer->bound_pipeline = NULL;
    cmd_buffer->bound_graphics_set = NULL;
    cmd_buffer->viewport_set = false;

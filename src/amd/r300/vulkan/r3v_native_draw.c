@@ -89,12 +89,13 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       view->image->lanes, pRenderPassBegin->pClearValues[0].color.float32);
 
    cmd_buffer->pass_target = view->image;
+   cmd_buffer->pass_target_layer_offset = view->layer_offset_bytes;
    cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
       .pending = true,
       .target_memory = view->image->memory,
-      .target_fill_offset = view->image->memory_offset,
-      .target_fill_bytes = r3v_native_render_footprint_bytes(
-         view->image->row_pitch_bytes, view->image->height),
+      .target_fill_offset =
+         view->image->memory_offset + view->layer_offset_bytes,
+      .target_fill_bytes = view->image->layer_pitch_bytes,
       .target_row_bytes = view->image->row_pitch_bytes,
       .clear_dword = clear_dword,
       .target_width = view->image->width,
@@ -116,6 +117,7 @@ r3v_CmdEndRenderPass(VkCommandBuffer commandBuffer)
       return;
    }
    cmd_buffer->pass_target = NULL;
+   cmd_buffer->pass_target_layer_offset = 0;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -213,14 +215,13 @@ r3v_CmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer _buffer,
  */
 static bool
 stream_overlaps_target(const struct r3v_native_memory *memory, uint64_t lo,
-                       uint64_t bytes, const struct r3v_native_image *target)
+                       uint64_t bytes, const struct r3v_native_image *target,
+                       uint32_t target_layer_offset)
 {
    if (memory->bo.handle != target->memory->bo.handle)
       return false;
-   const uint64_t target_lo = target->memory_offset;
-   const uint64_t target_hi =
-      target_lo + r3v_native_render_footprint_bytes(target->row_pitch_bytes,
-                                                   target->height);
+   const uint64_t target_lo = target->memory_offset + target_layer_offset;
+   const uint64_t target_hi = target_lo + target->layer_pitch_bytes;
    return lo < target_hi && target_lo < lo + bytes;
 }
 
@@ -301,7 +302,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
              index_buffer->vk.size - index_base ||
           stream_overlaps_target(memory, index_buffer->offset + index_base,
                                  index_buffer->vk.size - index_base,
-                                 cmd_buffer->pass_target)) {
+                                 cmd_buffer->pass_target,
+                                 cmd_buffer->pass_target_layer_offset)) {
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
@@ -378,7 +380,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       }
       const uint64_t available = buffer->vk.size - stream_base;
       if (stream_overlaps_target(memory, buffer->offset + stream_base,
-                                 available, cmd_buffer->pass_target)) {
+                                 available, cmd_buffer->pass_target,
+                                 cmd_buffer->pass_target_layer_offset)) {
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
@@ -484,9 +487,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
+      /* The bound view selects one layer, and its stride joins the bind
+       * offset in the TX_OFFSET_0 payload, so the fetch reads that
+       * layer's rows.
+       */
       sampled_texture = (struct r3v_native_sampled_texture){
          .memory = texture->memory,
-         .texture_offset = (uint32_t)texture->memory_offset,
+         .texture_offset = (uint32_t)texture->memory_offset +
+                           set->bindings[0].image_view->layer_offset_bytes,
          .texture_width = texture->width,
          .texture_height = texture->height,
          .texture_pitch_texels = texture->row_pitch_bytes / 4,
@@ -496,7 +504,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    }
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
-      pipeline->varying,
+      cmd_buffer->pass_target_layer_offset, pipeline->varying,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled);
    if (result != VK_SUCCESS) {
@@ -531,10 +539,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .target_memory = cmd_buffer->pass_target->memory,
-      .target_fill_offset = cmd_buffer->pass_target->memory_offset,
-      .target_fill_bytes = r3v_native_render_footprint_bytes(
-         cmd_buffer->pass_target->row_pitch_bytes,
-         cmd_buffer->pass_target->height),
+      .target_fill_offset = cmd_buffer->pass_target->memory_offset +
+                            cmd_buffer->pass_target_layer_offset,
+      .target_fill_bytes = cmd_buffer->pass_target->layer_pitch_bytes,
       .target_row_bytes = cmd_buffer->pass_target->row_pitch_bytes,
       .clear_dword = clear_dword,
       .target_width = cmd_buffer->pass_target->width,

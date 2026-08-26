@@ -1680,6 +1680,22 @@ test_sampled_cell_stream_and_refusals(void)
    bad.texture_lanes = (enum r300_triangle_lane_order)2;
    assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
 
+   /* A height-one texture is the 1D shape: FORMAT0's height mask reads
+    * zero and the rest of the block keeps its words.
+    */
+   struct r300_tcl_bypass_triangle_params one_row = params;
+   one_row.texture_height = 1;
+   assert(r300_tcl_bypass_triangle_emit(&one_row, &ib) == 0);
+   struct tracker t1 = { 0 };
+   track(&t1, ib.ib, ib.ib_size_dwords);
+   assert(t1.tx_format0_seen &&
+          t1.tx_format0 == ((63u << R300_TX_WIDTHMASK_SHIFT) |
+                            (0u << R300_TX_HEIGHTMASK_SHIFT) |
+                            R300_TX_PITCH_EN));
+   assert(t1.tx_format1_seen && t1.tx_format1 == t.tx_format1);
+   assert(t1.tx_offset_seen && t1.tx_offset == t.tx_offset);
+   r300_tcl_bypass_triangle_release(&ib);
+
    /* The B8G8R8A8 lane order swaps the R and B selects and leaves the
     * rest of the stream at the R8G8B8A8 cell's words.
     */

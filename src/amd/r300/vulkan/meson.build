@@ -2230,7 +2230,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'gpu-fetched-out-of-bounds',
                         'gpu-fetched-aliased-source', 'varying-armed',
                         'varying-fragment-mismatch', 'varying-missing',
-                        'sampled-armed',
+                        'sampled-armed', 'sampled-layer-armed',
                         'multi-attribute-armed',
                         'multi-attribute-interleaved-armed',
                         'multi-attribute-overlap-refused',

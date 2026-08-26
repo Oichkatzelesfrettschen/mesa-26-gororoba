@@ -475,8 +475,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count, const uint32_t color_bits[4],
+   struct r3v_native_image *target_image, uint32_t target_layer_offset,
+   bool varying, uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -490,10 +490,10 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    const uint64_t carrier_bytes =
       (uint64_t)triangle_count * (varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
                                           : R3V_TRIANGLE_VERTEX_BYTES);
+   const uint64_t target_base =
+      target_image->memory_offset + target_layer_offset;
    if (carrier_memory->bo.size < carrier_bytes ||
-       color_memory->bo.size - target_image->memory_offset <
-          r3v_native_render_footprint_bytes(target_image->row_pitch_bytes,
-                                            target_image->height)) {
+       color_memory->bo.size - target_base < target_image->layer_pitch_bytes) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %" PRIu64
                        " vertex bytes and the target image's declared "
@@ -513,11 +513,13 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    shape.height = target_image->height;
    shape.pitch_pixels = target_image->row_pitch_bytes / 4;
    shape.lanes = target_image->lanes;
-   /* The bind offset is where render row 0 starts, so it travels as the
-    * cell's RB3D_COLOROFFSET0 payload; r3v_BindImageMemory admitted it
-    * against the register's base granularity and the allocation bound.
+   /* The bind offset plus the attached layer's stride is where render
+    * row 0 starts, so it travels as the cell's RB3D_COLOROFFSET0
+    * payload; r3v_BindImageMemory admitted the bind offset against the
+    * register's base granularity, and each family's row pitch keeps the
+    * layer stride a multiple of the same 32 bytes.
     */
-   shape.target_offset = (uint32_t)target_image->memory_offset;
+   shape.target_offset = (uint32_t)target_base;
    if (!varying)
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
