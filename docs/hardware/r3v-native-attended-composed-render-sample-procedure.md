@@ -11,9 +11,12 @@ first target's coverage in the second proves the color writes published
 before the texture fetch read them.
 
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
-boundary statement, the host preconditions, the identity freeze, the
-arming conjunction, the rollback rules, and the retained-record layout;
-this document adds only what the composed cell changes.
+boundary statement, the host preconditions, the substrate admission
+table, the identity freeze, the arming conjunction, the rollback rules,
+and the retained-record layout; this document adds only what the
+composed cell changes.  The composed cell's one-attempt budget rests on
+that substrate check: a development-profile boot refuses before arming,
+so the attempt stays unspent.
 
 ## Cell identity
 
