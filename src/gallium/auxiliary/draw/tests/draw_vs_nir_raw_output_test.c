@@ -94,6 +94,20 @@ add_output(nir_builder *b, unsigned slot, gl_varying_slot loc)
    return v;
 }
 
+static nir_variable *
+add_output_array(nir_builder *builder, unsigned slot,
+                 gl_varying_slot location, unsigned array_length)
+{
+   nir_variable *variable = nir_variable_create(
+      builder->shader, nir_var_shader_out,
+      glsl_array_type(glsl_vec4_type(), array_length, 0), "out_array");
+   variable->data.location = location;
+   variable->data.driver_location = slot;
+   if (builder->shader->num_outputs < slot + array_length)
+      builder->shader->num_outputs = slot + array_length;
+   return variable;
+}
+
 typedef nir_shader *(*build_fn)(const nir_shader_compiler_options *opts);
 
 static nir_shader *
@@ -448,6 +462,56 @@ test_factory_output_semantics(struct draw_context *draw)
    interp->delete(draw, interp);
 }
 
+static nir_shader *
+build_dynamic_output_rows(const nir_shader_compiler_options *options)
+{
+   nir_builder builder =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
+                                     "dynamic output rows");
+   nir_def *offset = nir_load_vertex_id_zero_base(&builder);
+   nir_def *value = nir_imm_vec4(&builder, 1.0f, 2.0f, 3.0f, 4.0f);
+   nir_variable *output =
+      add_output_array(&builder, 0, VARYING_SLOT_VAR0, 2);
+   nir_deref_instr *element = nir_build_deref_array(
+      &builder, nir_build_deref_var(&builder, output), offset);
+   nir_store_deref(&builder, element, value, 0xf);
+   return builder.shader;
+}
+
+static void
+test_factory_dynamic_output_rows(struct draw_context *draw)
+{
+   printf("case: factory_dynamic_output_rows\n");
+   const nir_shader_compiler_options *options =
+      draw->pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR };
+   state.ir.nir = build_dynamic_output_rows(options);
+
+   CHECK(draw_vs_nir_supported(&state),
+         "factory_dynamic_output_rows: declared dynamic range is admitted");
+   struct draw_vertex_shader *interp = draw_create_vs_nir(draw, &state);
+   if (!interp) {
+      CHECK(false,
+            "factory_dynamic_output_rows: factory accepts dynamic stores");
+      return;
+   }
+
+   CHECK(interp->info.num_outputs == 2,
+         "factory_dynamic_output_rows: semantic range publishes two rows");
+   interp->prepare(interp, draw);
+   float output[2][2][4] = {{{0}}};
+   const float expected[2][2][4] = {
+      {{1.0f, 2.0f, 3.0f, 4.0f}, {0.0f, 0.0f, 0.0f, 0.0f}},
+      {{0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 2.0f, 3.0f, 4.0f}},
+   };
+   struct draw_buffer_info constants[PIPE_MAX_CONSTANT_BUFFERS] = {0};
+   interp->run_linear(draw, interp, NULL, (float (*)[4])output, constants, 2,
+                      0, sizeof(output[0]), NULL);
+   CHECK(memcmp(output, expected, sizeof(expected)) == 0,
+         "factory_dynamic_output_rows: runtime offsets select declared rows");
+   interp->delete(draw, interp);
+}
+
 /* out = vec4(iadd, ishl, ushr, imin(a,b)) where a, b come from f2i32 on the
  * loaded inputs, results converted back with i2f32: the f2i32/i2f32 round trip
  * plus ishl/ushr shift-amount handling is the r300 SW-TCL integer path
@@ -615,6 +679,45 @@ build_dynamic_input_row(const nir_shader_compiler_options *opts)
    return b.shader;
 }
 
+static nir_shader *
+build_dynamic_output_span_overflow(const nir_shader_compiler_options *options)
+{
+   nir_builder builder =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
+                                     "dynamic output span overflow");
+   nir_variable *output = add_output_array(
+      &builder, PIPE_MAX_SHADER_OUTPUTS - 1, VARYING_SLOT_VAR0, 2);
+   nir_deref_instr *element = nir_build_deref_array(
+      &builder, nir_build_deref_var(&builder, output),
+      nir_load_vertex_id_zero_base(&builder));
+   nir_store_deref(&builder, element,
+                   nir_imm_vec4(&builder, 1.0f, 2.0f, 3.0f, 4.0f), 0xf);
+   return builder.shader;
+}
+
+static nir_shader *
+build_dynamic_output_zero_span(const nir_shader_compiler_options *options)
+{
+   nir_builder builder =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
+                                     "dynamic output zero span");
+   nir_intrinsic_instr *store = nir_store_output(
+      &builder, nir_imm_vec4(&builder, 1.0f, 2.0f, 3.0f, 4.0f),
+      nir_load_vertex_id_zero_base(&builder),
+      .base = 0,
+      .write_mask = 0xf,
+      .component = 0,
+      .src_type = nir_type_float32,
+      .io_semantics = {
+         .location = VARYING_SLOT_VAR0,
+         .num_slots = 1,
+      });
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(store);
+   semantics.num_slots = 0;
+   nir_intrinsic_set_io_semantics(store, semantics);
+   return builder.shader;
+}
+
 static void
 check_unsupported(struct pipe_context *pipe, const char *name, build_fn build)
 {
@@ -765,6 +868,7 @@ main(void)
       winsys->destroy(winsys);
       return 77;
    }
+   glsl_type_singleton_init_or_ref();
 
    static const struct pipe_rasterizer_state rast = { .clamp_vertex_color = 0 };
    draw_set_rasterizer_state(draw, &rast, NULL);
@@ -918,6 +1022,7 @@ main(void)
    test_factory_continue_lowering(draw);
    test_factory_input_span(draw);
    test_factory_output_semantics(draw);
+   test_factory_dynamic_output_rows(draw);
 
    /* Admission predicate: shapes the interpreter cannot execute must be
     * rejected before draw_create_vs_exec ever dispatches to
@@ -925,11 +1030,16 @@ main(void)
    check_unsupported(pipe, "unsupported_intrinsic", build_unsupported_intrinsic);
    check_unsupported(pipe, "unsupported_tex", build_unsupported_tex);
    check_unsupported(pipe, "dynamic_input_row", build_dynamic_input_row);
+   check_unsupported(pipe, "dynamic_output_zero_span",
+                     build_dynamic_output_zero_span);
+   check_unsupported(pipe, "dynamic_output_span_overflow",
+                     build_dynamic_output_span_overflow);
 
    draw_destroy(draw);
    pipe->destroy(pipe);
    screen->destroy(screen);
    winsys->destroy(winsys);
+   glsl_type_singleton_decref();
 
    printf("\n%s: %u failures\n", g_fail ? "FAILURE" : "SUCCESS", g_fail);
    return g_fail ? 1 : 0;

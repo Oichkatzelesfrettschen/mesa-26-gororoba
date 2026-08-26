@@ -560,9 +560,11 @@ draw_vs_nir_scan_shader_info(nir_shader *nir, struct tgsi_shader_info *info)
    nir->info.io_lowered = io_lowered;
 }
 
-/* The interpreter indexes AOS rows with each lowered intrinsic's base plus
- * constant offset.  NIR semantic masks describe API locations and num_inputs
- * is producer metadata, so neither value alone defines this executable span. */
+/* The interpreter indexes AOS rows with each lowered intrinsic's base plus its
+ * runtime offset.  Constant offsets define an exact row; a dynamic output
+ * offset ranges across io_semantics.num_slots.  NIR semantic masks describe
+ * API locations and num_inputs is producer metadata, so neither value alone
+ * defines this executable span. */
 static bool
 draw_vs_nir_io_spans(nir_shader *nir,
                      unsigned *input_span,
@@ -597,15 +599,25 @@ draw_vs_nir_io_spans(nir_shader *nir,
          case nir_intrinsic_store_output: {
             const unsigned component = nir_intrinsic_component(intr);
             const unsigned write_mask = nir_intrinsic_write_mask(intr);
-            if (!nir_src_is_const(intr->src[1]) || component >= 4 ||
-                (write_mask >> (4 - component)))
+            if (component >= 4 || (write_mask >> (4 - component)))
                return false;
             base = nir_intrinsic_base(intr);
-            offset = nir_src_as_uint(intr->src[1]);
-            if (base >= PIPE_MAX_SHADER_OUTPUTS ||
-                offset >= PIPE_MAX_SHADER_OUTPUTS - base)
+            if (base >= PIPE_MAX_SHADER_OUTPUTS)
                return false;
-            *output_span = MAX2(*output_span, base + offset + 1);
+
+            unsigned slots;
+            if (nir_src_is_const(intr->src[1])) {
+               offset = nir_src_as_uint(intr->src[1]);
+               if (offset >= PIPE_MAX_SHADER_OUTPUTS - base)
+                  return false;
+               slots = offset + 1;
+            } else {
+               slots = nir_intrinsic_io_semantics(intr).num_slots;
+               if (slots == 0 || slots > PIPE_MAX_SHADER_OUTPUTS - base)
+                  return false;
+            }
+
+            *output_span = MAX2(*output_span, base + slots);
             break;
          }
 
