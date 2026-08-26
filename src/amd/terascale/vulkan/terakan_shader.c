@@ -1197,6 +1197,7 @@ terakan_shader_lower_and_optimize_post_link(
    nir_shader * const nir, struct terakan_pipeline_layout const * const pipeline_layout,
    BITSET_WORD * const resources_needed, uint32_t * const samplers_needed,
    BITSET_WORD * const uavs_for_mutable_resources_needed,
+   BITSET_WORD * const robustness_metadata_for_mutable_resources_needed,
    uint32_t * const driver_push_constants_used,
    uint16_t * const kcache_needed,
    uint8_t * const fragment_data_uncompacted_locations_out,
@@ -1364,7 +1365,9 @@ terakan_shader_lower_and_optimize_post_link(
             nir->info.stage == MESA_SHADER_FRAGMENT
                ? util_bitcount(fragment_data_uncompacted_locations)
                : 0,
-            uavs_for_mutable_resources_needed, driver_push_constants_used,
+            uavs_for_mutable_resources_needed,
+            robustness_metadata_for_mutable_resources_needed,
+            driver_push_constants_used,
             kcache_needed, robust_buffer_access);
 
    /* Lower cube sampler_dim to 2D_ARRAY before the view-swizzle clone pass.

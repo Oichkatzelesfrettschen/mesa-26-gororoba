@@ -108,7 +108,7 @@ struct terakan_descriptor_set_uav {
    uint32_t real_resource[8];
    /* baseArrayLayer of the VkImageView for STORAGE_IMAGE bindings.
     * Routed to
-    * robustness_metadata.uav_base_array_layers[] at pipeline_layout
+    * robustness_metadata mutable-resource shadow at pipeline_layout
     * bind time; NIR lowering adds this to coord.z so MEM_RAT
     * STORE_TYPED targets the correct physical slice of a
     * TEXTURE2DARRAY resource even when the view is non-array.

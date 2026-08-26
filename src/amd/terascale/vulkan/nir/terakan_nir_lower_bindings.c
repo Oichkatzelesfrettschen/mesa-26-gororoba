@@ -41,6 +41,8 @@ terakan_nir_lower_bindings(nir_shader * const shader,
                            BITSET_WORD * const resources_needed_accum,
                            uint32_t * const samplers_needed_accum, unsigned const uav_base,
                            BITSET_WORD * const uavs_for_mutable_resources_needed_out_opt,
+                           BITSET_WORD * const
+                              robustness_metadata_for_mutable_resources_needed_out_opt,
                            uint32_t * const driver_push_constants_used_accum,
                            uint16_t * const kcache_needed_accum_out,
                            bool const robust_buffer_access)
@@ -85,6 +87,8 @@ terakan_nir_lower_bindings(nir_shader * const shader,
       .resources_needed = resources_needed_accum,
       .samplers_needed = samplers_needed_accum,
       .uav_base = uav_base,
+      .robustness_metadata_for_mutable_resources_needed =
+         robustness_metadata_for_mutable_resources_needed_out_opt,
       .driver_push_constants_used = driver_push_constants_used_accum,
       .kcache_needed = &kcache_needed_accum,
       .robust_buffer_access = robust_buffer_access,
@@ -107,6 +111,20 @@ terakan_nir_lower_bindings(nir_shader * const shader,
       }
    }
 
+   if (robustness_metadata_for_mutable_resources_needed_out_opt != NULL) {
+      unsigned const mutable_resource_count =
+         shader->info.stage == MESA_SHADER_FRAGMENT
+            ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+            : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
+      memset(robustness_metadata_for_mutable_resources_needed_out_opt, 0,
+             sizeof(BITSET_WORD) * BITSET_WORDS(mutable_resource_count));
+      if (shader->info.stage != MESA_SHADER_FRAGMENT &&
+          shader->info.stage != MESA_SHADER_COMPUTE) {
+         state.robustness_metadata_for_mutable_resources_needed = NULL;
+      }
+   }
+
+   terakan_nir_gather_robustness_metadata_needed(shader, &state);
    terakan_nir_gather_uavs_needed(shader, &state);
 
    progress |= nir_shader_instructions_pass(shader, terakan_nir_lower_bindings_instr,
@@ -116,4 +134,3 @@ terakan_nir_lower_bindings(nir_shader * const shader,
    *kcache_needed_accum_out = kcache_needed_accum;
    return progress;
 }
-

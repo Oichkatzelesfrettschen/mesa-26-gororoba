@@ -26,6 +26,7 @@
  *   - push_constants_usage (from post-link lowering + pipeline layout)
  *   - fragment_data_uncompacted_locations (from post-link lowering)
  *   - uavs_for_mutable_resources_needed (from post-link lowering)
+ *   - robustness_metadata_for_mutable_resources_needed (from post-link lowering)
  *   - Full r600_shader internals (bytecode/arrays/pointer-owned state)
  *
  * These fields are filled by terakan_shader_lower_and_optimize_post_link()

@@ -118,6 +118,7 @@ libterakan_files = files(
   'terakan_pipeline_cache.h',
   'terakan_push_constants.c',
   'terakan_robustness_metadata.c',
+  'terakan_robustness_metadata.h',
   'terakan_push_constants.h',
   'terakan_render_pass.c',
   'terakan_query.c',
@@ -369,6 +370,27 @@ if with_tests
   test(
     'terakan-draw-indirect-offset',
     terakan_draw_indirect_offset_test,
+    suite : ['terakan'],
+  )
+  terakan_robustness_metadata_test = executable(
+    'terakan_robustness_metadata_test',
+    files('tests/terakan_robustness_metadata_test.c'),
+    include_directories : [
+      inc_include,
+      inc_src,
+      include_directories('.'),
+    ],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'terakan-robustness-metadata',
+    terakan_robustness_metadata_test,
+    suite : ['terakan'],
+  )
+  test(
+    'terakan-robustness-metadata-contract',
+    prog_python,
+    args : [files('tests/terakan_robustness_metadata_contract_test.py')],
     suite : ['terakan'],
   )
   test(

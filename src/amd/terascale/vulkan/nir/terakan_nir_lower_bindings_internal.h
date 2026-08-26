@@ -36,6 +36,7 @@
 #include "terakan_physical_device.h"
 #include "terakan_pipeline_layout.h"
 #include "terakan_push_constants.h"
+#include "terakan_robustness_metadata.h"
 
 #include "gallium/drivers/r600/eg_sq.h"
 #include "util/bitscan.h"
@@ -77,6 +78,9 @@ struct terakan_nir_lower_bindings_state {
    unsigned uav_base;
    /* TERAKAN_RESOURCE_RANGE_MUTABLE_BASE-based, NULL if the stage doesn't support UAVs. */
    BITSET_WORD * uavs_for_mutable_resources_needed;
+   /* Mutable-resource identity for the compact KCACHE bank-14 payload.
+    * This domain is consumer-derived and independent of RAT allocation. */
+   BITSET_WORD * robustness_metadata_for_mutable_resources_needed;
 
    uint32_t * driver_push_constants_used;
 
@@ -114,6 +118,8 @@ nir_def *terakan_nir_zero_vulkan_resource_offset_impl(nir_builder *b,
 /* UAV scanning (called by orchestrator). */
 void terakan_nir_gather_uavs_needed(nir_shader *shader,
                                     struct terakan_nir_lower_bindings_state *state);
+void terakan_nir_gather_robustness_metadata_needed(
+   nir_shader *shader, struct terakan_nir_lower_bindings_state *state);
 
 /* Binding resolution utilities (called by lower_abi handlers). */
 bool terakan_nir_get_binding(nir_src src, VkDescriptorType expected_type,
@@ -127,6 +133,11 @@ unsigned terakan_nir_get_binding_uav(
    struct terakan_nir_lower_bindings_state const *state,
    mesa_shader_stage stage,
    bool *apply_array_index_out);
+
+unsigned terakan_nir_get_binding_robustness_metadata(
+   struct terakan_nir_binding const *binding,
+   struct terakan_nir_lower_bindings_state const *state,
+   mesa_shader_stage stage, bool *apply_array_index_out);
 
 unsigned terakan_nir_atomic_uav_op(nir_atomic_op atomic_op, bool result_used);
 

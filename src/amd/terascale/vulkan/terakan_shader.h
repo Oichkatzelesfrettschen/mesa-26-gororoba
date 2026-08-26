@@ -311,6 +311,9 @@ struct terakan_shader_impl {
    BITSET_DECLARE(uavs_for_mutable_resources_needed,
                   MAX2(TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL,
                        TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL));
+   BITSET_DECLARE(robustness_metadata_for_mutable_resources_needed,
+                  MAX2(TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL,
+                       TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL));
 
    struct {
       BITSET_DECLARE(vertex_attributes_needed, TERAKAN_VERTEX_INPUT_MAX_ATTRIBUTES);
@@ -370,7 +373,9 @@ nir_shader * terakan_shader_spirv_to_nir(struct terakan_device * device, size_t 
 void terakan_shader_lower_and_optimize_post_link(
    nir_shader * nir, struct terakan_pipeline_layout const * pipeline_layout,
    BITSET_WORD * resources_needed, uint32_t * samplers_needed,
-   BITSET_WORD * uavs_for_mutable_resources_needed, uint32_t * driver_push_constants_used,
+   BITSET_WORD * uavs_for_mutable_resources_needed,
+   BITSET_WORD * robustness_metadata_for_mutable_resources_needed,
+   uint32_t * driver_push_constants_used,
    uint16_t * kcache_needed,
    uint8_t * fragment_data_uncompacted_locations_out,
    bool robust_buffer_access,

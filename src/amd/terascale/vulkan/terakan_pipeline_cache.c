@@ -45,6 +45,8 @@
  *      binary output IS affected by the new NIR pass and binding resolution
  *      refinements, so pre-f0b7093 cached shaders would run against post-
  *      f0b7093 dispatch logic with mismatched RAT slot assumptions.
+ *   6: separated bank-14 robustness metadata identity from writable RAT
+ *      allocation and compacted it from consumer-derived mutable resources.
  *
  * When to bump TERAKAN_CACHE_BLOB_VERSION:
  *   REQUIRED:
@@ -61,7 +63,7 @@
  *     - cache-miss compilation path improvements (produce same bytecode)
  *     - pure comment/refactor changes
  */
-#define TERAKAN_CACHE_BLOB_VERSION 5
+#define TERAKAN_CACHE_BLOB_VERSION 6
 
 struct terakan_cached_shader_blob_header {
    uint32_t version;
