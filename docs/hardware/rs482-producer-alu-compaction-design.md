@@ -476,12 +476,18 @@ helper mutates or consumes its input.
 ### The source-domain predicate proves path identity, not result shape (04f.3e)
 
 The predicate runs where the transport selection already runs:
-`r300_mp_select_r2vb_transport` on the restaged position NIR, per carried
-scalar. That NIR is still integer-typed at this point -- `r300_optimize_nir`
-runs `r300_nir_lower_bool_to_float` and leaves integer ALU for the backend's
-own lowering -- so integer conversions (`i2f32`, `u2f32`) and integer bound
-chains are intact for analysis, and pass B constructs the lowered float form
-itself when it builds the carry re-entry.
+`r300_mp_select_r2vb_transport` on the retained restaged position candidate,
+per carried scalar. `plan_measure_pass` restages the VS as
+`MESA_SHADER_FRAGMENT` and runs `r300_optimize_nir` before
+`plan_split_candidate` receives that candidate. The fragment branch therefore
+runs `r300_nir_lower_bool_to_float_fs`; a Boolean comparison consumed as a
+float may already be an `fcsel_ge` over lowered arithmetic rather than a
+comparison plus `b2f32`. Integer conversions and integer ALU can remain visible,
+but Boolean source provenance is not recoverable from the advertised
+pre-lowering shape. The Boolean witness stays fail-closed until the exact
+lowered `fcsel_ge` form has a path-identity proof, or the planner retains
+pre-lowering comparison provenance together with its lowering and separation
+proof.
 
 The obligation splits in two, and the existing checks discharge only the
 first. Carry-transport exactness -- the selected carry value survives the
@@ -490,13 +496,16 @@ FP24 carry-BO round trip bit-exactly -- follows from integrality plus the
 Source-conversion equivalence -- the FP24 fragment ALU and the FP32
 software vertex reference compute the same value in the first place -- is a
 property of the value's producers, and a predicate applied to the carried
-result cannot see it. The counterexample is one op deep: let `x` be the
-FP32 float immediately below 2.0. The reference computes `f2i32(x) = 1`;
-the fragment ALU holds `x` in `s1e7m16`, which quantizes it to exactly 2.0,
-and computes 2. Both results are integral, inside the window, and exactly
-representable, so every check on the result admits both. The two-obligation
-form (integral result + bounded result) restates carry-transport exactness
-and leaves the 04f.3e blocker open.
+result cannot see it. A positive FP32 value immediately below 2.0 is not a
+valid discriminator: `R300_NUM_DOMAIN_FP24_RTZ` registers
+`R300_ROUND_TRUNCATE`, so its FP24 representative stays below 2.0 and
+`f2i32` returns 1 on both paths. A valid calibration needs a retained upstream
+operation sequence whose FP24 and FP32 results straddle a conversion or
+comparison threshold, or a specifically identified non-RTZ path. No such
+calibration exists in the retained corpus. The result-only two-obligation form
+(integral result plus bounded result) therefore restates carry-transport
+exactness and leaves source-conversion equivalence unresolved without claiming
+an impossible one-op divergence.
 
 The predicate is therefore inductive over the producer dataflow. It
 classifies each SSA value as path-identical -- provably bit-equal between
@@ -504,37 +513,45 @@ the FP24 producer and the FP32 reference -- from source witnesses, and only
 a path-identical carry admits:
 
 1. Constants whose value is exactly representable in `s1e7m16`.
-2. Integer-origin chains: an integer constant, bounded integer system
-   value, or contract-seeded integer attribute flowing through integer ALU
-   whose every intermediate is proven inside the `+-2^17` window
-   (`nir_unsigned_upper_bound` for unsigned, the signed interval in
-   `r300_mp_signed_range` for signed, applied per intermediate -- the same
-   stepwise-accumulation window the Rocq FP24 theorem states). Integer
-   arithmetic inside the window maps to exact FP24 float arithmetic, so
-   both paths hold the identical integer at every step; the bound engines
-   are the authority for this class. `i2f32`/`u2f32` of such a chain stays
-   path-identical.
+2. Integer-origin chains: an exact integer constant, or a future source
+   explicitly seeded by a driver contract, flowing only through an integer
+   operation in the closed whitelist below. Each operation needs a
+   path-identical FP24 lowering, and every intermediate must remain inside the
+   `+-2^17` window (`nir_unsigned_upper_bound` for unsigned, the signed
+   interval in `r300_mp_signed_range` for signed, applied per intermediate --
+   the same stepwise-accumulation window the Rocq FP24 theorem states). The
+   operation proof and interval jointly establish the witness;
+   `i2f32`/`u2f32` of such a chain stays path-identical.
 3. Discontinuous ops -- `ffloor`, `fceil`, `ftrunc`, `fround_even`,
    `f2i32`, `f2u32` -- of a path-identical operand: identical inputs give
    identical outputs through any function. Boundedness or integrality of
-   the operand alone does not qualify; the threshold hazard is exactly the
-   `f2i32` counterexample above, and `ffloor` of a merely-bounded float
-   diverges the same way when quantization crosses an integer boundary.
-4. Comparisons and their `b2f32` results: a comparison is path-identical
-   when both operands are path-identical, because equal inputs decide the
-   same branch. The {0, 1} range of `b2f32` proves transport of the
-   boolean, never the comparison itself -- `x > 0.5` flips when FP24
-   quantization moves `x` across the threshold. A separation-margin rule
-   (proven operand distance from the threshold exceeding the maximum FP24
-   displacement) could widen this class later, but it needs interval
-   machinery that does not exist; until then a comparison with a
-   non-path-identical operand declines.
+   the operand alone does not qualify; the witness must prove that both paths
+   present the same operand at the discontinuity. The missing RTZ discriminator
+   above leaves every merely bounded float origin outside this domain, including
+   `ffloor` and float-to-integer conversions near an integer boundary.
+4. Comparisons use evidence from the operands' semantic domain.
+   Signed and unsigned integer comparisons consume the corresponding interval
+   witnesses from rule 2; interpreting integer bits through float classes is
+   not evidence about the integer values. Float comparisons require finite,
+   path-identical operands plus either a direct proof of the optimized
+   `fcsel_ge` arithmetic or retained pre-lowering comparison provenance with a
+   lowering and separation proof. The {0, 1} result range proves transport of
+   a Boolean, never the comparison that produced it. The optimized candidate
+   retains neither required float-comparison proof, so post-optimization
+   Boolean comparisons decline.
+5. Transparent SSA glue preserves an existing witness without creating one.
+   `mov` forwards its source; vector construction preserves the witness of
+   each component; `bcsel` preserves a result only when its condition and both
+   alternatives are proved and the alternatives carry compatible facts.
 
-`nir_analyze_fp_class` supplies integrality and finiteness evidence inside
-these witnesses (`FP_CLASS_NON_INTEGRAL`, `FP_CLASS_NAN`, and the infinity
-bits clear; a `b2i` bit-reinterpret keeps `NON_INTEGRAL` set and declines).
-It supplies neither a magnitude bound nor path identity, so it composes
-with the bound engines and the induction rather than replacing them.
+`nir_analyze_fp_class` supplies integrality and finiteness evidence only for
+float-producing witnesses. Integer and Boolean definitions use semantic type,
+origin, and signed or unsigned interval evidence instead. In particular,
+`nir_analyze_fp_class` reports `b2i32` bit patterns as
+`FP_CLASS_POS_ZERO | FP_CLASS_GT_ZERO_LT_POS_ONE`; that result is a float
+interpretation of integer storage, not an integer-source witness. Float-class
+analysis supplies neither a magnitude bound nor path identity, so it composes
+with the applicable float witness rather than replacing typed evidence.
 
 Unsigned conversion takes two facts before any truncation-agreement claim:
 the operand proven nonnegative and the value inside the representable
@@ -547,10 +564,10 @@ non-saturating split between gallivm's NIR and TGSI lanes carries no
 weight.
 
 Every rule is conservative and total: an unmodeled op, a float
-`load_input`, or a float UBO load is not path-identical, an unbounded
-interval or `FP_CLASS_UNKNOWN` fails its witness, and the existing decline
-returns give the gate its fail-closed shape, so the predicate can only
-under-admit.
+`load_input`, or a float UBO load is not path-identical. An unbounded required
+interval fails its integer witness, and `FP_CLASS_UNKNOWN` fails a float
+witness. The existing decline returns give the gate its fail-closed shape, so
+the predicate can only under-admit.
 
 The implementation carries the witnesses as a per-SSA-value record, one
 enumerator per rule with `NONE` as the zero-valued fail-closed default:
@@ -562,6 +579,7 @@ enum r300_r2vb_source_witness {
    R300_R2VB_WITNESS_INT_CHAIN,     /* rule 2 */
    R300_R2VB_WITNESS_DISCONTINUOUS, /* rule 3 */
    R300_R2VB_WITNESS_COMPARE,       /* rule 4 */
+   R300_R2VB_WITNESS_GLUE,          /* rule 5 */
 };
 ```
 
@@ -574,47 +592,48 @@ failed obligation and a review can re-derive the admission:
   holds for it).
 - `INT_CHAIN`: the per-intermediate interval -- `nir_unsigned_upper_bound`
   result or the `r300_mp_signed_range` interval -- for every step of the
-  chain, plus the seeding origin (integer constant, bounded system value,
-  or contract-seeded attribute).
+  chain, the exact integer constant or explicit future contract seed, and the
+  operation-level lowering proof.
 - `DISCONTINUOUS`: the operand's witness reference; the op itself adds no
   fact beyond membership in the whitelist below.
-- `COMPARE`: both operand witness references plus the
-  `nir_analyze_fp_class` verdict on each -- `FP_CLASS_NAN` and both
-  infinity bits clear.  Path identity is bit-level, so IEEE `-0.0 == +0.0`
-  cannot split the branch between paths (bit-equal operands decide
-  identically before value semantics enter); the NaN and infinity
-  exclusions guard the operands' own witnesses, where an unordered compare
-  or an overflowed chain would otherwise slip through a value-equality
-  argument.
+- `COMPARE`: signed or unsigned interval witnesses for integer operands. A
+  float comparison additionally retains finite float-class verdicts and either
+  pre-lowering comparison provenance or the exact lowered-arithmetic proof.
+- `GLUE`: the originating witness references and component mapping for `mov`
+  and vector construction; `bcsel` also retains the proved condition and both
+  compatible alternative witnesses.
 
-The op whitelist is exact and closed; an opcode outside it yields
-`WITNESS_NONE` regardless of its operands.  Integer chain steps (rule 2):
+The proof-generating op whitelist is exact and closed; an opcode outside it
+yields `WITNESS_NONE` regardless of its operands. Integer chain steps (rule 2):
 `iadd`, `isub`, `imul`, `ineg`, `iabs`, `imin`, `imax`, `umin`, `umax`,
-plus the exits `i2f32` and `u2f32`.  Discontinuous consumers (rule 3):
+plus the exits `i2f32` and `u2f32`. Discontinuous consumers (rule 3):
 `ffloor`, `fceil`, `ftrunc`, `fround_even`, `f2i32`, `f2u32`.
 Comparisons (rule 4): `flt`, `fge`, `feq`, `fneu`, `ilt`, `ige`, `ieq`,
-`ine`, `ult`, `uge`, and their `b2f32`/`b2i32` consumers.  Widening the
-whitelist is a per-opcode proof obligation -- the shift and bit ops stay
-out until an exact-FP24 image argument exists for each.
+`ine`, `ult`, `uge`, and their `b2f32`/`b2i32` consumers, subject to the
+domain-specific evidence above. Transparent glue (rule 5): `mov`, `vec2`,
+`vec3`, `vec4`, and guarded `bcsel`; these operations propagate witnesses and
+never establish a source. Widening either list is a per-opcode proof
+obligation -- the shift and bit ops stay out until an exact-FP24 image argument
+exists for each.
 
-Source classes provable today: float-encoded integer system values (the
-Draw-path encoding emits `nir_i2f32` at the definition -- witness 2) and
-boolean compares whose operands are integer-origin or exact constants
-(witness 4 over witnesses 1 and 2). Generic integer vertex attributes and
-integer uniform, UBO, or push-constant loads reach the analysis as unknown
-values and decline: `load_input` and `load_ubo` carry no class or bound
-facts, and the only range-contract intrinsic in the tree
-(`nir_intrinsic_arg_upper_bound_u32_amd`) is AMD-compute-specific. Lifting
-the integer classes requires a driver-side contract that seeds the range
-table -- the vertex-element format (`pure_integer` plus component width)
-for attributes, a declared range for uniforms -- which is a design decision
-for the implementation, not existing infrastructure. Float-typed attributes
-sit behind a strictly stronger contract: bounds never admit them, because
-path identity needs the delivered values exactly representable in FP24, an
-exactness guarantee no format alone provides. Until a seed exists the
-predicate admits the encoded-sysval and integer-operand-comparison classes
-only, which is the correct fail-closed floor for leaving diagnostic-only
-status.
+The executable source floor is exactly representable constants,
+constant-rooted integer chains, and transparent glue that preserves those
+witnesses. No runtime integer seed exists. `load_vertex_id` and other system
+values reach the planner as unsupported intrinsics and decline with
+`R300_R2VB_PLAN_INTRINSIC`; generic integer vertex attributes and integer
+uniform, UBO, or push-constant loads carry no source contract or bound facts.
+The only range-contract intrinsic in the tree
+(`nir_intrinsic_arg_upper_bound_u32_amd`) is AMD-compute-specific. Lifting the
+integer classes requires a driver-side contract that seeds the range table --
+the vertex-element format (`pure_integer` plus component width) for attributes,
+or a declared range for uniforms -- which is a design decision for the
+implementation, not existing infrastructure. Float-typed attributes sit behind
+a strictly stronger contract: bounds never admit them, because path identity
+needs the delivered values exactly representable in FP24, an exactness
+guarantee no format alone provides. Post-optimization Boolean comparisons also
+remain `WITNESS_NONE` until the planner preserves their provenance or proves
+their lowered `fcsel_ge` form. This is the fail-closed floor for leaving
+diagnostic-only status.
 
 ## Prerequisites before implementation
 
@@ -673,11 +692,14 @@ The required rows are `T0 SPLIT {f,b}`, `T1/T2 SPLIT {f,i}`, `T3 SPLIT {f,u}`,
 `T4/T5 REJECT SIGNED_RANGE`, `T6/T7 REJECT UNSIGNED_RANGE`, `T8/T9 REJECT
 MIXED_SIGNEDNESS`, plus an under-budget typed producer returning
 `TYPED_SINGLE_PASS_UNPROVEN`, a fractional `f2i` case just below and above an
-integer boundary, an unsupported integer op, an unbounded typed chain, and the
-existing float `recur90` and wide-frontier controls. This is the route-chain
-calibration the pre-draw host classifier (F3-CLASSIFIER-01) only predicts and the
-frozen-build silicon run (F3-R0) could not reach, so it precedes the attended
-silicon transport rows.
+integer boundary as an agreement control, a retained upstream operation that
+places the FP24 and FP32 results on opposite sides of that boundary as the
+source-conversion discriminator, an unsupported integer op, an unbounded typed
+chain, and the existing float `recur90` and wide-frontier controls. The
+discriminator remains unavailable until the required operation sequence or a
+non-RTZ path is identified. This is the route-chain calibration the pre-draw
+host classifier (F3-CLASSIFIER-01) only predicts and the frozen-build silicon
+run (F3-R0) could not reach, so it precedes the attended silicon transport rows.
 
 Silicon validation per rule (attended, under the standing safety protocol: 60s
 idle, `timeout 120`, kmsg guard, no PVS-port reads): the rule id and proof
