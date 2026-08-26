@@ -21,6 +21,8 @@ mesa_26_gororoba_prepend_path LIBGL_DRIVERS_PATH "${GOROROBA_MESA_PREFIX}/lib/dr
 mesa_26_gororoba_prepend_path LIBVA_DRIVERS_PATH "${GOROROBA_MESA_PREFIX}/lib/dri"
 mesa_26_gororoba_prepend_path GBM_BACKENDS_PATH "${GOROROBA_MESA_PREFIX}/lib/gbm"
 mesa_26_gororoba_prepend_path __EGL_VENDOR_LIBRARY_DIRS "${GOROROBA_MESA_PREFIX}/share/glvnd/egl_vendor.d"
+mesa_26_gororoba_prepend_path VK_ADD_LAYER_PATH "${GOROROBA_MESA_PREFIX}/share/vulkan/explicit_layer.d"
+mesa_26_gororoba_prepend_path VK_ADD_IMPLICIT_LAYER_PATH "${GOROROBA_MESA_PREFIX}/share/vulkan/implicit_layer.d"
 
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-${GOROROBA_MESA_PREFIX}/share/vulkan/icd.d/r3v_icd.x86_64.json}"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-${VK_DRIVER_FILES}}"
