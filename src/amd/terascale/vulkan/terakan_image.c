@@ -1926,8 +1926,8 @@ terakan_CreateImageView(VkDevice const deviceHandle,
          S_030010_DST_SEL_Z(V_030010_SQ_SEL_Z) |
          S_030010_DST_SEL_W(V_030010_SQ_SEL_W);
 
-      /* Integer cube GATHER4 on Palm/Wrestler (CHIP_PALM, the only
-       * Evergreen-family target validated for this lane) was suspected
+      /* Integer cube GATHER4 on Palm/Wrestler (CHIP_PALM, the target
+       * validated for this code path) was suspected
        * of needing the gather descriptor's DIM rewritten from
        * SQ_TEX_DIM_CUBEMAP to SQ_TEX_DIM_2D_ARRAY to bypass a NEAREST
        * footprint quirk.  Direct test on Palm showed the rewrite has
@@ -1935,12 +1935,11 @@ terakan_CreateImageView(VkDevice const deviceHandle,
        * breaks the cube-seamless face-boundary filter that samplerCube
        * semantics rely on; the user-supplied addressMode then leaks
        * onto face edges instead of being ignored.  Do not re-introduce
-       * the DIM rewrite as default behaviour on Palm without first
-       * solving the seamless-filter loss.  Other Evergreen-family
-       * chips (Cypress / Juniper / Redwood / Cedar / Cayman) have NOT
-       * been validated against this finding and may behave
-       * differently; treat the conclusion as Palm-scoped until
-       * cross-chip evidence exists.
+       * the DIM rewrite as default behavior on Palm without first
+       * solving the seamless-filter loss.  This conclusion is restricted
+       * to Palm.  Evergreen Cypress, Juniper, Redwood, and Cedar GPUs and
+       * Northern Islands Cayman require independent validation because
+       * their gather paths may behave differently.
        *
        * `TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY=1` reactivates
        * the rewrite for future hypothesis testing (e.g. paired with
