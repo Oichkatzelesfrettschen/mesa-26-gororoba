@@ -10,16 +10,30 @@
 
 #include "vl_nir.h"
 
+static void
+vl_nir_assign_vs_input_locations(nir_shader *shader)
+{
+   unsigned num_inputs = 0;
+
+   nir_foreach_shader_in_variable(var, shader) {
+      assert(var->data.location >= VERT_ATTRIB_GENERIC0);
+      var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
+      num_inputs = MAX2(num_inputs, var->data.driver_location +
+                        nir_variable_count_slots(var, var->type));
+   }
+
+   shader->num_inputs = num_inputs;
+}
+
 void *
 vl_nir_vs_finish(nir_builder *b, struct pipe_context *pipe)
 {
    /* nir_builder shaders must gather info and have IO var locations assigned
-    * before being consumed: nir_to_tgsi (SW-TCL VS) and nir_to_rc (FS) both
-    * key TGSI register / interpolator indices off var->data.driver_location,
-    * which they read but never assign.  Without this every input/output
-    * collapses onto slot 0 (no POSITION export, all texcoords on interp 0). */
+    * before being consumed.  Vertex inputs keep their generic-attribute index:
+    * the fixed VS_I_* vertex-element layouts can contain gaps that a compact
+    * assignment would erase.  Outputs remain compact interpolator/export rows. */
    nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
-   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   vl_nir_assign_vs_input_locations(b->shader);
    nir_assign_io_var_locations(b->shader, nir_var_shader_out);
 
    /* finalize_nir is an optional screen hook; r300 lowers NIR inside
@@ -54,13 +68,18 @@ vl_nir_vs_passthrough(struct pipe_context *pipe, unsigned num_tc,
    nir_store_var(&b, out_pos, pos, 0xf);
 
    for (unsigned i = 0; i < num_tc; i++) {
-      nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
-                                                glsl_vec4_type(), "tc_in");
-      in_tc->data.location = VERT_ATTRIB_GENERIC0 + i + 1;
+      nir_def *tc = pos;
+      if (num_tc > 1) {
+         nir_variable *in_tc = nir_variable_create(b.shader,
+                                                   nir_var_shader_in,
+                                                   glsl_vec4_type(), "tc_in");
+         in_tc->data.location = VERT_ATTRIB_GENERIC0 + i + 1;
+         tc = nir_load_var(&b, in_tc);
+      }
       nir_variable *out_tc = nir_variable_create(b.shader, nir_var_shader_out,
-                                                glsl_vec4_type(), "tc_out");
+                                                 glsl_vec4_type(), "tc_out");
       out_tc->data.location = VARYING_SLOT_VAR0 + i;
-      nir_store_var(&b, out_tc, nir_load_var(&b, in_tc), 0xf);
+      nir_store_var(&b, out_tc, tc, 0xf);
    }
 
    return vl_nir_vs_finish(&b, pipe);
