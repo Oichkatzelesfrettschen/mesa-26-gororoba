@@ -628,12 +628,31 @@ struct r300_triangle_coverage_verdict {
    uint32_t mismatch_pixels;
 };
 
+/* The predicted dword at one interior pixel center, for a fragment
+ * source that varies across the triangle: the caller's own model of
+ * what the shader delivers there.
+ */
+typedef uint32_t (*r300_triangle_interior_expectation)(void *data, uint32_t x,
+                                                       uint32_t y);
+
 /* Judges pixels over the shape's footprint.  interior_dwords carries the
  * admitted interior values -- one for a constant-color draw, several
  * when the fragment source varies over the triangle -- so the verdict
  * proves the drawn region's shape and its exterior, and a caller that
- * admits several values keeps their placement to its own check.
+ * admits several values keeps their placement to its own check.  A
+ * caller that models the variation supplies expectation instead, and
+ * each interior pixel is then judged against the dword the model
+ * predicts at that center, so placement joins the verdict; the admitted
+ * set is unread in that form.
  */
+void r300_tcl_bypass_triangle_coverage_oracle_predicted(
+   const struct r300_triangle_render_shape *shape,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   r300_triangle_interior_expectation expectation, void *expectation_data,
+   uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_coverage_verdict *verdict);
+
+/* The admitted-set form: the predicted form with no model. */
 void r300_tcl_bypass_triangle_coverage_oracle(
    const struct r300_triangle_render_shape *shape,
    const uint32_t *interior_dwords, uint32_t interior_dword_count,

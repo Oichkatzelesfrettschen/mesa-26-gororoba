@@ -47,6 +47,23 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 #define R3V_SAMPLED_LOWER_B 0x10
 #define R3V_SAMPLED_LOWER_A 0xd0
 
+/* The split-row arms' own model of the fragment source: TEX0's t is
+ * 0.125 at both base vertices, which sit at window y 8, and 0.875 at
+ * the apex at y 56 (r300_tcl_bypass_triangle_varying_vertices), so t
+ * carries no x term and reads 0.125 + (y - 8) / 64.  The texture holds
+ * the upper texel below its midpoint row and the lower texel from it,
+ * so the predicted dword at an interior center follows t alone and the
+ * verdict judges where each texel lands rather than that both appear.
+ */
+static uint32_t
+split_expectation(void *data, uint32_t x, uint32_t y)
+{
+   const uint32_t *texel = data;
+   (void)x;
+   const float t = 0.125f + ((float)y + 0.5f - 8.0f) / 64.0f;
+   return t < 0.5f ? texel[0] : texel[1];
+}
+
 static void
 stage(const char *name)
 {
@@ -799,9 +816,10 @@ main(int argc, char **argv)
    const uint32_t clear_dword = r300_tcl_bypass_triangle_pack_unorm8_dword(
       shape.lanes, (const float[4]){ 0.25f, 0.25f, 0.25f, 0.25f });
    struct r300_triangle_coverage_verdict verdict;
-   r300_tcl_bypass_triangle_coverage_oracle(
-      &shape, admitted_interior, texture_rows ? 2u : 1u, clear_dword,
-      color_map, color_bytes, &verdict);
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &shape, admitted_interior, texture_rows ? 2u : 1u,
+      texture_rows ? split_expectation : NULL, (void *)admitted_interior,
+      clear_dword, color_map, color_bytes, &verdict);
    const uint32_t *pixels = color_map;
    const uint32_t cx = shape.width / 2, cy = (shape.height * 3) / 8;
    printf("[oracle] coverage_exact=%d canary=%d interior=%u analytic=%u "

@@ -2039,6 +2039,106 @@ test_composed_reloc_payloads_bind_to_merged_indices(void)
    r300_tcl_bypass_triangle_release(&plain);
 }
 
+
+/* The split model the varying cell realizes: TEX0's t is 0.125 at the
+ * two base vertices and 0.875 at the apex, and both base vertices sit
+ * at window y 8 while the apex sits at y 56, so t is linear in y alone
+ * -- t = 0.125 + (y - 8) / 64 -- and a texture split at its midpoint
+ * changes texel at the center row where t reaches 0.5.
+ */
+static uint32_t
+split_expectation(void *data, uint32_t x, uint32_t y)
+{
+   const uint32_t *texel = data;
+   (void)x;
+   const float t = 0.125f + ((float)y + 0.5f - 8.0f) / 64.0f;
+   return t < 0.5f ? texel[0] : texel[1];
+}
+
+/* Calibrates the predicted form: a model that names the right dword at
+ * every interior center passes, and a model shifted by one row fails,
+ * so the verdict rests on placement rather than on the admitted set.
+ */
+static void
+test_coverage_oracle_predicted_calibration(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   uint32_t texel[2] = { 0xe02060a0u, 0xd0905010u };
+   const uint32_t exterior = 0x40404040u;
+   const uint32_t pitch = shape.pitch_pixels;
+   const uint32_t dwords = pitch * (shape.height + R300_TRIANGLE_CANARY_ROWS);
+   uint32_t *pixels = calloc(dwords, sizeof(*pixels));
+   assert(pixels != NULL);
+   for (uint32_t i = 0; i < dwords; i++)
+      pixels[i] = exterior;
+
+   const float vx[3] = { 8.0f, 56.0f, 32.0f }, vy[3] = { 8.0f, 8.0f, 56.0f };
+   uint32_t upper = 0, lower = 0;
+   for (uint32_t y = 0; y < shape.height; y++) {
+      for (uint32_t x = 0; x < shape.width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         bool in = true;
+         for (unsigned e = 0; e < 3; e++) {
+            const unsigned n = (e + 1) % 3;
+            in &= (vx[n] - vx[e]) * (py - vy[e]) -
+                     (vy[n] - vy[e]) * (px - vx[e]) >
+                  0.0f;
+         }
+         if (!in)
+            continue;
+         const uint32_t want = split_expectation(texel, x, y);
+         pixels[y * pitch + x] = want;
+         if (want == texel[0])
+            upper++;
+         else
+            lower++;
+      }
+   }
+   /* The crossing row and the triangle's widening toward its base fix
+    * the two counts, so the split is a stated quantity rather than
+    * whatever the loop produced.
+    */
+   assert(upper == 864 && lower == 288);
+
+   struct r300_triangle_coverage_verdict v;
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &shape, NULL, 0, split_expectation, texel, exterior, pixels,
+      dwords * 4u, &v);
+   assert(v.coverage_exact && v.canary_pass);
+   assert(v.interior_pixels == 1152 && v.mismatch_pixels == 0);
+
+   /* The admitted-set form passes on the same bytes without judging
+    * placement, so the two forms differ in what they prove.
+    */
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, texel, 2, exterior,
+                                            pixels, dwords * 4u, &v);
+   assert(v.coverage_exact);
+
+   /* A model whose texels are exchanged names the wrong dword at every
+    * interior center, which the admitted-set form cannot see.
+    */
+   uint32_t swapped[2] = { texel[1], texel[0] };
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &shape, NULL, 0, split_expectation, swapped, exterior, pixels,
+      dwords * 4u, &v);
+   assert(!v.coverage_exact && v.mismatch_pixels == 1152);
+
+   /* One interior pixel taking the other half's texel fails the
+    * predicted form alone.
+    */
+   pixels[20 * pitch + 32] = texel[1];
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &shape, NULL, 0, split_expectation, texel, exterior, pixels,
+      dwords * 4u, &v);
+   assert(!v.coverage_exact && v.mismatch_pixels == 1);
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, texel, 2, exterior,
+                                            pixels, dwords * 4u, &v);
+   assert(v.coverage_exact);
+
+   free(pixels);
+}
+
 int
 main(void)
 {
@@ -2068,6 +2168,7 @@ main(void)
    test_render_shape_deviates_per_parameter();
    test_render_shape_oracle_calibration();
    test_coverage_oracle_calibration();
+   test_coverage_oracle_predicted_calibration();
    test_pack_unorm8_dword();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
