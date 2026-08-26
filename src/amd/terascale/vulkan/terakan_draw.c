@@ -25,6 +25,7 @@
 #include "terakan_profile.h"
 #include "terakan_instance.h"
 #include "terakan_device.h"
+#include "terakan_draw_indirect.h"
 
 #include "terakan_barrier.h"
 #include "terakan_buffer.h"
@@ -525,7 +526,8 @@ terakan_emit_copy_dw_mem_to_register(struct terakan_gfx_command_writer * const c
 
 static void
 terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const command_writer,
-                                 uint64_t const buffer_offset,
+                                 uint64_t const buffer_bo_offset,
+                                 uint64_t const command_buffer_offset,
                                  uint64_t const buffer_size,
                                  uint32_t const drawCount, uint32_t const stride,
                                  struct terakan_bo * const bo, bool const indexed)
@@ -548,23 +550,21 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
     * to the draw when the Vulkan synchronization chain makes them visible
     * to the command processor. */
 
-   for (uint32_t i = 0; i < drawCount; i++) {
-      uint64_t const draw_data_offset = buffer_offset + (uint64_t)i * stride;
-
-      /* Kernel CS validator (radeon/evergreen_cs.c::evergreen_packet3_check
-       * case PACKET3_DRAW_INDIRECT) gates each draw on
-       * `data_offset + struct_size <= radeon_bo_size(reloc->robj)`.  Skip
-       * any iteration that would overflow rather than letting the
-       * kernel reject the whole submission. */
-      if (unlikely(draw_data_offset + draw_struct_size > buffer_size ||
-                   draw_data_offset > UINT32_MAX)) {
+   for (uint32_t draw_index = 0; draw_index < drawCount; ++draw_index) {
+      struct terakan_draw_indirect_command_offsets draw_offsets;
+      /* Vulkan bounds cover the buffer-relative command range.  Radeon
+       * SET_BASE relocates the BO base, so the packet's 32-bit data_offset
+       * also includes the buffer's VkBindBufferMemoryInfo::memoryOffset. */
+      if (unlikely(!terakan_draw_indirect_command_offsets(
+             buffer_bo_offset, command_buffer_offset, buffer_size,
+             draw_index, stride, draw_struct_size, &draw_offsets))) {
          continue;
       }
 
       uint64_t const vertex_offset_field_offset =
-         draw_data_offset + sizeof(uint32_t) * (indexed ? 3u : 2u);
+         draw_offsets.buffer + sizeof(uint32_t) * (indexed ? 3u : 2u);
       uint64_t const instance_offset_field_offset =
-         draw_data_offset + sizeof(uint32_t) * (indexed ? 4u : 3u);
+         draw_offsets.buffer + sizeof(uint32_t) * (indexed ? 4u : 3u);
 
       /* PM4 payload per draw before relocation records (19 dwords):
        *   COPY_DW indirect vertex offset -> VGT_INDX_OFFSET     : 6 dwords
@@ -583,10 +583,10 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
       }
 
       packet = terakan_emit_copy_dw_mem_to_register(
-         command_writer, packet, bo, bo->va + vertex_offset_field_offset,
+         command_writer, packet, bo, bo->va + buffer_bo_offset + vertex_offset_field_offset,
          R_028408_VGT_INDX_OFFSET);
       packet = terakan_emit_copy_dw_mem_to_register(
-         command_writer, packet, bo, bo->va + instance_offset_field_offset,
+         command_writer, packet, bo, bo->va + buffer_bo_offset + instance_offset_field_offset,
          R_03CFF4_SQ_VTX_START_INST_LOC);
 
       *packet++ = PKT3(EG_PKT3_SET_BASE, 2, 0);
@@ -608,7 +608,7 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
             bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
 
       *packet++ = PKT3(draw_opcode, 1, 0);
-      *packet++ = (uint32_t)draw_data_offset; /* bytes from BO base to args */
+      *packet++ = draw_offsets.bo;
       *packet++ = S_0287F0_SOURCE_SELECT(source_select);
 
       terakan_gfx_command_writer_emit_done(command_writer, packet);
@@ -641,9 +641,9 @@ terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
    struct terakan_gfx_command_writer * const command_writer = cmd->command_writer.gfx;
    struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
 
-   /* SET_BASE registers the BO base via reloc; the application offset
-    * + per-draw stride go into DRAW_INDIRECT's data_offset field. */
    struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
+   assert(buffer->va >= bo->va);
+   uint64_t const buffer_bo_offset = buffer->va - bo->va;
 
    /* VK_KHR_multiview view-loop expansion for indirect draws.  When
     * view_mask != 0 the full multi-draw batch (drawCount packets)
@@ -656,13 +656,13 @@ terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
          view_mask &= view_mask - 1;
          terakan_set_view_index_push_constant(command_writer, view_idx);
          terakan_set_view_attachment_layer(command_writer, view_idx);
-         terakan_emit_draw_indirect_batch(command_writer, offset,
+         terakan_emit_draw_indirect_batch(command_writer, buffer_bo_offset, offset,
                                           buffer->vk.size,
                                           drawCount, stride, bo, false);
       }
    } else {
       terakan_set_view_index_push_constant(command_writer, 0);
-      terakan_emit_draw_indirect_batch(command_writer, offset,
+      terakan_emit_draw_indirect_batch(command_writer, buffer_bo_offset, offset,
                                        buffer->vk.size,
                                        drawCount, stride, bo, false);
    }
@@ -685,6 +685,8 @@ terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
    struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
 
    struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
+   assert(buffer->va >= bo->va);
+   uint64_t const buffer_bo_offset = buffer->va - bo->va;
 
    /* VK_KHR_multiview view-loop expansion for indexed indirect draws.
     * Symmetric to terakan_CmdDrawIndirect; the drawCount-loop is
@@ -696,13 +698,13 @@ terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
          view_mask &= view_mask - 1;
          terakan_set_view_index_push_constant(command_writer, view_idx);
          terakan_set_view_attachment_layer(command_writer, view_idx);
-         terakan_emit_draw_indirect_batch(command_writer, offset,
+         terakan_emit_draw_indirect_batch(command_writer, buffer_bo_offset, offset,
                                           buffer->vk.size,
                                           drawCount, stride, bo, true);
       }
    } else {
       terakan_set_view_index_push_constant(command_writer, 0);
-      terakan_emit_draw_indirect_batch(command_writer, offset,
+      terakan_emit_draw_indirect_batch(command_writer, buffer_bo_offset, offset,
                                        buffer->vk.size,
                                        drawCount, stride, bo, true);
    }
