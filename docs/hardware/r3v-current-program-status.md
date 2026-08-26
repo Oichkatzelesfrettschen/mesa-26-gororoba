@@ -70,7 +70,7 @@ hazard:
 | 11 | wsi | display | silicon | open |
 
 Counts read Pass/NotSupported/Fail. Every Fail is classified against
-`r3v_conformance_nonpass_ledger.tsv` (19 rows); an unclassified row
+`r3v_conformance_nonpass_ledger.tsv` (20 rows); an unclassified row
 refuses decision grade. The machine-readable frontier over the 19
 slices -- counts, hazard, evidence status, blocking non-pass classes
 joined to their ledger rows, and the next admitting mechanism -- is
@@ -317,7 +317,9 @@ P1 (host-model rungs that move classified rows without a new gate):
   silicon (rungs 1-3 above); the residual walls are the withheld
   storage/all-usage image shapes at `vkCreateImage` (24 cases) and the
   render pipelines outside the qualified draw subset at
-  `vkCreateGraphicsPipelines` (52 cases);
+  `vkCreateGraphicsPipelines` (52 cases).  The layered and 1D admission
+  (rung 5) left this family at its 28 Pass and moved 36
+  `object_management` cases instead;
 - `driver_defect_open` (17 command-slice cases) per its ledger rows;
 - T10.8, the full-corpus target run, waits on the slices above; the
   eight unrun slices then follow partition order;
@@ -392,13 +394,84 @@ above is rung zero; the ladder after it runs in this order:
    the 12-layer `img2D` and destroy it without sampling a layer -- so
    admitting the shape to move them would advertise a layered sampled
    image the TX block programs no route for, which is the fabricated
-   capability the ledger's first row refuses.  The rung opens on an
-   executing layered route: a cell whose TX program addresses a chosen
-   layer, with its own silicon receipt, and the creation admission
-   follows that route rather than preceding it;
-6. the native 2x and 4x MSAA path before any sample-count limit rises;
+   capability the ledger's first row refuses.  The rung opened on the
+   executing layered route: a view selects one layer and its stride
+   joins the bind offset in the `TX_OFFSET_0` and `RB3D_COLOROFFSET0`
+   payloads the sampling and render cells already carry, so creation
+   admits `arrayLayers` to the reported `maxImageArrayLayers`,
+   `VK_IMAGE_TYPE_1D` as the height-one member of the layout, and the
+   sampled bit beside the color-attachment bit over the stricter
+   64-byte row pitch both routes read.  The host-model receipt is the
+   submit-order arm `sampled-layer-armed`, whose recorded IB for a view
+   selecting the last of three texture layers byte-matches the offline
+   cell emitted at that layer's stride while the layer-zero arm still
+   matches offset zero.  The rung moves 36 `object_management` cases --
+   `image_1d`, `image_2d`, `image_view_1d`, `image_view_2d` across nine
+   parent groups, the group reaching 286 Pass from 250 -- and the
+   `pipeline_barrier` family re-measures unchanged (bundle
+   steinmarder-r300
+   `r3v-layered-1d-image-conformance-movement-host-model`, seals
+   `ef21bc535a06` and `48a5de9734a0`).  Eighteen array-view cases moved
+   their refusal from `vkCreateImage` to `vkCreateImageView`, which the
+   ledger row `layered_view_type_route_absent` now carries.  Open inside
+   the rung: the attended arms `layer`, `row1`, and `wide`
+   (`r3v_native_sampled_arms.h`) hold the silicon receipt for a nonzero
+   `TX_OFFSET_0`, the height-one texture, and a 256x256 texture; the
+   volume type and its view (18 cases) need a TX volume route, the
+   cube-compatible creation flag and cube view (9 cases) need a cube
+   route, and the array view types (18 cases) index a layer from the
+   shader coordinate, which no TX program reaches;
+6. the native 2x and 4x MSAA path before any sample-count limit rises.
+   The rung decomposes into three mechanisms, and the register and
+   kernel contracts are read.  The multisample color surface lives in
+   VRAM (`r300_texture_initial_domain`, r300_texture.c) over a
+   sample-expanded allocation (`layer_size *= nr_samples`,
+   r300_texture_desc.c), while the render family's load-op clear is a
+   host fill of a CPU-mapped type-0 allocation, so an MSAA target needs
+   a device-local render family and a clear the command stream emits
+   rather than the host.  `r100_cs_track_check` sizes the color buffer
+   as `pitch * cpp * maxy` with no sample term, so the kernel validates
+   nothing about the sample expansion and the footprint proof lives
+   entirely in the driver.  The resolve is `RB3D_AARESOLVE_OFFSET`,
+   which takes a relocation and carries a 32-byte-aligned destination
+   offset, `RB3D_AARESOLVE_PITCH`, a pixel pitch in bits 1 through 13
+   the kernel masks to `0x3ffe`, and
+   `RB3D_AARESOLVE_CTL.AARESOLVE_MODE`, with the destination format
+   inherited from color buffer 0.  Per the AMD R3xx 3D register
+   document the resolve destination carries a pitch and an offset and
+   no tiling field, where `RB3D_COLORPITCH0` carries `COLORTILE` and
+   `COLORMICROTILE` beside its pitch; `r300_is_simple_msaa_resolve`
+   nonetheless takes its fast path only for a tiled destination, so
+   whether a linear resolve destination receives linearly ordered bytes
+   is an open silicon question.  Its falsifier: a resolve into a linear
+   GTT destination whose oracle reads the destination's interior at the
+   predicted dword, refuted by a tiled swizzle of the same bytes.  The
+   rung opens on the device-local render family with a command-stream
+   clear; a narrower first arm leaves the multisample buffer at
+   `VK_ATTACHMENT_LOAD_OP_DONT_CARE` and oracles the resolve
+   destination's interior alone, which is a named scope cut -- it
+   surrenders the sentinel corner that proves the device wrote inside
+   the extent;
 7. composed render and sampling surfaces before any core image or
-   framebuffer limit rises.
+   framebuffer limit rises.  The rung depends on the usage union in
+   rung 5 rather than on rung 6, so it runs when its own mechanisms
+   land and does not wait behind the MSAA entry condition.  Two of its
+   three mechanisms already execute: the cell's own prologue and
+   epilogue carry the coherency edge, since the sampled cell opens with
+   `TX_INVALTAGS` before `TX_ENABLE` and every cell closes with
+   `RB3D_DSTCACHE_CTLSTAT` flush-dirty plus free-3D-tags, so a render
+   cell followed by a sampling cell in one indirect buffer publishes
+   the color writes before the texture fetch reads them; and the
+   role-based composer (`r300_pm4_compose.h`) already binds several
+   independently emitted fragments into one submission on RS482
+   silicon through the fetched producer route.  What the rung needs is
+   the composed cell itself -- a stream that renders one target,
+   publishes it, and samples it into a second -- with a relocation list
+   naming the first target twice, once as a color write and once as a
+   texture read, since use-site identity is what the kernel validates;
+   and after that receipt, a recording contract that admits a second
+   render pass and a second deferred draw per command buffer, which the
+   one-pass bound refuses today (`r3v_CmdBeginRenderPass`).
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated
