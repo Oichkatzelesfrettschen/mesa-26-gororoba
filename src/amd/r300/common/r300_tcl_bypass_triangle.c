@@ -1141,6 +1141,57 @@ r300_tcl_bypass_triangle_coverage_oracle_predicted(
 }
 
 void
+r300_tcl_bypass_triangle_interior_oracle(
+   const struct r300_triangle_render_shape *shape,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_interior_verdict *verdict)
+{
+   *verdict = (struct r300_triangle_interior_verdict){ 0 };
+   if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
+       interior_dword_count == 0 ||
+       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+      return;
+   /* The rendered rows alone are read, so the footprint stops at the
+    * render extent; the canary row this verdict leaves unjudged stays
+    * outside its bound.
+    */
+   const uint32_t width = shape->width, height = shape->height;
+   const uint32_t pitch = shape->pitch_pixels;
+   const uint64_t required_bytes = (uint64_t)shape->target_offset +
+                                   (uint64_t)pitch * height * sizeof(uint32_t);
+   if (size_bytes < required_bytes)
+      return;
+
+   const struct triangle_geometry g = triangle_geometry_at(width, height);
+   const uint32_t *rows = pixels + shape->target_offset / 4u;
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = 0; x < width; x++) {
+         const int expected =
+            triangle_center_class(&g, (float)x + 0.5f, (float)y + 0.5f);
+         if (expected < 0) {
+            verdict->ambiguous_pixels++;
+            continue;
+         }
+         if (expected != 1)
+            continue;
+         verdict->analytic_pixels++;
+         const uint32_t observed = rows[y * pitch + x];
+         for (uint32_t i = 0; i < interior_dword_count; i++) {
+            if (observed == interior_dwords[i]) {
+               verdict->interior_pixels++;
+               break;
+            }
+         }
+      }
+   }
+   verdict->interior_exact = verdict->analytic_pixels != 0 &&
+                             verdict->ambiguous_pixels == 0 &&
+                             verdict->interior_pixels ==
+                                verdict->analytic_pixels;
+}
+
+void
 r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
                                 struct r300_triangle_oracle_verdict *verdict)
 {
