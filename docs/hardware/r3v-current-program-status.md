@@ -367,9 +367,14 @@ above is rung zero; the ladder after it runs in this order:
    order rides the swapped TX_FORMAT1 select set and rendered the
    predicted centroid on RS482 with the byte-X falsifier absent (cell
    blake3 `640c1336`, bundle steinmarder-r300
-   `r3v-native-sampled-bgra-lane-order-silicon-pass-rs482`); further
-   shapes (extents past the reference texture geometry, non-uniform
-   content addressing) stay open;
+   `r3v-native-sampled-bgra-lane-order-silicon-pass-rs482`), and a
+   split-row texture separates an addressed fetch from a constant one:
+   two oracle pixels read the texels at texel rows 6 and 11 as predicted
+   on RS482, so the TX unit addresses rows from the varying and the T
+   axis runs in texture order (bundle steinmarder-r300
+   `r3v-native-sampled-split-row-addressing-silicon-pass-rs482`);
+   extents past the reference texture geometry and the filter and wrap
+   modes outside nearest plus clamp-to-edge stay open;
 5. image types, arrays, cube, depth, and larger render extents, each a
    separate mechanism with its own receipt;
 6. the native 2x and 4x MSAA path before any sample-count limit rises;
