@@ -387,7 +387,15 @@ above is rung zero; the ladder after it runs in this order:
    wrap modes outside nearest plus clamp-to-edge are sampler state
    rather than an image shape and take their own rung position;
 5. image types, arrays, cube, depth, and larger render extents, each a
-   separate mechanism with its own receipt;
+   separate mechanism with its own receipt.  The `object_management`
+   population that needs this rung is creation-only -- the cases build
+   the 12-layer `img2D` and destroy it without sampling a layer -- so
+   admitting the shape to move them would advertise a layered sampled
+   image the TX block programs no route for, which is the fabricated
+   capability the ledger's first row refuses.  The rung opens on an
+   executing layered route: a cell whose TX program addresses a chosen
+   layer, with its own silicon receipt, and the creation admission
+   follows that route rather than preceding it;
 6. the native 2x and 4x MSAA path before any sample-count limit rises;
 7. composed render and sampling surfaces before any core image or
    framebuffer limit rises.
