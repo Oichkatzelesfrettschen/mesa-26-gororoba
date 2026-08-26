@@ -363,7 +363,13 @@ above is rung zero; the ladder after it runs in this order:
    `rs482-tx-format1-channel-selects-default-to-x`), fixed by the
    identity-select composition;
 4. sampled-image shapes, admitted only as the executing routes in rungs 2
-   and 3 complete;
+   and 3 complete -- first shape closed: the B8G8R8A8_UNORM sampled lane
+   order rides the swapped TX_FORMAT1 select set and rendered the
+   predicted centroid on RS482 with the byte-X falsifier absent (cell
+   blake3 `640c1336`, bundle steinmarder-r300
+   `r3v-native-sampled-bgra-lane-order-silicon-pass-rs482`); further
+   shapes (extents past the reference texture geometry, non-uniform
+   content addressing) stay open;
 5. image types, arrays, cube, depth, and larger render extents, each a
    separate mechanism with its own receipt;
 6. the native 2x and 4x MSAA path before any sample-count limit rises;
