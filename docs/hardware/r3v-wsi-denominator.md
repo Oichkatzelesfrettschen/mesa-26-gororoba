@@ -108,15 +108,19 @@ driver's own entry points.
 | `vkCreateImage` on a color-attachment image outside 64x64 | `r3v_native_image.c` `r3v_CreateImage`, lines 73-78 | refused (`R3V_NATIVE_REFUSAL_RESULT`) | `R3V_NATIVE_TARGET_WIDTH`/`R3V_NATIVE_TARGET_HEIGHT` are `64` (`r3v_native.h` lines 787-788) |
 | `vkCreateImage` on a transfer image outside 2048 per axis | `r3v_native_image.c` lines 81-85 | refused | `R3V_NATIVE_TRANSFER_DIMENSION_MAX` is `2048` (`r3v_native.h` line 815) |
 | `vkCreateImage` with mixed color-attachment and transfer usage | `r3v_native_image.c` lines 73-90 | refused | color-attachment branch requires `usage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` exactly; the transfer branch requires `usage & ~(TRANSFER_SRC\|TRANSFER_DST) == 0`; every other usage combination falls to the `else` refusal at line 90 |
-| `vkCreateImage` non-2D, non-`LINEAR`, non-exclusive, or with an unrecognized `flags` bit | `r3v_native_image.c` lines 59-67 | refused | same function, first guard clause; `VK_IMAGE_CREATE_ALIAS_BIT` is the one admitted flag bit, and only the transfer branch keeps an aliased image (the color-attachment branch re-refuses any nonzero `flags` at line 74) |
+| `vkCreateImage` on `VK_IMAGE_TYPE_3D`, a multi-mip or multisample image, a non-exclusive image, or one carrying an unrecognized `flags` bit | `r3v_native_image.c` lines 70-82 | refused | same function, first guard clause; `VK_IMAGE_TYPE_1D` is admitted as the height-one member of the linear layout and both `VK_IMAGE_TILING_LINEAR` and `VK_IMAGE_TILING_OPTIMAL` are admitted (line 79-80), so tiling and the 1D type carry no refusal here; `VK_IMAGE_CREATE_ALIAS_BIT` is the one admitted flag bit, and only the transfer branch keeps an aliased image (the color-attachment branch re-refuses any nonzero `flags`) |
 | sync export (external semaphore/fence) | `r3v_physical_device.h` lines 57-61 (`sync_types[3]`) | absent | comment: "r3v uses a CPU-side binary sync; the radeon DRM driver does not support DRM_CAP_SYNCOBJ"; two slots only, no external sync type |
 
 A swapchain-shaped presentable image (any extent an application picks, a
-transfer-capable usage set for the present blit, potentially non-`LINEAR`
-tiling for scanout) is refused by `r3v_CreateImage`'s own admission gate
-before any WSI-specific callback executes. The refusal is the same gate that
-protects the qualified render-target and transfer families from every other
-image shape; it carries no separate WSI-aware exception.
+transfer-capable usage set for the present blit) is refused by
+`r3v_CreateImage`'s own admission gate before any WSI-specific callback
+executes. The refusal rests on the extent ceiling and the usage vocabulary,
+which the render and transfer branches each fix; `VK_IMAGE_TILING_OPTIMAL`
+is admitted over both families as the same executing linear span under the
+opaque-layout contract, so scanout tiling alone reaches no refusal. The gate
+is the same one that protects the qualified render-target and transfer
+families from every other image shape; it carries no separate WSI-aware
+exception.
 
 ## Per-host-class dEQP applicability
 
@@ -224,9 +228,21 @@ because none of the tracked `if`-blocks names both guard tokens any more.
 The audit catches a dropped guard and a misplaced unconditional test by the
 same line-range mechanism, and it passes again once the guard is restored.
 
+## Superseded claims
+
+Two claims in the driver-callback table rested on admission gates that have
+since widened, and both are corrected above. The table read `non-2D` and
+`non-LINEAR` as refusals; `r3v_CreateImage` now admits `VK_IMAGE_TYPE_1D` as
+the height-one member of the linear layout and admits
+`VK_IMAGE_TILING_OPTIMAL` over both the render and transfer families
+(`r3v_native_image.c` lines 70-82). The swapchain-shaped refusal this
+document pins therefore rests on extent and usage rather than on tiling,
+which is the shape `check_optimal_tiling` in
+`tests/r3v_native_transfer_ops_test.c` already asserts.
+
 ## Dropped claims
 
-None. Every claim in this document was checked against the tree at the
+None. Every remaining claim in this document was checked against the tree at the
 commit this revision was written against
 (`git log -1 --format=%H -- docs/hardware/r3v-wsi-denominator.md`): the
 extension tables, the `nm`/`ldd` symbol evidence, the `r3v_CreateImage`
