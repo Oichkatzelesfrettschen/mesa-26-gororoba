@@ -412,8 +412,7 @@ def verify_merged_evidence(
     )
     if candidate_ancestry.returncode != 0:
         raise FrontierError(
-            f"candidate {candidate_commit} does not contain merged ref "
-            f"{main_commit}"
+            f"candidate {candidate_commit} does not contain merged ref {main_commit}"
         )
     target_identities: dict[tuple[str, EvidenceTarget], str] = {}
     checked_commits: set[str] = set()
@@ -466,6 +465,28 @@ def verify_merged_evidence(
                     f"{thread_id}: evidence owner {target.declaration} changed "
                     f"between {evidence_commit} and candidate {candidate_commit}"
                 )
+
+
+def verify_clean_candidate(repository_root: Path, candidate_ref: str) -> None:
+    """Require candidate evidence to identify the clean checked-out commit."""
+    candidate_commit = run_git(
+        repository_root, "rev-parse", "--verify", f"{candidate_ref}^{{commit}}"
+    )
+    head_commit = run_git(repository_root, "rev-parse", "--verify", "HEAD^{commit}")
+    if candidate_commit != head_commit:
+        raise FrontierError(
+            f"candidate {candidate_commit} does not identify checked-out HEAD "
+            f"{head_commit}"
+        )
+    status = run_git(
+        repository_root,
+        "status",
+        "--porcelain=v2",
+        "--untracked-files=all",
+        strip=False,
+    )
+    if status:
+        raise FrontierError("candidate worktree is not clean at the declared SHA")
 
 
 def validate_live_payload(
@@ -549,7 +570,10 @@ def validate_files(
     main_ref: str,
     candidate_ref: str,
     live: bool,
+    require_clean_candidate: bool = False,
 ) -> None:
+    if require_clean_candidate or candidate_ref == "HEAD":
+        verify_clean_candidate(repository_root, candidate_ref)
     frontier_rows = read_tsv(frontier_path, FRONTIER_FIELDS)
     ledger_rows = read_tsv(ledger_path, LEDGER_FIELDS)
     frontier_by_thread = validate_frontier(frontier_rows, batch_size)
@@ -575,6 +599,7 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--main-ref", default="origin/main")
     parser.add_argument("--candidate-ref", default="HEAD")
+    parser.add_argument("--require-clean-candidate", action="store_true")
     parser.add_argument("--live", action="store_true")
     arguments = parser.parse_args()
     try:
@@ -588,6 +613,7 @@ def main() -> int:
             arguments.main_ref,
             arguments.candidate_ref,
             arguments.live,
+            arguments.require_clean_candidate,
         )
     except (FrontierError, OSError) as error:
         print(f"FAIL: {error}", file=sys.stderr)

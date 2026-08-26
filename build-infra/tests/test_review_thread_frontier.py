@@ -230,6 +230,29 @@ def test_merged_evidence_accepts_unrelated_future_commit(tmp_path: Path) -> None
     )
 
 
+def test_clean_candidate_accepts_committed_head(tmp_path: Path) -> None:
+    initialize_evidence_repository(tmp_path)
+    review_thread_frontier.verify_clean_candidate(tmp_path, "HEAD")
+
+
+def test_clean_candidate_rejects_uncommitted_change(tmp_path: Path) -> None:
+    initialize_evidence_repository(tmp_path)
+    (tmp_path / "evidence.txt").write_text("uncommitted mechanism\n", encoding="utf-8")
+    with pytest.raises(review_thread_frontier.FrontierError, match="not clean"):
+        review_thread_frontier.verify_clean_candidate(tmp_path, "HEAD")
+
+
+def test_clean_candidate_rejects_different_commit(tmp_path: Path) -> None:
+    evidence_commit = initialize_evidence_repository(tmp_path)
+    (tmp_path / "later.txt").write_text("later mechanism\n", encoding="utf-8")
+    run_git(tmp_path, "add", "later.txt")
+    run_git(tmp_path, "commit", "-m", "add later mechanism")
+    with pytest.raises(
+        review_thread_frontier.FrontierError, match="does not identify checked-out HEAD"
+    ):
+        review_thread_frontier.verify_clean_candidate(tmp_path, evidence_commit)
+
+
 def test_evidence_slice_accepts_candidate_change_outside_range(tmp_path: Path) -> None:
     evidence_commit = initialize_evidence_repository(tmp_path)
     row = evidence_row(evidence_commit)
