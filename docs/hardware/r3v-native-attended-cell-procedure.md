@@ -338,6 +338,31 @@ those cells carry fewer relocation sites and no texture fetch, so they
 bound the regime rather than this cell, and the control run measures
 this one.
 
+The arming mechanism is `r3v_native_watchdog_bracket`, a co-process that
+holds the privilege the counter needs while the ICD, the render node,
+and the evidence writes stay with the invoking user. The runner names it
+through `R3V_NATIVE_WATCHDOG_BRACKET_COMMAND`, an absolute path with
+optional single-space-separated arguments that the runner execs
+directly, so no shell parses the value:
+
+```sh
+export R3V_NATIVE_WATCHDOG_BRACKET_COMMAND="/usr/bin/sudo -n \
+  <build-dir>/src/amd/r300/vulkan/r3v_native_watchdog_bracket"
+```
+
+The runner opens the bracket in its preparation phase and proves one arm
+and one disarm there, because `r3v_native_arming_disarm` writes
+`attempt.token` ahead of the trace: an arm that first fails inside
+`vkQueueSubmit` refuses the submission with the attempt already spent.
+The calibration reports its round trip, which measures what the
+co-process adds to the guarded interval.
+
+The third clause of the gate takes `R3V_NATIVE_WATCHDOG_WAIVER_ACCEPTED=1`.
+That value is the operator's explicit waiver of automatic recovery for
+one submission, and it commits the operator to a manual power cycle; the
+runner announces it and proceeds. Without either the bracket or the
+waiver the runner refuses before it creates the instance.
+
 Record these fields:
 
 ```text

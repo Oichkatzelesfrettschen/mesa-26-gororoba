@@ -859,13 +859,25 @@ r3v_native_attended_sampled = executable(
 # the sample half's texture and both targets take one coverage verdict.
 r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
-  files('tests/r3v_native_attended_composed.c'),
+  files('tests/r3v_native_attended_composed.c',
+        'tests/r3v_native_watchdog_client.c'),
   include_directories : [r3v_native_inc, include_directories('.')],
   dependencies : r3v_native_deps,
   link_whole : [libr3v_native_impl],
   link_with : [libradeon_drm_vk],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
+# SB600 TCO watchdog bracket co-process: holds the privilege the
+# attended submit gate's watchdog needs, so the runner arms across
+# DRM_IOCTL_RADEON_CS through fence completion while the ICD and the
+# evidence writes stay unprivileged.
+r3v_native_watchdog_bracket = executable(
+  'r3v_native_watchdog_bracket',
+  files('tests/r3v_native_watchdog_bracket.c'),
   build_by_default : true,
   install : false,
 )
