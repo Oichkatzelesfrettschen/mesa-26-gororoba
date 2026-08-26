@@ -15,18 +15,19 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   frontier and its 50-row post-resolution ledger.
 - `review-thread-frontiers/merged-pr93-pr161/` preserves the closed second-batch
   raw denominator and its chronological proof.
-- `review-thread-frontiers/merged-thread-frontier-92b67f719e7b/` is the active
+- `review-thread-frontiers/merged-thread-frontier-92b67f719e7b/` preserves the
   third-batch raw denominator.  Its manifest binds eleven request/response
   pages, exact query text, default-branch identity, every selected comment,
   hashes, and the chronological stop proof.
 - `review-thread-classifications/merged-thread-frontier-92b67f719e7b/` owns the
-  third batch's 50-row assessment, generated action frontier, and resolution
+  third batch's 50-row assessment, immutable pre-resolution frontier,
+  SHA-256-bound mutation journal, generated terminal frontier, and resolution
   ledger.  Keeping these paths batch-scoped preserves the second batch's
   terminal global views without overwriting history.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
-  views.  They retain the closed second batch until the third-batch source
-  audit produces its action rows.
+  views of the closed second batch.  The third batch's terminal views remain in
+  its batch-scoped classification directory.
 - `../scripts/review_thread_frontier.py` validates the frontier and ledger
   offline.  Its unit tests calibrate duplicate identity, ordering, false merged
   evidence, owner-path drift, missing closure rows, live GraphQL identity, and
@@ -171,7 +172,7 @@ mutation, postflight, journal replay, and deterministic ledger generation.
 Its journal binds the immutable pre-resolution frontier hash so later closed
 state cannot rewrite the mutation denominator.
 
-## Classified third-batch frontier
+## Closed classified third-batch frontier
 
 `review-thread-classifications/merged-thread-frontier-92b67f719e7b/assessments.tsv`
 classifies the exact third-batch denominator against merged main
@@ -196,6 +197,14 @@ install.dat parsing, replaced profiles, a relocated build area, and replaced
 package activation contracts.  Static source and Git history establish these
 code-state dispositions; runtime, conformance, performance, and silicon claims
 remain outside this closure.
+
+All 50 exact thread IDs were resolved after PR 1877 merged.  The resumable
+mutation journal records an ordered resolution prefix after every successful
+mutation and becomes complete only after the all-ID postflight.  The run began
+at `2026-08-26T21:33:23Z`; the final live verification completed at
+`2026-08-26T21:34:09Z`.  The terminal frontier and ledger contain 50 closed,
+re-verified rows.  The batch registry remains
+`resolved-pending-ledger-merge` until those artifacts merge to `main`.
 
 ## Verification
 
