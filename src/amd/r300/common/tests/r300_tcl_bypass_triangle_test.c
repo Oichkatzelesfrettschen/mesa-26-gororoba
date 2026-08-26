@@ -1712,10 +1712,105 @@ test_sampled_cell_stream_and_refusals(void)
    r300_fragment_binary_finish(&fs);
 }
 
+/* The dword index of the first or last type-0 write to reg, or -1. */
+static int
+find_reg_write(const uint32_t *ib, uint32_t count, uint32_t reg, bool last)
+{
+   int found = -1;
+   uint32_t i = 0;
+   while (i < count) {
+      const uint32_t header = ib[i];
+      const uint32_t payload = ((header >> 16) & 0x3fffu) + 1u;
+      if ((header >> 30) == 0 && ((header & 0x7fffu) << 2) == reg) {
+         found = (int)i;
+         if (!last)
+            return found;
+      }
+      i += 1 + payload;
+   }
+   return found;
+}
+
+/* The composed cell: the render half's stream followed by the sample
+ * half's, five relocation sites over five slots, and the coherency edge
+ * between them -- the render half's destination-cache flush precedes the
+ * sample half's texture-tag invalidate, so the color writes publish
+ * before the fetch reads them.
+ */
+static void
+test_composed_render_sample_cell(void)
+{
+   struct r300_triangle_composed_render_sample composed;
+   r300_tcl_bypass_triangle_render_shape_reference(&composed.render);
+   r300_tcl_bypass_triangle_render_shape_reference(&composed.sample);
+   composed.sample.target_offset = 65536;
+
+   struct r300_tcl_bypass_triangle_ib ib;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(
+             &composed, &ib) == 0);
+
+   struct r300_tcl_bypass_triangle_ib render_half;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&composed.render,
+                                                     &render_half) == 0);
+   assert(ib.ib_size_dwords > render_half.ib_size_dwords);
+   assert(memcmp(ib.ib, render_half.ib,
+                 render_half.ib_size_dwords * sizeof(uint32_t)) == 0);
+
+   assert(ib.reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT);
+   uint32_t slot_mask = 0;
+   for (uint32_t i = 0; i < ib.reloc_site_count; i++) {
+      slot_mask |= 1u << ib.reloc_sites[i].slot;
+      assert(ib.reloc_sites[i].ib_index < ib.ib_size_dwords);
+   }
+   assert(slot_mask == ((1u << R300_TRIANGLE_SLOT_VERTEX) |
+                        (1u << R300_TRIANGLE_SLOT_COLOR) |
+                        (1u << R300_TRIANGLE_SLOT_TEXTURE) |
+                        (1u << R300_TRIANGLE_SLOT_COMPOSED_VERTEX) |
+                        (1u << R300_TRIANGLE_SLOT_COMPOSED_COLOR)));
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&ib) == 0);
+
+   const int flush = find_reg_write(ib.ib, render_half.ib_size_dwords,
+                                    R300_RB3D_DSTCACHE_CTLSTAT, true);
+   /* The render half's own state prefix invalidates the texture tags
+    * too, so the edge reads the sample half's first invalidate: the
+    * search starts at the half boundary, which is a packet boundary.
+    */
+   const int invalidate =
+      find_reg_write(ib.ib + render_half.ib_size_dwords,
+                     ib.ib_size_dwords - render_half.ib_size_dwords,
+                     R300_TX_INVALTAGS, false);
+   assert(flush >= 0 && invalidate >= 0);
+   assert((uint32_t)flush < render_half.ib_size_dwords);
+
+   /* The sample half reads the render half's target: its texture offset
+    * is that target's, so the two halves name one byte range.
+    */
+   const int tx_offset =
+      find_reg_write(ib.ib + render_half.ib_size_dwords,
+                     ib.ib_size_dwords - render_half.ib_size_dwords,
+                     R300_TX_OFFSET_0, false) +
+      (int)render_half.ib_size_dwords;
+   assert(tx_offset >= 0 &&
+          ib.ib[tx_offset + 1] == composed.render.target_offset);
+
+   r300_tcl_bypass_triangle_release(&render_half);
+   r300_tcl_bypass_triangle_release(&ib);
+
+   struct r300_triangle_composed_render_sample bad = composed;
+   bad.render.width = 0;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(&bad, &ib) ==
+          -EINVAL);
+   bad = composed;
+   bad.sample.pitch_pixels = 1;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(&bad, &ib) ==
+          -EINVAL);
+}
+
 int
 main(void)
 {
    test_sampled_cell_stream_and_refusals();
+   test_composed_render_sample_cell();
    test_family_emit_deviates_in_count_words_alone();
    test_contract_cell_size_and_digest_are_pinned();
    test_varying_cell_tuple_and_digest_are_pinned();

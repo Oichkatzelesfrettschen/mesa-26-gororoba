@@ -345,7 +345,8 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
     * of these resolves a BO into a position the stream does not reference.
     */
    if (ib->reloc_site_count != R300_TRIANGLE_RENDER_SLOT_COUNT &&
-       ib->reloc_site_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT)
+       ib->reloc_site_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT &&
+       ib->reloc_site_count != R300_TRIANGLE_COMPOSED_SLOT_COUNT)
       return -EINVAL;
 
    /* The uniqueness set below is one uint32_t of slot bits. */
@@ -388,10 +389,22 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
    };
+   /* The composed cell's render half runs first, so its two sites lead
+    * and the sample half's three follow on the composed slots.
+    */
+   static const uint32_t composed_slots[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_VERTEX,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COMPOSED_COLOR,
+      R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
+   };
    const uint32_t *expected_slots =
-      ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT
-         ? sampled_slots
-         : render_slots;
+      ib->reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT
+         ? composed_slots
+         : ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT
+              ? sampled_slots
+              : render_slots;
    for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
       if (ib->reloc_sites[i].slot != expected_slots[i])
          return -EINVAL;
@@ -1192,6 +1205,145 @@ r300_tcl_bypass_triangle_render_shape_emit(
    rc = r300_tcl_bypass_triangle_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+/* The US_OUT_FMT_0 word a shape's lane order names: the C*_SEL fields
+ * place the shader's components into the target's bytes.
+ */
+static uint32_t
+render_shape_out_fmt(const struct r300_triangle_render_shape *shape)
+{
+   return shape->lanes == R300_TRIANGLE_LANES_R8G8B8A8
+             ? (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_R | R300_C1_SEL_G |
+                R300_C2_SEL_B | R300_C3_SEL_A)
+             : (R300_US_OUT_FMT_C4_8 | R300_C0_SEL_B | R300_C1_SEL_G |
+                R300_C2_SEL_R | R300_C3_SEL_A);
+}
+
+/* Emits the composed cell's second pass: the sampled cell over the
+ * sample shape's target, reading the render shape's target as its
+ * texture.
+ */
+static int
+composed_sample_emit(const struct r300_triangle_composed_render_sample *c,
+                     struct r300_tcl_bypass_triangle_ib *out)
+{
+   struct r300_fragment_binary fs;
+   int rc = r300_tcl_bypass_triangle_sampled_fs(&fs);
+   if (rc != 0)
+      return rc;
+
+   struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
+      .width = c->sample.width,
+      .height = c->sample.height,
+      .min_vtx_index = 0,
+      .max_vtx_index = 3 * c->sample.triangle_count - 1,
+      .texture_enabled = true,
+   };
+   struct r300_first_draw_contract contract;
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
+   if (rc == 0)
+      rc = r300_first_draw_contract_set_us_out_fmt_0(
+         &contract, render_shape_out_fmt(&c->sample));
+   const uint32_t pitch_word =
+      r300_rb3d_colorpitch0_pack_argb8888(c->sample.pitch_pixels);
+   if (rc != 0 || pitch_word == 0) {
+      r300_fragment_binary_finish(&fs);
+      return rc != 0 ? rc : -EINVAL;
+   }
+
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_offset = c->sample.target_offset,
+      .color_pitch_format = pitch_word,
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+      .varying = true,
+      .sampled = true,
+      .texture_offset = c->render.target_offset,
+      .texture_width = c->render.width,
+      .texture_height = c->render.height,
+      .texture_pitch_texels = c->render.pitch_pixels,
+      .texture_lanes = c->render.lanes,
+      .triangle_count = c->sample.triangle_count,
+   };
+   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
+}
+
+int
+r300_tcl_bypass_triangle_composed_render_sample_emit(
+   const struct r300_triangle_composed_render_sample *composed,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   memset(out, 0, sizeof(*out));
+   if (composed == NULL ||
+       r300_tcl_bypass_triangle_render_shape_validate(&composed->render) !=
+          0 ||
+       r300_tcl_bypass_triangle_render_shape_validate(&composed->sample) != 0)
+      return -EINVAL;
+
+   struct r300_tcl_bypass_triangle_ib render_half;
+   int rc = r300_tcl_bypass_triangle_render_shape_emit(&composed->render,
+                                                       &render_half);
+   if (rc != 0)
+      return rc;
+   struct r300_tcl_bypass_triangle_ib sample_half;
+   rc = composed_sample_emit(composed, &sample_half);
+   if (rc != 0) {
+      r300_tcl_bypass_triangle_release(&render_half);
+      return rc;
+   }
+
+   const uint32_t dwords =
+      render_half.ib_size_dwords + sample_half.ib_size_dwords;
+   uint32_t *ib = calloc(dwords, sizeof(uint32_t));
+   if (ib == NULL) {
+      r300_tcl_bypass_triangle_release(&render_half);
+      r300_tcl_bypass_triangle_release(&sample_half);
+      return -ENOMEM;
+   }
+   memcpy(ib, render_half.ib,
+          render_half.ib_size_dwords * sizeof(uint32_t));
+   memcpy(ib + render_half.ib_size_dwords, sample_half.ib,
+          sample_half.ib_size_dwords * sizeof(uint32_t));
+
+   /* The render half keeps its slots.  The sample half's vertex and
+    * color sites take the composed slots, so each buffer object the
+    * submission binds carries one slot, while its texture site stays on
+    * the texture slot the transport resolves to the render half's
+    * target.
+    */
+   uint32_t site = 0;
+   for (uint32_t i = 0; i < render_half.reloc_site_count; i++)
+      out->reloc_sites[site++] = render_half.reloc_sites[i];
+   for (uint32_t i = 0; i < sample_half.reloc_site_count; i++) {
+      struct r300_tcl_bypass_triangle_reloc_site s = sample_half.reloc_sites[i];
+      s.ib_index += render_half.ib_size_dwords;
+      if (s.slot == R300_TRIANGLE_SLOT_VERTEX)
+         s.slot = R300_TRIANGLE_SLOT_COMPOSED_VERTEX;
+      else if (s.slot == R300_TRIANGLE_SLOT_COLOR)
+         s.slot = R300_TRIANGLE_SLOT_COMPOSED_COLOR;
+      /* The payload dword names the slot, so the remap rewrites the
+       * stream beside the site list. */
+      ib[s.ib_index] = R300_TRIANGLE_RELOC_PAYLOAD(s.slot);
+      out->reloc_sites[site++] = s;
+   }
+   out->reloc_site_count = site;
+   out->ib = ib;
+   out->ib_size_dwords = dwords;
+   out->owns_ib = true;
+
+   r300_tcl_bypass_triangle_release(&render_half);
+   r300_tcl_bypass_triangle_release(&sample_half);
+   if (site != R300_TRIANGLE_COMPOSED_SLOT_COUNT ||
+       r300_tcl_bypass_triangle_validate_reloc_sites(out) != 0) {
+      r300_tcl_bypass_triangle_release(out);
+      return -EINVAL;
+   }
+   return 0;
 }
 
 void
