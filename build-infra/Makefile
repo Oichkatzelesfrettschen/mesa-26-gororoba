@@ -153,6 +153,9 @@ export GOROROBA_HOSTENV_INPUT
 
 override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
 override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
+override REVIEW_THREAD_FRONTIER := $(CURDIR)/docs/merged-review-thread-action-frontier.tsv
+override REVIEW_THREAD_LEDGER := $(CURDIR)/docs/merged-review-thread-resolution-ledger.tsv
+override REVIEW_THREAD_FRONTIER_TOOL := $(CURDIR)/scripts/review_thread_frontier.py
 override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_TOPSRC_INPUT=$(call make_shell_quote,$(value GOROROBA_TOPSRC_INPUT)) \
 	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
@@ -383,6 +386,8 @@ probe_dir="$$(mktemp -d)" && [ -n "$$probe_dir" ] && [ -d "$$probe_dir" ]
 endef
 
 .PHONY: list source-root-check source-root-control-unit-test \
+        review-thread-frontier-check review-thread-frontier-live-check \
+        review-thread-frontier-unit-test \
         source-root-selection-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean clean-all distclean install \
@@ -490,6 +495,22 @@ driver-root-audit:
 	python3 $(CURDIR)/scripts/driver_root_audit.py --self-test
 	python3 $(CURDIR)/scripts/driver_root_audit.py --repo-root $(CURDIR)/..
 
+review-thread-frontier-check:
+	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+		--frontier $(REVIEW_THREAD_FRONTIER) \
+		--ledger $(REVIEW_THREAD_LEDGER) \
+		--batch-size 50 \
+		--repo-root $(CURDIR)/.. \
+		--main-ref origin/main \
+		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
+
+review-thread-frontier-live-check:
+	$(MAKE) review-thread-frontier-check REVIEW_THREAD_LIVE=1
+
+review-thread-frontier-unit-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		python3 -m pytest -q $(CURDIR)/tests/test_review_thread_frontier.py
+
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
 	@echo ""
@@ -502,6 +523,9 @@ help:
 	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
 	@echo "  driver-root-audit fail when an AMD Vulkan driver root or its subdir() entry drifts"
+	@echo "  review-thread-frontier-check validate finite closure rows and merged evidence"
+	@echo "  review-thread-frontier-live-check bind exact GraphQL IDs, URLs, and states"
+	@echo "  review-thread-frontier-unit-test calibrate review closure rejection paths"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
@@ -779,6 +803,7 @@ distcc-gcc-major-probe-test:
 	echo "OK    missing GCC identity fails closed"
 
 audit: source-root-check source-root-control-unit-test \
+       review-thread-frontier-check review-thread-frontier-unit-test \
        source-root-selection-test \
        distcc-probe-directory-test \
        distcc-gcc-major-probe-test \

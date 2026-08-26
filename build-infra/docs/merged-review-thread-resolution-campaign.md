@@ -1,0 +1,103 @@
+# Merged Review Thread Resolution Campaign
+
+This campaign closes merged-pull-request review debt through current-main
+evidence, corrective integration, and exact GitHub thread verification.  A
+merged pull request, an outdated diff anchor, or a local patch does not close a
+review claim.  Closure requires the governing mechanism on merged `main`, the
+relevant focused gate, resolution of the exact GraphQL thread ID, and a final
+`isResolved=true` re-query recorded in the resolution ledger.
+
+## Canonical artifacts
+
+- `merged-review-thread-action-frontier.tsv` is the current 50-thread action
+  denominator.  Each row carries the review identity, current evidence,
+  discriminating question, required observation, completion gate, and
+  falsifier.
+- `merged-review-thread-resolution-ledger.tsv` records only post-merge,
+  post-resolution, re-verified closures.
+- `../scripts/review_thread_frontier.py` validates the frontier and ledger
+  offline.  Its unit tests calibrate duplicate identity, ordering, false merged
+  evidence, owner-path drift, missing closure rows, live GraphQL identity, and
+  invalid resolution chronology.
+
+The historical `last-100-pr-review-comment-audit.md` records a different
+archive operation.  It resolved 143 GitHub threads while only 11 findings were
+addressed in that working tree.  Its status remains historical evidence and
+does not satisfy this campaign's closure gate.
+
+## Oldest-thread denominator
+
+The first batch is anchored to merged `main`
+`7ac62205eb882df42462d849cc549086b59227ea` and ordered by the first review
+comment's `createdAt`, then GraphQL thread ID.
+
+- The first 100 merged PRs contained 60 unresolved threads.
+- Rank 50 is `PRRT_kwDOR3YK5M6Cvkag`, created
+  `2026-05-18T06:59:23Z` on PR 90.
+- The last PR in that first page was created `2026-05-19T05:55:23Z` and the
+  next page begins `2026-05-19T07:04:51Z`.
+
+A review thread cannot predate its pull request.  Therefore no later PR page
+can contain a thread older than rank 50, and the 50-row batch is a finite
+chronological denominator.
+
+The capture query uses `pullRequests(first:100, states:MERGED,
+orderBy:{field:CREATED_AT,direction:ASC})`, then requests
+`reviewThreads(first:100)` with `id`, `isResolved`, `isOutdated`, `path`,
+`originalLine`, and the first comment's `createdAt`, author, body, URL, and
+commit OIDs.  The normalization filters `isResolved=false`, sorts by
+`(comment.createdAt, thread.id)`, and selects the first 50 rows.  The first
+page contained no PR with more than 100 review threads, so neither nested
+connection was truncated.
+
+## Current classification
+
+The source/history audit classifies the 50 rows as:
+
+| State | Threads | Required transition |
+| --- | ---: | --- |
+| fixed on merged main | 34 | Re-query, resolve exact ID, re-query, record ledger |
+| superseded by merged mechanism | 9 | Re-query, resolve exact ID, re-query, record ledger |
+| actionable | 7 | Implement, test, merge, synchronize, then resolve |
+
+The seven actionable rows collapse into five mechanism-coherent changes:
+
+1. Wide-phi admission: require exact opt-in and bind selector discovery to the
+   phi's actual index provenance.
+2. Indirect draw addressing: keep Vulkan-buffer-relative bounds separate from
+   BO-relative packet offsets for nonzero memory-bind offsets.
+3. Carrier submit scratch ownership: replace loop-accumulating `alloca`
+   storage with reusable owned memory and stress repeated small IBs.
+4. Robustness metadata identity and order: establish one producer/consumer
+   index domain and make descriptor-set/pipeline binding order equivalent.
+5. TG4 swizzle metadata identity: separate shader-stage state and cover every
+   legal sampled-image resource ID, including dynamic arrays and later sets.
+
+These changes remain separate reviewable pull requests.  The 50-thread batch
+is the audit denominator, not permission to combine unrelated code paths.
+
+## Verification
+
+Run the offline contract with:
+
+```sh
+make -C build-infra review-thread-frontier-check
+make -C build-infra review-thread-frontier-live-check
+make -C build-infra review-thread-frontier-unit-test
+```
+
+Immediately before resolving a thread, query its exact node ID and confirm it
+is still unresolved.  Immediately afterward, query the same ID and require
+`isResolved=true`.  Record the merged evidence commit, evidence PR, merge time,
+resolution time, verification time, and mechanism note in the ledger.
+The offline validator requires every declared evidence commit to be an ancestor
+of `origin/main` and requires each semicolon-delimited `canonical_data_target`
+blob to match between that evidence commit and current main.  A change to an
+evidence owner therefore forces re-audit and an evidence-commit refresh, while
+an unrelated main commit leaves the proof valid.  Refresh the remote-tracking
+ref before relying on that verdict.  The live target binds every exact GraphQL
+thread ID to its discussion URL, outdated state, and resolution state.
+
+Static source and Git history establish only code-state facts.  Build, runtime,
+conformance, and silicon claims require their respective executed gates and
+remain explicitly unclaimed where they were not run.
