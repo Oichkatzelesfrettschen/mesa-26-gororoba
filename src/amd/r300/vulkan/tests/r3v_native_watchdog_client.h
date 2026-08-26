@@ -23,9 +23,19 @@ struct r3v_native_watchdog_client {
    FILE *to_helper;
    FILE *from_helper;
    bool armed;
+   /* The helper answers each command with its own state readings, and a
+    * "verified" acknowledgement is the only one that admits the run: it
+    * says the counter was rewritten, released, and observed falling
+    * across a bounded interval, where an unverified one says the
+    * hardware did not show the transition the gate depends on.
+    */
+   bool arm_verified;
    uint64_t armed_ns;
    uint64_t disarmed_ns;
    char facts[1024];
+   char calibration[256];
+   char arm_ack[128];
+   char disarm_ack[128];
 };
 
 /* Spawns the command named by R3V_NATIVE_WATCHDOG_BRACKET_COMMAND, an
@@ -34,6 +44,13 @@ struct r3v_native_watchdog_client {
  * ready.
  */
 int r3v_native_watchdog_client_open(struct r3v_native_watchdog_client *client);
+
+/* Walks the loaded, active, halted, reloaded, and rearmed states, two
+ * reads apiece, and retains the line.  Returns 0 when the helper
+ * verifies every relation.
+ */
+int r3v_native_watchdog_client_calibrate(
+   struct r3v_native_watchdog_client *client);
 
 int r3v_native_watchdog_client_arm(struct r3v_native_watchdog_client *client);
 

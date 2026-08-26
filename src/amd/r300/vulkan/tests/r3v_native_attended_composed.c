@@ -14,6 +14,7 @@
 
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
+#include "r3v_native_recovery_waiver.h"
 #include "r3v_native_watchdog_client.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
@@ -21,6 +22,7 @@
 #include "util/mesa-blake3.h"
 
 #include <errno.h>
+#include <libgen.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -28,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <vulkan/vulkan.h>
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -62,6 +65,7 @@ struct composed_watchdog_guard {
    struct r3v_native_watchdog_client client;
    bool present;
    bool waived;
+   struct r3v_native_recovery_waiver waiver;
 };
 
 static int
@@ -78,49 +82,126 @@ op_watchdog_bracket(void *ctx, enum r3v_native_submission_trace_event event)
    }
 }
 
-/* Opens the bracket and proves the arm and disarm work before the run
+static int
+read_first_line(const char *path, char *out, size_t size)
+{
+   FILE *file = fopen(path, "r");
+   if (file == NULL)
+      return -1;
+   char *line = fgets(out, (int)size, file);
+   fclose(file);
+   if (line == NULL)
+      return -1;
+   out[strcspn(out, "\r\n")] = '\0';
+   return 0;
+}
+
+/* The waiver binds to the runner that will submit, so the identity is
+ * the executing image's bytes rather than its path.
+ */
+static int
+running_image_digest(char *out)
+{
+   FILE *image = fopen("/proc/self/exe", "rb");
+   if (image == NULL)
+      return -1;
+   struct mesa_blake3 ctx;
+   _mesa_blake3_init(&ctx);
+   unsigned char block[65536];
+   size_t read;
+   while ((read = fread(block, 1, sizeof(block), image)) > 0)
+      _mesa_blake3_update(&ctx, block, read);
+   const int failed = ferror(image);
+   fclose(image);
+   if (failed)
+      return -1;
+   blake3_hash hash;
+   _mesa_blake3_final(&ctx, hash);
+   _mesa_blake3_format(out, hash);
+   return 0;
+}
+
+/* An exported variable outlives the decision it recorded, so the waiver
+ * of automatic recovery is a document naming this boot, this evidence
+ * directory, this command stream, this runner image, when the operator
+ * decided, and why.
+ */
+static int
+waiver_admits(struct composed_watchdog_guard *guard, const char *waiver_path,
+              const char *evidence_dir, const char *ib_digest)
+{
+   char boot_id[64];
+   char runner_digest[BLAKE3_OUT_LEN * 2 + 1];
+   if (read_first_line("/proc/sys/kernel/random/boot_id", boot_id,
+                       sizeof(boot_id)) != 0 ||
+       running_image_digest(runner_digest) != 0) {
+      fprintf(stderr, "the run could not read its own boot and image "
+                      "identity\n");
+      return -1;
+   }
+
+   char attempt[PATH_MAX];
+   snprintf(attempt, sizeof(attempt), "%s", evidence_dir);
+   const char *attempt_id = basename(attempt);
+
+   /* The bindings the waiver must carry, so the operator writes what
+    * this run is rather than transcribing it from elsewhere.
+    */
+   if (waiver_path == NULL) {
+      fprintf(stderr,
+              "the watchdog bracket refused and no waiver was named; set "
+              "R3V_NATIVE_WATCHDOG_BRACKET_COMMAND to the helper, or pass "
+              "--waiver <path> holding:\n"
+              "boot_id=%s\nattempt_id=%s\nib_blake3=%s\n"
+              "runner_blake3=%s\ntimestamp=<YYYY-MM-DDTHH:MM:SSZ>\n"
+              "operator_reason=<why automatic recovery is waived>\n",
+              boot_id, attempt_id, ib_digest, runner_digest);
+      return -1;
+   }
+
+   char reason[256];
+   if (r3v_native_recovery_waiver_admit(
+          waiver_path, boot_id, attempt_id, ib_digest, runner_digest,
+          (int64_t)time(NULL), &guard->waiver, reason,
+          sizeof(reason)) != 0) {
+      fprintf(stderr, "the waiver %s admits nothing: %s\n", waiver_path,
+              reason);
+      return -1;
+   }
+
+   guard->waived = true;
+   printf("watchdog.waiver_admitted=true attempt=%s written=%s\n",
+          guard->waiver.attempt_id, guard->waiver.timestamp);
+   printf("watchdog.waiver_operator_reason=%s\n",
+          guard->waiver.operator_reason);
+   printf("[watchdog] waived: the operator accepts manual power-cycle "
+          "recovery for this submission\n");
+   fflush(stdout);
+   return 0;
+}
+
+/* Opens the bracket and walks the counter's state ladder before the run
  * reaches the ioctl, because r3v_native_arming_disarm writes
  * attempt.token ahead of the trace: an arm that first fails inside
  * vkQueueSubmit refuses the submission with the attempt already spent.
  */
 static int
-watchdog_guard_open(struct composed_watchdog_guard *guard)
+watchdog_guard_open(struct composed_watchdog_guard *guard,
+                    const char *waiver_path, const char *evidence_dir,
+                    const char *ib_digest)
 {
-   const char *waiver = getenv("R3V_NATIVE_WATCHDOG_WAIVER_ACCEPTED");
-   guard->waived = waiver != NULL && strcmp(waiver, "1") == 0;
-
-   if (r3v_native_watchdog_client_open(&guard->client) != 0) {
-      if (!guard->waived) {
-         fprintf(stderr,
-                 "the watchdog bracket refused; set "
-                 "R3V_NATIVE_WATCHDOG_BRACKET_COMMAND to the helper, or "
-                 "waive automatic recovery with "
-                 "R3V_NATIVE_WATCHDOG_WAIVER_ACCEPTED=1 and stand by to "
-                 "power-cycle\n");
-         return -1;
-      }
-      printf("[watchdog] waived: the operator accepts manual power-cycle "
-             "recovery for this submission\n");
-      fflush(stdout);
-      return 0;
-   }
+   if (r3v_native_watchdog_client_open(&guard->client) != 0)
+      return waiver_admits(guard, waiver_path, evidence_dir, ib_digest);
 
    fputs(guard->client.facts, stdout);
-   if (r3v_native_watchdog_client_arm(&guard->client) != 0 ||
-       r3v_native_watchdog_client_disarm(&guard->client) != 0) {
-      fprintf(stderr, "the watchdog bracket refused its calibration\n");
+   if (r3v_native_watchdog_client_calibrate(&guard->client) != 0) {
+      fprintf(stderr, "the counter refused its state ladder: %s\n",
+              guard->client.calibration);
       r3v_native_watchdog_client_close(&guard->client);
       return -1;
    }
-   printf("watchdog.calibration_interval_ns=%" PRIu64 "\n",
-          guard->client.disarmed_ns - guard->client.armed_ns);
+   printf("watchdog.%s\n", guard->client.calibration);
    fflush(stdout);
-   /* The calibration timestamps are not the submission's, and
-    * armed_before_submit reads armed_ns; clearing them keeps a run whose
-    * real arm never happened from reporting one that did.
-    */
-   guard->client.armed_ns = 0;
-   guard->client.disarmed_ns = 0;
    guard->present = true;
    return 0;
 }
@@ -171,15 +252,20 @@ main(int argc, char **argv)
     * sequence.
     */
    bool record_only = false;
-   bool usage_error = argc < 2 || argc > 3;
-   if (argc == 3) {
-      if (strcmp(argv[2], "--record-only") == 0)
+   const char *waiver_path = NULL;
+   bool usage_error = argc < 2;
+   for (int i = 2; i < argc && !usage_error; i++) {
+      if (strcmp(argv[i], "--record-only") == 0)
          record_only = true;
+      else if (strcmp(argv[i], "--waiver") == 0 && i + 1 < argc)
+         waiver_path = argv[++i];
       else
          usage_error = true;
    }
    if (usage_error) {
-      fprintf(stderr, "usage: %s <evidence-directory> [--record-only]\n",
+      fprintf(stderr,
+              "usage: %s <evidence-directory> [--record-only] "
+              "[--waiver <path>]\n",
               argv[0]);
       return 2;
    }
@@ -269,7 +355,7 @@ main(int argc, char **argv)
    struct composed_watchdog_guard guard = {0};
    if (!record_only) {
       stage("watchdog");
-      if (watchdog_guard_open(&guard) != 0)
+      if (watchdog_guard_open(&guard, waiver_path, evidence_dir, digest) != 0)
          return 2;
    }
 
@@ -493,10 +579,16 @@ main(int argc, char **argv)
       printf("watchdog.guarded_interval=DRM_IOCTL_RADEON_CS through fence "
              "completion\n");
       printf("watchdog.armed_before_submit=%s\n",
-             guard.client.armed_ns != 0 ? "true" : "false");
+             guard.client.arm_verified ? "true" : "false");
+      printf("watchdog.arm_acknowledgement=%s\n", guard.client.arm_ack);
       printf("watchdog.completion_observed=%s\n",
              result == VK_SUCCESS ? "true" : "false");
-      printf("watchdog.disarm_result=%s\n", disarm == 0 ? "ok" : "failed");
+      printf("watchdog.disarm_result=%s\n",
+             disarm == 0 ? guard.client.disarm_ack : "failed");
+      /* The counter ran across this span, so it is what the 1.7 s grace
+       * is judged against; the driver's inner transport bracket sits
+       * inside it and measures less.
+       */
       printf("watchdog.guarded_interval_us=%" PRIu64 "\n",
              (guard.client.disarmed_ns - guard.client.armed_ns) / 1000u);
       fflush(stdout);

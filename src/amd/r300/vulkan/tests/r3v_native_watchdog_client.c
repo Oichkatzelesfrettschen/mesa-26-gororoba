@@ -125,20 +125,43 @@ r3v_native_watchdog_client_open(struct r3v_native_watchdog_client *client)
    return -1;
 }
 
+/* Sends one command and retains the answer, so a refusal reports the
+ * hardware readings that produced it rather than a bare failure.
+ */
+static int
+command(struct r3v_native_watchdog_client *client, const char *request,
+        const char *accepted, char *ack, size_t ack_size)
+{
+   if (client->to_helper == NULL)
+      return -1;
+   if (fprintf(client->to_helper, "%s\n", request) < 0)
+      return -1;
+   if (read_line(client, ack, ack_size) != 0) {
+      snprintf(ack, ack_size, "%s: no answer", request);
+      return -1;
+   }
+   return strncmp(ack, accepted, strlen(accepted)) == 0 ? 0 : -1;
+}
+
+int
+r3v_native_watchdog_client_calibrate(
+   struct r3v_native_watchdog_client *client)
+{
+   return command(client, "calibrate", "calibration verified",
+                  client->calibration, sizeof(client->calibration));
+}
+
 int
 r3v_native_watchdog_client_arm(struct r3v_native_watchdog_client *client)
 {
-   if (client->to_helper == NULL || client->armed)
+   if (client->armed)
       return -1;
-   if (fputs("arm\n", client->to_helper) < 0)
-      return -1;
-   char line[64];
-   if (read_line(client, line, sizeof(line)) != 0 ||
-       strcmp(line, "armed") != 0)
-      return -1;
+   const int result = command(client, "arm", "armed verified",
+                              client->arm_ack, sizeof(client->arm_ack));
    client->armed_ns = now_ns();
    client->armed = true;
-   return 0;
+   client->arm_verified = result == 0;
+   return result;
 }
 
 int
@@ -148,13 +171,8 @@ r3v_native_watchdog_client_disarm(struct r3v_native_watchdog_client *client)
       return 0;
    client->armed = false;
    client->disarmed_ns = now_ns();
-   if (fputs("disarm\n", client->to_helper) < 0)
-      return -1;
-   char line[64];
-   if (read_line(client, line, sizeof(line)) != 0 ||
-       strcmp(line, "disarmed ok") != 0)
-      return -1;
-   return 0;
+   return command(client, "disarm", "disarmed verified", client->disarm_ack,
+                  sizeof(client->disarm_ack));
 }
 
 void

@@ -860,6 +860,7 @@ r3v_native_attended_sampled = executable(
 r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
   files('tests/r3v_native_attended_composed.c',
+        'tests/r3v_native_recovery_waiver.c',
         'tests/r3v_native_watchdog_client.c'),
   include_directories : [r3v_native_inc, include_directories('.')],
   dependencies : r3v_native_deps,
@@ -869,6 +870,24 @@ r3v_native_attended_composed = executable(
   gnu_symbol_visibility : 'hidden',
   build_by_default : true,
   install : false,
+)
+
+# Recovery-waiver calibration: the waiver admits one attended run, so
+# every binding it carries -- boot, attempt, cell, runner image, age --
+# is exercised against a document that differs by that field alone.
+r3v_native_recovery_waiver_test = executable(
+  'r3v_native_recovery_waiver_test',
+  files('tests/r3v_native_recovery_waiver_test.c',
+        'tests/r3v_native_recovery_waiver.c'),
+  include_directories : include_directories('tests'),
+  build_by_default : true,
+  install : false,
+)
+test(
+  'r3v-native-recovery-waiver',
+  r3v_native_recovery_waiver_test,
+  timeout : 60,
+  suite : ['r3v'],
 )
 
 # SB600 TCO watchdog bracket co-process: holds the privilege the
