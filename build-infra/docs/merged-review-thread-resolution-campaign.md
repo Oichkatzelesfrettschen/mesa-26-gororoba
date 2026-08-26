@@ -19,6 +19,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   third-batch raw denominator.  Its manifest binds eleven request/response
   pages, exact query text, default-branch identity, every selected comment,
   hashes, and the chronological stop proof.
+- `review-thread-classifications/merged-thread-frontier-92b67f719e7b/` owns the
+  third batch's 50-row assessment, generated action frontier, and resolution
+  ledger.  Keeping these paths batch-scoped preserves the second batch's
+  terminal global views without overwriting history.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views.  They retain the closed second batch until the third-batch source
@@ -166,6 +170,32 @@ the canonical owner of terminal campaign state and closure merge identity.
 mutation, postflight, journal replay, and deterministic ledger generation.
 Its journal binds the immutable pre-resolution frontier hash so later closed
 state cannot rewrite the mutation denominator.
+
+## Classified third-batch frontier
+
+`review-thread-classifications/merged-thread-frontier-92b67f719e7b/assessments.tsv`
+classifies the exact third-batch denominator against merged main
+`0c8b733b08e32df22cdcc4e19bf4cde411f63f5e`.  The generated
+`action-frontier.tsv` preserves the retained chronological order and binds
+each row to its discussion URL, current evidence owner, falsifier, and merged
+evidence commit.
+
+| State | Threads | Required transition |
+| --- | ---: | --- |
+| fixed on merged main | 40 | Re-query, resolve exact ID, re-query, record ledger |
+| superseded by a merged mechanism | 10 | Re-query, resolve exact ID, re-query, record ledger |
+| actionable | 0 | None |
+
+The merged repairs cover install locking and status propagation, public source
+references, Rust image parity, SFN local-group failure state, package hooks and
+deployment consent, VL plane and vertex-row identity, generator-test isolation,
+RS480 debugfs parsing, package ownership, result visibility, GPUVis child
+failure handling, zscan and IDCT coordinate identity, and Draw output-row
+semantics.  Superseded rows govern removed pair and pump targets, retired
+install.dat parsing, replaced profiles, a relocated build area, and replaced
+package activation contracts.  Static source and Git history establish these
+code-state dispositions; runtime, conformance, performance, and silicon claims
+remain outside this closure.
 
 ## Verification
 
