@@ -12,6 +12,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 FRONTIER_FIELDS = (
     "frontier_id",
@@ -70,7 +71,10 @@ COMPLETION_DISPOSITION = {
 CLOSED_DISPOSITIONS = frozenset(("fixed", "superseded", "invalid"))
 THREAD_ID_PATTERN = re.compile(r"^PRRT_[A-Za-z0-9_-]+$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-CANONICAL_PATH_PATTERN = re.compile(r"^[A-Za-z0-9_./+-]+$")
+CANONICAL_TARGET_PATTERN = re.compile(
+    r"^(?P<path>[A-Za-z0-9_./+-]+)"
+    r"(?:#L(?P<first>[1-9][0-9]*)-L(?P<last>[1-9][0-9]*))?$"
+)
 REVIEW_URL_PATTERN = re.compile(
     r"^https://github[.]com/Oichkatzelesfrettschen/mesa-26-gororoba/"
     r"pull/([1-9][0-9]*)#discussion_r[1-9][0-9]*$"
@@ -79,6 +83,15 @@ REVIEW_URL_PATTERN = re.compile(
 
 class FrontierError(ValueError):
     """A frontier or ledger invariant failed."""
+
+
+class EvidenceTarget(NamedTuple):
+    """A repository path and optional inclusive source-line slice."""
+
+    declaration: str
+    path: str
+    first_line: int | None
+    last_line: int | None
 
 
 def read_tsv(path: Path, expected_fields: tuple[str, ...]) -> list[dict[str, str]]:
@@ -122,25 +135,37 @@ def positive_decimal(value: str, field: str, row_number: int) -> int:
     return int(value)
 
 
-def canonical_target_paths(value: str, row_number: int) -> tuple[str, ...]:
-    """Return normalized repository-relative evidence-owner paths."""
-    targets = tuple(value.split(";"))
-    for target in targets:
-        path_parts = target.split("/")
+def canonical_targets(value: str, row_number: int) -> tuple[EvidenceTarget, ...]:
+    """Return normalized repository-relative evidence-owner targets."""
+    targets = []
+    for declaration in value.split(";"):
+        target_match = CANONICAL_TARGET_PATTERN.fullmatch(declaration)
+        path = target_match.group("path") if target_match is not None else ""
+        path_parts = path.split("/")
         if (
-            not target
-            or not CANONICAL_PATH_PATTERN.fullmatch(target)
-            or target.startswith("/")
+            target_match is None
+            or path.startswith("/")
             or any(part in ("", ".", "..") for part in path_parts)
         ):
             raise FrontierError(
-                f"frontier row {row_number}: invalid canonical_data_target {target!r}"
+                f"frontier row {row_number}: invalid canonical_data_target "
+                f"{declaration!r}"
             )
+        first_text = target_match.group("first")
+        last_text = target_match.group("last")
+        first_line = int(first_text) if first_text is not None else None
+        last_line = int(last_text) if last_text is not None else None
+        if first_line is not None and last_line is not None and first_line > last_line:
+            raise FrontierError(
+                f"frontier row {row_number}: reversed canonical_data_target range "
+                f"{declaration!r}"
+            )
+        targets.append(EvidenceTarget(declaration, path, first_line, last_line))
     if len(set(targets)) != len(targets):
         raise FrontierError(
-            f"frontier row {row_number}: duplicate canonical_data_target path"
+            f"frontier row {row_number}: duplicate canonical_data_target"
         )
-    return targets
+    return tuple(targets)
 
 
 def validate_frontier(
@@ -163,7 +188,7 @@ def validate_frontier(
         for field in nonempty_fields:
             if not row[field].strip():
                 raise FrontierError(f"frontier row {row_number}: {field} is empty")
-        canonical_target_paths(row["canonical_data_target"], row_number)
+        canonical_targets(row["canonical_data_target"], row_number)
 
         frontier_id = row["frontier_id"]
         if frontier_id in frontier_ids:
@@ -309,8 +334,12 @@ def validate_ledger(
         )
 
 
-def run_git(repository_root: Path, *arguments: str) -> str:
-    """Run a read-only Git query and return its stripped standard output."""
+def run_git(
+    repository_root: Path,
+    *arguments: str,
+    strip: bool = True,
+) -> str:
+    """Run a read-only Git query and return its standard output."""
     result = subprocess.run(
         ["git", "-C", str(repository_root), *arguments],
         capture_output=True,
@@ -320,17 +349,73 @@ def run_git(repository_root: Path, *arguments: str) -> str:
     if result.returncode != 0:
         diagnostic = result.stderr.strip() or result.stdout.strip()
         raise FrontierError(f"git {' '.join(arguments)} failed: {diagnostic}")
-    return result.stdout.strip()
+    return result.stdout.strip() if strip else result.stdout
+
+
+def evidence_target_identity(
+    repository_root: Path,
+    revision: str,
+    target: EvidenceTarget,
+) -> str:
+    """Return a blob ID or exact bounded source slice for one target."""
+    if target.first_line is None or target.last_line is None:
+        return run_git(
+            repository_root,
+            "rev-parse",
+            "--verify",
+            f"{revision}:{target.path}",
+        )
+    content = run_git(
+        repository_root,
+        "show",
+        f"{revision}:{target.path}",
+        strip=False,
+    )
+    lines = content.splitlines()
+    if target.last_line > len(lines):
+        raise FrontierError(
+            f"{target.declaration}: source slice exceeds {revision} line count "
+            f"{len(lines)}"
+        )
+    return "\n".join(lines[target.first_line - 1 : target.last_line])
 
 
 def verify_merged_evidence(
-    frontier_rows: list[dict[str, str]], repository_root: Path, main_ref: str
+    frontier_rows: list[dict[str, str]],
+    repository_root: Path,
+    main_ref: str,
+    candidate_ref: str | None = None,
 ) -> None:
-    """Require merged evidence whose owner-path blobs still match current main."""
+    """Require merged evidence whose owner content still matches the candidate."""
     main_commit = run_git(
         repository_root, "rev-parse", "--verify", f"{main_ref}^{{commit}}"
     )
-    object_ids: dict[tuple[str, str], str] = {}
+    candidate_commit = run_git(
+        repository_root,
+        "rev-parse",
+        "--verify",
+        f"{candidate_ref or main_ref}^{{commit}}",
+    )
+    candidate_ancestry = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "merge-base",
+            "--is-ancestor",
+            main_commit,
+            candidate_commit,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if candidate_ancestry.returncode != 0:
+        raise FrontierError(
+            f"candidate {candidate_commit} does not contain merged ref "
+            f"{main_commit}"
+        )
+    target_identities: dict[tuple[str, EvidenceTarget], str] = {}
     checked_commits: set[str] = set()
     for row_number, frontier_row in enumerate(frontier_rows, start=2):
         evidence_commit = frontier_row["merged_evidence_commit"]
@@ -358,32 +443,28 @@ def verify_merged_evidence(
                     f"{diagnostic}"
                 )
             checked_commits.add(evidence_commit)
-        for target in canonical_target_paths(
+        for target in canonical_targets(
             frontier_row["canonical_data_target"], row_number
         ):
             evidence_key = (evidence_commit, target)
-            if evidence_key not in object_ids:
-                object_ids[evidence_key] = run_git(
+            if evidence_key not in target_identities:
+                target_identities[evidence_key] = evidence_target_identity(
                     repository_root,
-                    "rev-parse",
-                    "--verify",
-                    f"{evidence_commit}:{target}",
+                    evidence_commit,
+                    target,
                 )
-            main_key = (main_commit, target)
-            if main_key not in object_ids:
-                object_ids[main_key] = run_git(
+            candidate_key = (candidate_commit, target)
+            if candidate_key not in target_identities:
+                target_identities[candidate_key] = evidence_target_identity(
                     repository_root,
-                    "rev-parse",
-                    "--verify",
-                    f"{main_commit}:{target}",
+                    candidate_commit,
+                    target,
                 )
-            if object_ids[evidence_key] != object_ids[main_key]:
+            if target_identities[evidence_key] != target_identities[candidate_key]:
                 thread_id = frontier_row["thread_id"]
-                evidence_object = object_ids[evidence_key]
-                main_object = object_ids[main_key]
                 raise FrontierError(
-                    f"{thread_id}: evidence owner {target} changed after "
-                    f"{evidence_commit}: {evidence_object} != {main_object}"
+                    f"{thread_id}: evidence owner {target.declaration} changed "
+                    f"between {evidence_commit} and candidate {candidate_commit}"
                 )
 
 
@@ -466,13 +547,19 @@ def validate_files(
     batch_size: int,
     repository_root: Path,
     main_ref: str,
+    candidate_ref: str,
     live: bool,
 ) -> None:
     frontier_rows = read_tsv(frontier_path, FRONTIER_FIELDS)
     ledger_rows = read_tsv(ledger_path, LEDGER_FIELDS)
     frontier_by_thread = validate_frontier(frontier_rows, batch_size)
     validate_ledger(ledger_rows, frontier_by_thread)
-    verify_merged_evidence(frontier_rows, repository_root, main_ref)
+    verify_merged_evidence(
+        frontier_rows,
+        repository_root,
+        main_ref,
+        candidate_ref,
+    )
     if live:
         verify_live_threads(frontier_rows)
     print(
@@ -487,6 +574,7 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--main-ref", default="origin/main")
+    parser.add_argument("--candidate-ref", default="HEAD")
     parser.add_argument("--live", action="store_true")
     arguments = parser.parse_args()
     try:
@@ -498,6 +586,7 @@ def main() -> int:
             arguments.batch_size,
             arguments.repo_root,
             arguments.main_ref,
+            arguments.candidate_ref,
             arguments.live,
         )
     except (FrontierError, OSError) as error:
