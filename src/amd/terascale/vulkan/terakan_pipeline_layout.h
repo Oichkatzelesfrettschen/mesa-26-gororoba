@@ -25,6 +25,7 @@
 #define TERAKAN_PIPELINE_LAYOUT_H
 
 #include "compiler/shader_enums.h"
+#include "terakan_tg4_metadata.h"
 #include "vk_pipeline_layout.h"
 
 #include <stdint.h>
@@ -35,6 +36,7 @@ extern "C" {
 
 struct terakan_pipeline_layout_set {
    uint8_t first_shader_resources[MESA_SHADER_STAGES];
+   uint8_t first_shader_tg4_metadata[MESA_SHADER_STAGES];
    uint8_t first_shader_uniform_buffers[MESA_SHADER_STAGES];
    uint8_t first_shader_samplers[MESA_SHADER_STAGES];
 };
@@ -43,6 +45,8 @@ struct terakan_pipeline_layout {
    struct vk_pipeline_layout vk;
 
    struct terakan_pipeline_layout_set * sets;
+
+   struct terakan_tg4_metadata_map shader_tg4_metadata_maps[MESA_SHADER_STAGES];
 
    uint32_t shader_non_immutable_samplers[MESA_SHADER_STAGES];
    uint32_t shader_immutable_samplers_unnormalized_coordinates[MESA_SHADER_STAGES];

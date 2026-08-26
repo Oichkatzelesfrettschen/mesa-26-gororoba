@@ -245,9 +245,9 @@ struct terakan_image_view {
     *   bits [11:8]  = B-channel target
     *   bits [15:12] = A-channel target
     *
-    * Identity swizzle packs to 0x3210.  CmdBindDescriptorSets copies
-    * this into `command_writer->robustness_metadata.view_swizzles[]`
-    * at the appropriate physical slot index. */
+    * Identity swizzle packs to 0x3210. CmdBindDescriptorSets copies this
+    * into the shader stage's compact sampled-image metadata index; the
+    * pipeline-layout map retains the corresponding absolute resource ID. */
    uint16_t component_swizzle_packed;
 };
 

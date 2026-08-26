@@ -190,8 +190,9 @@ bool terakan_nir_lower_24bit_mul_hint(nir_shader * shader);
  * cost is acceptable for correctness.
  *
  * Must run AFTER `terakan_nir_lower_bindings` so `tex->texture_index`
- * is the physical sampler resource slot (the index used to address
- * `view_swizzles[]` in robustness metadata KCACHE bank 14).
+ * is the absolute physical sampler resource slot. `metadata_map` translates
+ * that slot to the compact per-stage `view_swizzles[]` index in KCACHE bank
+ * 14.
  */
 /* When `resources_needed` is non-NULL, the pass marks the gather-safe
  * HW slot (`tex->texture_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET`)
@@ -199,7 +200,8 @@ bool terakan_nir_lower_24bit_mul_hint(nir_shader * shader);
  * live across binds.  Pass NULL only if the caller has already marked
  * the relevant gather slots through some other path. */
 bool terakan_nir_lower_tg4_view_swizzle(nir_shader * shader,
-                                        BITSET_WORD * resources_needed);
+                                        BITSET_WORD * resources_needed,
+                                        struct terakan_tg4_metadata_map const * metadata_map);
 
 /* Pipeline-time image atomic reject check for Palm / Wrestler
  * (CHIP_PALM, Evergreen / TeraScale-2 VLIW5).

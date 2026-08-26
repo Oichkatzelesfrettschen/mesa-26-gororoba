@@ -658,6 +658,7 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
          next_shader_range_index - layout_shader->first_resource_range;
 
       layout_shader->resource_count = stage_resource_count;
+      layout_shader->sampled_image_count = stage_sampled_image_count;
       layout_shader->uniform_buffer_count = stage_uniform_buffer_count;
    }
 

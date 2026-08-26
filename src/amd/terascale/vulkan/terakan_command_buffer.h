@@ -33,6 +33,7 @@
 #include "terakan_physical_device.h"
 #include "terakan_push_constants.h"
 #include "terakan_robustness_metadata.h"
+#include "terakan_tg4_metadata.h"
 
 struct terakan_pipeline_compute;
 struct terakan_pipeline_graphics;
@@ -428,13 +429,11 @@ struct terakan_gfx_command_writer {
        *   bits [15:12] = A-channel target
        *   bits [19:16] = R-target for second binding in this dword
        *   ...
-       * Index by `physical_sampler_resource_slot / 2`, low/high half by
-       * `physical_sampler_resource_slot % 2`.  Slot count = 24 (12 dwords
-       * × 2 bindings) covers the typical VK 1.0 minimum + headroom.
-       * Slots >= 24 fall back to identity in the NIR pass (the SAMPLE-
-       * side bake into SQ_TEX_RESOURCE_WORD4 still handles those, only
-       * the GATHER path uses this runtime metadata). */
-      uint32_t view_swizzles[12];
+       * Each shader stage owns a distinct 24-entry compact sampled-image
+       * namespace. Pipeline-layout maps translate absolute resource IDs to
+       * these indices, so later sets and mixed descriptor classes do not
+       * consume the KCACHE metadata budget. */
+      uint32_t view_swizzles[MESA_SHADER_STAGES][TERAKAN_TG4_METADATA_DWORD_COUNT];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */
       struct terakan_bo const *bo;

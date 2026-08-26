@@ -1436,7 +1436,8 @@ terakan_shader_lower_and_optimize_post_link(
           * rewritten tg4.  Without this the SQC state tracker may evict
           * the gather descriptor between draws and the cloned FETCH4 reads
           * stale data. */
-         NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle, resources_needed);
+         NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle, resources_needed,
+                  &pipeline_layout->shader_tg4_metadata_maps[nir->info.stage]);
       }
    }
 

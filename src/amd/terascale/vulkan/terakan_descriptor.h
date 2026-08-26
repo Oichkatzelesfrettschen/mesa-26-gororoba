@@ -149,11 +149,12 @@ extern "C" {
  * the gather result in the `terakan_nir_lower_tg4_view_swizzle` NIR
  * pass.
  *
- * The cap (24) is tied to the KCACHE bank 14 `view_swizzles[12]` region
- * (12 dwords * 2 bindings per dword = 24 slots).  Vulkan minimum
- * `maxPerStageDescriptorSampledImages` is 16; 24 is comfortable
- * headroom.  Raising this requires extending `view_swizzles[]` storage
- * AND the matching TERAKAN_TG4_VIEW_SWIZZLE_SLOT_LIMIT in the NIR pass.
+ * The cap (24) is tied to each shader stage's KCACHE bank 14
+ * `view_swizzles[12]` region (12 dwords * 2 bindings per dword = 24
+ * compact metadata entries). Vulkan minimum
+ * `maxPerStageDescriptorSampledImages` is 16; 24 is comfortable headroom.
+ * Raising this requires extending the stage-local `view_swizzles[]` storage
+ * and the pipeline-layout metadata map.
  *
  * `maxPerStageDescriptorSampledImages` is clamped to this value in
  * terakan_instance.c so Vulkan validation rejects pipeline layouts that
