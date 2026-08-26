@@ -1629,6 +1629,7 @@ test_sampled_cell_stream_and_refusals(void)
       .texture_width = 64,
       .texture_height = 64,
       .texture_pitch_texels = 64,
+      .texture_lanes = R300_TRIANGLE_LANES_R8G8B8A8,
    };
    struct r300_tcl_bypass_triangle_ib ib;
    assert(r300_tcl_bypass_triangle_emit(&params, &ib) == 0);
@@ -1674,6 +1675,23 @@ test_sampled_cell_stream_and_refusals(void)
    bad = params;
    bad.texture_width = 2049;
    assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
+
+   bad = params;
+   bad.texture_lanes = (enum r300_triangle_lane_order)2;
+   assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
+
+   /* The B8G8R8A8 lane order swaps the R and B selects and leaves the
+    * rest of the stream at the R8G8B8A8 cell's words.
+    */
+   params.texture_lanes = R300_TRIANGLE_LANES_B8G8R8A8;
+   assert(r300_tcl_bypass_triangle_emit(&params, &ib) == 0);
+   struct tracker t2 = { 0 };
+   track(&t2, ib.ib, ib.ib_size_dwords);
+   assert(t2.tx_format1_seen &&
+          t2.tx_format1 == R300_EASY_TX_FORMAT(X, Y, Z, W, W8Z8Y8X8));
+   assert(t2.tx_format0_seen && t2.tx_format0 == t.tx_format0);
+   assert(t2.tx_format2_seen && t2.tx_format2 == t.tx_format2);
+   r300_tcl_bypass_triangle_release(&ib);
 
    r300_fragment_binary_finish(&fs);
 }

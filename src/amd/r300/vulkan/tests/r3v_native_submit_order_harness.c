@@ -626,7 +626,7 @@ run_arm(enum arm arm, const char *name)
       struct r300_tcl_bypass_triangle_ib sampled_cell;
       assert(r300_tcl_bypass_triangle_sampled_emit(
                 R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1, 0, 16,
-                16, 16, &sampled_cell) == 0);
+                16, 16, R300_TRIANGLE_LANES_R8G8B8A8, &sampled_cell) == 0);
       r300_triangle_ib_digest_hex(sampled_cell.ib,
                                   sampled_cell.ib_size_dwords, route_digest);
       r300_tcl_bypass_triangle_release(&sampled_cell);
@@ -1555,7 +1555,7 @@ run_arm(enum arm arm, const char *name)
          struct r300_tcl_bypass_triangle_ib offline;
          assert(r300_tcl_bypass_triangle_sampled_emit(
                    R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1, 0,
-                   16, 16, 16, &offline) == 0);
+                   16, 16, 16, R300_TRIANGLE_LANES_R8G8B8A8, &offline) == 0);
          char offline_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
          r300_triangle_ib_digest_hex(offline.ib, offline.ib_size_dwords,
                                      offline_digest);

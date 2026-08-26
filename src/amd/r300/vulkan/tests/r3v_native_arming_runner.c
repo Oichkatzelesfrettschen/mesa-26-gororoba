@@ -49,6 +49,8 @@ static struct r300_triangle_render_shape render_shape;
  * attended runner's 16x16 uniform texture at offset 0, pitch 16.
  */
 static bool cell_sampled = false;
+static enum r300_triangle_lane_order cell_sampled_lanes =
+   R300_TRIANGLE_LANES_R8G8B8A8;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -56,7 +58,7 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
    if (cell_sampled)
       return r300_tcl_bypass_triangle_sampled_emit(
          R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, 1, 0, 16,
-         16, 16, cell);
+         16, 16, cell_sampled_lanes, cell);
    if (cell_render_shape)
       return r300_tcl_bypass_triangle_render_shape_emit(&render_shape, cell);
    return cell_varying
@@ -188,6 +190,11 @@ main(int argc, char **argv)
       argi += 1;
    } else if (argc >= argi + 1 && strcmp(argv[argi], "--sampled") == 0) {
       cell_sampled = true;
+      argi += 1;
+   } else if (argc >= argi + 1 &&
+              strcmp(argv[argi], "--sampled-bgra") == 0) {
+      cell_sampled = true;
+      cell_sampled_lanes = R300_TRIANGLE_LANES_B8G8R8A8;
       argi += 1;
    } else if (argc >= argi + 1 + R3V_RENDER_SHAPE_ARGC &&
               strcmp(argv[argi], "--shape") == 0) {

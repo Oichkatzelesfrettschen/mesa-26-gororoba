@@ -36,6 +36,13 @@ enum r300_tcl_bypass_triangle_slot {
 #define R300_TRIANGLE_RENDER_SLOT_COUNT 2u
 #define R300_TRIANGLE_SAMPLED_SLOT_COUNT 3u
 
+enum r300_triangle_lane_order {
+   /* Target bytes [B, G, R, A]: VK_FORMAT_B8G8R8A8_UNORM. */
+   R300_TRIANGLE_LANES_B8G8R8A8 = 0,
+   /* Target bytes [R, G, B, A]: VK_FORMAT_R8G8B8A8_UNORM. */
+   R300_TRIANGLE_LANES_R8G8B8A8 = 1,
+};
+
 struct r300_tcl_bypass_triangle_params {
    /* Byte offset of the first vertex inside the vertex BO. */
    uint32_t vertex_offset;
@@ -91,6 +98,11 @@ struct r300_tcl_bypass_triangle_params {
    uint32_t texture_width;
    uint32_t texture_height;
    uint32_t texture_pitch_texels;
+   /* Memory lane order of the 32-bpp texels; FORMAT1's per-channel
+    * selects route the W8Z8Y8X8 word's X/Y/Z/W bytes to shader R/G/B/A,
+    * one select set per order.
+    */
+   enum r300_triangle_lane_order texture_lanes;
    /* The triangles the consumer draws from the record stream: one
     * vertex-list draw of 3 * triangle_count vertices over records
     * 0 .. 3 * triangle_count - 1, the host expansion of an instanced
@@ -187,6 +199,7 @@ int r300_tcl_bypass_triangle_sampled_emit(
    uint32_t width, uint32_t height, uint32_t triangle_count,
    uint32_t texture_offset, uint32_t texture_width,
    uint32_t texture_height, uint32_t texture_pitch_texels,
+   enum r300_triangle_lane_order texture_lanes,
    struct r300_tcl_bypass_triangle_ib *out);
 
 /* Builds the varying cell's fragment binary: the varying-passthrough US
@@ -412,13 +425,6 @@ void r300_tcl_bypass_triangle_varying_extent_oracle(
  * pins the per-parameter dword deltas.
  */
 #define R300_TRIANGLE_VERTEX_DWORDS 12
-
-enum r300_triangle_lane_order {
-   /* Target bytes [B, G, R, A]: VK_FORMAT_B8G8R8A8_UNORM. */
-   R300_TRIANGLE_LANES_B8G8R8A8 = 0,
-   /* Target bytes [R, G, B, A]: VK_FORMAT_R8G8B8A8_UNORM. */
-   R300_TRIANGLE_LANES_R8G8B8A8 = 1,
-};
 
 /* Extent and pitch ceiling of the family.  RB3D_COLORPITCH0 admits a
  * pitch to 8190 pixels and the first-draw contract an extent to

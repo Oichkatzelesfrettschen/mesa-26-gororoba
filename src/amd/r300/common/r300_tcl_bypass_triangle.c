@@ -96,7 +96,9 @@ r300_tcl_bypass_triangle_emit_into(
         params->texture_height > 2048 ||
         params->texture_pitch_texels < params->texture_width ||
         params->texture_pitch_texels > 0x4000 ||
-        (params->texture_offset & 31) != 0))
+        (params->texture_offset & 31) != 0 ||
+        (params->texture_lanes != R300_TRIANGLE_LANES_B8G8R8A8 &&
+         params->texture_lanes != R300_TRIANGLE_LANES_R8G8B8A8)))
       return -EINVAL;
    const uint32_t vertex_count =
       3 * (params->triangle_count ? params->triangle_count : 1);
@@ -231,12 +233,14 @@ r300_tcl_bypass_triangle_emit_into(
                        << R300_TX_HEIGHTMASK_SHIFT) |
                       R300_TX_PITCH_EN);
       /* FORMAT1's per-channel selects default to X, so silicon returns
-       * byte X in every lane without them; the identity selects route
-       * X/Y/Z/W to R/G/B/A (RS482 readback: 0x20202020 for texel
-       * 20,60,a0,e0 with selects absent).
+       * byte X in every lane without them (RS482 readback: 0x20202020
+       * for texel 20,60,a0,e0 with selects absent); each lane order
+       * takes the select set that routes its memory bytes to R/G/B/A.
        */
       r300_pm4_reg(&b, R300_TX_FORMAT1_0,
-                   R300_EASY_TX_FORMAT(Z, Y, X, W, W8Z8Y8X8));
+                   params->texture_lanes == R300_TRIANGLE_LANES_B8G8R8A8
+                      ? R300_EASY_TX_FORMAT(X, Y, Z, W, W8Z8Y8X8)
+                      : R300_EASY_TX_FORMAT(Z, Y, X, W, W8Z8Y8X8));
       r300_pm4_reg(&b, R300_TX_FORMAT2_0,
                    params->texture_pitch_texels - 1);
       r300_pm4_reg(&b, R300_TX_OFFSET_0, params->texture_offset);
@@ -552,6 +556,7 @@ r300_tcl_bypass_triangle_sampled_emit(
    uint32_t width, uint32_t height, uint32_t triangle_count,
    uint32_t texture_offset, uint32_t texture_width,
    uint32_t texture_height, uint32_t texture_pitch_texels,
+   enum r300_triangle_lane_order texture_lanes,
    struct r300_tcl_bypass_triangle_ib *out)
 {
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
@@ -596,6 +601,7 @@ r300_tcl_bypass_triangle_sampled_emit(
       .texture_width = texture_width,
       .texture_height = texture_height,
       .texture_pitch_texels = texture_pitch_texels,
+      .texture_lanes = texture_lanes,
       .triangle_count = triangle_count,
    };
    rc = r300_tcl_bypass_triangle_emit(&params, out);

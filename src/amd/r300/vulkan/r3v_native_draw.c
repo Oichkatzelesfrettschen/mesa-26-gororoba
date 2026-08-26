@@ -479,12 +479,18 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
+      enum r300_triangle_lane_order tex_lanes;
+      if (!r3v_native_render_lane_order(texture->format, &tex_lanes)) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
       sampled_texture = (struct r3v_native_sampled_texture){
          .memory = texture->memory,
          .texture_offset = (uint32_t)texture->memory_offset,
          .texture_width = texture->width,
          .texture_height = texture->height,
          .texture_pitch_texels = texture->row_pitch_bytes / 4,
+         .texture_lanes = tex_lanes,
       };
       sampled = &sampled_texture;
    }
