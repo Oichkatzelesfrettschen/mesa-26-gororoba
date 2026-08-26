@@ -311,6 +311,18 @@ itself admit `imageType=1D`, and admitting `imageType=1D` does not by
 itself close the sampled-image gate. `sampled_image_format_feature_withheld`
 (90 cases, host-model run seal `959264ee4799`) carries this reading.
 
+The ladder's sampled rungs landed after that seal, so the class name
+`sampled_image_format_feature_withheld` now outlives the posture it was
+named for: `r3v_CreateImage` admits sampled usage on the linear
+transfer family for both 32-bpp lane orders, and both
+R8G8B8A8_UNORM and B8G8R8A8_UNORM carry
+`VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT`.  The 90 cases stand where they
+were: the host-model run at seal `7a7ea4232c80` measures the same 90
+`vkCreateImage` refusals, now because `img2D` requests `arraySize = 12`
+together with `SAMPLED_BIT | COLOR_ATTACHMENT_BIT` rather than because
+the sampled bit is withheld.  The paragraph above records the state at
+seal `959264ee4799`, and the class name is the key sealed runs cite.
+
 **`pipeline_barrier` is an executing-route family, not a creation-cell
 family.** The Rung 1 correction above already traced this: 56 cases
 poison on `r3v_CmdExecuteCommands` (no secondary-command-buffer route),
