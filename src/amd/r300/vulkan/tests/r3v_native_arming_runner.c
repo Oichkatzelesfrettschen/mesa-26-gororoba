@@ -44,10 +44,19 @@ static bool cell_compute_identity = false;
  */
 static bool cell_render_shape = false;
 static struct r300_triangle_render_shape render_shape;
+/* --sampled selects the sampled triangle cell: the varying vertex path
+ * with the sampled fragment binary and the TX unit-0 block over the
+ * attended runner's 16x16 uniform texture at offset 0, pitch 16.
+ */
+static bool cell_sampled = false;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (cell_sampled)
+      return r300_tcl_bypass_triangle_sampled_emit(
+         R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, 1, 0, 16,
+         16, 16, cell);
    if (cell_render_shape)
       return r300_tcl_bypass_triangle_render_shape_emit(&render_shape, cell);
    return cell_varying
@@ -177,6 +186,9 @@ main(int argc, char **argv)
               strcmp(argv[argi], "--compute-identity") == 0) {
       cell_compute_identity = true;
       argi += 1;
+   } else if (argc >= argi + 1 && strcmp(argv[argi], "--sampled") == 0) {
+      cell_sampled = true;
+      argi += 1;
    } else if (argc >= argi + 1 + R3V_RENDER_SHAPE_ARGC &&
               strcmp(argv[argi], "--shape") == 0) {
       if (!r3v_render_shape_parse(&argv[argi + 1], &render_shape))
@@ -286,6 +298,8 @@ main(int argc, char **argv)
    r3v_native_arming_collect(&facts, vendor_id, device_id,
                              cell_compute_identity
                                 ? R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER
+                             : cell_sampled
+                                ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
                              : cell_render_shape
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE
                                 : R3V_NATIVE_CELL_KIND_TRIANGLE,
