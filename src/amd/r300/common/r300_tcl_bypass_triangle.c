@@ -1396,6 +1396,15 @@ composed_sample_emit(const struct r300_triangle_composed_render_sample *c,
    return rc;
 }
 
+const uint32_t
+   r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = 0,
+      [R300_TRIANGLE_SLOT_COLOR] = 1,
+      [R300_TRIANGLE_SLOT_TEXTURE] = 1,
+      [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 2,
+      [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 3,
+};
+
 int
 r300_tcl_bypass_triangle_bind_reloc_indices(
    struct r300_tcl_bypass_triangle_ib *ib, const uint32_t *slot_indices,

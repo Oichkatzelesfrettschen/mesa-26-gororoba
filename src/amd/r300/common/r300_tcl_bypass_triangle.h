@@ -513,6 +513,14 @@ int r300_tcl_bypass_triangle_composed_render_sample_emit(
  * idempotent.  Returns 0 or a negative errno, and validates the sites
  * against the emitted form first, so binding twice refuses.
  */
+/* The relocation index each composed slot resolves to once the winsys
+ * has merged the shared first target into one entry: the map a recorder
+ * reproduces from its own reference array, and the map an offline
+ * emitter binds with to reach the digest the recorded cell carries.
+ */
+extern const uint32_t
+   r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT];
+
 int r300_tcl_bypass_triangle_bind_reloc_indices(
    struct r300_tcl_bypass_triangle_ib *ib, const uint32_t *slot_indices,
    uint32_t slot_index_count);

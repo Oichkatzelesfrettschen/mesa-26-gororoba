@@ -1384,7 +1384,21 @@ VkResult r3v_native_record_tcl_bypass_triangle_render_shape(
  * to that array's positions.  The four memories name four distinct GEM
  * objects; a repeat among them merges entries whose roles carry
  * different domains and refuses.
+ *
+ * The caller owns both vertex payloads, which the recording leaves
+ * untouched: the render half fetches four-dword position records
+ * (r300_tcl_bypass_triangle_render_shape_vertices at its own shape),
+ * and the sample half fetches eight-dword records carrying position
+ * plus the TEX0 coordinate the texture fetch reads
+ * (r300_tcl_bypass_triangle_varying_vertices at the reference extent).
+ * The two layouts differ, so the two arrays are filled separately.
  */
+/* The composed cell's five slots reach four buffer objects, since its
+ * first target fills both the render half's color slot and the sample
+ * half's texture slot.
+ */
+#define R3V_NATIVE_COMPOSED_REFERENCE_COUNT 4u
+
 struct r300_triangle_composed_render_sample;
 VkResult r3v_native_record_composed_render_sample(
    VkCommandBuffer commandBuffer, VkDeviceMemory renderVertexMemory,

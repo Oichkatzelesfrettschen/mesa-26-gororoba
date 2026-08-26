@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
 
 #include <radeon_drm.h>
 #include <vulkan/vulkan.h>
@@ -22,6 +23,9 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 #include "r3v_native.h"
+#include "tests/r3v_native_shim_arming.h"
+
+#include "util/mesa-blake3.h"
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
                                              const char *pName);
@@ -50,8 +54,54 @@ typedef PFN_vkVoidFunction (*icd_gipa_fn)(VkInstance, const char *);
 #define RELOC_PAYLOAD(index) ((index) * 4u)
 
 int
-main(void)
+main(int argc, char **argv)
 {
+   /* The unbound mode arms with the digest of the cell as emitted, the
+    * form whose payloads name their slot numbers.  The recorder installs
+    * the bound form, so the gate compares two different streams and
+    * refuses: the calibration that keeps an offline report from
+    * authorizing a stream the recorder never installs.
+    */
+   const bool unbound = argc == 2 && strcmp(argv[1], "unbound") == 0;
+   /* Arm from the offline cell before the device reads its environment:
+    * emit the composed cell, bind it with the merged slot map, and
+    * declare that digest.  The recorder installs the same stream, so an
+    * armed submission below proves the reported digest is the one the
+    * gate compares.
+    */
+   struct r300_triangle_composed_render_sample armed_shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&armed_shape.render);
+   r300_tcl_bypass_triangle_render_shape_reference(&armed_shape.sample);
+   armed_shape.sample.target_offset = 0;
+   struct r300_tcl_bypass_triangle_ib armed_cell;
+   CHECK(r300_tcl_bypass_triangle_composed_render_sample_emit(
+            &armed_shape, &armed_cell) == 0,
+         "the offline cell emits");
+   if (!unbound) {
+      CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
+               &armed_cell, r300_tcl_bypass_triangle_composed_slot_index,
+               R300_TRIANGLE_SLOT_COUNT) == 0,
+            "the offline cell binds");
+   }
+   char armed_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(armed_cell.ib, armed_cell.ib_size_dwords,
+                               armed_digest);
+   r300_tcl_bypass_triangle_release(&armed_cell);
+
+   struct utsname host;
+   CHECK(uname(&host) == 0, "uname");
+   char manifest_template[] = "/tmp/r3v-composed-XXXXXX";
+   const char *manifest_dir = mkdtemp(manifest_template);
+   CHECK(manifest_dir != NULL, "mkdtemp");
+   if (manifest_dir == NULL)
+      return 1;
+   setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
+   setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+   setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", armed_digest, 1);
+   setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
+   setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+          R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+
    icd_gipa_fn gipa = vk_icdGetInstanceProcAddr;
 
    VkInstance instance = VK_NULL_HANDLE;
@@ -100,6 +150,9 @@ main(void)
    CHECK(result == VK_SUCCESS, "vkCreateDevice: %d", result);
    if (result != VK_SUCCESS)
       return 1;
+
+   r3v_native_device_from_handle(device)->arming_provider =
+      &r3v_native_shim_arming_provider;
 
    LOAD_DEVICE(vkAllocateMemory);
    LOAD_DEVICE(vkFreeMemory);
@@ -225,13 +278,7 @@ main(void)
     * its slot fills, which the recorder bound from the array's own
     * positions.
     */
-   const uint32_t expected_index[R300_TRIANGLE_SLOT_COUNT] = {
-      [R300_TRIANGLE_SLOT_VERTEX] = 0,
-      [R300_TRIANGLE_SLOT_COLOR] = 1,
-      [R300_TRIANGLE_SLOT_TEXTURE] = 1,
-      [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 2,
-      [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 3,
-   };
+   const uint32_t *expected_index = r300_tcl_bypass_triangle_composed_slot_index;
    struct r300_tcl_bypass_triangle_ib reference_cell;
    CHECK(r300_tcl_bypass_triangle_composed_render_sample_emit(
             &composed, &reference_cell) == 0,
@@ -254,8 +301,52 @@ main(void)
          differing++;
    }
    CHECK(differing == 3, "three payloads move, got %u", differing);
+
+   /* Binding the reference cell with the same map reproduces the
+    * installed stream byte for byte, so the digest an offline emitter
+    * reports under that map is the digest the arming gate compares
+    * against the recorded cell.  A report from the unbound form would
+    * name a stream the recorder never installs, and the armed run would
+    * refuse on the mismatch.
+    */
+   CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
+            &reference_cell, r300_tcl_bypass_triangle_composed_slot_index,
+            R300_TRIANGLE_SLOT_COUNT) == 0,
+         "the reference cell binds");
+   CHECK(memcmp(reference_cell.ib, native_cmd->ib,
+                (size_t)native_cmd->ib_size_dwords * sizeof(uint32_t)) == 0,
+         "the bound reference stream equals the installed stream");
    r300_tcl_bypass_triangle_release(&reference_cell);
    radeon_drm_vk_reloc_list_finish(&relocs);
+
+   /* The composed kind reaches the gate: the geometry predicate reads
+    * the merged binding this recorder installs, and a kind with no
+    * predicate reports its geometry unfrozen and refuses before the
+    * ioctl.  The gate was armed ahead of device creation with the
+    * offline cell's bound digest -- the same order the attended
+    * procedure runs in -- so a submission proves that the digest an
+    * offline emitter reports authorizes the recorded cell.
+    */
+   LOAD_DEVICE(vkEndCommandBuffer);
+   LOAD_DEVICE(vkGetDeviceQueue);
+   LOAD_DEVICE(vkQueueSubmit);
+   result = vkEndCommandBuffer(cmd);
+   CHECK(result == VK_SUCCESS, "vkEndCommandBuffer: %d", result);
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(device, 0, 0, &queue);
+   result = vkQueueSubmit(queue, 1,
+                          &(VkSubmitInfo){
+                             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                             .commandBufferCount = 1,
+                             .pCommandBuffers = &cmd,
+                          },
+                          VK_NULL_HANDLE);
+   if (unbound) {
+      CHECK(result != VK_SUCCESS,
+            "the unbound digest refuses the recorded cell, got %d", result);
+   } else {
+      CHECK(result == VK_SUCCESS, "composed vkQueueSubmit: %d", result);
+   }
 
    vkDestroyCommandPool(device, pool, NULL);
    for (unsigned i = 0; i < 4; i++)
