@@ -25,6 +25,7 @@
 #define TERAKAN_QUEUE_H
 
 #include "terakan_bo.h"
+#include "terakan_carrier_submit_scratch.h"
 #include "terakan_sync_completion.h"
 
 #include "c11/threads.h"
@@ -224,6 +225,9 @@ struct terakan_queue {
    uint32_t shader_rings_bytes_shr8;
    struct terakan_bo * shader_rings;
    uint64_t shader_rings_last_usage;
+
+   /* Reused by externally synchronized queue submissions. */
+   struct terakan_carrier_submit_scratch carrier_submit_scratch;
 
    /* Monotonic per-queue sequence counter for the dmabuf-carrier
     * tail EVENT_WRITE_EOP fence-word write.  Increments once per

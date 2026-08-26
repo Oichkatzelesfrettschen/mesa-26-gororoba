@@ -64,6 +64,7 @@ libterakan_files = files(
   'terakan_bo.h',
   'terakan_buffer.c',
   'terakan_buffer.h',
+  'terakan_carrier_submit_scratch.h',
   'terakan_command_buffer.c',
   'terakan_command_buffer.h',
   'terakan_cp_dma.c',
@@ -309,6 +310,28 @@ _dev_icd = custom_target(
 devenv.append('VK_ICD_FILENAMES', _dev_icd.full_path())
 
 if with_tests
+  terakan_carrier_submit_scratch_test = executable(
+    'terakan_carrier_submit_scratch_test',
+    files('tests/terakan_carrier_submit_scratch_test.c'),
+    include_directories : [
+      inc_include,
+      inc_src,
+      include_directories('.'),
+    ],
+    dependencies : [idep_vulkan_util],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'terakan-carrier-submit-scratch',
+    terakan_carrier_submit_scratch_test,
+    suite : ['terakan'],
+  )
+  test(
+    'terakan-carrier-submit-scratch-contract',
+    prog_python,
+    args : [files('tests/terakan_carrier_submit_scratch_contract_test.py')],
+    suite : ['terakan'],
+  )
   terakan_descriptor_set_layout_mask_test = executable(
     'terakan_descriptor_set_layout_mask_test',
     files('tests/terakan_descriptor_set_layout_mask_test.c'),
