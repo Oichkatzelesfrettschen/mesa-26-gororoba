@@ -1,34 +1,47 @@
-import pytest
-import sys
+import importlib.util
 import os
-from unittest.mock import MagicMock
+import sys
 
-# Mock yaml before it's imported by u_format_parse
-sys.modules['yaml'] = MagicMock()
+_test_dir = os.path.dirname(__file__)
+_format_dir = os.path.normpath(os.path.join(_test_dir, "../../../util/format"))
+_module_path = os.path.join(_test_dir, "terascale_formats.py")
+_original_sys_path = list(sys.path)
+try:
+    sys.path.insert(0, _format_dir)
+    _module_spec = importlib.util.spec_from_file_location(
+        "terascale_formats_under_test", _module_path
+    )
+    assert _module_spec is not None
+    assert _module_spec.loader is not None
+    _terascale_formats = importlib.util.module_from_spec(_module_spec)
+    _module_spec.loader.exec_module(_terascale_formats)
+finally:
+    sys.path[:] = _original_sys_path
 
-# Ensure u_format_parse is findable before importing terascale_formats
-# terascale_formats.py uses sys.argv[0] to find u_format_parse, which is unreliable in tests.
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../util/format"))
+NumberTypeInfo = _terascale_formats.NumberTypeInfo
 
-from terascale_formats import NumberTypeInfo
 
 def test_number_type_info_is_equal_ignoring_sign_none():
-    info = NumberTypeInfo('UNORM', 'SNORM')
+    info = NumberTypeInfo("UNORM", "SNORM")
     assert info.is_equal_ignoring_sign(None) is False
 
+
 def test_number_type_info_is_equal_ignoring_sign_same():
-    info = NumberTypeInfo('UNORM', 'SNORM')
-    assert info.is_equal_ignoring_sign('UNORM') is True
+    info = NumberTypeInfo("UNORM", "SNORM")
+    assert info.is_equal_ignoring_sign("UNORM") is True
+
 
 def test_number_type_info_is_equal_ignoring_sign_opposite():
-    info = NumberTypeInfo('UNORM', 'SNORM')
-    assert info.is_equal_ignoring_sign('SNORM') is True
+    info = NumberTypeInfo("UNORM", "SNORM")
+    assert info.is_equal_ignoring_sign("SNORM") is True
+
 
 def test_number_type_info_is_equal_ignoring_sign_different():
-    info = NumberTypeInfo('UNORM', 'SNORM')
-    assert info.is_equal_ignoring_sign('UINT') is False
+    info = NumberTypeInfo("UNORM", "SNORM")
+    assert info.is_equal_ignoring_sign("UINT") is False
+
 
 def test_number_type_info_is_equal_ignoring_sign_no_opposite():
-    info = NumberTypeInfo('FLOAT')
-    assert info.is_equal_ignoring_sign('FLOAT') is True
-    assert info.is_equal_ignoring_sign('UNORM') is False
+    info = NumberTypeInfo("FLOAT")
+    assert info.is_equal_ignoring_sign("FLOAT") is True
+    assert info.is_equal_ignoring_sign("UNORM") is False

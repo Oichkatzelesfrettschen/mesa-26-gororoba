@@ -41,6 +41,15 @@ amd_terascale_formats_c = custom_target(
   capture : true,
 )
 
+if with_tests
+  test(
+    'terascale_formats_py',
+    prog_python,
+    args : [files('test_terascale_formats.py')],
+    suite : ['amd'],
+  )
+endif
+
 amd_terascale_common_files = files(
   '../../../gallium/drivers/r600/eg_asm.c',
   '../../../gallium/drivers/r600/r600_asm.c',
