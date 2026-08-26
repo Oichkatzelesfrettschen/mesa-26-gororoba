@@ -31,11 +31,16 @@ expect_failure() {
   package="$1"
   builddir="$2"
   label="$3"
+  expected_diagnostic="${4:-reconfigure via the build-infra Makefile}"
   if run_gate "$package" "$builddir" > "$WORKDIR/$label.out" 2>&1; then
     echo "expected $label to fail for $package" >&2
     exit 1
   fi
-  grep -Fq 'reconfigure via the build-infra Makefile' "$WORKDIR/$label.out"
+  if ! grep -Fq "$expected_diagnostic" "$WORKDIR/$label.out"; then
+    echo "expected $label diagnostic for $package: $expected_diagnostic" >&2
+    cat "$WORKDIR/$label.out" >&2
+    exit 1
+  fi
 }
 
 write_options() {
@@ -50,7 +55,25 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps([
     {"name": "prefix", "value": sys.argv[2]},
     {"name": "sysconfdir", "value": "/etc"},
+    {"name": "vulkan-layers", "value": ["anti-lag", "device-select", "overlay"]},
 ]) + "\n", encoding="utf-8")
+PYTHON
+}
+
+write_layers() {
+  metadata=$1
+  shift
+  python3 - "$metadata" "$@" <<'PYTHON'
+import json
+import sys
+from pathlib import Path
+
+metadata = Path(sys.argv[1])
+options = json.loads(metadata.read_text(encoding="utf-8"))
+for option in options:
+    if option.get("name") == "vulkan-layers":
+        option["value"] = sys.argv[2:]
+metadata.write_text(json.dumps(options) + "\n", encoding="utf-8")
 PYTHON
 }
 
@@ -80,5 +103,23 @@ for package in \
   write_options "$valid" /opt/repack-fixture
   run_gate "$package" "$valid"
 done
+
+debug_package="$HERE/mesa-gororoba-debug-optimized/PKGBUILD"
+
+missing_anti_lag="$WORKDIR/debug-optimized-missing-anti-lag"
+write_options "$missing_anti_lag" /opt/repack-fixture
+write_layers "$missing_anti_lag/meson-info/intro-buildoptions.json" \
+  device-select overlay
+expect_failure "$debug_package" "$missing_anti_lag" \
+  "debug-optimized-missing-anti-lag" \
+  "vulkan-layers omits required implicit layers: anti-lag"
+
+missing_device_select="$WORKDIR/debug-optimized-missing-device-select"
+write_options "$missing_device_select" /opt/repack-fixture
+write_layers "$missing_device_select/meson-info/intro-buildoptions.json" \
+  anti-lag overlay
+expect_failure "$debug_package" "$missing_device_select" \
+  "debug-optimized-missing-device-select" \
+  "vulkan-layers omits required implicit layers: device-select"
 
 echo "repack config-gate fixtures: PASS"

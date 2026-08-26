@@ -46,7 +46,7 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
-pkgrel=20
+pkgrel=21
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
@@ -98,7 +98,7 @@ install="${pkgname}.install"
 # prebuilt build-infra builddir (see _builddir), not from a git checkout.
 source=('mesa-gororoba-debug-optimized-env.sh'
         'mesa-gororoba-debug-optimized-run')
-sha256sums=('91fde174cd155c2e0062f98b1443a9eaf18f8f7a04ba74c6d5617de65a5d857a'
+sha256sums=('3b9164da7656c5d7b122bc2924f51e91d0fb3cd2ad4efb1e4f2da28b767a10c9'
             '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf')
 
 _prefix=/opt/mesa-gororoba-debug-optimized
@@ -233,6 +233,17 @@ for index, option in enumerate(options):
 if "prefix" not in opts or "sysconfdir" not in opts:
     reconfigure("lacks required prefix or sysconfdir options")
 
+configured_layers = opts.get("vulkan-layers")
+if (not isinstance(configured_layers, list) or
+        not all(isinstance(layer, str) for layer in configured_layers)):
+    reconfigure("has an invalid vulkan-layers option (expected a string list)")
+
+required_layers = {"anti-lag", "device-select"}
+missing_layers = sorted(required_layers.difference(configured_layers))
+if missing_layers:
+    reconfigure("vulkan-layers omits required implicit layers: %s" %
+                ", ".join(missing_layers))
+
 bad = []
 if opts.get("prefix") != expected_prefix:
     bad.append("prefix=%r (need %r)" % (opts.get("prefix"), expected_prefix))
@@ -246,6 +257,26 @@ if bad:
 PYGATE
 
   meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
+
+  # The package replaces Arch's complete implicit-layer slot.  Verify the
+  # staged runtime pair before creating any /usr activation links so stale or
+  # incomplete builddirs cannot satisfy the package dependency while dropping
+  # an implicit layer.
+  local layer_name layer_artifact missing_layer_artifacts=""
+  for layer_name in anti_lag device_select; do
+    for layer_artifact in \
+      "lib/libVkLayer_MESA_${layer_name}.so" \
+      "share/vulkan/implicit_layer.d/VkLayer_MESA_${layer_name}.json"; do
+      [ -f "${pkgdir}${_prefix}/${layer_artifact}" ] \
+        || missing_layer_artifacts="${missing_layer_artifacts} ${_prefix}/${layer_artifact}"
+    done
+  done
+  if [ -n "${missing_layer_artifacts}" ]; then
+    echo "ERROR: required Vulkan implicit-layer artifacts are missing:${missing_layer_artifacts}" >&2
+    echo "       reconfigure and rebuild profile ${_profile}; refusing to replace" >&2
+    echo "       vulkan-mesa-implicit-layers with an incomplete staged tree." >&2
+    return 1
+  fi
 
   install -Dm755 "${srcdir}/mesa-gororoba-debug-optimized-run" \
     "${pkgdir}/usr/bin/mesa-gororoba-debug-optimized-run"
