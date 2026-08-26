@@ -482,15 +482,24 @@ above is rung zero; the ladder after it runs in this order:
    render half's target -- extent, row pitch, lane order, and byte
    offset -- so the halves cannot disagree about the bytes between them,
    and the concatenation puts the render half's destination-cache flush
-   ahead of the sample half's texture-tag invalidate.  Its relocation
-   list names the first target twice, once through the color slot the
-   render half writes and once through the texture slot the sample half
-   reads, since use-site identity is what the kernel validates; the
-   arming runner emits it under `--composed`, 485 IB dwords, blake3
-   `7e1eeb21`.  Open: the silicon receipt for that digest, and a
-   recording contract admitting a second render pass and a second
-   deferred draw per command buffer, which the one-pass bound refuses
-   today (`r3v_CmdBeginRenderPass`).
+   ahead of the sample half's texture-tag invalidate.  The arming runner
+   emits it under `--composed`, 485 IB dwords, blake3 `7e1eeb21`, which
+   describes the cell in its emitted form.  A submission of that form
+   reaches the wrong buffers: the emitter writes each relocation payload
+   as its slot number, which holds while every slot names a distinct
+   buffer object, and the composed cell's first target is both the
+   render half's color slot and the sample half's texture slot, so
+   `radeon_drm_vk_reloc_list_add` merges the two into one relocation
+   entry as the kernel does and three of the five payloads then name a
+   buffer they were not emitted for.
+   `r300_tcl_bypass_triangle_bind_reloc_indices` binds the payloads to
+   the merged indices, and its test derives the merged map by the winsys
+   rule and pins the disagreement before binding.  Open: a recorder that
+   deduplicates the cell's buffer objects, binds, and installs; the
+   silicon receipt, whose digest is the bound cell's rather than
+   `7e1eeb21`; and a recording contract admitting a second render pass
+   and a second deferred draw per command buffer, which the one-pass
+   bound refuses today (`r3v_CmdBeginRenderPass`).
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated
