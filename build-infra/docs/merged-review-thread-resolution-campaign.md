@@ -13,14 +13,16 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   anchors, exact endpoint thread IDs, and paths to retained artifacts.
 - `review-thread-frontiers/merged-pr1-pr90/` preserves the first classified
   frontier and its 50-row post-resolution ledger.
-- `review-thread-frontiers/merged-pr93-pr161/` is the active second-batch raw
-  denominator.  Its manifest binds two request/response pages, exact query
-  text, default-branch identity, every selected comment, hashes, and the
-  chronological stop proof.
+- `review-thread-frontiers/merged-pr93-pr161/` preserves the closed second-batch
+  raw denominator and its chronological proof.
+- `review-thread-frontiers/merged-thread-frontier-92b67f719e7b/` is the active
+  third-batch raw denominator.  Its manifest binds eleven request/response
+  pages, exact query text, default-branch identity, every selected comment,
+  hashes, and the chronological stop proof.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
-  views.  They retain the last fully classified batch until the second-batch
-  source audit produces its action rows.
+  views.  They retain the closed second batch until the third-batch source
+  audit produces its action rows.
 - `../scripts/review_thread_frontier.py` validates the frontier and ledger
   offline.  Its unit tests calibrate duplicate identity, ordering, false merged
   evidence, owner-path drift, missing closure rows, live GraphQL identity, and
@@ -61,7 +63,7 @@ commit OIDs.  The normalization filters `isResolved=false`, sorts by
 page contained no PR with more than 100 review threads, so neither nested
 connection was truncated.
 
-### Active captured frontier
+### Closed second frontier
 
 The second batch is anchored to merged `main`
 `661a73bf5bb99146ce096cc086613c7a819895f3`.  The authenticated private-repo
@@ -82,6 +84,28 @@ retained request cursors prove the two pages are contiguous.  Exact query text,
 raw responses, normalized selected threads, every selected comment body and
 author, and their hashes live in
 `review-thread-frontiers/merged-pr93-pr161/`.
+
+### Active captured frontier
+
+The third batch is anchored to merged `main`
+`dd93eca45e58f3592e505b67a15625829feffb91`.  The authenticated private-repo
+capture scanned 1,100 merged pull requests across eleven ascending pages and
+observed 79 unresolved threads among 2,193 total review threads.
+
+- Rank 1 is `PRRT_kwDOR3YK5M6D9-pq`, created
+  `2026-05-22T00:28:15Z` on PR 167.
+- Rank 50 is `PRRT_kwDOR3YK5M6QY6A8`, created
+  `2026-07-13T12:34:45Z` on PR 1109.
+- The last scanned pull request is PR 1130, created
+  `2026-07-16T19:18:37Z`.
+
+The pull-request connection is ordered by `createdAt` ascending, and a review
+comment cannot predate its pull request.  PR 1130 therefore establishes that
+every unscanned pull request was created after the rank-50 comment.  The
+retained request cursors prove the eleven pages are contiguous.  Exact query
+text, raw responses, normalized selected threads, every selected comment body
+and author, and their hashes live in
+`review-thread-frontiers/merged-thread-frontier-92b67f719e7b/`.
 
 ## First-batch classification
 
@@ -109,7 +133,7 @@ The seven actionable rows collapse into five mechanism-coherent changes:
 These changes remain separate reviewable pull requests.  The 50-thread batch
 is the audit denominator, not permission to combine unrelated code paths.
 
-## Active classification
+## Closed second-batch classification
 
 `review-thread-classifications/merged-pr93-pr161/assessments.tsv` classifies
 the second batch against merged main `0fab98b4e09da3f4d9920535cd2518e2055c9e27`.
