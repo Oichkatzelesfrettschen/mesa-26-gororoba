@@ -277,8 +277,10 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * as identity (0x3210), which the NIR pass never
                    * dereferences for tg4 anyway.
                    */
-                  {
-                     uint8_t const sampler_slot = base + di;
+                  if (binding_is_sampled_image) {
+                     uint8_t const metadata_index =
+                        ls->first_shader_tg4_metadata[stage] +
+                        r->first_shader_descriptor + di;
                      bool const is_tex =
                         G_03001C_TYPE(desc.resource[7]) ==
                         V_03001C_SQ_TEX_VTX_VALID_TEXTURE;
@@ -295,12 +297,9 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      } else {
                         pack = 0x3210u;
                      }
-                     if (sampler_slot < TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES) {
-                        uint32_t * const slot =
-                           &command_writer->robustness_metadata.view_swizzles[sampler_slot / 2u];
-                        uint32_t const shift = (sampler_slot & 1u) ? 16u : 0u;
-                        uint32_t const cleared = *slot & ~(0xffffu << shift);
-                        *slot = cleared | ((uint32_t)pack << shift);
+                     if (terakan_tg4_metadata_set_swizzle(
+                            command_writer->robustness_metadata.view_swizzles,
+                            stage, metadata_index, pack)) {
                         command_writer->robustness_metadata.dirty = true;
                      }
                   }
@@ -572,8 +571,12 @@ terakan_pipeline_layout_create(struct terakan_device * const device,
    layout->sets = sets;
 
    uint8_t next_res[MESA_SHADER_STAGES] = {};
+   uint8_t next_tg4_metadata[MESA_SHADER_STAGES] = {};
    uint8_t next_ubo[MESA_SHADER_STAGES] = {};
    uint8_t next_samp[MESA_SHADER_STAGES] = {};
+
+   for (unsigned stage_index = 0; stage_index < MESA_SHADER_STAGES; ++stage_index)
+      terakan_tg4_metadata_map_init(&layout->shader_tg4_metadata_maps[stage_index]);
 
    for (uint32_t set_idx = 0; set_idx < layout->vk.set_count; ++set_idx) {
       struct vk_descriptor_set_layout const * const slb = layout->vk.set_layouts[set_idx];
@@ -594,7 +597,14 @@ terakan_pipeline_layout_create(struct terakan_device * const device,
          if (max_res - next_res[st] < sls->resource_count)
             goto too_many_descriptors;
          s->first_shader_resources[st] = TERAKAN_RESOURCE_RANGE_MUTABLE_BASE + next_res[st];
+         s->first_shader_tg4_metadata[st] = next_tg4_metadata[st];
+         if (!terakan_tg4_metadata_map_add_range(
+                &layout->shader_tg4_metadata_maps[st],
+                s->first_shader_resources[st], next_tg4_metadata[st],
+                sls->sampled_image_count))
+            goto too_many_descriptors;
          next_res[st] += sls->resource_count;
+         next_tg4_metadata[st] += sls->sampled_image_count;
 
          if (next_ubo[st] + sls->uniform_buffer_count > TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS)
             goto too_many_descriptors;

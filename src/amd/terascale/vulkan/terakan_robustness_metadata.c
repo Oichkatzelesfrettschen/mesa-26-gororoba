@@ -28,7 +28,7 @@
  * populating it with the current per-slot UAV bounds, and binding it to
  * KCACHE bank 14 at draw/dispatch time.
  *
- * Layout (KCACHE bank 14, 1 line = 256 bytes):
+ * Layout (KCACHE bank 14, one 256-byte line per shader stage):
  *   dword  0..11 : uint32_t ssbo_byte_sizes[12]
  *                   For STORAGE_BUFFER: exact byte count from Vulkan range.
  *   dword 12     : uint32_t trash_page_addr (GPU VA >> 2)
@@ -43,7 +43,7 @@
  *                   hardware treating R3.z as the absolute slice index
  *                   and ignoring CB_COLOR_VIEW.SLICE_START on writes.
  *   dword 40..51 : uint32_t view_swizzles[12]  (2 bindings packed per dword)
- *                   Per-sampler-binding VkComponentMapping for
+ *                   Stage-local compact sampled-image VkComponentMapping for
  *                   `terakan_nir_lower_tg4_view_swizzle`.  Each binding
  *                   packs as 16 bits = 4 channels x 4-bit targets, with
  *                   the channel-target encoding matching
@@ -125,27 +125,57 @@ terakan_robustness_metadata_apply(
       struct terakan_bo const *bo;
       uint32_t va_kcache_lines;
       uint32_t * const mapping = (uint32_t *)terakan_push_buffer_allocate_kcache(
-         command_writer->base.command_buffer, TERAKAN_KCACHE_HW_LINE_BYTES,
+         command_writer->base.command_buffer,
+         TERAKAN_KCACHE_HW_LINE_BYTES * MESA_SHADER_STAGES,
          &bo, &va_kcache_lines);
       if (unlikely(mapping == NULL))
          return;
 
-      /* Zero the entire KCACHE line (256 bytes = 64 dwords).
-       * Then fill the per-UAV byte sizes and texel buffer element counts. */
-      memset(mapping, 0, TERAKAN_KCACHE_HW_LINE_BYTES);
-
       /* PROBE_FILL_LINE (): if set, overwrite the entire
-       * 256-byte KCACHE line with 0xDEADBEEF AFTER the field writes
+       * stage-specific 256-byte KCACHE lines with 0xDEADBEEF AFTER the field writes
        * below.  If shader's KC14 read returns 0xDEADBEEF, the BO IS
        * being fetched (residual is a slot-offset bug); if shader still
        * returns 0, the BO is not being fetched at all. */
       bool const probe_fill_line =
          debug_get_bool_option("TERAKAN_PROBE_FILL_LINE", false);
 
-      /* Dwords 0..11: SSBO byte sizes. */
-      memcpy(mapping,
-             command_writer->robustness_metadata.payload.uav_byte_sizes,
-             sizeof(command_writer->robustness_metadata.payload.uav_byte_sizes));
+      struct terakan_device const * const device =
+         terakan_gfx_command_writer_device(command_writer);
+      for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
+         uint32_t * const stage_mapping =
+            mapping + stage * (TERAKAN_KCACHE_HW_LINE_BYTES / sizeof(uint32_t));
+         memset(stage_mapping, 0, TERAKAN_KCACHE_HW_LINE_BYTES);
+
+         /* Dwords 0..11: SSBO byte sizes. */
+         memcpy(stage_mapping,
+                command_writer->robustness_metadata.payload.uav_byte_sizes,
+                sizeof(command_writer->robustness_metadata.payload.uav_byte_sizes));
+         /* Dwords 16..27: texel buffer element counts. */
+         memcpy(stage_mapping + 16,
+                command_writer->robustness_metadata.payload.texel_buffer_element_counts,
+                sizeof(command_writer->robustness_metadata.payload
+                          .texel_buffer_element_counts));
+         /* Dwords 28..39: per-UAV baseArrayLayer for slice-coordinate lowering. */
+         memcpy(stage_mapping + 28,
+                command_writer->robustness_metadata.payload.uav_base_array_layers,
+                sizeof(command_writer->robustness_metadata.payload.uav_base_array_layers));
+         /* Dwords 40..51: the compact sampled-image metadata namespace for
+          * this shader stage. Absolute SQC resource IDs remain independent
+          * and may exceed the 24-entry metadata budget. */
+         memcpy(stage_mapping + 40,
+                command_writer->robustness_metadata.view_swizzles[stage],
+                sizeof(command_writer->robustness_metadata.view_swizzles[stage]));
+         /* Dword 12: driver-owned trash page GPU VA >> 2. */
+         stage_mapping[12] = device->robustness_trash_page_va_shr2;
+
+         if (probe_fill_line) {
+            for (uint32_t dword_index = 0;
+                 dword_index < TERAKAN_KCACHE_HW_LINE_BYTES / sizeof(uint32_t);
+                 ++dword_index)
+               stage_mapping[dword_index] = 0xDEADBEEFu;
+         }
+      }
+
       if (debug_get_bool_option("TERAKAN_DEBUG_ROBUSTNESS_METADATA", false)) {
          fprintf(stderr, "terakan/robustness_metadata: uav_byte_sizes[0..5] = %u %u %u %u %u %u\n",
                  command_writer->robustness_metadata.payload.uav_byte_sizes[0],
@@ -163,40 +193,9 @@ terakan_robustness_metadata_apply(
                  command_writer->robustness_metadata.payload.uav_base_array_layers[4],
                  command_writer->robustness_metadata.payload.uav_base_array_layers[5]);
       }
-      /* Dwords 16..27: texel buffer element counts. */
-      memcpy(mapping + 16,
-             command_writer->robustness_metadata.payload.texel_buffer_element_counts,
-             sizeof(command_writer->robustness_metadata.payload.texel_buffer_element_counts));
-      /* Dwords 28..39: per-UAV baseArrayLayer for slice-coordinate lowering. */
-      memcpy(mapping + 28,
-             command_writer->robustness_metadata.payload.uav_base_array_layers,
-             sizeof(command_writer->robustness_metadata.payload.uav_base_array_layers));
-      /* Dwords 40..51: per-sampler-binding VkComponentMapping pack
-       * (two bindings per dword, 16 bits each).  Consumed by
-       * terakan_nir_lower_tg4_view_swizzle to pre-map the gather
-       * component argument before FETCH4 emission. */
-      memcpy(mapping + 40,
-             command_writer->robustness_metadata.view_swizzles,
-             sizeof(command_writer->robustness_metadata.view_swizzles));
-      /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
-       * Used by math-predication write guards to redirect OOB writes to a safe
-       * garbage sink instead of offset 0 of the target buffer. */
-      {
-         struct terakan_device const * const device =
-            terakan_gfx_command_writer_device(command_writer);
-         ((uint32_t *)mapping)[12] = device->robustness_trash_page_va_shr2;
-      }
-
-      /* Apply PROBE_FILL_LINE: blanket-fill 0xDEADBEEF across all 64
-       * dwords AFTER the field-specific writes.  Overrides everything
-       * so the shader's KC14 read should return 0xDEADBEEF if it
-       * actually fetches from this BO. */
       if (probe_fill_line) {
-         for (uint32_t i = 0; i < TERAKAN_KCACHE_HW_LINE_BYTES / 4u; ++i) {
-            ((uint32_t *)mapping)[i] = 0xDEADBEEFu;
-         }
          fprintf(stderr,
-            "TERAKAN_PROBE_FILL_LINE: filled 256-byte line with 0xDEADBEEF\n");
+            "TERAKAN_PROBE_FILL_LINE: filled stage KCACHE lines with 0xDEADBEEF\n");
       }
 
       /* flush CPU store buffers before the IB
@@ -247,7 +246,7 @@ terakan_robustness_metadata_apply(
             TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
             1,  /* size_lines: 1 KCACHE line (256 bytes) */
             command_writer->robustness_metadata.bo,
-            command_writer->robustness_metadata.va_kcache_lines);
+            command_writer->robustness_metadata.va_kcache_lines + stage_index);
       }
       command_writer->robustness_metadata.bound_to_stages |= bind_stages;
    }

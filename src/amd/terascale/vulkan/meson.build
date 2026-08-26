@@ -78,6 +78,7 @@ libterakan_files = files(
   'terakan_descriptor_set_layout.c',
   'terakan_descriptor_set_layout.h',
   'terakan_descriptor_set_layout_mask.h',
+  'terakan_tg4_metadata.h',
   'terakan_device.c',
   'terakan_device.h',
   'terakan_fix_ac_warmup.c',
@@ -348,6 +349,27 @@ if with_tests
   test(
     'terakan-wide-phi-selector',
     terakan_wide_phi_selector_test,
+    suite : ['terakan'],
+  )
+  terakan_tg4_metadata_test = executable(
+    'terakan_tg4_metadata_test',
+    files('tests/terakan_tg4_metadata_test.c'),
+    include_directories : [
+      inc_include,
+      inc_src,
+      include_directories('.'),
+    ],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'terakan-tg4-metadata',
+    terakan_tg4_metadata_test,
+    suite : ['terakan'],
+  )
+  test(
+    'terakan-tg4-metadata-contract',
+    prog_python,
+    args : [files('tests/terakan_tg4_metadata_contract_test.py')],
     suite : ['terakan'],
   )
   terakan_descriptor_set_layout_mask_test = executable(

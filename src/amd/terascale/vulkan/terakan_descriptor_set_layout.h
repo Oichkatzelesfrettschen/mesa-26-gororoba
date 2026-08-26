@@ -90,6 +90,7 @@ struct terakan_descriptor_set_layout_shader {
    uint8_t uav_range_count;
 
    uint8_t resource_count;
+   uint8_t sampled_image_count;
    uint8_t uniform_buffer_count;
    uint8_t sampler_count;
 };

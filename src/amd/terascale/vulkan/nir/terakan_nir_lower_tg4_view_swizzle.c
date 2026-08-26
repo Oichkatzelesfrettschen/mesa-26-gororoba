@@ -18,8 +18,10 @@
  *
  * This pass detects `nir_texop_tg4` instructions after
  * `terakan_nir_lower_bindings` has resolved `tex->texture_index` to
- * a physical sampler resource slot, loads the runtime
- * VkComponentMapping for that slot from KCACHE bank 14 (populated by
+ * an absolute physical sampler resource slot. The pipeline-layout map
+ * translates that resource identity to a compact per-stage metadata
+ * index, and the pass loads the runtime VkComponentMapping from KCACHE
+ * bank 14 (populated by
  * `terakan_pipeline_layout.c::terakan_CmdBindDescriptorSets` from
  * `image_view->component_swizzle_packed`), and remaps the gather
  * component argument so that the actual FETCH4 reads the swizzled
@@ -33,7 +35,7 @@
  * this is acceptable for correctness.
  *
  * KCACHE layout (terakan_robustness_metadata.c::terakan_robustness_metadata_apply):
- *   bank 14, dwords 40..51 = uint32_t view_swizzles[12]
+ *   bank 14, stage-selected line, dwords 40..51 = view_swizzles[12]
  *   Two bindings packed per dword (low 16 bits = even slot,
  *   high 16 bits = odd slot), each binding 16 bits = 4 channels
  *   x 4-bit channel target.  Channel target values match
@@ -42,6 +44,7 @@
 
 #include "terakan_nir.h"
 #include "terakan_descriptor.h"
+#include "terakan_tg4_metadata.h"
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
@@ -58,20 +61,10 @@
 #define TERAKAN_TG4_TARGET_ZERO 4u
 #define TERAKAN_TG4_TARGET_ONE  5u
 
-/* Max sampler slots that fit in the 12-dword view_swizzles region
- * (2 packed bindings per dword).  Tied to
- * TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES; both are bounded by the
- * KCACHE bank 14 view_swizzles[] storage capacity. */
-#define TERAKAN_TG4_VIEW_SWIZZLE_SLOT_LIMIT TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES
-
-/* State threaded into the pass: the per-stage resources_needed bitset
- * so we can mark the gather slot for each rewritten tg4.  The HW state
- * tracker (terakan_hw_state_sqc_set_needed) treats unmarked slots as
- * not-emitted; if the gather slot's bit is clear, the gather-safe
- * descriptor may be evicted from the SQC bank between draws and the
- * cloned FETCH4 would read stale data. */
+/* State threaded into the pass binds absolute resource IDs to the compact
+ * sampled-image metadata namespace for the shader stage. */
 struct terakan_tg4_view_swizzle_state {
-   BITSET_WORD * resources_needed;
+   struct terakan_tg4_metadata_map const * metadata_map;
 };
 
 /* Clone `tex` with `op == nir_texop_tg4` rewritten to gather channel
@@ -121,16 +114,10 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
       return false;
    }
 
-   /* Skip if the physical slot is outside the runtime swizzle table.
-    * `maxPerStageDescriptorSampledImages` is clamped to
-    * TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES in terakan_instance.c so
-    * the validation layer rejects pipeline layouts that would exceed
-    * this; the guard remains as a defence-in-depth measure against
-    * future regressions, internal meta-shader bindings beyond the
-    * advertised limit, and dynamic array indexing that runtime-resolves
-    * to a slot outside the metadata range.
-    */
-   if (tex->texture_index >= TERAKAN_TG4_VIEW_SWIZZLE_SLOT_LIMIT) {
+   unsigned metadata_index;
+   if (state == NULL || state->metadata_map == NULL ||
+       !terakan_tg4_metadata_index(state->metadata_map, tex->texture_index,
+                                   &metadata_index)) {
       return false;
    }
 
@@ -154,7 +141,7 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
     * runtime bank offset (held at zero here since the bank is
     * statically known).
     */
-   nir_def * descriptor_slot = nir_imm_int(b, tex->texture_index);
+   nir_def * descriptor_slot = nir_imm_int(b, metadata_index);
    int const texture_offset_src_index =
       nir_tex_instr_src_index(tex, nir_tex_src_texture_offset);
    if (texture_offset_src_index >= 0) {
@@ -266,41 +253,37 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
 
    nir_def_rewrite_uses(&tex->def, result);
 
-   /* Mark the gather-safe HW slot in resources_needed so the SQC state
-    * tracker keeps the gather descriptor live across draws.  The clones
-    * use texture_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET; if the
-    * gather slot bit isn't set, terakan_hw_state_sqc_set_needed() may
-    * evict it between bind points and the FETCH4 reads a stale
-    * descriptor.  The original sample slot was marked by
-    * terakan_nir_lower_abi at lower_bindings time. */
-   if (state != NULL && state->resources_needed != NULL) {
-      unsigned const gather_slot =
-         tex->texture_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
-      BITSET_SET(state->resources_needed, gather_slot);
-      if (texture_offset_src_index >= 0) {
-         /* Dynamic array index: the runtime could pick any slot in
-          * [texture_index, texture_index + array_range_last].  Mark
-          * the whole gather-slot range conservatively. */
-         BITSET_SET_RANGE(state->resources_needed, gather_slot,
-                          gather_slot +
-                             (TERAKAN_TG4_VIEW_SWIZZLE_SLOT_LIMIT -
-                              tex->texture_index - 1u));
-      }
-   }
-
    nir_instr_remove(&tex->instr);
    return true;
 }
 
 bool
 terakan_nir_lower_tg4_view_swizzle(nir_shader * const shader,
-                                   BITSET_WORD * const resources_needed)
+                                   BITSET_WORD * const resources_needed,
+                                   struct terakan_tg4_metadata_map const * const metadata_map)
 {
    struct terakan_tg4_view_swizzle_state state = {
-      .resources_needed = resources_needed,
+      .metadata_map = metadata_map,
    };
-   return nir_shader_instructions_pass(shader,
-                                       terakan_nir_lower_tg4_view_swizzle_instr,
-                                       nir_metadata_control_flow,
-                                       &state);
+   bool const progress = nir_shader_instructions_pass(
+      shader, terakan_nir_lower_tg4_view_swizzle_instr,
+      nir_metadata_control_flow, &state);
+
+   if (progress && resources_needed != NULL && metadata_map != NULL) {
+      for (unsigned resource_index = 0;
+           resource_index < TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE;
+           ++resource_index) {
+         unsigned ignored_metadata_index;
+         if (BITSET_TEST(resources_needed, resource_index) &&
+             terakan_tg4_metadata_index(metadata_map, resource_index,
+                                        &ignored_metadata_index)) {
+            unsigned const gather_index =
+               resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
+            if (gather_index < TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE)
+               BITSET_SET(resources_needed, gather_index);
+         }
+      }
+   }
+
+   return progress;
 }
