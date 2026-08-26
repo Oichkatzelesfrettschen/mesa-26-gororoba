@@ -36,6 +36,8 @@ enum {
    OP_TYPE_INT = 21,
    OP_TYPE_FLOAT = 22,
    OP_TYPE_VECTOR = 23,
+   OP_TYPE_IMAGE = 25,
+   OP_TYPE_SAMPLED_IMAGE = 27,
    OP_TYPE_ARRAY = 28,
    OP_TYPE_STRUCT = 30,
    OP_TYPE_POINTER = 32,
@@ -51,7 +53,9 @@ enum {
    OP_IN_BOUNDS_ACCESS_CHAIN = 66,
    OP_DECORATE = 71,
    OP_MEMBER_DECORATE = 72,
+   OP_VECTOR_SHUFFLE = 79,
    OP_COMPOSITE_CONSTRUCT = 80,
+   OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
    OP_CONVERT_S_TO_F = 111,
    OP_F_ADD = 129,
    OP_F_MUL = 133,
@@ -69,6 +73,7 @@ enum {
    EXEC_MODE_ORIGIN_UPPER_LEFT = 7,
    ADDRESSING_LOGICAL = 0,
 
+   SC_UNIFORM_CONSTANT = 0,
    SC_INPUT = 1,
    SC_OUTPUT = 3,
    SC_FUNCTION = 7,
@@ -77,6 +82,11 @@ enum {
    DECOR_BLOCK = 2,
    DECOR_BUILTIN = 11,
    DECOR_LOCATION = 30,
+   DECOR_BINDING = 33,
+   DECOR_DESCRIPTOR_SET = 34,
+
+   IMAGE_DIM_2D = 1,
+   IMAGE_FORMAT_UNKNOWN = 0,
 
    BUILTIN_POSITION = 0,
    BUILTIN_POINT_SIZE = 1,
@@ -134,6 +144,18 @@ enum id_kind {
     * reaches the vec4 straight line only through OpConvertSToF. */
    ID_VAR_INPUT_SYSTEM_VALUE,
    ID_VAL_INT_BROADCAST,
+   /* The sampled fragment shape's ids: the 2D sampled-image types, the
+    * two-component float vector the coordinate shuffle produces, the
+    * set-0 binding-0 combined image sampler variable, and the loaded
+    * image, coordinate, and sampled texel values.
+    */
+   ID_TYPE_IMAGE_2D,
+   ID_TYPE_SAMPLED_IMAGE,
+   ID_TYPE_VEC2,
+   ID_VAR_SAMPLER,
+   ID_VAL_SAMPLED_IMAGE,
+   ID_VAL_COORD_VEC2,
+   ID_VAL_SAMPLED_TEXEL,
 };
 
 /* The fragment program shapes the two fragment admitters accept: one
@@ -144,6 +166,9 @@ enum fragment_shape {
    FRAGMENT_SHAPE_NONE = 0,
    FRAGMENT_SHAPE_CONSTANT_COLOR,
    FRAGMENT_SHAPE_VARYING_PASSTHROUGH,
+   /* The location-0 varying's xy sampling the set-0 binding-0 combined
+    * image sampler, stored to the location-0 output. */
+   FRAGMENT_SHAPE_SAMPLED_TEXTURE,
 };
 
 struct id_info {
@@ -161,7 +186,9 @@ struct id_info {
    uint32_t vec[4];
    /* Decorations, collected before definitions are read. */
    bool has_location, has_builtin, has_m0_builtin;
+   bool has_binding, has_descriptor_set;
    uint32_t location, builtin, m0_builtin;
+   uint32_t binding, descriptor_set;
 };
 
 struct reader {
@@ -453,6 +480,18 @@ admit_module(const uint32_t *words, size_t word_count,
             entry->has_builtin = true;
             entry->builtin = w[3];
             break;
+         case DECOR_BINDING:
+            if (len != 4)
+               return refuse(r, "malformed decoration");
+            entry->has_binding = true;
+            entry->binding = w[3];
+            break;
+         case DECOR_DESCRIPTOR_SET:
+            if (len != 4)
+               return refuse(r, "malformed decoration");
+            entry->has_descriptor_set = true;
+            entry->descriptor_set = w[3];
+            break;
          case DECOR_BLOCK:
          case DECOR_RELAXED_PRECISION:
             break;
@@ -523,9 +562,41 @@ admit_module(const uint32_t *words, size_t word_count,
          struct id_info *entry = define(r, w[1]);
          if (entry == NULL)
             return refuse(r, "malformed type");
-         if (!id_is(r, w[2], ID_TYPE_FLOAT32) || w[3] != 4)
-            return refuse(r, "vector type outside vec4 float");
-         entry->kind = ID_TYPE_VEC4;
+         if (!id_is(r, w[2], ID_TYPE_FLOAT32) ||
+             (w[3] != 4 && w[3] != 2))
+            return refuse(r, "vector type outside float vec4 or vec2");
+         entry->kind = w[3] == 4 ? ID_TYPE_VEC4 : ID_TYPE_VEC2;
+         break;
+      }
+
+      case OP_TYPE_IMAGE: {
+         /* The one admitted image type is the sampled 2D single-sample
+          * float image with no declared format, the type the canonical
+          * combined-image-sampler declaration produces. */
+         if (len != 9)
+            return refuse(r, "malformed image type");
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL)
+            return refuse(r, "malformed image type");
+         if (shape != FRAGMENT_SHAPE_SAMPLED_TEXTURE ||
+             !id_is(r, w[2], ID_TYPE_FLOAT32) || w[3] != IMAGE_DIM_2D ||
+             w[4] != 0 || w[5] != 0 || w[6] != 0 || w[7] != 1 ||
+             w[8] != IMAGE_FORMAT_UNKNOWN)
+            return refuse(r, "image type outside the sampled 2D float");
+         entry->kind = ID_TYPE_IMAGE_2D;
+         break;
+      }
+
+      case OP_TYPE_SAMPLED_IMAGE: {
+         if (len != 3)
+            return refuse(r, "malformed sampled-image type");
+         struct id_info *entry = define(r, w[1]);
+         if (entry == NULL)
+            return refuse(r, "malformed sampled-image type");
+         if (!id_is(r, w[2], ID_TYPE_IMAGE_2D))
+            return refuse(r,
+                          "sampled-image type outside the 2D float image");
+         entry->kind = ID_TYPE_SAMPLED_IMAGE;
          break;
       }
 
@@ -634,7 +705,7 @@ admit_module(const uint32_t *words, size_t word_count,
             return refuse(r, "variable type outside a matching pointer");
          switch (storage_class) {
          case SC_INPUT:
-            if (fragment && shape != FRAGMENT_SHAPE_VARYING_PASSTHROUGH)
+            if (fragment && shape == FRAGMENT_SHAPE_CONSTANT_COLOR)
                return refuse(r, "fragment shader reads an input");
             if (fragment) {
                if (!id_is(r, ptr->b, ID_TYPE_VEC4) ||
@@ -710,6 +781,23 @@ admit_module(const uint32_t *words, size_t word_count,
                              "vertex output outside the Position builtin");
             }
             output_var = w[2];
+            break;
+         case SC_UNIFORM_CONSTANT:
+            /* The sampled shape's one descriptor: the combined image
+             * sampler at set 0 binding 0, the binding the pipeline
+             * layout and the descriptor write name. */
+            if (shape != FRAGMENT_SHAPE_SAMPLED_TEXTURE ||
+                !id_is(r, ptr->b, ID_TYPE_SAMPLED_IMAGE) ||
+                !entry->has_binding || entry->binding != 0 ||
+                !entry->has_descriptor_set || entry->descriptor_set != 0)
+               return refuse(r,
+                             "uniform constant outside the set-0 "
+                             "binding-0 combined image sampler");
+            for (uint32_t s = 1; s < bound; s++) {
+               if (ids[s].kind == ID_VAR_SAMPLER)
+                  return refuse(r, "more than one sampler variable");
+            }
+            entry->kind = ID_VAR_SAMPLER;
             break;
          case SC_FUNCTION:
             if (!in_function)
@@ -808,6 +896,12 @@ admit_module(const uint32_t *words, size_t word_count,
             if (!id_is(r, w[1], ID_TYPE_VEC4))
                return refuse(r, "load outside one vec4");
             entry->kind = ID_VAL_VARYING;
+         } else if (ptr->kind == ID_VAR_SAMPLER) {
+            if (!id_is(r, w[1], ID_TYPE_SAMPLED_IMAGE))
+               return refuse(r,
+                             "sampler loaded outside its sampled-image "
+                             "type");
+            entry->kind = ID_VAL_SAMPLED_IMAGE;
          } else if (ptr->kind == ID_VAR_FUNCTION) {
             /* The variable forwards the value it holds. */
             const struct id_info *held = info(r, ptr->b);
@@ -866,6 +960,11 @@ admit_module(const uint32_t *words, size_t word_count,
                   return refuse(r,
                                 "fragment program outside the varying "
                                 "pass-through");
+            } else if (shape == FRAGMENT_SHAPE_SAMPLED_TEXTURE) {
+               if (value->kind != ID_VAL_SAMPLED_TEXEL)
+                  return refuse(r,
+                                "fragment program outside the sampled "
+                                "texel store");
             } else {
                if (value->kind != ID_CONST_VEC4)
                   return refuse(r,
@@ -969,6 +1068,44 @@ admit_module(const uint32_t *words, size_t word_count,
             return false;
          entry->kind = ID_VAL_SCALAR_BROADCAST;
          entry->a = dst;
+         break;
+      }
+
+      case OP_VECTOR_SHUFFLE: {
+         /* The one admitted shuffle takes the loaded varying's x and y
+          * as the vec2 sampling coordinate. */
+         if (len != 7 || !in_function || returned)
+            return refuse(r, "malformed vector shuffle");
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL)
+            return refuse(r, "malformed vector shuffle");
+         const struct id_info *src = info(r, w[3]);
+         if (shape != FRAGMENT_SHAPE_SAMPLED_TEXTURE ||
+             !id_is(r, w[1], ID_TYPE_VEC2) || src == NULL ||
+             src->kind != ID_VAL_VARYING || w[4] != w[3] || w[5] != 0 ||
+             w[6] != 1)
+            return refuse(r,
+                          "shuffle outside the varying's xy coordinate");
+         entry->kind = ID_VAL_COORD_VEC2;
+         break;
+      }
+
+      case OP_IMAGE_SAMPLE_IMPLICIT_LOD: {
+         if (len != 5 || !in_function || returned)
+            return refuse(r, "malformed image sample");
+         struct id_info *entry = define(r, w[2]);
+         if (entry == NULL)
+            return refuse(r, "malformed image sample");
+         const struct id_info *img = info(r, w[3]);
+         const struct id_info *coord = info(r, w[4]);
+         if (shape != FRAGMENT_SHAPE_SAMPLED_TEXTURE ||
+             !id_is(r, w[1], ID_TYPE_VEC4) || img == NULL ||
+             img->kind != ID_VAL_SAMPLED_IMAGE || coord == NULL ||
+             coord->kind != ID_VAL_COORD_VEC2)
+            return refuse(r,
+                          "sample outside the loaded sampler at the "
+                          "varying coordinate");
+         entry->kind = ID_VAL_SAMPLED_TEXEL;
          break;
       }
 
@@ -1099,5 +1236,18 @@ bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
    memset(&scratch, 0, sizeof(scratch));
    return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
                       FRAGMENT_SHAPE_VARYING_PASSTHROUGH, entry_name,
+                      &scratch, unused_color, reason);
+}
+
+bool r300_fragment_sampled_texture_from_spirv(const uint32_t *words,
+                                              size_t word_count,
+                                              const char *entry_name,
+                                              const char **reason)
+{
+   struct r300_vertex_job scratch;
+   uint32_t unused_color[4];
+   memset(&scratch, 0, sizeof(scratch));
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
+                      FRAGMENT_SHAPE_SAMPLED_TEXTURE, entry_name,
                       &scratch, unused_color, reason);
 }
