@@ -261,7 +261,7 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
    struct r3v_native_bo_reference *references =
-      calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));
+      calloc(R300_TRIANGLE_RENDER_SLOT_COUNT, sizeof(*references));
    if (references == NULL) {
       r300_tcl_bypass_triangle_release(&cell);
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -281,7 +281,7 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
    r3v_native_cmd_buffer_install_ib(cmd_buffer,
                                     R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE,
                                     cell.ib, cell.ib_size_dwords, references,
-                                    R300_TRIANGLE_SLOT_COUNT);
+                                    R300_TRIANGLE_RENDER_SLOT_COUNT);
    cell.ib = NULL;
    r300_tcl_bypass_triangle_release(&cell);
    return VK_SUCCESS;
@@ -386,7 +386,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * outside the relocation chunk.
     */
    struct r3v_native_bo_reference *references =
-      calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));
+      calloc(R300_TRIANGLE_RENDER_SLOT_COUNT, sizeof(*references));
    if (references == NULL) {
       r300_tcl_bypass_triangle_release(&cell);
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -407,7 +407,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    r3v_native_cmd_buffer_install_ib(cmd_buffer,
                                     R3V_NATIVE_CELL_KIND_TRIANGLE, cell.ib,
                                     cell.ib_size_dwords, references,
-                                    R300_TRIANGLE_SLOT_COUNT);
+                                    R300_TRIANGLE_RENDER_SLOT_COUNT);
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_tcl_bypass_triangle_release(&cell);

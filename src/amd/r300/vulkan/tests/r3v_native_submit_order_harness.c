@@ -1433,7 +1433,7 @@ run_arm(enum arm arm, const char *name)
       native_device->gpu_producer_compose_inject_errno = -ENOMEM;
    const uint32_t references_before = native_cmd->reference_count;
    const enum r3v_native_cell_kind kind_before = native_cmd->cell_kind;
-   assert(references_before == R300_TRIANGLE_SLOT_COUNT);
+   assert(references_before == R300_TRIANGLE_RENDER_SLOT_COUNT);
    assert(kind_before == R3V_NATIVE_CELL_KIND_TRIANGLE);
    assert(native_cmd->owned_slot == NULL);
 
@@ -1623,7 +1623,7 @@ run_arm(enum arm arm, const char *name)
       assert(cs_ioctls == 1);
       assert(carrier_is_varying_reference);
       assert(native_cmd->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE);
-      assert(native_cmd->reference_count == R300_TRIANGLE_SLOT_COUNT);
+      assert(native_cmd->reference_count == R300_TRIANGLE_RENDER_SLOT_COUNT);
       check_target(device, &target, true, name);
       assert(token);
       break;

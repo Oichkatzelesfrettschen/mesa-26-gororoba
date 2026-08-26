@@ -34,6 +34,7 @@
 #include "radeon_regalloc.h"
 
 #include "amd/r300/common/r300_r2vb_producer_fs_block.h"
+#include "amd/r300/common/r300_tcl_bypass_sampled_fs_block.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle_fs_block.h"
 
 static struct pipe_screen *
@@ -106,6 +107,47 @@ build_varying_passthrough_shader(void)
    out->data.location = FRAG_RESULT_COLOR;
    out->data.driver_location = 0;
    nir_store_var(&b, out, nir_load_var(&b, in), 0xf);
+   return b.shader;
+}
+
+/* The sampling cell's program reads texture coordinate set 0 and samples
+ * combined texture/sampler 0 at its xy, the fetch RS routes through
+ * interpolator 0 and the TX unit resolves.
+ */
+static nir_shader *
+build_sampled_texture_shader(void)
+{
+   static const nir_shader_compiler_options options = {
+      .float_mul_add32 =
+         nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+      .lower_flrp32 = true,
+   };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "tcl_bypass_sampled_texture");
+   nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                          glsl_vec4_type(), "texcoord");
+   in->data.location = VARYING_SLOT_TEX0;
+   in->data.driver_location = 0;
+   in->data.interpolation = INTERP_MODE_NONE;
+   b.shader->info.inputs_read = BITFIELD64_BIT(VARYING_SLOT_TEX0);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *coord = nir_channels(&b, nir_load_var(&b, in), 0x3);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 1);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->coord_components = 2;
+   tex->dest_type = nir_type_float32;
+   tex->texture_index = 0;
+   tex->sampler_index = 0;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   nir_store_var(&b, out, &tex->def, 0xf);
    return b.shader;
 }
 
@@ -238,6 +280,19 @@ static const struct fs_program fs_programs[] = {
       .golden_size = ARRAY_SIZE(r300_r2vb_producer_fs_block),
       .golden_fg_depth_src = R300_R2VB_PRODUCER_FS_FG_DEPTH_SRC,
       .golden_us_out_w = R300_R2VB_PRODUCER_FS_US_OUT_W,
+   },
+   {
+      .option = "sampled",
+      .description = "Sampled-texture US block for the TCL-bypass sampling "
+                     "cell",
+      .guard = "R300_TCL_BYPASS_SAMPLED_FS_BLOCK_H",
+      .macro_prefix = "R300_TCL_BYPASS_SAMPLED_FS",
+      .symbol = "r300_tcl_bypass_sampled_fs_block",
+      .build = build_sampled_texture_shader,
+      .golden = r300_tcl_bypass_sampled_fs_block,
+      .golden_size = ARRAY_SIZE(r300_tcl_bypass_sampled_fs_block),
+      .golden_fg_depth_src = R300_TCL_BYPASS_SAMPLED_FS_FG_DEPTH_SRC,
+      .golden_us_out_w = R300_TCL_BYPASS_SAMPLED_FS_US_OUT_W,
    },
 };
 

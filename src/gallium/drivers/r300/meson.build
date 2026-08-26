@@ -845,6 +845,12 @@ if with_tests
     args : ['--check=r2vb-producer'],
     suite : ['r300'],
   )
+  test(
+    'r300-tcl-bypass-sampled-fs-block-regeneration',
+    r300_tcl_bypass_fs_tool,
+    args : ['--check=sampled'],
+    suite : ['r300'],
+  )
 
   # Classic fragment-compiler register allocation: chain recycling and the
   # register-file boundary, fit and reject sides.

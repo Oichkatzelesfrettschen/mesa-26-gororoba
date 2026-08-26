@@ -182,7 +182,7 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * with no deferred public draw riding the kind.
        */
       if (cmd_buffer->deferred_draw.pending ||
-          cmd_buffer->reference_count != R300_TRIANGLE_SLOT_COUNT)
+          cmd_buffer->reference_count != R300_TRIANGLE_RENDER_SLOT_COUNT)
          return true;
       const struct r3v_native_bo_reference *vertex =
          &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];
@@ -203,7 +203,7 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
           cmd_buffer->deferred_draw.target_height !=
              R3V_NATIVE_TARGET_HEIGHT)
          return true;
-      if (cmd_buffer->reference_count != R300_TRIANGLE_SLOT_COUNT)
+      if (cmd_buffer->reference_count != R300_TRIANGLE_RENDER_SLOT_COUNT)
          return true;
       const struct r3v_native_bo_reference *slot =
          &cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX];

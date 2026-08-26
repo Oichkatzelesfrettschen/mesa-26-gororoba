@@ -20,8 +20,21 @@ struct r300_first_draw_contract;
 enum r300_tcl_bypass_triangle_slot {
    R300_TRIANGLE_SLOT_VERTEX = 0,
    R300_TRIANGLE_SLOT_COLOR = 1,
-   R300_TRIANGLE_SLOT_COUNT = 2,
+   /* The sampled cell's texture BO: the TX_OFFSET_0 payload, which the
+    * kernel biases by the BO base under RADEON_CS_KEEP_TILING_FLAGS
+    * keeping the register's low five bits (r300_packet0_check, radeon
+    * r300.c).
+    */
+   R300_TRIANGLE_SLOT_TEXTURE = 2,
+   R300_TRIANGLE_SLOT_COUNT = 3,
 };
+
+/* The unsampled cells reference the vertex and color slots alone, so
+ * their relocation lists carry exactly two entries; the sampled cell
+ * adds the texture slot.
+ */
+#define R300_TRIANGLE_RENDER_SLOT_COUNT 2u
+#define R300_TRIANGLE_SAMPLED_SLOT_COUNT 3u
 
 struct r300_tcl_bypass_triangle_params {
    /* Byte offset of the first vertex inside the vertex BO. */
@@ -58,6 +71,26 @@ struct r300_tcl_bypass_triangle_params {
     * eight dwords per vertex at a 32-byte stride.
     */
    bool varying;
+   /* When set, the cell samples texture unit 0: the varying vertex path
+    * carries the TEX0 coordinate, the TX block programs one enabled
+    * unit -- nearest filters, clamp-to-edge wraps, W8Z8Y8X8 texels over
+    * the pitch-addressed linear layout -- and TX_OFFSET_0's payload
+    * takes texture_offset with the texture BO's reloc.  The kernel
+    * tracker computes the texture footprint from these registers and
+    * validates it against the BO (r100_cs_track_texture_check, radeon
+    * r100.c), so pitch and height describe the real allocation.
+    * Requires varying and a fragment binary whose US program fetches
+    * unit 0 (r300_tcl_bypass_triangle_sampled_fs).
+    */
+   bool sampled;
+   /* Byte offset of texel row 0 inside the texture BO; the register's
+    * low five bits are reserved, so the offset is 32-byte aligned.
+    */
+   uint32_t texture_offset;
+   /* Texel extent and row pitch of the linear W8Z8Y8X8 texture. */
+   uint32_t texture_width;
+   uint32_t texture_height;
+   uint32_t texture_pitch_texels;
    /* The triangles the consumer draws from the record stream: one
     * vertex-list draw of 3 * triangle_count vertices over records
     * 0 .. 3 * triangle_count - 1, the host expansion of an instanced
@@ -138,6 +171,12 @@ int r300_tcl_bypass_triangle_validate_reloc_sites(
  * or a negative errno; the caller owns the binary.
  */
 int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
+
+/* Builds the sampled cell's fragment binary: the sampled-texture US
+ * block compiled by r300_tcl_bypass_fs_tool, fetching texture unit 0 at
+ * the TEX0 coordinate.
+ */
+int r300_tcl_bypass_triangle_sampled_fs(struct r300_fragment_binary *fs);
 
 /* Builds the varying cell's fragment binary: the varying-passthrough US
  * block that moves interpolator 0 to the color output.  Returns 0 or a

@@ -1300,7 +1300,7 @@ main(void)
    assert(native_cmd->ib_size_dwords == reference.ib_size_dwords);
    assert(memcmp(native_cmd->ib, reference.ib,
                  reference.ib_size_dwords * sizeof(uint32_t)) == 0);
-   assert(native_cmd->reference_count == R300_TRIANGLE_SLOT_COUNT);
+   assert(native_cmd->reference_count == R300_TRIANGLE_RENDER_SLOT_COUNT);
    assert(native_cmd->owned_carrier != NULL);
    struct r3v_native_memory *const recorded_carrier =
       native_cmd->owned_carrier;

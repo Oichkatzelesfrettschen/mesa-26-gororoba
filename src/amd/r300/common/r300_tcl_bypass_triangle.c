@@ -5,6 +5,7 @@
 #include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
 #include "r300_r2vb_producer_fs_block.h"
+#include "r300_tcl_bypass_sampled_fs_block.h"
 #include "r300_tcl_bypass_triangle_fs_block.h"
 #include "r300_us_source_read.h"
 
@@ -84,6 +85,18 @@ r300_tcl_bypass_triangle_emit_into(
    }
 
    if (params->triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   /* The sampled cell rides the varying vertex path for its coordinate,
+    * the TX width/height masks hold extent - 1 in 11 bits, the pitch
+    * covers each row, and TX_OFFSET_0's low five bits are reserved.
+    */
+   if (params->sampled &&
+       (!params->varying || params->texture_width == 0 ||
+        params->texture_height == 0 || params->texture_width > 2048 ||
+        params->texture_height > 2048 ||
+        params->texture_pitch_texels < params->texture_width ||
+        params->texture_pitch_texels > 0x4000 ||
+        (params->texture_offset & 31) != 0))
       return -EINVAL;
    const uint32_t vertex_count =
       3 * (params->triangle_count ? params->triangle_count : 1);
@@ -193,6 +206,37 @@ r300_tcl_bypass_triangle_emit_into(
                       R300_RS_INST_TEX_ADDR(0));
    }
 
+   /* The sampled cell's TX unit 0: nearest filters and clamp-to-edge
+    * wraps make each fetch one texel read, W8Z8Y8X8 gives the kernel
+    * tracker cpp 4, and TX_PITCH_EN with FORMAT2's pitch - 1 makes the
+    * tracker validate pitch * cpp * height against the texture BO
+    * (r100_cs_track_texture_check).  TX_OFFSET_0's payload rides the
+    * texture reloc; the invalidate ahead of the enable drops stale
+    * texture-cache tags before the first fetch.
+    */
+   if (params->sampled) {
+      r300_pm4_reg(&b, R300_TX_INVALTAGS, 0);
+      r300_pm4_reg(&b, R300_TX_ENABLE, R300_TX_ENABLE_0);
+      r300_pm4_reg(&b, R300_TX_FILTER0_0,
+                   (R300_TX_CLAMP_TO_EDGE << R300_TX_WRAP_S_SHIFT) |
+                      (R300_TX_CLAMP_TO_EDGE << R300_TX_WRAP_T_SHIFT) |
+                      R300_TX_MAG_FILTER_NEAREST |
+                      R300_TX_MIN_FILTER_NEAREST);
+      r300_pm4_reg(&b, R300_TX_FILTER1_0, 0);
+      r300_pm4_reg(&b, R300_TX_BORDER_COLOR_0, 0);
+      r300_pm4_reg(&b, R300_TX_FORMAT0_0,
+                   ((params->texture_width - 1)
+                    << R300_TX_WIDTHMASK_SHIFT) |
+                      ((params->texture_height - 1)
+                       << R300_TX_HEIGHTMASK_SHIFT) |
+                      R300_TX_PITCH_EN);
+      r300_pm4_reg(&b, R300_TX_FORMAT1_0, R300_TX_FORMAT_W8Z8Y8X8);
+      r300_pm4_reg(&b, R300_TX_FORMAT2_0,
+                   params->texture_pitch_texels - 1);
+      r300_pm4_reg(&b, R300_TX_OFFSET_0, params->texture_offset);
+      write_reloc(&b, out, R300_TRIANGLE_SLOT_TEXTURE);
+   }
+
    /* Fragment program: the owned binary's US/FG block verbatim, then the
     * two register values the descriptor keeps outside the sequence.
     */
@@ -290,7 +334,8 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
     * payload names the slot.  A relocation list built from sites failing any
     * of these resolves a BO into a position the stream does not reference.
     */
-   if (ib->reloc_site_count != R300_TRIANGLE_SLOT_COUNT)
+   if (ib->reloc_site_count != R300_TRIANGLE_RENDER_SLOT_COUNT &&
+       ib->reloc_site_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT)
       return -EINVAL;
 
    /* The uniqueness set below is one uint32_t of slot bits. */
@@ -324,13 +369,20 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
     * fact, distinct from enum order, so the expected sequence is spelled
     * out rather than derived.
     */
-   static const uint32_t expected_slots[] = {
+   static const uint32_t render_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
    };
-   static_assert(ARRAY_SIZE(expected_slots) == R300_TRIANGLE_SLOT_COUNT,
-                 "every slot has a place in the stream order");
-   for (uint32_t i = 0; i < R300_TRIANGLE_SLOT_COUNT; i++) {
+   static const uint32_t sampled_slots[] = {
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_VERTEX,
+   };
+   const uint32_t *expected_slots =
+      ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT
+         ? sampled_slots
+         : render_slots;
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
       if (ib->reloc_sites[i].slot != expected_slots[i])
          return -EINVAL;
       if (i > 0 &&
@@ -351,6 +403,22 @@ r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs)
       R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC,
       R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W,
       "r300-tcl-bypass-triangle-compiled");
+}
+
+int
+r300_tcl_bypass_triangle_sampled_fs(struct r300_fragment_binary *fs)
+{
+   /* The sampled US program fetches texture unit 0 at interpolator 0's
+    * coordinate and writes the fetched texel to the color output; the
+    * TX block the sampled cell emits resolves the fetch.
+    */
+   return r300_fragment_binary_init(
+      fs, r300_tcl_bypass_sampled_fs_block,
+      sizeof(r300_tcl_bypass_sampled_fs_block) /
+         sizeof(r300_tcl_bypass_sampled_fs_block[0]),
+      R300_TCL_BYPASS_SAMPLED_FS_FG_DEPTH_SRC,
+      R300_TCL_BYPASS_SAMPLED_FS_US_OUT_W,
+      "r300-sampled-texture-compiled");
 }
 
 int
