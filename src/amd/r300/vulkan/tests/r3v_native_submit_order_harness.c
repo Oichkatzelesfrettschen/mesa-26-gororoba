@@ -125,6 +125,11 @@ enum arm {
    ARM_VARYING_ARMED,
    ARM_VARYING_FRAGMENT_MISMATCH,
    ARM_VARYING_MISSING,
+   /* The sampled pipeline on the CPU route: the varying vertex module
+    * with the sampled fragment module over a set-0 combined image
+    * sampler, recording the sampled cell with the texture BO on its
+    * third relocation. */
+   ARM_SAMPLED_ARMED,
    /* The two-attribute module (location 0 position, location 1 color
     * passed to the varying) on the CPU route: over two bindings (F32_4
     * positions at stride 16, F32_3 colors at stride 12) and over one
@@ -241,6 +246,7 @@ static const struct {
    { "varying-armed", ARM_VARYING_ARMED },
    { "varying-fragment-mismatch", ARM_VARYING_FRAGMENT_MISMATCH },
    { "varying-missing", ARM_VARYING_MISSING },
+   { "sampled-armed", ARM_SAMPLED_ARMED },
    { "multi-attribute-armed", ARM_MULTI_ATTRIBUTE_ARMED },
    { "multi-attribute-interleaved-armed",
      ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED },
@@ -370,6 +376,11 @@ retained_ib_digest(const char *dir, char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1],
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
    f(vkCmdBindIndexBuffer) f(vkCmdDrawIndexed)                             \
    f(vkCmdPipelineBarrier) f(vkGetDeviceQueue) f(vkQueueSubmit)            \
+   f(vkCreateSampler) f(vkDestroySampler)                                  \
+   f(vkCreateDescriptorSetLayout) f(vkDestroyDescriptorSetLayout)          \
+   f(vkCreateDescriptorPool) f(vkDestroyDescriptorPool)                    \
+   f(vkAllocateDescriptorSets) f(vkUpdateDescriptorSets)                   \
+   f(vkCmdBindDescriptorSets)                                              \
    f(vkDestroyDevice)
 #define DECLARE(name) static PFN_##name name;
 DEVICE_COMMANDS(DECLARE)
@@ -588,7 +599,8 @@ run_arm(enum arm arm, const char *name)
    r300_tcl_bypass_triangle_release(&two_triangles);
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
-   const bool varying_cell_arm = arm == ARM_VARYING_ARMED || multi_arm;
+   const bool varying_cell_arm = arm == ARM_VARYING_ARMED ||
+                                 arm == ARM_SAMPLED_ARMED || multi_arm;
    char route_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1] = { 0 };
    uint32_t route_dwords = 0;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
@@ -608,6 +620,17 @@ run_arm(enum arm arm, const char *name)
                                    &route_dwords);
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
              R300_RETAINED_GPU_ROUTE_IB_BLAKE3, 1);
+   } else if (arm == ARM_SAMPLED_ARMED) {
+      /* The sampled cell's authorized identity is its own offline
+       * emission at this arm's parameters. */
+      struct r300_tcl_bypass_triangle_ib sampled_cell;
+      assert(r300_tcl_bypass_triangle_sampled_emit(
+                R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1, 0, 16,
+                16, 16, &sampled_cell) == 0);
+      r300_triangle_ib_digest_hex(sampled_cell.ib,
+                                  sampled_cell.ib_size_dwords, route_digest);
+      r300_tcl_bypass_triangle_release(&sampled_cell);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", route_digest, 1);
    } else if (varying_cell_arm) {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", R300_VARYING_CELL_IB_BLAKE3,
              1);
@@ -1040,15 +1063,142 @@ run_arm(enum arm arm, const char *name)
                 .layers = 1,
              },
              NULL, &framebuffer) == VK_SUCCESS);
+   /* The sampled arm's texture: a sampled-usage R8G8B8A8 image with
+    * bound memory, a view, a nearest/clamp-to-edge sampler, and the
+    * set-0 combined-image-sampler write. */
+   VkImage tex_image = VK_NULL_HANDLE;
+   VkDeviceMemory tex_memory = VK_NULL_HANDLE;
+   VkImageView tex_view = VK_NULL_HANDLE;
+   VkSampler tex_sampler = VK_NULL_HANDLE;
+   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+   VkDescriptorPool desc_pool = VK_NULL_HANDLE;
+   VkDescriptorSet desc_set = VK_NULL_HANDLE;
+   if (arm == ARM_SAMPLED_ARMED) {
+      assert(vkCreateImage(
+                device,
+                &(VkImageCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                   .imageType = VK_IMAGE_TYPE_2D,
+                   .format = VK_FORMAT_R8G8B8A8_UNORM,
+                   .extent = { 16, 16, 1 },
+                   .mipLevels = 1,
+                   .arrayLayers = 1,
+                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                   .tiling = VK_IMAGE_TILING_LINEAR,
+                   .usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                },
+                NULL, &tex_image) == VK_SUCCESS);
+      VkMemoryRequirements tex_reqs;
+      vkGetImageMemoryRequirements(device, tex_image, &tex_reqs);
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = tex_reqs.size,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &tex_memory) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, tex_image, tex_memory, 0) ==
+             VK_SUCCESS);
+      assert(vkCreateImageView(
+                device,
+                &(VkImageViewCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .image = tex_image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                   .format = VK_FORMAT_R8G8B8A8_UNORM,
+                   .subresourceRange = { .aspectMask =
+                                            VK_IMAGE_ASPECT_COLOR_BIT,
+                                         .levelCount = 1,
+                                         .layerCount = 1 },
+                },
+                NULL, &tex_view) == VK_SUCCESS);
+      assert(vkCreateSampler(
+                device,
+                &(VkSamplerCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                   .magFilter = VK_FILTER_NEAREST,
+                   .minFilter = VK_FILTER_NEAREST,
+                   .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                   .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   .borderColor =
+                      VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+                },
+                NULL, &tex_sampler) == VK_SUCCESS);
+      assert(vkCreateDescriptorSetLayout(
+                device,
+                &(VkDescriptorSetLayoutCreateInfo){
+                   .sType =
+                      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                   .bindingCount = 1,
+                   .pBindings =
+                      &(VkDescriptorSetLayoutBinding){
+                         .binding = 0,
+                         .descriptorType =
+                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                         .descriptorCount = 1,
+                         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                      },
+                },
+                NULL, &set_layout) == VK_SUCCESS);
+      assert(vkCreateDescriptorPool(
+                device,
+                &(VkDescriptorPoolCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                   .maxSets = 1,
+                   .poolSizeCount = 1,
+                   .pPoolSizes =
+                      &(VkDescriptorPoolSize){
+                         .type =
+                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                         .descriptorCount = 1,
+                      },
+                },
+                NULL, &desc_pool) == VK_SUCCESS);
+      assert(vkAllocateDescriptorSets(
+                device,
+                &(VkDescriptorSetAllocateInfo){
+                   .sType =
+                      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                   .descriptorPool = desc_pool,
+                   .descriptorSetCount = 1,
+                   .pSetLayouts = &set_layout,
+                },
+                &desc_set) == VK_SUCCESS);
+      vkUpdateDescriptorSets(
+         device, 1,
+         &(VkWriteDescriptorSet){
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = desc_set,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo =
+               &(VkDescriptorImageInfo){
+                  .sampler = tex_sampler,
+                  .imageView = tex_view,
+                  .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               },
+         },
+         0, NULL);
+   }
    VkPipelineLayout layout = VK_NULL_HANDLE;
    assert(vkCreatePipelineLayout(
              device,
              &(VkPipelineLayoutCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = arm == ARM_SAMPLED_ARMED ? 1 : 0,
+                .pSetLayouts =
+                   arm == ARM_SAMPLED_ARMED ? &set_layout : NULL,
              },
              NULL, &layout) == VK_SUCCESS);
-   const bool varying_vs =
-      arm == ARM_VARYING_ARMED || arm == ARM_VARYING_FRAGMENT_MISMATCH;
+   const bool varying_vs = arm == ARM_VARYING_ARMED ||
+                           arm == ARM_VARYING_FRAGMENT_MISMATCH ||
+                           arm == ARM_SAMPLED_ARMED;
    const bool varying_fs = arm == ARM_VARYING_ARMED || arm == ARM_VARYING_MISSING;
    VkShaderModule vs =
       multi_arm
@@ -1069,7 +1219,10 @@ run_arm(enum arm arm, const char *name)
          : make_module(device, r3v_reference_vertex_spirv,
                        sizeof(r3v_reference_vertex_spirv));
    VkShaderModule fs =
-      varying_fs || multi_arm
+      arm == ARM_SAMPLED_ARMED
+         ? make_module(device, r3v_reference_fragment_sampled_spirv,
+                       sizeof(r3v_reference_fragment_sampled_spirv))
+      : varying_fs || multi_arm
          ? make_module(device, r3v_reference_fragment_varying_spirv,
                        sizeof(r3v_reference_fragment_varying_spirv))
          : make_module(device, r3v_reference_fragment_spirv,
@@ -1310,6 +1463,9 @@ run_arm(enum arm arm, const char *name)
       },
       VK_SUBPASS_CONTENTS_INLINE);
    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+   if (arm == ARM_SAMPLED_ARMED)
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+                              0, 1, &desc_set, 0, NULL);
    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer,
                           &(VkDeviceSize){ bind_offset });
    if (multi_arm && !interleaved_arm &&
@@ -1392,7 +1548,21 @@ run_arm(enum arm arm, const char *name)
       char recorded_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       r300_triangle_ib_digest_hex(native_cmd->ib, native_cmd->ib_size_dwords,
                                   recorded_digest);
-      if (varying_cell_arm) {
+      if (arm == ARM_SAMPLED_ARMED) {
+         /* The sampled cell's identity is its own offline emission at
+          * the recorded parameters: the reference 64x64 target and the
+          * bound 16x16 texture at offset 0 over the 16-texel pitch. */
+         struct r300_tcl_bypass_triangle_ib offline;
+         assert(r300_tcl_bypass_triangle_sampled_emit(
+                   R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1, 0,
+                   16, 16, 16, &offline) == 0);
+         char offline_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+         r300_triangle_ib_digest_hex(offline.ib, offline.ib_size_dwords,
+                                     offline_digest);
+         assert(native_cmd->ib_size_dwords == offline.ib_size_dwords);
+         assert(strcmp(recorded_digest, offline_digest) == 0);
+         r300_tcl_bypass_triangle_release(&offline);
+      } else if (varying_cell_arm) {
          assert(native_cmd->ib_size_dwords == R300_VARYING_CELL_IB_DWORDS);
          assert(strcmp(recorded_digest, R300_VARYING_CELL_IB_BLAKE3) == 0);
       } else if (two_triangle_arm) {
@@ -1433,8 +1603,12 @@ run_arm(enum arm arm, const char *name)
       native_device->gpu_producer_compose_inject_errno = -ENOMEM;
    const uint32_t references_before = native_cmd->reference_count;
    const enum r3v_native_cell_kind kind_before = native_cmd->cell_kind;
-   assert(references_before == R300_TRIANGLE_RENDER_SLOT_COUNT);
-   assert(kind_before == R3V_NATIVE_CELL_KIND_TRIANGLE);
+   assert(references_before == (arm == ARM_SAMPLED_ARMED
+                                   ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
+                                   : R300_TRIANGLE_RENDER_SLOT_COUNT));
+   assert(kind_before == (arm == ARM_SAMPLED_ARMED
+                             ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
+                             : R3V_NATIVE_CELL_KIND_TRIANGLE));
    assert(native_cmd->owned_slot == NULL);
 
    inject_live = true;
@@ -1624,6 +1798,19 @@ run_arm(enum arm arm, const char *name)
       assert(carrier_is_varying_reference);
       assert(native_cmd->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE);
       assert(native_cmd->reference_count == R300_TRIANGLE_RENDER_SLOT_COUNT);
+      check_target(device, &target, true, name);
+      assert(token);
+      break;
+   case ARM_SAMPLED_ARMED:
+      /* The sampled cell recorded: the varying carrier executed on the
+       * CPU route, and the cell binds three relocations with the
+       * texture read beside the vertex and color slots. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(native_cmd->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED);
+      assert(native_cmd->reference_count ==
+             R300_TRIANGLE_SAMPLED_SLOT_COUNT);
       check_target(device, &target, true, name);
       assert(token);
       break;
