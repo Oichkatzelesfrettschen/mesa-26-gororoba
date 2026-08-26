@@ -60,11 +60,21 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     */
    const uint32_t texel_bytes =
       r3v_native_transfer_texel_bytes(pCreateInfo->format);
+   /* VK_IMAGE_TYPE_1D is the height-one member of the same linear
+    * layout: one row the TX block addresses with its height mask at
+    * zero and the render cell scissors to a single scanline, so the two
+    * types share every register class.  VK_IMAGE_TYPE_3D takes a depth
+    * axis the TX program has no route for and refuses here.
+    */
+   const bool one_dimensional = pCreateInfo->imageType == VK_IMAGE_TYPE_1D;
    if ((pCreateInfo->flags & ~(VkImageCreateFlags)VK_IMAGE_CREATE_ALIAS_BIT) ||
-       pCreateInfo->imageType != VK_IMAGE_TYPE_2D || texel_bytes == 0 ||
+       (pCreateInfo->imageType != VK_IMAGE_TYPE_2D && !one_dimensional) ||
+       texel_bytes == 0 ||
        pCreateInfo->extent.width < 1 || pCreateInfo->extent.height < 1 ||
+       (one_dimensional && pCreateInfo->extent.height != 1) ||
        pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
-       pCreateInfo->arrayLayers != 1 ||
+       pCreateInfo->arrayLayers < 1 ||
+       pCreateInfo->arrayLayers > R3V_NATIVE_MAX_ARRAY_LAYERS ||
        pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT ||
        (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR &&
         pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
@@ -91,17 +101,33 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    uint32_t row_pitch_bytes;
    enum r300_triangle_lane_order lanes = R300_TRIANGLE_LANES_B8G8R8A8;
    if (pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
+      /* The sampled bit joins the attachment bit over one layout: the
+       * 64-byte row alignment the sampling family already executes is a
+       * multiple of the eight 32-bpp pixels the render cell's
+       * RB3D_COLORPITCH0 addresses, so a union image carries the
+       * stricter pitch and both routes read the same rows.  The extent
+       * then answers to whichever ceiling is lower.
+       */
+      const bool sampled = (pCreateInfo->usage &
+                            VK_IMAGE_USAGE_SAMPLED_BIT) != 0;
+      const uint32_t extent_max =
+         sampled ? MIN2(R3V_NATIVE_RENDER_MAX_EXTENT,
+                        R3V_NATIVE_TRANSFER_DIMENSION_MAX)
+                 : R3V_NATIVE_RENDER_MAX_EXTENT;
       if (pCreateInfo->flags != 0 ||
           (pCreateInfo->usage &
            ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                VK_IMAGE_USAGE_SAMPLED_BIT |
                                 transfer_usage)) != 0 ||
           !r3v_native_render_lane_order(pCreateInfo->format, &lanes) ||
-          pCreateInfo->extent.width > R3V_NATIVE_RENDER_MAX_EXTENT ||
-          pCreateInfo->extent.height > R3V_NATIVE_RENDER_MAX_EXTENT)
+          pCreateInfo->extent.width > extent_max ||
+          pCreateInfo->extent.height > extent_max)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       transfer_family = false;
       row_pitch_bytes =
-         r3v_native_render_row_pitch_bytes(pCreateInfo->extent.width);
+         sampled ? r3v_native_transfer_row_pitch_bytes(
+                      pCreateInfo->extent.width, texel_bytes)
+                 : r3v_native_render_row_pitch_bytes(pCreateInfo->extent.width);
    } else if (pCreateInfo->usage != 0 &&
               (pCreateInfo->usage &
                ~(transfer_usage | VK_IMAGE_USAGE_SAMPLED_BIT)) == 0) {
@@ -125,6 +151,17 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
    }
 
+   /* The reported maxResourceSize is the 32-bit span every offset the
+    * routes place travels in, so a footprint past it has no register
+    * payload and refuses here.
+    */
+   const uint32_t layer_pitch_bytes = r3v_native_image_layer_pitch_bytes(
+      row_pitch_bytes, pCreateInfo->extent.height, !transfer_family);
+   const uint64_t footprint_bytes =
+      (uint64_t)layer_pitch_bytes * pCreateInfo->arrayLayers;
+   if (footprint_bytes > UINT32_MAX)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
    struct r3v_native_image *image =
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*image),
                        VK_OBJECT_TYPE_IMAGE);
@@ -137,6 +174,10 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->texel_bytes = texel_bytes;
    image->lanes = lanes;
    image->row_pitch_bytes = row_pitch_bytes;
+   image->array_layers = pCreateInfo->arrayLayers;
+   image->one_dimensional = one_dimensional;
+   image->layer_pitch_bytes = layer_pitch_bytes;
+   image->footprint_bytes = footprint_bytes;
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
    image->optimal_tiling = pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL;
@@ -177,12 +218,7 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
     * is always one the clear can map.
     */
    *pMemoryRequirements = (VkMemoryRequirements){
-      .size = image->transfer_family
-                 ? r3v_native_transfer_footprint_bytes(image->width,
-                                                       image->height,
-                                                       image->texel_bytes)
-                 : r3v_native_render_footprint_bytes(image->row_pitch_bytes,
-                                                    image->height),
+      .size = image->footprint_bytes,
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
    };
@@ -260,14 +296,7 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
    VK_FROM_HANDLE(r3v_native_image, image, _image);
    VK_FROM_HANDLE(r3v_native_memory, memory, _memory);
 
-   const uint64_t footprint =
-      image != NULL
-         ? (image->transfer_family
-               ? r3v_native_transfer_footprint_bytes(image->width,
-                                                     image->height,
-                                                     image->texel_bytes)
-               : r3v_native_render_footprint_bytes(image->row_pitch_bytes,
-                                                  image->height))
+   const uint64_t footprint = image != NULL ? image->footprint_bytes
          : 0;
    if (image == NULL || memory == NULL || image->memory != NULL ||
        memory->vk.memory_type_index != 0 ||
@@ -324,16 +353,30 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
     */
    assert(!image->optimal_tiling);
 
+   /* Layers stack at the image's own stride, so the queried layer's
+    * span starts there; arrayPitch names that stride for a layered
+    * image and stays zero for a single-layer one, matching the
+    * VkSubresourceLayout contract.
+    */
+   assert(pSubresource->mipLevel == 0 &&
+          pSubresource->arrayLayer < image->array_layers);
    *pLayout = (VkSubresourceLayout){
-      .offset = 0,
+      .offset = (VkDeviceSize)image->layer_pitch_bytes *
+                pSubresource->arrayLayer,
       .size = (VkDeviceSize)image->row_pitch_bytes * image->height,
       .rowPitch = image->row_pitch_bytes,
+      .arrayPitch = image->array_layers > 1 ? image->layer_pitch_bytes : 0,
    };
 }
 
-/* The view admits the identity reading of the one image shape: same
- * format, 2D, the full single-mip single-layer color subresource, and
- * identity component mapping in either spelling.
+/* The view admits the identity reading of one layer: same format, the
+ * view type its image's own type names, one mip, one array layer at any
+ * index the image holds, and identity component mapping in either
+ * spelling.  The layer resolves to a byte offset the sampling and
+ * attachment routes add to the bind offset, so every admitted view has
+ * an executing route; the array, cube, and volume view types index a
+ * layer from the shader instead, which the TX program has no route for,
+ * and they refuse here.
  */
 static bool
 swizzle_is_identity(VkComponentSwizzle swizzle, VkComponentSwizzle identity)
@@ -356,11 +399,14 @@ r3v_CreateImageView(VkDevice _device,
     * image carries neither usage, so no view admits it.
     */
    const VkImageSubresourceRange *range = &pCreateInfo->subresourceRange;
+   const VkImageViewType view_type =
+      image != NULL && image->one_dimensional ? VK_IMAGE_VIEW_TYPE_1D
+                                              : VK_IMAGE_VIEW_TYPE_2D;
    if (image == NULL ||
        (image->transfer_family &&
         (image->usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0) ||
        pCreateInfo->flags != 0 ||
-       pCreateInfo->viewType != VK_IMAGE_VIEW_TYPE_2D ||
+       pCreateInfo->viewType != view_type ||
        pCreateInfo->format != image->format ||
        !swizzle_is_identity(pCreateInfo->components.r,
                             VK_COMPONENT_SWIZZLE_R) ||
@@ -374,9 +420,10 @@ r3v_CreateImageView(VkDevice _device,
        range->baseMipLevel != 0 ||
        (range->levelCount != 1 &&
         range->levelCount != VK_REMAINING_MIP_LEVELS) ||
-       range->baseArrayLayer != 0 ||
+       range->baseArrayLayer >= image->array_layers ||
        (range->layerCount != 1 &&
-        range->layerCount != VK_REMAINING_ARRAY_LAYERS))
+        (range->layerCount != VK_REMAINING_ARRAY_LAYERS ||
+         range->baseArrayLayer + 1 != image->array_layers)))
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    struct r3v_native_image_view *view =
@@ -386,6 +433,8 @@ r3v_CreateImageView(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    view->image = image;
+   view->base_array_layer = range->baseArrayLayer;
+   view->layer_offset_bytes = image->layer_pitch_bytes * range->baseArrayLayer;
    *pView = r3v_native_image_view_to_handle(view);
    return VK_SUCCESS;
 }

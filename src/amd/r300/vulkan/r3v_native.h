@@ -552,6 +552,11 @@ struct r3v_native_cmd_buffer {
    uint32_t reference_count;
 
    struct r3v_native_image *pass_target;
+   /* Byte offset of the attached view's layer inside the target image;
+    * the clear, the overlap test, and the cell's RB3D_COLOROFFSET0
+    * payload all address the layer from the bind offset plus this.
+    */
+   uint32_t pass_target_layer_offset;
    struct r3v_native_pipeline *bound_pipeline;
    /* Dynamic viewport/scissor state: undefined at begin, set by the
     * vkCmdSet commands, persisting across binds and passes within the
@@ -977,6 +982,23 @@ r3v_native_render_footprint_bytes(uint32_t row_pitch_bytes, uint32_t height)
    return (uint64_t)row_pitch_bytes * (height + 1);
 }
 
+/* The byte stride between array layers: each layer is one tightly
+ * stacked plane, and the render family's plane carries its own
+ * oracle-headroom row so a layer's clear stays inside its own stride.
+ * Both R300_TX_OFFSET_0 and RB3D_COLOROFFSET0 reserve their low five
+ * bits, and each family's row pitch is a multiple of 32 bytes, so every
+ * multiple of this stride is a legal register payload.
+ */
+static inline uint32_t
+r3v_native_image_layer_pitch_bytes(uint32_t row_pitch_bytes, uint32_t height,
+                                   bool render_family)
+{
+   return render_family
+             ? (uint32_t)r3v_native_render_footprint_bytes(row_pitch_bytes,
+                                                           height)
+             : row_pitch_bytes * height;
+}
+
 /* The linear transfer family: 2D images of a fixed-size color texel
  * under transfer usage alone, at any extent inside 2048 per axis -- a
  * deliberately conservative policy bound taken from the RS48x
@@ -993,6 +1015,11 @@ r3v_native_render_footprint_bytes(uint32_t row_pitch_bytes, uint32_t height)
  * render family's contract.
  */
 #define R3V_NATIVE_TRANSFER_DIMENSION_MAX 2048
+
+/* Array layers, bounded by the reported maxImageArrayLayers so the
+ * admission and the advertised limit name one number.
+ */
+#define R3V_NATIVE_MAX_ARRAY_LAYERS 256u
 
 static inline uint32_t
 r3v_native_transfer_texel_bytes(VkFormat format)
@@ -1050,6 +1077,22 @@ struct r3v_native_image {
     * width-derived 64-byte-aligned pitch for the transfer family.
     */
    uint32_t row_pitch_bytes;
+   /* Array layers and the byte stride between them.  A view selects one
+    * layer, and that layer's base travels as the byte offset in the
+    * TX_OFFSET_0 or RB3D_COLOROFFSET0 payload the executing route
+    * already carries, so every admitted layer is addressable.
+    */
+   uint32_t array_layers;
+   uint32_t layer_pitch_bytes;
+   /* Set for VK_IMAGE_TYPE_1D: the height-one member of the layout,
+    * whose views take VK_IMAGE_VIEW_TYPE_1D.
+    */
+   bool one_dimensional;
+   /* The bound footprint: every layer's stride, the value
+    * r3v_GetImageMemoryRequirements reports and r3v_BindImageMemory
+    * proves against the allocation.
+    */
+   uint64_t footprint_bytes;
    /* Creation usage; the copy recording admits each direction by its
     * bit.
     */
@@ -1070,6 +1113,12 @@ struct r3v_native_image {
 struct r3v_native_image_view {
    struct vk_object_base base;
    struct r3v_native_image *image;
+   /* The single layer the view selects and its byte offset from the
+    * image base; the sampling and attachment routes add it to the bind
+    * offset when they place their register payload.
+    */
+   uint32_t base_array_layer;
+   uint32_t layer_offset_bytes;
 };
 
 /* A sampler is pure recorded state: no native route samples, so the
@@ -1382,8 +1431,8 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
-   struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count, const uint32_t color_bits[4],
+   struct r3v_native_image *target_image, uint32_t target_layer_offset,
+   bool varying, uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled);
 
 /* Executes the command buffer's deferred draw at submission: gathers the

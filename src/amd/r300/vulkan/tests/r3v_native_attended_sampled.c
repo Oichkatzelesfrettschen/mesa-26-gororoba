@@ -15,9 +15,11 @@
 
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
+#include "r3v_native_sampled_arms.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -78,26 +80,33 @@ write_target(const char *dir, const void *data, size_t size)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2 && !(argc == 3 && (strcmp(argv[2], "bgra") == 0 ||
-                                    strcmp(argv[2], "rows") == 0))) {
-      fprintf(stderr, "usage: %s <evidence-directory> [bgra|rows]\n",
+   const struct r3v_sampled_arm *arm = &r3v_sampled_arms[0];
+   if (argc == 3)
+      arm = r3v_sampled_arm_find(argv[2]);
+   if ((argc != 2 && argc != 3) || arm == NULL) {
+      fprintf(stderr,
+              "usage: %s <evidence-directory> "
+              "[rgba|bgra|rows|wide|layer|row1]\n",
               argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
-   /* The optional bgra arm binds the same texel values through the
-    * B8G8R8A8 memory order; the predicted target dword is unchanged,
-    * and unrouted selects would instead replicate byte X (0xa0).  The
-    * rows arm splits the 16x16 texture into halves -- rows 0-7 the
-    * upper texel, rows 8-15 the lower -- so the two oracle pixels
-    * prove address-dependent fetch: the varying TEX0 interpolation
-    * puts pixel (32,24) at texel row 6 and pixel (32,44) at row 11,
-    * each at least 1.8 texels from the half boundary.
+   /* The bgra arm binds the same texel values through the B8G8R8A8
+    * memory order; the predicted target dword is unchanged, and
+    * unrouted selects would instead replicate byte X (0xa0).  The
+    * split-row arms halve the texture, so the two oracle pixels prove
+    * address-dependent fetch: the varying TEX0 interpolation puts pixel
+    * (32,24) at texture fraction 0.41 and pixel (32,44) at 0.72, each
+    * clear of the half boundary at every admitted height.  The layer
+    * arm selects the last of three layers with the other two holding
+    * the lower texel, so a dropped TX_OFFSET_0 stride reads that texel;
+    * the row1 arm is the height-one 1D shape.
     */
-   const bool texture_bgra = argc == 3 && strcmp(argv[2], "bgra") == 0;
-   const bool texture_rows = argc == 3 && strcmp(argv[2], "rows") == 0;
-   const VkFormat texture_format =
-      texture_bgra ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+   const bool texture_bgra = arm->lanes == R300_TRIANGLE_LANES_B8G8R8A8;
+   const bool texture_rows = arm->split_rows;
+   const VkFormat texture_format = texture_bgra
+                                      ? VK_FORMAT_B8G8R8A8_UNORM
+                                      : VK_FORMAT_R8G8B8A8_UNORM;
 
    /* The oracle's expected interior is the texel through the reference
     * target's UNORM8 conversion; the reference shape carries geometry,
@@ -120,12 +129,20 @@ main(int argc, char **argv)
    };
    const uint32_t predicted_lower_dword =
       r300_tcl_bypass_triangle_pack_unorm8_dword(shape.lanes, lower_rgba);
-   printf("[shape] sampled reference 64x64, %s %s texel "
-          "(%02x,%02x,%02x,%02x), predicted interior 0x%08x\n",
+   printf("[shape] arm %s, target 64x64, texture %s %ux%u %u layer(s) "
+          "view layer %u, %s %s texel (%02x,%02x,%02x,%02x), predicted "
+          "interior 0x%08x\n",
+          arm->name, arm->one_dimensional ? "1D" : "2D", arm->width,
+          arm->height, arm->array_layers, arm->view_layer,
           texture_bgra ? "B8G8R8A8" : "R8G8B8A8",
           texture_rows ? "split-rows upper" : "uniform", R3V_SAMPLED_TEXEL_R,
           R3V_SAMPLED_TEXEL_G, R3V_SAMPLED_TEXEL_B, R3V_SAMPLED_TEXEL_A,
           predicted_dword);
+   if (arm->decoy_layers)
+      printf("[shape] unselected layers hold (%02x,%02x,%02x,%02x), "
+             "falsifier 0x%08x\n",
+             R3V_SAMPLED_LOWER_R, R3V_SAMPLED_LOWER_G, R3V_SAMPLED_LOWER_B,
+             R3V_SAMPLED_LOWER_A, predicted_lower_dword);
    if (texture_rows)
       printf("[shape] lower texel (%02x,%02x,%02x,%02x), predicted lower "
              "0x%08x at (32,44)\n",
@@ -221,6 +238,7 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkCreateImage);
    LOAD_DEVICE(vkDestroyImage);
    LOAD_DEVICE(vkGetImageMemoryRequirements);
+   LOAD_DEVICE(vkGetImageSubresourceLayout);
    LOAD_DEVICE(vkBindImageMemory);
    LOAD_DEVICE(vkCreateImageView);
    LOAD_DEVICE(vkDestroyImageView);
@@ -273,11 +291,12 @@ main(int argc, char **argv)
       device,
       &(VkImageCreateInfo){
          .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-         .imageType = VK_IMAGE_TYPE_2D,
+         .imageType = arm->one_dimensional ? VK_IMAGE_TYPE_1D
+                                           : VK_IMAGE_TYPE_2D,
          .format = texture_format,
-         .extent = { 16, 16, 1 },
+         .extent = { arm->width, arm->height, 1 },
          .mipLevels = 1,
-         .arrayLayers = 1,
+         .arrayLayers = arm->array_layers,
          .samples = VK_SAMPLE_COUNT_1_BIT,
          .tiling = VK_IMAGE_TILING_LINEAR,
          .usage = VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -296,20 +315,55 @@ main(int argc, char **argv)
                           },
                           NULL, &tex_memory));
    CHECK(vkBindImageMemory(device, tex_image, tex_memory, 0));
+   VkSubresourceLayout tex_layout;
+   vkGetImageSubresourceLayout(
+      device, tex_image,
+      &(VkImageSubresource){ .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT },
+      &tex_layout);
+   printf("[texture] rowPitch %" PRIu64 " arrayPitch %" PRIu64 " size %" PRIu64
+          ", arm pitch %u texels, arm layer offset %u\n",
+          (uint64_t)tex_layout.rowPitch, (uint64_t)tex_layout.arrayPitch,
+          (uint64_t)tex_reqs.size, r3v_sampled_arm_row_pitch_texels(arm),
+          r3v_sampled_arm_texture_offset(arm));
+   fflush(stdout);
+   /* The arming digest was computed from the arm's own geometry, so a
+    * layout the driver derives differently would submit a stream the
+    * report never named.
+    */
+   if (tex_layout.rowPitch != r3v_sampled_arm_row_pitch_texels(arm) * 4u ||
+       (arm->array_layers > 1 &&
+        tex_layout.arrayPitch != r3v_sampled_arm_layer_pitch_bytes(arm))) {
+      fprintf(stderr, "driver layout disagrees with the arm geometry\n");
+      return 1;
+   }
    {
       void *map = NULL;
       CHECK(vkMapMemory(device, tex_memory, 0, VK_WHOLE_SIZE, 0, &map));
       uint8_t *texels = map;
-      for (size_t t = 0; t < tex_reqs.size / 4; t++) {
-         const bool lower = texture_rows && (t / 16) >= 8;
-         const uint8_t r = lower ? R3V_SAMPLED_LOWER_R : R3V_SAMPLED_TEXEL_R;
-         const uint8_t g = lower ? R3V_SAMPLED_LOWER_G : R3V_SAMPLED_TEXEL_G;
-         const uint8_t b = lower ? R3V_SAMPLED_LOWER_B : R3V_SAMPLED_TEXEL_B;
-         const uint8_t a = lower ? R3V_SAMPLED_LOWER_A : R3V_SAMPLED_TEXEL_A;
-         texels[4 * t + 0] = texture_bgra ? b : r;
-         texels[4 * t + 1] = g;
-         texels[4 * t + 2] = texture_bgra ? r : b;
-         texels[4 * t + 3] = a;
+      const uint64_t layer_pitch =
+         arm->array_layers > 1 ? tex_layout.arrayPitch : 0;
+      for (uint32_t layer = 0; layer < arm->array_layers; layer++) {
+         for (uint32_t y = 0; y < arm->height; y++) {
+            uint8_t *row =
+               texels + layer * layer_pitch + (uint64_t)y * tex_layout.rowPitch;
+            const bool lower =
+               (texture_rows && y >= arm->height / 2) ||
+               (arm->decoy_layers && layer != arm->view_layer);
+            const uint8_t r =
+               lower ? R3V_SAMPLED_LOWER_R : R3V_SAMPLED_TEXEL_R;
+            const uint8_t g =
+               lower ? R3V_SAMPLED_LOWER_G : R3V_SAMPLED_TEXEL_G;
+            const uint8_t b =
+               lower ? R3V_SAMPLED_LOWER_B : R3V_SAMPLED_TEXEL_B;
+            const uint8_t a =
+               lower ? R3V_SAMPLED_LOWER_A : R3V_SAMPLED_TEXEL_A;
+            for (uint32_t x = 0; x < arm->width; x++) {
+               row[4 * x + 0] = texture_bgra ? b : r;
+               row[4 * x + 1] = g;
+               row[4 * x + 2] = texture_bgra ? r : b;
+               row[4 * x + 3] = a;
+            }
+         }
       }
       vkUnmapMemory(device, tex_memory);
    }
@@ -319,10 +373,12 @@ main(int argc, char **argv)
       &(VkImageViewCreateInfo){
          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
          .image = tex_image,
-         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+         .viewType = arm->one_dimensional ? VK_IMAGE_VIEW_TYPE_1D
+                                          : VK_IMAGE_VIEW_TYPE_2D,
          .format = texture_format,
          .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                                .levelCount = 1,
+                               .baseArrayLayer = arm->view_layer,
                                .layerCount = 1 },
       },
       NULL, &tex_view));

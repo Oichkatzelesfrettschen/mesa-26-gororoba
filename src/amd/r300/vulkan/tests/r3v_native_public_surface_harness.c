@@ -446,10 +446,11 @@ struct image_usage_case {
 };
 
 /* Query and creation are separate public entry points, so exercise the
- * complete image-family matrix through both dispatch paths.  The native
- * transfer mask is exactly the two transfer bits; the render family takes
- * the color-attachment bit with either transfer bit beside it, and zero
- * or a mask naming any other usage refuses at both boundaries.
+ * complete image-family matrix through both dispatch paths.  The
+ * sampling family takes the two transfer bits and the sampled bit; the
+ * render family takes the color-attachment bit with the sampled and
+ * transfer bits beside it, and zero or a mask naming any other usage
+ * refuses at both boundaries.
  */
 static void
 check_image_usage_surface(
@@ -476,7 +477,10 @@ check_image_usage_surface(
            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         VK_SUCCESS, VK_SUCCESS },
       { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_ERROR_FORMAT_NOT_SUPPORTED, R3V_NATIVE_REFUSAL_RESULT },
+        VK_SUCCESS, VK_SUCCESS },
+      { VK_IMAGE_USAGE_SAMPLED_BIT, VK_SUCCESS, VK_SUCCESS },
+      { VK_IMAGE_USAGE_STORAGE_BIT, VK_ERROR_FORMAT_NOT_SUPPORTED,
+        R3V_NATIVE_REFUSAL_RESULT },
    };
 
    assert(transfer_usage ==
@@ -3566,9 +3570,10 @@ main(void)
                 R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);
 
-      /* The render family takes the transfer bits beside the
-       * attachment bit and executes their copies over its own row
-       * pitch; a usage naming anything else refuses.
+      /* The render family takes the transfer and sampled bits beside
+       * the attachment bit: the copies execute over its row pitch and
+       * the TX block fetches the same rows.  A usage naming anything
+       * else refuses.
        */
       VkImageCreateInfo mixed_info = image_info;
       mixed_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -3581,7 +3586,128 @@ main(void)
 
       mixed_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT;
+      assert(vkCreateImage(device, &mixed_info, NULL, &mixed_image) ==
+                VK_SUCCESS &&
+             mixed_image != VK_NULL_HANDLE);
+      vkDestroyImage(device, mixed_image, NULL);
+
+      mixed_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_STORAGE_BIT;
       assert(vkCreateImage(device, &mixed_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      /* An array image stacks its layers at one stride, and a view
+       * selects a single layer at any index.  The subresource layout
+       * reports that stride, and the layer count past the reported
+       * maximum, a layered view, and the array view type each refuse.
+       */
+      VkImageCreateInfo layered_info = image_info;
+      layered_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                           VK_IMAGE_USAGE_SAMPLED_BIT;
+      layered_info.arrayLayers = 12;
+      VkImage layered_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &layered_info, NULL, &layered_image) ==
+                VK_SUCCESS &&
+             layered_image != VK_NULL_HANDLE);
+
+      VkMemoryRequirements layered_requirements;
+      vkGetImageMemoryRequirements(device, layered_image,
+                                   &layered_requirements);
+      VkSubresourceLayout layered_layout;
+      const VkImageSubresource layered_subresource = {
+         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+         .mipLevel = 0,
+         .arrayLayer = 5,
+      };
+      vkGetImageSubresourceLayout(device, layered_image,
+                                  &layered_subresource, &layered_layout);
+      assert(layered_layout.arrayPitch != 0);
+      assert(layered_layout.offset == 5 * layered_layout.arrayPitch);
+      assert(layered_requirements.size == 12 * layered_layout.arrayPitch);
+
+      VkImageViewCreateInfo layered_view_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .image = layered_image,
+         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+         .format = layered_info.format,
+         .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .baseArrayLayer = 5,
+            .layerCount = 1,
+         },
+      };
+      VkImageView layered_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(device, &layered_view_info, NULL,
+                               &layered_view) == VK_SUCCESS &&
+             layered_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, layered_view, NULL);
+
+      layered_view_info.subresourceRange.layerCount = 2;
+      assert(vkCreateImageView(device, &layered_view_info, NULL,
+                               &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
+             layered_view == VK_NULL_HANDLE);
+
+      layered_view_info.subresourceRange.layerCount = 1;
+      layered_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+      assert(vkCreateImageView(device, &layered_view_info, NULL,
+                               &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
+             layered_view == VK_NULL_HANDLE);
+
+      layered_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      layered_view_info.subresourceRange.baseArrayLayer = 12;
+      assert(vkCreateImageView(device, &layered_view_info, NULL,
+                               &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
+             layered_view == VK_NULL_HANDLE);
+      vkDestroyImage(device, layered_image, NULL);
+
+      layered_info.arrayLayers = R3V_NATIVE_MAX_ARRAY_LAYERS + 1;
+      assert(vkCreateImage(device, &layered_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      /* The 1D type is the height-one member of the same layout; its
+       * views take VK_IMAGE_VIEW_TYPE_1D, and a height past one has no
+       * 1D image to describe.
+       */
+      VkImageCreateInfo one_d_info = image_info;
+      one_d_info.imageType = VK_IMAGE_TYPE_1D;
+      one_d_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+      one_d_info.extent = (VkExtent3D){ 256, 1, 1 };
+      one_d_info.arrayLayers = 4;
+      VkImage one_d_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &one_d_info, NULL, &one_d_image) ==
+                VK_SUCCESS &&
+             one_d_image != VK_NULL_HANDLE);
+
+      VkImageViewCreateInfo one_d_view_info = layered_view_info;
+      one_d_view_info.image = one_d_image;
+      one_d_view_info.viewType = VK_IMAGE_VIEW_TYPE_1D;
+      one_d_view_info.format = one_d_info.format;
+      one_d_view_info.subresourceRange.baseArrayLayer = 3;
+      VkImageView one_d_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(device, &one_d_view_info, NULL,
+                               &one_d_view) == VK_SUCCESS &&
+             one_d_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, one_d_view, NULL);
+
+      one_d_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      assert(vkCreateImageView(device, &one_d_view_info, NULL, &one_d_view) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             one_d_view == VK_NULL_HANDLE);
+      vkDestroyImage(device, one_d_image, NULL);
+
+      one_d_info.extent.height = 2;
+      assert(vkCreateImage(device, &one_d_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      VkImageCreateInfo three_d_info = image_info;
+      three_d_info.imageType = VK_IMAGE_TYPE_3D;
+      three_d_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+      three_d_info.extent = (VkExtent3D){ 64, 64, 4 };
+      assert(vkCreateImage(device, &three_d_info, NULL, &refused_image) ==
                 R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);
 

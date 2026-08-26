@@ -89,7 +89,7 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->maxImageDimension2D = R3V_MAX_IMAGE_DIMENSION_2D;
    props->maxImageDimension3D = 256;
    props->maxImageDimensionCube = R3V_VK10_MIN_IMAGE_DIMENSION_CUBE;
-   props->maxImageArrayLayers = 256;
+   props->maxImageArrayLayers = R3V_NATIVE_MAX_ARRAY_LAYERS;
 
    /* Texel buffer size: R3xx has no native texel buffer object.  The
     * Vulkan 1.4 minimum is 65536; r3v_CreateBufferView enforces the same
@@ -871,29 +871,32 @@ r3v_get_image_format_properties(
    VkFormatProperties3 format_properties;
    r3v_get_format_properties(device, info->format, &format_properties);
 
-   /* The native image contract carries two 2D flat families --
-    * color-attachment usage alone at no create flag, and transfer usage
-    * alone at no create flag or at VK_IMAGE_CREATE_ALIAS_BIT, whose
-    * aliasing window is the linear footprint (r3v_native_image.c) -- so
-    * the query reports every other type, flag, or usage unsupported
-    * before the shared type switch, the same refusal vkCreateImage
-    * applies.
+   /* The native image contract carries two flat families over the 1D and
+    * 2D types -- the render family, which takes the color-attachment bit
+    * with the sampled and transfer bits beside it at no create flag, and
+    * the sampling family, which takes the transfer and sampled bits at no
+    * create flag or at VK_IMAGE_CREATE_ALIAS_BIT, whose aliasing window
+    * is the linear footprint (r3v_native_image.c) -- so the query reports
+    * every other type, flag, or usage unsupported before the shared type
+    * switch, the same refusal vkCreateImage applies.
     */
    const VkImageUsageFlags r3v_native_transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-   const bool r3v_native_transfer_query =
-      info->usage != 0 &&
-      (info->usage & ~r3v_native_transfer_usage) == 0;
    const bool r3v_native_render_query =
       (info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
       (info->usage & ~(VkImageUsageFlags)(
                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_SAMPLED_BIT |
                          r3v_native_transfer_usage)) == 0;
+   const bool r3v_native_sampling_query =
+      !r3v_native_render_query && info->usage != 0 &&
+      (info->usage & ~(VkImageUsageFlags)(VK_IMAGE_USAGE_SAMPLED_BIT |
+                                          r3v_native_transfer_usage)) == 0;
    const VkImageCreateFlags r3v_native_admitted_flags =
-      r3v_native_transfer_query ? VK_IMAGE_CREATE_ALIAS_BIT : 0;
-   if (info->type != VK_IMAGE_TYPE_2D ||
+      r3v_native_sampling_query ? VK_IMAGE_CREATE_ALIAS_BIT : 0;
+   if ((info->type != VK_IMAGE_TYPE_2D && info->type != VK_IMAGE_TYPE_1D) ||
        (info->flags & ~r3v_native_admitted_flags) ||
-       (!r3v_native_render_query && !r3v_native_transfer_query))
+       (!r3v_native_render_query && !r3v_native_sampling_query))
       goto unsupported;
 
    VkFormatFeatureFlags2 image_features = 0;
@@ -920,29 +923,23 @@ r3v_get_image_format_properties(
 
    /* Physical-device limits expose Vulkan's floor.  Per-format properties
     * expose the implemented flat-image contract so vkCreateImage and format
-    * queries agree: one mip level and one array layer. */
+    * queries agree: one mip level, the layer count a view selects one
+    * layer out of, and the family's own extent ceiling.  The 1D type is
+    * the height-one member of that same layout, so it reports the same
+    * width bound.
+    */
+   const uint32_t r3v_native_family_extent =
+      r3v_native_render_query ? R3V_NATIVE_RENDER_MAX_EXTENT
+                              : R3V_NATIVE_TRANSFER_DIMENSION_MAX;
+   max_mip_levels = 1;
+   max_array_layers = R3V_NATIVE_MAX_ARRAY_LAYERS;
    switch (info->type) {
    case VK_IMAGE_TYPE_1D:
-      max_extent = (VkExtent3D){
-         device->vk.properties.maxImageDimension1D, 1, 1,
-      };
-      max_mip_levels = 1;
-      max_array_layers = 1;
+      max_extent = (VkExtent3D){ r3v_native_family_extent, 1, 1 };
       break;
    case VK_IMAGE_TYPE_2D:
-      /* The reported ceiling follows the family the usage names --
-       * the render-shape family's extent for attachment usage, the
-       * linear transfer bound for transfer usage alone -- so
-       * vkCreateImage accepts exactly what this query admits for each.
-       */
-      max_extent =
-         r3v_native_transfer_query
-            ? (VkExtent3D){ R3V_NATIVE_TRANSFER_DIMENSION_MAX,
-                            R3V_NATIVE_TRANSFER_DIMENSION_MAX, 1 }
-            : (VkExtent3D){ R3V_NATIVE_RENDER_MAX_EXTENT,
-                            R3V_NATIVE_RENDER_MAX_EXTENT, 1 };
-      max_mip_levels = 1;
-      max_array_layers = 1;
+      max_extent = (VkExtent3D){ r3v_native_family_extent,
+                                 r3v_native_family_extent, 1 };
       break;
    case VK_IMAGE_TYPE_3D:
       /* Every image is one flat 2D linear layer over its GEM BO
@@ -967,9 +964,9 @@ r3v_get_image_format_properties(
                                R3V_R3XX_MAX_RENDER_DIMENSION);
    }
 
-   /* There is no multisample path: images are single-sample flat layers
-    * with host-mapped transfers and no resolve, so every format supports
-    * exactly one sample, matching the single-sample device limits. */
+   /* Every format supports one sample: the render cell rasterizes at
+    * one sample per pixel and the transfers move one sample's bytes,
+    * matching the single-sample device limits. */
    *image_properties = (VkImageFormatProperties){
       .maxExtent = max_extent,
       .maxMipLevels = max_mip_levels,

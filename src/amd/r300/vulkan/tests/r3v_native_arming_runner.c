@@ -13,6 +13,7 @@
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native_render_shape_args.h"
+#include "r3v_native_sampled_arms.h"
 
 #include "util/mesa-blake3.h"
 
@@ -45,20 +46,23 @@ static bool cell_compute_identity = false;
 static bool cell_render_shape = false;
 static struct r300_triangle_render_shape render_shape;
 /* --sampled selects the sampled triangle cell: the varying vertex path
- * with the sampled fragment binary and the TX unit-0 block over the
- * attended runner's 16x16 uniform texture at offset 0, pitch 16.
+ * with the sampled fragment binary and the TX unit-0 block over one
+ * arm's texture geometry.  --sampled and --sampled-bgra name the two
+ * uniform 16x16 arms, and --sampled-arm names any arm in the table.
  */
 static bool cell_sampled = false;
-static enum r300_triangle_lane_order cell_sampled_lanes =
-   R300_TRIANGLE_LANES_R8G8B8A8;
+static const struct r3v_sampled_arm *cell_sampled_arm = NULL;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
 {
    if (cell_sampled)
       return r300_tcl_bypass_triangle_sampled_emit(
-         R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, 1, 0, 16,
-         16, 16, cell_sampled_lanes, cell);
+         R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, 1,
+         r3v_sampled_arm_texture_offset(cell_sampled_arm),
+         cell_sampled_arm->width, cell_sampled_arm->height,
+         r3v_sampled_arm_row_pitch_texels(cell_sampled_arm),
+         cell_sampled_arm->lanes, cell);
    if (cell_render_shape)
       return r300_tcl_bypass_triangle_render_shape_emit(&render_shape, cell);
    return cell_varying
@@ -190,12 +194,22 @@ main(int argc, char **argv)
       argi += 1;
    } else if (argc >= argi + 1 && strcmp(argv[argi], "--sampled") == 0) {
       cell_sampled = true;
+      cell_sampled_arm = r3v_sampled_arm_find("rgba");
       argi += 1;
    } else if (argc >= argi + 1 &&
               strcmp(argv[argi], "--sampled-bgra") == 0) {
       cell_sampled = true;
-      cell_sampled_lanes = R300_TRIANGLE_LANES_B8G8R8A8;
+      cell_sampled_arm = r3v_sampled_arm_find("bgra");
       argi += 1;
+   } else if (argc >= argi + 2 &&
+              strcmp(argv[argi], "--sampled-arm") == 0) {
+      cell_sampled = true;
+      cell_sampled_arm = r3v_sampled_arm_find(argv[argi + 1]);
+      if (cell_sampled_arm == NULL) {
+         fprintf(stderr, "unknown sampled arm %s\n", argv[argi + 1]);
+         return 2;
+      }
+      argi += 2;
    } else if (argc >= argi + 1 + R3V_RENDER_SHAPE_ARGC &&
               strcmp(argv[argi], "--shape") == 0) {
       if (!r3v_render_shape_parse(&argv[argi + 1], &render_shape))
@@ -270,7 +284,8 @@ main(int argc, char **argv)
     */
    if (argc != argi + 1) {
       fprintf(stderr,
-              "usage: %s [--varying|--compute-identity|--shape <w> <h> "
+              "usage: %s [--varying|--compute-identity|--sampled|"
+              "--sampled-bgra|--sampled-arm <name>|--shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "
               "<evidence-directory> | [--varying|--compute-identity|"
