@@ -158,8 +158,11 @@ override REVIEW_THREAD_LEDGER := $(CURDIR)/docs/merged-review-thread-resolution-
 override REVIEW_THREAD_FRONTIER_TOOL := $(CURDIR)/scripts/review_thread_frontier.py
 override REVIEW_THREAD_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-pr93-pr161
 override REVIEW_THREAD_CAPTURE_TOOL := $(CURDIR)/scripts/review_thread_batch_capture.py
+override REVIEW_THREAD_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-pr93-pr161/assessments.tsv
+override REVIEW_THREAD_CLASSIFICATION_TOOL := $(CURDIR)/scripts/review_thread_classification.py
 override REVIEW_THREAD_ARCHIVE_FRONTIER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/action-frontier.tsv
 override REVIEW_THREAD_ARCHIVE_LEDGER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/resolution-ledger.tsv
+override REVIEW_THREAD_ARCHIVE_COMMIT := d6661faf431e4998f5e7d1879b1d6d6eb3c7bf7c
 override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_TOPSRC_INPUT=$(call make_shell_quote,$(value GOROROBA_TOPSRC_INPUT)) \
 	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
@@ -501,13 +504,19 @@ driver-root-audit:
 
 review-thread-frontier-check:
 	python3 $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_CAPTURE)
+	python3 $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
+		--capture-frontier $(REVIEW_THREAD_CAPTURE)/frontier.tsv \
+		--assessments $(REVIEW_THREAD_CLASSIFICATION) \
+		--output $(REVIEW_THREAD_FRONTIER) \
+		--batch-id merged-review-thread-closure-batch-0002 \
+		--batch-size 50
 	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_ARCHIVE_FRONTIER) \
 		--ledger $(REVIEW_THREAD_ARCHIVE_LEDGER) \
 		--batch-size 50 \
 		--repo-root $(CURDIR)/.. \
-		--main-ref origin/main \
-		--candidate-ref HEAD
+		--main-ref $(REVIEW_THREAD_ARCHIVE_COMMIT) \
+		--candidate-ref $(REVIEW_THREAD_ARCHIVE_COMMIT)
 	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_FRONTIER) \
 		--ledger $(REVIEW_THREAD_LEDGER) \
@@ -524,7 +533,8 @@ review-thread-frontier-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 		python3 -m pytest -q \
 			$(CURDIR)/tests/test_review_thread_frontier.py \
-			$(CURDIR)/tests/test_review_thread_batch_capture.py
+			$(CURDIR)/tests/test_review_thread_batch_capture.py \
+			$(CURDIR)/tests/test_review_thread_classification.py
 
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"

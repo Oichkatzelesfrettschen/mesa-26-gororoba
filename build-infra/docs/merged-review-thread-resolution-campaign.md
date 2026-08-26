@@ -83,7 +83,7 @@ raw responses, normalized selected threads, every selected comment body and
 author, and their hashes live in
 `review-thread-frontiers/merged-pr93-pr161/`.
 
-## Current classification
+## First-batch classification
 
 The source/history audit classifies the 50 rows as:
 
@@ -108,6 +108,27 @@ The seven actionable rows collapse into five mechanism-coherent changes:
 
 These changes remain separate reviewable pull requests.  The 50-thread batch
 is the audit denominator, not permission to combine unrelated code paths.
+
+## Active classification
+
+`review-thread-classifications/merged-pr93-pr161/assessments.tsv` classifies
+the second batch against merged main `0fab98b4e09da3f4d9920535cd2518e2055c9e27`.
+`../scripts/review_thread_classification.py` joins those assessments to the
+retained GitHub identities and rejects missing, extra, duplicate, reordered,
+or state-mismatched rows.
+
+| State | Threads | Required transition |
+| --- | ---: | --- |
+| fixed on merged main | 48 | Re-query, resolve exact ID, re-query, record ledger |
+| superseded by removed build targets | 2 | Re-query, resolve exact ID, re-query, record ledger |
+| actionable | 0 | None |
+
+The two findings that survived the initial source audit both governed the Palm
+cube-gather comment.  PR 1866 merged the complete correction: Palm is the
+validated code path, Cypress/Juniper/Redwood/Cedar are Evergreen GPUs, and
+Cayman is Northern Islands.  Static source and Git history support these
+dispositions.  Runtime, conformance, performance, and silicon claims remain
+outside this classification.
 
 ## Verification
 
