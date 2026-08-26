@@ -853,6 +853,23 @@ r3v_native_attended_sampled = executable(
   install : false,
 )
 
+# Attended composed render-then-sample cell: records the composed cell
+# through r3v_native_record_composed_render_sample and drives it to a
+# live DRM_RADEON_CS on RS482 silicon, where the render half's target is
+# the sample half's texture and both targets take one coverage verdict.
+r3v_native_attended_composed = executable(
+  'r3v_native_attended_composed',
+  files('tests/r3v_native_attended_composed.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended direct-write control: performs a live DRM_RADEON_CS on RS482
 # silicon under the authorization and procedure in
 # docs/hardware/r3v-native-direct-write-attended-procedure.md.  The

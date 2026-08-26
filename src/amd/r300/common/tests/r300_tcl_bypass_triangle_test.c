@@ -2171,6 +2171,94 @@ test_varying_shape_vertices_scale_positions_alone(void)
    }
 }
 
+/* The composed cell's two halves address the shared target through
+ * different register paths, and each path carries its own tiling
+ * fields: RB3D_COLORPITCH0 holds COLORTILE and COLORMICROTILE beside
+ * the pitch, while TX_OFFSET_0 holds TXO_MACRO_TILE and TXO_MICRO_TILE
+ * in the bits below its base.  A disagreement there would have the
+ * texture fetch read a swizzle of what the render half wrote, so the
+ * shared target's linear layout is a property of both words.  The
+ * 32-byte target alignment the shape validator enforces for
+ * RB3D_COLOROFFSET's base field is what holds the TX tiling bits at
+ * linear.
+ */
+static void
+test_composed_halves_agree_on_linear_layout(void)
+{
+   struct r300_triangle_composed_render_sample composed;
+   r300_tcl_bypass_triangle_render_shape_reference(&composed.render);
+   r300_tcl_bypass_triangle_render_shape_reference(&composed.sample);
+   composed.sample.target_offset = 65536;
+
+   struct r300_tcl_bypass_triangle_ib ib;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(
+             &composed, &ib) == 0);
+
+   const uint32_t tile_bits = R300_COLOR_TILE(1) | R300_COLOR_MICROTILE(3);
+   for (uint32_t at = 0, seen = 0; at < ib.ib_size_dwords; at++) {
+      const int found = find_reg_write(ib.ib + at, ib.ib_size_dwords - at,
+                                       R300_RB3D_COLORPITCH0, false);
+      if (found < 0) {
+         assert(seen == 2);
+         break;
+      }
+      at += (uint32_t)found;
+      assert((ib.ib[at + 1] & tile_bits) == 0);
+      assert((ib.ib[at + 1] & R300_COLORPITCH_MASK) ==
+             (seen == 0 ? composed.render.pitch_pixels
+                        : composed.sample.pitch_pixels));
+      seen++;
+   }
+
+   const int tx_offset =
+      find_reg_write(ib.ib, ib.ib_size_dwords, R300_TX_OFFSET_0, false);
+   assert(tx_offset >= 0);
+   assert((ib.ib[tx_offset + 1] &
+           (R300_TXO_MACRO_TILE(1) | R300_TXO_MICRO_TILE(3))) == 0);
+
+   /* A base off the 32-byte grid would set TXO_MACRO_TILE or
+    * TXO_MICRO_TILE while displacing the texture, and the shape
+    * validator refuses it before the emitter runs.
+    */
+   struct r300_triangle_composed_render_sample skewed = composed;
+   skewed.render.target_offset = 4;
+   struct r300_tcl_bypass_triangle_ib refused;
+   assert(r300_tcl_bypass_triangle_composed_render_sample_emit(
+             &skewed, &refused) == -EINVAL);
+
+   r300_tcl_bypass_triangle_release(&ib);
+}
+
+/* TEX0 at each vertex is that vertex's window position over the render
+ * extent, so a nearest fetch from a texture at the render extent reads
+ * pixel (x, y) at texel (x, y): the interpolated coordinate at pixel
+ * center (x + 0.5, y + 0.5) is (x + 0.5) / width, which scaled by the
+ * texture width lands a half texel from either boundary.  The composed
+ * cell's sample half therefore reproduces its texture's coverage pixel
+ * for pixel, which is what makes one predicted interior dword cover
+ * both of its targets.
+ */
+static void
+test_varying_tex0_is_the_window_position_fraction(void)
+{
+   const uint32_t extents[][2] = { { 64, 64 }, { 32, 32 }, { 128, 64 } };
+   for (unsigned e = 0; e < ARRAY_SIZE(extents); e++) {
+      struct r300_triangle_render_shape shape;
+      r300_tcl_bypass_triangle_render_shape_reference(&shape);
+      shape.width = extents[e][0];
+      shape.height = extents[e][1];
+      shape.pitch_pixels = extents[e][0];
+      assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == 0);
+
+      float records[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+      r300_tcl_bypass_triangle_varying_shape_vertices(&shape, records);
+      for (unsigned i = 0; i < 3; i++) {
+         assert(records[i * 8 + 4] == records[i * 8 + 0] / (float)shape.width);
+         assert(records[i * 8 + 5] == records[i * 8 + 1] / (float)shape.height);
+      }
+   }
+}
+
 int
 main(void)
 {
@@ -2203,6 +2291,8 @@ main(void)
    test_coverage_oracle_predicted_calibration();
    test_pack_unorm8_dword();
    test_varying_shape_vertices_scale_positions_alone();
+   test_varying_tex0_is_the_window_position_fraction();
+   test_composed_halves_agree_on_linear_layout();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }
