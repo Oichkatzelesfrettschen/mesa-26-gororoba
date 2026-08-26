@@ -842,7 +842,10 @@ r3v_native_attended_render_shape = executable(
 # the interior equal one texel whatever the interpolated coordinates.
 r3v_native_attended_sampled = executable(
   'r3v_native_attended_sampled',
-  files('tests/r3v_native_attended_sampled.c'),
+  files('tests/r3v_native_attended_sampled.c',
+        'tests/r3v_native_recovery_waiver.c',
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
   include_directories : [r3v_native_inc, include_directories('.')],
   dependencies : r3v_native_deps,
   link_whole : [libr3v_native_impl],
@@ -861,7 +864,8 @@ r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
   files('tests/r3v_native_attended_composed.c',
         'tests/r3v_native_recovery_waiver.c',
-        'tests/r3v_native_watchdog_client.c'),
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
   include_directories : [r3v_native_inc, include_directories('.')],
   dependencies : r3v_native_deps,
   link_whole : [libr3v_native_impl],

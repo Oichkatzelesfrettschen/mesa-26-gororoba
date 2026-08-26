@@ -385,6 +385,20 @@ reloaded  R0 > H0        WDIOC_SETTIMEOUT rewrites the register
 rearmed   B0 > B1        the rewritten count runs
 ```
 
+The ladder ran on the Vostro 1000's SB600 and verified every relation:
+
+```text
+L0=65535  A0=65535 A1=65367  H0=65367 H1=65367  R0=65535  B0=65535 B1=65369
+```
+
+The active phase fell 168 counts across a nominal 5 ms and the rearmed
+phase 166, which puts the tick between the two at the 32.768 kHz the
+retained measurement reports, since `nanosleep` overshoots and so bounds
+the implied rate from above. `H0 == H1` is the load-bearing observation:
+PM 0x69 bit 0 halts the counter, which is what makes a disarm possible
+at all. `R0 > H0` shows `WDIOC_SETTIMEOUT` rewriting a depleted count
+back to full, so no arm depends on `.start` reloading.
+
 Each later arm repeats the operative subset -- assert halted, reload,
 verify the count near full, clear the halt, verify the countdown -- and
 acknowledges `armed verified` with its readings. An `armed unverified`

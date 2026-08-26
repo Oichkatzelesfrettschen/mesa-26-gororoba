@@ -14,6 +14,7 @@
  */
 
 #include "r3v_native_arming.h"
+#include "r3v_native_watchdog_guard.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_sampled_arms.h"
 
@@ -98,12 +99,20 @@ int
 main(int argc, char **argv)
 {
    const struct r3v_sampled_arm *arm = &r3v_sampled_arms[0];
-   if (argc == 3)
-      arm = r3v_sampled_arm_find(argv[2]);
-   if ((argc != 2 && argc != 3) || arm == NULL) {
+   const char *waiver_path = NULL;
+   bool usage_error = argc < 2;
+   for (int i = 2; i < argc && !usage_error; i++) {
+      if (strcmp(argv[i], "--waiver") == 0 && i + 1 < argc)
+         waiver_path = argv[++i];
+      else if (argv[i][0] != '-' && (arm = r3v_sampled_arm_find(argv[i])))
+         continue;
+      else
+         usage_error = true;
+   }
+   if (usage_error || arm == NULL) {
       fprintf(stderr,
               "usage: %s <evidence-directory> "
-              "[rgba|bgra|rows|wide|layer|row1]\n",
+              "[rgba|bgra|rows|wide|layer|row1] [--waiver <path>]\n",
               argv[0]);
       return 2;
    }
@@ -177,6 +186,18 @@ main(int argc, char **argv)
    }
    setenv("R3V_NATIVE_MANIFEST_DIR", evidence_dir, 1);
 
+   /* The qualified control submission the guarded interval is measured
+    * on: this cell holds silicon evidence, so the interval it reports
+    * bounds the bracket rather than the cell.  The arming digest comes
+    * from the separate arming runner, so no cell digest is present here
+    * to bind a waiver, and the bracket is the only admission.
+    */
+   struct r3v_native_watchdog_guard guard = {0};
+   stage("watchdog");
+   if (r3v_native_watchdog_guard_open(&guard, waiver_path, evidence_dir,
+                                      NULL) != 0)
+      return 2;
+
    stage("instance");
    PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
       vk_icdGetInstanceProcAddr;
@@ -242,6 +263,8 @@ main(int argc, char **argv)
       fprintf(stderr, "vkCreateDevice: %d\n", result);
       return 1;
    }
+
+   r3v_native_watchdog_guard_install(&guard, device);
 
    PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
 #define LOAD_DEVICE(name) PFN_##name name = (PFN_##name)gdpa(device, #name)
@@ -789,6 +812,14 @@ main(int argc, char **argv)
                           VK_NULL_HANDLE);
    printf("[submit] vkQueueSubmit returned %d\n", result);
    fflush(stdout);
+
+   /* The counter comes to rest before the first target read, because a
+    * fire after a good submission destroys the result and spends the
+    * attempt.
+    */
+   if (r3v_native_watchdog_guard_close(&guard, result) != 0)
+      return 1;
+
    if (result != VK_SUCCESS) {
       fprintf(stderr, "submission refused or failed: %d\n", result);
       return 1;
