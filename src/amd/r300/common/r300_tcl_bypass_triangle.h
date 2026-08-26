@@ -667,6 +667,31 @@ void r300_tcl_bypass_triangle_coverage_oracle(
    uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_coverage_verdict *verdict);
 
+/* The analytic interior alone, for a target whose exterior carries no
+ * predicted value: a render whose load op is
+ * VK_ATTACHMENT_LOAD_OP_DONT_CARE, or a resolve destination the device
+ * writes only where the resolving draw covers.  The verdict reads the
+ * centers the geometry covers and leaves the exterior, the pitch
+ * padding, and the canary row unjudged, so it proves the drawn region
+ * received the admitted values and carries no claim about the bytes
+ * around it -- the sentinel corner the coverage verdict provides is
+ * the price.  analytic_pixels is the denominator, and a refused call
+ * reports zero of it with interior_exact false, so an inadmissible
+ * shape or a short buffer reads as a refusal rather than a pass.
+ */
+struct r300_triangle_interior_verdict {
+   bool interior_exact;
+   uint32_t analytic_pixels;
+   uint32_t interior_pixels;
+   uint32_t ambiguous_pixels;
+};
+
+void r300_tcl_bypass_triangle_interior_oracle(
+   const struct r300_triangle_render_shape *shape,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_interior_verdict *verdict);
+
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
  * BO.

@@ -2259,6 +2259,109 @@ test_varying_tex0_is_the_window_position_fraction(void)
    }
 }
 
+/* Calibrates the interior-only verdict: a footprint whose analytic
+ * interior holds the admitted dword passes with arbitrary bytes
+ * everywhere else, which is the property an uncleared target needs, and
+ * one mutation per failure mode refuses.  The exterior arm is the
+ * discriminating one -- a verdict that read the exterior would fail it,
+ * and a verdict that read nothing would pass every arm.
+ */
+static void
+test_interior_oracle_calibration(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   const uint32_t admitted = 0x11223344u;
+   const uint32_t footprint =
+      shape.pitch_pixels * (shape.height + R300_TRIANGLE_CANARY_ROWS);
+   uint32_t *pixels = malloc((size_t)footprint * sizeof(uint32_t));
+   assert(pixels != NULL);
+
+   /* Everything outside the analytic interior takes a per-dword pattern
+    * no admitted value equals, so a verdict reading it would refuse.
+    */
+   for (uint32_t i = 0; i < footprint; i++)
+      pixels[i] = 0xdead0000u + (i & 0xffffu);
+   /* The reference geometry: window vertices (8, 8), (56, 8), (32, 56),
+    * whose half-open coverage is 1152 of the 4096 centers.
+    */
+   const float vx[3] = { 8.0f, 56.0f, 32.0f }, vy[3] = { 8.0f, 8.0f, 56.0f };
+   uint32_t painted = 0;
+   for (uint32_t y = 0; y < shape.height; y++) {
+      for (uint32_t x = 0; x < shape.width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         bool in = true;
+         for (unsigned e = 0; e < 3; e++) {
+            const unsigned n = (e + 1) % 3;
+            in &= (vx[n] - vx[e]) * (py - vy[e]) -
+                     (vy[n] - vy[e]) * (px - vx[e]) >
+                  0.0f;
+         }
+         if (in) {
+            pixels[y * shape.pitch_pixels + x] = admitted;
+            painted++;
+         }
+      }
+   }
+   assert(painted == 1152);
+
+   struct r300_triangle_interior_verdict verdict;
+   r300_tcl_bypass_triangle_interior_oracle(&shape, &admitted, 1, pixels,
+                                            footprint * sizeof(uint32_t),
+                                            &verdict);
+   assert(verdict.interior_exact);
+   assert(verdict.analytic_pixels == painted);
+   assert(verdict.interior_pixels == painted);
+   assert(verdict.ambiguous_pixels == 0);
+
+   /* One interior dword off refuses, and the count names how many. */
+   const uint32_t apex_y = shape.height / 2;
+   pixels[apex_y * shape.pitch_pixels + shape.width / 2] = ~admitted;
+   r300_tcl_bypass_triangle_interior_oracle(&shape, &admitted, 1, pixels,
+                                            footprint * sizeof(uint32_t),
+                                            &verdict);
+   assert(!verdict.interior_exact);
+   assert(verdict.interior_pixels == painted - 1);
+   pixels[apex_y * shape.pitch_pixels + shape.width / 2] = admitted;
+
+   /* A device that wrote nothing leaves the whole footprint at the
+    * pattern: the failure mode an uncleared resolve destination takes,
+    * and the one the verdict has to separate from a correct write.
+    */
+   for (uint32_t i = 0; i < footprint; i++)
+      pixels[i] = 0xdead0000u + (i & 0xffffu);
+   r300_tcl_bypass_triangle_interior_oracle(&shape, &admitted, 1, pixels,
+                                            footprint * sizeof(uint32_t),
+                                            &verdict);
+   assert(!verdict.interior_exact && verdict.interior_pixels == 0);
+   assert(verdict.analytic_pixels == painted);
+
+   /* A buffer short of the rendered rows refuses before it reads, and
+    * the refusal reports a zero denominator rather than a pass.
+    */
+   r300_tcl_bypass_triangle_interior_oracle(
+      &shape, &admitted, 1, pixels,
+      (size_t)shape.pitch_pixels * shape.height * sizeof(uint32_t) - 4,
+      &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+
+   /* An empty admitted set and an inadmissible shape refuse the same
+    * way, so a caller that forgot its prediction cannot read a pass.
+    */
+   r300_tcl_bypass_triangle_interior_oracle(&shape, &admitted, 0, pixels,
+                                            footprint * sizeof(uint32_t),
+                                            &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+   struct r300_triangle_render_shape bad = shape;
+   bad.pitch_pixels = 1;
+   r300_tcl_bypass_triangle_interior_oracle(&bad, &admitted, 1, pixels,
+                                            footprint * sizeof(uint32_t),
+                                            &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+
+   free(pixels);
+}
+
 int
 main(void)
 {
@@ -2289,6 +2392,7 @@ main(void)
    test_render_shape_oracle_calibration();
    test_coverage_oracle_calibration();
    test_coverage_oracle_predicted_calibration();
+   test_interior_oracle_calibration();
    test_pack_unorm8_dword();
    test_varying_shape_vertices_scale_positions_alone();
    test_varying_tex0_is_the_window_position_fraction();
