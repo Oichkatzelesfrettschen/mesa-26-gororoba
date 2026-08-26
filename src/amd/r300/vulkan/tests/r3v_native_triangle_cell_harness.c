@@ -608,7 +608,7 @@ main(int argc, char **argv)
          goto done;
 
       CHECK(native_device->drm.cache_sync_count ==
-               recorder_sync_count + R300_TRIANGLE_SLOT_COUNT,
+               recorder_sync_count + R300_TRIANGLE_RENDER_SLOT_COUNT,
             "map establishment syncs both referenced BOs: %" PRIu64,
             native_device->drm.cache_sync_count);
    }
@@ -617,7 +617,7 @@ main(int argc, char **argv)
     * publications and two map-establishment syncs for the live references.
     */
    const uint64_t expected_pre_submit_sync_count =
-      live_mapping_mode ? recorder_sync_count + R300_TRIANGLE_SLOT_COUNT
+      live_mapping_mode ? recorder_sync_count + R300_TRIANGLE_RENDER_SLOT_COUNT
                          : recorder_sync_count;
    CHECK(native_device->drm.cache_sync_count == expected_pre_submit_sync_count,
          "pre-submit cache sync count is %" PRIu64,
@@ -642,9 +642,9 @@ main(int argc, char **argv)
             "open-gate submission through the shim: %d", result);
 
       const uint64_t expected_submit_sync_count =
-         pre_submit_sync_count + R300_TRIANGLE_SLOT_COUNT;
+         pre_submit_sync_count + R300_TRIANGLE_RENDER_SLOT_COUNT;
       const uint64_t expected_completion_sync_count =
-         expected_submit_sync_count + R300_TRIANGLE_SLOT_COUNT;
+         expected_submit_sync_count + R300_TRIANGLE_RENDER_SLOT_COUNT;
       CHECK(native_device->drm.submit_boundary_sync_count ==
                expected_submit_sync_count,
             "DRM_RADEON_CS boundary sees %" PRIu64 " cache syncs",
@@ -666,7 +666,7 @@ main(int argc, char **argv)
                             &submit_relocs, &submit_relocs_size) == 0,
             "submit_relocs.bin is retained");
       CHECK(submit_relocs_size ==
-               (R300_TRIANGLE_SLOT_COUNT + 1) *
+               (R300_TRIANGLE_RENDER_SLOT_COUNT + 1) *
                   sizeof(struct drm_radeon_cs_reloc),
             "submit object carries the completion reloc (%zu bytes)",
             submit_relocs_size);
@@ -778,7 +778,7 @@ main(int argc, char **argv)
             "manifest relocs.bin is retained");
       if (reloc_data != NULL) {
          CHECK(reloc_size ==
-                  R300_TRIANGLE_SLOT_COUNT *
+                  R300_TRIANGLE_RENDER_SLOT_COUNT *
                      sizeof(struct drm_radeon_cs_reloc),
                "relocation chunk carries the two cell references "
                "(%zu bytes)",
