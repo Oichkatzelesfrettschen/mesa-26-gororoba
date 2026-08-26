@@ -8,8 +8,8 @@
  * so one indirect buffer carries the destination-cache flush ahead of
  * the texture-tag invalidate and the second target holds what the first
  * one received.  Runs only under the authorization and procedure in
- * docs/hardware/r3v-native-attended-render-shape-procedure.md; every
- * stage prints and flushes before it runs.
+ * docs/hardware/r3v-native-attended-composed-render-sample-procedure.md;
+ * every stage prints and flushes before it runs.
  */
 
 #include "r3v_native.h"
@@ -387,6 +387,29 @@ main(int argc, char **argv)
           draw_dword, sample_pixels[0]);
    fflush(stdout);
 
+   /* The two failure modes the sample target separates: an interior
+    * that reads the sentinel over the whole analytic triangle names a
+    * texture fetch ahead of the render half's publication, while an
+    * interior that reads anything else names the fetch's addressing or
+    * the coverage.  The counters carry the distinction, so the verdict
+    * classifies the run instead of reporting one aggregate flag.
+    */
+   const uint32_t analytic = sample_verdict.analytic_pixels;
+   const bool sample_unpublished = analytic != 0 &&
+                                   sample_verdict.interior_pixels == 0 &&
+                                   sample_verdict.exterior_pixels ==
+                                      composed.sample.width *
+                                         composed.sample.height;
+   printf("[classify] sample interior %u of %u analytic, exterior %u of "
+          "%u classified%s\n",
+          sample_verdict.interior_pixels, analytic,
+          sample_verdict.exterior_pixels,
+          composed.sample.width * composed.sample.height,
+          sample_unpublished
+             ? "; the render half's writes reached no texture fetch"
+             : "");
+   fflush(stdout);
+
    const bool pass = render_verdict.coverage_exact &&
                      render_verdict.canary_pass &&
                      sample_verdict.coverage_exact &&
@@ -402,6 +425,9 @@ main(int argc, char **argv)
    printf("[verdict] %s\n",
           pass ? "the sample target reproduces the render target's coverage "
                  "through one indirect buffer"
-               : "prediction deviated; the deviation is the finding");
+               : sample_unpublished
+                    ? "the texture fetch read the pre-render sentinel; the "
+                      "cell's coherency edge is the finding"
+                    : "prediction deviated; the deviation is the finding");
    return pass ? 0 : 1;
 }
