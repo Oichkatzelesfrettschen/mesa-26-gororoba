@@ -513,12 +513,27 @@ above is rung zero; the ladder after it runs in this order:
    refuses.  The recorder leaves both vertex payloads to the caller, and
    the two arrays take different layouts -- four-dword position records
    for the render half, eight-dword position-plus-TEX0 records for the
-   sample half.  Open: the attended runner and the silicon receipt; and
-   a
-   recording contract admitting a second render pass and a second
-   deferred draw per command buffer, which the one-pass bound refuses
-   today (`r3v_CmdBeginRenderPass`), so a conformance case reaches the
-   path.
+   sample half.  The attended runner lands:
+   `r3v_native_attended_composed` seeds both vertex arrays, fills both
+   targets with `R300_TRIANGLE_COLOR_SENTINEL`, records through the
+   composed recorder, and takes a coverage verdict on each target, with
+   `docs/hardware/r3v-native-attended-composed-render-sample-procedure.md`
+   carrying the arming, predictions, and falsifiers.  Its predicted
+   interior covers both targets because TEX0 at each vertex is that
+   vertex's window position over the render extent, so a nearest fetch
+   at pixel center reads texel `(x, y)` a half texel from either
+   boundary and the sample half reproduces its texture's coverage pixel
+   for pixel.  The sentinel is what separates the failure modes: a
+   sample interior reading it names a texture fetch ahead of the render
+   half's publication, so the coherency edge, rather than the coverage,
+   carries a deviation there.  Open: the silicon receipt, which takes
+   one attended session on RS482.  Behind it, a recording contract
+   admitting a second render pass and a second deferred draw per command
+   buffer, which the one-pass bound refuses today
+   (`r3v_CmdBeginRenderPass`) because `deferred_draw` carries one clear,
+   one carrier, and one vertex execution; it waits on the receipt, since
+   a conformance case reaching the path moves no row until the cell
+   holds silicon evidence.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated
