@@ -381,12 +381,11 @@ static int exec_tracecmd_argv( const char *const argv[], bool background, const 
                 if ( log_path )
                 {
                     int fd = open( log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
-                    if ( fd != -1 )
-                    {
-                        dup2( fd, STDOUT_FILENO );
-                        dup2( fd, STDERR_FILENO );
-                        close( fd );
-                    }
+                    if ( fd == -1 )
+                        _exit( 127 );
+                    dup2( fd, STDOUT_FILENO );
+                    dup2( fd, STDERR_FILENO );
+                    close( fd );
                 }
 
                 execvp( argv[ 0 ], ( char *const * )argv );
@@ -424,12 +423,11 @@ static int exec_tracecmd_argv( const char *const argv[], bool background, const 
         if ( log_path )
         {
             int fd = open( log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
-            if ( fd != -1 )
-            {
-                dup2( fd, STDOUT_FILENO );
-                dup2( fd, STDERR_FILENO );
-                close( fd );
-            }
+            if ( fd == -1 )
+                _exit( 127 );
+            dup2( fd, STDOUT_FILENO );
+            dup2( fd, STDERR_FILENO );
+            close( fd );
         }
         else
         {
@@ -463,7 +461,13 @@ static int exec_tracecmd_argv( const char *const argv[], bool background, const 
     }
 
     int status;
-    if ( waitpid( pid, &status, 0 ) != -1 )
+    pid_t waited;
+    do
+    {
+        waited = waitpid( pid, &status, 0 );
+    } while ( waited == -1 && errno == EINTR );
+
+    if ( waited != -1 )
     {
         if ( WIFEXITED( status ) )
             ret = WEXITSTATUS( status );
