@@ -311,9 +311,12 @@ P0 (blocks the next target run):
 P1 (host-model rungs that move classified rows without a new gate):
 
 - the compute recognizer index-from-UBO shape (111 robustness cases; the host-planning pass proves no robustness case reaches an IB before it);
-- `pipeline_barrier_executing_route_gap` (100 cases) needs secondary
-  command buffers, image blit, or sampled/storage-image admission, each a
-  larger mechanism than an image cell;
+- `pipeline_barrier_executing_route_gap`: the secondary replay and the
+  nearest scaling blit moved the family 4 -> 20 Pass under the shim and
+  both movements hold on RS482 silicon (rungs 1 and 2 above); the
+  residual walls are the withheld sampled/storage image usage at
+  `vkCreateImage` and the render pipelines outside the qualified draw
+  subset;
 - `driver_defect_open` (17 command-slice cases) per its ledger rows;
 - T10.8, the full-corpus target run, waits on the slices above; the
   eight unrun slices then follow partition order;
@@ -330,10 +333,23 @@ Conformance expands by executed mechanism, and each rung opens only after
 the rung before it holds silicon evidence. The one-case plan/replay chain
 above is rung zero; the ladder after it runs in this order:
 
-1. secondary command buffer execution, implemented or removed by name from
-   the first selected family; it is the largest identified
-   `pipeline_barrier_executing_route_gap` subpopulation;
-2. the bounded image-blit route;
+1. secondary command buffer execution -- closed: `r3v_CmdExecuteCommands`
+   replays a secondary's recorded host-executed ops (deferred copies,
+   event ops, query ops) into the primary in recorded order, and the
+   moved `pipeline_barrier` subgroups pass on RS482 silicon at decision
+   grade (8/8 Pass, dmesg delta 0, gates closed, seal `13b4b86a37c2b2`,
+   bundle steinmarder-r300
+   `r3v-native-secondary-replay-pipeline-barrier-first-silicon-pass-rs482`);
+   the replay also closed an update-buffer aliasing double free by
+   taking an owned copy of the replayed bytes;
+2. the bounded image-blit route -- closed: `r3v_CmdBlitImage` lowers
+   unequal-extent rectangles onto a nearest resample executor whose
+   sample point (d + 0.5) * src/dst matches the spec's nearest filter
+   (VK_FILTER_NEAREST, distinct images; flips keep refusing), and the
+   twelve moved subgroups pass on RS482 silicon at decision grade
+   (12/12 Pass, dmesg delta 0, gates closed, seal `765a0687a232c2`,
+   bundle steinmarder-r300
+   `r3v-native-scaling-blit-pipeline-barrier-silicon-pass-rs482`);
 3. fragment sampling through a real descriptor-set binding;
 4. sampled-image shapes, admitted only as the executing routes in rungs 2
    and 3 complete;
