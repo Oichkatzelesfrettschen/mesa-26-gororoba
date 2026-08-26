@@ -464,14 +464,21 @@ above is rung zero; the ladder after it runs in this order:
    the color writes before the texture fetch reads them; and the
    role-based composer (`r300_pm4_compose.h`) already binds several
    independently emitted fragments into one submission on RS482
-   silicon through the fetched producer route.  What the rung needs is
-   the composed cell itself -- a stream that renders one target,
-   publishes it, and samples it into a second -- with a relocation list
-   naming the first target twice, once as a color write and once as a
-   texture read, since use-site identity is what the kernel validates;
-   and after that receipt, a recording contract that admits a second
-   render pass and a second deferred draw per command buffer, which the
-   one-pass bound refuses today (`r3v_CmdBeginRenderPass`).
+   silicon through the fetched producer route.  The composed cell itself
+   lands: `r300_tcl_bypass_triangle_composed_render_sample_emit` emits
+   the render half, then the sample half whose texture geometry is the
+   render half's target -- extent, row pitch, lane order, and byte
+   offset -- so the halves cannot disagree about the bytes between them,
+   and the concatenation puts the render half's destination-cache flush
+   ahead of the sample half's texture-tag invalidate.  Its relocation
+   list names the first target twice, once through the color slot the
+   render half writes and once through the texture slot the sample half
+   reads, since use-site identity is what the kernel validates; the
+   arming runner emits it under `--composed`, 485 IB dwords, blake3
+   `7e1eeb21`.  Open: the silicon receipt for that digest, and a
+   recording contract admitting a second render pass and a second
+   deferred draw per command buffer, which the one-pass bound refuses
+   today (`r3v_CmdBeginRenderPass`).
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated
