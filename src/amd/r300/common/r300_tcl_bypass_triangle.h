@@ -675,7 +675,10 @@ void r300_tcl_bypass_triangle_coverage_oracle(
  * padding, and the canary row unjudged, so it proves the drawn region
  * received the admitted values and carries no claim about the bytes
  * around it -- the sentinel corner the coverage verdict provides is
- * the price.  analytic_pixels is the denominator, and a refused call
+ * the price.  The denominator is the pixel center, so a multisampled
+ * or resolved target answers to its subsample positions instead and
+ * takes an inset region rather than this one.  analytic_pixels is the
+ * denominator, and a refused call
  * reports zero of it with interior_exact false, so an inadmissible
  * shape or a short buffer reads as a refusal rather than a pass.
  */
