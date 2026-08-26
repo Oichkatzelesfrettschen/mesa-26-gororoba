@@ -1191,6 +1191,97 @@ r300_tcl_bypass_triangle_interior_oracle(
                                 verdict->analytic_pixels;
 }
 
+/* The sample sets r300g programs into GB_MSPOS0/GB_MSPOS1 for each
+ * multisample mode (r300_emit_fb_state_pipelined), in 1/12 subpixel
+ * units.  Sample count 1 is the pixel center.
+ */
+uint32_t
+r300_tcl_bypass_triangle_subsample_positions(
+   uint32_t sample_count, uint8_t positions[R300_TRIANGLE_MAX_SUBSAMPLES][2])
+{
+   static const uint8_t locs_1x[1][2] = { { 6, 6 } };
+   static const uint8_t locs_2x[2][2] = { { 3, 9 }, { 9, 3 } };
+   static const uint8_t locs_4x[4][2] = {
+      { 4, 4 }, { 8, 8 }, { 2, 10 }, { 10, 2 }
+   };
+   const uint8_t (*src)[2];
+   switch (sample_count) {
+   case 1: src = locs_1x; break;
+   case 2: src = locs_2x; break;
+   case 4: src = locs_4x; break;
+   default: return 0;
+   }
+   if (positions != NULL)
+      memcpy(positions, src, sample_count * 2 * sizeof(uint8_t));
+   return sample_count;
+}
+
+/* The margin a subsample clears an edge by before the verdict judges
+ * its pixel.  The judged counts hold across margins from 1/64 to 1/16
+ * pixel at the reference geometry, so the value sits on a plateau
+ * rather than on a threshold, and it stands far above the float32 edge
+ * evaluation's error at these magnitudes.
+ */
+#define R300_TRIANGLE_SAMPLE_MARGIN 0.0625f
+
+void
+r300_tcl_bypass_triangle_sample_set_oracle(
+   const struct r300_triangle_render_shape *shape, uint32_t sample_count,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_sample_set_verdict *verdict)
+{
+   *verdict = (struct r300_triangle_sample_set_verdict){ 0 };
+   uint8_t positions[R300_TRIANGLE_MAX_SUBSAMPLES][2];
+   const uint32_t samples =
+      r300_tcl_bypass_triangle_subsample_positions(sample_count, positions);
+   if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
+       interior_dword_count == 0 || samples == 0 ||
+       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+      return;
+   const uint32_t width = shape->width, height = shape->height;
+   const uint32_t pitch = shape->pitch_pixels;
+   const uint64_t required_bytes = (uint64_t)shape->target_offset +
+                                   (uint64_t)pitch * height * sizeof(uint32_t);
+   if (size_bytes < required_bytes)
+      return;
+
+   const struct triangle_geometry g = triangle_geometry_at(width, height);
+   const uint32_t *rows = pixels + shape->target_offset / 4u;
+   const float grid = (float)R300_TRIANGLE_SUBPIXEL_GRID;
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = 0; x < width; x++) {
+         uint32_t inside = 0, outside = 0;
+         for (uint32_t s = 0; s < samples; s++) {
+            const float margin = triangle_signed_margin(
+               &g, (float)x + (float)positions[s][0] / grid,
+               (float)y + (float)positions[s][1] / grid);
+            if (margin >= R300_TRIANGLE_SAMPLE_MARGIN)
+               inside++;
+            else if (margin <= -R300_TRIANGLE_SAMPLE_MARGIN)
+               outside++;
+         }
+         if (outside == samples)
+            continue;
+         if (inside != samples) {
+            verdict->unjudged_pixels++;
+            continue;
+         }
+         verdict->analytic_pixels++;
+         const uint32_t observed = rows[y * pitch + x];
+         for (uint32_t i = 0; i < interior_dword_count; i++) {
+            if (observed == interior_dwords[i]) {
+               verdict->interior_pixels++;
+               break;
+            }
+         }
+      }
+   }
+   verdict->interior_exact = verdict->analytic_pixels != 0 &&
+                             verdict->interior_pixels ==
+                                verdict->analytic_pixels;
+}
+
 void
 r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
                                 struct r300_triangle_oracle_verdict *verdict)

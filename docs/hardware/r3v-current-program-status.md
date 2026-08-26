@@ -476,31 +476,53 @@ above is rung zero; the ladder after it runs in this order:
    subsamples off-center, so a pixel whose center sits inside the
    triangle while a subsample sits outside resolves to a blend of the
    draw color and whatever the multisample buffer held, and the
-   admitted-set test refuses it.  The MSAA arm therefore judges the
-   inset region whose whole sample set is interior, which is strictly
-   smaller than the center-covered 1152 and which the subsample
-   positions determine; the center denominator serves the
-   single-sample uncleared target alone.
-   Two questions stand open before the emitter.  The resolve half's
-   draw semantics are a hypothesis: `r300_simple_msaa_resolve`
-   (r300_blit.c) binds the multisample surface as the render target,
-   sets `RB3D_AARESOLVE_CTL.AARESOLVE_MODE` to resolve, and draws a
-   full-target rectangle through `util_blitter_custom_color` with a
-   full RGBA write mask and a constant-color fragment shader, which
-   leaves `the incoming fragment carries coverage alone while the color
-   backend emits the downsampled samples` and `the fragment color is
-   written into the multisample surface and then resolved`
-   unseparated; the commit that added the path (`r300g: implement
-   MSAA`) states neither.  An AMD R3xx 3D register statement separates
-   them offline.  Silicon separates them only through an emitter, so
-   the first emitter is written to stand under either reading -- its
-   resolve-half fragment carries a color no multisample sample holds,
-   which the destination then either shows or does not -- and the arm
-   that discriminates the semantics is the same arm that first exercises
-   the path.  The destination byte order stays the falsifier already
-   recorded, and both readings of it -- linear order and the tiled
-   swizzle of the same bytes -- take their predicted dwords before the
-   run, so one submit classifies either outcome;
+   admitted-set test refuses it.  The MSAA arm therefore takes
+   `r300_tcl_bypass_triangle_sample_set_oracle`, which judges a pixel
+   only when every subsample clears the analytic edges by
+   `R300_TRIANGLE_SAMPLE_MARGIN`; the center denominator serves the
+   single-sample uncleared target alone.  The subsample positions are
+   r300g's own (`r300_emit_fb_state_pipelined`) on the 1/12 subpixel
+   grid `GB_TILE_CONFIG.SUBPIXEL` selects: `(6,6)` at one sample,
+   `(3,9)` and `(9,3)` at two, and `(4,4) (8,8) (2,10) (10,2)` at four.
+   The judged footprints at the reference geometry are 1152, 1128, and
+   1104 pixels against the center oracle's 1152, pinned against an
+   independent enumeration in exact rational arithmetic.  The margin
+   carries a second mechanism beyond the blend: the 4x grid's thirds
+   meet the slope -2 edge from `(56, 8)` to `(32, 56)` at 64 sample
+   positions where the edge function is exactly zero, so those samples
+   have no defined side without the hardware's fill rule, and float32
+   edge evaluation resolves only 13 of the 64 as on-edge.  The margin
+   rule holds the judged counts across margins from 1/64 to 1/16 pixel,
+   so the verdict rides neither the fill rule nor the float
+   representation.
+   One question stands open before the emitter, and one is settled.
+   The resolve half's draw semantics resolve from r300g's own working
+   path: `r300_simple_msaa_resolve` (r300_blit.c) binds the
+   multisample surface that holds the content being resolved as the
+   render target and draws a full-target rectangle through
+   `util_blitter_custom_color`, whose `NULL` custom blend selects the
+   full-RGBA-write-mask blend state and whose fragment shader is
+   `BLITTER_FS_CLEAR_COL_ONE_CBUF`.  A fragment color written into that
+   surface would destroy the samples the resolve reads, leaving every
+   resolve destination the constant color, so the surviving reading is
+   that `RB3D_AARESOLVE_CTL.AARESOLVE_MODE_RESOLVE` redirects the color
+   backend to `RB3D_AARESOLVE_OFFSET` and emits the downsampled
+   samples while the fragment supplies coverage alone.
+   `AARESOLVE_CTL.AARESOLVE_ALPHA_SAMPLE0` and `AARESOLVE_ALPHA_AVERAGE`
+   corroborate it: both derive the resolve output's alpha from the
+   samples.  The reading rests on driver source and a consistency
+   argument rather than on a register statement, so the first emitter
+   still carries a resolve-half fragment color no multisample sample
+   holds, and the destination showing that color falsifies the reading
+   in one submit.  The destination byte order stays the falsifier
+   already recorded, and both readings of it -- linear order and the
+   tiled swizzle of the same bytes -- take their predicted dwords before
+   the run.  A third destination content is named before the arm runs:
+   a mixture, if the fragment write and the sample downsample both
+   reach the destination order-dependently, which reads as a finding
+   rather than a defect.  The multisample surface is never CPU-read, so
+   it takes a device-local allocation while the resolve destination
+   stays host-visible for readback;
 7. composed render and sampling surfaces before any core image or
    framebuffer limit rises.  The rung depends on the usage union in
    rung 5 rather than on rung 6, so it runs when its own mechanisms

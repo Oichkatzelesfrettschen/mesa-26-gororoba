@@ -695,6 +695,45 @@ void r300_tcl_bypass_triangle_interior_oracle(
    const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_interior_verdict *verdict);
 
+/* The subsample positions the multisample modes place, in the 1/12
+ * subpixel grid GB_TILE_CONFIG.SUBPIXEL selects, as the (x, y) pairs
+ * GB_MSPOS0 and GB_MSPOS1 carry in nibble lanes.  Sample count 1 puts
+ * its one sample at the pixel center (6, 6); 2 and 4 take the diagonal
+ * sets r300g programs.
+ */
+#define R300_TRIANGLE_SUBPIXEL_GRID 12u
+#define R300_TRIANGLE_MAX_SUBSAMPLES 4u
+
+uint32_t r300_tcl_bypass_triangle_subsample_positions(
+   uint32_t sample_count,
+   uint8_t positions[R300_TRIANGLE_MAX_SUBSAMPLES][2]);
+
+/* The interior verdict over a multisampled or resolved target.  A pixel
+ * is judged only when every subsample clears the analytic edges by
+ * R300_TRIANGLE_SAMPLE_MARGIN pixels, so the verdict rides neither the
+ * resolve's blend nor the hardware's fill rule: an edge-adjacent pixel
+ * whose samples straddle an edge carries a blend no admitted dword
+ * names, and a subsample landing exactly on an edge -- which the 4x
+ * grid does, its thirds meeting the slope -2 edge from (56, 8) to
+ * (32, 56) at 64 sample positions -- has no defined side.  Both stay
+ * unjudged and counted.  The judged footprint is a strict subset of the
+ * pixel-center footprint r300_tcl_bypass_triangle_interior_oracle
+ * takes: at the reference geometry it holds 1152 pixels at one sample,
+ * 1128 at two, and 1104 at four, against that oracle's 1152.
+ */
+struct r300_triangle_sample_set_verdict {
+   bool interior_exact;
+   uint32_t analytic_pixels;
+   uint32_t interior_pixels;
+   uint32_t unjudged_pixels;
+};
+
+void r300_tcl_bypass_triangle_sample_set_oracle(
+   const struct r300_triangle_render_shape *shape, uint32_t sample_count,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_sample_set_verdict *verdict);
+
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
  * BO.

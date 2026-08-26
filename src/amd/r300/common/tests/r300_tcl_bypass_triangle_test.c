@@ -1808,6 +1808,25 @@ test_composed_render_sample_cell(void)
 }
 
 
+/* The reference geometry's coverage predicate: window vertices (8, 8),
+ * (56, 8), (32, 56), which wind so an interior point yields three
+ * positive edge functions.
+ */
+static bool
+sample_inside_reference(float px, float py)
+{
+   static const float vx[3] = { 8.0f, 56.0f, 32.0f };
+   static const float vy[3] = { 8.0f, 8.0f, 56.0f };
+   bool in = true;
+   for (unsigned e = 0; e < 3; e++) {
+      const unsigned n = (e + 1) % 3;
+      in &= (vx[n] - vx[e]) * (py - vy[e]) -
+               (vy[n] - vy[e]) * (px - vx[e]) >
+            0.0f;
+   }
+   return in;
+}
+
 /* Calibrates the exact-coverage verdict on a synthesized known-good
  * footprint and on one mutation per failure mode.  The synthesized
  * interior is the analytic triangle itself, so the known-good case
@@ -1833,19 +1852,10 @@ test_coverage_oracle_calibration(void)
     * (0, 0.75) through the viewport transform at the 64x64 extent,
     * giving window vertices (8, 8), (56, 8), (32, 56).
     */
-   const float vx[3] = { 8.0f, 56.0f, 32.0f }, vy[3] = { 8.0f, 8.0f, 56.0f };
    uint32_t painted = 0;
    for (uint32_t y = 0; y < shape.height; y++) {
       for (uint32_t x = 0; x < shape.width; x++) {
-         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
-         bool in = true;
-         for (unsigned e = 0; e < 3; e++) {
-            const unsigned n = (e + 1) % 3;
-            in &= (vx[n] - vx[e]) * (py - vy[e]) -
-                     (vy[n] - vy[e]) * (px - vx[e]) >
-                  0.0f;
-         }
-         if (in) {
+         if (sample_inside_reference((float)x + 0.5f, (float)y + 0.5f)) {
             pixels[y * pitch + x] = interior;
             painted++;
          }
@@ -2259,6 +2269,145 @@ test_varying_tex0_is_the_window_position_fraction(void)
    }
 }
 
+/* Calibrates the sample-set verdict against the pixel-center one.  The
+ * two footprints stand in a containment relation -- a pixel whose whole
+ * sample set clears the edges has its center inside -- so painting the
+ * center set satisfies the sample-set oracle and cannot refute it.  The
+ * discriminating arm runs the other way: a footprint painted to the 4x
+ * sample-set predicate leaves the 48 pixels the two disagree on
+ * unpainted, which the center oracle counts as analytic and refuses.
+ * A calibration that generated its footprint from the predicate under
+ * test would pass every arm, so the judged counts are pinned against an
+ * independent enumeration in exact rational arithmetic: 1152 at one
+ * sample, 1128 at two, 1104 at four.
+ */
+static void
+test_sample_set_oracle_calibration(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   const uint32_t admitted = 0x11223344u;
+   const uint32_t footprint =
+      shape.pitch_pixels * (shape.height + R300_TRIANGLE_CANARY_ROWS);
+   uint32_t *pixels = malloc((size_t)footprint * sizeof(uint32_t));
+   assert(pixels != NULL);
+
+   /* Judged and unjudged pixels per sample count.  One sample sits at
+    * the pixel center, so it reduces to the center oracle's footprint
+    * with nothing unjudged; wider sets trade judged pixels for the
+    * edge band the resolve blends.
+    */
+   const uint32_t counts[3] = { 1, 2, 4 };
+   const uint32_t judged[3] = { 1152, 1128, 1104 };
+   const uint32_t unjudged[3] = { 0, 48, 96 };
+
+   /* The center footprint contains every sample-set footprint, so each
+    * sample count passes on it while judging strictly fewer pixels as
+    * the samples spread.
+    */
+   for (uint32_t i = 0; i < footprint; i++)
+      pixels[i] = 0xdead0000u + (i & 0xffffu);
+   for (uint32_t y = 0; y < shape.height; y++)
+      for (uint32_t x = 0; x < shape.width; x++)
+         if (sample_inside_reference((float)x + 0.5f, (float)y + 0.5f))
+            pixels[y * shape.pitch_pixels + x] = admitted;
+
+   struct r300_triangle_sample_set_verdict verdict;
+   for (unsigned i = 0; i < 3; i++) {
+      r300_tcl_bypass_triangle_sample_set_oracle(&shape, counts[i], &admitted,
+                                                 1, pixels,
+                                                 footprint * sizeof(uint32_t),
+                                                 &verdict);
+      assert(verdict.interior_exact);
+      assert(verdict.analytic_pixels == judged[i]);
+      assert(verdict.interior_pixels == judged[i]);
+      assert(verdict.unjudged_pixels == unjudged[i]);
+   }
+
+   /* The discriminating arm: paint only the pixels whose whole 4x sample
+    * set clears the edges.  The sample-set verdict passes and the
+    * pixel-center verdict refuses on exactly the pixels the two
+    * denominators disagree on, so a run separates them.
+    */
+   uint8_t positions[R300_TRIANGLE_MAX_SUBSAMPLES][2];
+   assert(r300_tcl_bypass_triangle_subsample_positions(4, positions) == 4);
+   for (uint32_t i = 0; i < footprint; i++)
+      pixels[i] = 0xdead0000u + (i & 0xffffu);
+   uint32_t painted = 0;
+   for (uint32_t y = 0; y < shape.height; y++) {
+      for (uint32_t x = 0; x < shape.width; x++) {
+         bool all_in = true;
+         for (unsigned s = 0; s < 4; s++)
+            all_in &= sample_inside_reference(
+               (float)x + (float)positions[s][0] / 12.0f,
+               (float)y + (float)positions[s][1] / 12.0f);
+         if (all_in) {
+            pixels[y * shape.pitch_pixels + x] = admitted;
+            painted++;
+         }
+      }
+   }
+   assert(painted == 1104);
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 4, &admitted, 1, pixels, footprint * sizeof(uint32_t), &verdict);
+   assert(verdict.interior_exact && verdict.interior_pixels == 1104);
+
+   struct r300_triangle_interior_verdict center;
+   r300_tcl_bypass_triangle_interior_oracle(
+      &shape, &admitted, 1, pixels, footprint * sizeof(uint32_t), &center);
+   assert(!center.interior_exact);
+   assert(center.analytic_pixels == 1152);
+   assert(center.interior_pixels == 1104);
+
+   /* One judged dword off refuses, and the count names how many. */
+   uint32_t flipped = 0;
+   for (uint32_t y = 0; y < shape.height && flipped == 0; y++)
+      for (uint32_t x = 0; x < shape.width && flipped == 0; x++)
+         if (pixels[y * shape.pitch_pixels + x] == admitted) {
+            pixels[y * shape.pitch_pixels + x] = ~admitted;
+            flipped = 1;
+         }
+   assert(flipped == 1);
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 4, &admitted, 1, pixels, footprint * sizeof(uint32_t), &verdict);
+   assert(!verdict.interior_exact && verdict.interior_pixels == 1103);
+
+   /* A resolve that wrote nothing leaves the whole footprint at the
+    * pattern: the failure the destination takes when the resolve never
+    * reached it, separated from a correct write by the counter.
+    */
+   for (uint32_t i = 0; i < footprint; i++)
+      pixels[i] = 0xdead0000u + (i & 0xffffu);
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 4, &admitted, 1, pixels, footprint * sizeof(uint32_t), &verdict);
+   assert(!verdict.interior_exact && verdict.interior_pixels == 0);
+   assert(verdict.analytic_pixels == 1104);
+
+   /* A buffer short of the rendered rows, an empty admitted set, a
+    * sample count no MSPOS set covers, and an inadmissible shape each
+    * refuse with a zero denominator rather than a pass.
+    */
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 4, &admitted, 1, pixels,
+      (size_t)shape.pitch_pixels * shape.height * sizeof(uint32_t) - 4,
+      &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 4, &admitted, 0, pixels, footprint * sizeof(uint32_t), &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 3, &admitted, 1, pixels, footprint * sizeof(uint32_t), &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+   assert(r300_tcl_bypass_triangle_subsample_positions(3, positions) == 0);
+   struct r300_triangle_render_shape bad = shape;
+   bad.target_offset = 4;
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &bad, 4, &admitted, 1, pixels, footprint * sizeof(uint32_t), &verdict);
+   assert(!verdict.interior_exact && verdict.analytic_pixels == 0);
+
+   free(pixels);
+}
+
 /* Calibrates the interior-only verdict: a footprint whose analytic
  * interior holds the admitted dword passes with arbitrary bytes
  * everywhere else, which is the property an uncleared target needs, and
@@ -2285,19 +2434,10 @@ test_interior_oracle_calibration(void)
    /* The reference geometry: window vertices (8, 8), (56, 8), (32, 56),
     * whose half-open coverage is 1152 of the 4096 centers.
     */
-   const float vx[3] = { 8.0f, 56.0f, 32.0f }, vy[3] = { 8.0f, 8.0f, 56.0f };
    uint32_t painted = 0;
    for (uint32_t y = 0; y < shape.height; y++) {
       for (uint32_t x = 0; x < shape.width; x++) {
-         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
-         bool in = true;
-         for (unsigned e = 0; e < 3; e++) {
-            const unsigned n = (e + 1) % 3;
-            in &= (vx[n] - vx[e]) * (py - vy[e]) -
-                     (vy[n] - vy[e]) * (px - vx[e]) >
-                  0.0f;
-         }
-         if (in) {
+         if (sample_inside_reference((float)x + 0.5f, (float)y + 0.5f)) {
             pixels[y * shape.pitch_pixels + x] = admitted;
             painted++;
          }
@@ -2393,6 +2533,7 @@ main(void)
    test_coverage_oracle_calibration();
    test_coverage_oracle_predicted_calibration();
    test_interior_oracle_calibration();
+   test_sample_set_oracle_calibration();
    test_pack_unorm8_dword();
    test_varying_shape_vertices_scale_positions_alone();
    test_varying_tex0_is_the_window_position_fraction();
