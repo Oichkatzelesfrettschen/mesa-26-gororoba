@@ -230,7 +230,13 @@ r300_tcl_bypass_triangle_emit_into(
                       ((params->texture_height - 1)
                        << R300_TX_HEIGHTMASK_SHIFT) |
                       R300_TX_PITCH_EN);
-      r300_pm4_reg(&b, R300_TX_FORMAT1_0, R300_TX_FORMAT_W8Z8Y8X8);
+      /* FORMAT1's per-channel selects default to X, so silicon returns
+       * byte X in every lane without them; the identity selects route
+       * X/Y/Z/W to R/G/B/A (RS482 readback: 0x20202020 for texel
+       * 20,60,a0,e0 with selects absent).
+       */
+      r300_pm4_reg(&b, R300_TX_FORMAT1_0,
+                   R300_EASY_TX_FORMAT(Z, Y, X, W, W8Z8Y8X8));
       r300_pm4_reg(&b, R300_TX_FORMAT2_0,
                    params->texture_pitch_texels - 1);
       r300_pm4_reg(&b, R300_TX_OFFSET_0, params->texture_offset);

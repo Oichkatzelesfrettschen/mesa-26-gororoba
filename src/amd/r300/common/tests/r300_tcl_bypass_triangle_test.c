@@ -1645,7 +1645,8 @@ test_sampled_cell_stream_and_refusals(void)
           t.tx_format0 == ((63u << R300_TX_WIDTHMASK_SHIFT) |
                            (63u << R300_TX_HEIGHTMASK_SHIFT) |
                            R300_TX_PITCH_EN));
-   assert(t.tx_format1_seen && t.tx_format1 == R300_TX_FORMAT_W8Z8Y8X8);
+   assert(t.tx_format1_seen &&
+          t.tx_format1 == R300_EASY_TX_FORMAT(Z, Y, X, W, W8Z8Y8X8));
    assert(t.tx_format2_seen && t.tx_format2 == 63);
    assert(t.tx_offset_seen && t.tx_offset == 4096);
 
