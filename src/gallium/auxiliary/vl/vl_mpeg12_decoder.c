@@ -180,7 +180,7 @@ init_zscan_buffer(struct vl_mpeg12_decoder *dec, struct vl_mpeg12_buffer *buffer
    res_tmpl.target = PIPE_TEXTURE_2D;
    res_tmpl.format = dec->zscan_source_format;
    res_tmpl.width0 = dec->blocks_per_line * VL_BLOCK_WIDTH * VL_BLOCK_HEIGHT;
-   res_tmpl.height0 = align(dec->num_blocks, dec->blocks_per_line) / dec->blocks_per_line;
+   res_tmpl.height0 = DIV_ROUND_UP(dec->num_blocks, dec->blocks_per_line);
    res_tmpl.depth0 = 1;
    res_tmpl.array_size = 1;
    res_tmpl.usage = PIPE_USAGE_STREAM;
@@ -1182,14 +1182,12 @@ init_idct(struct vl_mpeg12_decoder *dec, const struct format_config* format_conf
 
    formats[0] = formats[1] = formats[2] = format_config->idct_source_format;
    memset(&templat, 0, sizeof(templat));
-   /* mesa-26 vl_video_buffer_create_ex2 takes the plane count from
-    * util_format_get_num_planes(buffer_format), then frees the surplus
-    * resources as "auxiliary".  The IDCT source is three planes (resource_formats
-    * overrides each to R16_SNORM); without a three-plane buffer_format only plane
-    * 0 survives and get_sampler_view_planes returns NULL for planes 1 and 2.
-    * buffer_format sets only the count here -- the chroma_format argument sizes
-    * the planes. */
-   templat.buffer_format = PIPE_FORMAT_YV12;
+   /* vl_video_buffer_create_ex2 retains the resource count described by
+    * buffer_format and releases surplus resources as auxiliary planes.  The
+    * IDCT source provides three R16_SNORM resources, so its format identity
+    * must retain all three in Y/U/V order; chroma_format supplies their 4:2:0
+    * dimensions. */
+   templat.buffer_format = PIPE_FORMAT_IYUV;
    templat.width = dec->base.width / 4;
    templat.height = dec->base.height;
    dec->idct_source = vl_video_buffer_create_ex
@@ -1204,8 +1202,8 @@ init_idct(struct vl_mpeg12_decoder *dec, const struct format_config* format_conf
 
    formats[0] = formats[1] = formats[2] = format_config->mc_source_format;
    memset(&templat, 0, sizeof(templat));
-   /* Three-plane buffer_format for the same reason as idct_source above. */
-   templat.buffer_format = PIPE_FORMAT_YV12;
+   /* Retain the three motion-compensation resources in Y/U/V order. */
+   templat.buffer_format = PIPE_FORMAT_IYUV;
    templat.width = dec->base.width / nr_of_idct_render_targets;
    templat.height = dec->base.height / 4;
    dec->mc_source = vl_video_buffer_create_ex

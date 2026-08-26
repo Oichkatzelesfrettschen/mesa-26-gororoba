@@ -591,6 +591,17 @@ libgallium = static_library(
 )
 
 if with_tests
+  test('vl-nir-vertex-io',
+    executable(
+      'vl_nir_vertex_io_test',
+      ['vl/vl_nir.c', 'vl/tests/vl_nir_vertex_io_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_nir, idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
   test('gallium-aux',
     executable(
       'gallium-aux',

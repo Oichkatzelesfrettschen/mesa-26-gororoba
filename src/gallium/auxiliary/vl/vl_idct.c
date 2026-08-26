@@ -347,16 +347,18 @@ create_stage1_vert_shader(struct vl_idct *idct)
    nir_def *l_addr[2], *r_addr[2];
    calc_addr(&b, l_addr, t_tex, t_start, false, false, idct->buffer_width / 4);
    /* The source coefficient plane is fetched NEAREST on both lanes at non-power-of-
-    * two sizes: the column lane at buffer_width/4, the row lane at buffer_height
-    * via the interpolated (vpos+vrect)*scale varying.  NEAREST resolves the
+    * two sizes: the stepped start/x lane uses calc_addr's buffer_width/4 size,
+    * while the row lane uses buffer_height via the interpolated
+    * (vpos+vrect)*scale varying.  NEAREST resolves the
     * leftmost columns of a block a hair below the intended texel edge, so floor()
     * reads one texel low on each lane.  The column drop puts the horizontal DC into
     * slot 4 (a flat block reconstructs as horizontal frequency 4); the row drop
     * reads the source row one high, which on the single-render-target collapse
     * misplaces a block's first two output columns by one vertical-frequency
-    * channel.  Bias both lanes to the texel center (+2/buffer_width on the column,
-    * +0.5/buffer_height on the row); floor(R+0.5)=R keeps round-to-nearest exact
-    * and is inert where the coordinate already sits on the center. */
+    * channel.  Bias the start/x lane by half one packed coefficient texel,
+    * 0.5/(buffer_width/4) = 2/buffer_width, and the row lane by
+    * 0.5/buffer_height.  floor(R+0.5)=R keeps round-to-nearest exact and is
+    * inert where the coordinate already sits on the center. */
    nir_def *l_center = nir_imm_vec2(&b, 2.0f / idct->buffer_width,
                                     0.5f / idct->buffer_height);
    l_addr[0] = nir_fadd(&b, l_addr[0], l_center);
