@@ -1459,14 +1459,17 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     c_args : [no_override_init_args],
     gnu_symbol_visibility : 'hidden',
   )
-  test(
-    'r3v-native-composed-cell-reloc-contract',
-    r3v_native_composed_cell_harness,
-    env : r3v_native_cell_env,
-    depends : [libradeon_noop_drm_shim],
-    timeout : 60,
-    suite : ['r3v'],
-  )
+  foreach composed_mode : ['bound', 'unbound']
+    test(
+      'r3v-native-composed-cell-reloc-@0@'.format(composed_mode),
+      r3v_native_composed_cell_harness,
+      args : [composed_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   r3v_native_direct_write_harness = executable(
     'r3v_native_direct_write_harness',
     files('tests/r3v_native_direct_write_harness.c'),

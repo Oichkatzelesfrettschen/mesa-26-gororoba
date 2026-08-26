@@ -67,8 +67,20 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
       r300_tcl_bypass_triangle_render_shape_reference(&composed.render);
       r300_tcl_bypass_triangle_render_shape_reference(&composed.sample);
       composed.sample.target_offset = cell_composed_sample_offset;
-      return r300_tcl_bypass_triangle_composed_render_sample_emit(&composed,
-                                                                  cell);
+      const int emitted =
+         r300_tcl_bypass_triangle_composed_render_sample_emit(&composed, cell);
+      if (emitted != 0)
+         return emitted;
+      /* The recorded cell binds its payloads to the merged relocation
+       * indices, so the digest that authorizes a submission is the bound
+       * cell's; an unbound report would name a stream the recorder never
+       * installs and the armed run would refuse on the mismatch.
+       */
+      const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+         cell, r300_tcl_bypass_triangle_composed_slot_index, R300_TRIANGLE_SLOT_COUNT);
+      if (bound != 0)
+         r300_tcl_bypass_triangle_release(cell);
+      return bound;
    }
    if (cell_sampled)
       return r300_tcl_bypass_triangle_sampled_emit(

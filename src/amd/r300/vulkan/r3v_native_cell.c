@@ -2802,7 +2802,7 @@ r3v_native_record_composed_render_sample(
    };
 
    struct r3v_native_bo_reference *references =
-      calloc(R300_TRIANGLE_SLOT_COUNT, sizeof(*references));
+      calloc(R3V_NATIVE_COMPOSED_REFERENCE_COUNT, sizeof(*references));
    if (references == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 

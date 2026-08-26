@@ -222,6 +222,27 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
              vertex->write_domain != 0 || color->read_domains != 0 ||
              color->write_domain != RADEON_GEM_DOMAIN_GTT;
    }
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE: {
+      /* The declared shapes are the geometry and the digest carries
+       * them; the frozen facts are the merged binding the recorder
+       * installs.  Five slots reach four buffer objects, so the first
+       * target's entry carries the render half's write beside the read
+       * the sample half's texture fetch takes, and the two vertex
+       * arrays and the second target keep one direction each.  No
+       * deferred public draw rides the kind.
+       */
+      if (cmd_buffer->deferred_draw.pending ||
+          cmd_buffer->reference_count != R3V_NATIVE_COMPOSED_REFERENCE_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *c = cmd_buffer->references;
+      return c[0].read_domains != RADEON_GEM_DOMAIN_GTT ||
+             c[0].write_domain != 0 ||
+             c[1].read_domains != RADEON_GEM_DOMAIN_GTT ||
+             c[1].write_domain != RADEON_GEM_DOMAIN_GTT ||
+             c[2].read_domains != RADEON_GEM_DOMAIN_GTT ||
+             c[2].write_domain != 0 || c[3].read_domains != 0 ||
+             c[3].write_domain != RADEON_GEM_DOMAIN_GTT;
+   }
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC: {
       /* The composed cell renders the consumer's maximum public extent
        * and crosses the carrier through both engines, so the vertex
