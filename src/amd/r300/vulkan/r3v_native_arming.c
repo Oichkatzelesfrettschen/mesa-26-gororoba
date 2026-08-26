@@ -56,6 +56,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER:
    case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE:
    case R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED:
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE:
       break;
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

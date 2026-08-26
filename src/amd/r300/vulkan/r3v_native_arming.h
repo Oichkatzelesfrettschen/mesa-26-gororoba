@@ -106,6 +106,14 @@ enum r3v_native_cell_kind {
     * family's extent plus the texture's own declared geometry.
     */
    R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED,
+   /* The composed render-then-sample triangle: one stream renders a
+    * target, publishes it through the destination-cache flush, then
+    * samples it into a second target.  Five relocations -- two vertex
+    * reads, two color writes, and the first target read again as the
+    * texture -- so the submission binds one buffer object under both a
+    * write and a read use site.
+    */
+   R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

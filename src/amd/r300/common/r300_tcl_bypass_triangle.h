@@ -26,7 +26,15 @@ enum r300_tcl_bypass_triangle_slot {
     * r300.c).
     */
    R300_TRIANGLE_SLOT_TEXTURE = 2,
-   R300_TRIANGLE_SLOT_COUNT = 3,
+   /* The composed cell's second pass: its own vertex records and its own
+    * color target.  The first pass's color slot and the texture slot
+    * resolve to one buffer object at submission, under a write domain
+    * and a read domain; the kernel validates each use site, so the two
+    * stay separate slots.
+    */
+   R300_TRIANGLE_SLOT_COMPOSED_VERTEX = 3,
+   R300_TRIANGLE_SLOT_COMPOSED_COLOR = 4,
+   R300_TRIANGLE_SLOT_COUNT = 5,
 };
 
 /* The unsampled cells reference the vertex and color slots alone, so
@@ -35,6 +43,7 @@ enum r300_tcl_bypass_triangle_slot {
  */
 #define R300_TRIANGLE_RENDER_SLOT_COUNT 2u
 #define R300_TRIANGLE_SAMPLED_SLOT_COUNT 3u
+#define R300_TRIANGLE_COMPOSED_SLOT_COUNT 5u
 
 enum r300_triangle_lane_order {
    /* Target bytes [B, G, R, A]: VK_FORMAT_B8G8R8A8_UNORM. */
@@ -465,6 +474,29 @@ struct r300_triangle_render_shape {
     */
    uint32_t target_offset;
 };
+
+/* The composed render-then-sample cell: one stream renders the first
+ * shape, publishes its color writes through the destination-cache
+ * flush every cell closes with, then invalidates the texture tags and
+ * samples that target into the second shape.  The first target is both
+ * the render half's color slot and the sample half's texture slot, so
+ * the submission binds one buffer object under two use sites, which is
+ * what the kernel validates.  The texture geometry comes from the
+ * render shape alone -- its extent, row pitch, lane order, and target
+ * offset are the texture's -- so the two halves cannot disagree about
+ * the bytes between them.
+ */
+struct r300_triangle_composed_render_sample {
+   struct r300_triangle_render_shape render;
+   struct r300_triangle_render_shape sample;
+};
+
+/* Emits the composed cell.  Returns 0 or a negative errno; the caller
+ * owns the returned IB allocation.
+ */
+int r300_tcl_bypass_triangle_composed_render_sample_emit(
+   const struct r300_triangle_composed_render_sample *composed,
+   struct r300_tcl_bypass_triangle_ib *out);
 
 /* RB3D_COLOROFFSET holds the base in its bits 31:5
  * (R300_COLOROFFSET_MASK = 0xffffffe0, r300_reg.h), so a base carrying

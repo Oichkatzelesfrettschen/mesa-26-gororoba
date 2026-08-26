@@ -52,10 +52,24 @@ static struct r300_triangle_render_shape render_shape;
  */
 static bool cell_sampled = false;
 static const struct r3v_sampled_arm *cell_sampled_arm = NULL;
+/* --composed selects the composed render-then-sample cell: the
+ * reference shape rendered at the allocation base, then sampled into a
+ * second target at the declared byte offset.
+ */
+static bool cell_composed = false;
+static uint32_t cell_composed_sample_offset;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (cell_composed) {
+      struct r300_triangle_composed_render_sample composed;
+      r300_tcl_bypass_triangle_render_shape_reference(&composed.render);
+      r300_tcl_bypass_triangle_render_shape_reference(&composed.sample);
+      composed.sample.target_offset = cell_composed_sample_offset;
+      return r300_tcl_bypass_triangle_composed_render_sample_emit(&composed,
+                                                                  cell);
+   }
    if (cell_sampled)
       return r300_tcl_bypass_triangle_sampled_emit(
          R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, 1,
@@ -202,6 +216,12 @@ main(int argc, char **argv)
       cell_sampled_arm = r3v_sampled_arm_find("bgra");
       argi += 1;
    } else if (argc >= argi + 2 &&
+              strcmp(argv[argi], "--composed") == 0) {
+      cell_composed = true;
+      cell_composed_sample_offset =
+         (uint32_t)strtoul(argv[argi + 1], NULL, 0);
+      argi += 2;
+   } else if (argc >= argi + 2 &&
               strcmp(argv[argi], "--sampled-arm") == 0) {
       cell_sampled = true;
       cell_sampled_arm = r3v_sampled_arm_find(argv[argi + 1]);
@@ -285,7 +305,8 @@ main(int argc, char **argv)
    if (argc != argi + 1) {
       fprintf(stderr,
               "usage: %s [--varying|--compute-identity|--sampled|"
-              "--sampled-bgra|--sampled-arm <name>|--shape <w> <h> "
+              "--sampled-bgra|--sampled-arm <name>|--composed <offset>|"
+              "--shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "
               "<evidence-directory> | [--varying|--compute-identity|"
@@ -318,7 +339,9 @@ main(int argc, char **argv)
    char module[128];
    struct r3v_native_arming_facts facts;
    r3v_native_arming_collect(&facts, vendor_id, device_id,
-                             cell_compute_identity
+                             cell_composed
+                                ? R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE
+                             : cell_compute_identity
                                 ? R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER
                              : cell_sampled
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
