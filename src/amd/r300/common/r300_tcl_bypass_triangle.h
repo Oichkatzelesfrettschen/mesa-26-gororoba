@@ -498,6 +498,25 @@ int r300_tcl_bypass_triangle_composed_render_sample_emit(
    const struct r300_triangle_composed_render_sample *composed,
    struct r300_tcl_bypass_triangle_ib *out);
 
+/* Binds the cell's relocation payloads to a submission's own relocation
+ * indices.  The emitter writes each payload as its slot number, which
+ * holds while every slot names a distinct buffer object, since the
+ * winsys then assigns indices in slot order.  A cell naming one buffer
+ * object under two use sites -- the composed cell's first target, which
+ * its render half writes and its sample half reads -- meets a winsys
+ * that merges duplicate handles into one relocation entry
+ * (radeon_drm_vk_reloc_list_add) exactly as the kernel does, so the
+ * indices past the first duplicate shift down and the payloads stop
+ * naming the buffers they were emitted for.  slot_indices[slot] carries
+ * the merged index for each slot the cell references; the payloads then
+ * name the merged chunk, and a second merge over the same list is
+ * idempotent.  Returns 0 or a negative errno, and validates the sites
+ * against the emitted form first, so binding twice refuses.
+ */
+int r300_tcl_bypass_triangle_bind_reloc_indices(
+   struct r300_tcl_bypass_triangle_ib *ib, const uint32_t *slot_indices,
+   uint32_t slot_index_count);
+
 /* RB3D_COLOROFFSET holds the base in its bits 31:5
  * (R300_COLOROFFSET_MASK = 0xffffffe0, r300_reg.h), so a base carrying
  * any of the reserved low five bits names an address the register
