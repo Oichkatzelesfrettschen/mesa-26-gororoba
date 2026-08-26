@@ -444,7 +444,19 @@ above is rung zero; the ladder after it runs in this order:
    rather than the host.  `r100_cs_track_check` sizes the color buffer
    as `pitch * cpp * maxy` with no sample term, so the kernel validates
    nothing about the sample expansion and the footprint proof lives
-   entirely in the driver.  The resolve is `RB3D_AARESOLVE_OFFSET`,
+   entirely in the driver.  That bounds what the rung can claim: while
+   the parser footprint carries no sample multiplier, the multisample
+   path stays an internal attended cell rather than an advertised
+   Vulkan capability, and it rises to a public capability once the
+   parser incorporates the multiplier or the driver-side bound is
+   established independently.  Placement takes the same care.
+   `r3v_native_memory_type_policy` (r3v_native_memory.c) gives type 1
+   `RADEON_GEM_DOMAIN_VRAM | RADEON_GEM_DOMAIN_GTT` under
+   `RADEON_GEM_NO_CPU_ACCESS`, so a host-unmapped allocation is not a
+   VRAM-resident allocation: GTT stands as a fallback domain.  The
+   recorder therefore either takes a strict internal VRAM path or
+   retains placement evidence proving the multisample buffer resides
+   where the cell claims.  The resolve is `RB3D_AARESOLVE_OFFSET`,
    which takes a relocation and carries a 32-byte-aligned destination
    offset, `RB3D_AARESOLVE_PITCH`, a pixel pitch in bits 1 through 13
    the kernel masks to `0x3ffe`, and
