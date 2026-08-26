@@ -417,18 +417,21 @@ arithmetic, transcendentals, float-domain compare/select, and moves; it excludes
 the integer and Boolean source ops (`f2i32`/`f2u32`, `i2f32`/`u2f32`,
 `imin`/`imax`/`umin`, `flt`, `b2f32`) a typed carry uses, so a typed producer
 declines the route before restaging. The typed T0-T9 corpus rendered through
-gallivm with `aluable=0` and no split token on silicon (F3-R0, stein PR#110),
-confirming the typed split primitive is unreachable this way.
+gallivm with `aluable=0` and no split token on silicon. The retained
+`2026-07-14-r2vb-typed-carry-production-route-unreachable-aluable-gate`
+finding records this F3-R0 result and confirms that the typed split primitive
+is unreachable this way.
 
 The fragment backend lowers those ops before RC emission
 (`r300_nir_lower_bitwise_to_arith`, `nir_lower_int_to_float`, bool-to-float,
 compare lowering), which is why the host pass-A/pass-B builders compile. So the
 admission split follows the plan's own consumer boundary: a pre-lowering scan
 keeps only the structural facts that survive lowering -- single-block control
-flow, plain I/O and uniform/UBO intrinsics, a `gl_Position` output, and a bounded
-set of position-feeding inputs (up to `R300_R2VB_MAX_PRODUCER_INPUTS`) mapped in
-the producer's `VARYING_SLOT_VAR0 + location-rank` order, each representable by
-the producer input contract. The T0-T9 corpus folds its typed carry into the
+flow; plain I/O, uniform/UBO, push-constant, and constant-data intrinsics; a
+`gl_Position` output; and a bounded set of position-feeding inputs (up to
+`R300_R2VB_MAX_PRODUCER_INPUTS`) mapped in the producer's
+`VARYING_SLOT_VAR0 + location-rank` order, each representable by the producer
+input contract. The T0-T9 corpus folds its typed carry into the
 position computation alongside `inPos`, so a leading-input-only rule would reject
 it again; the multi-input position path already feeds those inputs in
 location-rank order. ALU-lowering capability becomes the backend verdict on the
