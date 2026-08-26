@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current synthetic capture framebuffer still swaps fb_state.state without installing a matching fb_cbufs surface array. The capture comments identify the hazard, but no complete ownership repair or dirty-state regression is merged. I leave this row unresolved.",
+              "commit": {
+                "oid": "353b44c552a3a5f7ba8c9a1432bdc3601f461c25"
+              },
+              "createdAt": "2026-08-12T17:34:57Z",
+              "databaseId": 3768794300,
+              "id": "PRRC_kwDOR3YK5M7gozy8",
+              "originalCommit": {
+                "oid": "353b44c552a3a5f7ba8c9a1432bdc3601f461c25"
+              },
+              "updatedAt": "2026-08-12T17:34:57Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1169#discussion_r3768794300"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1N1rO4KM8vA==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6SKweQ"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wNy0yMFQwNzoxOToxOVrO11OYEA==",
+    "threadId": "PRRT_kwDOR3YK5M6SKweQ"
+  }
+}

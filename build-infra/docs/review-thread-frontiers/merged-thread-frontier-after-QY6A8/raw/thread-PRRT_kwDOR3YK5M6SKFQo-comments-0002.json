@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current staging path still validates output identity before staging and does not re-prove the bound framebuffer view immediately before emission. A framebuffer rebind between validation and staging remains an untested stale-transaction boundary. I leave this row unresolved pending a transaction snapshot or revalidation fix with a regression.",
+              "commit": {
+                "oid": "aa015f46d8eeaedb7f6814d7182ccab719ff153a"
+              },
+              "createdAt": "2026-08-12T17:34:52Z",
+              "databaseId": 3768793768,
+              "id": "PRRC_kwDOR3YK5M7gozqo",
+              "originalCommit": {
+                "oid": "aa015f46d8eeaedb7f6814d7182ccab719ff153a"
+              },
+              "updatedAt": "2026-08-12T17:34:53Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1166#discussion_r3768793768"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1MlrO4KM6qA==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6SKFQo"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wNy0yMFQwNjoxODowNFrO10_r7g==",
+    "threadId": "PRRT_kwDOR3YK5M6SKFQo"
+  }
+}
