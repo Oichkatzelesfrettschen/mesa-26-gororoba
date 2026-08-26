@@ -534,7 +534,42 @@ above is rung zero; the ladder after it runs in this order:
    sample count multiplies the layer size and leaves the stride alone
    (`r300_texture_desc.c`: `layer_size *= base->nr_samples`), so a 2x or
    4x surface at the reference extent is that multiple of the
-   single-sample layer with its pitch unchanged;
+   single-sample layer with its pitch unchanged.
+   The offline cell is emitted:
+   `r300_tcl_bypass_triangle_msaa_resolve_emit` opens with `GB_AA_CONFIG`
+   and the `GB_MSPOS0`/`GB_MSPOS1` pair, renders the reference triangle
+   into the multisample surface, writes the resolve register run --
+   `RB3D_AARESOLVE_OFFSET`, the destination's pitch masked to
+   `0x3ffe`, and `AARESOLVE_MODE_RESOLVE | ALPHA_AVERAGE` in one
+   `PACKET0` with the destination's relocation behind it, the order
+   `r300_emit_aa_state` writes -- then covers the whole extent a second
+   time into the same surface with a fragment constant no multisample
+   sample holds, and closes both the resolve mode and the subsample set.
+   `RB3D_AARESOLVE_PITCH` takes a raw pixel pitch in bits 1 through 13:
+   r300g masks `r300_surface::pitch`, which is the full
+   `RB3D_COLORPITCH0` register word carrying format, tile, microtile,
+   and endian bits beside the stride (`r300_texture.c`), so the mask
+   extracts the stride and the resolve register carries no format field.
+   A resolve emits only for the pixels a fragment covers, which is why
+   `r300_simple_msaa_resolve` draws a full-target rectangle; the cell
+   reaches the same coverage with one triangle at `(0, 0)`, `(2w, 0)`,
+   `(0, 2h)`, whose interior holds every pixel center in the extent, so
+   the three-vertex writer serves the resolve half unchanged.  The cell
+   binds five relocation sites over four buffer objects: the render
+   half's vertices and the multisample surface, the resolve
+   destination, then the multisample surface a second time on the
+   texture slot and the cover geometry on the composed vertex slot.
+   Both the composed and the multisample cell carry five sites, so site
+   count no longer selects a single expected slot sequence and the
+   validator admits either, with a five-site sequence matching neither
+   still refused.  What remains is the recorder and the attended
+   runner: the multisample surface takes a device-local allocation the
+   host never maps, which no existing cell exercises, and the three
+   predicted destination dwords -- the render half's color for the
+   downsampled samples, the resolve constant for a fragment write, and
+   judged pixels holding neither for the mixture -- are read by three
+   passes of `r300_tcl_bypass_triangle_sample_set_oracle` over one
+   denominator;
 7. composed render and sampling surfaces before any core image or
    framebuffer limit rises.  The rung depends on the usage union in
    rung 5 rather than on rung 6, so it runs when its own mechanisms

@@ -399,21 +399,48 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_COMPOSED_COLOR,
       R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
    };
-   const uint32_t *expected_slots =
-      ib->reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT
-         ? composed_slots
-         : ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT
-              ? sampled_slots
-              : render_slots;
-   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
-      if (ib->reloc_sites[i].slot != expected_slots[i])
-         return -EINVAL;
-      if (i > 0 &&
-          ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
-         return -EINVAL;
+   /* The multisample cell binds the same five slots as the composed cell
+    * in its own order: its render half writes the multisample surface
+    * and its vertices, the resolve destination's relocation follows the
+    * resolve register run, and the resolve half binds the multisample
+    * surface a second time on the texture slot with its cover geometry
+    * behind it.  Site count alone does not separate the two cells, so
+    * both five-site sequences are admitted and the stream matches one.
+    */
+   static const uint32_t msaa_slots[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_VERTEX,
+      R300_TRIANGLE_SLOT_COMPOSED_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
+   };
+   const uint32_t *candidates[2] = { NULL, NULL };
+   if (ib->reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT) {
+      candidates[0] = composed_slots;
+      candidates[1] = msaa_slots;
+   } else if (ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT) {
+      candidates[0] = sampled_slots;
+   } else {
+      candidates[0] = render_slots;
    }
 
-   return 0;
+   /* Every cell's relocations follow the stream, so the sites rise
+    * whichever sequence matches.
+    */
+   for (uint32_t i = 1; i < ib->reloc_site_count; i++)
+      if (ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
+         return -EINVAL;
+
+   for (unsigned c = 0; c < ARRAY_SIZE(candidates); c++) {
+      if (candidates[c] == NULL)
+         continue;
+      bool match = true;
+      for (uint32_t i = 0; i < ib->reloc_site_count && match; i++)
+         match = ib->reloc_sites[i].slot == candidates[c][i];
+      if (match)
+         return 0;
+   }
+   return -EINVAL;
 }
 
 int
@@ -1595,6 +1622,249 @@ r300_tcl_bypass_triangle_bind_reloc_indices(
          &ib->reloc_sites[i];
       ib->ib[site->ib_index] =
          R300_TRIANGLE_RELOC_PAYLOAD(slot_indices[site->slot]);
+   }
+   return 0;
+}
+
+/* The multisample cell's slot map after the winsys merges the
+ * multisample surface's two use sites into one relocation entry.  The
+ * texture slot stays unused; the resolve destination takes the composed
+ * color slot, which is the second half's destination in both cells.
+ */
+const uint32_t
+   r300_tcl_bypass_triangle_msaa_slot_index[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = 0,
+      [R300_TRIANGLE_SLOT_COLOR] = 1,
+      [R300_TRIANGLE_SLOT_TEXTURE] = 1,
+      [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 2,
+      [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 3,
+};
+
+/* The subsample sets r300g programs, in 1/12 subpixel units, as the six
+ * (x, y) pairs GB_MSPOS0 and GB_MSPOS1 carry together
+ * (r300_emit_fb_state_pipelined).  Counts below six repeat their last
+ * live sample into the unused lanes, which is what keeps an unused lane
+ * from naming a position outside the pixel.
+ */
+static const uint8_t *
+msaa_sample_locs(uint32_t sample_count)
+{
+   static const uint8_t locs_2x[12] = { 3, 9, 9, 3, 9, 3, 9, 3, 9, 3, 9, 3 };
+   static const uint8_t locs_4x[12] = { 4,  4, 8, 8, 2, 10,
+                                        10, 2, 10, 2, 10, 2 };
+   switch (sample_count) {
+   case 2: return locs_2x;
+   case 4: return locs_4x;
+   default: return NULL;
+   }
+}
+
+uint32_t
+r300_tcl_bypass_triangle_gb_aa_config(uint32_t sample_count)
+{
+   switch (sample_count) {
+   case 2:
+      return R300_GB_AA_CONFIG_AA_ENABLE |
+             R300_GB_AA_CONFIG_NUM_AA_SUBSAMPLES_2;
+   case 4:
+      return R300_GB_AA_CONFIG_AA_ENABLE |
+             R300_GB_AA_CONFIG_NUM_AA_SUBSAMPLES_4;
+   default:
+      return 0;
+   }
+}
+
+#define MSAA_NIBBLES(x0, y0, x1, y1, x2, y2, d0y, d0x)                  \
+   (((uint32_t)(x0) & 0xf) | (((uint32_t)(y0) & 0xf) << 4) |            \
+    (((uint32_t)(x1) & 0xf) << 8) | (((uint32_t)(y1) & 0xf) << 12) |    \
+    (((uint32_t)(x2) & 0xf) << 16) | (((uint32_t)(y2) & 0xf) << 20) |   \
+    (((uint32_t)(d0y) & 0xf) << 24) | (((uint32_t)(d0x) & 0xf) << 28))
+
+uint32_t
+r300_tcl_bypass_triangle_gb_mspos(uint32_t index, uint32_t sample_count)
+{
+   const uint8_t *p = msaa_sample_locs(sample_count);
+   if (p == NULL || index > 1)
+      return 0;
+   if (index == 0) {
+      /* D0_X carries the distance from the pixel quad's left edge to the
+       * first sample in subpixels; the hardware converts an encoded 7
+       * into 8, so a true distance of 8 encodes as 7.
+       */
+      uint32_t distx = 11, disty = 11;
+      for (unsigned i = 0; i < 12; i += 2)
+         if (p[i] < distx)
+            distx = p[i];
+      for (unsigned i = 1; i < 12; i += 2)
+         if (p[i] < disty)
+            disty = p[i];
+      if (distx == 8)
+         distx = 7;
+      return MSAA_NIBBLES(p[0], p[1], p[2], p[3], p[4], p[5], disty, distx);
+   }
+   uint32_t dist = 11;
+   for (unsigned i = 0; i < 12; i++)
+      if (p[i] < dist)
+         dist = p[i];
+   return MSAA_NIBBLES(p[6], p[7], p[8], p[9], p[10], p[11], dist, 0);
+}
+
+void
+r300_tcl_bypass_triangle_cover_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_TRIANGLE_VERTEX_DWORDS])
+{
+   const float w = (float)shape->width, h = (float)shape->height;
+   const float v[6] = { 0.0f, 0.0f, 2.0f * w, 0.0f, 0.0f, 2.0f * h };
+   for (unsigned i = 0; i < 3; i++) {
+      out[i * 4 + 0] = v[i * 2 + 0];
+      out[i * 4 + 1] = v[i * 2 + 1];
+      out[i * 4 + 2] = 0.0f;
+      out[i * 4 + 3] = 1.0f;
+   }
+}
+
+int
+r300_tcl_bypass_triangle_msaa_resolve_emit(
+   const struct r300_triangle_msaa_resolve *msaa,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   memset(out, 0, sizeof(*out));
+   if (msaa == NULL ||
+       r300_tcl_bypass_triangle_render_shape_validate(&msaa->render) != 0 ||
+       r300_tcl_bypass_triangle_render_shape_validate(&msaa->destination) !=
+          0 ||
+       r300_tcl_bypass_triangle_gb_aa_config(msaa->sample_count) == 0)
+      return -EINVAL;
+   /* RB3D_AARESOLVE_PITCH holds a raw pixel pitch in bits 1 through 13,
+    * and RB3D_AARESOLVE_OFFSET a base in bits 31:5, so a pitch outside
+    * the mask or an unaligned destination offset names a word the
+    * register cannot carry.
+    */
+   if ((msaa->destination.pitch_pixels &
+        ~(uint32_t)R300_RB3D_AARESOLVE_PITCH_MASK) != 0 ||
+       (msaa->destination.target_offset &
+        ~(uint32_t)R300_RB3D_AARESOLVE_OFFSET_MASK) != 0)
+      return -EINVAL;
+
+   /* The resolve half renders into the multisample surface again, so it
+    * takes the render half's extent, pitch, lane order, and target
+    * offset and only its fragment constant differs.
+    */
+   struct r300_triangle_render_shape resolve_shape = msaa->render;
+   memcpy(resolve_shape.color_bits, msaa->resolve_color_bits,
+          sizeof(resolve_shape.color_bits));
+
+   struct r300_tcl_bypass_triangle_ib render_half, resolve_half;
+   int rc = r300_tcl_bypass_triangle_render_shape_emit(&msaa->render,
+                                                       &render_half);
+   if (rc != 0)
+      return rc;
+   rc = r300_tcl_bypass_triangle_render_shape_emit(&resolve_shape,
+                                                   &resolve_half);
+   if (rc != 0) {
+      r300_tcl_bypass_triangle_release(&render_half);
+      return rc;
+   }
+
+   uint32_t prologue[8], interlude[8], epilogue[8];
+   struct r300_pm4_builder pb, ib_mid, eb;
+   r300_pm4_builder_init(&pb, prologue, ARRAY_SIZE(prologue));
+   r300_pm4_reg(&pb, R300_GB_AA_CONFIG,
+                r300_tcl_bypass_triangle_gb_aa_config(msaa->sample_count));
+   const uint32_t mspos[2] = {
+      r300_tcl_bypass_triangle_gb_mspos(0, msaa->sample_count),
+      r300_tcl_bypass_triangle_gb_mspos(1, msaa->sample_count),
+   };
+   r300_pm4_packet0(&pb, R300_GB_MSPOS0, mspos, 2);
+
+   /* One PACKET0 run over the adjacent OFFSET, PITCH, and CTL registers
+    * followed by the destination's relocation, which is the order
+    * r300_emit_aa_state writes them in.
+    */
+   r300_pm4_builder_init(&ib_mid, interlude, ARRAY_SIZE(interlude));
+   const uint32_t aa[3] = {
+      msaa->destination.target_offset,
+      msaa->destination.pitch_pixels &
+         (uint32_t)R300_RB3D_AARESOLVE_PITCH_MASK,
+      R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
+         R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE,
+   };
+   r300_pm4_packet0(&ib_mid, R300_RB3D_AARESOLVE_OFFSET, aa, 3);
+   const uint32_t reloc_at = r300_pm4_reloc_nop(
+      &ib_mid,
+      R300_TRIANGLE_RELOC_PAYLOAD(R300_TRIANGLE_SLOT_COMPOSED_COLOR));
+
+   /* Resolve mode and the subsample set both close, so the cell leaves
+    * the color backend where it found it.
+    */
+   r300_pm4_builder_init(&eb, epilogue, ARRAY_SIZE(epilogue));
+   r300_pm4_reg(&eb, R300_RB3D_AARESOLVE_CTL,
+                R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
+   r300_pm4_reg(&eb, R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
+
+   if (pb.error != 0 || ib_mid.error != 0 || eb.error != 0 ||
+       reloc_at == R300_PM4_NO_INDEX) {
+      r300_tcl_bypass_triangle_release(&render_half);
+      r300_tcl_bypass_triangle_release(&resolve_half);
+      return -EINVAL;
+   }
+
+   const uint32_t dwords = pb.count + render_half.ib_size_dwords +
+                           ib_mid.count + resolve_half.ib_size_dwords +
+                           eb.count;
+   uint32_t *ib = calloc(dwords, sizeof(uint32_t));
+   if (ib == NULL) {
+      r300_tcl_bypass_triangle_release(&render_half);
+      r300_tcl_bypass_triangle_release(&resolve_half);
+      return -ENOMEM;
+   }
+   uint32_t at = 0;
+   memcpy(ib + at, prologue, pb.count * sizeof(uint32_t));
+   const uint32_t render_base = (at += pb.count);
+   memcpy(ib + at, render_half.ib,
+          render_half.ib_size_dwords * sizeof(uint32_t));
+   const uint32_t mid_base = (at += render_half.ib_size_dwords);
+   memcpy(ib + at, interlude, ib_mid.count * sizeof(uint32_t));
+   const uint32_t resolve_base = (at += ib_mid.count);
+   memcpy(ib + at, resolve_half.ib,
+          resolve_half.ib_size_dwords * sizeof(uint32_t));
+   at += resolve_half.ib_size_dwords;
+   memcpy(ib + at, epilogue, eb.count * sizeof(uint32_t));
+
+   /* The render half keeps its slots.  The resolve half's vertex site
+    * takes the composed vertex slot so its own cover geometry binds
+    * there, while its color site stays on the color slot: both halves
+    * render into the one multisample surface.
+    */
+   uint32_t site = 0;
+   for (uint32_t i = 0; i < render_half.reloc_site_count; i++) {
+      out->reloc_sites[site] = render_half.reloc_sites[i];
+      out->reloc_sites[site++].ib_index += render_base;
+   }
+   out->reloc_sites[site].slot = R300_TRIANGLE_SLOT_COMPOSED_COLOR;
+   out->reloc_sites[site++].ib_index = mid_base + reloc_at;
+   for (uint32_t i = 0; i < resolve_half.reloc_site_count; i++) {
+      struct r300_tcl_bypass_triangle_reloc_site r =
+         resolve_half.reloc_sites[i];
+      r.ib_index += resolve_base;
+      if (r.slot == R300_TRIANGLE_SLOT_VERTEX)
+         r.slot = R300_TRIANGLE_SLOT_COMPOSED_VERTEX;
+      else if (r.slot == R300_TRIANGLE_SLOT_COLOR)
+         r.slot = R300_TRIANGLE_SLOT_TEXTURE;
+      ib[r.ib_index] = R300_TRIANGLE_RELOC_PAYLOAD(r.slot);
+      out->reloc_sites[site++] = r;
+   }
+   out->reloc_site_count = site;
+   out->ib = ib;
+   out->ib_size_dwords = dwords;
+   out->owns_ib = true;
+
+   r300_tcl_bypass_triangle_release(&render_half);
+   r300_tcl_bypass_triangle_release(&resolve_half);
+   if (r300_tcl_bypass_triangle_validate_reloc_sites(out) != 0) {
+      r300_tcl_bypass_triangle_release(out);
+      return -EINVAL;
    }
    return 0;
 }

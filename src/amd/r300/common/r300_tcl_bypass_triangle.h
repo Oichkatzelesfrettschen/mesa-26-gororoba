@@ -521,6 +521,81 @@ int r300_tcl_bypass_triangle_composed_render_sample_emit(
 extern const uint32_t
    r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT];
 
+/* The multisample resolve cell: one stream renders the reference
+ * triangle into a sample-expanded color surface with GB_AA_CONFIG's
+ * subsample set live, then binds that same surface as the render target
+ * a second time with RB3D_AARESOLVE_CTL in resolve mode and covers the
+ * whole extent, which sends the downsampled samples to
+ * RB3D_AARESOLVE_OFFSET.  The multisample surface is written and never
+ * read by the host (r300_texture_initial_domain places an
+ * nr_samples > 1 resource in RADEON_DOMAIN_VRAM alone); the resolve
+ * destination is the buffer the oracle reads.
+ *
+ * The resolve half's fragment constant is a color no multisample sample
+ * holds, so the destination separates the two readings of the resolve
+ * semantics in one submission: downsampled samples give the render
+ * half's color, a fragment write that reaches the destination gives
+ * this constant, and a destination holding neither over judged pixels
+ * is the mixture the third counter reports.
+ */
+struct r300_triangle_msaa_resolve {
+   /* The multisample color surface.  Its pitch is the single-sample
+    * pitch; the sample count multiplies the allocation's layer size and
+    * leaves the stride alone (r300_texture_desc.c).
+    */
+   struct r300_triangle_render_shape render;
+   /* The resolve destination.  RB3D_AARESOLVE_PITCH carries a raw pixel
+    * pitch in bits 1 through 13, the same field position
+    * RB3D_COLORPITCH0 gives its stride, and RB3D_AARESOLVE_OFFSET
+    * carries a 32-byte-aligned base in bits 31:5.
+    */
+   struct r300_triangle_render_shape destination;
+   /* 2 or 4: the subsample sets GB_MSPOS0 and GB_MSPOS1 carry. */
+   uint32_t sample_count;
+   /* The resolve half's fragment constant, RGBA binary32 bit patterns on
+    * the FP24 lattice, distinct from the render half's color.
+    */
+   uint32_t resolve_color_bits[4];
+};
+
+/* Emits the multisample resolve cell.  Returns 0 or a negative errno;
+ * the caller owns the returned IB allocation.
+ */
+int r300_tcl_bypass_triangle_msaa_resolve_emit(
+   const struct r300_triangle_msaa_resolve *msaa,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The relocation index each slot of the multisample cell resolves to
+ * once the winsys has merged the multisample surface's two use sites --
+ * the render half's color target and the resolve half's -- into one
+ * entry.
+ */
+extern const uint32_t
+   r300_tcl_bypass_triangle_msaa_slot_index[R300_TRIANGLE_SLOT_COUNT];
+
+/* The resolve half's vertices: one triangle at (0, 0), (2w, 0), (0, 2h)
+ * whose interior covers the whole extent, so the scissor bounds the
+ * coverage to the target and every pixel reaches the color backend.  A
+ * resolve emits only for the pixels a fragment covers, so full coverage
+ * is what sends the whole surface to the resolve destination.
+ */
+void r300_tcl_bypass_triangle_cover_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_TRIANGLE_VERTEX_DWORDS]);
+
+/* The GB_AA_CONFIG word a sample count names, or 0 for a count with no
+ * subsample set.
+ */
+uint32_t r300_tcl_bypass_triangle_gb_aa_config(uint32_t sample_count);
+
+/* The GB_MSPOS0 (index 0) or GB_MSPOS1 (index 1) word for a sample
+ * count, packed as r300_get_mspos packs it: (x, y) nibble pairs followed
+ * by the minimum subpixel distance from the pixel edge, with distance 8
+ * encoded as 7.
+ */
+uint32_t r300_tcl_bypass_triangle_gb_mspos(uint32_t index,
+                                           uint32_t sample_count);
+
 int r300_tcl_bypass_triangle_bind_reloc_indices(
    struct r300_tcl_bypass_triangle_ib *ib, const uint32_t *slot_indices,
    uint32_t slot_index_count);

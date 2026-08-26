@@ -13,6 +13,7 @@
 
 #include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
+#include "r300_pm4_builder.h"
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_us_source_read.h"
@@ -2269,6 +2270,185 @@ test_varying_tex0_is_the_window_position_fraction(void)
    }
 }
 
+/* The multisample resolve cell's emitted form: the subsample registers
+ * open the stream, the resolve register run carries the destination's
+ * offset, pitch, and mode with its relocation behind it, and both the
+ * resolve mode and the subsample set close.  The words are checked
+ * against r300g's own values (r300_emit_fb_state_pipelined for the
+ * sample positions, r300_emit_aa_state for the resolve run), so a
+ * transcription error in either fails here rather than on the one
+ * attended submission the cell gets.
+ */
+static void
+test_msaa_resolve_cell(void)
+{
+   struct r300_triangle_msaa_resolve msaa;
+   r300_tcl_bypass_triangle_render_shape_reference(&msaa.render);
+   r300_tcl_bypass_triangle_render_shape_reference(&msaa.destination);
+   msaa.destination.target_offset = 0;
+   msaa.sample_count = 4;
+   /* A resolve-half constant no multisample sample holds: the render
+    * half's color is the reference shape's, so an opaque green here is
+    * distinct from it and from the sentinel.
+    */
+   const float resolve_rgba[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+   for (unsigned i = 0; i < 4; i++)
+      memcpy(&msaa.resolve_color_bits[i], &resolve_rgba[i], sizeof(float));
+
+   /* GB_AA_CONFIG and the MSPOS pair against r300g's own encoding. */
+   assert(r300_tcl_bypass_triangle_gb_aa_config(2) == (1u | (0u << 1)));
+   assert(r300_tcl_bypass_triangle_gb_aa_config(4) == (1u | (2u << 1)));
+   assert(r300_tcl_bypass_triangle_gb_aa_config(1) == 0);
+   assert(r300_tcl_bypass_triangle_gb_aa_config(3) == 0);
+   assert(r300_tcl_bypass_triangle_gb_aa_config(6) == 0);
+   /* 4x samples (4,4) (8,8) (2,10) (10,2) with lanes 4 and 5 repeating
+    * (10,2): MSPOS0 packs samples 0-2 then (D0_Y, D0_X) = (2, 2), and
+    * MSPOS1 packs samples 3-5 then the minimum over all twelve, 2.
+    */
+   assert(r300_tcl_bypass_triangle_gb_mspos(0, 4) ==
+          (4u | (4u << 4) | (8u << 8) | (8u << 12) | (2u << 16) |
+           (10u << 20) | (2u << 24) | (2u << 28)));
+   assert(r300_tcl_bypass_triangle_gb_mspos(1, 4) ==
+          (10u | (2u << 4) | (10u << 8) | (2u << 12) | (10u << 16) |
+           (2u << 20) | (2u << 24)));
+   /* 2x samples (3,9) (9,3): every lane past the second repeats (9,3),
+    * so both minima are 3.
+    */
+   assert(r300_tcl_bypass_triangle_gb_mspos(0, 2) ==
+          (3u | (9u << 4) | (9u << 8) | (3u << 12) | (9u << 16) |
+           (3u << 20) | (3u << 24) | (3u << 28)));
+   assert(r300_tcl_bypass_triangle_gb_mspos(0, 3) == 0);
+   assert(r300_tcl_bypass_triangle_gb_mspos(2, 4) == 0);
+
+   /* The cover triangle: (0,0), (2w,0), (0,2h) contains every pixel
+    * center in the extent, which is what full resolve coverage needs.
+    */
+   float cover[R300_TRIANGLE_VERTEX_DWORDS];
+   r300_tcl_bypass_triangle_cover_vertices(&msaa.render, cover);
+   assert(cover[0] == 0.0f && cover[1] == 0.0f);
+   assert(cover[4] == 2.0f * (float)msaa.render.width && cover[5] == 0.0f);
+   assert(cover[8] == 0.0f && cover[9] == 2.0f * (float)msaa.render.height);
+   for (unsigned i = 0; i < 3; i++)
+      assert(cover[i * 4 + 2] == 0.0f && cover[i * 4 + 3] == 1.0f);
+   for (uint32_t y = 0; y < msaa.render.height; y++)
+      for (uint32_t x = 0; x < msaa.render.width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         assert(px >= 0.0f && py >= 0.0f &&
+                px / (2.0f * (float)msaa.render.width) +
+                      py / (2.0f * (float)msaa.render.height) <
+                   1.0f);
+      }
+
+   struct r300_tcl_bypass_triangle_ib ib;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, &ib) == 0);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&ib) == 0);
+
+   /* GB_AA_CONFIG opens the stream and the MSPOS pair follows it. */
+   assert(ib.ib[0] == CP_PACKET0(R300_GB_AA_CONFIG, 0));
+   assert(ib.ib[1] == r300_tcl_bypass_triangle_gb_aa_config(4));
+   assert(ib.ib[2] == CP_PACKET0(R300_GB_MSPOS0, 1));
+   assert(ib.ib[3] == r300_tcl_bypass_triangle_gb_mspos(0, 4));
+   assert(ib.ib[4] == r300_tcl_bypass_triangle_gb_mspos(1, 4));
+
+   /* The resolve run: one PACKET0 over the three adjacent registers,
+    * the destination's offset and masked pitch, resolve mode with the
+    * averaged alpha, and the relocation site behind them.
+    */
+   uint32_t run = 0;
+   bool found_run = false, found_close = false, aa_closed = false;
+   for (uint32_t i = 0; i + 4 < ib.ib_size_dwords; i++) {
+      if (ib.ib[i] == CP_PACKET0(R300_RB3D_AARESOLVE_OFFSET, 2)) {
+         assert(!found_run);
+         found_run = true;
+         run = i;
+      }
+   }
+   assert(found_run);
+   assert(ib.ib[run + 1] == msaa.destination.target_offset);
+   assert(ib.ib[run + 2] ==
+          (msaa.destination.pitch_pixels &
+           (uint32_t)R300_RB3D_AARESOLVE_PITCH_MASK));
+   assert(ib.ib[run + 3] ==
+          (R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
+           R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE));
+   /* The destination's relocation sits immediately behind the run. */
+   assert(ib.ib[run + 4] == CP_PACKET3(R300_PM4_PACKET3_NOP, 0));
+
+   /* Both state closes land after the resolve half. */
+   for (uint32_t i = run + 5; i + 1 < ib.ib_size_dwords; i++) {
+      if (ib.ib[i] == CP_PACKET0(R300_RB3D_AARESOLVE_CTL, 0) &&
+          ib.ib[i + 1] == R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL)
+         found_close = true;
+      if (ib.ib[i] == CP_PACKET0(R300_GB_AA_CONFIG, 0) &&
+          ib.ib[i + 1] == R300_GB_AA_CONFIG_AA_DISABLE)
+         aa_closed = true;
+   }
+   assert(found_close && aa_closed);
+
+   /* Four buffer objects reach the cell: the render half's vertices and
+    * the multisample surface, the resolve half's cover vertices, and the
+    * resolve destination.  The multisample surface carries two sites.
+    */
+   uint32_t seen[R300_TRIANGLE_SLOT_COUNT] = { 0 };
+   for (uint32_t i = 0; i < ib.reloc_site_count; i++)
+      seen[ib.reloc_sites[i].slot]++;
+   assert(seen[R300_TRIANGLE_SLOT_VERTEX] == 1);
+   assert(seen[R300_TRIANGLE_SLOT_COLOR] == 1);
+   /* The resolve half's second binding of the multisample surface takes
+    * the texture slot, which the map resolves to the color slot's entry.
+    */
+   assert(seen[R300_TRIANGLE_SLOT_TEXTURE] == 1);
+   assert(seen[R300_TRIANGLE_SLOT_COMPOSED_VERTEX] == 1);
+   assert(seen[R300_TRIANGLE_SLOT_COMPOSED_COLOR] == 1);
+
+   /* The validator admits two five-site sequences, so a five-site
+    * sequence matching neither still refuses: swapping the resolve
+    * destination's slot with the cover geometry's leaves every slot
+    * present exactly once and every site rising, and the stream is
+    * still rejected on order alone.
+    */
+   {
+      struct r300_tcl_bypass_triangle_ib mutated = ib;
+      uint32_t *copy = malloc(ib.ib_size_dwords * sizeof(uint32_t));
+      assert(copy != NULL);
+      memcpy(copy, ib.ib, ib.ib_size_dwords * sizeof(uint32_t));
+      mutated.ib = copy;
+      mutated.owns_ib = false;
+      const uint32_t a = 2, b = 4;
+      const uint32_t slot_a = mutated.reloc_sites[a].slot;
+      mutated.reloc_sites[a].slot = mutated.reloc_sites[b].slot;
+      mutated.reloc_sites[b].slot = slot_a;
+      /* The payload is the slot's dword index into the relocation
+       * chunk, so it moves with the slot.
+       */
+      copy[mutated.reloc_sites[a].ib_index] = mutated.reloc_sites[a].slot * 4;
+      copy[mutated.reloc_sites[b].ib_index] = mutated.reloc_sites[b].slot * 4;
+      assert(r300_tcl_bypass_triangle_validate_reloc_sites(&mutated) != 0);
+      free(copy);
+   }
+
+   /* The merged map binds without refusing, and binding twice refuses. */
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &ib, r300_tcl_bypass_triangle_msaa_slot_index,
+             R300_TRIANGLE_SLOT_COUNT) == 0);
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &ib, r300_tcl_bypass_triangle_msaa_slot_index,
+             R300_TRIANGLE_SLOT_COUNT) != 0);
+   r300_tcl_bypass_triangle_release(&ib);
+
+   /* Refusals: a sample count with no subsample set, a destination
+    * pitch outside the resolve register's mask, and an unaligned
+    * destination offset each refuse before any word is emitted.
+    */
+   struct r300_triangle_msaa_resolve bad = msaa;
+   bad.sample_count = 3;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&bad, &ib) == -EINVAL);
+   bad = msaa;
+   bad.destination.target_offset = 4;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&bad, &ib) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(NULL, &ib) == -EINVAL);
+}
+
 /* Calibrates the sample-set verdict against the pixel-center one.  The
  * two footprints stand in a containment relation -- a pixel whose whole
  * sample set clears the edges has its center inside -- so painting the
@@ -2534,6 +2714,7 @@ main(void)
    test_coverage_oracle_predicted_calibration();
    test_interior_oracle_calibration();
    test_sample_set_oracle_calibration();
+   test_msaa_resolve_cell();
    test_pack_unorm8_dword();
    test_varying_shape_vertices_scale_positions_alone();
    test_varying_tex0_is_the_window_position_fraction();
