@@ -2,14 +2,9 @@
 # SPDX-License-Identifier: MIT
 
 import unittest
-from unittest.mock import MagicMock
-import sys
-
-# Mock mako before importing lat_rs_gen
-sys.modules['mako'] = MagicMock()
-sys.modules['mako.template'] = MagicMock()
 
 import lat_rs_gen
+
 
 class TestLatRsGen(unittest.TestCase):
     def test_to_camel(self):
@@ -17,6 +12,10 @@ class TestLatRsGen(unittest.TestCase):
         self.assertEqual(lat_rs_gen.to_camel("123_prefixed"), "_123Prefixed")
         self.assertEqual(lat_rs_gen.to_camel("foo_123"), "Foo123")
         self.assertEqual(lat_rs_gen.to_camel(""), "")
+
+    def test_to_camel_rejects_none(self):
+        with self.assertRaises(AttributeError):
+            lat_rs_gen.to_camel(None)
 
     def test_parse_csv(self):
         csv_data = [
