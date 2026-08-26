@@ -311,12 +311,13 @@ P0 (blocks the next target run):
 P1 (host-model rungs that move classified rows without a new gate):
 
 - the compute recognizer index-from-UBO shape (111 robustness cases; the host-planning pass proves no robustness case reaches an IB before it);
-- `pipeline_barrier_executing_route_gap`: the secondary replay and the
-  nearest scaling blit moved the family 4 -> 20 Pass under the shim and
-  both movements hold on RS482 silicon (rungs 1 and 2 above); the
-  residual walls are the withheld sampled/storage image usage at
-  `vkCreateImage` and the render pipelines outside the qualified draw
-  subset;
+- `pipeline_barrier_executing_route_gap`: the secondary replay, the
+  nearest scaling blit, and the sampled-image admission moved the family
+  4 -> 28 Pass under the shim and all three movements hold on RS482
+  silicon (rungs 1-3 above); the residual walls are the withheld
+  storage/all-usage image shapes at `vkCreateImage` (24 cases) and the
+  render pipelines outside the qualified draw subset at
+  `vkCreateGraphicsPipelines` (52 cases);
 - `driver_defect_open` (17 command-slice cases) per its ledger rows;
 - T10.8, the full-corpus target run, waits on the slices above; the
   eight unrun slices then follow partition order;
@@ -350,7 +351,17 @@ above is rung zero; the ladder after it runs in this order:
    (12/12 Pass, dmesg delta 0, gates closed, seal `765a0687a232c2`,
    bundle steinmarder-r300
    `r3v-native-scaling-blit-pipeline-barrier-silicon-pass-rs482`);
-3. fragment sampling through a real descriptor-set binding;
+3. fragment sampling through a real descriptor-set binding -- closed:
+   the sampled cell binds a uniform R8G8B8A8 texel through a
+   combined-image-sampler descriptor set and a TCL-bypass triangle
+   samples it on TX unit 0; the attended run on RS482 rendered the
+   predicted centroid `0xe02060a0` with an empty dmesg delta and gates
+   armed one-shot (cell blake3 `4e3d252315fb`, bundle steinmarder-r300
+   `r3v-native-sampled-descriptor-cell-silicon-pass-rs482`); the
+   falsifying first run exposed that `R300_TX_FORMAT1` channel selects
+   default to X (finding
+   `rs482-tx-format1-channel-selects-default-to-x`), fixed by the
+   identity-select composition;
 4. sampled-image shapes, admitted only as the executing routes in rungs 2
    and 3 complete;
 5. image types, arrays, cube, depth, and larger render extents, each a
