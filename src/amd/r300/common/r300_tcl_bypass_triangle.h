@@ -178,6 +178,17 @@ int r300_tcl_bypass_triangle_reference_fs(struct r300_fragment_binary *fs);
  */
 int r300_tcl_bypass_triangle_sampled_fs(struct r300_fragment_binary *fs);
 
+/* Emits the sampled cell at the reference target pitch: the varying
+ * vertex path carries the TEX0 coordinate, the sampled fragment binary
+ * fetches TX unit 0, and the TX block programs the declared linear
+ * W8Z8Y8X8 texture with its offset on the texture relocation slot.
+ */
+int r300_tcl_bypass_triangle_sampled_emit(
+   uint32_t width, uint32_t height, uint32_t triangle_count,
+   uint32_t texture_offset, uint32_t texture_width,
+   uint32_t texture_height, uint32_t texture_pitch_texels,
+   struct r300_tcl_bypass_triangle_ib *out);
+
 /* Builds the varying cell's fragment binary: the varying-passthrough US
  * block that moves interpolator 0 to the color output.  Returns 0 or a
  * negative errno; the caller owns the binary.

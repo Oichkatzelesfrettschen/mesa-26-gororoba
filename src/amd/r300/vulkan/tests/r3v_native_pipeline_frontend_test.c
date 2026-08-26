@@ -115,6 +115,53 @@ static void test_reference_fragment_module(void)
           color[3] == 0x3f800000u);
 }
 
+
+/* The sampled-texture reader admits the canonical module alone: the
+ * other two fragment readers refuse it, the sampled reader refuses the
+ * pass-through module, and a descriptor-set or binding literal moved
+ * off zero refuses.
+ */
+static void test_reference_sampled_module(void)
+{
+   const char *reason = NULL;
+   uint32_t color[4];
+   assert(r300_fragment_sampled_texture_from_spirv(
+      r3v_reference_fragment_sampled_spirv,
+      WORDS(r3v_reference_fragment_sampled_spirv), "main", &reason));
+   assert(!r300_fragment_constant_color_from_spirv(
+      r3v_reference_fragment_sampled_spirv,
+      WORDS(r3v_reference_fragment_sampled_spirv), "main", color,
+      &reason));
+   assert(!r300_fragment_varying_passthrough_from_spirv(
+      r3v_reference_fragment_sampled_spirv,
+      WORDS(r3v_reference_fragment_sampled_spirv), "main", &reason));
+   assert(!r300_fragment_sampled_texture_from_spirv(
+      r3v_reference_fragment_varying_spirv,
+      WORDS(r3v_reference_fragment_varying_spirv), "main", &reason));
+
+   /* Move each descriptor literal off zero: OpDecorate (opcode 71,
+    * length 4) with Binding (33) or DescriptorSet (34). */
+   for (uint32_t decor = 33; decor <= 34; decor++) {
+      uint32_t bad[WORDS(r3v_reference_fragment_sampled_spirv)];
+      memcpy(bad, r3v_reference_fragment_sampled_spirv, sizeof(bad));
+      size_t at = 5;
+      bool patched = false;
+      while (at < WORDS(bad)) {
+         const uint32_t len = bad[at] >> 16;
+         assert(len != 0 && at + len <= WORDS(bad));
+         if ((bad[at] & 0xffffu) == 71 && len == 4 &&
+             bad[at + 2] == decor) {
+            bad[at + 3] = 1;
+            patched = true;
+         }
+         at += len;
+      }
+      assert(patched);
+      assert(!r300_fragment_sampled_texture_from_spirv(
+         bad, WORDS(bad), "main", &reason));
+   }
+}
+
 /* The arithmetic reference exercises the constant, FFMA, DP4,
  * function-variable, and broadcast-replicate paths; the executed value
  * is the host model's exact composition.
@@ -667,6 +714,7 @@ int main(void)
 {
    test_reference_vertex_module();
    test_reference_fragment_module();
+   test_reference_sampled_module();
    test_reference_arith_module();
    test_reference_varying_modules();
    test_varying_module_known_bads();

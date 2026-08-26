@@ -448,11 +448,51 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       return;
    }
 
+   /* The sampled pipeline resolves its combined image sampler from the
+    * bound graphics set: the binding written, the view's image bound,
+    * and the sampler the TX program's exact shape -- nearest filters,
+    * clamp-to-edge wraps, no mip chain, normalized coordinates, no
+    * compare.  The texture's linear geometry rides into the cell.
+    */
+   struct r3v_native_sampled_texture sampled_texture;
+   const struct r3v_native_sampled_texture *sampled = NULL;
+   if (pipeline->sampled) {
+      const struct r3v_native_descriptor_set *set =
+         cmd_buffer->bound_graphics_set;
+      if (set == NULL || set->poisoned || !set->bindings[0].bound ||
+          set->bindings[0].image_view == NULL ||
+          set->bindings[0].sampler == NULL) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      const struct r3v_native_image *texture =
+         set->bindings[0].image_view->image;
+      const VkSamplerCreateInfo *si = &set->bindings[0].sampler->info;
+      if (texture->memory == NULL ||
+          si->magFilter != VK_FILTER_NEAREST ||
+          si->minFilter != VK_FILTER_NEAREST ||
+          si->mipmapMode != VK_SAMPLER_MIPMAP_MODE_NEAREST ||
+          si->addressModeU != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
+          si->addressModeV != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
+          si->compareEnable != VK_FALSE ||
+          si->unnormalizedCoordinates != VK_FALSE) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      sampled_texture = (struct r3v_native_sampled_texture){
+         .memory = texture->memory,
+         .texture_offset = (uint32_t)texture->memory_offset,
+         .texture_width = texture->width,
+         .texture_height = texture->height,
+         .texture_pitch_texels = texture->row_pitch_bytes / 4,
+      };
+      sampled = &sampled_texture;
+   }
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
       pipeline->varying,
       (args->vertex_count / 3) * args->instance_count,
-      pipeline->color_bits);
+      pipeline->color_bits, sampled);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);

@@ -542,6 +542,62 @@ r300_tcl_bypass_triangle_family_emit(
 }
 
 int
+r300_tcl_bypass_triangle_sampled_emit(
+   uint32_t width, uint32_t height, uint32_t triangle_count,
+   uint32_t texture_offset, uint32_t texture_width,
+   uint32_t texture_height, uint32_t texture_pitch_texels,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
+       height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
+       triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+
+   struct r300_fragment_binary fs;
+   int rc = r300_tcl_bypass_triangle_sampled_fs(&fs);
+   if (rc != 0)
+      return rc;
+
+   /* The sampled cell owns the TX block on top of the contract, so the
+    * contract skips its TX writes and the cell's own enable stands.
+    */
+   struct r300_first_draw_params draw_params = {
+      .chip_family = CHIP_RS480,
+      .width = width,
+      .height = height,
+      .min_vtx_index = 0,
+      .max_vtx_index = 3 * triangle_count - 1,
+      .texture_enabled = true,
+   };
+   struct r300_first_draw_contract contract;
+   rc = r300_first_draw_contract_resolve(&draw_params, &contract);
+   if (rc == 0)
+      rc = r300_tcl_bypass_triangle_set_target_format(&contract);
+   if (rc != 0) {
+      r300_fragment_binary_finish(&fs);
+      return rc;
+   }
+
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(
+         R300_TRIANGLE_TARGET_PITCH_PIXELS),
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+      .varying = true,
+      .sampled = true,
+      .texture_offset = texture_offset,
+      .texture_width = texture_width,
+      .texture_height = texture_height,
+      .texture_pitch_texels = texture_pitch_texels,
+      .triangle_count = triangle_count,
+   };
+   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
+}
+
+int
 r300_tcl_bypass_triangle_extent_emit(
    uint32_t width, uint32_t height,
    struct r300_tcl_bypass_triangle_ib *out)

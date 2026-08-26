@@ -100,6 +100,12 @@ enum r3v_native_cell_kind {
     * recorder refuses a shape the family's admission refuses.
     */
    R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE,
+   /* The sampled triangle: the varying cell fetching TX unit 0 over the
+    * declared linear texture, three relocations -- vertex and texture
+    * read, color target written.  The geometry contract is the render
+    * family's extent plus the texture's own declared geometry.
+    */
+   R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

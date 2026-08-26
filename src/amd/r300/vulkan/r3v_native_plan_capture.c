@@ -59,6 +59,7 @@ static atomic_uint capture_next_ordinal = ATOMIC_VAR_INIT(0);
  * named by index so the entry still distinguishes it.
  */
 static const char *const triangle_roles[] = {"vertex", "color"};
+static const char *const sampled_roles[] = {"vertex", "color", "texture"};
 /* The public producer route rides the triangle slots with the carrier
  * at the vertex slot, written by the producer and read by the consumer.
  */
@@ -81,6 +82,9 @@ r3v_native_plan_capture_slot_role(enum r3v_native_cell_kind kind,
    case R3V_NATIVE_CELL_KIND_TRIANGLE:
    case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE:
       TABLE(triangle_roles);
+      break;
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED:
+      TABLE(sampled_roles);
       break;
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC:
       TABLE(public_route_roles);

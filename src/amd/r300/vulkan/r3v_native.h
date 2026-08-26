@@ -335,6 +335,11 @@ struct r3v_native_descriptor_binding {
     * the write, so the dispatch admission compares plain numbers.
     */
    VkDeviceSize range;
+   /* A combined-image-sampler binding: the written view and sampler;
+    * the draw admission holds them to the sampling cell's TX program.
+    */
+   struct r3v_native_image_view *image_view;
+   struct r3v_native_sampler *sampler;
 };
 
 struct r3v_native_descriptor_set {
@@ -610,6 +615,10 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_pipeline *bound_compute_pipeline;
    struct r3v_native_descriptor_set *bound_compute_set;
+   /* The graphics set-0 bind: the sampling pipeline's draw resolves its
+    * combined image sampler here.
+    */
+   struct r3v_native_descriptor_set *bound_graphics_set;
    struct r3v_native_deferred_dispatch deferred_dispatch;
    /* Member count the burst status-load cell composed; zero for every
     * other kind.  The arming gate matches it against the declared
@@ -1128,6 +1137,11 @@ struct r3v_native_pipeline {
     * cell over eight-dword records.
     */
    bool varying;
+   /* Set when the fragment module is the sampled-texture shape: the
+    * draw resolves the set-0 binding-0 combined image sampler from the
+    * bound graphics set and records the sampling cell.
+    */
+   bool sampled;
    /* The constant-color fragment module's RGBA as four binary32 bit
     * patterns on the FP24 lattice; the draw places them in the render
     * shape, which emits them as the fragment block's R300_PFS_PARAM_0
@@ -1351,12 +1365,24 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
  * vertex gather and the sentinel clear ride cmd_buffer->deferred_draw
  * and execute at queue submission.
  */
+/* The sampled cell's texture binding: the bound image's memory and
+ * offset with the declared linear geometry the TX block programs.
+ */
+struct r3v_native_sampled_texture {
+   struct r3v_native_memory *memory;
+   uint32_t texture_offset;
+   uint32_t texture_width;
+   uint32_t texture_height;
+   uint32_t texture_pitch_texels;
+};
+
 VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, bool varying,
-   uint32_t triangle_count, const uint32_t color_bits[4]);
+   uint32_t triangle_count, const uint32_t color_bits[4],
+   const struct r3v_native_sampled_texture *sampled);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

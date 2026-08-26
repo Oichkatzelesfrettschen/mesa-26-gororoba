@@ -98,6 +98,9 @@ r3v_native_image_layout_ok(const struct r3v_native_image *image,
    if ((image->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
        r3v_native_render_layout_ok(layout))
       return true;
+   if ((image->usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0 &&
+       layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+      return true;
    return ((image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
            r3v_native_transfer_source_layout_ok(layout)) ||
           ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&

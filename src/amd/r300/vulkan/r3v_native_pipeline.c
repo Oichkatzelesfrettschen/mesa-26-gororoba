@@ -195,7 +195,7 @@ vertex_input_admit(const VkPipelineVertexInputStateCreateInfo *vi,
 static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
-                        uint32_t color_bits[4])
+                        bool *sampled, uint32_t color_bits[4])
 {
    if (info->stageCount != 2)
       return false;
@@ -227,9 +227,17 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    if (fs_data == NULL)
       return false;
    *varying = r300_vertex_job_has_varying(job);
-   if (*varying)
-      return r300_fragment_varying_passthrough_from_spirv(
+   *sampled = false;
+   if (*varying) {
+      if (r300_fragment_varying_passthrough_from_spirv(
+             fs_data, fs_words, fragment->pName, &reason))
+         return true;
+      /* The varying job's other fragment shape samples the set-0
+       * binding-0 combined image sampler at the varying's xy. */
+      *sampled = r300_fragment_sampled_texture_from_spirv(
          fs_data, fs_words, fragment->pName, &reason);
+      return *sampled;
+   }
    return r300_fragment_constant_color_from_spirv(fs_data, fs_words,
                                                   fragment->pName,
                                                   color_bits, &reason) &&
@@ -395,18 +403,45 @@ create_pipeline(struct r3v_native_device *device,
    bool dynamic_viewport_scissor = false;
    struct r300_vertex_job job;
    bool varying = false;
+   bool sampled = false;
    uint32_t color_bits[4] = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
-       !stages_build_vertex_job(info, &job, &varying, color_bits) ||
+       !stages_build_vertex_job(info, &job, &varying, &sampled,
+                                color_bits) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
                                  &dynamic_viewport_scissor) ||
-       layout == NULL || layout->set_count != 0 ||
-       layout->push_range_count != 0 ||
+       layout == NULL || layout->push_range_count != 0 ||
        !r3v_native_render_pass_matches_cell(pass) || info->subpass != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   /* The sampled module names set 0 binding 0, so its layout carries
+    * exactly that combined-image-sampler binding under the fragment
+    * stage; every other pipeline carries no set.
+    */
+   if (!sampled) {
+      if (layout->set_count != 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   } else {
+      if (layout->set_count != 1)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      const struct r3v_native_descriptor_set_layout *set0 =
+         container_of(layout->set_layouts[0],
+                      struct r3v_native_descriptor_set_layout, vk);
+      const struct r3v_native_descriptor_layout_binding *b0 =
+         &set0->bindings[0];
+      if (!b0->present ||
+          b0->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+          b0->count != 1 ||
+          (b0->stages & ~(VkShaderStageFlags)
+                           VK_SHADER_STAGE_FRAGMENT_BIT) != 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      for (uint32_t bi = 1; bi < R3V_NATIVE_DESCRIPTOR_BINDING_MAX; bi++) {
+         if (set0->bindings[bi].present)
+            return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      }
+   }
 
    struct r3v_native_pipeline *pipeline =
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*pipeline),
@@ -431,6 +466,7 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
    pipeline->varying = varying;
+   pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));
    /* GPU-route admission metadata: the qualified TCL-bypass cell
     * delivers the raw attribute stream, so only the identity job

@@ -55,6 +55,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED:
    case R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER:
    case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE:
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED:
       break;
    case R3V_NATIVE_CELL_KIND_UNDECLARED:
    default:

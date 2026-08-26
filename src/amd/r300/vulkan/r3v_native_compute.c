@@ -385,6 +385,32 @@ r3v_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
             &set->layout->bindings[binding];
          const uint32_t here_max = decl->count - element;
          const uint32_t here = here_max < remaining ? here_max : remaining;
+         if (write->descriptorType ==
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+             decl->count == 1 && element == 0 && here == 1) {
+            /* The executing sampling shape: a view over a sampled-usage
+             * image in a layout the sampling read admits, with the
+             * write's own sampler; the draw admission holds the pair
+             * to the TX program it emits.
+             */
+            const VkDescriptorImageInfo *info = &write->pImageInfo[payload];
+            VK_FROM_HANDLE(r3v_native_image_view, view, info->imageView);
+            VK_FROM_HANDLE(r3v_native_sampler, sampler, info->sampler);
+            if (view == NULL || sampler == NULL ||
+                (view->image->usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0 ||
+                (info->imageLayout != VK_IMAGE_LAYOUT_GENERAL &&
+                 info->imageLayout !=
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+               set->poisoned = true;
+               break;
+            }
+            set->bindings[binding] =
+               (struct r3v_native_descriptor_binding){
+                  .bound = true,
+                  .image_view = view,
+                  .sampler = sampler,
+               };
+         }
          if (write->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
              decl->count == 1 && element == 0 && here == 1) {
             const VkDescriptorBufferInfo *info =
@@ -654,7 +680,8 @@ r3v_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
    (void)layout;
    (void)pDynamicOffsets;
 
-   if (pipelineBindPoint != VK_PIPELINE_BIND_POINT_COMPUTE ||
+   if ((pipelineBindPoint != VK_PIPELINE_BIND_POINT_COMPUTE &&
+        pipelineBindPoint != VK_PIPELINE_BIND_POINT_GRAPHICS) ||
        firstSet != 0 || descriptorSetCount != 1 ||
        dynamicOffsetCount != 0) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
@@ -678,7 +705,10 @@ r3v_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
-   cmd_buffer->bound_compute_set = set;
+   if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS)
+      cmd_buffer->bound_graphics_set = set;
+   else
+      cmd_buffer->bound_compute_set = set;
 }
 
 /* The CPU compute route at submission, mirroring the deferred

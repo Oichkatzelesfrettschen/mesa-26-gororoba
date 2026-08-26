@@ -64,4 +64,14 @@ bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
                                                   const char *entry_name,
                                                   const char **reason);
 
+/* Reads an admitted SPIR-V fragment module as the sampled texture: a
+ * straight-line Fragment entry function loading the set-0 binding-0
+ * combined image sampler, sampling it at the location-0 varying's xy,
+ * and storing the texel to the location-0 output.
+ */
+bool r300_fragment_sampled_texture_from_spirv(const uint32_t *words,
+                                              size_t word_count,
+                                              const char *entry_name,
+                                              const char **reason);
+
 #endif /* R300_VERTEX_SPIRV_H */
