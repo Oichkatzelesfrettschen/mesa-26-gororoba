@@ -1171,6 +1171,29 @@ const float r300_tcl_bypass_triangle_varying_vertices
    32.0f, 56.0f, 0.0f, 1.0f, 0.5f,   0.875f, 0.25f, 1.0f,
 };
 
+void
+r300_tcl_bypass_triangle_varying_shape_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_TRIANGLE_VARYING_VERTEX_DWORDS])
+{
+   const struct triangle_geometry g =
+      triangle_geometry_at(shape->width, shape->height);
+   for (unsigned i = 0; i < 3; i++) {
+      out[i * 8 + 0] = g.v[i * 2 + 0];
+      out[i * 8 + 1] = g.v[i * 2 + 1];
+      out[i * 8 + 2] = 0.0f;
+      out[i * 8 + 3] = 1.0f;
+      /* The TEX0 payload is normalized, so it rides every extent
+       * unchanged; the reference records are this writer's output at
+       * the reference extent.
+       */
+      for (unsigned c = 0; c < 4; c++) {
+         out[i * 8 + 4 + c] =
+            r300_tcl_bypass_triangle_varying_vertices[i * 8 + 4 + c];
+      }
+   }
+}
+
 static const uint32_t r300_triangle_reference_color_bits[4] = {
    0x3e000000u, 0x3ec00000u, 0x3f200000u, 0x3f600000u,
 };

@@ -20,6 +20,12 @@
 struct r3v_sampled_arm {
    const char *name;
    /* Memory lane order of the texels; FORMAT1's selects route it. */
+   /* The TEXTURE's memory lane order, which FORMAT1's per-channel
+    * selects route to shader RGBA.  The render target keeps the
+    * reference shape's own order, which no arm reassigns, so the two
+    * orders are independent and the predicted dword follows the
+    * target's.
+    */
    enum r300_triangle_lane_order lanes;
    /* VK_IMAGE_TYPE_1D, the height-one member of the same layout. */
    bool one_dimensional;

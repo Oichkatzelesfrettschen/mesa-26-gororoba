@@ -2139,6 +2139,38 @@ test_coverage_oracle_predicted_calibration(void)
    free(pixels);
 }
 
+
+/* Calibrates the extent-parameterized varying writer against the
+ * reference array it reproduces, and shows the positions scaling while
+ * the normalized TEX0 payload holds.
+ */
+static void
+test_varying_shape_vertices_scale_positions_alone(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   float records[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   r300_tcl_bypass_triangle_varying_shape_vertices(&shape, records);
+   assert(memcmp(records, r300_tcl_bypass_triangle_varying_vertices,
+                 sizeof(records)) == 0);
+
+   /* Half the extent halves every window coordinate and leaves the
+    * texture coordinate where the fetch reads it.
+    */
+   shape.width = R300_TRIANGLE_TARGET_WIDTH / 2;
+   shape.height = R300_TRIANGLE_TARGET_HEIGHT / 2;
+   shape.pitch_pixels = R300_TRIANGLE_TARGET_PITCH_PIXELS;
+   float halved[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   r300_tcl_bypass_triangle_varying_shape_vertices(&shape, halved);
+   for (unsigned i = 0; i < 3; i++) {
+      assert(halved[i * 8 + 0] == records[i * 8 + 0] / 2.0f);
+      assert(halved[i * 8 + 1] == records[i * 8 + 1] / 2.0f);
+      assert(halved[i * 8 + 2] == 0.0f && halved[i * 8 + 3] == 1.0f);
+      for (unsigned c = 0; c < 4; c++)
+         assert(halved[i * 8 + 4 + c] == records[i * 8 + 4 + c]);
+   }
+}
+
 int
 main(void)
 {
@@ -2170,6 +2202,7 @@ main(void)
    test_coverage_oracle_calibration();
    test_coverage_oracle_predicted_calibration();
    test_pack_unorm8_dword();
+   test_varying_shape_vertices_scale_positions_alone();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;
 }

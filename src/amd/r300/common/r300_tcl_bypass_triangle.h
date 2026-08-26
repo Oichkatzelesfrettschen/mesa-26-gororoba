@@ -685,6 +685,18 @@ extern const float
 #define R300_TRIANGLE_VARYING_VERTEX_DWORDS 24
 extern const float r300_tcl_bypass_triangle_varying_vertices
    [R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+
+/* The varying record payload at the shape's own extent: the reference
+ * TEX0 coordinates, which are normalized and so carry across extents,
+ * behind positions the viewport transform places at this width and
+ * height.  The array above is this writer's output at the reference
+ * extent, so a caller filling a sample half at another extent reaches
+ * the coordinates its texture fetch reads rather than the reference
+ * window's.
+ */
+void r300_tcl_bypass_triangle_varying_shape_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_TRIANGLE_VARYING_VERTEX_DWORDS]);
 extern const float r300_tcl_bypass_triangle_varying_colors[12];
 
 #endif /* R300_TCL_BYPASS_TRIANGLE_H */
