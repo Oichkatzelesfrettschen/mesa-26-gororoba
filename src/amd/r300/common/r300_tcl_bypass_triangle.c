@@ -1045,13 +1045,27 @@ r300_tcl_bypass_triangle_coverage_oracle(
    uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_coverage_verdict *verdict)
 {
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      shape, interior_dwords, interior_dword_count, NULL, NULL,
+      exterior_dword, pixels, size_bytes, verdict);
+}
+
+void
+r300_tcl_bypass_triangle_coverage_oracle_predicted(
+   const struct r300_triangle_render_shape *shape,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   r300_triangle_interior_expectation expectation, void *expectation_data,
+   uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_coverage_verdict *verdict)
+{
    /* The verdict producer admits the emitter's own domain and the full
     * retained footprint, so an inadmissible call reads as a refused
     * verdict rather than indexing past the buffer.
     */
    *verdict = (struct r300_triangle_coverage_verdict){ 0 };
-   if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
-       interior_dword_count == 0 ||
+   if (shape == NULL || pixels == NULL ||
+       (expectation == NULL &&
+        (interior_dwords == NULL || interior_dword_count == 0)) ||
        r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
       return;
    const uint32_t width = shape->width, height = shape->height;
@@ -1071,11 +1085,19 @@ r300_tcl_bypass_triangle_coverage_oracle(
    for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
          const uint32_t observed = rows[y * pitch + x];
-         bool is_interior_value = false;
-         for (uint32_t i = 0; i < interior_dword_count; i++)
-            is_interior_value |= observed == interior_dwords[i];
          const int expected =
             triangle_center_class(&g, (float)x + 0.5f, (float)y + 0.5f);
+         /* The model predicts one dword per interior center, so a
+          * pixel the model does not cover keeps the admitted-set test
+          * and the exterior stays the exterior dword either way.
+          */
+         bool is_interior_value = false;
+         if (expectation != NULL && expected == 1) {
+            is_interior_value = observed == expectation(expectation_data, x, y);
+         } else {
+            for (uint32_t i = 0; i < interior_dword_count; i++)
+               is_interior_value |= observed == interior_dwords[i];
+         }
          if (expected < 0)
             verdict->ambiguous_pixels++;
          else if (expected == 1)
