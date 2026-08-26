@@ -932,7 +932,13 @@ r3v_get_image_format_properties(
       r3v_native_render_query ? R3V_NATIVE_RENDER_MAX_EXTENT
                               : R3V_NATIVE_TRANSFER_DIMENSION_MAX;
    max_mip_levels = 1;
-   max_array_layers = R3V_NATIVE_MAX_ARRAY_LAYERS;
+   /* The render family's layer count answers to the cell's
+    * RB3D_COLOROFFSET0 ceiling, the sampling family's to the reported
+    * device limit, and vkCreateImage admits each at the same number.
+    */
+   max_array_layers = r3v_native_render_query
+                         ? R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS
+                         : R3V_NATIVE_MAX_ARRAY_LAYERS;
    switch (info->type) {
    case VK_IMAGE_TYPE_1D:
       max_extent = (VkExtent3D){ r3v_native_family_extent, 1, 1 };

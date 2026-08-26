@@ -1021,6 +1021,22 @@ r3v_native_image_layer_pitch_bytes(uint32_t row_pitch_bytes, uint32_t height,
  */
 #define R3V_NATIVE_MAX_ARRAY_LAYERS 256u
 
+/* The render cell's RB3D_COLOROFFSET0 payload is bounded by
+ * R300_TRIANGLE_MAX_TARGET_OFFSET (r300_tcl_bypass_triangle_render_shape_
+ * validate), so a layer whose base passes that ceiling has no cell to
+ * emit it.  The bound is the layer count that fits at the family's
+ * largest layer stride -- the maximum extent over its own row pitch plus
+ * the oracle-headroom row -- and it holds at every smaller extent, so
+ * the creation admission and the format query name one number the way
+ * the sampling family's 256 does.  The sampling route's TX_OFFSET_0
+ * carries the full 32-bit span and keeps that larger bound.
+ */
+#define R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS                                 \
+   (R300_TRIANGLE_MAX_TARGET_OFFSET /                                      \
+       (R3V_NATIVE_RENDER_MAX_EXTENT * 4u *                                \
+        (R3V_NATIVE_RENDER_MAX_EXTENT + 1u)) +                             \
+    1u)
+
 static inline uint32_t
 r3v_native_transfer_texel_bytes(VkFormat format)
 {
