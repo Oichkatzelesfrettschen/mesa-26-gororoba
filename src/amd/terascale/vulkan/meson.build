@@ -59,6 +59,8 @@ libterakan_files = files(
   'nir/terakan_nir_lower_subgroup_lds.c',
   'nir/terakan_nir_lower_tg4_view_swizzle.c',
   'nir/terakan_nir_lower_24bit_mul_hint.c',
+  'nir/terakan_nir_wide_phi.c',
+  'nir/terakan_nir_wide_phi.h',
   'terakan_barrier.c',
   'terakan_bo.c',
   'terakan_bo.h',
@@ -330,6 +332,21 @@ if with_tests
     'terakan-carrier-submit-scratch-contract',
     prog_python,
     args : [files('tests/terakan_carrier_submit_scratch_contract_test.py')],
+    suite : ['terakan'],
+  )
+  terakan_wide_phi_selector_test = executable(
+    'terakan_wide_phi_selector_test',
+    [
+      files('tests/terakan_wide_phi_selector_test.c'),
+      files('nir/terakan_nir_wide_phi.c'),
+    ],
+    include_directories : include_directories('.'),
+    dependencies : [idep_nir, idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'terakan-wide-phi-selector',
+    terakan_wide_phi_selector_test,
     suite : ['terakan'],
   )
   terakan_descriptor_set_layout_mask_test = executable(
