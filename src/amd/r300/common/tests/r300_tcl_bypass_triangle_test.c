@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PKT0(reg, count) ((((count) - 1) << 16) | ((reg) >> 2))
@@ -1806,6 +1807,136 @@ test_composed_render_sample_cell(void)
           -EINVAL);
 }
 
+
+/* Calibrates the exact-coverage verdict on a synthesized known-good
+ * footprint and on one mutation per failure mode.  The synthesized
+ * interior is the analytic triangle itself, so the known-good case
+ * proves the classifier agrees with its own geometry and each mutation
+ * proves a distinct counter moves.
+ */
+static void
+test_coverage_oracle_calibration(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   const uint32_t interior = 0xe02060a0u, exterior = 0x40404040u;
+   const uint32_t pitch = shape.pitch_pixels;
+   const uint32_t dwords =
+      pitch * (shape.height + R300_TRIANGLE_CANARY_ROWS);
+   uint32_t *pixels = calloc(dwords, sizeof(*pixels));
+   assert(pixels != NULL);
+
+   struct r300_triangle_coverage_verdict good;
+   for (uint32_t i = 0; i < dwords; i++)
+      pixels[i] = exterior;
+   /* The reference geometry: NDC (-0.75, -0.75), (0.75, -0.75),
+    * (0, 0.75) through the viewport transform at the 64x64 extent,
+    * giving window vertices (8, 8), (56, 8), (32, 56).
+    */
+   const float vx[3] = { 8.0f, 56.0f, 32.0f }, vy[3] = { 8.0f, 8.0f, 56.0f };
+   uint32_t painted = 0;
+   for (uint32_t y = 0; y < shape.height; y++) {
+      for (uint32_t x = 0; x < shape.width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         bool in = true;
+         for (unsigned e = 0; e < 3; e++) {
+            const unsigned n = (e + 1) % 3;
+            in &= (vx[n] - vx[e]) * (py - vy[e]) -
+                     (vy[n] - vy[e]) * (px - vx[e]) >
+                  0.0f;
+         }
+         if (in) {
+            pixels[y * pitch + x] = interior;
+            painted++;
+         }
+      }
+   }
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u, &good);
+   assert(good.coverage_exact && good.canary_pass);
+   assert(good.mismatch_pixels == 0 && good.ambiguous_pixels == 0);
+   assert(good.interior_pixels == good.analytic_pixels);
+   /* Base 48 pixels and height 48 give the half-open triangle's 1152
+    * covered centers, so the count is fixed rather than whatever the
+    * classifier happened to produce.
+    */
+   assert(good.analytic_pixels == 1152 && painted == 1152);
+   assert(good.exterior_pixels == shape.width * shape.height - 1152);
+
+   /* Underdraw: one interior pixel left at the exterior value. */
+   struct r300_triangle_coverage_verdict bad;
+   pixels[32 * pitch + 32] = exterior;
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(!bad.coverage_exact && bad.canary_pass);
+   assert(bad.interior_pixels == good.interior_pixels - 1);
+   assert(bad.mismatch_pixels == 0);
+   pixels[32 * pitch + 32] = interior;
+
+   /* Overdraw: one exterior pixel taking the interior value. */
+   pixels[0] = interior;
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(!bad.coverage_exact);
+   assert(bad.interior_pixels == good.interior_pixels + 1);
+   pixels[0] = exterior;
+
+   /* A third value inside the extent is neither expectation. */
+   pixels[0] = 0x12345678u;
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(!bad.coverage_exact && bad.mismatch_pixels == 1);
+   pixels[0] = exterior;
+
+   /* A write in the canary row past the extent leaves the classified
+    * band exact and fails the canary alone.
+    */
+   pixels[shape.height * pitch] = interior;
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(bad.coverage_exact && !bad.canary_pass);
+   pixels[shape.height * pitch] = exterior;
+
+   /* A footprint short of the canary rows refuses rather than judging a
+    * band it cannot read.
+    */
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u - 4u, &bad);
+   assert(!bad.coverage_exact && bad.analytic_pixels == 0);
+
+   /* An empty admitted-interior set refuses; every drawn pixel would
+    * otherwise read as a mismatch and the verdict would describe the
+    * call rather than the device.
+    */
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 0, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(!bad.coverage_exact && bad.interior_pixels == 0);
+
+   /* Two admitted interior values: a split fragment source paints both
+    * halves and the verdict stays exact, since placement is the
+    * caller's own check.
+    */
+   const uint32_t split[2] = { interior, 0xd0905010u };
+   for (uint32_t y = shape.height / 2; y < shape.height; y++) {
+      for (uint32_t x = 0; x < shape.width; x++) {
+         if (pixels[y * pitch + x] == interior)
+            pixels[y * pitch + x] = split[1];
+      }
+   }
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, split, 2, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(bad.coverage_exact && bad.canary_pass);
+   assert(bad.interior_pixels == good.interior_pixels);
+   /* One admitted value alone reads the other half as underdraw, so the
+    * admitted set is what the verdict rests on.
+    */
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &interior, 1, exterior,
+                                            pixels, dwords * 4u, &bad);
+   assert(!bad.coverage_exact && bad.mismatch_pixels > 0);
+
+   free(pixels);
+}
+
 int
 main(void)
 {
@@ -1833,6 +1964,7 @@ main(void)
    test_extent_emit_deviates_in_scissor_words_alone();
    test_render_shape_deviates_per_parameter();
    test_render_shape_oracle_calibration();
+   test_coverage_oracle_calibration();
    test_pack_unorm8_dword();
    printf("r300_tcl_bypass_triangle_test: all checks passed\n");
    return 0;

@@ -786,32 +786,43 @@ main(int argc, char **argv)
       return 1;
    }
 
-   /* The load-op clear paints (0.25, 0.25, 0.25, 0.25) rather than the
-    * sentinel, so the render-shape oracle's exterior expectation is the
-    * clear dword; a shape whose color_bits carry the texel and whose
-    * clear rides the pass gives the oracle both expectations through
-    * the family's own conversion.
+   /* The coverage verdict classifies every dword of the footprint: the
+    * admitted interior values are the texels the fragment source can
+    * deliver, and the exterior is the pass's own load-op clear, which
+    * paints (0.25, 0.25, 0.25, 0.25) through the family's UNORM8
+    * conversion.  Their placement inside the drawn region is the two
+    * point checks below, so the verdict carries the region's shape and
+    * the point checks carry the addressing.
     */
-   struct r300_triangle_oracle_verdict verdict;
-   r300_tcl_bypass_triangle_render_shape_oracle(&shape, color_map,
-                                                color_bytes, &verdict);
+   const uint32_t admitted_interior[2] = { predicted_dword,
+                                           predicted_lower_dword };
+   const uint32_t clear_dword = r300_tcl_bypass_triangle_pack_unorm8_dword(
+      shape.lanes, (const float[4]){ 0.25f, 0.25f, 0.25f, 0.25f });
+   struct r300_triangle_coverage_verdict verdict;
+   r300_tcl_bypass_triangle_coverage_oracle(
+      &shape, admitted_interior, texture_rows ? 2u : 1u, clear_dword,
+      color_map, color_bytes, &verdict);
    const uint32_t *pixels = color_map;
    const uint32_t cx = shape.width / 2, cy = (shape.height * 3) / 8;
-   printf("[oracle] executed=%d interior=%d interior_samples=%u\n",
-          verdict.executed, verdict.interior_pass, verdict.interior_samples);
+   printf("[oracle] coverage_exact=%d canary=%d interior=%u analytic=%u "
+          "exterior=%u ambiguous=%u mismatch=%u\n",
+          verdict.coverage_exact, verdict.canary_pass, verdict.interior_pixels,
+          verdict.analytic_pixels, verdict.exterior_pixels,
+          verdict.ambiguous_pixels, verdict.mismatch_pixels);
    printf("[oracle] centroid (%u,%u)=0x%08x predicted 0x%08x corner "
           "(0,0)=0x%08x\n",
           cx, cy, pixels[cy * shape.pitch_pixels + cx], predicted_dword,
           pixels[0]);
    fflush(stdout);
-   bool centroid_pass =
-      pixels[cy * shape.pitch_pixels + cx] == predicted_dword;
+   bool oracle_pass = verdict.coverage_exact && verdict.canary_pass &&
+                        pixels[cy * shape.pitch_pixels + cx] ==
+                           predicted_dword;
    if (texture_rows) {
       const uint32_t lower_read = pixels[44 * shape.pitch_pixels + 32];
       printf("[oracle] lower (32,44)=0x%08x predicted 0x%08x\n", lower_read,
              predicted_lower_dword);
       fflush(stdout);
-      centroid_pass = centroid_pass && lower_read == predicted_lower_dword;
+      oracle_pass = oracle_pass && lower_read == predicted_lower_dword;
    }
 
    stage("teardown");
@@ -837,8 +848,8 @@ main(int argc, char **argv)
    vkDestroyInstance(instance, NULL);
 
    printf("[verdict] %s\n",
-          centroid_pass ? "sampled cell rendered the texel as predicted"
+          oracle_pass ? "sampled cell covered the analytic triangle with the predicted texel"
                         : "prediction deviated; the deviation is the "
                           "finding");
-   return centroid_pass ? 0 : 1;
+   return oracle_pass ? 0 : 1;
 }

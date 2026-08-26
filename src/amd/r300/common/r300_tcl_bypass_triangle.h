@@ -582,6 +582,45 @@ void r300_tcl_bypass_triangle_render_shape_oracle(
    const struct r300_triangle_render_shape *shape, const uint32_t *pixels,
    uint32_t size_bytes, struct r300_triangle_oracle_verdict *verdict);
 
+/* The exact-coverage verdict: every dword of the rendered footprint is
+ * classified against the analytic triangle, so an overdraw, an
+ * underdraw, and a fill-rule deviation each appear as a nonzero
+ * mismatch count rather than escaping between sample points.  A pixel
+ * center is interior when the three edge functions share a sign;
+ * centers that land exactly on an edge are ambiguous, counted, and
+ * refuse the verdict, so an extent whose geometry sits on the tie-break
+ * takes the sampled oracle above instead.
+ */
+struct r300_triangle_coverage_verdict {
+   /* Every dword classified and the interior set equal to the analytic
+    * one: mismatch and ambiguous both zero, interior equal to analytic.
+    */
+   bool coverage_exact;
+   /* The canary rows past the render extent, and any dwords below the
+    * target offset, hold the exterior dword.
+    */
+   bool canary_pass;
+   uint32_t interior_pixels;
+   uint32_t exterior_pixels;
+   uint32_t analytic_pixels;
+   /* Pixel centers on an edge, excluded from the analytic set. */
+   uint32_t ambiguous_pixels;
+   /* Dwords inside the extent equal to neither expectation. */
+   uint32_t mismatch_pixels;
+};
+
+/* Judges pixels over the shape's footprint.  interior_dwords carries the
+ * admitted interior values -- one for a constant-color draw, several
+ * when the fragment source varies over the triangle -- so the verdict
+ * proves the drawn region's shape and its exterior, and a caller that
+ * admits several values keeps their placement to its own check.
+ */
+void r300_tcl_bypass_triangle_coverage_oracle(
+   const struct r300_triangle_render_shape *shape,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_coverage_verdict *verdict);
+
 /* The pretransformed screen-space triangle for a 64x64 color target: three
  * FLOAT_4 positions, sixteen bytes each, the payload of the cell's vertex
  * BO.
