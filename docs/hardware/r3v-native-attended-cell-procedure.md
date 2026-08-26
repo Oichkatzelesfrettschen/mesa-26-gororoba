@@ -350,18 +350,83 @@ export R3V_NATIVE_WATCHDOG_BRACKET_COMMAND="/usr/bin/sudo -n \
   <build-dir>/src/amd/r300/vulkan/r3v_native_watchdog_bracket"
 ```
 
-The runner opens the bracket in its preparation phase and proves one arm
-and one disarm there, because `r3v_native_arming_disarm` writes
+The runner opens the bracket in its preparation phase and walks the
+counter's state ladder there, because `r3v_native_arming_disarm` writes
 `attempt.token` ahead of the trace: an arm that first fails inside
 `vkQueueSubmit` refuses the submission with the attempt already spent.
-The calibration reports its round trip, which measures what the
-co-process adds to the guarded interval.
 
-The third clause of the gate takes `R3V_NATIVE_WATCHDOG_WAIVER_ACCEPTED=1`.
-That value is the operator's explicit waiver of automatic recovery for
-one submission, and it commits the operator to a manual power cycle; the
-runner announces it and proceeds. Without either the bracket or the
-waiver the runner refuses before it creates the instance.
+The driver's `.start` sets START and TRIGGER while its `.ping` sets
+TRIGGER alone, so the measured-ineffective ping refutes `.start`'s reload
+along with it. Every arm therefore rewrites `WatchDogCount` explicitly
+through `WDIOC_SETTIMEOUT` while the PM bit holds the counter halted, and
+reads the register back before clearing the bit. The helper sets PM 0x69
+bit 0 before it ever opens the device, so the open that starts the
+countdown finds the counter inhibited:
+
+```text
+set PM 0x69 bit 0          halt first
+open /dev/watchdog0        the hardware stays inhibited
+WDIOC_SETTIMEOUT 65535     rewrite WatchDogCount
+read halted count
+```
+
+Each state is judged by two reads across a bounded interval, because one
+`WDIOC_GETTIMELEFT` read separates a running counter from a halted one
+not at all. The observation interval is 5 ms, which is 164 ticks at
+32.768 kHz. The ladder states its relations before it reads them, and the
+depleting active phase is what makes the rewrite observable: a counter
+halted at its loaded value could not show a reload at all.
+
+```text
+loaded    L0 >= 0x8000   heartbeat=65535 reached WatchDogCount
+active    A0 > A1        clearing the PM bit starts the count
+halted    H0 == H1       setting the PM bit stops it
+reloaded  R0 > H0        WDIOC_SETTIMEOUT rewrites the register
+rearmed   B0 > B1        the rewritten count runs
+```
+
+Each later arm repeats the operative subset -- assert halted, reload,
+verify the count near full, clear the halt, verify the countdown -- and
+acknowledges `armed verified` with its readings. An `armed unverified`
+acknowledgement refuses the submission before the ioctl.
+
+Exit is fail-closed while armed. A normal exit runs from the disarmed
+state, keeps the PM halt, performs the watchdog core's magic close, and
+confirms PM 0x69 bit 0 still reads set; the count cannot answer that,
+because reopening the device would arm it. Every abnormal exit -- a
+signal, a closed command stream, a parent that wedged the machine --
+leaves an armed counter running, so the reset the gate promises still
+lands.
+
+A helper that answers without touching hardware measures the pipe round
+trip and nothing else. That figure is
+`watchdog.stub_trace_interval_ns`, roughly 110 ns here, and it is not
+the guarded interval: the guarded interval begins after the co-process
+confirms the counter is running and ends after it confirms the counter
+is halted, so it carries the reload, both two-read observations, and
+both acknowledgements.
+
+The third clause of the gate takes `--waiver <path>`, naming a document
+the operator writes for one run. An exported variable outlives the
+decision it recorded and authorizes whatever runs next, so the waiver
+binds to the run instead:
+
+```text
+boot_id=<contents of /proc/sys/kernel/random/boot_id>
+attempt_id=<basename of the evidence directory>
+ib_blake3=<the cell digest the runner reports>
+runner_blake3=<BLAKE3 of the submitting image>
+timestamp=<YYYY-MM-DDTHH:MM:SSZ>
+operator_reason=<why automatic recovery is waived>
+```
+
+Every field is matched against the live run, and the timestamp admits an
+age of 0 to 3600 seconds, so a waiver written for another boot, another
+attempt, another cell, another runner image, or another hour admits
+nothing. The runner prints the exact bindings when it refuses, so the
+operator writes what the run is rather than transcribing it. Without
+either the bracket or an admitted waiver the runner refuses before it
+creates the instance.
 
 Record these fields:
 
@@ -376,8 +441,10 @@ watchdog.keepalive_reload_effective = false
 watchdog.reset_path_verified
 watchdog.guarded_interval
 watchdog.armed_before_submit
+watchdog.arm_acknowledgement
 watchdog.completion_observed
 watchdog.disarm_result
+watchdog.guarded_interval_us
 ```
 
 `watchdog.reset_path_verified` reports what the run can show. Firing the
