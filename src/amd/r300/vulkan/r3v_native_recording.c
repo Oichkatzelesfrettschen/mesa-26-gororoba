@@ -961,6 +961,21 @@ r3v_CmdExecuteCommands(
             return;
          *op = secondary->deferred_copies[c];
          op->group = r3v_native_copy_group_at_record(cmd_buffer);
+         /* Each recording frees its own update_data, so the appended
+          * op takes a copy rather than aliasing the secondary's. */
+         if (op->update_data != NULL) {
+            uint8_t *data = vk_alloc(&cmd_buffer->vk.pool->alloc,
+                                     op->size, 8,
+                                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+            if (data == NULL) {
+               vk_command_buffer_set_error(&cmd_buffer->vk,
+                                           VK_ERROR_OUT_OF_HOST_MEMORY);
+               r3v_native_cmd_poison(commandBuffer);
+               return;
+            }
+            memcpy(data, op->update_data, op->size);
+            op->update_data = data;
+         }
          cmd_buffer->deferred_copy_count++;
       }
       for (uint32_t e = 0; e < secondary->event_op_count; e++) {

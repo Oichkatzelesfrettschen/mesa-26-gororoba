@@ -818,6 +818,38 @@ check_empty_secondary_execution(const struct fixture *f)
       CHECK(filled, "the replayed fill wrote every dword");
    }
    vkUnmapMemory(f->device, fill_memory);
+
+   /* An update recorded into the secondary replays with its own copy
+    * of the data, so freeing the secondary before the primary leaves
+    * one owner per recording. */
+   const uint32_t update_words[4] = { 1, 2, 3, 4 };
+   VkCommandBuffer update_secondary;
+   REQUIRE(vkAllocateCommandBuffers(f->device, &secondary_info,
+                                    &update_secondary) == VK_SUCCESS,
+           "update secondary allocation");
+   REQUIRE(vkBeginCommandBuffer(update_secondary, &secondary_begin) ==
+              VK_SUCCESS,
+           "update secondary begin");
+   vkCmdUpdateBuffer(update_secondary, fill_buffer, 0,
+                     sizeof(update_words), update_words);
+   REQUIRE(vkEndCommandBuffer(update_secondary) == VK_SUCCESS,
+           "update secondary end");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "primary begin for the update replay");
+   vkCmdExecuteCommands(f->cmd, 1, &update_secondary);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "executing the update-bearing secondary records");
+   vkFreeCommandBuffers(f->device, f->cmd_pool, 1, &update_secondary);
+   CHECK(vkQueueSubmit(f->queue, 1, &submit_info, VK_NULL_HANDLE) ==
+            VK_SUCCESS &&
+         vkQueueWaitIdle(f->queue) == VK_SUCCESS,
+         "the primary submits after the secondary is freed");
+   REQUIRE(vkMapMemory(f->device, fill_memory, 0, 64, 0, &fill_map) ==
+              VK_SUCCESS,
+           "replay update mapping");
+   CHECK(memcmp(fill_map, update_words, sizeof(update_words)) == 0,
+         "the replayed update wrote its bytes");
+   vkUnmapMemory(f->device, fill_memory);
    vkDestroyBuffer(f->device, fill_buffer, NULL);
    vkFreeMemory(f->device, fill_memory, NULL);
 
