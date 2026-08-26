@@ -103,7 +103,17 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
       row_pitch_bytes =
          r3v_native_render_row_pitch_bytes(pCreateInfo->extent.width);
    } else if (pCreateInfo->usage != 0 &&
-              (pCreateInfo->usage & ~transfer_usage) == 0) {
+              (pCreateInfo->usage &
+               ~(transfer_usage | VK_IMAGE_USAGE_SAMPLED_BIT)) == 0) {
+      /* The sampled bit joins the linear transfer family for the one
+       * format whose memory bytes the TX unit's W8Z8Y8X8 word reads in
+       * shader order (X = byte 0 = R), so the sampling cell converts
+       * nothing; a sampled image keeps the family's extent ceiling,
+       * which is the TX width/height mask ceiling.
+       */
+      if ((pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
+          pCreateInfo->format != VK_FORMAT_R8G8B8A8_UNORM)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       if (pCreateInfo->extent.width > R3V_NATIVE_TRANSFER_DIMENSION_MAX ||
           pCreateInfo->extent.height > R3V_NATIVE_TRANSFER_DIMENSION_MAX)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
@@ -341,11 +351,13 @@ r3v_CreateImageView(VkDevice _device,
 
    *pView = VK_NULL_HANDLE;
 
-   /* A view serves the attachment path, and the transfer family
-    * carries no attachment usage, so no view admits it.
+   /* A view serves the attachment and sampling paths; a transfer-only
+    * image carries neither usage, so no view admits it.
     */
    const VkImageSubresourceRange *range = &pCreateInfo->subresourceRange;
-   if (image == NULL || image->transfer_family ||
+   if (image == NULL ||
+       (image->transfer_family &&
+        (image->usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0) ||
        pCreateInfo->flags != 0 ||
        pCreateInfo->viewType != VK_IMAGE_VIEW_TYPE_2D ||
        pCreateInfo->format != image->format ||

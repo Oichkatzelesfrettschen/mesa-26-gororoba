@@ -722,8 +722,23 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
     * CPU vertex executor gathers.
     */
    switch (vk_format) {
-   case VK_FORMAT_B8G8R8A8_UNORM:
    case VK_FORMAT_R8G8B8A8_UNORM:
+      /* R8G8B8A8's memory bytes are the TX unit's W8Z8Y8X8 shader
+       * order (X = byte 0 = R), so the sampling cell reads this format
+       * with no conversion and it alone carries the sampled-image
+       * grant beside the shared attachment, transfer, and texel-buffer
+       * grants of the B8G8R8A8 block below.
+       */
+      properties->linearTilingFeatures =
+         VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+         VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      properties->optimalTilingFeatures = properties->linearTilingFeatures;
+      properties->bufferFeatures =
+         VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
+      break;
+   case VK_FORMAT_B8G8R8A8_UNORM:
       /* The render family's color-attachment grant plus the transfer
        * family's copy grant: the recorded vkCmdCopy* subset executes
        * the transfer features through host mappings at submission. Each
