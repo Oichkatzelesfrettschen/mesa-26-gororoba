@@ -395,8 +395,9 @@ main(void)
    printf("Test(vl-h264-idct: random sweep) = %s (%d/%d)\n",
           sweep_ok == sweep ? "pass" : "fail", sweep_ok, sweep);
 
-   /* Destroy the cso context first: it unbinds the shaders and sampler from the
-    * pipe, which softpipe asserts before any delete_*_state. */
+   /* Explicitly unbind the shaders and sampler before destroying the CSO
+    * context; softpipe asserts that each state object is unbound before its
+    * delete_*_state call. */
    cso_unbind_context(cso);
    cso_destroy_context(cso);
    ctx->delete_sampler_state(ctx, p.sampler);
