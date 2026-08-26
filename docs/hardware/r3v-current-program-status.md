@@ -95,17 +95,27 @@ first real submission waits on a planning pass that lands transcripts,
 
 | Field | Value |
 |---|---|
-| Bundle | `steinmarder-r300/src/re/r300/results/r3v-submission-slices-7-10-closed-gate-target-run-rs482` |
-| Finding | `src/re/r300/findings/active/2026-08-24-r3v-submission-slices-7-10-shut-gate-target-run.md` |
-| Verdict | `classified_nonpass`, `decision_grade` true, `evidence_class` silicon |
-| Source | Mesa `00e3c5dd25deb8545a531a6725b0d76c50156e1c`, clean tree |
-| DSO | sha256 `c0348c6341de4f...6314` |
-| Partition manifest | sha256 `5886a3de1a95f0a562e47411a30b01a41e9fc3ee91583cd72e20ed9c3c5d410e` |
-| Shards | 23, one dEQP process per shard, ~45 s per 20k-case shard |
-| CS ioctls | 0 `DRM_IOCTL_RADEON_CS` of 24,206 witnessed; dmesg delta 0 |
-| Queue claim | `experimental_compute_subset`, gate declared, `compute_claim_eligible` false |
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482` |
+| Finding | `src/re/r300/findings/active/2026-08-26-r3v-smoke-triangle-plan-replay-silicon-pass.md` |
+| Case | `dEQP-VK.api.smoke.triangle`, plan replay of one 231-dword triangle IB |
+| Verdict | `Pass`, `decision_grade` true, `evidence_class` silicon, receipt seal `c68d24e2957a...` |
+| Source | Mesa `133f7703713910fed6b3f3c545dd1bf08a60395c`, clean tree; DSO sha256 `fc37a699222e13...6aa3`, BLAKE3 `9a155d81b9b9...ff94` |
+| Submission | digest `389cc2a228a1...51fb1`, retained IB and one `chain.log` entry, session `complete/admitted` |
+| Runtime | kernel `7.1.8-1-cachyos`, radeon srcversion `727CE89E79FB2D14663C381`, `radeon-rs482-policy 0.8.11-1`, boot `d217f017-...`, dmesg delta 0 |
+| Gate | `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED` unset; the bound plan is the authorization |
 
-The preceding receipts are `r3v-command-slice-first-target-run-rs482`
+The prediction was Fail on image comparison (reasoned from the noop-shim
+host-planning receipt); the observed dEQP status is Pass. The deviation is
+the finding: the `driver_defect_open` classification is a host-model
+artifact of the shim, and the RS482 render refutes it. The six-mutation
+plan ladder (order, runtime, digest, relocation, source, nonce) each
+refuses before any `DRM_IOCTL_RADEON_CS`, and the two render-shape
+receipts (offset arm, module-constant arm) close in the same bundle.
+
+The preceding submission-slice receipt is
+`r3v-submission-slices-7-10-closed-gate-target-run-rs482` (Mesa
+`00e3c5dd25de`, seal per shard, 0 `DRM_IOCTL_RADEON_CS` of 24,206). The
+earlier receipts are `r3v-command-slice-first-target-run-rs482`
 (seal `faeb93f267cc`, same source and DSO) and
 `r3v-hazard-free-conformance-slices-first-target-run-rs482` (seal
 `638e57a44286`, Mesa `d78bf73c847`, DSO `60e1c7d28216...a263a`).
@@ -149,8 +159,10 @@ OPTIMAL tiling on the render family (an admission truth under the
 opaque-layout contract, the one element that adds no executed word).
 Every submitting graphics case of the command slice refuses at
 `vk.createImage` or `vk.endCommandBuffer`, so the first dEQP transcript
-waits on those elements; the one-case compose, replay, mutation, and
-silicon steps are open.
+waited on those elements; the one-case compose, independent plan check,
+drm-shim mutation ladder, and one-attempt silicon replay are done, and
+the case passes on RS482 (bundle
+`r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`).
 
 ## Kernel deployment reconciliation
 
@@ -207,10 +219,13 @@ bit, the ledger claim, and the gate state disagree.
 
 P0 (blocks the next target run):
 
-- the first dEQP transcript: `dEQP-VK.api.smoke.triangle` is the
-  selected one-case bridge from dEQP semantics to the exact-plan hardware
-  gate, and it reaches a nonempty IB only after the five render-family
-  elements above land.  Those elements decompose into three evidence
+- the first dEQP transcript is delivered: `dEQP-VK.api.smoke.triangle`,
+  the one-case bridge from dEQP semantics to the exact-plan hardware gate,
+  passes at decision grade on RS482 through the plan replay (see the
+  latest target receipt above); this row is closed and the next target
+  run is the expansion ladder rung 1.  It reached a nonempty IB after the
+  five render-family elements landed.  Those elements decompose into three
+  evidence
   classes rather than five silicon receipts: the lane order, the extent
   with its pitch, and the fragment constant are each one register class
   of the qualified triangle cell (`r300_triangle_render_shape`,
@@ -249,26 +264,28 @@ P0 (blocks the next target run):
   family at any page-aligned offset whose footprint fits, and the
   load-op clear and the in-pass attachment clears realize any
   `VkClearColorValue` through the target's lane order and the UNORM8
-  conversion.  Two receipts stay open: the reference shape under the
-  module's constant, and the offset arm of the attended render-shape
-  procedure.  The smoke.triangle host-planning rerun reached the first
-  transcript (`smoke-triangle.run7`, receipt seal `1be4dc1b5db1`, plan
-  seal `777c6a36a5df...`): one submission of 231 IB dwords with three
-  relocations (vertex read, color write, completion write), after the
-  cell family gained a color-target byte offset, the pipeline stopped
-  reading `pTessellationState` on a vertex-plus-fragment pipeline (the
-  rule reads it only with both tessellation stages present), load-op
-  and attachment clears admit any color, and copies execute in record
-  order around the deferred draw (pre-draw copies, then the clear, the
-  IB, and the bounded completion wait, then post-draw copies with the
-  render target invalidated after completion).  The dEQP verdict under
-  the noop drm-shim stays Fail on image comparison, since the shim
-  rasterizes nothing.  Open silicon receipts: the offset arm and the
-  reference shape under the module's constant.  The transcript
-  then needs compose, an independent plan check, drm-shim replay, the
-  six mutations (order, digest, relocation, source identity, runtime
-  ceiling, nonce) each refusing before the transport, and the
-  one-attempt silicon run on 0.8.11-1;
+  conversion.  Both render-shape receipts are closed on RS482 (bundle
+  steinmarder-r300
+  `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`): the
+  offset arm renders the reference shape based at byte 4096 with the first
+  4096 bytes left at the sentinel (oracle centroid `0xdf20609f`), and the
+  module-constant arm renders the reference 64x64 shape with the admitted
+  pipeline module's own `vec4(0, 1, 0, 1)` (oracle centroid `0xff00ff00`),
+  each armed under its own digest, `vkQueueSubmit` 0, dmesg delta 0,
+  `ib.bin` byte-identical to the emitter.  The smoke.triangle transcript
+  (231 IB dwords, three relocations: vertex read, color write, completion
+  write) then composed to a sealed plan and replayed on RS482 to a
+  decision-grade `Pass`: the plan binds this box's source, DSO, kernel,
+  and module identity at the first submission, the queue opens the CS
+  ioctl without `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED`, dEQP writes reference
+  and result images and its image comparison passes, the session reaches
+  `complete/admitted` with one retained IB, and the dmesg delta is zero.
+  The prediction was Fail (reasoned from the noop-shim host-planning
+  receipt, where nothing rasterizes); the Pass is the deviation and the
+  finding.  The six plan mutations (order, runtime, digest, relocation,
+  source, nonce) each refuse before any `DRM_IOCTL_RADEON_CS`: order and
+  runtime at `r3v_native_plan_tool check`, digest and relocation at the
+  driver admit, source and nonce at the driver bind;
 - the fragment-constant identity: the executed cell's fragment block
   writes the byte-order oracle constant (0.125, 0.375, 0.625, 0.875),
   interior dword `0xdf20609f`; pipeline admission
@@ -278,8 +295,10 @@ P0 (blocks the next target run):
   constant into the four `R300_PFS_PARAM_0` payloads at every target,
   and `R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3` pins the stream that
   produces; the retained CPU-route digest keeps naming the oracle-color
-  reference cell.  The row closes on a silicon receipt for the reference
-  shape under a non-oracle constant;
+  reference cell.  The row closes: the module-constant arm renders the
+  reference shape under the admitted module's `vec4(0, 1, 0, 1)` on RS482,
+  oracle centroid `0xff00ff00`, in bundle
+  `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`;
 - draw slice: a planning pass for `draw`, `synchronization`, and
   `transfer.0000-0001` that lands transcripts (rerun pending); a
   transcript-bearing shard needs compose, per-case plans, and the human
