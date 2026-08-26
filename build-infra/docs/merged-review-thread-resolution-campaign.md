@@ -136,7 +136,7 @@ mutation and becomes complete only after the all-ID postflight.  The run began
 at `2026-08-26T20:35:01Z`; the final live verification completed at
 `2026-08-26T20:35:53Z`.  The active frontier and ledger now contain 50 closed,
 re-verified rows.  The batch registry remains
-`resolved-pending-ledger-merge` until those artifacts merge to `main`.
+the canonical owner of terminal campaign state and closure merge identity.
 
 `../scripts/review_thread_resolution.py` owns preflight, resumable exact-ID
 mutation, postflight, journal replay, and deterministic ledger generation.
