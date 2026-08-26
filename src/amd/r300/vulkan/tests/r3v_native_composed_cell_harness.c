@@ -90,12 +90,19 @@ main(int argc, char **argv)
 
    struct utsname host;
    CHECK(uname(&host) == 0, "uname");
+   /* A caller's own manifest directory stands; the harness creates one
+    * only when the environment names none, so an evidence directory
+    * chosen outside survives.
+    */
    char manifest_template[] = "/tmp/r3v-composed-XXXXXX";
-   const char *manifest_dir = mkdtemp(manifest_template);
-   CHECK(manifest_dir != NULL, "mkdtemp");
-   if (manifest_dir == NULL)
-      return 1;
-   setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
+   const char *manifest_dir = getenv("R3V_NATIVE_MANIFEST_DIR");
+   if (manifest_dir == NULL || manifest_dir[0] == '\0') {
+      manifest_dir = mkdtemp(manifest_template);
+      CHECK(manifest_dir != NULL, "mkdtemp");
+      if (manifest_dir == NULL)
+         return 1;
+      setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
+   }
    setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
    setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", armed_digest, 1);
    setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
