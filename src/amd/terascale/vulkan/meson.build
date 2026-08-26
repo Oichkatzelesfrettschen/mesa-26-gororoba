@@ -320,6 +320,17 @@ if with_tests
     terakan_descriptor_set_layout_mask_test,
     suite : ['terakan'],
   )
+  terakan_draw_indirect_offset_test = executable(
+    'terakan_draw_indirect_offset_test',
+    files('tests/terakan_draw_indirect_offset_test.c'),
+    include_directories : include_directories('.'),
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'terakan-draw-indirect-offset',
+    terakan_draw_indirect_offset_test,
+    suite : ['terakan'],
+  )
   test(
     'terakan-multiview-state-contract',
     prog_python,
