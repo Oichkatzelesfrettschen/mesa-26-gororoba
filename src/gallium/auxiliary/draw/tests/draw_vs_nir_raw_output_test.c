@@ -387,6 +387,67 @@ test_factory_input_span(struct draw_context *draw)
    interp->delete(draw, interp);
 }
 
+static nir_shader *
+build_driver_ordered_outputs(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opts,
+                                     "driver ordered outputs");
+   nir_variable *position = add_output(&b, 0, VARYING_SLOT_POS);
+   nir_variable *point_size = add_output(&b, 1, VARYING_SLOT_PSIZ);
+   nir_variable *color = add_output(&b, 2, VARYING_SLOT_COL0);
+   nir_store_var(&b, position,
+                 nir_imm_vec4(&b, 1.0f, 2.0f, 3.0f, 1.0f), 0xf);
+   nir_store_var(&b, point_size,
+                 nir_imm_vec4(&b, 7.0f, 0.0f, 0.0f, 0.0f), 0xf);
+   nir_store_var(&b, color,
+                 nir_imm_vec4(&b, -1.0f, 2.0f, 3.0f, 4.0f), 0xf);
+   nir_lower_io_passes(b.shader, false);
+   position->data.driver_location = 0;
+   point_size->data.driver_location = 1;
+   color->data.driver_location = 2;
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+static void
+test_factory_output_semantics(struct draw_context *draw)
+{
+   printf("case: factory_output_semantics\n");
+   const nir_shader_compiler_options *opts =
+      draw->pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR };
+   state.ir.nir = build_driver_ordered_outputs(opts);
+   struct draw_vertex_shader *interp = draw_create_vs_nir(draw, &state);
+   if (!interp) {
+      CHECK(false,
+            "factory_output_semantics: factory accepts constant outputs");
+      return;
+   }
+
+   CHECK(interp->info.num_outputs == 3,
+         "factory_output_semantics: three output rows are published");
+   CHECK(interp->info.output_semantic_name[0] == TGSI_SEMANTIC_POSITION,
+         "factory_output_semantics: row 0 remains position");
+   CHECK(interp->info.output_semantic_name[1] == TGSI_SEMANTIC_PSIZE,
+         "factory_output_semantics: row 1 remains point size");
+   CHECK(interp->info.output_semantic_name[2] == TGSI_SEMANTIC_COLOR,
+         "factory_output_semantics: row 2 remains color");
+   interp->prepare(interp, draw);
+   float output[3][4] = {{0}};
+   const float expected[3][4] = {
+      {1.0f, 2.0f, 3.0f, 1.0f},
+      {7.0f, 0.0f, 0.0f, 0.0f},
+      {-1.0f, 2.0f, 3.0f, 4.0f},
+   };
+   struct draw_buffer_info constants[PIPE_MAX_CONSTANT_BUFFERS] = {0};
+   interp->run_linear(draw, interp, NULL, output, constants, 1, 0,
+                      sizeof(output), NULL);
+   CHECK(memcmp(output, expected, sizeof(expected)) == 0,
+         "factory_output_semantics: stores retain driver row order");
+   interp->delete(draw, interp);
+}
+
 /* out = vec4(iadd, ishl, ushr, imin(a,b)) where a, b come from f2i32 on the
  * loaded inputs, results converted back with i2f32: the f2i32/i2f32 round trip
  * plus ishl/ushr shift-amount handling is the r300 SW-TCL integer path
@@ -599,7 +660,7 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
    nir_shader *bridge_nir = tc->build(opts);
    const void *bridge_tokens = nir_to_tgsi(bridge_nir, draw->pipe->screen);
    if (!bridge_tokens) {
-      CHECK(false, "TGSI reference compilation returned tokens");
+      CHECK(false, "TGSI reference compilation succeeds");
       ralloc_free(bridge_nir);
       return;
    }
@@ -856,6 +917,7 @@ main(void)
     * pre-lower so the bridge path can run. */
    test_factory_continue_lowering(draw);
    test_factory_input_span(draw);
+   test_factory_output_semantics(draw);
 
    /* Admission predicate: shapes the interpreter cannot execute must be
     * rejected before draw_create_vs_exec ever dispatches to

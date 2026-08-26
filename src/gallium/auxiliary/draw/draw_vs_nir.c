@@ -479,6 +479,87 @@ draw_vs_nir_io_slots(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
+static nir_variable *
+draw_vs_nir_find_io_variable(nir_shader *nir, nir_variable_mode mode,
+                             unsigned location, unsigned *location_offset)
+{
+   nir_foreach_variable_with_modes(variable, nir, mode) {
+      const struct glsl_type *type = variable->type;
+      if (nir_is_arrayed_io(variable, nir->info.stage)) {
+         assert(glsl_type_is_array(type));
+         type = glsl_get_array_element(type);
+      }
+
+      const unsigned slots = nir_variable_count_slots(variable, type);
+      if (location >= variable->data.location &&
+          location - variable->data.location < slots) {
+         *location_offset = location - variable->data.location;
+         return variable;
+      }
+   }
+
+   return NULL;
+}
+
+/* The Draw AOS layout follows driver_location.  A state tracker can lower I/O
+ * before a driver assigns that layout, leaving intrinsic bases in semantic
+ * order while the retained variables carry the final row order. */
+static void
+draw_vs_nir_rebind_io_bases(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         nir_variable_mode mode;
+         switch (intr->intrinsic) {
+         case nir_intrinsic_load_input:
+            mode = nir_var_shader_in;
+            break;
+         case nir_intrinsic_store_output:
+            mode = nir_var_shader_out;
+            break;
+         default:
+            continue;
+         }
+
+         const nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+         unsigned location_offset;
+         nir_variable *variable = draw_vs_nir_find_io_variable(
+            nir, mode, semantics.location, &location_offset);
+         if (variable) {
+            nir_intrinsic_set_base(
+               intr, variable->data.driver_location + location_offset);
+         }
+      }
+   }
+}
+
+static bool
+draw_vs_nir_has_output_variables(nir_shader *nir)
+{
+   nir_foreach_shader_out_variable(variable, nir)
+      return true;
+   return false;
+}
+
+static void
+draw_vs_nir_scan_shader_info(nir_shader *nir, struct tgsi_shader_info *info)
+{
+   const bool io_lowered = nir->info.io_lowered;
+
+   /* io_lowered reconstruction compacts semantics by gl_varying_slot.  When
+    * output variables remain, their driver_location is the AOS row authority
+    * and must govern the metadata consumed by Draw's post-VS stages. */
+   if (io_lowered && draw_vs_nir_has_output_variables(nir))
+      nir->info.io_lowered = false;
+   nir_tgsi_scan_shader(nir, info, true);
+   nir->info.io_lowered = io_lowered;
+}
+
 /* The interpreter indexes AOS rows with each lowered intrinsic's base plus
  * constant offset.  NIR semantic masks describe API locations and num_inputs
  * is producer metadata, so neither value alone defines this executable span. */
@@ -545,6 +626,7 @@ draw_vs_nir_lower(nir_shader *nir)
       NIR_PASS(_, nir, nir_lower_uniforms_to_ubo, false, false);
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             draw_vs_nir_io_slots, 0);
+   draw_vs_nir_rebind_io_bases(nir);
    NIR_PASS(_, nir, nir_opt_dce);
 
    /* nir_lower_io changes the executable I/O shape.  Refresh inputs_read and
@@ -759,7 +841,7 @@ draw_create_vs_nir(struct draw_context *draw,
       FREE(vs);
       return NULL;
    }
-   nir_tgsi_scan_shader(nir, &vs->base.info, true);
+   draw_vs_nir_scan_shader_info(nir, &vs->base.info);
    vs->base.info.num_inputs = input_span;
    vs->base.info.num_outputs = output_span;
 
