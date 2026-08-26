@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from types import ModuleType
 from typing import NoReturn
 
 UID_MAP_FIELD_COUNT = 3
+MOUNT_NAMESPACE_PATTERN = re.compile(r"^mnt:\[[1-9][0-9]*\]$")
 
 
 @dataclass(frozen=True)
@@ -124,24 +126,42 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(f"mount-boundary-calibration: {message}")
 
 
+def validate_namespace_isolation(
+    uid_fields: list[str],
+    process_mount_namespace: str,
+    caller_mount_namespace: str,
+) -> None:
+    """Require a caller-mapped root user and a distinct mount namespace."""
+    if (
+        len(uid_fields) < UID_MAP_FIELD_COUNT
+        or uid_fields[0] != "0"
+        or uid_fields[1] == "0"
+    ):
+        fail("calibration is outside a private user namespace")
+    if not MOUNT_NAMESPACE_PATTERN.fullmatch(caller_mount_namespace):
+        fail("caller mount namespace identity is invalid")
+    if not MOUNT_NAMESPACE_PATTERN.fullmatch(process_mount_namespace):
+        fail("calibration mount namespace identity is invalid")
+    if process_mount_namespace == caller_mount_namespace:
+        fail("calibration is outside a private mount namespace")
+
+
 def require_private_user_mount_namespace() -> None:
     if os.environ.get("GOROROBA_MOUNT_BOUNDARY_CALIBRATION") != "1":
         fail("exact calibration consent is missing")
     if os.getuid() != 0:
         fail("calibration user namespace does not map the caller to uid 0")
+    caller_mount_namespace = os.environ.get("GOROROBA_CALLER_MOUNT_NAMESPACE", "")
     try:
         uid_fields = Path("/proc/self/uid_map").read_text(encoding="utf-8").split()
         process_mount_namespace = os.readlink("/proc/self/ns/mnt")
-        init_mount_namespace = os.readlink("/proc/1/ns/mnt")
     except OSError as error:
         fail(f"cannot verify namespace isolation: {error}")
-    if (
-        len(uid_fields) < UID_MAP_FIELD_COUNT
-        or uid_fields[0] != "0"
-        or uid_fields[1] == "0"
-        or process_mount_namespace == init_mount_namespace
-    ):
-        fail("calibration is outside a private user and mount namespace")
+    validate_namespace_isolation(
+        uid_fields,
+        process_mount_namespace,
+        caller_mount_namespace,
+    )
 
 
 def load_source_root_control(control_root: Path) -> ModuleType:
@@ -334,7 +354,7 @@ def run_rejection_cases(
 def run_control_prefix_case(
     context: CalibrationContext,
 ) -> None:
-    control_prefix_values = {
+    control_prefix_values: dict[str, Path | str] = {
         "source_root": context.control_root,
         "source_commit": "1" * 40,
         "source_tree": "2" * 40,
@@ -379,8 +399,12 @@ def run_trusted_boundary_case(
         "boundary-mount-build",
         "probe",
     )
-    previous_owned_build_namespaces = context.module.owned_build_namespaces
-    context.module.owned_build_namespaces = lambda _repository_root: (trusted_boundary,)
+    previous_owned_build_namespaces = getattr(context.module, "owned_build_namespaces")
+    setattr(
+        context.module,
+        "owned_build_namespaces",
+        lambda _repository_root: (trusted_boundary,),
+    )
     try:
         require_layout_acceptance(
             context.module,
@@ -408,7 +432,11 @@ def run_trusted_boundary_case(
             "trusted boundary after bind mount",
         )
     finally:
-        context.module.owned_build_namespaces = previous_owned_build_namespaces
+        setattr(
+            context.module,
+            "owned_build_namespaces",
+            previous_owned_build_namespaces,
+        )
 
 
 def run_calibration(
@@ -428,12 +456,20 @@ def run_calibration(
     except OSError as error:
         fail(f"cannot create victim sentinel {sentinel}: {error}")
 
-    module.owned_build_namespaces = lambda _repository_root: (build_namespace,)
-    module.validate_owned_namespace = lambda selected_namespace, _user_id: (
-        selected_namespace
+    setattr(
+        module,
+        "owned_build_namespaces",
+        lambda _repository_root: (build_namespace,),
     )
-    module.build_namespace_parent_boundary = lambda _namespace, _repository_root: (
-        audit_root
+    setattr(
+        module,
+        "validate_owned_namespace",
+        lambda selected_namespace, _user_id: selected_namespace,
+    )
+    setattr(
+        module,
+        "build_namespace_parent_boundary",
+        lambda _namespace, _repository_root: audit_root,
     )
     context = CalibrationContext(
         module,
