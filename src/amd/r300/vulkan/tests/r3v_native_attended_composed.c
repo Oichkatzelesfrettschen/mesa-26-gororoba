@@ -14,11 +14,13 @@
 
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
+#include "r3v_native_watchdog_client.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
 #include "util/mesa-blake3.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -46,6 +48,81 @@ stage(const char *name)
 {
    printf("[stage] %s\n", name);
    fflush(stdout);
+}
+
+/* The watchdog bracket the submit gate requires.  The SB600 TCO counter
+ * runs a fixed ~2.0 s window that WDIOC_KEEPALIVE does not reload, so it
+ * covers DRM_IOCTL_RADEON_CS through fence completion and nothing wider:
+ * arming at CS_IOCTL_ENTER and disarming at COMPLETION_WAIT_RETURN keeps
+ * the deferred copies, the completion allocation, and the attempt.token
+ * write outside the window, where a stall would fire the counter on a
+ * healthy submission.  A failed arm refuses before the ioctl.
+ */
+struct composed_watchdog_guard {
+   struct r3v_native_watchdog_client client;
+   bool present;
+   bool waived;
+};
+
+static int
+op_watchdog_bracket(void *ctx, enum r3v_native_submission_trace_event event)
+{
+   struct composed_watchdog_guard *guard = ctx;
+   switch (event) {
+   case R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER:
+      return r3v_native_watchdog_client_arm(&guard->client) == 0 ? 0 : -EIO;
+   case R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN:
+      return r3v_native_watchdog_client_disarm(&guard->client) == 0 ? 0 : -EIO;
+   default:
+      return 0;
+   }
+}
+
+/* Opens the bracket and proves the arm and disarm work before the run
+ * reaches the ioctl, because r3v_native_arming_disarm writes
+ * attempt.token ahead of the trace: an arm that first fails inside
+ * vkQueueSubmit refuses the submission with the attempt already spent.
+ */
+static int
+watchdog_guard_open(struct composed_watchdog_guard *guard)
+{
+   const char *waiver = getenv("R3V_NATIVE_WATCHDOG_WAIVER_ACCEPTED");
+   guard->waived = waiver != NULL && strcmp(waiver, "1") == 0;
+
+   if (r3v_native_watchdog_client_open(&guard->client) != 0) {
+      if (!guard->waived) {
+         fprintf(stderr,
+                 "the watchdog bracket refused; set "
+                 "R3V_NATIVE_WATCHDOG_BRACKET_COMMAND to the helper, or "
+                 "waive automatic recovery with "
+                 "R3V_NATIVE_WATCHDOG_WAIVER_ACCEPTED=1 and stand by to "
+                 "power-cycle\n");
+         return -1;
+      }
+      printf("[watchdog] waived: the operator accepts manual power-cycle "
+             "recovery for this submission\n");
+      fflush(stdout);
+      return 0;
+   }
+
+   fputs(guard->client.facts, stdout);
+   if (r3v_native_watchdog_client_arm(&guard->client) != 0 ||
+       r3v_native_watchdog_client_disarm(&guard->client) != 0) {
+      fprintf(stderr, "the watchdog bracket refused its calibration\n");
+      r3v_native_watchdog_client_close(&guard->client);
+      return -1;
+   }
+   printf("watchdog.calibration_interval_ns=%" PRIu64 "\n",
+          guard->client.disarmed_ns - guard->client.armed_ns);
+   fflush(stdout);
+   /* The calibration timestamps are not the submission's, and
+    * armed_before_submit reads armed_ns; clearing them keeps a run whose
+    * real arm never happened from reporting one that did.
+    */
+   guard->client.armed_ns = 0;
+   guard->client.disarmed_ns = 0;
+   guard->present = true;
+   return 0;
 }
 
 static bool
@@ -189,6 +266,13 @@ main(int argc, char **argv)
    }
    setenv("R3V_NATIVE_MANIFEST_DIR", evidence_dir, 1);
 
+   struct composed_watchdog_guard guard = {0};
+   if (!record_only) {
+      stage("watchdog");
+      if (watchdog_guard_open(&guard) != 0)
+         return 2;
+   }
+
    stage("instance");
    PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
       vk_icdGetInstanceProcAddr;
@@ -253,6 +337,14 @@ main(int argc, char **argv)
    if (result != VK_SUCCESS) {
       fprintf(stderr, "vkCreateDevice: %d\n", result);
       return 1;
+   }
+
+   if (guard.present) {
+      r3v_native_device_from_handle(device)->submission_trace =
+         (struct r3v_native_submission_trace){
+            .ctx = &guard,
+            .emit = op_watchdog_bracket,
+         };
    }
 
    PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
@@ -390,6 +482,31 @@ main(int argc, char **argv)
                           VK_NULL_HANDLE);
    printf("[submit] vkQueueSubmit returned %d\n", result);
    fflush(stdout);
+
+   /* The hook disarms at COMPLETION_WAIT_RETURN; this covers the paths
+    * that reach no completion wait, and it precedes every target read,
+    * because a fire after a good submission destroys the result and
+    * spends the attempt.
+    */
+   if (guard.present) {
+      const int disarm = r3v_native_watchdog_client_disarm(&guard.client);
+      printf("watchdog.guarded_interval=DRM_IOCTL_RADEON_CS through fence "
+             "completion\n");
+      printf("watchdog.armed_before_submit=%s\n",
+             guard.client.armed_ns != 0 ? "true" : "false");
+      printf("watchdog.completion_observed=%s\n",
+             result == VK_SUCCESS ? "true" : "false");
+      printf("watchdog.disarm_result=%s\n", disarm == 0 ? "ok" : "failed");
+      printf("watchdog.guarded_interval_us=%" PRIu64 "\n",
+             (guard.client.disarmed_ns - guard.client.armed_ns) / 1000u);
+      fflush(stdout);
+      r3v_native_watchdog_client_close(&guard.client);
+      if (disarm != 0) {
+         fprintf(stderr, "the watchdog stayed armed after the interval\n");
+         return 1;
+      }
+   }
+
    if (result != VK_SUCCESS) {
       fprintf(stderr, "submission refused or failed: %d\n", result);
       return 1;
