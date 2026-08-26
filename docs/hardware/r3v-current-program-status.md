@@ -13,7 +13,7 @@ commit whose state a revision of this table describes.
 
 | Repository | Head | Subject |
 |---|---|---|
-| `mesa-26-gororoba` | `13701e61540` | r3v: record the composed cell over merged references |
+| `mesa-26-gororoba` | `84cf229c0d6` | r3v: arm the composed cell from its bound digest |
 | `steinmarder-r300` | `2ae932526` | r3v: read the varying interpolation out of the 256x256 target |
 | `steinmarder` (workspace index, cross-repo orchestration) | `77869e866` | tools/workspace-index-marker-and-trailer-retention |
 | `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
@@ -503,8 +503,18 @@ above is rung zero; the ladder after it runs in this order:
    idempotent and the indices the arming digest covers are the indices
    the kernel reads.  Its harness runs on the drm-shim and is calibrated
    against a recorder that skips the binding and one that leaves the
-   array unmerged.  Open: the attended runner and the silicon receipt,
-   whose digest is the bound cell's rather than `7e1eeb21`; and a
+   array unmerged.  The gate reaches the cell: the arming runner binds
+   before digesting, so `--composed` reports `247949a2`, the bound
+   cell's digest and the one the recorder installs; the queue's geometry
+   predicate reads the merged binding rather than falling to the
+   unfrozen default; and the harness arms from the offline cell ahead of
+   device creation, the order the attended procedure runs in, then
+   submits on the shim, with an unbound arm proving the emitted digest
+   refuses.  The recorder leaves both vertex payloads to the caller, and
+   the two arrays take different layouts -- four-dword position records
+   for the render half, eight-dword position-plus-TEX0 records for the
+   sample half.  Open: the attended runner and the silicon receipt; and
+   a
    recording contract admitting a second render pass and a second
    deferred draw per command buffer, which the one-pass bound refuses
    today (`r3v_CmdBeginRenderPass`), so a conformance case reaches the
