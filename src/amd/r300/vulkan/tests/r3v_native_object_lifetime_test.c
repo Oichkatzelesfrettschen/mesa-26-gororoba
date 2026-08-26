@@ -722,10 +722,10 @@ check_query_zero_span(const struct fixture *f)
    return 0;
 }
 
-/* Secondary command buffers: the empty recorded sequence executes as
- * an exact no-op through vkCmdExecuteCommands and the whole primary
- * submits; a secondary carrying recorded work, and an execute inside
- * a render pass or of a primary-level buffer, each poison.
+/* vkCmdExecuteCommands replays a secondary's recorded ops into the
+ * primary: the empty sequence as a no-op, a recorded transfer op
+ * executing at the primary's submission; dynamic state and a
+ * primary-level buffer in the list each poison.
  */
 static int
 check_empty_secondary_execution(const struct fixture *f)
@@ -772,6 +772,54 @@ check_empty_secondary_execution(const struct fixture *f)
             VK_SUCCESS &&
          vkQueueWaitIdle(f->queue) == VK_SUCCESS,
          "the primary with the no-op execute submits");
+
+   /* A fill recorded into the secondary executes at the primary's
+    * submission. */
+   const VkBufferCreateInfo fill_buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 64,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer fill_buffer;
+   REQUIRE(vkCreateBuffer(f->device, &fill_buffer_info, NULL,
+                          &fill_buffer) == VK_SUCCESS,
+           "replay fill buffer creation");
+   VkDeviceMemory fill_memory;
+   if (allocate_memory(f, 4096, 0, &fill_memory))
+      return 1;
+   REQUIRE(vkBindBufferMemory(f->device, fill_buffer, fill_memory, 0) ==
+              VK_SUCCESS,
+           "replay fill buffer bind");
+   REQUIRE(vkBeginCommandBuffer(secondary, &secondary_begin) ==
+              VK_SUCCESS,
+           "fill secondary begin");
+   vkCmdFillBuffer(secondary, fill_buffer, 0, 64, 0xa1b2c3d4u);
+   REQUIRE(vkEndCommandBuffer(secondary) == VK_SUCCESS,
+           "fill secondary end");
+   REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
+           "primary begin for the fill replay");
+   vkCmdExecuteCommands(f->cmd, 1, &secondary);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "executing the fill-bearing secondary records");
+   CHECK(vkQueueSubmit(f->queue, 1, &submit_info, VK_NULL_HANDLE) ==
+            VK_SUCCESS &&
+         vkQueueWaitIdle(f->queue) == VK_SUCCESS,
+         "the primary with the replayed fill submits");
+   void *fill_map = NULL;
+   REQUIRE(vkMapMemory(f->device, fill_memory, 0, 64, 0, &fill_map) ==
+              VK_SUCCESS,
+           "replay fill mapping");
+   {
+      const uint32_t *words = fill_map;
+      bool filled = true;
+      for (uint32_t w = 0; w < 16; w++)
+         filled = filled && words[w] == 0xa1b2c3d4u;
+      CHECK(filled, "the replayed fill wrote every dword");
+   }
+   vkUnmapMemory(f->device, fill_memory);
+   vkDestroyBuffer(f->device, fill_buffer, NULL);
+   vkFreeMemory(f->device, fill_memory, NULL);
 
    /* A primary-level buffer in the list poisons. */
    REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
