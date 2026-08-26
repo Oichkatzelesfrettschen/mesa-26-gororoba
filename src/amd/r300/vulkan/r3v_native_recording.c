@@ -388,12 +388,13 @@ r3v_native_rects_overlap(int32_t ax, int32_t ay, int32_t bx, int32_t by,
           ay < by + (int32_t)height && by < ay + (int32_t)height;
 }
 
-/* The admitted blit is the unit-scale unflipped rectangle between
- * transfer-family images: equal source and destination extents make
- * every filter the same texel move, so the recording lowers it onto
- * the image-to-image copy executor.  Scaling, axis flips, and
- * overlapping same-image rectangles refuse -- the host row mover has
- * no filter and Vulkan leaves overlapping blits undefined.
+/* The admitted blit is the unflipped rectangle between transfer-family
+ * images of one format: the unit-scale case lowers onto the
+ * image-to-image copy, and unequal extents lower onto the nearest
+ * resample executor, whose sample point (x + 0.5) * src/dst matches
+ * the spec's nearest filter.  A scaling blit takes VK_FILTER_NEAREST
+ * and distinct images; flips and overlapping same-image rectangles
+ * refuse.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBlitImage(
@@ -410,7 +411,6 @@ r3v_CmdBlitImage(
    VK_FROM_HANDLE(r3v_native_image, src, srcImage);
    VK_FROM_HANDLE(r3v_native_image, dst, dstImage);
 
-   (void)filter;
    for (uint32_t r = 0; r < regionCount; r++) {
       const VkImageBlit *region = &pRegions[r];
       struct r3v_native_deferred_copy *op =
@@ -424,8 +424,14 @@ r3v_CmdBlitImage(
          .height = (uint32_t)(src_h > 0 ? src_h : 0),
          .depth = 1,
       };
+      const VkExtent3D dst_extent = {
+         .width = (uint32_t)(dst_w > 0 ? dst_w : 0),
+         .height = (uint32_t)(dst_h > 0 ? dst_h : 0),
+         .depth = 1,
+      };
+      const bool unit_scale = src_w == dst_w && src_h == dst_h;
       if (op == NULL || src_w <= 0 || src_h <= 0 ||
-          src_w != dst_w || src_h != dst_h ||
+          dst_w <= 0 || dst_h <= 0 ||
           region->srcOffsets[0].z != 0 || region->srcOffsets[1].z != 1 ||
           region->dstOffsets[0].z != 0 || region->dstOffsets[1].z != 1 ||
           !r3v_native_transfer_source_layout_ok(srcImageLayout) ||
@@ -433,12 +439,13 @@ r3v_CmdBlitImage(
           !r3v_native_copy_subresource_ok(&region->srcSubresource) ||
           !r3v_native_copy_subresource_ok(&region->dstSubresource) ||
           !r3v_native_copy_rect_ok(src, region->srcOffsets[0], extent) ||
-          !r3v_native_copy_rect_ok(dst, region->dstOffsets[0], extent) ||
+          !r3v_native_copy_rect_ok(dst, region->dstOffsets[0], dst_extent) ||
           (src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
           (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
-          /* The unit-scale blit lowers onto the byte copy, which
-           * converts nothing, so the two formats must be one format. */
+          /* Both executors move bytes and convert nothing, so the two
+           * formats must be one format. */
           src->format != dst->format ||
+          (!unit_scale && (filter != VK_FILTER_NEAREST || src == dst)) ||
           (src == dst &&
            r3v_native_rects_overlap(region->srcOffsets[0].x,
                                     region->srcOffsets[0].y,
@@ -450,7 +457,10 @@ r3v_CmdBlitImage(
       }
       *op = (struct r3v_native_deferred_copy){
          .group = r3v_native_copy_group_at_record(cmd_buffer),
-         .kind = R3V_NATIVE_COPY_IMAGE_TO_IMAGE,
+         .kind = unit_scale ? R3V_NATIVE_COPY_IMAGE_TO_IMAGE
+                            : R3V_NATIVE_COPY_BLIT_IMAGE,
+         .dst_width = dst_extent.width,
+         .dst_height = dst_extent.height,
          .src_image = src,
          .dst_image = dst,
          .src_x = (uint32_t)region->srcOffsets[0].x,

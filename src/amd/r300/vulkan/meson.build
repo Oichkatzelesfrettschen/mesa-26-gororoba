@@ -1766,9 +1766,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
     test(
-      'r3v-native-transfer-ops-known-bad-scaled-blit-admits',
+      'r3v-native-transfer-ops-known-bad-scaled-linear-blit-admits',
       r3v_native_transfer_ops_test,
-      args : ['--inject-scaled-blit-admits'],
+      args : ['--inject-scaled-linear-blit-admits'],
       env : r3v_native_loader_env,
       depends : [libradeon_noop_drm_shim, libvulkan_r3v,
                  _dev_icd],

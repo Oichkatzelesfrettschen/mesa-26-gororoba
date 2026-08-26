@@ -169,6 +169,61 @@ execute_copy(struct r3v_native_device *device,
       release_memory(device, dst_memory, dst_owned);
       return VK_SUCCESS;
    }
+   case R3V_NATIVE_COPY_BLIT_IMAGE: {
+      /* Nearest resample: destination texel (dx, dy) reads the source
+       * texel at ((d + 0.5) * src_extent / dst_extent), the spec's
+       * nearest sample point, computed as (2d + 1) * src / (2 * dst).
+       */
+      src_memory = op->src_image->memory;
+      dst_memory = op->dst_image->memory;
+      if (src_memory == NULL || dst_memory == NULL)
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: blit source or destination is "
+                          "unbound at submission");
+      uint8_t *blit_src_map = NULL, *blit_dst_map = NULL;
+      bool blit_src_owned, blit_dst_owned;
+      VkResult blit_result =
+         map_memory(device, src_memory, &blit_src_map, &blit_src_owned);
+      if (blit_result != VK_SUCCESS)
+         return blit_result;
+      blit_result =
+         map_memory(device, dst_memory, &blit_dst_map, &blit_dst_owned);
+      if (blit_result != VK_SUCCESS) {
+         release_memory(device, src_memory, blit_src_owned);
+         return blit_result;
+      }
+      radeon_drm_vk_bo_cache_sync(&device->drm, blit_src_map,
+                                  src_memory->bo.size);
+      const uint32_t texel_bytes = op->dst_image->texel_bytes;
+      const uint8_t *src_base =
+         blit_src_map + op->src_image->memory_offset;
+      uint8_t *dst_base = blit_dst_map + op->dst_image->memory_offset;
+      for (uint32_t dy = 0; dy < op->dst_height; dy++) {
+         const uint32_t sy =
+            op->src_y + (uint32_t)(((uint64_t)(2 * dy + 1) * op->height) /
+                                   (2 * (uint64_t)op->dst_height));
+         const uint8_t *src_row =
+            src_base + (uint64_t)sy * op->src_image->row_pitch_bytes;
+         uint8_t *dst_row =
+            dst_base +
+            (uint64_t)(op->dst_y + dy) * op->dst_image->row_pitch_bytes +
+            (uint64_t)op->dst_x * texel_bytes;
+         for (uint32_t dx = 0; dx < op->dst_width; dx++) {
+            const uint32_t sx =
+               op->src_x +
+               (uint32_t)(((uint64_t)(2 * dx + 1) * op->width) /
+                          (2 * (uint64_t)op->dst_width));
+            memcpy(dst_row + (uint64_t)dx * texel_bytes,
+                   src_row + (uint64_t)sx * texel_bytes, texel_bytes);
+         }
+      }
+      if (!blit_dst_owned)
+         radeon_drm_vk_bo_cache_sync(&device->drm, blit_dst_map,
+                                     dst_memory->bo.size);
+      release_memory(device, dst_memory, blit_dst_owned);
+      release_memory(device, src_memory, blit_src_owned);
+      return VK_SUCCESS;
+   }
    case R3V_NATIVE_COPY_IMAGE_TO_IMAGE:
       src_memory = op->src_image->memory;
       src_base_offset = op->src_image->memory_offset +
