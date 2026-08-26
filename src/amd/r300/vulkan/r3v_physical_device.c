@@ -723,11 +723,10 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
     */
    switch (vk_format) {
    case VK_FORMAT_R8G8B8A8_UNORM:
-      /* R8G8B8A8's memory bytes are the TX unit's W8Z8Y8X8 shader
-       * order (X = byte 0 = R), so the sampling cell reads this format
-       * with no conversion and it alone carries the sampled-image
-       * grant beside the shared attachment, transfer, and texel-buffer
-       * grants of the B8G8R8A8 block below.
+      /* Both 32-bpp lane orders carry the sampled-image grant: the
+       * sampling cell's FORMAT1 per-channel selects route each order's
+       * memory bytes to shader R/G/B/A over the TX unit's W8Z8Y8X8
+       * word, so neither format converts.
        */
       properties->linearTilingFeatures =
          VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
@@ -751,6 +750,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        * equal.
        */
       properties->linearTilingFeatures =
+         VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
          VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;

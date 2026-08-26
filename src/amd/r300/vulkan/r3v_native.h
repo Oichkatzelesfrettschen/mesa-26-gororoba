@@ -1374,6 +1374,8 @@ struct r3v_native_sampled_texture {
    uint32_t texture_width;
    uint32_t texture_height;
    uint32_t texture_pitch_texels;
+   /* Memory lane order of the texels, from the image format. */
+   enum r300_triangle_lane_order texture_lanes;
 };
 
 VkResult r3v_native_record_tcl_bypass_triangle_carrier(

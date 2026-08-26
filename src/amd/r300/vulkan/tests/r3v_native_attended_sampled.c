@@ -70,11 +70,18 @@ write_target(const char *dir, const void *data, size_t size)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   if (argc != 2 && !(argc == 3 && strcmp(argv[2], "bgra") == 0)) {
+      fprintf(stderr, "usage: %s <evidence-directory> [bgra]\n", argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+   /* The optional bgra arm binds the same texel values through the
+    * B8G8R8A8 memory order; the predicted target dword is unchanged,
+    * and unrouted selects would instead replicate byte X (0xa0).
+    */
+   const bool texture_bgra = argc == 3;
+   const VkFormat texture_format =
+      texture_bgra ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
 
    /* The oracle's expected interior is the texel through the reference
     * target's UNORM8 conversion; the reference shape carries geometry,
@@ -91,10 +98,11 @@ main(int argc, char **argv)
       r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
    const uint32_t predicted_dword =
       r300_tcl_bypass_triangle_pack_unorm8_dword(shape.lanes, texel_rgba);
-   printf("[shape] sampled reference 64x64, uniform texel "
+   printf("[shape] sampled reference 64x64, %s uniform texel "
           "(%02x,%02x,%02x,%02x), predicted interior 0x%08x\n",
-          R3V_SAMPLED_TEXEL_R, R3V_SAMPLED_TEXEL_G, R3V_SAMPLED_TEXEL_B,
-          R3V_SAMPLED_TEXEL_A, predicted_dword);
+          texture_bgra ? "B8G8R8A8" : "R8G8B8A8", R3V_SAMPLED_TEXEL_R,
+          R3V_SAMPLED_TEXEL_G, R3V_SAMPLED_TEXEL_B, R3V_SAMPLED_TEXEL_A,
+          predicted_dword);
    fflush(stdout);
 
    const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
@@ -238,7 +246,7 @@ main(int argc, char **argv)
       &(VkImageCreateInfo){
          .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
          .imageType = VK_IMAGE_TYPE_2D,
-         .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .format = texture_format,
          .extent = { 16, 16, 1 },
          .mipLevels = 1,
          .arrayLayers = 1,
@@ -265,9 +273,11 @@ main(int argc, char **argv)
       CHECK(vkMapMemory(device, tex_memory, 0, VK_WHOLE_SIZE, 0, &map));
       uint8_t *texels = map;
       for (size_t t = 0; t < tex_reqs.size / 4; t++) {
-         texels[4 * t + 0] = R3V_SAMPLED_TEXEL_R;
+         texels[4 * t + 0] =
+            texture_bgra ? R3V_SAMPLED_TEXEL_B : R3V_SAMPLED_TEXEL_R;
          texels[4 * t + 1] = R3V_SAMPLED_TEXEL_G;
-         texels[4 * t + 2] = R3V_SAMPLED_TEXEL_B;
+         texels[4 * t + 2] =
+            texture_bgra ? R3V_SAMPLED_TEXEL_R : R3V_SAMPLED_TEXEL_B;
          texels[4 * t + 3] = R3V_SAMPLED_TEXEL_A;
       }
       vkUnmapMemory(device, tex_memory);
@@ -279,7 +289,7 @@ main(int argc, char **argv)
          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
          .image = tex_image,
          .viewType = VK_IMAGE_VIEW_TYPE_2D,
-         .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .format = texture_format,
          .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                                .levelCount = 1,
                                .layerCount = 1 },

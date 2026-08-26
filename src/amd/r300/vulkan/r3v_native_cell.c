@@ -377,7 +377,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       emit_result = r300_tcl_bypass_triangle_sampled_emit(
          shape->width, shape->height, triangle_count,
          sampled->texture_offset, sampled->texture_width,
-         sampled->texture_height, sampled->texture_pitch_texels, &cell);
+         sampled->texture_height, sampled->texture_pitch_texels,
+         sampled->texture_lanes, &cell);
    } else if (varying || triangle_count != 1) {
       if (!reference_target)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);

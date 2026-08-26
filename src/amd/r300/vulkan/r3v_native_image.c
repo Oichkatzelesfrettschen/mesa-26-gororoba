@@ -105,14 +105,15 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    } else if (pCreateInfo->usage != 0 &&
               (pCreateInfo->usage &
                ~(transfer_usage | VK_IMAGE_USAGE_SAMPLED_BIT)) == 0) {
-      /* The sampled bit joins the linear transfer family for the one
-       * format whose memory bytes the TX unit's W8Z8Y8X8 word reads in
-       * shader order (X = byte 0 = R), so the sampling cell converts
-       * nothing; a sampled image keeps the family's extent ceiling,
-       * which is the TX width/height mask ceiling.
+      /* The sampled bit joins the linear transfer family for the two
+       * 32-bpp lane orders; FORMAT1's per-channel selects route each
+       * order's memory bytes to shader R/G/B/A, so the sampling cell
+       * converts nothing, and a sampled image keeps the family's extent
+       * ceiling, which is the TX width/height mask ceiling.
        */
+      enum r300_triangle_lane_order sampled_lanes;
       if ((pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
-          pCreateInfo->format != VK_FORMAT_R8G8B8A8_UNORM)
+          !r3v_native_render_lane_order(pCreateInfo->format, &sampled_lanes))
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       if (pCreateInfo->extent.width > R3V_NATIVE_TRANSFER_DIMENSION_MAX ||
           pCreateInfo->extent.height > R3V_NATIVE_TRANSFER_DIMENSION_MAX)
