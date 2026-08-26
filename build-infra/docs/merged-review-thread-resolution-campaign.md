@@ -9,16 +9,25 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 
 ## Canonical artifacts
 
-- `merged-review-thread-action-frontier.tsv` is the current 50-thread action
-  denominator.  Each row carries the review identity, current evidence,
-  discriminating question, required observation, completion gate, and
-  falsifier.
-- `merged-review-thread-resolution-ledger.tsv` records only post-merge,
-  post-resolution, re-verified closures.
+- `merged-review-thread-batch-registry.tsv` owns batch identity, state, commit
+  anchors, exact endpoint thread IDs, and paths to retained artifacts.
+- `review-thread-frontiers/merged-pr1-pr90/` preserves the first classified
+  frontier and its 50-row post-resolution ledger.
+- `review-thread-frontiers/merged-pr93-pr161/` is the active second-batch raw
+  denominator.  Its manifest binds two request/response pages, exact query
+  text, default-branch identity, every selected comment, hashes, and the
+  chronological stop proof.
+- `merged-review-thread-action-frontier.tsv` and
+  `merged-review-thread-resolution-ledger.tsv` remain the stable classified
+  views.  They retain the last fully classified batch until the second-batch
+  source audit produces its action rows.
 - `../scripts/review_thread_frontier.py` validates the frontier and ledger
   offline.  Its unit tests calibrate duplicate identity, ordering, false merged
   evidence, owner-path drift, missing closure rows, live GraphQL identity, and
   invalid resolution chronology.
+- `../scripts/review_thread_batch_capture.py` captures and replays a bounded
+  oldest-unresolved denominator.  Its checker rejects file-membership, hash,
+  exact-query, request-cursor, selected-comment, and chronology mutations.
 
 The historical `last-100-pr-review-comment-audit.md` records a different
 archive operation.  It resolved 143 GitHub threads while only 11 findings were
@@ -26,6 +35,8 @@ addressed in that working tree.  Its status remains historical evidence and
 does not satisfy this campaign's closure gate.
 
 ## Oldest-thread denominator
+
+### Closed classified frontier
 
 The first batch is anchored to merged `main`
 `7ac62205eb882df42462d849cc549086b59227ea` and ordered by the first review
@@ -49,6 +60,28 @@ commit OIDs.  The normalization filters `isResolved=false`, sorts by
 `(comment.createdAt, thread.id)`, and selects the first 50 rows.  The first
 page contained no PR with more than 100 review threads, so neither nested
 connection was truncated.
+
+### Active captured frontier
+
+The second batch is anchored to merged `main`
+`661a73bf5bb99146ce096cc086613c7a819895f3`.  The authenticated private-repo
+capture scanned 200 merged pull requests across two ascending pages and
+observed 65 unresolved threads among 322 total review threads.
+
+- Rank 1 is `PRRT_kwDOR3YK5M6C8Exz`, created
+  `2026-05-18T19:03:09Z` on PR 93.
+- Rank 50 is `PRRT_kwDOR3YK5M6D9CKy`, created
+  `2026-05-21T22:37:33Z` on PR 161.
+- The last scanned pull request is PR 209, created
+  `2026-05-23T07:15:36Z`.
+
+The pull-request connection is ordered by `createdAt` ascending, and a review
+comment cannot predate its pull request.  PR 209 therefore establishes that
+every unscanned pull request was created after the rank-50 comment.  The
+retained request cursors prove the two pages are contiguous.  Exact query text,
+raw responses, normalized selected threads, every selected comment body and
+author, and their hashes live in
+`review-thread-frontiers/merged-pr93-pr161/`.
 
 ## Current classification
 
@@ -84,6 +117,22 @@ Run the offline contract with:
 make -C build-infra review-thread-frontier-check
 make -C build-infra review-thread-frontier-live-check
 make -C build-infra review-thread-frontier-unit-test
+```
+
+Capture a subsequent denominator into a new mechanism-named directory with:
+
+```sh
+python3 build-infra/scripts/review_thread_batch_capture.py capture \
+  --batch-id merged-review-thread-closure-batch-NNNN \
+  --batch-size 50 \
+  --output-dir build-infra/docs/review-thread-frontiers/merged-prFIRST-prLAST
+```
+
+The output directory must be empty.  Run the checker before classification:
+
+```sh
+python3 build-infra/scripts/review_thread_batch_capture.py check \
+  --input-dir build-infra/docs/review-thread-frontiers/merged-prFIRST-prLAST
 ```
 
 Immediately before resolving a thread, query its exact node ID and confirm it

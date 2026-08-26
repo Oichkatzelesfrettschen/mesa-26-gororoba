@@ -156,6 +156,10 @@ override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibratio
 override REVIEW_THREAD_FRONTIER := $(CURDIR)/docs/merged-review-thread-action-frontier.tsv
 override REVIEW_THREAD_LEDGER := $(CURDIR)/docs/merged-review-thread-resolution-ledger.tsv
 override REVIEW_THREAD_FRONTIER_TOOL := $(CURDIR)/scripts/review_thread_frontier.py
+override REVIEW_THREAD_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-pr93-pr161
+override REVIEW_THREAD_CAPTURE_TOOL := $(CURDIR)/scripts/review_thread_batch_capture.py
+override REVIEW_THREAD_ARCHIVE_FRONTIER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/action-frontier.tsv
+override REVIEW_THREAD_ARCHIVE_LEDGER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/resolution-ledger.tsv
 override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_TOPSRC_INPUT=$(call make_shell_quote,$(value GOROROBA_TOPSRC_INPUT)) \
 	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
@@ -496,6 +500,14 @@ driver-root-audit:
 	python3 $(CURDIR)/scripts/driver_root_audit.py --repo-root $(CURDIR)/..
 
 review-thread-frontier-check:
+	python3 $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_CAPTURE)
+	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+		--frontier $(REVIEW_THREAD_ARCHIVE_FRONTIER) \
+		--ledger $(REVIEW_THREAD_ARCHIVE_LEDGER) \
+		--batch-size 50 \
+		--repo-root $(CURDIR)/.. \
+		--main-ref origin/main \
+		--candidate-ref HEAD
 	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_FRONTIER) \
 		--ledger $(REVIEW_THREAD_LEDGER) \
@@ -510,7 +522,9 @@ review-thread-frontier-live-check:
 
 review-thread-frontier-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q $(CURDIR)/tests/test_review_thread_frontier.py
+		python3 -m pytest -q \
+			$(CURDIR)/tests/test_review_thread_frontier.py \
+			$(CURDIR)/tests/test_review_thread_batch_capture.py
 
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
