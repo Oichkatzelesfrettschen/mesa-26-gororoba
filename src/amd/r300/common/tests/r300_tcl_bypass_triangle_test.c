@@ -48,6 +48,11 @@ struct tracker {
       rs_ip0_seen, rs_inst0_seen;
    uint32_t vbpntr_size_stride;
    bool vbpntr_seen;
+   /* The sampled cell's TX unit-0 registers. */
+   uint32_t tx_enable, tx_filter0, tx_format0, tx_format1, tx_format2,
+      tx_offset;
+   bool tx_enable_seen, tx_filter0_seen, tx_format0_seen, tx_format1_seen,
+      tx_format2_seen, tx_offset_seen;
 };
 
 static void
@@ -109,6 +114,24 @@ track(struct tracker *t, const uint32_t *ib, uint32_t count)
             } else if (r == R300_RS_INST_0) {
                t->rs_inst0 = value;
                t->rs_inst0_seen = true;
+            } else if (r == R300_TX_ENABLE) {
+               t->tx_enable = value;
+               t->tx_enable_seen = true;
+            } else if (r == R300_TX_FILTER0_0) {
+               t->tx_filter0 = value;
+               t->tx_filter0_seen = true;
+            } else if (r == R300_TX_FORMAT0_0) {
+               t->tx_format0 = value;
+               t->tx_format0_seen = true;
+            } else if (r == R300_TX_FORMAT1_0) {
+               t->tx_format1 = value;
+               t->tx_format1_seen = true;
+            } else if (r == R300_TX_FORMAT2_0) {
+               t->tx_format2 = value;
+               t->tx_format2_seen = true;
+            } else if (r == R300_TX_OFFSET_0) {
+               t->tx_offset = value;
+               t->tx_offset_seen = true;
             }
          }
       } else if (type == 3) {
@@ -1584,9 +1607,80 @@ test_pack_unorm8_dword(void)
           r300_tcl_bypass_triangle_render_shape_draw_dword(&shape));
 }
 
+/* The sampled cell's stream: the TX unit-0 block lands with the
+ * declared geometry, the texture reloc site precedes the color and
+ * vertex sites in stream order, the site validator accepts the
+ * three-slot list, and each admission bound refuses by itself.
+ */
+static void
+test_sampled_cell_stream_and_refusals(void)
+{
+   struct r300_fragment_binary fs;
+   assert(r300_tcl_bypass_triangle_sampled_fs(&fs) == 0);
+
+   struct r300_tcl_bypass_triangle_params params = {
+      .vertex_offset = 0,
+      .color_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+      .fragment_binary = &fs,
+      .varying = true,
+      .sampled = true,
+      .texture_offset = 4096,
+      .texture_width = 64,
+      .texture_height = 64,
+      .texture_pitch_texels = 64,
+   };
+   struct r300_tcl_bypass_triangle_ib ib;
+   assert(r300_tcl_bypass_triangle_emit(&params, &ib) == 0);
+
+   struct tracker t = { 0 };
+   track(&t, ib.ib, ib.ib_size_dwords);
+   assert(t.tx_enable_seen && t.tx_enable == R300_TX_ENABLE_0);
+   assert(t.tx_filter0_seen &&
+          t.tx_filter0 ==
+             ((R300_TX_CLAMP_TO_EDGE << R300_TX_WRAP_S_SHIFT) |
+              (R300_TX_CLAMP_TO_EDGE << R300_TX_WRAP_T_SHIFT) |
+              R300_TX_MAG_FILTER_NEAREST | R300_TX_MIN_FILTER_NEAREST));
+   assert(t.tx_format0_seen &&
+          t.tx_format0 == ((63u << R300_TX_WIDTHMASK_SHIFT) |
+                           (63u << R300_TX_HEIGHTMASK_SHIFT) |
+                           R300_TX_PITCH_EN));
+   assert(t.tx_format1_seen && t.tx_format1 == R300_TX_FORMAT_W8Z8Y8X8);
+   assert(t.tx_format2_seen && t.tx_format2 == 63);
+   assert(t.tx_offset_seen && t.tx_offset == 4096);
+
+   assert(ib.reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT);
+   assert(ib.reloc_sites[0].slot == R300_TRIANGLE_SLOT_TEXTURE);
+   assert(ib.reloc_sites[1].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert(ib.reloc_sites[2].slot == R300_TRIANGLE_SLOT_VERTEX);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&ib) == 0);
+   r300_tcl_bypass_triangle_release(&ib);
+
+   struct r300_tcl_bypass_triangle_params bad;
+
+   bad = params;
+   bad.varying = false;
+   assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
+
+   bad = params;
+   bad.texture_offset = 4100;
+   assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
+
+   bad = params;
+   bad.texture_pitch_texels = 32;
+   assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
+
+   bad = params;
+   bad.texture_width = 2049;
+   assert(r300_tcl_bypass_triangle_emit(&bad, &ib) == -EINVAL);
+
+   r300_fragment_binary_finish(&fs);
+}
+
 int
 main(void)
 {
+   test_sampled_cell_stream_and_refusals();
    test_family_emit_deviates_in_count_words_alone();
    test_contract_cell_size_and_digest_are_pinned();
    test_varying_cell_tuple_and_digest_are_pinned();
