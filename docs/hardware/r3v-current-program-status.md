@@ -463,16 +463,24 @@ above is rung zero; the ladder after it runs in this order:
    `VK_ATTACHMENT_LOAD_OP_DONT_CARE` and oracles the resolve
    destination's interior alone, which is a named scope cut -- it
    surrenders the sentinel corner that proves the device wrote inside
-   the extent.  That arm's verdict producer lands:
-   `r300_tcl_bypass_triangle_interior_oracle` classifies the centers
-   the geometry covers and leaves the exterior, the pitch padding, and
-   the canary row unjudged, so an uncleared footprint reads as a
-   verdict rather than as a refusal the full-footprint oracle would
-   return for the garbage around the draw.  Its calibration includes
-   the arm that separates the two MSAA outcomes: a footprint the device
-   never wrote reports zero interior pixels against the same analytic
-   denominator, so `resolve wrote nothing` and `resolve wrote
-   correctly` are distinct results rather than one false flag.
+   the extent.  An uncleared
+   footprint takes `r300_tcl_bypass_triangle_interior_oracle`, which
+   classifies the centers the geometry covers and leaves the exterior,
+   the pitch padding, and the canary row unjudged, so the garbage
+   around the draw reads as unjudged rather than as the refusal the
+   full-footprint oracle returns for it; its blank-footprint arm
+   reports zero interior pixels against the same denominator, so a
+   resolve that wrote nothing and one that wrote correctly are distinct
+   results.  Its denominator is the pixel center, which a resolved
+   target does not answer to: `GB_MSPOS0` and `GB_MSPOS1` place the
+   subsamples off-center, so a pixel whose center sits inside the
+   triangle while a subsample sits outside resolves to a blend of the
+   draw color and whatever the multisample buffer held, and the
+   admitted-set test refuses it.  The MSAA arm therefore judges the
+   inset region whose whole sample set is interior, which is strictly
+   smaller than the center-covered 1152 and which the subsample
+   positions determine; the center denominator serves the
+   single-sample uncleared target alone.
    Two questions stand open before the emitter.  The resolve half's
    draw semantics are a hypothesis: `r300_simple_msaa_resolve`
    (r300_blit.c) binds the multisample surface as the render target,
@@ -483,12 +491,16 @@ above is rung zero; the ladder after it runs in this order:
    backend emits the downsampled samples` and `the fragment color is
    written into the multisample surface and then resolved`
    unseparated; the commit that added the path (`r300g: implement
-   MSAA`) states neither, so the emitter waits on an AMD R3xx 3D
-   register statement or a silicon arm that writes a fragment color no
-   multisample sample holds.  The destination byte order stays the
-   falsifier already recorded, and both readings of it -- linear order
-   and the tiled swizzle of the same bytes -- take their predicted
-   dwords before the run, so one submit classifies either outcome;
+   MSAA`) states neither.  An AMD R3xx 3D register statement separates
+   them offline.  Silicon separates them only through an emitter, so
+   the first emitter is written to stand under either reading -- its
+   resolve-half fragment carries a color no multisample sample holds,
+   which the destination then either shows or does not -- and the arm
+   that discriminates the semantics is the same arm that first exercises
+   the path.  The destination byte order stays the falsifier already
+   recorded, and both readings of it -- linear order and the tiled
+   swizzle of the same bytes -- take their predicted dwords before the
+   run, so one submit classifies either outcome;
 7. composed render and sampling surfaces before any core image or
    framebuffer limit rises.  The rung depends on the usage union in
    rung 5 rather than on rung 6, so it runs when its own mechanisms
