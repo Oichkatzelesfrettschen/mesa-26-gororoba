@@ -25,7 +25,7 @@ static unsigned failures;
 enum mutation_mode {
    MUTATION_NONE,
    /* A scaling blit is reported as admitted. */
-   MUTATION_SCALED_BLIT_ADMITS,
+   MUTATION_SCALED_LINEAR_BLIT_ADMITS,
    /* A same-buffer overlapping copy is reported as admitted. */
    MUTATION_OVERLAP_COPY_ADMITS,
 };
@@ -426,14 +426,28 @@ check_blit(const struct fixture *f)
    };
    vkCmdBlitImage(f->cmd, src.image, VK_IMAGE_LAYOUT_GENERAL, dst.image,
                   VK_IMAGE_LAYOUT_GENERAL, 1, &scaled, VK_FILTER_NEAREST);
-   const VkResult scaled_end = vkEndCommandBuffer(f->cmd);
-   if (mutation == MUTATION_SCALED_BLIT_ADMITS)
-      CHECK(scaled_end == VK_SUCCESS,
-            "mutation: scaling blit reported admitted");
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "a nearest scaling blit admits");
+   if (submit(f))
+      return 1;
+   CHECK(texel(&dst, 0, 0) == texel(&src, 0, 0) &&
+         texel(&dst, 1, 0) == texel(&src, 0, 0) &&
+         texel(&dst, 8, 3) == texel(&src, 4, 1) &&
+         texel(&dst, 15, 15) == texel(&src, 7, 7),
+         "the 2x resample reads the nearest sample at (d + 0.5) / 2");
+
+   if (begin(f))
+      return 1;
+   vkCmdBlitImage(f->cmd, src.image, VK_IMAGE_LAYOUT_GENERAL, dst.image,
+                  VK_IMAGE_LAYOUT_GENERAL, 1, &scaled, VK_FILTER_LINEAR);
+   const VkResult linear_end = vkEndCommandBuffer(f->cmd);
+   if (mutation == MUTATION_SCALED_LINEAR_BLIT_ADMITS)
+      CHECK(linear_end == VK_SUCCESS,
+            "mutation: linear scaling blit reported admitted");
    else
-      CHECK(scaled_end != VK_SUCCESS,
-            "a scaling blit poisons the recording: the host row mover "
-            "has no filter");
+      CHECK(linear_end != VK_SUCCESS,
+            "a linear scaling blit poisons the recording: the resample "
+            "executor is nearest only");
 
    if (begin(f))
       return 1;
@@ -978,8 +992,8 @@ int
 main(int argc, char **argv)
 {
    for (int i = 1; i < argc; i++) {
-      if (strcmp(argv[i], "--inject-scaled-blit-admits") == 0) {
-         mutation = MUTATION_SCALED_BLIT_ADMITS;
+      if (strcmp(argv[i], "--inject-scaled-linear-blit-admits") == 0) {
+         mutation = MUTATION_SCALED_LINEAR_BLIT_ADMITS;
       } else if (strcmp(argv[i], "--inject-overlap-copy-admits") == 0) {
          mutation = MUTATION_OVERLAP_COPY_ADMITS;
       } else {

@@ -179,6 +179,11 @@ enum r3v_native_copy_kind {
     * application bytes, released with the recording.
     */
    R3V_NATIVE_COPY_UPDATE_BUFFER,
+   /* Nearest-filter resample between distinct transfer images: the
+    * source rectangle (src_x/src_y, width, height) maps onto the
+    * destination rectangle (dst_x/dst_y, dst_width, dst_height).
+    */
+   R3V_NATIVE_COPY_BLIT_IMAGE,
 };
 
 /* A copy's position relative to the command buffer's deferred draw,
@@ -210,6 +215,7 @@ struct r3v_native_deferred_copy {
    uint32_t src_x, src_y;
    uint32_t dst_x, dst_y;
    uint32_t width, height;
+   uint32_t dst_width, dst_height;
    uint32_t clear_dword;
    uint8_t clear_texel[16];
    uint8_t *update_data;
