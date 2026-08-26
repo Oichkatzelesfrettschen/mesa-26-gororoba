@@ -2125,6 +2125,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The composed render-then-sample runner's recording boundary on the
+  # fixture: five relocation slots reach four buffer objects, the render
+  # target filling both the render color slot and the sample texture
+  # slot, so a binding that names the wrong buffer fails here rather
+  # than on the one attended submission the cell gets.
+  test(
+    'r3v-native-composed-record',
+    r3v_native_attended_composed,
+    args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The compute identity carrier runner's recording boundary on the
   # fixture: the compute surface under its gate, the descriptor set, the
   # reference kernel, and one dispatch record.

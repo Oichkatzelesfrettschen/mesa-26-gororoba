@@ -85,11 +85,42 @@ report(const char *label, const struct r300_triangle_coverage_verdict *v)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   /* --record-only builds every object and records the command buffer,
+    * then stops at the recording boundary.  The argument handling, the
+    * seeding, and the recording contract -- allocation size, both
+    * vertex layouts, the merged relocation binding -- are what this
+    * program can get wrong with no device present, so the shim fixture
+    * calibrates them here and the attended run inherits a proven
+    * sequence.
+    */
+   bool record_only = false;
+   bool usage_error = argc < 2 || argc > 3;
+   if (argc == 3) {
+      if (strcmp(argv[2], "--record-only") == 0)
+         record_only = true;
+      else
+         usage_error = true;
+   }
+   if (usage_error) {
+      fprintf(stderr, "usage: %s <evidence-directory> [--record-only]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+
+   /* A silicon verdict binds to the real libc entry points, so a
+    * preloaded interposer refuses before the first Vulkan call.  The
+    * recording mode reaches no ioctl and reports no verdict, so it runs
+    * on the fixture.
+    */
+   const char *preload = getenv("LD_PRELOAD");
+   if (!record_only && preload != NULL && preload[0] != '\0') {
+      fprintf(stderr,
+              "LD_PRELOAD is set (%s); a hardware run admits no "
+              "interposer\n",
+              preload);
+      return 1;
+   }
 
    /* Both halves take the reference shape, so the sample half's texture
     * geometry is the render half's target at the same extent, pitch, and
@@ -331,6 +362,17 @@ main(int argc, char **argv)
       cmd, memory[MEM_RENDER_VERTEX], memory[MEM_RENDER_TARGET],
       memory[MEM_SAMPLE_VERTEX], memory[MEM_SAMPLE_TARGET], &composed));
    CHECK(vkEndCommandBuffer(cmd));
+
+   if (record_only) {
+      printf("record: ACCEPTED\n");
+      fflush(stdout);
+      vkDestroyCommandPool(device, pool, NULL);
+      for (unsigned i = 0; i < MEM_COUNT; i++)
+         vkFreeMemory(device, memory[i], NULL);
+      vkDestroyDevice(device, NULL);
+      vkDestroyInstance(instance, NULL);
+      return 0;
+   }
 
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
