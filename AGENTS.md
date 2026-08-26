@@ -631,7 +631,7 @@ Structure agent-loaded Markdown documents with clean, predictable formatting:
 Maintain clean, ASCII-compatible text across all checked-in documentation:
 - Keep documentation free of emoji.
 - Use standard typography: choose straight quotes over curly quotes, `--` over em dashes, and `...` over ellipsis glyphs.
-- Close `--` up against adjacent words (`word--word`), matching standard typographic style without surrounding spaces.
+- Enforce space-free closed double-hyphen delimiters: close `--` tightly against adjacent words without surrounding whitespace (`word--word`), ensuring punctuation remains fully closed.
 - Retain meaningful scientific and mathematical symbols: mathematical operators, Greek letters in ISA and equation text, arrows in state transition maps, box-drawing characters in descriptor and packet diagrams, degree symbols, and micro signs.
 - Preserve author and copyright names in their original spellings, including accented characters and Unicode copyright symbols in upstream attribution lines (`Copyright (c) 2024 Vitaliy Triang3l Kuzmin`).
 
