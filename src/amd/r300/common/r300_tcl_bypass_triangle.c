@@ -1017,6 +1017,107 @@ r300_tcl_bypass_triangle_varying_extent_oracle(
       verdict->interior_pass = false;
 }
 
+/* Classifies one pixel center against the triangle: 1 interior, 0
+ * exterior, -1 exactly on an edge.  The three edge functions share a
+ * sign inside the triangle whichever winding the vertices carry.
+ */
+static int
+triangle_center_class(const struct triangle_geometry *g, float px, float py)
+{
+   const float e[3] = {
+      triangle_edgef(g->v[0], g->v[1], g->v[2], g->v[3], px, py),
+      triangle_edgef(g->v[2], g->v[3], g->v[4], g->v[5], px, py),
+      triangle_edgef(g->v[4], g->v[5], g->v[0], g->v[1], px, py),
+   };
+   for (unsigned i = 0; i < 3; i++) {
+      if (e[i] == 0.0f)
+         return -1;
+   }
+   const bool positive = e[0] > 0.0f && e[1] > 0.0f && e[2] > 0.0f;
+   const bool negative = e[0] < 0.0f && e[1] < 0.0f && e[2] < 0.0f;
+   return positive || negative ? 1 : 0;
+}
+
+void
+r300_tcl_bypass_triangle_coverage_oracle(
+   const struct r300_triangle_render_shape *shape,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_coverage_verdict *verdict)
+{
+   /* The verdict producer admits the emitter's own domain and the full
+    * retained footprint, so an inadmissible call reads as a refused
+    * verdict rather than indexing past the buffer.
+    */
+   *verdict = (struct r300_triangle_coverage_verdict){ 0 };
+   if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
+       interior_dword_count == 0 ||
+       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+      return;
+   const uint32_t width = shape->width, height = shape->height;
+   const uint32_t pitch = shape->pitch_pixels;
+   const uint64_t required_bytes =
+      (uint64_t)shape->target_offset +
+      (uint64_t)pitch * (height + R300_TRIANGLE_CANARY_ROWS) * sizeof(uint32_t);
+   if (size_bytes < required_bytes)
+      return;
+
+   const struct triangle_geometry g = triangle_geometry_at(width, height);
+   const uint32_t offset_dwords = shape->target_offset / 4u;
+   const uint32_t *rows = pixels + offset_dwords;
+   verdict->coverage_exact = true;
+   verdict->canary_pass = true;
+
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = 0; x < width; x++) {
+         const uint32_t observed = rows[y * pitch + x];
+         bool is_interior_value = false;
+         for (uint32_t i = 0; i < interior_dword_count; i++)
+            is_interior_value |= observed == interior_dwords[i];
+         const int expected =
+            triangle_center_class(&g, (float)x + 0.5f, (float)y + 0.5f);
+         if (expected < 0)
+            verdict->ambiguous_pixels++;
+         else if (expected == 1)
+            verdict->analytic_pixels++;
+         if (is_interior_value)
+            verdict->interior_pixels++;
+         else if (observed == exterior_dword)
+            verdict->exterior_pixels++;
+         else
+            verdict->mismatch_pixels++;
+      }
+   }
+   if (verdict->mismatch_pixels != 0 || verdict->ambiguous_pixels != 0 ||
+       verdict->interior_pixels != verdict->analytic_pixels)
+      verdict->coverage_exact = false;
+
+   /* The bytes below render row 0 and the canary rows past the extent
+    * carry no draw, so each holds the exterior dword; a device write
+    * outside the rendered rows is as observable as one inside them.
+    */
+   for (uint32_t i = 0; i < offset_dwords; i++) {
+      if (pixels[i] != exterior_dword)
+         verdict->canary_pass = false;
+   }
+   const uint32_t footprint_dwords =
+      pitch * (height + R300_TRIANGLE_CANARY_ROWS);
+   for (uint32_t i = height * pitch; i < footprint_dwords; i++) {
+      if (rows[i] != exterior_dword)
+         verdict->canary_pass = false;
+   }
+   /* Every column past the render extent in a rendered row lies outside
+    * the draw for the same reason, so the pitch padding joins the
+    * canary rather than the classified band.
+    */
+   for (uint32_t y = 0; y < height; y++) {
+      for (uint32_t x = width; x < pitch; x++) {
+         if (rows[y * pitch + x] != exterior_dword)
+            verdict->canary_pass = false;
+      }
+   }
+}
+
 void
 r300_tcl_bypass_triangle_oracle(const uint32_t *pixels, uint32_t size_bytes,
                                 struct r300_triangle_oracle_verdict *verdict)
