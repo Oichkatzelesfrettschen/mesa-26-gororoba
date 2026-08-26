@@ -422,6 +422,7 @@ endef
         rebuild-all-tiers audit-werror driver-root-audit \
         build-lease-test build-job-policy-test \
         pkg-mesa-gororoba deploy-mesa-gororoba \
+        deploy-mesa-gororoba-unit-test \
         help
 
 # Component-policy gate: every profile config must stay inside its
@@ -570,6 +571,8 @@ help:
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
 	@echo "  build-lease-test  verify mutation leases and path-safety guards"
 	@echo "  build-job-policy-test verify nproc local jobs and the six-job distcc ceiling"
+	@echo "  deploy-mesa-gororoba install the release package only with MESA_GOROROBA_DEPLOY_ACCEPTED=1"
+	@echo "  deploy-mesa-gororoba-unit-test calibrate consent, package selection, and remote argv"
 	@echo "  rebuild-<profile> clean + configure + build; r300 release also runs unit tests"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
@@ -3391,8 +3394,8 @@ rebuild-all-tiers: \
 # mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
 # ati_r300/r3v Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
 # pkg-mesa-gororoba runs makepkg and repo-adds the artifact to a local
-# [gororoba] repo; deploy-mesa-gororoba ships it to TARGET_HOST and installs it
-# (atomic swap over stock mesa; --overwrite forces any file collision).  Build
+# [gororoba] repo; deploy-mesa-gororoba ships it to TARGET_HOST and asks pacman
+# to execute the package-declared replacement transaction.  Build
 # on a fast x86-64 host whose llvm major matches the target's llvm-libs.
 # Override the pinned source commit with GOROROBA_COMMIT=<sha>.  Artifacts live
 # under ../build/ (the sanctioned build area), not as workspace siblings.
@@ -3401,6 +3404,7 @@ GOROROBA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-gororoba-pkg)
 GOROROBA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-gororoba-repo)
 GOROROBA_REPO_NAME ?= gororoba
 TARGET_HOST        ?= cachyos-vostro1000
+MESA_GOROROBA_DEPLOY_ACCEPTED ?= 0
 
 pkg-mesa-gororoba:
 	mkdir -p "$(GOROROBA_PKG_DIR)/tmp" "$(GOROROBA_REPO_DIR)"
@@ -3412,8 +3416,11 @@ pkg-mesa-gororoba:
 	@echo "packaged + repo-added under $(GOROROBA_REPO_DIR); deploy: make deploy-mesa-gororoba TARGET_HOST=<host>"
 
 deploy-mesa-gororoba:
-	@pkg=$$(ls -t "$(GOROROBA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst 2>/dev/null | head -1); \
-	test -n "$$pkg" || { echo "no package; run 'make pkg-mesa-gororoba' first"; exit 1; }; \
-	echo "deploy $$pkg -> $(TARGET_HOST)"; \
-	scp "$$pkg" "$(TARGET_HOST):/tmp/" && \
-	ssh "$(TARGET_HOST)" "yes | sudo -n pacman -U --overwrite '*' /tmp/$$(basename $$pkg)"
+	python3 $(CURDIR)/scripts/deploy_mesa_gororoba.py \
+		--package-dir "$(GOROROBA_PKG_DIR)" \
+		--target-host "$(TARGET_HOST)" \
+		--accepted "$(MESA_GOROROBA_DEPLOY_ACCEPTED)"
+
+deploy-mesa-gororoba-unit-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		python3 -m pytest -q $(CURDIR)/tests/test_deploy_mesa_gororoba.py
