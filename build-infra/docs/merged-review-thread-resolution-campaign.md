@@ -41,9 +41,8 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Thirty-six rows are closed, two are
-  fixed on merged main pending exact-ID resolution, and 12 actionable rows
-  require merged repairs.
+  append-only evidence-refresh ledger.  Thirty-eight rows are closed, and the
+  12 actionable rows require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -329,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 | State | Threads | Required transition |
 | --- | ---: | --- |
 | actionable | 12 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 2 | Merge this re-audit, then resolve and record |
-| closed as fixed | 31 | Retain exact merge and post-resolution evidence |
+| fixed on merged main | 0 | None |
+| closed as fixed | 33 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -401,7 +400,9 @@ selection to `tempfile` and hashes physical tracked bytes without clean
 filters.  The non-default `TMPDIR` and hostile-filter fixtures pass.  PR 1918
 requalifies the expanded source-root files at merge commit
 `59593fda660a7603789c895c479c2bb38d5140fa`; all 125 source-root and mount tests
-pass.  Both exact GitHub threads remain unresolved until this re-audit merges.
+pass.  PR 1927 re-audits both targets at merge commit
+`c249fec76a8579d842cc69e4182be62b3cbe01bd`; both exact GitHub threads are
+resolved and re-queried.
 
 The surviving actionable mechanisms cover archive-attribute-isolated source
 views; installation-success and build-control identity; nonnull Draw decline
@@ -422,10 +423,9 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 36 resolved and 14 unresolved exact IDs.  Two
-unresolved rows have verified merged-main fixes and resolve after this re-audit
-merges.  The other 12 require their actionable mechanisms to merge before
-exact-ID resolution.
+Live GraphQL state reports 38 resolved and 12 unresolved exact IDs.  The 12
+unresolved rows require their actionable mechanisms to merge before exact-ID
+resolution.
 
 ## Verification
 
