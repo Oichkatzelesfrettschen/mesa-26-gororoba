@@ -15,11 +15,22 @@
   "$defs": {
     "sha256": {
       "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
       "pattern": "^[0-9a-f]{64}$"
     },
     "git_object": {
       "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
       "pattern": "^[0-9a-f]{40}$"
+    },
+    "build_id": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "[^0-9A-Fa-f]"
+      }
     },
     "non_empty_string": {
       "type": "string",
@@ -212,7 +223,7 @@
           "description": "Digest of the installed radeon.ko corresponding to the running module"
         },
         "module_build_id": {
-          "$ref": "#/$defs/non_empty_string",
+          "$ref": "#/$defs/build_id",
           "description": "ELF Build ID of the installed radeon.ko corresponding to the running module"
         },
         "equivalence": {"$ref": "#/$defs/kernel_equivalence"}
@@ -314,19 +325,19 @@
           "description": "xorg-server package name-version-pkgrel (pacman -Q form)"
         },
         "xorg_binary_sha256": {"$ref": "#/$defs/sha256"},
-        "xorg_build_id": {"$ref": "#/$defs/non_empty_string"},
+        "xorg_build_id": {"$ref": "#/$defs/build_id"},
         "glamor_sha256": {
           "$ref": "#/$defs/sha256",
           "description": "sha256 of libglamoregl.so"
         },
-        "glamor_build_id": {"$ref": "#/$defs/non_empty_string"},
+        "glamor_build_id": {"$ref": "#/$defs/build_id"},
         "active_ddx": {
           "type": "string",
           "enum": ["modesetting", "radeon"],
           "description": "DDX actually loaded for the session; a bare 'Xorg active' is inadmissible"
         },
         "ddx_module_sha256": {"$ref": "#/$defs/sha256"},
-        "ddx_module_build_id": {"$ref": "#/$defs/non_empty_string"},
+        "ddx_module_build_id": {"$ref": "#/$defs/build_id"},
         "ddx_package": {
           "$ref": "#/$defs/non_empty_string",
           "description": "xf86-video-ati package version when active_ddx is radeon"
@@ -386,7 +397,7 @@
         },
         "libgallium_path": {"$ref": "#/$defs/non_empty_string"},
         "libgallium_sha256": {"$ref": "#/$defs/sha256"},
-        "libgallium_build_id": {"$ref": "#/$defs/non_empty_string"},
+        "libgallium_build_id": {"$ref": "#/$defs/build_id"},
         "prefix": {"$ref": "#/$defs/non_empty_string", "description": "install prefix of the image"},
         "profile": {"type": "string", "description": "build-infra profile name"},
         "provenance": {"$ref": "#/$defs/mesa_provenance"}

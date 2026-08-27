@@ -1,0 +1,101 @@
+{
+  "base_fixture": "valid-source-to-payload-v2.json",
+  "mutations": [
+    {
+      "name": "empty Xorg Build ID",
+      "path": ["xorg", "xorg_build_id"],
+      "value": "",
+      "validator": "minLength"
+    },
+    {
+      "name": "nonhexadecimal Xorg Build ID",
+      "path": ["xorg", "xorg_build_id"],
+      "value": "not-a-build-id",
+      "validator": "not"
+    },
+    {
+      "name": "empty glamor Build ID",
+      "path": ["xorg", "glamor_build_id"],
+      "value": "",
+      "validator": "minLength"
+    },
+    {
+      "name": "nonhexadecimal glamor Build ID",
+      "path": ["xorg", "glamor_build_id"],
+      "value": "not-a-build-id",
+      "validator": "not"
+    },
+    {
+      "name": "empty DDX Build ID",
+      "path": ["xorg", "ddx_module_build_id"],
+      "value": "",
+      "validator": "minLength"
+    },
+    {
+      "name": "nonhexadecimal DDX Build ID",
+      "path": ["xorg", "ddx_module_build_id"],
+      "value": "not-a-build-id",
+      "validator": "not"
+    },
+    {
+      "name": "empty libgallium Build ID",
+      "path": ["mesa", "libgallium_build_id"],
+      "value": "",
+      "validator": "minLength"
+    },
+    {
+      "name": "nonhexadecimal libgallium Build ID",
+      "path": ["mesa", "libgallium_build_id"],
+      "value": "not-a-build-id",
+      "validator": "not"
+    },
+    {
+      "name": "empty kernel module Build ID",
+      "path": ["kernel", "provenance", "module_build_id"],
+      "value": "",
+      "validator": "minLength"
+    },
+    {
+      "name": "nonhexadecimal kernel module Build ID",
+      "path": ["kernel", "provenance", "module_build_id"],
+      "value": "not-a-build-id",
+      "validator": "not"
+    },
+    {
+      "name": "short SHA-256 digest",
+      "path": ["kernel", "provenance", "source_pin_sha256"],
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "validator": "minLength"
+    },
+    {
+      "name": "long SHA-256 digest",
+      "path": ["kernel", "provenance", "source_pin_sha256"],
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "validator": "maxLength"
+    },
+    {
+      "name": "newline-terminated SHA-256 digest",
+      "path": ["kernel", "provenance", "source_pin_sha256"],
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "validator": "maxLength"
+    },
+    {
+      "name": "short Git object ID",
+      "path": ["mesa", "source_sha"],
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "validator": "minLength"
+    },
+    {
+      "name": "long Git object ID",
+      "path": ["mesa", "source_sha"],
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "validator": "maxLength"
+    },
+    {
+      "name": "newline-terminated Git object ID",
+      "path": ["mesa", "source_sha"],
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "validator": "maxLength"
+    }
+  ]
+}
