@@ -599,10 +599,33 @@ The `HBTCL-NN` tokens are secondary registry labels for this tracker; the
 load-bearing identity of each row is the mechanism in the description column
 (durable mechanism names for branches, commits, and findings).
 
+The demand decision for HBTCL-04f.4 and HBTCL-04f.5 is bound to the retained
+RS482 census
+`src/re/r300/results/r2vb-telemetry-client-20260717T230013Z/` in the external
+`steinmarder` repository. Its `workload.table` records these commands and its
+Piglit result archives plus `telemetry.all.txt` record these classified cells:
+
+| Workload | Exact command | Classified cells |
+| --- | --- | ---: |
+| Piglit sanity | `env PIGLIT_PLATFORM=surfaceless_egl piglit run --overwrite sanity "$1"` | 3 |
+| Piglit `glsl-vs` | `env PIGLIT_PLATFORM=surfaceless_egl piglit run --overwrite quick -t glsl-vs "$1"` | 84 |
+| Piglit `draw-vertices` | `env PIGLIT_PLATFORM=surfaceless_egl piglit run --overwrite quick -t draw-vertices "$1"` | 10 |
+| glmark2 | `glmark2 -b build:duration=5 -b texture:duration=5 -b desktop:duration=5` | 11 |
+| glxgears control | `glxgears` | 0; excluded because the GLX process selected llvmpipe and reported `engagement=absent` |
+
+The 108 engaged cells comprise 84 single-pass producers, 16 control-flow
+rejects, and 8 intrinsic rejects, with zero over-budget, split, typed, or
+retained producers. The bundle pins Mesa `ae7621c0d1`, runner
+`94ff7985f76426972c704d2ae86073e0ae7b745a`, kernel `7.1.3-2-cachyos`, one
+RS482 boot, and a calibrated 60-second idle interval; its
+`box_freeze_hashes.sha256` verifies every counted artifact. The zero-demand
+verdict covers this workload population and boot. Desktop/glamor sessions and
+larger applications remain uncaptured and can reopen either demand-gated row.
+
 | Task | Work | Depends on |
 | --- | --- | --- |
 | HBTCL-01 | No-submit PM4 decode of the clear-quad IB vs a working r3v triangle IB: capture with in-tree `R300_TRACE` / `RADEON_DUMP_PATCHED_IB` (and, when present, the external `steinmarder` r300 retained-IB decode tools), then compare the VAP frontend words; name the single diverging register among `VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE` | -- |
-| HBTCL-02 | Converge `util_blitter`'s clear-quad emit onto the demonstrated-hang-free bypass shape; re-run `fbo-clearmipmap` under the forensic poller, confirm the VAP/GA stall clears | HBTCL-01 |
+| HBTCL-02 | OPEN: commit `41d7ff464fb` routes the measured SWTCL TEXCOORD_XY point-sprite blit through the demonstrated-hang-free plain-quad shape. Re-run the exact `fbo-clearmipmap` reproducer under the forensic poller and close this row only when its fence retires without the `VAP_BUSY = GA_BUSY = 100%` stall. A completed draw with wrong pixels routes independently to the stale-US lane | HBTCL-01 |
 | HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the typed one-`vec4` budget escape. Perspective divide (04b), geometric clipping (04c-04e), and the bounded standing-route promotion (HBTCL-08) are landed; the residual is algebraic compaction and multi-carry transport (04f.4-04f.5) plus the points-topology RCA (HBTCL-07) | -- |
 | HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
 | HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
@@ -615,8 +638,8 @@ load-bearing identity of each row is the mechanism in the description column
 | HBTCL-04f.3c | DONE (commit `19eaf0ec242`): flat-input typed-source semantic parity. The fragment compile applies `r300_nir_lower_f2i_epsilon` (`x * (1 + 2^-15)`, an away-from-zero nudge compensating interpolated-varying error) before `f2i32`/`f2u32`; the direct Draw VS path `r300_draw_init_vertex_shader` lowers integers with `nir_lower_int_to_float` and omits that nudge. An R2VB producer's generated point attributes are flat, so the fragment epsilon can push a fractional value across the truncation boundary relative to gallivm. An `r300_fs_input_semantics` distinction (`INTERPOLATED` vs `R2VB_FLAT_VERTEX`) skips the epsilon for flat R2VB producer conversions; a host oracle covers a fractional `f2i` case just below and above an integer boundary | HBTCL-04f.3 |
 | HBTCL-04f.3R | DONE, DIAGNOSTIC-ONLY (commit `8b475779ef2`): the typed split is wired so a controlled corpus can reach it. The admission gate builds the restaged position FS (`r300_r2vb_build_restaged_fs_nir`, the plan consumer in `rs482-producer-alu-compaction-design.md`) and preflight-compiles it, so the backend verdict (`REJECT` unsupported, `OVER_ALU_BUDGET` split-eligible) decides ALU-lowering capability. The pre-lowering `r300_nir_op_is_fragment_aluable` whitelist scan narrows to the structural facts that survive lowering: single-block control flow; plain I/O, uniform/UBO, push-constant, and constant-data intrinsics; a `gl_Position` output; and a bounded set of position-feeding inputs (up to `R300_R2VB_MAX_PRODUCER_INPUTS`) mapped in the producer's `VARYING_SLOT_VAR0 + location-rank` order, each representable by the producer input contract. Under the exact `R300_R2VB_TYPED_SPLIT=1` diagnostic gate, a narrow typed-source shape reaches the split (Boolean `flt -> b2f32`, signed `f2i32` + constant clamp `-> i2f32`, unsigned `max(x,0)` + `f2u32` + constant clamp `-> u2f32`); `r300_r2vb_typed_split_gate_value` accepts only the string `1`, while unset, empty, `0`, padded, and every other value keep the route closed. An under-budget typed producer declines (`TYPED_SINGLE_PASS_UNPROVEN`). This gate proves the mechanism on a controlled corpus and stays diagnostic-only: it establishes carry transport exactness (04f.3), not source-conversion equivalence (04f.3e), so it is not a production-safe route | HBTCL-04f.3, HBTCL-04f.3c, HBTCL-04f.3e, COMP-PLAN-01 |
 | HBTCL-04f.3e | OPEN, PRODUCTION BLOCKER: typed source-domain equivalence. The exact-carry proof (04f.3) shows an integer within `+-2^17` round-trips FP24->FP32 exactly; it does not show the FP24 producer's `f2i32`/`f2u32` produced the same integer as the gallivm/Draw software VS, since a runtime float can quantize differently in FP24 before truncation (a value just below `2` truncates to `1` in software but rounds to `2` in FP24 first). The production contract needs two independent predicates: source conversion equivalence (the FP24 producer's typed value equals the Draw reference value) and carry transport exactness (04f.3). An arbitrary `f2i32(attribute)` + clamp bounds the output without proving the conversion matched the reference, so it declines `R300_R2VB_REJECT_TYPED_SOURCE_DOMAIN_UNPROVEN`. Typed-source expansion of the HBTCL-08 standing route stays blocked until a static source-domain predicate exists (exact integral floats within `+-2^17`; documented integer system streams; range-contracted integer uniform/push values; Boolean compares with proven threshold separation) | HBTCL-04f.3R |
-| HBTCL-04f.4 | PARKED, DEMAND-GATED: standing-route telemetry over real workloads found no over-budget producer population, so implementation waits on measured demand. Semantics-preserving algebraic compaction of the over-budget producer -- designed in `rs482-producer-alu-compaction-design.md` (two-proof certified-rewrite pipeline over the emitted resource vector, shared producer plan with the split; the multiply-minimization family is gated off as a DP4-regime loss). Implementation gated on PROOF-FP24-01 (the FP24 exact-integer window is 2^17, not 2^24) and a real-workload mine; the affine closed form is contract-restricted and `recur90` stays a split stress case | HBTCL-04f.2 |
-| HBTCL-04f.5 | OPEN, NOT ACTIVE: no measured multi-carry workload demand. Multi-carry / MRT transport for producers whose escape needs more than one carry stream; gallivm fallback for every unsupported shape. R400 code banks stay diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-04f.2 |
+| HBTCL-04f.4 | PARKED, DEMAND-GATED by the 108-cell census above: the retained population contains no over-budget or split producer, so implementation waits on a retained demand witness. Semantics-preserving algebraic compaction of the over-budget producer remains designed in `rs482-producer-alu-compaction-design.md` (two-proof certified-rewrite pipeline over the emitted resource vector, shared producer plan with the split; the multiply-minimization family is gated off as a DP4-regime loss). PROOF-FP24-01 fixes the exact-integer window at 2^17, the affine closed form is contract-restricted, and `recur90` stays a split stress case | HBTCL-04f.2 |
+| HBTCL-04f.5 | OPEN, DEMAND-GATED by the same census: the retained population contains no producer that requires more than one carry stream. Multi-carry / MRT transport remains the escape for a future retained producer with that shape; gallivm handles every unsupported shape. R400 code banks stay diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-04f.2 |
 | HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200-0x22dc` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
 | HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
@@ -629,8 +652,8 @@ engine audit; HBTCL-04a-04e are the landed contract, divide, and clip ladder,
 04f.1-04f.2 the landed emitted-slot admission and float one-`vec4` split, 04f.3
 the host-tested typed split primitive whose diagnostic route reachability landed
 (04f.3R, ahead of it the landed flat-input epsilon parity 04f.3c) and whose
-production admission blocks on source-domain equivalence (04f.3e), 04f.4 parked
-on measured demand and 04f.5 open but inactive for the same reason;
+production admission blocks on source-domain equivalence (04f.3e), while the
+population-scoped 108-cell census parks 04f.4 and demand-gates 04f.5;
 HBTCL-08 lands the bounded packed-FP32 standing route while HBTCL-07 retains the
 points-topology RCA; HBTCL-05/06/09/10 are
 the register-table, lighting, MRT-export, and movement extensions. All hardware
@@ -639,12 +662,16 @@ poller; the decode steps submit nothing.
 
 ## Open items
 
-- The `fbo-clearmipmap` clear-quad wedge: the no-submit PM4 IB decode ran
-  (HBTCL-01), and the SWTCL TEXCOORD_XY blit now falls back to a plain quad,
-  completing the 2013 MSAA-resolve fix. HBTCL-02C is a ledger reconciliation: the
-  fbo-clearmipmap reproducer's symptoms fold into the armed stale-US lane, whose
-  live-trace RCA covers them, and the row stays open only for the remainder that
-  a re-run shows independent of the armed-US history.
+- The `fbo-clearmipmap` clear-quad wedge remains independently open in
+  HBTCL-02. The retained TEXCOORD_XY point-sprite finding records accepted
+  command streams followed by an unsignaled wait and `RBBM_STATUS=0x8411c100`,
+  then records the plain-quad fix and its retiring silicon acceptance run. It
+  does not retain an exact post-fix `fbo-clearmipmap` rerun that proves this
+  unsignaled VAP/GA stall equivalent to the stale-US result. The stale-US
+  finding instead records completed draws whose pixels come from prior-epoch
+  fragment-program state. The exact `fbo-clearmipmap` rerun under the forensic
+  poller closes HBTCL-02 only when its fence retires without the VAP/GA stall;
+  any completed wrong-pixel result continues in the stale-US lane.
 - The typed one-`vec4` split is a host-tested primitive unreachable through the
   production draw route: `r300_vs_nir_is_fragment_aluable` scans the pre-lowering
   application VS against a float-only whitelist, so a typed carry op declines the
@@ -689,7 +716,15 @@ underflow finding and its fix in commit `9899a4d8dd3`
 `findings/active/2026-05-29-rs482-swtcl-vap-16bit-vertex-count-underflow.md`);
 the has_tcl/hardware-unit map, the vertex-engine write-only/read-wedge
 asymmetry, the R2VB direct-VAP validator-accepted hang-free submit, and the
-platform reset/wedge taxonomy. Archive: Glaeser
+platform reset/wedge taxonomy; the TEXCOORD_XY point-sprite hang and plain-quad
+acceptance
+(`src/re/r300/findings/rs482-swtcl-texcoord-blit-point-sprite-wedge.md`);
+the distinct completed-draw stale-US result
+(`src/re/r300/findings/active/2026-07-23-rs482-swtcl-clear-stale-us-fragment-program-epoch.md`);
+and the population-scoped demand census
+(`src/re/r300/findings/active/2026-07-17-r2vb-real-workload-telemetry-census-single-dominant.md`)
+with its exact commands, telemetry, and hash manifest under
+`src/re/r300/results/r2vb-telemetry-client-20260717T230013Z/`. Archive: Glaeser
 (1994) linear-collineation split, Hoppe (1999) FIFO post-transform cache, Mayer
 (1970) invariant-data axis transform, Artwick (1984) measured clip-versus-matrix
 cost split and per-vertex quaternion cost, Owens et al. (2005) vertex stage as
