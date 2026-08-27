@@ -654,6 +654,85 @@ case_float_single(struct r300_context *r300)
    ralloc_free(vs);
 }
 
+/* Both children inherit uninitialized process-cached gate values because this
+ * case runs before the production admission helper.  The positive child
+ * proves the under-budget force-split decision reaches the shadow check; the
+ * mismatch child perturbs the cached plan so the same decision exercises the
+ * release counter or the assertion-build stop. */
+static void
+case_force_split_shadow(struct r300_context *r300)
+{
+   printf("forced under-budget split has a calibrated shadow writer\n");
+   static struct r300_vertex_shader fake_vs;
+   memset(&fake_vs, 0, sizeof(fake_vs));
+   nir_shader *vs = build_float_fits();
+   fake_vs.state.type = PIPE_SHADER_IR_NIR;
+   fake_vs.state.ir.nir = vs;
+   r300->vs_state.state = &fake_vs;
+
+   const struct r300_r2vb_producer_plan *plan =
+      r300_r2vb_producer_plan_get(r300, false, R300_R2VB_POSITION_CLIP);
+   struct r300_r2vb_producer_plan *cached = fake_vs.r2vb_plan[0][0];
+   setenv("R300_R2VB_FORCE_SPLIT", "1", 1);
+   setenv("R300_R2VB_BUDGET_ESCAPE", "spill1", 1);
+
+   bool forced_shadow_witness = false;
+   if (plan && plan->action == R300_R2VB_PLAN_SINGLE && cached) {
+      pid_t child = fork();
+      if (child == 0) {
+         bool admitted = r300_r2vb_admits_producer_for_test(
+            r300, false, R300_R2VB_POSITION_CLIP);
+         _exit(admitted &&
+                     fake_vs.r2vb_admission[0][0] == R300_R2VB_ADMIT_SPLIT &&
+                     r300_r2vb_plan_shadow_divergences() == 0
+                  ? 0
+                  : 1);
+      } else if (child > 0) {
+         int status = 0;
+         forced_shadow_witness = waitpid(child, &status, 0) == child &&
+                                 WIFEXITED(status) &&
+                                 WEXITSTATUS(status) == 0;
+      }
+   }
+   CHECK(forced_shadow_witness,
+         "forced split reaches the matching shadow writer");
+
+   bool forced_mismatch_witness = false;
+   if (plan && plan->action == R300_R2VB_PLAN_SINGLE && cached) {
+      pid_t child = fork();
+      if (child == 0) {
+         cached->action = R300_R2VB_PLAN_SPLIT;
+         bool admitted = r300_r2vb_admits_producer_for_test(
+            r300, false, R300_R2VB_POSITION_CLIP);
+#ifdef NDEBUG
+         _exit(admitted && r300_r2vb_plan_shadow_divergences() > 0 ? 0 : 1);
+#else
+         _exit(admitted ? 0 : 1);
+#endif
+      } else if (child > 0) {
+         int status = 0;
+         forced_mismatch_witness = waitpid(child, &status, 0) == child;
+#ifdef NDEBUG
+         forced_mismatch_witness = forced_mismatch_witness &&
+                                   WIFEXITED(status) &&
+                                   WEXITSTATUS(status) == 0;
+#else
+         forced_mismatch_witness = forced_mismatch_witness &&
+                                   WIFSIGNALED(status) &&
+                                   WTERMSIG(status) == SIGABRT;
+#endif
+      }
+   }
+   CHECK(forced_mismatch_witness,
+         "forced split detects a mismatched plan action");
+
+   unsetenv("R300_R2VB_FORCE_SPLIT");
+   unsetenv("R300_R2VB_BUDGET_ESCAPE");
+   r300_r2vb_plan_cache_release(&fake_vs);
+   r300->vs_state.state = NULL;
+   ralloc_free(vs);
+}
+
 /* A producer with no uniform-class variable is admissible: the production
  * route delivers passthrough and transform-only producers, and the RS482
  * shadow-parity corpus caught the plan diverging from the memo (io_shape
@@ -1540,6 +1619,7 @@ main(void)
    struct r300_context *r300 = fake_r300_context();
 
    case_float_single(r300);
+   case_force_split_shadow(r300);
    case_uniform_free_single(r300);
    case_computed_varying_position_cell(r300);
    case_computed_varying_single_cell(r300);

@@ -276,15 +276,18 @@ enum r300_r2vb_admission_memo {
     R300_R2VB_ADMIT_SPLIT,
 };
 
-/* The meaning of a memo cell depends on the writer that populated it: the
- * legacy float route records a SPLIT only under the spill1 escape gate, and
- * the typed diagnostic route records exactly what its contract admits.  The
- * classify structure fixes the writer per cell -- a VS that passes the
- * fragment-aluable scan takes the float writer, a structurally rejected VS
- * reaches the typed writer -- so the effective mapping below is
- * deterministic per cell, independent of call order and of the other gate. */
+/* The meaning of a memo cell depends on the writer that populated it.  The
+ * legacy float route records a SPLIT only under the spill1 escape gate.  The
+ * forced-float-split writer records a SPLIT after the under-budget route has
+ * separately admitted a cut, while the plan still classifies the unsplit
+ * producer as SINGLE.  The typed diagnostic route records exactly what its
+ * contract admits.  The classify structure fixes the writer per cell -- a VS
+ * that passes the fragment-aluable scan takes a float writer, and a
+ * structurally rejected VS reaches the typed writer -- so the effective
+ * mapping below is deterministic per decision point. */
 enum r300_r2vb_memo_writer {
     R300_R2VB_MEMO_WRITER_LEGACY_FLOAT = 0,
+    R300_R2VB_MEMO_WRITER_FORCED_FLOAT_SPLIT,
     R300_R2VB_MEMO_WRITER_TYPED_DIAGNOSTIC,
 };
 
