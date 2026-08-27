@@ -130,6 +130,13 @@ if with_tests
     timeout: 30,
     suite: ['amd', 'drm-shim'],
   )
+  test(
+    'radeon-noop-drm-shim-write-only-state-token-readable-witness',
+    radeon_noop_drm_shim_test,
+    args: ['write-only-state-token-readable-witness'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
 
   if cc.get_define(
     '__GLIBC__',

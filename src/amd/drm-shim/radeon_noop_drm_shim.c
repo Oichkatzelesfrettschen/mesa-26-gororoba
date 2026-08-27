@@ -2669,6 +2669,206 @@ test_receive_descriptor(int socket_fd)
 }
 
 static void
+test_state_token_wrong_inode_witness(void)
+{
+   int witness_fd =
+      open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   TEST_CHECK(witness_fd >= 0,
+              "wrong-inode witness open failed with errno %d", errno);
+   if (witness_fd < 0)
+      return;
+
+   drm_shim_test_force_state_token_readable_witness(witness_fd);
+   errno = 0;
+   int rejected_open =
+      open("/dev/dri/renderD128", O_WRONLY | O_CLOEXEC);
+   int open_errno = errno;
+   int readable_witness_fd =
+      drm_shim_test_state_token_readable_witness_fd();
+   int rejected_fd = drm_shim_test_rejected_state_token_fd();
+   drm_shim_test_force_state_token_readable_witness(-1);
+
+   TEST_CHECK(rejected_open == -1 && open_errno == ENODEV,
+              "wrong-inode state token open returned %d errno %d",
+              rejected_open, open_errno);
+   TEST_CHECK(rejected_fd >= 0,
+              "wrong-inode rejection did not record its target fd");
+   TEST_CHECK(readable_witness_fd >= 0,
+              "wrong-inode rejection did not record its readable witness");
+   if (rejected_fd >= 0)
+      TEST_CHECK(!drm_shim_test_fd_is_registered(rejected_fd),
+                 "wrong-inode target fd %d remained registered",
+                 rejected_fd);
+   if (rejected_fd >= 0) {
+      errno = 0;
+      int descriptor_flags = fcntl(rejected_fd, F_GETFD);
+      int descriptor_errno = errno;
+      TEST_CHECK(descriptor_flags == -1 && descriptor_errno == EBADF,
+                 "wrong-inode target fd %d remained open: %d errno %d",
+                 rejected_fd, descriptor_flags, descriptor_errno);
+   }
+   if (readable_witness_fd >= 0) {
+      errno = 0;
+      int descriptor_flags = fcntl(readable_witness_fd, F_GETFD);
+      int descriptor_errno = errno;
+      TEST_CHECK(descriptor_flags == -1 && descriptor_errno == EBADF,
+                 "wrong-inode readable witness fd %d remained open: %d "
+                 "errno %d",
+                 readable_witness_fd, descriptor_flags,
+                 descriptor_errno);
+   }
+   if (rejected_open >= 0)
+      close(rejected_open);
+   close(witness_fd);
+}
+
+static void
+test_write_only_scm_rights(void)
+{
+   int bo_baseline = drm_shim_test_live_bos();
+   int backing_baseline = drm_shim_test_live_bo_backing_files();
+   int source_fd =
+      open("/dev/dri/renderD128", O_WRONLY | O_CLOEXEC);
+   TEST_CHECK(source_fd >= 0,
+              "write-only SCM source open failed with errno %d", errno);
+   if (source_fd < 0)
+      return;
+
+   int source_status_flags = fcntl(source_fd, F_GETFL);
+   TEST_CHECK(source_status_flags >= 0 &&
+                 (source_status_flags & O_ACCMODE) == O_WRONLY,
+              "write-only SCM source flags are 0x%x",
+              source_status_flags);
+
+   struct drm_radeon_gem_create create = {
+      .size = 4096,
+      .alignment = 4096,
+      .initial_domain = RADEON_GEM_DOMAIN_GTT,
+   };
+   int ret =
+      ioctl(source_fd, DRM_IOCTL_RADEON_GEM_CREATE, &create);
+   struct drm_radeon_gem_mmap mmap_bo = {
+      .handle = create.handle,
+   };
+   if (ret == 0)
+      ret = ioctl(source_fd, DRM_IOCTL_RADEON_GEM_MMAP, &mmap_bo);
+   TEST_CHECK(ret == 0 && create.handle && mmap_bo.addr_ptr &&
+                 drm_shim_test_live_bos() == bo_baseline + 1 &&
+                 drm_shim_test_live_bo_backing_files() ==
+                    backing_baseline + 1,
+              "write-only SCM setup returned %d handle %u offset 0x%llx "
+              "BOs %d/%d backing %d/%d errno %d",
+              ret, create.handle,
+              (unsigned long long)mmap_bo.addr_ptr,
+              drm_shim_test_live_bos(), bo_baseline,
+              drm_shim_test_live_bo_backing_files(), backing_baseline,
+              errno);
+
+   int sockets[2] = {-1, -1};
+   int received_fd = -1;
+   int received_fd_number = -1;
+   int socket_result =
+      socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, sockets);
+   TEST_CHECK(socket_result == 0,
+              "write-only SCM socketpair returned %d errno %d",
+              socket_result, errno);
+   if (socket_result == 0 && ret == 0) {
+      ssize_t length = test_send_descriptor(sockets[0], source_fd);
+      TEST_CHECK(length == 1,
+                 "write-only SCM send returned %zd errno %d",
+                 length, errno);
+      if (length == 1) {
+         int close_result = close(source_fd);
+         source_fd = -1;
+         TEST_CHECK(close_result == 0,
+                    "write-only SCM source close returned %d errno %d",
+                    close_result, errno);
+
+         received_fd = test_receive_descriptor(sockets[1]);
+         received_fd_number = received_fd;
+         TEST_CHECK(received_fd >= 0,
+                    "write-only SCM receive returned %d errno %d",
+                    received_fd, errno);
+         if (received_fd >= 0) {
+            int received_status_flags = fcntl(received_fd, F_GETFL);
+            TEST_CHECK(received_status_flags >= 0 &&
+                          (received_status_flags & O_ACCMODE) == O_WRONLY,
+                       "write-only SCM receiver flags are 0x%x",
+                       received_status_flags);
+            struct drm_radeon_gem_busy busy = {
+               .handle = create.handle,
+               .domain = UINT32_MAX,
+            };
+            ret =
+               ioctl(received_fd, DRM_IOCTL_RADEON_GEM_BUSY, &busy);
+            TEST_CHECK(ret == 0 &&
+                          busy.domain == RADEON_GEM_DOMAIN_GTT,
+                       "write-only SCM receiver lost GEM state: %d "
+                       "domain 0x%x errno %d",
+                       ret, busy.domain, errno);
+            struct drm_gem_close close_bo = {
+               .handle = create.handle,
+            };
+            ret = ioctl(received_fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+            TEST_CHECK(ret == 0,
+                       "write-only SCM GEM close returned %d errno %d",
+                       ret, errno);
+            if (ret == 0)
+               create.handle = 0;
+         }
+      }
+   }
+
+   if (received_fd >= 0)
+      close(received_fd);
+   if (received_fd_number >= 0) {
+      TEST_CHECK(!drm_shim_test_fd_is_registered(received_fd_number),
+                 "write-only SCM receiver fd %d remained registered",
+                 received_fd_number);
+      errno = 0;
+      int descriptor_flags = fcntl(received_fd_number, F_GETFD);
+      int descriptor_errno = errno;
+      TEST_CHECK(descriptor_flags == -1 && descriptor_errno == EBADF,
+                 "write-only SCM receiver fd %d remained open: %d "
+                 "errno %d",
+                 received_fd_number, descriptor_flags,
+                 descriptor_errno);
+   }
+   if (source_fd >= 0) {
+      if (create.handle) {
+         struct drm_gem_close close_bo = {
+            .handle = create.handle,
+         };
+         (void)ioctl(source_fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+         create.handle = 0;
+      }
+      close(source_fd);
+   }
+   if (sockets[0] >= 0)
+      close(sockets[0]);
+   if (sockets[1] >= 0)
+      close(sockets[1]);
+
+   TEST_CHECK(drm_shim_test_live_bos() == bo_baseline &&
+                 drm_shim_test_live_bo_backing_files() ==
+                    backing_baseline,
+              "write-only SCM cleanup retained BOs %d/%d or backing "
+              "files %d/%d",
+              drm_shim_test_live_bos(), bo_baseline,
+              drm_shim_test_live_bo_backing_files(), backing_baseline);
+}
+
+static int
+test_write_only_state_token_readable_witness(void)
+{
+   if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+      return 1;
+   test_state_token_wrong_inode_witness();
+   test_write_only_scm_rights();
+   return test_failures ? 1 : 0;
+}
+
+static void
 test_scm_record_fifo(void)
 {
    int backing_baseline = drm_shim_test_live_bo_backing_files();
@@ -6299,6 +6499,9 @@ test_fd_exact_identity_or_refuse(void)
 int
 main(int argc, char **argv)
 {
+   if (argc == 2 &&
+       strcmp(argv[1], "write-only-state-token-readable-witness") == 0)
+      return test_write_only_state_token_readable_witness();
    if (argc == 2 &&
        strcmp(argv[1], "fd-exact-identity-or-refuse") == 0)
       return test_fd_exact_identity_or_refuse();

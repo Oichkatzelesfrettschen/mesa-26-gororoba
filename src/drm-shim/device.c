@@ -136,6 +136,9 @@ static int forced_kcmp_result;
 static int fd_discovery_barrier_ready_fd = -1;
 static int fd_discovery_barrier_release_fd = -1;
 static int fd_discovery_barrier_remaining;
+static int forced_state_token_readable_witness_fd = -1;
+static int state_token_readable_witness_fd = -1;
+static int rejected_state_token_fd = -1;
 
 void
 drm_shim_test_force_fd_identity_errors(int duplicate_query_error,
@@ -150,6 +153,28 @@ drm_shim_test_force_kcmp_result(bool force, int result)
 {
    force_kcmp_result = force;
    forced_kcmp_result = result;
+}
+
+void
+drm_shim_test_force_state_token_readable_witness(int witness_fd)
+{
+   forced_state_token_readable_witness_fd = witness_fd;
+   if (witness_fd >= 0) {
+      state_token_readable_witness_fd = -1;
+      rejected_state_token_fd = -1;
+   }
+}
+
+int
+drm_shim_test_state_token_readable_witness_fd(void)
+{
+   return state_token_readable_witness_fd;
+}
+
+int
+drm_shim_test_rejected_state_token_fd(void)
+{
+   return rejected_state_token_fd;
 }
 
 void
@@ -284,20 +309,44 @@ drm_shim_readable_witness(int fd)
       errno = ENAMETOOLONG;
       return -1;
    }
-   int witness =
-      syscall(SYS_openat, AT_FDCWD, proc_path, O_RDONLY | O_CLOEXEC, 0);
+   int witness;
+#ifdef DRM_SHIM_TEST
+   if (forced_state_token_readable_witness_fd >= 0) {
+      witness =
+         syscall(SYS_fcntl, forced_state_token_readable_witness_fd,
+                 F_DUPFD_CLOEXEC, 3);
+      state_token_readable_witness_fd = witness;
+   } else
+#endif
+   {
+      witness =
+         syscall(SYS_openat, AT_FDCWD, proc_path,
+                 O_RDONLY | O_CLOEXEC, 0);
+   }
    if (witness < 0)
       return -1;
 
    struct stat original_status;
    struct stat witness_status;
-   if (syscall(SYS_fstat, fd, &original_status) < 0 ||
-       syscall(SYS_fstat, witness, &witness_status) < 0 ||
-       original_status.st_dev != witness_status.st_dev ||
-       original_status.st_ino != witness_status.st_ino) {
-      int saved_errno = errno ? errno : ESTALE;
+   if (syscall(SYS_fstat, fd, &original_status) < 0) {
+      int saved_errno = errno;
       syscall(SYS_close, witness);
       errno = saved_errno;
+      return -1;
+   }
+   if (syscall(SYS_fstat, witness, &witness_status) < 0) {
+      int saved_errno = errno;
+      syscall(SYS_close, witness);
+      errno = saved_errno;
+      return -1;
+   }
+   if (original_status.st_dev != witness_status.st_dev ||
+       original_status.st_ino != witness_status.st_ino) {
+#ifdef DRM_SHIM_TEST
+      rejected_state_token_fd = fd;
+#endif
+      syscall(SYS_close, witness);
+      errno = ESTALE;
       return -1;
    }
    return witness;
@@ -428,8 +477,8 @@ drm_shim_state_token_identifier_valid(const char identifier[33])
 }
 
 static bool
-drm_shim_state_token_name_parse(int fd,
-                                struct drm_shim_state_token_header *header)
+drm_shim_state_token_readable_parse(
+   int fd, struct drm_shim_state_token_header *header)
 {
    struct stat status;
    if (syscall(SYS_fstat, fd, &status) < 0 ||
@@ -487,6 +536,33 @@ drm_shim_state_token_name_parse(int fd,
 
    *header = candidate;
    return true;
+}
+
+static bool
+drm_shim_state_token_name_parse(int fd,
+                                struct drm_shim_state_token_header *header)
+{
+   int status_flags = syscall(SYS_fcntl, fd, F_GETFL);
+   if (status_flags < 0)
+      return false;
+
+   int readable_fd = fd;
+   if ((status_flags & O_PATH) != O_PATH &&
+       (status_flags & O_ACCMODE) == O_WRONLY) {
+      /* The render descriptor retains the caller's write-only access mode.
+       * A readable descriptor for the same token provides the header
+       * witness while registration records the caller descriptor's own
+       * backing identity.
+       */
+      readable_fd = drm_shim_readable_witness(fd);
+      if (readable_fd < 0)
+         return false;
+   }
+
+   bool parsed = drm_shim_state_token_readable_parse(readable_fd, header);
+   if (readable_fd != fd)
+      syscall(SYS_close, readable_fd);
+   return parsed;
 }
 
 /* Recovers a state token's identity from its memfd name alone.  An O_PATH
@@ -2474,6 +2550,19 @@ drm_shim_fd_reports_selected_device(int fd)
    struct drm_shim_render_identity identity;
    return drm_shim_render_identity_parse(fd, &identity);
 }
+
+#ifdef DRM_SHIM_TEST
+bool
+drm_shim_test_fd_is_registered(int fd)
+{
+   mtx_lock(&shim_device.lock);
+   bool registered =
+      _mesa_hash_table_search(shim_device.fd_map,
+                              (void *)(uintptr_t)(fd + 1)) != NULL;
+   mtx_unlock(&shim_device.lock);
+   return registered;
+}
+#endif
 
 static int
 drm_shim_fd_register_detected(int fd, bool enable_state)
