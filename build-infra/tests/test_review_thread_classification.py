@@ -264,9 +264,11 @@ def test_sixth_classification_preserves_evidence_partition() -> None:
     rows = build_sixth_rows(capture_rows, assessment_rows)
     assert sum(row["completion_state"] == "actionable" for row in rows) == 33
     assert sum(row["completion_state"] == "pending-evidence" for row in rows) == 2
-    assert sum(row["completion_state"] == "fixed-on-main" for row in rows) == 10
-    assert sum(row["completion_state"] == "superseded-on-main" for row in rows) == 5
-    assert all(row["resolution_state"] == "unresolved" for row in rows)
+    assert sum(row["completion_state"] == "closed" for row in rows) == 15
+    assert sum(row["disposition"] == "fixed" for row in rows) == 10
+    assert sum(row["disposition"] == "superseded" for row in rows) == 5
+    assert sum(row["resolution_state"] == "resolved" for row in rows) == 15
+    assert sum(row["resolution_state"] == "unresolved" for row in rows) == 35
 
 
 def test_classification_rejects_missing_assessment() -> None:
