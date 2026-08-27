@@ -218,17 +218,32 @@ create_test_root(char *root, size_t capacity)
 }
 
 static int
-dump_next_frame(struct vl_mpeg12_dump *dump,
-                struct pipe_context *pipe,
-                const struct vl_mpeg12_dump_stage *stages,
-                unsigned stage_count)
+dump_next_frame_with_state(
+   struct vl_mpeg12_dump *dump,
+   struct pipe_context *pipe,
+   const struct vl_mpeg12_dump_stage *stages,
+   unsigned stage_count,
+   enum vl_mpeg12_dump_frame_state *frame_state_out)
 {
+   *frame_state_out = VL_MPEG12_DUMP_FRAME_CLEANED;
    uint64_t frame;
    int result = vl_mpeg12_dump_reserve_frame(dump, &frame);
    if (result)
       return result;
 
-   return vl_mpeg12_dump_frame(dump, frame, pipe, stages, stage_count);
+   return vl_mpeg12_dump_frame(dump, frame, pipe, stages, stage_count,
+                               frame_state_out);
+}
+
+static int
+dump_next_frame(struct vl_mpeg12_dump *dump,
+                struct pipe_context *pipe,
+                const struct vl_mpeg12_dump_stage *stages,
+                unsigned stage_count)
+{
+   enum vl_mpeg12_dump_frame_state frame_state;
+   return dump_next_frame_with_state(dump, pipe, stages, stage_count,
+                                     &frame_state);
 }
 
 static bool
@@ -450,8 +465,9 @@ enum fault_mode {
    FAULT_TERMINAL_SHORT_WRITE,
    FAULT_CLOSE,
    FAULT_SYNC_FILE,
-   FAULT_RENAME,
    FAULT_SYNC_DIRECTORY,
+   FAULT_MKDIR_FAILURE,
+   FAULT_MKDIR_COLLISION,
 };
 
 static enum fault_mode active_fault;
@@ -459,12 +475,12 @@ static unsigned fault_target;
 static unsigned fault_open_calls;
 static unsigned fault_current_file;
 static unsigned fault_current_write_calls;
-static unsigned fault_rename_calls;
 static unsigned fault_sync_directory_calls;
 static unsigned fault_remove_file_calls;
 static unsigned fault_remove_file_target;
 static unsigned fault_remove_directory_calls;
 static unsigned fault_remove_directory_target;
+static unsigned fault_mkdir_calls;
 static char fault_last_mkdir_path[2048];
 static bool fault_triggered;
 
@@ -524,18 +540,6 @@ fault_close(FILE *stream)
 }
 
 static int
-fault_rename(const char *old_path, const char *new_path)
-{
-   ++fault_rename_calls;
-   if (active_fault == FAULT_RENAME && fault_rename_calls == fault_target &&
-       !fault_triggered) {
-      fault_triggered = true;
-      return -EIO;
-   }
-   return vl_mpeg12_dump_default_io()->rename(old_path, new_path);
-}
-
-static int
 fault_sync_directory(const char *path)
 {
    ++fault_sync_directory_calls;
@@ -570,10 +574,25 @@ fault_remove_directory(const char *path)
 static int
 fault_mkdir(const char *path, int mode)
 {
+   ++fault_mkdir_calls;
    int length = snprintf(fault_last_mkdir_path,
                          sizeof(fault_last_mkdir_path), "%s", path);
    if (length < 0 || (size_t)length >= sizeof(fault_last_mkdir_path))
       return -ENAMETOOLONG;
+
+   if (active_fault == FAULT_MKDIR_FAILURE &&
+       fault_mkdir_calls == fault_target && !fault_triggered) {
+      fault_triggered = true;
+      return -ENOSPC;
+   }
+
+   if (active_fault == FAULT_MKDIR_COLLISION &&
+       fault_mkdir_calls == fault_target && !fault_triggered) {
+      int result = vl_mpeg12_dump_default_io()->mkdir(path, mode);
+      if (result)
+         return result;
+      fault_triggered = true;
+   }
    return vl_mpeg12_dump_default_io()->mkdir(path, mode);
 }
 
@@ -585,7 +604,6 @@ fault_io(void)
    io.write = fault_write;
    io.sync_file = fault_sync_file;
    io.close = fault_close;
-   io.rename = fault_rename;
    io.sync_directory = fault_sync_directory;
    io.remove_file = fault_remove_file;
    io.remove_directory = fault_remove_directory;
@@ -601,12 +619,12 @@ reset_fault(enum fault_mode mode, unsigned target)
    fault_open_calls = 0;
    fault_current_file = 0;
    fault_current_write_calls = 0;
-   fault_rename_calls = 0;
    fault_sync_directory_calls = 0;
    fault_remove_file_calls = 0;
    fault_remove_file_target = 0;
    fault_remove_directory_calls = 0;
    fault_remove_directory_target = 0;
+   fault_mkdir_calls = 0;
    fault_last_mkdir_path[0] = '\0';
    fault_triggered = false;
 }
@@ -625,9 +643,13 @@ check_failure_leaves_no_frame(const char *root,
    CHECK(vl_mpeg12_dump_init_with_io(&dump, root, &io) == 0,
          "a fault-calibration session is created");
    reset_fault(mode, target);
-   CHECK(dump_next_frame(&dump, &fixture->pipe, fixture->stages,
-                         FIXTURE_STAGE_COUNT) == expected_result,
+   enum vl_mpeg12_dump_frame_state frame_state;
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == expected_result,
          message);
+   CHECK(frame_state == VL_MPEG12_DUMP_FRAME_CLEANED,
+         "a pre-admission failure removes every publisher-owned frame path");
    CHECK(dump.frame == 1,
          "a failed capture reserves its decoded-frame identity");
 
@@ -670,9 +692,13 @@ check_cleanup_failure_is_explicit(const char *root,
          "the cleanup-failure session is created");
    reset_fault(FAULT_TERMINAL_SHORT_WRITE, 5);
    fault_remove_file_target = 1;
-   CHECK(dump_next_frame(&dump, &fixture->pipe, fixture->stages,
-                         FIXTURE_STAGE_COUNT) == -EACCES,
+   enum vl_mpeg12_dump_frame_state frame_state;
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EACCES,
          "a cleanup failure supersedes the payload error explicitly");
+   CHECK(frame_state == VL_MPEG12_DUMP_FRAME_RETAINED,
+         "a failed cleanup reports retained non-admitted data");
    CHECK(dump.frame == 1,
          "cleanup failure preserves the attempted decoded-frame identity");
 
@@ -694,15 +720,15 @@ check_cleanup_failure_is_explicit(const char *root,
                                    &fixture->stages[1], 1),
          "the retained failed-payload name is representable");
    CHECK(make_path(path, sizeof(path),
-                   "%s/frame-%020u/.payload.partial/%s",
+                   "%s/frame-%020u/payload/%s",
                    dump.session_path, 0, filename) &&
             vl_mpeg12_dump_default_io()->remove_file(path) == 0,
          "the deliberately retained failed payload is classified and removed");
    CHECK(make_path(path, sizeof(path),
-                   "%s/frame-%020u/.payload.partial",
+                   "%s/frame-%020u/payload",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
-         "the deliberately retained staging directory is removed");
+         "the deliberately retained payload directory is removed");
    CHECK(make_path(path, sizeof(path), "%s/frame-%020u",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
@@ -722,11 +748,15 @@ check_directory_removal_failure_is_explicit(const char *root,
 
    reset_fault(FAULT_TERMINAL_SHORT_WRITE, 5);
    fault_remove_directory_target = 1;
-   CHECK(dump_next_frame(&dump, &fixture->pipe, fixture->stages,
-                         FIXTURE_STAGE_COUNT) == -EACCES,
+   enum vl_mpeg12_dump_frame_state frame_state;
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EACCES,
          "a directory-removal failure supersedes the payload error");
+   CHECK(frame_state == VL_MPEG12_DUMP_FRAME_RETAINED,
+         "a failed directory cleanup reports retained non-admitted data");
    CHECK(fault_remove_directory_calls == 1,
-         "cleanup attempts the staging-directory removal once");
+         "cleanup attempts the payload-directory removal once");
 
    char path[2048];
    CHECK(make_path(path, sizeof(path), "%s/frame-%020u/complete",
@@ -742,14 +772,55 @@ check_directory_removal_failure_is_explicit(const char *root,
    remove_frame(&dump, fixture, 1);
 
    CHECK(make_path(path, sizeof(path),
-                   "%s/frame-%020u/.payload.partial",
+                   "%s/frame-%020u/payload",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
-         "the retained empty staging directory is classified and removed");
+         "the retained empty payload directory is classified and removed");
    CHECK(make_path(path, sizeof(path), "%s/frame-%020u",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the retained incomplete frame directory is classified and removed");
+   remove_session(&dump);
+}
+
+static void
+check_leaf_collision_preserves_namespace(const char *root,
+                                         struct dump_fixture *fixture)
+{
+   struct vl_mpeg12_dump_io io = fault_io();
+   struct vl_mpeg12_dump dump;
+   reset_fault(FAULT_NONE, 0);
+   CHECK(vl_mpeg12_dump_init_with_io(&dump, root, &io) == 0,
+         "the leaf-collision session is created");
+
+   enum vl_mpeg12_dump_frame_state frame_state;
+   reset_fault(FAULT_MKDIR_COLLISION, 2);
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) != 0 &&
+            frame_state == VL_MPEG12_DUMP_FRAME_RETAINED && fault_triggered,
+         "a colliding payload directory is retained without replacement");
+
+   char path[2048];
+   CHECK(make_path(path, sizeof(path), "%s/frame-%020u/payload",
+                   dump.session_path, 0) &&
+            vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
+         "the injected payload collision remains empty and removable");
+   CHECK(make_path(path, sizeof(path), "%s/frame-%020u", dump.session_path,
+                   0) &&
+            vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
+         "the frame containing the payload collision remains classified");
+
+   reset_fault(FAULT_MKDIR_COLLISION, 3);
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EEXIST &&
+            frame_state == VL_MPEG12_DUMP_FRAME_RETAINED && fault_triggered,
+         "a colliding completion marker preserves the published payload");
+   check_complete_frame(&dump, fixture, 1);
+
+   reset_fault(FAULT_NONE, 0);
+   remove_frame(&dump, fixture, 1);
    remove_session(&dump);
 }
 
@@ -765,9 +836,13 @@ check_postcommit_sync_failure_preserves_frame(const char *root,
 
    reset_fault(FAULT_SYNC_DIRECTORY, 4);
    fault_remove_directory_target = 1;
-   CHECK(dump_next_frame(&dump, &fixture->pipe, fixture->stages,
-                         FIXTURE_STAGE_COUNT) == -EIO,
+   enum vl_mpeg12_dump_frame_state frame_state;
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EIO,
          "a completion-marker sync failure reports uncertain durability");
+   CHECK(frame_state == VL_MPEG12_DUMP_FRAME_ADMITTED,
+         "a post-admission error reports the irreversible frame state");
    CHECK(fault_triggered && fault_remove_directory_calls == 0,
          "postcommit failure never retracts the completion marker");
    CHECK(dump.frame == 1,
@@ -832,6 +907,12 @@ check_source_span_validation(void)
    CHECK(vl_mpeg12_dump_validate_source_span(
             3, UINT64_MAX, 1, 0, 1) == -EOVERFLOW,
          "layer-offset multiplication overflow fails before dereference");
+   CHECK(vl_mpeg12_dump_validate_source_span(
+            1, 0, 3, UINT64_MAX, 1) == -EOVERFLOW,
+         "row-offset multiplication overflow fails before dereference");
+   CHECK(vl_mpeg12_dump_validate_source_span(
+            2, UINT64_MAX - 1, 2, 2, 1) == -EOVERFLOW,
+         "combined layer and row offsets fail closed on overflow");
    CHECK(vl_mpeg12_dump_validate_source_span(
             2, SIZE_MAX, 1, 0, 1) == -EOVERFLOW,
          "the final mapped byte must fit the host address space");
@@ -959,21 +1040,25 @@ main(void)
       root, &fixture, FAULT_SYNC_FILE, 1, -ENOSPC,
       "an early payload synchronization failure prevents admission");
    check_failure_leaves_no_frame(
+      root, &fixture, FAULT_SYNC_FILE, 5, -ENOSPC,
+      "a late payload synchronization failure removes earlier payloads");
+   check_failure_leaves_no_frame(
       root, &fixture, FAULT_SYNC_FILE, 10, -ENOSPC,
       "a manifest synchronization failure prevents admission");
    check_failure_leaves_no_frame(
-      root, &fixture, FAULT_RENAME, 1, -EIO,
-      "a payload-publication failure removes the staged frame");
-   check_failure_leaves_no_frame(
       root, &fixture, FAULT_SYNC_DIRECTORY, 1, -EIO,
-      "a staging-directory synchronization failure prevents publication");
+      "a payload-directory synchronization failure prevents publication");
    check_failure_leaves_no_frame(
       root, &fixture, FAULT_SYNC_DIRECTORY, 2, -EIO,
       "a frame-directory synchronization failure prevents admission");
    check_failure_leaves_no_frame(
       root, &fixture, FAULT_SYNC_DIRECTORY, 3, -EIO,
       "a session-directory synchronization failure prevents admission");
+   check_failure_leaves_no_frame(
+      root, &fixture, FAULT_MKDIR_FAILURE, 3, -ENOSPC,
+      "a completion-marker creation failure removes the unadmitted frame");
    check_postcommit_sync_failure_preserves_frame(root, &fixture);
+   check_leaf_collision_preserves_namespace(root, &fixture);
    check_cleanup_failure_is_explicit(root, &fixture);
    check_directory_removal_failure_is_explicit(root, &fixture);
 

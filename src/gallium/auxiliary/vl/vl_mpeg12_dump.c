@@ -233,29 +233,6 @@ default_sync_file(FILE *stream)
 }
 
 static int
-default_rename(const char *old_path, const char *new_path)
-{
-   errno = 0;
-#if DETECT_OS_WINDOWS
-   wchar_t *wide_old_path = windows_path_from_utf8(old_path);
-   if (!wide_old_path)
-      return io_error();
-   wchar_t *wide_new_path = windows_path_from_utf8(new_path);
-   if (!wide_new_path) {
-      int result = io_error();
-      ralloc_free(wide_old_path);
-      return result;
-   }
-   int result = _wrename(wide_old_path, wide_new_path) == 0 ? 0 : io_error();
-   ralloc_free(wide_new_path);
-   ralloc_free(wide_old_path);
-   return result;
-#else
-   return rename(old_path, new_path) == 0 ? 0 : io_error();
-#endif
-}
-
-static int
 default_remove_file(const char *path)
 {
    errno = 0;
@@ -349,7 +326,6 @@ static const struct vl_mpeg12_dump_io default_io = {
    .write = fwrite,
    .sync_file = default_sync_file,
    .close = fclose,
-   .rename = default_rename,
    .remove_file = default_remove_file,
    .remove_directory = default_remove_directory,
    .mkdir = default_mkdir,
@@ -380,7 +356,7 @@ static bool
 io_is_complete(const struct vl_mpeg12_dump_io *io)
 {
    return io && io->open_unique && io->write && io->sync_file && io->close &&
-          io->rename && io->remove_file && io->remove_directory && io->mkdir &&
+          io->remove_file && io->remove_directory && io->mkdir &&
           io->sync_directory;
 }
 
@@ -520,7 +496,7 @@ vl_mpeg12_dump_validate_source_span(unsigned layer_count,
 static int
 dump_plane(const struct vl_mpeg12_dump *dump,
            struct pipe_context *pipe,
-           const char *staging_path,
+           const char *payload_path,
            const struct vl_mpeg12_dump_stage *stage,
            unsigned storage_plane,
            struct vl_mpeg12_dump_entry *entry)
@@ -606,7 +582,7 @@ dump_plane(const struct vl_mpeg12_dump *dump,
       stage->name, storage_plane, level, first_layer, last_layer,
       width, height, layer_count, storage_format_name, view_format_name);
    if (entry->filename)
-      entry->path = ralloc_asprintf(NULL, "%s/%s", staging_path,
+      entry->path = ralloc_asprintf(NULL, "%s/%s", payload_path,
                                     entry->filename);
    if (!entry->filename || !entry->path) {
       pipe->texture_unmap(pipe, transfer);
@@ -665,13 +641,13 @@ dump_plane(const struct vl_mpeg12_dump *dump,
 
 static int
 write_manifest(const struct vl_mpeg12_dump *dump,
-               const char *staging_path,
+               const char *payload_path,
                const struct vl_mpeg12_dump_entry *entries,
                unsigned entry_count,
                char **manifest_path_out,
                bool *manifest_created_out)
 {
-   char *manifest_path = ralloc_asprintf(NULL, "%s/manifest.tsv", staging_path);
+   char *manifest_path = ralloc_asprintf(NULL, "%s/manifest.tsv", payload_path);
    if (!manifest_path)
       return -ENOMEM;
 
@@ -738,25 +714,22 @@ record_cleanup_result(int *result, int candidate)
 static int
 cleanup_frame(const struct vl_mpeg12_dump *dump,
               const char *frame_path,
-              const char *staging_path,
               const char *payload_path,
               const struct vl_mpeg12_dump_entry *entries,
               unsigned entry_count,
               bool manifest_created,
               bool frame_created,
-              bool staging_created,
               bool payload_created)
 {
    if (!frame_created)
       return 0;
 
-   const char *data_path = payload_created ? payload_path : staging_path;
-   if (payload_created || staging_created) {
+   if (payload_created) {
       int result = 0;
 
       if (manifest_created) {
          char *manifest_path =
-            ralloc_asprintf(NULL, "%s/manifest.tsv", data_path);
+            ralloc_asprintf(NULL, "%s/manifest.tsv", payload_path);
          if (!manifest_path)
             record_cleanup_result(&result, -ENOMEM);
          else
@@ -770,7 +743,7 @@ cleanup_frame(const struct vl_mpeg12_dump *dump,
          if (!filename || !entries[index - 1].created)
             continue;
 
-         char *path = ralloc_asprintf(NULL, "%s/%s", data_path, filename);
+         char *path = ralloc_asprintf(NULL, "%s/%s", payload_path, filename);
          if (!path)
             record_cleanup_result(&result, -ENOMEM);
          else
@@ -781,10 +754,10 @@ cleanup_frame(const struct vl_mpeg12_dump *dump,
       if (result)
          return result;
 
-      result = dump->io.sync_directory(data_path);
+      result = dump->io.sync_directory(payload_path);
       if (result)
          return result;
-      result = dump->io.remove_directory(data_path);
+      result = dump->io.remove_directory(payload_path);
       if (result && result != -ENOENT)
          return result;
       result = dump->io.sync_directory(frame_path);
@@ -803,8 +776,13 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
                      uint64_t frame,
                      struct pipe_context *pipe,
                      const struct vl_mpeg12_dump_stage *stages,
-                     unsigned stage_count)
+                     unsigned stage_count,
+                     enum vl_mpeg12_dump_frame_state *frame_state_out)
 {
+   if (!frame_state_out)
+      return -EINVAL;
+   *frame_state_out = VL_MPEG12_DUMP_FRAME_CLEANED;
+
    if (!dump || !pipe || !pipe->texture_map || !pipe->texture_unmap ||
        !stages || !vl_mpeg12_dump_enabled(dump) ||
        !io_is_complete(&dump->io) || !stage_count ||
@@ -821,36 +799,32 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
 
    char *frame_path = ralloc_asprintf(
       NULL, "%s/frame-%020" PRIu64, dump->session_path, frame);
-   char *staging_path = ralloc_asprintf(
-      NULL, "%s/.payload.partial", frame_path);
    char *payload_path = ralloc_asprintf(NULL, "%s/payload", frame_path);
    char *complete_path = ralloc_asprintf(NULL, "%s/complete", frame_path);
-   if (!frame_path || !staging_path || !payload_path || !complete_path) {
+   if (!frame_path || !payload_path || !complete_path) {
       ralloc_free(frame_path);
-      ralloc_free(staging_path);
       ralloc_free(payload_path);
       ralloc_free(complete_path);
       return -ENOMEM;
    }
 
    bool frame_created = false;
-   bool staging_created = false;
    bool payload_created = false;
    bool complete_created = false;
+   bool complete_collision = false;
 
    int result = dump->io.mkdir(frame_path, 0700);
    if (result) {
       ralloc_free(frame_path);
-      ralloc_free(staging_path);
       ralloc_free(payload_path);
       ralloc_free(complete_path);
       return result;
    }
    frame_created = true;
 
-   result = dump->io.mkdir(staging_path, 0700);
+   result = dump->io.mkdir(payload_path, 0700);
    if (!result)
-      staging_created = true;
+      payload_created = true;
 
    struct vl_mpeg12_dump_entry
       entries[VL_MPEG12_DUMP_MAX_STAGES * VL_MPEG12_DUMP_MAX_PLANES] = {0};
@@ -864,24 +838,17 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
       for (unsigned storage_plane = 0;
            !result && storage_plane < stage->plane_count; ++storage_plane) {
          struct vl_mpeg12_dump_entry *entry = &entries[entry_count++];
-         result = dump_plane(dump, pipe, staging_path, stage, storage_plane,
+         result = dump_plane(dump, pipe, payload_path, stage, storage_plane,
                              entry);
       }
    }
 
    if (!result)
-      result = write_manifest(dump, staging_path, entries, entry_count,
+      result = write_manifest(dump, payload_path, entries, entry_count,
                               &manifest_path, &manifest_created);
 
    if (!result)
-      result = dump->io.sync_directory(staging_path);
-
-   if (!result)
-      result = dump->io.rename(staging_path, payload_path);
-   if (!result) {
-      staging_created = false;
-      payload_created = true;
-   }
+      result = dump->io.sync_directory(payload_path);
 
    if (!result)
       result = dump->io.sync_directory(frame_path);
@@ -892,26 +859,33 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
     * fallible publication and parent-link synchronization precedes it.  A
     * frame-directory synchronization error after admission preserves the
     * admitted payload and reports that its crash durability remains uncertain. */
-   if (!result)
+   if (!result) {
       result = dump->io.mkdir(complete_path, 0500);
+      complete_collision = result == -EEXIST;
+   }
    if (!result)
       complete_created = true;
    if (!result)
       result = dump->io.sync_directory(frame_path);
 
-   if (result && !complete_created) {
+   if (result && !complete_created && !complete_collision) {
       int cleanup_result = cleanup_frame(
-         dump, frame_path, staging_path, payload_path, entries, entry_count,
-         manifest_created, frame_created, staging_created, payload_created);
-      if (cleanup_result)
+         dump, frame_path, payload_path, entries, entry_count, manifest_created,
+         frame_created, payload_created);
+      if (cleanup_result) {
          result = cleanup_result;
+         *frame_state_out = VL_MPEG12_DUMP_FRAME_RETAINED;
+      }
+   } else if (complete_created) {
+      *frame_state_out = VL_MPEG12_DUMP_FRAME_ADMITTED;
+   } else if (complete_collision) {
+      *frame_state_out = VL_MPEG12_DUMP_FRAME_RETAINED;
    }
 
    for (unsigned index = 0; index < entry_count; ++index)
       free_entry(&entries[index]);
    ralloc_free(manifest_path);
    ralloc_free(frame_path);
-   ralloc_free(staging_path);
    ralloc_free(payload_path);
    ralloc_free(complete_path);
    return result;

@@ -879,14 +879,15 @@ append_dump_stage(struct vl_mpeg12_dump_stage *stage,
 
 /* VL_MPEG12_DUMP_DIR names an existing writable directory.  Decoder creation
  * reserves an exclusive session below it.  Each end_frame read-map copies the
- * submitted coefficient, first-pass IDCT, and output sampler views into a
- * hidden payload directory.  A frame becomes admissible evidence only after
+ * submitted coefficient, first-pass IDCT, and output sampler views into an
+ * exclusive payload directory.  A frame becomes admissible evidence only after
  * every payload and the manifest are durable and the empty complete directory
  * atomically records that state. */
 static int
 dump_stage_surfaces(struct vl_mpeg12_decoder *dec,
                     struct pipe_video_buffer *target,
-                    uint64_t frame)
+                    uint64_t frame,
+                    enum vl_mpeg12_dump_frame_state *frame_state_out)
 {
    struct vl_mpeg12_dump_stage stages[VL_MPEG12_DUMP_MAX_STAGES];
    unsigned stage_count = 0;
@@ -908,7 +909,7 @@ dump_stage_surfaces(struct vl_mpeg12_decoder *dec,
    ++stage_count;
 
    return vl_mpeg12_dump_frame(&dec->dump, frame, dec->context, stages,
-                               stage_count);
+                               stage_count, frame_state_out);
 }
 
 static int
@@ -1022,12 +1023,21 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
 
    if (vl_mpeg12_dump_enabled(&dec->dump)) {
       uint64_t dump_frame = dec->dump.frame;
+      enum vl_mpeg12_dump_frame_state frame_state =
+         VL_MPEG12_DUMP_FRAME_CLEANED;
       int dump_result = vl_mpeg12_dump_reserve_frame(&dec->dump, &dump_frame);
       if (!dump_result)
-         dump_result = dump_stage_surfaces(dec, target, dump_frame);
+         dump_result =
+            dump_stage_surfaces(dec, target, dump_frame, &frame_state);
       if (dump_result) {
-         debug_printf("vl/mpeg12 dump frame %" PRIu64 " failed: %s\n",
-                      dump_frame,
+         const char *frame_disposition =
+            frame_state == VL_MPEG12_DUMP_FRAME_ADMITTED
+               ? "admitted with uncertain marker durability"
+               : frame_state == VL_MPEG12_DUMP_FRAME_RETAINED
+               ? "retained without confirmed publisher admission"
+               : "cleaned";
+         debug_printf("vl/mpeg12 dump frame %" PRIu64 " failed (%s): %s\n",
+                      dump_frame, frame_disposition,
                       dump_result < 0 ? strerror(-dump_result)
                                       : "unknown error");
          return dump_result;

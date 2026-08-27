@@ -23,7 +23,6 @@ struct vl_mpeg12_dump_io {
    size_t (*write)(const void *data, size_t size, size_t count, FILE *stream);
    int (*sync_file)(FILE *stream);
    int (*close)(FILE *stream);
-   int (*rename)(const char *old_path, const char *new_path);
    int (*remove_file)(const char *path);
    int (*remove_directory)(const char *path);
    int (*mkdir)(const char *path, int mode);
@@ -41,6 +40,16 @@ struct vl_mpeg12_dump_stage {
    enum pipe_format buffer_format;
    struct pipe_sampler_view **planes;
    unsigned plane_count;
+};
+
+enum vl_mpeg12_dump_frame_state {
+   /* No publisher-owned path from the attempted frame remains. */
+   VL_MPEG12_DUMP_FRAME_CLEANED,
+   /* Collision or cleanup failure retains a frame without confirmed admission. */
+   VL_MPEG12_DUMP_FRAME_RETAINED,
+   /* The publisher created the completion marker.  A nonzero result
+    * means the admitted marker's final parent-directory sync failed. */
+   VL_MPEG12_DUMP_FRAME_ADMITTED,
 };
 
 const struct vl_mpeg12_dump_io *
@@ -76,6 +85,7 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
                      uint64_t frame,
                      struct pipe_context *pipe,
                      const struct vl_mpeg12_dump_stage *stages,
-                     unsigned stage_count);
+                     unsigned stage_count,
+                     enum vl_mpeg12_dump_frame_state *frame_state_out);
 
 #endif /* VL_MPEG12_DUMP_H */
