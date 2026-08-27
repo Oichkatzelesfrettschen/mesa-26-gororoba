@@ -737,8 +737,8 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
 {
    assert(state->type == PIPE_SHADER_IR_NIR);
    nir_shader *nir = nir_shader_clone(NULL, state->ir.nir);
-   const char *why = NULL;
-   char whybuf[64];
+   const char *decline_reason = "unsupported";
+   char decline_reason_buffer[64];
 
    draw_vs_nir_lower(nir);
 
@@ -749,7 +749,7 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
       draw_vs_nir_io_spans(nir, &input_span, &output_span);
 
    if (!supported) {
-      why = "io_spans";
+      decline_reason = "io_spans";
       goto done;
    }
 
@@ -782,10 +782,11 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
                break;
             default:
                /* interp_intrinsic's default case, mirrored here. */
-               snprintf(whybuf, sizeof(whybuf), "intrinsic:%s",
+               snprintf(decline_reason_buffer, sizeof(decline_reason_buffer),
+                        "intrinsic:%s",
                         nir_intrinsic_infos[
                            nir_instr_as_intrinsic(instr)->intrinsic].name);
-               why = whybuf;
+               decline_reason = decline_reason_buffer;
                supported = false;
                break;
             }
@@ -797,7 +798,7 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
             case nir_jump_return:
                break;
             default:
-               why = "jump";
+               decline_reason = "jump";
                supported = false;
                break;
             }
@@ -805,9 +806,9 @@ draw_vs_nir_supported(const struct pipe_shader_state *state)
          default:
             /* nir_instr_type_tex, nir_instr_type_call, and any other type
              * interp_block does not list fall to its UNREACHABLE default. */
-            snprintf(whybuf, sizeof(whybuf), "instr_type:%d",
-                     (int)instr->type);
-            why = whybuf;
+            snprintf(decline_reason_buffer, sizeof(decline_reason_buffer),
+                     "instr_type:%d", (int)instr->type);
+            decline_reason = decline_reason_buffer;
             supported = false;
             break;
          }
@@ -822,7 +823,8 @@ done:
               supported ? "admit" : "decline",
               state->ir.nir && ((nir_shader *)state->ir.nir)->info.name
                  ? ((nir_shader *)state->ir.nir)->info.name : "-",
-              supported ? "" : " reason=", supported ? "" : why);
+              supported ? "" : " reason=",
+              supported ? "" : decline_reason);
    ralloc_free(nir);
    return supported;
 }
