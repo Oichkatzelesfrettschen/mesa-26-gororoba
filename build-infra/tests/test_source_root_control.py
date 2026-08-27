@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shlex
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,9 +204,16 @@ def commit_repository(repository: Path, message: str) -> None:
     )
 
 
-def committed_repository(repository: Path) -> Path:
+def committed_repository(repository: Path, object_format: str = "sha1") -> Path:
     repository.mkdir(parents=True)
-    source_root_control.run_git(repository, "init", "-q", "-b", "main")
+    source_root_control.run_git(
+        repository,
+        "init",
+        "-q",
+        "-b",
+        "main",
+        f"--object-format={object_format}",
+    )
     source_file = repository / "meson.build"
     source_file.write_text("project('clean')\n", encoding="utf-8")
     (repository / "meson.options").write_text("", encoding="utf-8")
@@ -992,6 +1000,89 @@ def test_source_view_content_digest_is_deterministic_and_complete(
     assert initial_digest == source_root_control.source_view_content_digest(source_view)
     source_file.write_text("mutated\n", encoding="utf-8")
     assert initial_digest != source_root_control.source_view_content_digest(source_view)
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_run_git_archive_preserves_tracked_archive_attributes(
+    tmp_path: Path,
+    object_format: str,
+) -> None:
+    repository = tmp_path / "repository"
+    source_file = committed_repository(repository, object_format)
+    source_file.write_text(
+        "project('clean')\n# $Format:%H$\n",
+        encoding="utf-8",
+    )
+    (repository / "tracked-source").write_text(
+        "excluded by tracked attributes\n",
+        encoding="utf-8",
+    )
+    (repository / ".gitattributes").write_text(
+        "meson.build export-subst\ntracked-source export-ignore\n",
+        encoding="utf-8",
+    )
+    commit_repository(repository, "test: select tracked archive attributes")
+    source_commit = source_root_control.run_git(repository, "rev-parse", "HEAD")
+    archive_path = tmp_path / "tracked-attributes.tar"
+
+    source_root_control.run_git_archive(repository, source_commit, archive_path)
+
+    with tarfile.open(archive_path, mode="r:") as archive:
+        assert "tracked-source" not in archive.getnames()
+        meson_build = archive.extractfile("meson.build")
+        assert meson_build is not None
+        meson_build_bytes = meson_build.read()
+    assert b"$Format:%H$" not in meson_build_bytes
+    assert source_commit.encode("ascii") in meson_build_bytes
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_run_git_archive_ignores_repository_info_attributes(
+    tmp_path: Path,
+    object_format: str,
+) -> None:
+    repository = tmp_path / "repository"
+    source_file = committed_repository(repository, object_format)
+    source_file.write_text(
+        "project('clean')\n# $Format:%H$\n",
+        encoding="utf-8",
+    )
+    (repository / "tracked-source").write_text(
+        "retained without tracked attributes\n",
+        encoding="utf-8",
+    )
+    commit_repository(repository, "test: add archive inputs")
+    source_commit = source_root_control.run_git(repository, "rev-parse", "HEAD")
+    baseline_archive = source_root_control.run_git_bytes(
+        repository,
+        "archive",
+        "--format=tar",
+        source_commit,
+    )
+    git_directory = Path(
+        source_root_control.run_git(repository, "rev-parse", "--absolute-git-dir")
+    )
+    info_attributes = git_directory / "info" / "attributes"
+    info_attributes.write_text(
+        "meson.build export-subst\ntracked-source export-ignore\n",
+        encoding="utf-8",
+    )
+    ambient_archive = source_root_control.run_git_bytes(
+        repository,
+        "archive",
+        "--format=tar",
+        source_commit,
+    )
+    isolated_archive_path = tmp_path / "isolated-attributes.tar"
+
+    source_root_control.run_git_archive(
+        repository,
+        source_commit,
+        isolated_archive_path,
+    )
+
+    assert ambient_archive != baseline_archive
+    assert isolated_archive_path.read_bytes() == baseline_archive
 
 
 def test_prepare_source_view_archives_exact_source_and_replaces_owned_view(

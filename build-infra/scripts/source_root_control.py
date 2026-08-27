@@ -194,27 +194,6 @@ def run_git_bytes(
     return result.stdout
 
 
-def run_git_archive(root: Path, commit: str, output: Path) -> None:
-    command = git_command(
-        root,
-        "archive",
-        "--format=tar",
-        f"--output={output}",
-        commit,
-    )
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        env=git_environment(),
-        shell=False,
-        text=True,
-    )
-    if result.returncode != 0:
-        diagnostic = result.stderr.strip() or result.stdout.strip()
-        fail(f"{' '.join(command)} failed: {diagnostic}")
-
-
 def source_identity(source_root: Path) -> tuple[str, str]:
     if not source_root.is_dir():
         fail(f"TOPSRC is not a directory: {source_root}")
@@ -246,9 +225,8 @@ def file_identity(path_status: os.stat_result) -> tuple[int, int, int, int, int]
     )
 
 
-def isolated_checkout_environment(
+def isolated_object_database_environment(
     root: Path,
-    index_environment: dict[str, str],
     temporary_root: Path,
 ) -> dict[str, str]:
     object_format = run_git(root, "rev-parse", "--show-object-format")
@@ -285,11 +263,37 @@ def isolated_checkout_environment(
         diagnostic = result.stderr.strip() or result.stdout.strip()
         fail(f"{' '.join(command)} failed: {diagnostic}")
     return {
-        **index_environment,
         "GIT_DIR": str(isolated_git_directory),
         "GIT_OBJECT_DIRECTORY": str(object_directory),
+    }
+
+
+def isolated_checkout_environment(
+    root: Path,
+    index_environment: dict[str, str],
+    temporary_root: Path,
+) -> dict[str, str]:
+    return {
+        **index_environment,
+        **isolated_object_database_environment(root, temporary_root),
         "GIT_WORK_TREE": str(root),
     }
+
+
+def run_git_archive(root: Path, commit: str, output: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="gororoba-git-archive.") as directory:
+        archive_environment = isolated_object_database_environment(
+            root,
+            Path(directory),
+        )
+        run_git(
+            root,
+            "archive",
+            "--format=tar",
+            f"--output={output}",
+            commit,
+            extra_environment=archive_environment,
+        )
 
 
 def expected_checkout_bytes(
