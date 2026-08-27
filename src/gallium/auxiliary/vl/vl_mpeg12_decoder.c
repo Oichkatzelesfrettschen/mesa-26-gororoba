@@ -858,25 +858,6 @@ vl_mpeg12_decode_bitstream(struct pipe_video_codec *decoder,
    vl_mpg12_bs_decode(&buf->bs, target, desc, num_buffers, buffers, sizes);
 }
 
-static int
-append_dump_stage(struct vl_mpeg12_dump_stage *stage,
-                  const char *name,
-                  struct pipe_video_buffer *buffer)
-{
-   unsigned plane_count = util_format_get_num_planes(buffer->buffer_format);
-   struct pipe_sampler_view **planes =
-      buffer->get_sampler_view_planes(buffer);
-
-   if (!planes || !plane_count || plane_count > VL_MPEG12_DUMP_MAX_PLANES)
-      return -EIO;
-
-   stage->name = name;
-   stage->buffer_format = buffer->buffer_format;
-   stage->planes = planes;
-   stage->plane_count = plane_count;
-   return 0;
-}
-
 /* VL_MPEG12_DUMP_DIR names an existing writable directory.  Decoder creation
  * reserves an exclusive session below it.  Each end_frame read-map copies the
  * submitted coefficient, first-pass IDCT, and output sampler views into an
@@ -893,18 +874,19 @@ dump_stage_surfaces(struct vl_mpeg12_decoder *dec,
    unsigned stage_count = 0;
 
    if (dec->idct_source) {
-      if (append_dump_stage(&stages[stage_count], "coeff",
-                            dec->idct_source) != 0)
+      if (vl_mpeg12_dump_stage_from_video_buffer(
+             &stages[stage_count], "coeff", dec->idct_source) != 0)
          return -EIO;
       ++stage_count;
    }
 
-   if (append_dump_stage(&stages[stage_count], "stage1",
-                         dec->mc_source) != 0)
+   if (vl_mpeg12_dump_stage_from_video_buffer(
+          &stages[stage_count], "stage1", dec->mc_source) != 0)
       return -EIO;
    ++stage_count;
 
-   if (append_dump_stage(&stages[stage_count], "out", target) != 0)
+   if (vl_mpeg12_dump_stage_from_video_buffer(
+          &stages[stage_count], "out", target) != 0)
       return -EIO;
    ++stage_count;
 
@@ -1256,8 +1238,11 @@ init_mc_source_widthout_idct(struct vl_mpeg12_decoder *dec, const struct format_
    struct pipe_video_buffer templat;
 
    formats[0] = formats[1] = formats[2] = format_config->mc_source_format;
-   assert(pipe_format_to_chroma_format(formats[0]) == dec->base.chroma_format);
    memset(&templat, 0, sizeof(templat));
+   /* The MC entrypoint owns three Y/U/V resources.  IYUV supplies the
+    * 4:2:0 buffer identity while each resource retains the single-channel
+    * mc_source_format storage identity. */
+   templat.buffer_format = PIPE_FORMAT_IYUV;
    templat.width = dec->base.width;
    templat.height = dec->base.height;
    dec->mc_source = vl_video_buffer_create_ex
