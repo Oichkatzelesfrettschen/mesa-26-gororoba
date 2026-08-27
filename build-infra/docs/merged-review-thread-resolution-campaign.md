@@ -41,8 +41,9 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Thirty-eight rows are closed, and the
-  12 actionable rows require merged repairs.
+  append-only evidence-refresh ledger.  Thirty-eight rows are closed, five are
+  fixed on merged main pending exact-ID resolution, and seven actionable rows
+  require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -327,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 12 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 0 | None |
+| actionable | 7 | Implement, test, merge, synchronize, then resolve |
+| fixed on merged main | 5 | Merge this re-audit, then resolve and record |
 | closed as fixed | 33 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
@@ -404,12 +405,21 @@ pass.  PR 1927 re-audits both targets at merge commit
 `c249fec76a8579d842cc69e4182be62b3cbe01bd`; both exact GitHub threads are
 resolved and re-queried.
 
+Five Draw rows are fixed on merged main.  PR 1907 merge commit
+`f7f60db090af11e7ad491042afccd29e40fc6b2e` initializes every NIR decline with
+a nonnull fallback.  PR 1908 merge commit
+`e7656d6bf70d3492a70200cbfb97f8fb646b7c58` moves both Draw NIR options onto
+the atomic once-option mechanism, calibrates 16-thread first use, and records
+the production caller and r300 prefilter searches.  PR 1929 merge commit
+`60c34e778d475469fae20e0714de79464bc42136` names all seven direct NIR scan
+sites and states the separate VAR-to-GENERIC and TEX-to-TEXCOORD mappings.
+The focused Clang 22 build and output-location oracle pass at the repair SHA.
+All five exact GitHub threads remain unresolved until this re-audit merges.
+
 The surviving actionable mechanisms cover archive-attribute-isolated source
-views; installation-success and build-control identity; nonnull Draw decline
-reasons and thread-safe options; Draw discovery provenance and
-TEXCOORD/GENERIC comment accuracy; the positive dash-spacing rule; per-screen
-R2VB state; width-correct Radeon info queries; and write-only DRM-shim token
-identity.
+views; installation-success and build-control identity; the positive
+dash-spacing rule; per-screen R2VB state; width-correct Radeon info queries;
+and write-only DRM-shim token identity.
 
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
@@ -423,9 +433,10 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 38 resolved and 12 unresolved exact IDs.  The 12
-unresolved rows require their actionable mechanisms to merge before exact-ID
-resolution.
+Live GraphQL state reports 38 resolved and 12 unresolved exact IDs.  Five
+unresolved rows have verified merged-main fixes and resolve after this re-audit
+merges.  The other seven require their actionable mechanisms to merge before
+exact-ID resolution.
 
 ## Verification
 
