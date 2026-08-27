@@ -161,6 +161,7 @@ override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
 override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
 override REVIEW_THREAD_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/action-frontier.tsv
 override REVIEW_THREAD_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/resolution-ledger.tsv
+override REVIEW_THREAD_EVIDENCE_REFRESH_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/evidence-refresh-ledger.tsv
 override REVIEW_THREAD_FRONTIER_TOOL := $(CURDIR)/scripts/review_thread_frontier.py
 override REVIEW_THREAD_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-thread-frontier-after-QY6A8
 override REVIEW_THREAD_CAPTURE_TOOL := $(CURDIR)/scripts/review_thread_batch_capture.py
@@ -538,6 +539,7 @@ review-thread-frontier-check:
 	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_FRONTIER) \
 		--ledger $(REVIEW_THREAD_LEDGER) \
+		--evidence-refresh-ledger $(REVIEW_THREAD_EVIDENCE_REFRESH_LEDGER) \
 		--batch-size 50 \
 		--repo-root $(CURDIR)/.. \
 		--main-ref origin/main \
