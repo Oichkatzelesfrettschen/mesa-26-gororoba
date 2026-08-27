@@ -414,7 +414,7 @@ endef
 
 .PHONY: list source-root-check source-root-control-unit-test \
         review-thread-frontier-check review-thread-frontier-live-check \
-        review-thread-frontier-unit-test \
+        review-thread-frontier-unit-test headless-hardware-gl-runner-test \
         source-root-selection-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean clean-all distclean install \
@@ -585,6 +585,11 @@ review-thread-frontier-unit-test:
 			$(CURDIR)/tests/test_review_thread_classification.py \
 			$(CURDIR)/tests/test_review_thread_resolution.py
 
+headless-hardware-gl-runner-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		python3 -m pytest -q \
+			$(CURDIR)/tests/test_headless_hardware_gl_runner.py
+
 help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
 	@echo ""
@@ -600,6 +605,7 @@ help:
 	@echo "  review-thread-frontier-check validate finite closure rows and merged evidence"
 	@echo "  review-thread-frontier-live-check bind exact GraphQL IDs, URLs, and states"
 	@echo "  review-thread-frontier-unit-test calibrate review closure rejection paths"
+	@echo "  headless-hardware-gl-runner-test calibrate transient Xorg unit teardown"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
@@ -930,6 +936,7 @@ distcc-gcc-major-probe-test:
 	echo "OK    missing GCC identity fails closed"
 
 audit: source-root-check source-root-control-unit-test \
+       headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
        source-root-selection-test \
        distcc-probe-directory-test \
