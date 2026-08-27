@@ -61,6 +61,14 @@ LEDGER_FIELDS = (
     "closure_note",
 )
 
+EVIDENCE_REFRESH_FIELDS = (
+    "thread_id",
+    "previous_evidence_commit",
+    "evidence_commit",
+    "verified_at",
+    "refresh_note",
+)
+
 COMPLETION_DISPOSITION = {
     "pending-evidence": "pending",
     "actionable": "requires-change",
@@ -291,8 +299,9 @@ def validate_frontier(
 
 def validate_ledger(
     rows: list[dict[str, str]], frontier_by_thread: dict[str, dict[str, str]]
-) -> None:
+) -> dict[str, dict[str, str]]:
     ledger_threads: set[str] = set()
+    ledger_by_thread: dict[str, dict[str, str]] = {}
     for row_number, row in enumerate(rows, start=2):
         thread_id = row["thread_id"]
         if thread_id in ledger_threads:
@@ -324,6 +333,7 @@ def validate_ledger(
                 f"ledger row {row_number}: expected merged <= resolved <= verified"
             )
         ledger_threads.add(thread_id)
+        ledger_by_thread[thread_id] = row
 
     closed_threads = {
         thread_id
@@ -336,6 +346,66 @@ def validate_ledger(
             f"missing={sorted(closed_threads - ledger_threads)}, "
             f"extra={sorted(ledger_threads - closed_threads)}"
         )
+    return ledger_by_thread
+
+
+def validate_evidence_refreshes(
+    rows: list[dict[str, str]],
+    frontier_by_thread: dict[str, dict[str, str]],
+    ledger_by_thread: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    """Validate append-only re-audits and return each thread's latest commit."""
+    latest_commits: dict[str, str] = {}
+    chronological_keys: list[tuple[datetime, str]] = []
+    for row_number, row in enumerate(rows, start=2):
+        thread_id = row["thread_id"]
+        frontier_row = frontier_by_thread.get(thread_id)
+        if frontier_row is None:
+            raise FrontierError(
+                f"evidence refresh row {row_number}: thread is outside frontier"
+            )
+        if frontier_row["completion_state"] != "closed":
+            raise FrontierError(
+                f"evidence refresh row {row_number}: frontier row is not closed"
+            )
+        previous_commit = row["previous_evidence_commit"]
+        expected_previous = latest_commits.get(
+            thread_id, frontier_row["merged_evidence_commit"]
+        )
+        if previous_commit != expected_previous:
+            raise FrontierError(
+                f"evidence refresh row {row_number}: previous commit differs"
+            )
+        evidence_commit = row["evidence_commit"]
+        if not COMMIT_PATTERN.fullmatch(evidence_commit):
+            raise FrontierError(
+                f"evidence refresh row {row_number}: invalid evidence commit"
+            )
+        if evidence_commit == previous_commit:
+            raise FrontierError(
+                f"evidence refresh row {row_number}: evidence commit did not advance"
+            )
+        if not row["refresh_note"].strip():
+            raise FrontierError(
+                f"evidence refresh row {row_number}: empty refresh note"
+            )
+        verified_at = parse_timestamp(
+            row["verified_at"], f"evidence refresh row {row_number}"
+        )
+        closure_verified_at = parse_timestamp(
+            ledger_by_thread[thread_id]["post_resolution_verified_at"],
+            f"closure ledger for {thread_id}",
+        )
+        if verified_at < closure_verified_at:
+            raise FrontierError(
+                f"evidence refresh row {row_number}: refresh predates closure verification"
+            )
+        chronological_keys.append((verified_at, thread_id))
+        latest_commits[thread_id] = evidence_commit
+
+    if chronological_keys != sorted(chronological_keys):
+        raise FrontierError("evidence refresh ledger is not chronologically ordered")
+    return latest_commits
 
 
 def run_git(
@@ -441,6 +511,7 @@ def verify_merged_evidence(
     repository_root: Path,
     main_ref: str,
     candidate_ref: str | None = None,
+    refreshed_commits: dict[str, str] | None = None,
 ) -> None:
     """Require merged evidence whose owner content still matches the candidate."""
     main_commit = run_git(
@@ -474,7 +545,9 @@ def verify_merged_evidence(
     slice_changes: dict[tuple[str, str, EvidenceTarget], bool] = {}
     checked_commits: set[str] = set()
     for row_number, frontier_row in enumerate(frontier_rows, start=2):
-        evidence_commit = frontier_row["merged_evidence_commit"]
+        evidence_commit = (refreshed_commits or {}).get(
+            frontier_row["thread_id"], frontier_row["merged_evidence_commit"]
+        )
         if not evidence_commit:
             continue
         if evidence_commit not in checked_commits:
@@ -536,6 +609,48 @@ def verify_merged_evidence(
                 raise FrontierError(
                     f"{thread_id}: evidence owner {target.declaration} changed "
                     f"between {evidence_commit} and candidate {candidate_commit}"
+                )
+
+
+def verify_evidence_refresh_ancestry(
+    rows: list[dict[str, str]],
+    repository_root: Path,
+    main_ref: str,
+) -> None:
+    """Require every refresh to descend from its predecessor and reach main."""
+    main_commit = run_git(
+        repository_root, "rev-parse", "--verify", f"{main_ref}^{{commit}}"
+    )
+    for row_number, row in enumerate(rows, start=2):
+        previous_commit = row["previous_evidence_commit"]
+        evidence_commit = row["evidence_commit"]
+        for ancestor, descendant, relationship in (
+            (
+                previous_commit,
+                evidence_commit,
+                "does not descend from previous evidence",
+            ),
+            (evidence_commit, main_commit, "is not merged in main"),
+        ):
+            ancestry = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repository_root),
+                    "merge-base",
+                    "--is-ancestor",
+                    ancestor,
+                    descendant,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if ancestry.returncode != 0:
+                diagnostic = ancestry.stderr.strip() or "commit is not reachable"
+                raise FrontierError(
+                    f"evidence refresh row {row_number}: {evidence_commit} "
+                    f"{relationship}: {diagnostic}"
                 )
 
 
@@ -637,6 +752,7 @@ def verify_live_threads(frontier_rows: list[dict[str, str]]) -> None:
 def validate_files(
     frontier_path: Path,
     ledger_path: Path,
+    evidence_refresh_path: Path | None,
     batch_size: int,
     repository_root: Path,
     main_ref: str,
@@ -649,17 +765,30 @@ def validate_files(
     frontier_rows = read_tsv(frontier_path, FRONTIER_FIELDS)
     ledger_rows = read_tsv(ledger_path, LEDGER_FIELDS)
     frontier_by_thread = validate_frontier(frontier_rows, batch_size)
-    validate_ledger(ledger_rows, frontier_by_thread)
+    ledger_by_thread = validate_ledger(ledger_rows, frontier_by_thread)
+    if evidence_refresh_path is None:
+        evidence_refresh_rows: list[dict[str, str]] = []
+        refreshed_commits: dict[str, str] = {}
+    else:
+        evidence_refresh_rows = read_tsv(evidence_refresh_path, EVIDENCE_REFRESH_FIELDS)
+        refreshed_commits = validate_evidence_refreshes(
+            evidence_refresh_rows, frontier_by_thread, ledger_by_thread
+        )
+        verify_evidence_refresh_ancestry(
+            evidence_refresh_rows, repository_root, main_ref
+        )
     verify_merged_evidence(
         frontier_rows,
         repository_root,
         main_ref,
         candidate_ref,
+        refreshed_commits,
     )
     if live:
         verify_live_threads(frontier_rows)
     print(
-        f"OK: {len(frontier_rows)} frontier rows; {len(ledger_rows)} verified closures"
+        f"OK: {len(frontier_rows)} frontier rows; {len(ledger_rows)} verified closures; "
+        f"{len(evidence_refresh_rows)} evidence refreshes"
     )
 
 
@@ -667,6 +796,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontier", type=Path, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
+    parser.add_argument("--evidence-refresh-ledger", type=Path)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--main-ref", default="origin/main")
@@ -680,6 +810,7 @@ def main() -> int:
         validate_files(
             arguments.frontier,
             arguments.ledger,
+            arguments.evidence_refresh_ledger,
             arguments.batch_size,
             arguments.repo_root,
             arguments.main_ref,

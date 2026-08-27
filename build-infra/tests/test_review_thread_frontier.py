@@ -7,7 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest  # type: ignore[import-not-found]
+import pytest
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "review_thread_frontier.py"
@@ -102,6 +102,41 @@ def evidence_row(evidence_commit: str) -> dict[str, str]:
     return row
 
 
+def closed_evidence_row(evidence_commit: str) -> dict[str, str]:
+    row = evidence_row(evidence_commit)
+    row["completion_state"] = "closed"
+    row["resolution_state"] = "resolved"
+    return row
+
+
+def evidence_refresh_row(
+    thread_id: str,
+    previous_evidence_commit: str,
+    evidence_commit: str,
+    verified_at: str = "2026-08-27T10:00:00Z",
+) -> dict[str, str]:
+    return {
+        "thread_id": thread_id,
+        "previous_evidence_commit": previous_evidence_commit,
+        "evidence_commit": evidence_commit,
+        "verified_at": verified_at,
+        "refresh_note": "current source retains the governed mechanism",
+    }
+
+
+def closure_ledger_row(frontier_row: dict[str, str]) -> dict[str, str]:
+    return {
+        "thread_id": frontier_row["thread_id"],
+        "disposition": frontier_row["disposition"],
+        "evidence_commit": frontier_row["merged_evidence_commit"],
+        "evidence_pr": "3",
+        "merged_at": "2026-01-03T00:00:00Z",
+        "github_resolved_at": "2026-01-03T00:01:00Z",
+        "post_resolution_verified_at": "2026-01-03T00:02:00Z",
+        "closure_note": "known-good closure ordering",
+    }
+
+
 def live_payload(rows: list[dict[str, str]]) -> dict[str, object]:
     return {
         "data": {
@@ -121,7 +156,7 @@ def test_accepts_complete_chronological_batch() -> None:
     assert tuple(rows_by_thread) == ("PRRT_calibration_1", "PRRT_calibration_2")
 
 
-@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+@pytest.mark.parametrize(
     ("field", "value"),
     (
         ("thread_id", "discussion_r123"),
@@ -228,6 +263,119 @@ def test_merged_evidence_accepts_unrelated_future_commit(tmp_path: Path) -> None
     review_thread_frontier.verify_merged_evidence(
         [evidence_row(evidence_commit)], tmp_path, "origin/main"
     )
+
+
+def test_evidence_refresh_accepts_changed_owner_after_reaudit(tmp_path: Path) -> None:
+    original_commit = initialize_evidence_repository(tmp_path)
+    frontier_row = closed_evidence_row(original_commit)
+    (tmp_path / "evidence.txt").write_text(
+        "stronger fixed mechanism\n", encoding="utf-8"
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "strengthen fixed mechanism")
+    refreshed_commit = run_git(tmp_path, "rev-parse", "HEAD")
+    run_git(tmp_path, "update-ref", "refs/remotes/origin/main", refreshed_commit)
+    refresh_rows = [
+        evidence_refresh_row(
+            frontier_row["thread_id"], original_commit, refreshed_commit
+        )
+    ]
+    latest_commits = review_thread_frontier.validate_evidence_refreshes(
+        refresh_rows,
+        {frontier_row["thread_id"]: frontier_row},
+        {frontier_row["thread_id"]: closure_ledger_row(frontier_row)},
+    )
+    review_thread_frontier.verify_evidence_refresh_ancestry(
+        refresh_rows, tmp_path, "origin/main"
+    )
+    review_thread_frontier.verify_merged_evidence(
+        [frontier_row], tmp_path, "origin/main", "HEAD", latest_commits
+    )
+
+
+def test_evidence_refresh_rejects_broken_commit_chain(tmp_path: Path) -> None:
+    original_commit = initialize_evidence_repository(tmp_path)
+    frontier_row = closed_evidence_row(original_commit)
+    refresh_rows = [evidence_refresh_row(frontier_row["thread_id"], "b" * 40, "c" * 40)]
+    with pytest.raises(review_thread_frontier.FrontierError, match="previous commit"):
+        review_thread_frontier.validate_evidence_refreshes(
+            refresh_rows,
+            {frontier_row["thread_id"]: frontier_row},
+            {frontier_row["thread_id"]: closure_ledger_row(frontier_row)},
+        )
+
+
+def test_evidence_refresh_rejects_observation_before_closure(tmp_path: Path) -> None:
+    original_commit = initialize_evidence_repository(tmp_path)
+    frontier_row = closed_evidence_row(original_commit)
+    refresh_rows = [
+        evidence_refresh_row(
+            frontier_row["thread_id"],
+            original_commit,
+            "c" * 40,
+            "2026-01-03T00:01:59Z",
+        )
+    ]
+    with pytest.raises(review_thread_frontier.FrontierError, match="predates closure"):
+        review_thread_frontier.validate_evidence_refreshes(
+            refresh_rows,
+            {frontier_row["thread_id"]: frontier_row},
+            {frontier_row["thread_id"]: closure_ledger_row(frontier_row)},
+        )
+
+
+def test_evidence_refresh_rejects_divergent_commit(tmp_path: Path) -> None:
+    original_commit = initialize_evidence_repository(tmp_path)
+    frontier_row = closed_evidence_row(original_commit)
+    original_tree = run_git(tmp_path, "rev-parse", f"{original_commit}^{{tree}}")
+    divergent_commit = run_git(
+        tmp_path, "commit-tree", original_tree, "-m", "divergent refresh"
+    )
+    refresh_rows = [
+        evidence_refresh_row(
+            frontier_row["thread_id"], original_commit, divergent_commit
+        )
+    ]
+    review_thread_frontier.validate_evidence_refreshes(
+        refresh_rows,
+        {frontier_row["thread_id"]: frontier_row},
+        {frontier_row["thread_id"]: closure_ledger_row(frontier_row)},
+    )
+    with pytest.raises(review_thread_frontier.FrontierError, match="does not descend"):
+        review_thread_frontier.verify_evidence_refresh_ancestry(
+            refresh_rows, tmp_path, "origin/main"
+        )
+
+
+def test_evidence_refresh_rejects_later_owner_drift(tmp_path: Path) -> None:
+    original_commit = initialize_evidence_repository(tmp_path)
+    frontier_row = closed_evidence_row(original_commit)
+    (tmp_path / "evidence.txt").write_text(
+        "stronger fixed mechanism\n", encoding="utf-8"
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "strengthen fixed mechanism")
+    refreshed_commit = run_git(tmp_path, "rev-parse", "HEAD")
+    run_git(tmp_path, "update-ref", "refs/remotes/origin/main", refreshed_commit)
+    refresh_rows = [
+        evidence_refresh_row(
+            frontier_row["thread_id"], original_commit, refreshed_commit
+        )
+    ]
+    latest_commits = review_thread_frontier.validate_evidence_refreshes(
+        refresh_rows,
+        {frontier_row["thread_id"]: frontier_row},
+        {frontier_row["thread_id"]: closure_ledger_row(frontier_row)},
+    )
+    (tmp_path / "evidence.txt").write_text(
+        "regressed after refresh\n", encoding="utf-8"
+    )
+    run_git(tmp_path, "add", "evidence.txt")
+    run_git(tmp_path, "commit", "-m", "regress refreshed mechanism")
+    with pytest.raises(review_thread_frontier.FrontierError, match="changed"):
+        review_thread_frontier.verify_merged_evidence(
+            [frontier_row], tmp_path, "origin/main", "HEAD", latest_commits
+        )
 
 
 def test_clean_candidate_accepts_committed_head(tmp_path: Path) -> None:
@@ -389,7 +537,7 @@ def test_live_payload_accepts_exact_thread_identity() -> None:
     review_thread_frontier.validate_live_payload(rows, live_payload(rows))
 
 
-@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+@pytest.mark.parametrize(
     ("field", "value", "message"),
     (
         ("id", "PRRT_wrong", "node mismatch"),

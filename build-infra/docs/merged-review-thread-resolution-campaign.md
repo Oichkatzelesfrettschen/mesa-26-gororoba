@@ -34,8 +34,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   terminal global views without overwriting history.
 - `review-thread-classifications/merged-thread-frontier-after-QY6A8/` owns the
   fourth batch's 50-row assessment, immutable pre-resolution frontier,
-  SHA-256-bound mutation journal, generated terminal frontier, and resolution
-  ledger.
+  SHA-256-bound mutation journal, generated terminal frontier, resolution
+  ledger, and append-only evidence-refresh ledger.  A refresh preserves the
+  original merge and resolution chronology while binding a later current-main
+  re-audit to the preceding evidence commit.
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, generated action frontier, and resolution
   ledger.  Its 38 actionable rows require merged repairs before exact-ID
@@ -44,10 +46,11 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
   remain in their batch-scoped classification directories.
-- `../scripts/review_thread_frontier.py` validates the frontier and ledger
-  offline.  Its unit tests calibrate duplicate identity, ordering, false merged
-  evidence, owner-path drift, missing closure rows, live GraphQL identity, and
-  invalid resolution chronology.
+- `../scripts/review_thread_frontier.py` validates the frontier, resolution
+  ledger, and evidence-refresh chain offline.  Its unit tests calibrate
+  duplicate identity, ordering, false merged evidence, owner-path drift,
+  missing closure rows, refresh ancestry, live GraphQL identity, and invalid
+  resolution chronology.
 - `../scripts/review_thread_batch_capture.py` captures and replays a bounded
   oldest-unresolved denominator.  Its checker rejects file-membership, hash,
   exact-query, request-cursor, selected-comment, and chronology mutations.
