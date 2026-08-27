@@ -44,6 +44,18 @@ FOURTH_OUTPUT_PATH = (
     BUILD_INFRA_ROOT
     / "docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/action-frontier.tsv"
 )
+FIFTH_CAPTURE_PATH = (
+    BUILD_INFRA_ROOT
+    / "docs/review-thread-frontiers/merged-thread-frontier-after-TvpLc/frontier.tsv"
+)
+FIFTH_ASSESSMENT_PATH = (
+    BUILD_INFRA_ROOT
+    / "docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/assessments.tsv"
+)
+FIFTH_OUTPUT_PATH = (
+    BUILD_INFRA_ROOT
+    / "docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/action-frontier.tsv"
+)
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "review_thread_classification", SCRIPT_PATH
 )
@@ -116,6 +128,27 @@ def build_fourth_rows(
     )
 
 
+def fifth_retained_inputs() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    capture_rows = review_thread_classification.read_tsv(
+        FIFTH_CAPTURE_PATH, review_thread_classification.CAPTURE_FIELDS
+    )
+    assessment_rows = review_thread_classification.read_tsv(
+        FIFTH_ASSESSMENT_PATH, review_thread_classification.ASSESSMENT_FIELDS
+    )
+    return capture_rows, assessment_rows
+
+
+def build_fifth_rows(
+    capture_rows: list[dict[str, str]], assessment_rows: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    return review_thread_classification.build_rows(
+        capture_rows,
+        assessment_rows,
+        "merged-review-thread-closure-batch-0005",
+        50,
+    )
+
+
 def test_retained_classification_matches_generated_frontier() -> None:
     capture_rows, assessment_rows = retained_inputs()
     expected = build_rows(capture_rows, assessment_rows)
@@ -157,6 +190,23 @@ def test_fourth_classification_rejects_missing_assessment() -> None:
         review_thread_classification.FrontierError, match="membership differs"
     ):
         build_fourth_rows(capture_rows, assessment_rows[:-1])
+
+
+def test_fifth_classification_matches_generated_frontier() -> None:
+    capture_rows, assessment_rows = fifth_retained_inputs()
+    expected = build_fifth_rows(capture_rows, assessment_rows)
+    retained = review_thread_classification.read_tsv(
+        FIFTH_OUTPUT_PATH, review_thread_classification.FRONTIER_FIELDS
+    )
+    assert retained == expected
+
+
+def test_fifth_classification_rejects_missing_assessment() -> None:
+    capture_rows, assessment_rows = fifth_retained_inputs()
+    with pytest.raises(
+        review_thread_classification.FrontierError, match="membership differs"
+    ):
+        build_fifth_rows(capture_rows, assessment_rows[:-1])
 
 
 def test_classification_rejects_missing_assessment() -> None:
