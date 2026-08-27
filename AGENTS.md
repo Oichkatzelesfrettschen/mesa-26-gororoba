@@ -401,7 +401,13 @@ Reserve `breakthrough` strictly for discontinuous discoveries that alter the evi
 
 ## Headless hardware GL
 
-Follow `headless-hardware-gl-runner.md` to access the hardware GL provider on a display-manager host: route headless execution through the render-node EGL/GBM path when no X server is present, deploy the headless glamor X path for test suites requiring a physical default framebuffer, and verify provider identity to differentiate hardware acceleration from llvmpipe fallback. Treat a `DRISWRAST` provider or an `llvmpipe` renderer string as proof of software rendering, regardless of the active driver target.
+Follow `headless-hardware-gl-runner.md` to access the hardware GL provider on a
+display-manager host: bind render-node EGL/GBM execution to the target PCI
+device, route every X-window-system test through the target-scoped glamor X
+path, and verify the server and direct-client providers independently. A
+`DRISWRAST` AIGLX provider classifies indirect GLX as software rendering; an
+`llvmpipe` or `swrast` client renderer classifies that direct-client run as
+software rendering.
 
 ## Build and cache doctrine
 
