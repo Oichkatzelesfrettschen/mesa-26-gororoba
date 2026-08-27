@@ -1,0 +1,36 @@
+{
+  "complete": false,
+  "entries": [
+    {
+      "disposition": "fixed",
+      "evidence_commit": "400df9e74aeacc6917410a887a3bf33bf5fda167",
+      "evidence_pr": 1912,
+      "merged_at": "2026-08-27T08:31:24Z",
+      "resolved_at": "2026-08-27T09:49:04Z",
+      "thread_id": "PRRT_kwDOR3YK5M6VuETX",
+      "verified_at": "2026-08-27T09:49:04Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "4b0c1f55abd1c9d84022973e14fd40d639426ec9",
+      "evidence_pr": 1900,
+      "merged_at": "2026-08-27T02:06:42Z",
+      "resolved_at": "2026-08-27T09:49:12Z",
+      "thread_id": "PRRT_kwDOR3YK5M6VuETZ",
+      "verified_at": "2026-08-27T09:49:12Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "05023afc27fcc9fb0637ecacfa425d9fc4263a81",
+      "evidence_pr": 1913,
+      "merged_at": "2026-08-27T09:04:16Z",
+      "resolved_at": "2026-08-27T09:49:20Z",
+      "thread_id": "PRRT_kwDOR3YK5M6VuETa",
+      "verified_at": "2026-08-27T09:49:21Z"
+    }
+  ],
+  "frontier_sha256": "8dde8893acceeb3346868e21c02758c2eede84cc0b070e2460eeac7b0d99c4ff",
+  "post_verified_at": null,
+  "schema": "mesa-review-thread-resolution-v2",
+  "started_at": "2026-08-27T09:49:03Z"
+}
