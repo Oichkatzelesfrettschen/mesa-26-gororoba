@@ -611,12 +611,14 @@ draw_enable_derivative_injection(struct draw_context *draw, bool enable,
  * Translate a neutral output location into the TGSI semantic pair the shader
  * info carries for it.
  *
- * Every draw stage scans its NIR with nir_tgsi_scan_shader(nir, info, true),
- * so the info this module searches is keyed with needs_texcoord_semantic set,
- * whatever the driver screen reports for tgsi_texcoord. Under that flag
- * VARYING_SLOT_VAR0 + n resolves to (GENERIC, n) and the TEX0..TEX7 range to
- * (TEXCOORD, 0..7), which keeps the neutral location and the TGSI index in the
- * same space and makes the translation exact in both directions.
+ * Draw's direct NIR scanners pass true in draw_create_vs_llvm,
+ * draw_vs_nir_scan_shader_info, draw_create_fragment_shader,
+ * draw_create_geometry_shader, draw_create_tess_ctrl_shader,
+ * draw_create_tess_eval_shader, and draw_create_mesh_shader
+ * (rg --fixed-strings 'nir_tgsi_scan_shader' src/gallium/auxiliary/draw/).
+ * These calls key their shader info with needs_texcoord_semantic set: VAR0 + n
+ * maps to (GENERIC, n), while TEX0 + n maps to (TEXCOORD, n).  The separate
+ * semantic domains keep each neutral location paired with its TGSI index.
  */
 void
 draw_output_location_semantic(gl_varying_slot location,
@@ -961,7 +963,7 @@ draw_set_indexes(struct draw_context *draw,
 void draw_do_flush(struct draw_context *draw, unsigned flags)
 {
    if (!draw->suspend_flushing) {
-      assert(!draw->flushing); /* catch inadvertant recursion */
+      assert(!draw->flushing); /* catch inadvertent recursion */
 
       draw->flushing = true;
 
