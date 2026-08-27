@@ -2146,6 +2146,59 @@ test_coverage_oracle_predicted_calibration(void)
    r300_tcl_bypass_triangle_coverage_oracle(&shape, texel, 2, exterior,
                                             pixels, dwords * 4u, &v);
    assert(v.coverage_exact);
+   pixels[20 * pitch + 32] = texel[0];
+
+   /* A cell whose fragment color arrives through the TX unit carries no
+    * R300_PFS_PARAM_0 constant, so its color_bits sit wherever the
+    * caller left them.  0x3e008081 is one ulp off the FP24 s1e7m16
+    * lattice -- r300_fp24_quantize_bits carries it to 0x3e008080 -- and
+    * the emitter's admission refuses it while the verdict, which reads
+    * geometry and takes its interior values as arguments, still judges.
+    */
+   struct r300_triangle_render_shape tx_sourced = shape;
+   for (unsigned i = 0; i < 4; i++)
+      tx_sourced.color_bits[i] = 0x3e008081u;
+   assert(r300_fp24_quantize_bits(0x3e008081u) == 0x3e008080u);
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&tx_sourced) ==
+          -EINVAL);
+   assert(r300_tcl_bypass_triangle_render_shape_validate_geometry(
+             &tx_sourced) == 0);
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &tx_sourced, NULL, 0, split_expectation, texel, exterior, pixels,
+      dwords * 4u, &v);
+   assert(v.judged && v.coverage_exact && v.canary_pass);
+   assert(v.interior_pixels == 1152 && v.mismatch_pixels == 0);
+
+   /* Inadmissible geometry still refuses, and the refusal is legible:
+    * judged stays false where a total mismatch would report counters.
+    */
+   struct r300_triangle_render_shape bad_pitch = shape;
+   bad_pitch.pitch_pixels = shape.pitch_pixels + 1u;
+   assert(r300_tcl_bypass_triangle_render_shape_validate_geometry(
+             &bad_pitch) == -EINVAL);
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &bad_pitch, NULL, 0, split_expectation, texel, exterior, pixels,
+      dwords * 4u, &v);
+   assert(!v.judged && !v.coverage_exact && v.interior_pixels == 0);
+
+   struct r300_triangle_render_shape bad_offset = shape;
+   bad_offset.target_offset = 4u;
+   assert(r300_tcl_bypass_triangle_render_shape_validate_geometry(
+             &bad_offset) == -EINVAL);
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &bad_offset, NULL, 0, split_expectation, texel, exterior, pixels,
+      dwords * 4u, &v);
+   assert(!v.judged);
+
+   /* The judged flag separates a refusal from a judged total mismatch,
+    * which both report every counter zero on coverage_exact alone.
+    */
+   for (uint32_t i = 0; i < dwords; i++)
+      pixels[i] = 0xdeadbeefu;
+   r300_tcl_bypass_triangle_coverage_oracle_predicted(
+      &shape, NULL, 0, split_expectation, texel, exterior, pixels,
+      dwords * 4u, &v);
+   assert(v.judged && !v.coverage_exact && v.mismatch_pixels == 4096);
 
    free(pixels);
 }

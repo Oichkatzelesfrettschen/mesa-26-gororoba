@@ -828,6 +828,7 @@ r300_tcl_bypass_triangle_render_shape_oracle(
    const struct triangle_geometry g = triangle_geometry_at(width, height);
 
    *verdict = (struct r300_triangle_oracle_verdict) {
+      .judged = true,
       .interior_pass = true,
       .exterior_pass = true,
       .canary_pass = true,
@@ -1085,15 +1086,17 @@ r300_tcl_bypass_triangle_coverage_oracle_predicted(
    uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_coverage_verdict *verdict)
 {
-   /* The verdict producer admits the emitter's own domain and the full
-    * retained footprint, so an inadmissible call reads as a refused
-    * verdict rather than indexing past the buffer.
+   /* The verdict reads the shape's extent, pitch, and target base and
+    * takes its interior values as arguments, so geometry is the whole
+    * admission; a cell whose fragment color arrives through the TX unit
+    * carries no R300_PFS_PARAM_0 constant to judge.  An inadmissible
+    * call leaves judged false rather than indexing past the buffer.
     */
    *verdict = (struct r300_triangle_coverage_verdict){ 0 };
    if (shape == NULL || pixels == NULL ||
        (expectation == NULL &&
         (interior_dwords == NULL || interior_dword_count == 0)) ||
-       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+       r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
       return;
    const uint32_t width = shape->width, height = shape->height;
    const uint32_t pitch = shape->pitch_pixels;
@@ -1106,6 +1109,7 @@ r300_tcl_bypass_triangle_coverage_oracle_predicted(
    const struct triangle_geometry g = triangle_geometry_at(width, height);
    const uint32_t offset_dwords = shape->target_offset / 4u;
    const uint32_t *rows = pixels + offset_dwords;
+   verdict->judged = true;
    verdict->coverage_exact = true;
    verdict->canary_pass = true;
 
@@ -1177,7 +1181,7 @@ r300_tcl_bypass_triangle_interior_oracle(
    *verdict = (struct r300_triangle_interior_verdict){ 0 };
    if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
        interior_dword_count == 0 ||
-       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+       r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
       return;
    /* The rendered rows alone are read, so the footprint stops at the
     * render extent; the canary row this verdict leaves unjudged stays
@@ -1190,6 +1194,7 @@ r300_tcl_bypass_triangle_interior_oracle(
    if (size_bytes < required_bytes)
       return;
 
+   verdict->judged = true;
    const struct triangle_geometry g = triangle_geometry_at(width, height);
    const uint32_t *rows = pixels + shape->target_offset / 4u;
    for (uint32_t y = 0; y < height; y++) {
@@ -1264,7 +1269,7 @@ r300_tcl_bypass_triangle_sample_set_oracle(
       r300_tcl_bypass_triangle_subsample_positions(sample_count, positions);
    if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
        interior_dword_count == 0 || samples == 0 ||
-       r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
+       r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
       return;
    const uint32_t width = shape->width, height = shape->height;
    const uint32_t pitch = shape->pitch_pixels;
@@ -1273,6 +1278,7 @@ r300_tcl_bypass_triangle_sample_set_oracle(
    if (size_bytes < required_bytes)
       return;
 
+   verdict->judged = true;
    const struct triangle_geometry g = triangle_geometry_at(width, height);
    const uint32_t *rows = pixels + shape->target_offset / 4u;
    const float grid = (float)R300_TRIANGLE_SUBPIXEL_GRID;
@@ -1383,7 +1389,7 @@ r300_tcl_bypass_triangle_render_shape_reference(
 }
 
 int
-r300_tcl_bypass_triangle_render_shape_validate(
+r300_tcl_bypass_triangle_render_shape_validate_geometry(
    const struct r300_triangle_render_shape *shape)
 {
    if (shape == NULL || shape->width < 1 || shape->height < 1 ||
@@ -1408,9 +1414,18 @@ r300_tcl_bypass_triangle_render_shape_validate(
        (shape->target_offset % R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT) != 0 ||
        shape->target_offset > R300_TRIANGLE_MAX_TARGET_OFFSET)
       return -EINVAL;
-   /* The register holds the FP24 lattice value, so a constant off the
-    * lattice (a NaN included, which quantizes to max finite) would
-    * execute a value other than the one the oracle predicts.
+   return 0;
+}
+
+int
+r300_tcl_bypass_triangle_render_shape_validate(
+   const struct r300_triangle_render_shape *shape)
+{
+   if (r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
+      return -EINVAL;
+   /* R300_PFS_PARAM_0 holds the FP24 lattice value, so a constant off
+    * the lattice (a NaN included, which quantizes to max finite) would
+    * execute a value other than the one the emitter names.
     */
    for (unsigned i = 0; i < 4; i++) {
       if (r300_fp24_quantize_bits(shape->color_bits[i]) !=

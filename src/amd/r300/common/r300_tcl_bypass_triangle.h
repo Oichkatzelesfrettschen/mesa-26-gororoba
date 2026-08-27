@@ -372,6 +372,11 @@ uint32_t r300_rb3d_colorpitch0_pack_argb8888(uint32_t pitch_pixels);
  * positive, so an extent too small to witness fails closed.
  */
 struct r300_triangle_oracle_verdict {
+   /* The producer admitted the call and classified the footprint.  A
+    * refused call leaves this false with every counter zero, which a
+    * judged total mismatch would otherwise be indistinguishable from.
+    */
+   bool judged;
    bool executed;
    bool interior_pass;
    bool exterior_pass;
@@ -622,7 +627,19 @@ int r300_tcl_bypass_triangle_bind_reloc_indices(
 void r300_tcl_bypass_triangle_render_shape_reference(
    struct r300_triangle_render_shape *out);
 
-/* 0 for an admitted shape, -EINVAL otherwise. */
+/* The geometry alone: extent, pitch, lane order, triangle count, and
+ * the target base.  A verdict producer that takes its interior values
+ * as arguments admits on this, because a cell whose fragment color
+ * arrives through the TX unit carries no R300_PFS_PARAM_0 constant.
+ * 0 for admitted geometry, -EINVAL otherwise.
+ */
+int r300_tcl_bypass_triangle_render_shape_validate_geometry(
+   const struct r300_triangle_render_shape *shape);
+
+/* The geometry and the fragment constant together, for an emitter that
+ * writes color_bits into R300_PFS_PARAM_0 or an oracle that derives its
+ * expectation from them.  0 for an admitted shape, -EINVAL otherwise.
+ */
 int r300_tcl_bypass_triangle_render_shape_validate(
    const struct r300_triangle_render_shape *shape);
 
@@ -694,6 +711,11 @@ void r300_tcl_bypass_triangle_render_shape_oracle(
  * takes the sampled oracle above instead.
  */
 struct r300_triangle_coverage_verdict {
+   /* The producer admitted the call and classified the footprint.  A
+    * refused call leaves this false with every counter zero, which a
+    * judged total mismatch would otherwise be indistinguishable from.
+    */
+   bool judged;
    /* Every dword classified and the interior set equal to the analytic
     * one: mismatch and ambiguous both zero, interior equal to analytic.
     */
@@ -758,6 +780,11 @@ void r300_tcl_bypass_triangle_coverage_oracle(
  * shape or a short buffer reads as a refusal rather than a pass.
  */
 struct r300_triangle_interior_verdict {
+   /* The producer admitted the call and classified the footprint.  A
+    * refused call leaves this false with every counter zero, which a
+    * judged total mismatch would otherwise be indistinguishable from.
+    */
+   bool judged;
    bool interior_exact;
    uint32_t analytic_pixels;
    uint32_t interior_pixels;
@@ -797,6 +824,11 @@ uint32_t r300_tcl_bypass_triangle_subsample_positions(
  * 1128 at two, and 1104 at four, against that oracle's 1152.
  */
 struct r300_triangle_sample_set_verdict {
+   /* The producer admitted the call and classified the footprint.  A
+    * refused call leaves this false with every counter zero, which a
+    * judged total mismatch would otherwise be indistinguishable from.
+    */
+   bool judged;
    bool interior_exact;
    uint32_t analytic_pixels;
    uint32_t interior_pixels;
