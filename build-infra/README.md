@@ -176,9 +176,10 @@ record enters a provisional transaction that reserves the entire root for one
 selected source root, commit, tree, control root, control commit, control tree,
 derived source-view path, build directory, prefix, and sysconfdir.  Archive
 preparation records the initial derived-view digest under the provisional
-transaction.  Meson success records the post-setup digest and writes matching
-final records with one transaction identifier.  Meson failure leaves the root
-provisional.  A
+transaction.  The identity also binds the resolved profile, host environment,
+mode, compiler chain, and compiler family.  Meson success records the
+post-setup digest and writes matching final records with one transaction
+identifier.  Meson failure leaves the root provisional.  A
 previous build-directory record may remain after failed reconfiguration, but
 its final state cannot satisfy build, test, install, or distclean while the
 root transaction stays provisional.  Cleanup accepts a matching provisional
@@ -190,9 +191,10 @@ boundary.
 
 Install reconfiguration uses the same transaction.  It verifies the existing
 final identity, marks the root provisional before `meson setup`, and finalizes
-matching root and build-directory records only after setup succeeds.  A failed
-install setup therefore revokes build, test, install, and artifact consumers
-until a successful configure restores one final transaction.
+matching root and build-directory records only after setup, installation, and
+install-log ownership repair succeed.  A failure in any of those operations
+therefore revokes build, test, install, and artifact consumers until a
+successful configure restores one final transaction.
 
 External `clean` verifies the recorded source identity before removing an
 existing build directory.  An absent build directory remains a successful
@@ -237,8 +239,8 @@ assume-unchanged, ignored-subproject, nested-worktree, and bare-repository
 rejection, shell-input rejection, physical containment, namespace ownership,
 sibling-worktree protection, clean-all refusal, lease-bound path replacement,
 build-root and prefix identity drift, configure and install transactions,
-failed reconfiguration revocation, hashed synthetic Vulkan-Profiles
-population, source-view drift, unhashed download rejection,
+build-policy selector drift, failed reconfiguration revocation, hashed
+synthetic Vulkan-Profiles population, source-view drift, unhashed download rejection,
 clean-then-distclean archival, archival retry, artifact-report source-tuple
 binding, shared prefix refusal, and the external and control Meson source
 arguments.  When the host permits private user and mount namespaces, the same

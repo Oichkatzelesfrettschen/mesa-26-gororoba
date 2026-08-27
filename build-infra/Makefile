@@ -143,6 +143,9 @@ override GOROROBA_PREFIX_INPUT := $(value PREFIX)
 override GOROROBA_SYSCONFDIR_INPUT := $(value SYSCONFDIR)
 override GOROROBA_PROFILE_INPUT := $(value PROFILE)
 override GOROROBA_HOSTENV_INPUT := $(value HOSTENV)
+override GOROROBA_MODE_INPUT := $(value MODE)
+override GOROROBA_COMPILER_CHAIN_INPUT := $(value COMPILER_CHAIN)
+override GOROROBA_COMPILER_FAMILY_INPUT := $(value COMPILER_FAMILY)
 export GOROROBA_TOPSRC_INPUT
 export GOROROBA_BUILD_ROOT_INPUT
 export GOROROBA_BUILDDIR_INPUT
@@ -150,6 +153,9 @@ export GOROROBA_PREFIX_INPUT
 export GOROROBA_SYSCONFDIR_INPUT
 export GOROROBA_PROFILE_INPUT
 export GOROROBA_HOSTENV_INPUT
+export GOROROBA_MODE_INPUT
+export GOROROBA_COMPILER_CHAIN_INPUT
+export GOROROBA_COMPILER_FAMILY_INPUT
 
 override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
 override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
@@ -174,6 +180,9 @@ override SOURCE_ROOT_FIELDS := $(shell \
 	GOROROBA_SYSCONFDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_SYSCONFDIR_INPUT)) \
 	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_INPUT)) \
 	GOROROBA_HOSTENV_INPUT=$(call make_shell_quote,$(value GOROROBA_HOSTENV_INPUT)) \
+	GOROROBA_MODE_INPUT=$(call make_shell_quote,$(value GOROROBA_MODE_INPUT)) \
+	GOROROBA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_CHAIN_INPUT)) \
+	GOROROBA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_FAMILY_INPUT)) \
 	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
 override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
@@ -2595,7 +2604,8 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$failed_config_root" \
 		BUILDDIR="$$failed_config_builddir" PREFIX="$$failed_config_prefix" \
-		BUILD_LOCK="$$tmpdir/failed-config.lock" LOCK_WAIT=0 >/dev/null; \
+		BUILD_LOCK="$$tmpdir/failed-config.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct >/dev/null; \
 	test ! -e "$$failed_config_builddir" || { \
 		echo "FAIL  provisional identity did not admit interrupted-build cleanup" >&2; \
 		exit 1; \
@@ -2685,6 +2695,38 @@ source-root-selection-test:
 		echo "FAIL  configure omitted the external build-root identity" >&2; \
 		exit 1; \
 	}; \
+	for selector_case in \
+		'profile:GOROROBA_PROFILE_INPUT:selector-profile-drift' \
+		'hostenv:GOROROBA_HOSTENV_INPUT:selector-hostenv-drift' \
+		'mode:GOROROBA_MODE_INPUT:stable' \
+		'compiler_chain:GOROROBA_COMPILER_CHAIN_INPUT:ccache' \
+		'compiler_family:GOROROBA_COMPILER_FAMILY_INPUT:gnu'; do \
+		IFS=: read -r selector_field selector_variable selector_value \
+			<<< "$$selector_case"; \
+		if selector_drift_output="$$( env \
+			GOROROBA_TOPSRC_INPUT="$$source_root" \
+			GOROROBA_BUILD_ROOT_INPUT="$$identity_build_root" \
+			GOROROBA_BUILDDIR_INPUT="$$identity_builddir" \
+			GOROROBA_PREFIX_INPUT="$$identity_prefix" \
+			GOROROBA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
+			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			GOROROBA_HOSTENV_INPUT="$(HOSTENV)" \
+			GOROROBA_MODE_INPUT="$(MODE)" \
+			GOROROBA_COMPILER_CHAIN_INPUT=direct \
+			GOROROBA_COMPILER_FAMILY_INPUT=llvm \
+			"$$selector_variable=$$selector_value" \
+			python3 "$(SOURCE_ROOT_CONTROL)" verify-identity 2>&1 )"; then \
+			echo "FAIL  identity accepted $$selector_field drift" >&2; \
+			exit 1; \
+		fi; \
+		printf '%s\n' "$$selector_drift_output" | \
+			grep -F "external source identity drift: $$selector_field" \
+			>/dev/null || { \
+			echo "FAIL  $$selector_field drift returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$selector_drift_output" >&2; exit 1; \
+		}; \
+	done; \
+	echo "OK    external identities bind every build-policy selector"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
@@ -2810,7 +2852,8 @@ source-root-selection-test:
 		-C "$(CURDIR)" artifact-check \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
-		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 2>&1 )"; then \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct 2>&1 )"; then \
 		echo "FAIL  artifact-check accepted a partial failed install" >&2; \
 		exit 1; \
 	fi; \
@@ -2841,12 +2884,13 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" artifact-check \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
-		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 >/dev/null; \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct >/dev/null; \
 	if artifact_drift_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		artifact-check TOPSRC="$$legacy_root" \
 		BUILD_ROOT="$$identity_build_root" BUILDDIR="$$identity_builddir" \
 		PREFIX="$$identity_prefix" BUILD_LOCK="$$tmpdir/identity.lock" \
-		LOCK_WAIT=0 2>&1 )"; then \
+		LOCK_WAIT=0 COMPILER_CHAIN=direct 2>&1 )"; then \
 		echo "FAIL  artifact-check accepted another source identity" >&2; \
 		exit 1; \
 	fi; \
@@ -2918,7 +2962,8 @@ source-root-selection-test:
 	if stale_distclean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
 		distclean TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
-		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 SUDO= 2>&1 )"; then \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct SUDO= 2>&1 )"; then \
 		echo "FAIL  distclean accepted a stale final build identity" >&2; \
 		exit 1; \
 	fi; \
@@ -2961,7 +3006,8 @@ source-root-selection-test:
 	if distclean_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$alternate_prefix" \
-		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 SUDO= 2>&1 )"; then \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct SUDO= 2>&1 )"; then \
 		echo "FAIL  distclean accepted a prefix outside its source identity" >&2; \
 		exit 1; \
 	fi; \
@@ -2993,7 +3039,7 @@ source-root-selection-test:
 		TOPSRC="$$source_root" BUILD_ROOT="$$remove_distclean_root" \
 		BUILDDIR="$$remove_distclean_builddir" PREFIX="$$remove_distclean_prefix" \
 		BUILD_LOCK="$$tmpdir/remove-distclean.lock" LOCK_WAIT=0 \
-		REMOVE_TREE=false SUDO= 2>&1 )"; then \
+		COMPILER_CHAIN=direct REMOVE_TREE=false SUDO= 2>&1 )"; then \
 		echo "FAIL  distclean reported success after remove failure" >&2; \
 		exit 1; \
 	fi; \
@@ -3021,7 +3067,7 @@ source-root-selection-test:
 		TOPSRC="$$source_root" BUILD_ROOT="$$archive_failure_root" \
 		BUILDDIR="$$archive_failure_builddir" PREFIX="$$archive_failure_prefix" \
 		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 \
-		SUDO=false 2>&1 )"; then \
+		COMPILER_CHAIN=direct SUDO=false 2>&1 )"; then \
 		echo "FAIL  distclean reported success after archive failure" >&2; \
 		exit 1; \
 	fi; \
@@ -3038,7 +3084,8 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$archive_failure_root" \
 		BUILDDIR="$$archive_failure_builddir" PREFIX="$$archive_failure_prefix" \
-		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 SUDO= \
+		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct SUDO= \
 		>/dev/null; \
 	test ! -e "$$archive_failure_prefix" || { \
 		echo "FAIL  distclean retry left the bound prefix" >&2; exit 1; \
@@ -3062,7 +3109,8 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
 		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
-		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 >/dev/null; \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct >/dev/null; \
 	test ! -e "$$clean_distclean_builddir" && \
 	test -f "$$clean_distclean_prefix/sentinel" || { \
 		echo "FAIL  clean-then-distclean setup lost a protected target" >&2; \
@@ -3071,12 +3119,14 @@ source-root-selection-test:
 	$(MAKE) --no-print-directory -C "$(CURDIR)" artifact-check \
 		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
 		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
-		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 >/dev/null; \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct >/dev/null; \
 	echo "OK    artifact reporting uses final root identity after clean"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
 		TOPSRC="$$source_root" BUILD_ROOT="$$clean_distclean_root" \
 		BUILDDIR="$$clean_distclean_builddir" PREFIX="$$clean_distclean_prefix" \
-		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 SUDO= \
+		BUILD_LOCK="$$tmpdir/clean-distclean.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct SUDO= \
 		>/dev/null; \
 	test ! -e "$$clean_distclean_prefix" || { \
 		echo "FAIL  distclean left the bound prefix after clean" >&2; \
@@ -3092,7 +3142,8 @@ source-root-selection-test:
 	if clean_owner_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" clean \
 		TOPSRC="$$legacy_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
-		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 2>&1 )"; then \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct 2>&1 )"; then \
 		echo "FAIL  clean deleted a build directory owned by another source" >&2; \
 		exit 1; \
 	fi; \
@@ -3140,7 +3191,7 @@ source-root-selection-test:
 			TOPSRC="$$source_root" BUILD_ROOT="$$retarget_root" \
 			BUILDDIR="$$retarget_builddir" PREFIX="$$retarget_prefix" \
 			BUILD_LOCK="$$tmpdir/retarget.lock" LOCK_WAIT=5 \
-			FLOCK="$$retarget_flock" SUDO= \
+			COMPILER_CHAIN=direct FLOCK="$$retarget_flock" SUDO= \
 			> "$$retarget_output" 2>&1 & \
 	retarget_pid=$$!; \
 	retarget_wait=0; \
