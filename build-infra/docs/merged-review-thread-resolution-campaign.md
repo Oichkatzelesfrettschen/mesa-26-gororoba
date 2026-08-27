@@ -48,9 +48,11 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   append-only evidence-refresh ledger.  All 50 exact rows are closed and
   re-verified.
 - `review-thread-classifications/merged-thread-frontier-after-WhUFS/` owns the
-  sixth batch's 50-row assessment, generated action frontier, and empty
-  resolution ledger.  Its 33 actionable rows require merged repairs, while two
-  hardware-evidence rows retain their explicit RS482 observation gates.
+  sixth batch's 50-row assessment, immutable pre-resolution frontier, ordered
+  recovery journal, generated action frontier, and partial resolution ledger.
+  Fifteen exact fixed or superseded rows are closed and re-verified.  Its 33
+  actionable rows require merged repairs, while two hardware-evidence rows
+  retain their explicit RS482 observation gates.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third, fourth, and fifth batch
@@ -494,27 +496,32 @@ commits are ancestors of `origin/main`, their declared target files match the
 current candidate, and the terminal journal binds each resolution to its
 repair PR and post-resolution verification time.
 
-## Classified sixth-batch frontier
+## Active sixth-batch frontier
 
 `review-thread-classifications/merged-thread-frontier-after-WhUFS/assessments.tsv`
-classifies the exact sixth-batch denominator against merged main
-`c6c629d0071f1d0e4f64bcfd642fc9dbe69d0867`.  The generated
+initially classifies the exact sixth-batch denominator against merged main
+`c6c629d0071f1d0e4f64bcfd642fc9dbe69d0867`.  Closed-row transitions bind the
+merged current-main assessment at
+`ba9456059bb308b499b8940148d78b806adf67fc`.  The generated
 `action-frontier.tsv` keeps the retained chronological order and binds every
 row to its exact GraphQL ID, current source evidence, required observation,
 falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| fixed on merged main | 10 | Resolve exact ID from merged evidence |
-| superseded by merged main | 5 | Resolve exact ID from successor |
+| closed as fixed | 10 | Retain exact merge and post-resolution evidence |
+| closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 | actionable | 33 | Implement, test, merge, synchronize, then resolve |
 | pending RS482 evidence | 2 | Execute the declared hardware oracle |
 
-The fixed and superseded rows cover DRM-shim exec locators and residue
+The closed rows cover DRM-shim exec locators and residue
 calibration, source-header policy, r300 compiler initialization, the qualified
 native triangle path, deletion of the Gallium-backed Vulkan lane, GPU-producer
 WINDOW routing, route ownership, and producer-specific arming.  Static source
-and Git history establish those code-state dispositions.
+and Git history establish those code-state dispositions.  PR 1942 binds all
+fifteen current targets to one merged assessment authority.  Each exact thread
+is resolved, immediately re-queried, and recorded with two additional live
+verification queries in the partial recovery journal.
 
 The actionable rows retain concrete repair gates for clean source identity,
 DRM-shim selected-device and provenance handling, native clipping and carrier
@@ -523,9 +530,9 @@ input semantics, dispatch analysis, exact producer payload identity, and
 producer replay interpretation.  The intensity-blend and C1C packet rows stay
 pending until their exact RS482 oracles produce retained evidence.
 
-Every captured GitHub node remains unresolved.  Resolution begins only after
-the applicable assessment, repair, or hardware-evidence transition is present
-on synchronized `main` and the exact node is re-queried.
+Live GraphQL state reports 15 resolved and 35 unresolved exact IDs.  Each
+remaining ID resolves only after its repair or hardware-evidence transition
+is present on synchronized `main` and the exact node is re-queried.
 
 ## Verification
 

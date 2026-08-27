@@ -1,0 +1,144 @@
+{
+  "complete": false,
+  "entries": [
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:12Z",
+      "thread_id": "PRRT_kwDOR3YK5M6WhUFW",
+      "verified_at": "2026-08-27T21:00:12Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:15Z",
+      "thread_id": "PRRT_kwDOR3YK5M6WqAMl",
+      "verified_at": "2026-08-27T21:00:15Z"
+    },
+    {
+      "disposition": "superseded",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:18Z",
+      "thread_id": "PRRT_kwDOR3YK5M6WqAMt",
+      "verified_at": "2026-08-27T21:00:18Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:21Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XRpjE",
+      "verified_at": "2026-08-27T21:00:22Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:24Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XbEit",
+      "verified_at": "2026-08-27T21:00:25Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:27Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XgW3D",
+      "verified_at": "2026-08-27T21:00:28Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:30Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XgW3G",
+      "verified_at": "2026-08-27T21:00:30Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:33Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XgcYX",
+      "verified_at": "2026-08-27T21:00:33Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:35Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Xglay",
+      "verified_at": "2026-08-27T21:00:35Z"
+    },
+    {
+      "disposition": "superseded",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:38Z",
+      "thread_id": "PRRT_kwDOR3YK5M6X27Yi",
+      "verified_at": "2026-08-27T21:00:38Z"
+    },
+    {
+      "disposition": "superseded",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:40Z",
+      "thread_id": "PRRT_kwDOR3YK5M6YiMuz",
+      "verified_at": "2026-08-27T21:00:40Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:42Z",
+      "thread_id": "PRRT_kwDOR3YK5M6ZIGc4",
+      "verified_at": "2026-08-27T21:00:43Z"
+    },
+    {
+      "disposition": "superseded",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:44Z",
+      "thread_id": "PRRT_kwDOR3YK5M6ZIGdC",
+      "verified_at": "2026-08-27T21:00:45Z"
+    },
+    {
+      "disposition": "superseded",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:47Z",
+      "thread_id": "PRRT_kwDOR3YK5M6ZIX17",
+      "verified_at": "2026-08-27T21:00:47Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
+      "evidence_pr": 1942,
+      "merged_at": "2026-08-27T20:46:29Z",
+      "resolved_at": "2026-08-27T21:00:49Z",
+      "thread_id": "PRRT_kwDOR3YK5M6ZIj8A",
+      "verified_at": "2026-08-27T21:00:50Z"
+    }
+  ],
+  "frontier_sha256": "5c765adda17e2b9ab8a3c60e53540e3ff1c2f56356bd424965ed7a15dbf8823b",
+  "post_verified_at": null,
+  "schema": "mesa-review-thread-resolution-v2",
+  "started_at": "2026-08-27T21:00:11Z"
+}
