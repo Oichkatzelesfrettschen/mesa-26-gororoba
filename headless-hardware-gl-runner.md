@@ -1,74 +1,367 @@
-# Headless hardware-GL runner on display-manager hosts
+# Headless hardware GL on display-manager hosts
 
-Conformance and driver work needs a hardware GL provider. A GLX client cannot
-upgrade itself: when the X server's GLX provider is `DRISWRAST`, every client on
-that display gets software regardless of `MESA_LOADER_DRIVER_OVERRIDE` or any
-`LIBGL_*` flag it sets. The server has to expose glamor, so the fix belongs to
-the server, not the client.
+Conformance evidence binds every result to one target device, one Mesa build,
+and one window-system provider. A render-node EGL/GBM run exercises a direct
+client without DRM master. An X11 run adds Xorg, its AIGLX provider, and the
+direct-rendering client path. These paths produce distinct evidence classes.
 
-Display-manager hosts make that harder in three ways. The DM holds the DRM
-master, so a second X server on the same GPU cannot become master. Its own X
-server is often configured without glamor. And Arch-derived hosts commonly set
-`dmesg_restrict=1`, which puts kernel-log evidence behind `sudo`.
+`DRISWRAST` identifies the server-side AIGLX provider. It disqualifies indirect
+GLX results as target-hardware evidence. A DRI3 client can still open a render
+node and select a hardware client driver, so its renderer and loader trace
+determine the direct-client identity. Retain both observations.
 
-## Reach the hardware without an X server first
+## Bind the render node to the target PCI device
 
-`EGL` plus `GBM` on `/dev/dri/renderD128` reaches the hardware driver with no X
-server and no DRM master, because the render node is world-accessible. Run
-everything there that does not need a window-system default framebuffer:
-`PIGLIT_PLATFORM=gbm`, or `eglGetPlatformDisplayEXT` with
-`EGL_PLATFORM_GBM_KHR`. Tests requiring a real default framebuffer or an MSAA
-window are the only ones that need the headless X path below.
-
-## Headless X path
-
-Free the GPU, since the DM owns the DRM master. Check
-`display-manager.service` for which one is live, then `sudo systemctl stop <dm>`.
-
-Start a headless server with a hardware provider on a free display and VT:
+Set the target PCI BDF, the expected renderer pattern, and an evidence directory
+before selecting a provider. Place retained hardware evidence in the applicable
+`steinmarder-r300` result bundle.
 
 ```sh
-sudo Xorg :2 -config /path/glamor.conf -nolisten tcp vt9 -novtswitch -keeptty &
+TARGET_PCI_BDF=${TARGET_PCI_BDF:?set a domain:bus:device.function PCI BDF}
+EXPECTED_RENDERER_PATTERN=${EXPECTED_RENDERER_PATTERN:?set a renderer pattern}
+EVIDENCE_DIR=${EVIDENCE_DIR:?set an absolute retained-evidence directory}
+
+case "$EVIDENCE_DIR" in
+   /*) ;;
+   *) printf 'evidence directory must be absolute: %s\n' \
+      "$EVIDENCE_DIR" >&2; exit 2 ;;
+esac
+[ ! -e "$EVIDENCE_DIR" ] || {
+   printf 'evidence directory already exists: %s\n' "$EVIDENCE_DIR" >&2
+   exit 2
+}
+
+if ! printf '%s\n' "$TARGET_PCI_BDF" | grep -Eq \
+   '^[[:xdigit:]]{4}:[[:xdigit:]]{2}:[[:xdigit:]]{2}\.[[:xdigit:]]$'
+then
+   printf 'invalid PCI BDF: %s\n' "$TARGET_PCI_BDF" >&2
+   exit 2
+fi
+mkdir -m 0700 "$EVIDENCE_DIR"
+
+target_render_sysfs=
+for render_sysfs_candidate in \
+   "/sys/bus/pci/devices/$TARGET_PCI_BDF"/drm/renderD*
+do
+   [ -e "$render_sysfs_candidate" ] || continue
+   if [ -n "$target_render_sysfs" ]; then
+      printf 'multiple render nodes for %s\n' "$TARGET_PCI_BDF" >&2
+      exit 2
+   fi
+   target_render_sysfs=$render_sysfs_candidate
+done
+[ -n "$target_render_sysfs" ] || {
+   printf 'no render node for %s\n' "$TARGET_PCI_BDF" >&2
+   exit 2
+}
+
+TARGET_RENDER_NODE=/dev/dri/${target_render_sysfs##*/}
+target_render_device=$(readlink -f \
+   "/sys/class/drm/${TARGET_RENDER_NODE##*/}/device")
+target_pci_device=$(readlink -f "/sys/bus/pci/devices/$TARGET_PCI_BDF")
+[ "$target_render_device" = "$target_pci_device" ] || exit 2
+
+lspci -Dnnks "$TARGET_PCI_BDF" > "$EVIDENCE_DIR/device-identity.txt"
+stat -Lc '%n %t:%T %a %U:%G' "$TARGET_RENDER_NODE" \
+   > "$EVIDENCE_DIR/render-node-access.txt"
+getfacl -cp "$TARGET_RENDER_NODE" \
+   >> "$EVIDENCE_DIR/render-node-access.txt"
+if [ ! -r "$TARGET_RENDER_NODE" ] || \
+   [ ! -w "$TARGET_RENDER_NODE" ] || \
+   ! : <> "$TARGET_RENDER_NODE"
+then
+   printf '%s requires read-write access for user %s\n' \
+      "$TARGET_RENDER_NODE" "$(id -un)" >&2
+   exit 2
+fi
 ```
 
-The config sets `Driver "modesetting"` with glamor enabled.
-`Option "AccelMethod" "none"` disables glamor and forces `DRISWRAST`, so it stays
-out. Run no window manager and no compositor: a bare X issues no XRender 2D
-shaders, which is what keeps glamor clear of per-GPU shader limits.
+The render-node group or a seat ACL grants access. Add the test user to the
+host's designated render group or install a target-scoped ACL, then establish a
+new login session and repeat the preflight. Run the GL client as that user;
+root execution changes the loader environment and the runtime identity.
 
-Confirm the provider is hardware before trusting any result:
+Derive Mesa's PCI selection tag from the same BDF. `DRI_PRIME_DEBUG=1` records
+the selected render node, while `wflinfo` records the renderer.
 
 ```sh
-grep -iE "glamor|GLX|AIGLX|DRISWRAST" /var/log/Xorg.2.log
-DISPLAY=:2 glxinfo | grep -i "OpenGL renderer"
+TARGET_DRI_PRIME="pci-$(printf '%s' "$TARGET_PCI_BDF" | tr ':.' '__')"
+DRI_PRIME="$TARGET_DRI_PRIME" DRI_PRIME_DEBUG=1 \
+   wflinfo --platform gbm --api gl --verbose \
+   > "$EVIDENCE_DIR/gbm-renderer.txt" \
+   2> "$EVIDENCE_DIR/gbm-loader-selection.txt"
+grep -F "selected ($TARGET_RENDER_NODE)" \
+   "$EVIDENCE_DIR/gbm-loader-selection.txt"
+grep -Ei -- "$EXPECTED_RENDERER_PATTERN" "$EVIDENCE_DIR/gbm-renderer.txt"
 ```
 
-A `DRISWRAST GL provider` line, or an `llvmpipe` or `swrast` renderer string,
-means glamor did not come up. Fix the config; a suite run on software reports a
-software result whatever the driver under test does.
+Both checks form the GBM admission gate. A missing selection line, a different
+render node, or a renderer mismatch rejects the run as target-device evidence.
 
-Run the suite against `DISPLAY=:2`. Under `dmesg_restrict=1` both `dmesg` and
-piglit `--dmesg` need `sudo`. Sample the GPU reset count before and after, and
-abort the run on a reset.
+Route platform-neutral EGL, GBM, and surfaceless cases through this path. Route
+every GLX, EGL-X11, Xlib, XCB, X protocol, context, visual, drawable, and
+default-framebuffer case through the X path. GBM coverage never substitutes for
+an X-window-system result.
 
-Tear down and restore the session:
+## Establish an independent recovery session
+
+Enter through SSH from another machine or a text VT. Keep that session open
+until the display manager is restored. A terminal owned by the graphical
+session exits when the display manager stops and cannot provide recovery.
 
 ```sh
-sudo pkill -f "Xorg :2"
-sudo systemctl start <dm>
+if [ -n "${SSH_CONNECTION:-}" ]; then
+   CONTROL_SESSION=ssh
+elif [ "${XDG_SESSION_TYPE:-}" = tty ] && \
+     [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+   CONTROL_SESSION=text-vt
+else
+   printf 'use remote SSH or an independent text VT\n' >&2
+   exit 2
+fi
+printf '%s\n' "$CONTROL_SESSION" > "$EVIDENCE_DIR/control-session.txt"
+
+DISPLAY_MANAGER_UNIT=display-manager.service
+systemctl show "$DISPLAY_MANAGER_UNIT" \
+   --property=Id --property=Names --property=FragmentPath \
+   > "$EVIDENCE_DIR/display-manager-unit.txt"
+systemctl is-active --quiet "$DISPLAY_MANAGER_UNIT" || exit 2
+printf 'sudo systemctl start %s\n' "$DISPLAY_MANAGER_UNIT" \
+   > "$EVIDENCE_DIR/display-manager-restore-command.txt"
 ```
 
-## Silicon and evidence caveats
+The retained restoration command stays available in the independent session.
+Stopping the display manager is permitted only after these checks pass.
 
-Old and limited GPUs hang under glamor when a 2D or XRender shader exceeds a
-hardware limit, such as a 104-ALU shader on a 64-ALU-max part. The headless
-no-compositor session avoids the usual trigger, and GL test rendering reaches
-Mesa directly rather than through glamor. Watch dmesg anyway and keep a reboot
-path.
+## Create a target-scoped Xorg configuration
 
-A client pointed at a hardware-only Mesa build, one without swrast, is a useful
-probe: it either uses the hardware driver or fails loudly, so it cannot fall back
-to llvmpipe and mask a software result.
+Xorg expresses PCI bus, domain, device, and function numbers in decimal. Derive
+that identity from the same validated BDF and materialize the exact
+configuration in the evidence directory.
 
-A software-GLX run supports no conclusion about the driver. Confirm the renderer
-string first, then read the result.
+```sh
+target_pci_domain_hex=${TARGET_PCI_BDF%%:*}
+target_pci_suffix=${TARGET_PCI_BDF#*:}
+target_pci_bus_hex=${target_pci_suffix%%:*}
+target_pci_slot_function=${target_pci_suffix#*:}
+target_pci_device_hex=${target_pci_slot_function%%.*}
+target_pci_function_hex=${target_pci_slot_function#*.}
+TARGET_XORG_BUS_ID=$(printf 'PCI:%d@%d:%d:%d' \
+   "0x$target_pci_bus_hex" "0x$target_pci_domain_hex" \
+   "0x$target_pci_device_hex" "0x$target_pci_function_hex")
+XORG_CONFIG_PATH=$EVIDENCE_DIR/xorg-target.conf
+
+sed "s|@TARGET_XORG_BUS_ID@|$TARGET_XORG_BUS_ID|g" \
+   > "$XORG_CONFIG_PATH" <<'EOF'
+Section "ServerFlags"
+    Option "AutoAddGPU" "off"
+EndSection
+
+Section "Device"
+    Identifier "Target GPU"
+    Driver "modesetting"
+    BusID "@TARGET_XORG_BUS_ID@"
+    Option "AccelMethod" "glamor"
+EndSection
+
+Section "Screen"
+    Identifier "Target Screen"
+    Device "Target GPU"
+EndSection
+
+Section "ServerLayout"
+    Identifier "Target Layout"
+    Screen "Target Screen"
+    Option "IsolateDevice" "@TARGET_XORG_BUS_ID@"
+EndSection
+EOF
+```
+
+`BusID`, `AutoAddGPU`, and `IsolateDevice` keep discovery and reset ownership on
+the selected GPU. The modesetting driver initializes glamor explicitly. A bare
+server runs without a window manager or compositor, which removes their XRender
+workloads from the hardware-conformance session.
+
+## Launch and verify the X provider
+
+Stop the display manager, then launch Xorg as a transient service. `Type=exec`
+makes launch success depend on executing Xorg. The system service manager owns
+the process after the initiating command returns. The display, VT, and unit
+preflight prevents collision with an existing graphical service.
+
+```sh
+XORG_DISPLAY=:2
+XORG_DISPLAY_NUMBER=${XORG_DISPLAY#:}
+XORG_VT=vt9
+XORG_VT_NUMBER=${XORG_VT#vt}
+XORG_UNIT=mesa-headless-gl-target.service
+XORG_LOG=$EVIDENCE_DIR/xorg-provider.log
+
+if [ -e "/tmp/.X11-unix/X$XORG_DISPLAY_NUMBER" ] || \
+   [ -e "/tmp/.X$XORG_DISPLAY_NUMBER-lock" ] || \
+   systemctl is-active --quiet "getty@tty$XORG_VT_NUMBER.service" || \
+   systemctl is-active --quiet "$XORG_UNIT" || \
+   systemctl is-failed --quiet "$XORG_UNIT"
+then
+   printf 'Xorg display, VT, or transient unit is already owned\n' >&2
+   exit 2
+fi
+
+sudo systemctl stop "$DISPLAY_MANAGER_UNIT"
+if systemctl is-active --quiet "$DISPLAY_MANAGER_UNIT"; then
+   printf 'display manager remains active\n' >&2
+   exit 2
+fi
+
+sudo systemd-run --unit="$XORG_UNIT" --property=Type=exec \
+   -- Xorg "$XORG_DISPLAY" -config "$XORG_CONFIG_PATH" \
+   -logfile "$XORG_LOG" -nolisten tcp "$XORG_VT" -novtswitch -keeptty
+
+XORG_MAIN_PID=$(sudo systemctl show "$XORG_UNIT" \
+   --property=MainPID --value)
+case "$XORG_MAIN_PID" in
+   ''|*[!0-9]*|0|1) printf 'invalid Xorg MainPID: %s\n' \
+      "$XORG_MAIN_PID" >&2; exit 2 ;;
+esac
+systemctl show "$XORG_UNIT" \
+   --property=MainPID --property=ActiveState --property=SubState \
+   > "$EVIDENCE_DIR/xorg-unit-state.txt"
+printf '%s\n' "$XORG_MAIN_PID" > "$EVIDENCE_DIR/xorg-main-pid.txt"
+sudo cat "/proc/$XORG_MAIN_PID/cmdline" | tr '\0' ' ' \
+   > "$EVIDENCE_DIR/xorg-command-line.txt"
+
+xorg_ready_attempts=30
+until DISPLAY="$XORG_DISPLAY" xdpyinfo >/dev/null 2>&1; do
+   sudo kill -0 "$XORG_MAIN_PID" || exit 2
+   if [ "$xorg_ready_attempts" -le 0 ]; then
+      printf 'Xorg display readiness timed out\n' >&2
+      exit 2
+   fi
+   xorg_ready_attempts=$((xorg_ready_attempts - 1))
+   sleep 1
+done
+```
+
+The exact `MainPID`, unit state, and command line prove which server this run
+owns. They also define the only teardown target.
+
+Capture the server provider and direct-client identities separately. The GLX
+and EGL-X11 checks must select the same target render node and match the expected
+renderer.
+
+```sh
+grep -iE 'glamor|GLX|AIGLX|DRISWRAST' "$XORG_LOG" \
+   > "$EVIDENCE_DIR/xorg-provider-selection.txt"
+
+for waffle_platform in glx x11_egl
+do
+   DISPLAY="$XORG_DISPLAY" DRI_PRIME="$TARGET_DRI_PRIME" DRI_PRIME_DEBUG=1 \
+      wflinfo --platform "$waffle_platform" --api gl --verbose \
+      > "$EVIDENCE_DIR/$waffle_platform-renderer.txt" \
+      2> "$EVIDENCE_DIR/$waffle_platform-loader-selection.txt"
+   grep -F "selected ($TARGET_RENDER_NODE)" \
+      "$EVIDENCE_DIR/$waffle_platform-loader-selection.txt"
+   grep -Ei -- "$EXPECTED_RENDERER_PATTERN" \
+      "$EVIDENCE_DIR/$waffle_platform-renderer.txt"
+done
+```
+
+A `DRISWRAST` AIGLX line rejects indirect GLX results as hardware evidence. The
+direct GLX and EGL-X11 results retain their independently verified client
+identity. An `llvmpipe` or `swrast` client renderer rejects that client run.
+
+## Run the suite without privilege
+
+Capture kernel state through dedicated privileged commands. Run Piglit and
+other test clients in the configured user environment so `LD_LIBRARY_PATH`,
+`LIBGL_DRIVERS_PATH`, `MESA_LOADER_DRIVER_OVERRIDE`, `DRI_PRIME`, and the Piglit
+platform keep their intended values.
+
+```sh
+# The unprivileged shell owns the evidence file. Privilege covers dmesg only.
+# shellcheck disable=SC2024
+sudo dmesg --color=never > "$EVIDENCE_DIR/kernel-before.txt"
+
+PIGLIT_PROFILE=${PIGLIT_PROFILE:?set a Piglit profile}
+TARGET_PIGLIT_PLATFORM=${TARGET_PIGLIT_PLATFORM:?set glx or x11_egl}
+case "$TARGET_PIGLIT_PLATFORM" in
+   glx|x11_egl) ;;
+   *) printf 'invalid X-window-system Piglit platform: %s\n' \
+      "$TARGET_PIGLIT_PLATFORM" >&2; exit 2 ;;
+esac
+DISPLAY="$XORG_DISPLAY" DRI_PRIME="$TARGET_DRI_PRIME" \
+   PIGLIT_PLATFORM="$TARGET_PIGLIT_PLATFORM" \
+   piglit run "$PIGLIT_PROFILE" "$EVIDENCE_DIR/piglit-results"
+suite_status=$?
+
+# shellcheck disable=SC2024
+sudo dmesg --color=never > "$EVIDENCE_DIR/kernel-after.txt"
+diff -u "$EVIDENCE_DIR/kernel-before.txt" \
+   "$EVIDENCE_DIR/kernel-after.txt" \
+   > "$EVIDENCE_DIR/kernel-movement.diff"
+kernel_diff_status=$?
+case "$kernel_diff_status" in
+   0|1) ;;
+   *) exit "$kernel_diff_status" ;;
+esac
+printf '%s\n' "$suite_status" > "$EVIDENCE_DIR/suite-status.txt"
+```
+
+`sudo` applies to the two `dmesg` captures and the Xorg lifecycle commands. It
+never prefixes Piglit or a GL client. A new DRM validation rejection, GPU reset,
+ring stall, lockup, or kernel fault invalidates the run and opens hardware RCA.
+
+## Terminate the recorded server and restore the display manager
+
+Signal the recorded Xorg PID, wait for that PID and the transient unit to exit,
+then restore the display manager. Process-name matching has no role in this
+sequence.
+
+```sh
+XORG_UNIT=mesa-headless-gl-target.service
+XORG_MAIN_PID=${XORG_MAIN_PID:-$(cat "$EVIDENCE_DIR/xorg-main-pid.txt")}
+sudo kill -TERM "$XORG_MAIN_PID"
+xorg_exit_attempts=30
+while [ "$(systemctl show "$XORG_UNIT" \
+              --property=MainPID --value)" = "$XORG_MAIN_PID" ]
+do
+   if [ "$xorg_exit_attempts" -le 0 ]; then
+      printf 'Xorg exit timed out for PID %s\n' "$XORG_MAIN_PID" >&2
+      exit 2
+   fi
+   xorg_exit_attempts=$((xorg_exit_attempts - 1))
+   sleep 1
+done
+[ ! -e "/proc/$XORG_MAIN_PID" ] || {
+   printf 'recorded Xorg PID still exists: %s\n' "$XORG_MAIN_PID" >&2
+   exit 2
+}
+sudo systemctl start "$DISPLAY_MANAGER_UNIT"
+systemctl is-active --quiet "$DISPLAY_MANAGER_UNIT"
+```
+
+The display manager restarts only after the recorded Xorg process exits. If the
+Xorg launch or suite aborts, execute this same PID-scoped restoration sequence
+from the independent control session.
+
+## Preserve silicon safety and negative controls
+
+Limited GPUs can hang when a glamor 2D or XRender shader exceeds a silicon
+limit, such as a 104-ALU shader on a 64-ALU-maximum part. The bare X server
+removes window-manager and compositor workloads from this session. That
+containment reduces the known trigger surface; kernel-log monitoring and an
+independent reboot path remain mandatory.
+
+A hardware-only Mesa build without swrast supplies an independent negative
+control. The client either loads the expected hardware driver or fails at
+provider creation, so llvmpipe cannot mask the result. This control complements
+the loader-selection and renderer gates; it never substitutes for them.
+
+## Retain evidence by class
+
+Keep device identity, render-node access, loader selection, renderer identity,
+Xorg provider selection, Xorg command line and `MainPID`, suite results, and
+kernel logs as separate artifacts. Record the Mesa source SHA, build identity,
+tool paths, tool versions, suite command, and environment allowlist beside them,
+then hash the admitted bundle. Build success, provider identity, conformance
+movement, and kernel or silicon behavior remain separate claims.
