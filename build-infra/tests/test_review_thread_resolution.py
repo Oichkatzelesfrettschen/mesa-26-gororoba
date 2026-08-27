@@ -15,7 +15,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 SCRIPT_PATH = SCRIPT_DIR / "review_thread_resolution.py"
 CLASSIFICATION_DIR = (
     BUILD_INFRA_ROOT
-    / "docs/review-thread-classifications/merged-thread-frontier-92b67f719e7b"
+    / "docs/review-thread-classifications/merged-thread-frontier-after-QY6A8"
 )
 FRONTIER_PATH = CLASSIFICATION_DIR / "pre-resolution-frontier.tsv"
 JOURNAL_PATH = CLASSIFICATION_DIR / "resolution-observation.json"

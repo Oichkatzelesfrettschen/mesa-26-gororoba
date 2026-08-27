@@ -19,7 +19,7 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   third-batch raw denominator.  Its manifest binds eleven request/response
   pages, exact query text, default-branch identity, every selected comment,
   hashes, and the chronological stop proof.
-- `review-thread-frontiers/merged-thread-frontier-after-QY6A8/` is the active
+- `review-thread-frontiers/merged-thread-frontier-after-QY6A8/` preserves the
   fourth-batch raw denominator.  Its manifest binds twelve request/response
   pages, exact query text, default-branch identity, every selected comment,
   hashes, and the chronological stop proof.
@@ -29,13 +29,13 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   ledger.  Keeping these paths batch-scoped preserves the second batch's
   terminal global views without overwriting history.
 - `review-thread-classifications/merged-thread-frontier-after-QY6A8/` owns the
-  fourth batch's 50-row assessment, generated action frontier, and resolution
-  ledger.  The action frontier stays unresolved until this assessment is on
-  merged `main` and the exact-ID mutation run completes.
+  fourth batch's 50-row assessment, immutable pre-resolution frontier,
+  SHA-256-bound mutation journal, generated terminal frontier, and resolution
+  ledger.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
-  views of the closed second batch.  The third batch's terminal views remain in
-  its batch-scoped classification directory.
+  views of the closed second batch.  The third and fourth batch terminal views
+  remain in their batch-scoped classification directories.
 - `../scripts/review_thread_frontier.py` validates the frontier and ledger
   offline.  Its unit tests calibrate duplicate identity, ordering, false merged
   evidence, owner-path drift, missing closure rows, live GraphQL identity, and
@@ -236,7 +236,7 @@ at `2026-08-26T21:33:23Z`; the final live verification completed at
 re-verified rows.  The batch registry remains the canonical owner of terminal
 campaign state and closure merge identity.
 
-## Classified fourth-batch frontier
+## Closed classified fourth-batch frontier
 
 `review-thread-classifications/merged-thread-frontier-after-QY6A8/assessments.tsv`
 classifies the exact fourth-batch denominator against merged main
@@ -263,9 +263,13 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and RS482 silicon claims remain outside
 this closure.
 
-All 50 live GraphQL nodes remain unresolved.  Exact-ID mutation begins only
-after this assessment merges, preserving merged-main evidence as the closure
-authority.
+All 50 exact thread IDs were resolved after PR 1895 merged.  The resumable
+mutation journal records an ordered resolution prefix after every successful
+mutation and becomes complete only after the all-ID postflight.  The run began
+at `2026-08-27T01:11:19Z`; the final live verification completed at
+`2026-08-27T01:12:05Z`.  The terminal frontier and ledger contain 50 closed,
+re-verified rows.  The batch registry remains
+`resolved-pending-ledger-merge` until those artifacts merge to `main`.
 
 ## Verification
 
