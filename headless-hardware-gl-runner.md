@@ -194,16 +194,29 @@ XORG_DISPLAY=:2
 XORG_DISPLAY_NUMBER=${XORG_DISPLAY#:}
 XORG_VT=vt9
 XORG_VT_NUMBER=${XORG_VT#vt}
-XORG_UNIT=mesa-headless-gl-target.service
+XORG_RUN_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid)
+if ! printf '%s\n' "$XORG_RUN_ID" | grep -Eq '^[[:xdigit:]]{32}$'; then
+   printf 'invalid Xorg run identity: %s\n' "$XORG_RUN_ID" >&2
+   exit 2
+fi
+XORG_UNIT=mesa-headless-gl-target-$XORG_RUN_ID.service
 XORG_LOG=$EVIDENCE_DIR/xorg-provider.log
+printf '%s\n' "$XORG_UNIT" > "$EVIDENCE_DIR/xorg-unit-name.txt"
+
+xorg_unit_name_snapshot=$(systemctl show "$XORG_UNIT" \
+   --property=LoadState --property=ActiveState)
+xorg_unit_name_load_state=$(printf '%s\n' "$xorg_unit_name_snapshot" | \
+   sed -n 's/^LoadState=//p')
+xorg_unit_name_active_state=$(printf '%s\n' "$xorg_unit_name_snapshot" | \
+   sed -n 's/^ActiveState=//p')
 
 if [ -e "/tmp/.X11-unix/X$XORG_DISPLAY_NUMBER" ] || \
    [ -e "/tmp/.X$XORG_DISPLAY_NUMBER-lock" ] || \
    systemctl is-active --quiet "getty@tty$XORG_VT_NUMBER.service" || \
-   systemctl is-active --quiet "$XORG_UNIT" || \
-   systemctl is-failed --quiet "$XORG_UNIT"
+   [ "$xorg_unit_name_load_state:$xorg_unit_name_active_state" != \
+     not-found:inactive ]
 then
-   printf 'Xorg display, VT, or transient unit is already owned\n' >&2
+   printf 'Xorg display, VT, or run identity is already owned\n' >&2
    exit 2
 fi
 
@@ -217,22 +230,60 @@ sudo systemd-run --unit="$XORG_UNIT" --property=Type=exec \
    -- Xorg "$XORG_DISPLAY" -config "$XORG_CONFIG_PATH" \
    -logfile "$XORG_LOG" -nolisten tcp "$XORG_VT" -novtswitch -keeptty
 
-XORG_MAIN_PID=$(sudo systemctl show "$XORG_UNIT" \
-   --property=MainPID --value)
+xorg_launch_snapshot=$(sudo systemctl show "$XORG_UNIT" \
+   --property=LoadState --property=ActiveState --property=SubState \
+   --property=MainPID --property=InvocationID)
+XORG_LOAD_STATE=$(printf '%s\n' "$xorg_launch_snapshot" | \
+   sed -n 's/^LoadState=//p')
+XORG_ACTIVE_STATE=$(printf '%s\n' "$xorg_launch_snapshot" | \
+   sed -n 's/^ActiveState=//p')
+XORG_MAIN_PID=$(printf '%s\n' "$xorg_launch_snapshot" | \
+   sed -n 's/^MainPID=//p')
+XORG_INVOCATION_ID=$(printf '%s\n' "$xorg_launch_snapshot" | \
+   sed -n 's/^InvocationID=//p')
+[ "$XORG_LOAD_STATE:$XORG_ACTIVE_STATE" = loaded:active ] || {
+   printf 'Xorg unit did not reach loaded:active: %s:%s\n' \
+      "$XORG_LOAD_STATE" "$XORG_ACTIVE_STATE" >&2
+   exit 2
+}
 case "$XORG_MAIN_PID" in
    ''|*[!0-9]*|0|1) printf 'invalid Xorg MainPID: %s\n' \
       "$XORG_MAIN_PID" >&2; exit 2 ;;
 esac
-systemctl show "$XORG_UNIT" \
-   --property=MainPID --property=ActiveState --property=SubState \
+if ! printf '%s\n' "$XORG_INVOCATION_ID" | \
+   grep -Eq '^[[:xdigit:]]{32}$'
+then
+   printf 'invalid Xorg InvocationID: %s\n' "$XORG_INVOCATION_ID" >&2
+   exit 2
+fi
+printf '%s\n' "$xorg_launch_snapshot" \
    > "$EVIDENCE_DIR/xorg-unit-state.txt"
 printf '%s\n' "$XORG_MAIN_PID" > "$EVIDENCE_DIR/xorg-main-pid.txt"
+printf '%s\n' "$XORG_INVOCATION_ID" \
+   > "$EVIDENCE_DIR/xorg-invocation-id.txt"
 sudo cat "/proc/$XORG_MAIN_PID/cmdline" | tr '\0' ' ' \
    > "$EVIDENCE_DIR/xorg-command-line.txt"
 
 xorg_ready_attempts=30
 until DISPLAY="$XORG_DISPLAY" xdpyinfo >/dev/null 2>&1; do
-   sudo kill -0 "$XORG_MAIN_PID" || exit 2
+   xorg_ready_snapshot=$(systemctl show "$XORG_UNIT" \
+      --property=LoadState --property=ActiveState --property=MainPID \
+      --property=InvocationID)
+   xorg_ready_load_state=$(printf '%s\n' "$xorg_ready_snapshot" | \
+      sed -n 's/^LoadState=//p')
+   xorg_ready_active_state=$(printf '%s\n' "$xorg_ready_snapshot" | \
+      sed -n 's/^ActiveState=//p')
+   xorg_ready_main_pid=$(printf '%s\n' "$xorg_ready_snapshot" | \
+      sed -n 's/^MainPID=//p')
+   xorg_ready_invocation_id=$(printf '%s\n' "$xorg_ready_snapshot" | \
+      sed -n 's/^InvocationID=//p')
+   if [ "$xorg_ready_load_state:$xorg_ready_active_state" != loaded:active ] || \
+      [ "$xorg_ready_main_pid" != "$XORG_MAIN_PID" ] || \
+      [ "$xorg_ready_invocation_id" != "$XORG_INVOCATION_ID" ]
+   then
+      printf 'Xorg transient-unit identity changed before readiness\n' >&2
+      exit 2
+   fi
    if [ "$xorg_ready_attempts" -le 0 ]; then
       printf 'Xorg display readiness timed out\n' >&2
       exit 2
@@ -242,8 +293,10 @@ until DISPLAY="$XORG_DISPLAY" xdpyinfo >/dev/null 2>&1; do
 done
 ```
 
-The exact `MainPID`, unit state, and command line prove which server this run
-owns. They also define the only teardown target.
+The exact random unit name, `MainPID`, systemd `InvocationID`, unit state, and
+command line prove which server this run owns. The 128-bit name is created once
+inside the mode-0700 evidence directory and is never reused. That run-scoped
+unit capability and its live invocation define the only teardown target.
 
 Capture the server provider and direct-client identities separately. The GLX
 and EGL-X11 checks must select the same target render node and match the expected
@@ -313,35 +366,137 @@ ring stall, lockup, or kernel fault invalidates the run and opens hardware RCA.
 
 ## Terminate the recorded server and restore the display manager
 
-Signal the recorded Xorg PID, wait for that PID and the transient unit to exit,
-then restore the display manager. Process-name matching has no role in this
-sequence.
+Verify that the live transient unit still owns the recorded invocation and PID,
+request its stop through systemd, and wait for the unit to become inactive
+before restoring the display manager. An inactive or removed unit means the
+recorded server has already stopped. A live unit with another invocation or PID
+fails closed without signaling either process.
 
 ```sh
-XORG_UNIT=mesa-headless-gl-target.service
+XORG_UNIT=${XORG_UNIT:-$(cat "$EVIDENCE_DIR/xorg-unit-name.txt")}
+if ! printf '%s\n' "$XORG_UNIT" | grep -Eq \
+   '^mesa-headless-gl-target-[[:xdigit:]]{32}\.service$'
+then
+   printf 'invalid recorded Xorg unit name: %s\n' "$XORG_UNIT" >&2
+   exit 2
+fi
 XORG_MAIN_PID=${XORG_MAIN_PID:-$(cat "$EVIDENCE_DIR/xorg-main-pid.txt")}
-sudo kill -TERM "$XORG_MAIN_PID"
+XORG_INVOCATION_ID=${XORG_INVOCATION_ID:-$(
+   cat "$EVIDENCE_DIR/xorg-invocation-id.txt"
+)}
+case "$XORG_MAIN_PID" in
+   ''|*[!0-9]*|0|1) printf 'invalid recorded Xorg MainPID: %s\n' \
+      "$XORG_MAIN_PID" >&2; exit 2 ;;
+esac
+if ! printf '%s\n' "$XORG_INVOCATION_ID" | \
+   grep -Eq '^[[:xdigit:]]{32}$'
+then
+   printf 'invalid recorded Xorg InvocationID: %s\n' \
+      "$XORG_INVOCATION_ID" >&2
+   exit 2
+fi
+
+xorg_unit_snapshot=$(systemctl show "$XORG_UNIT" \
+   --property=LoadState --property=ActiveState --property=MainPID \
+   --property=InvocationID)
+xorg_load_state=$(printf '%s\n' "$xorg_unit_snapshot" | \
+   sed -n 's/^LoadState=//p')
+xorg_active_state=$(printf '%s\n' "$xorg_unit_snapshot" | \
+   sed -n 's/^ActiveState=//p')
+xorg_live_main_pid=$(printf '%s\n' "$xorg_unit_snapshot" | \
+   sed -n 's/^MainPID=//p')
+xorg_live_invocation_id=$(printf '%s\n' "$xorg_unit_snapshot" | \
+   sed -n 's/^InvocationID=//p')
+
+case "$xorg_load_state:$xorg_active_state" in
+   not-found:inactive|loaded:inactive|loaded:failed)
+      [ "$xorg_live_main_pid" = 0 ] || {
+         printf 'inactive Xorg unit retains MainPID %s\n' \
+            "$xorg_live_main_pid" >&2
+         exit 2
+      }
+      ;;
+   loaded:active|loaded:activating|loaded:reloading|loaded:deactivating)
+      if [ "$xorg_live_main_pid" != "$XORG_MAIN_PID" ] || \
+         [ "$xorg_live_invocation_id" != "$XORG_INVOCATION_ID" ]
+      then
+         printf 'Xorg transient-unit identity mismatch; refusing stop\n' >&2
+         exit 2
+      fi
+      if [ "$xorg_active_state" != deactivating ]; then
+         sudo systemctl stop --no-block "$XORG_UNIT"
+      fi
+      ;;
+   *)
+      printf 'unsupported Xorg unit state: %s:%s\n' \
+         "$xorg_load_state" "$xorg_active_state" >&2
+      exit 2
+      ;;
+esac
+
 xorg_exit_attempts=30
-while [ "$(systemctl show "$XORG_UNIT" \
-              --property=MainPID --value)" = "$XORG_MAIN_PID" ]
+while :
 do
+   xorg_unit_snapshot=$(systemctl show "$XORG_UNIT" \
+      --property=LoadState --property=ActiveState --property=MainPID \
+      --property=InvocationID)
+   xorg_load_state=$(printf '%s\n' "$xorg_unit_snapshot" | \
+      sed -n 's/^LoadState=//p')
+   xorg_active_state=$(printf '%s\n' "$xorg_unit_snapshot" | \
+      sed -n 's/^ActiveState=//p')
+   xorg_live_main_pid=$(printf '%s\n' "$xorg_unit_snapshot" | \
+      sed -n 's/^MainPID=//p')
+   xorg_live_invocation_id=$(printf '%s\n' "$xorg_unit_snapshot" | \
+      sed -n 's/^InvocationID=//p')
+   case "$xorg_load_state:$xorg_active_state" in
+      not-found:inactive|loaded:inactive|loaded:failed)
+         [ "$xorg_live_main_pid" = 0 ] || {
+            printf 'stopped Xorg unit retains MainPID %s\n' \
+               "$xorg_live_main_pid" >&2
+            exit 2
+         }
+         break
+         ;;
+      loaded:active|loaded:activating|loaded:reloading|loaded:deactivating)
+         if [ "$xorg_live_invocation_id" != "$XORG_INVOCATION_ID" ]; then
+            printf 'Xorg transient unit changed while stopping\n' >&2
+            exit 2
+         fi
+         case "$xorg_live_main_pid" in
+            0|"$XORG_MAIN_PID") ;;
+            *) printf 'Xorg MainPID changed while stopping: %s\n' \
+                  "$xorg_live_main_pid" >&2; exit 2 ;;
+         esac
+         ;;
+      *)
+         printf 'unsupported Xorg stop state: %s:%s\n' \
+            "$xorg_load_state" "$xorg_active_state" >&2
+         exit 2
+         ;;
+   esac
    if [ "$xorg_exit_attempts" -le 0 ]; then
-      printf 'Xorg exit timed out for PID %s\n' "$XORG_MAIN_PID" >&2
+      printf 'Xorg unit stop timed out for invocation %s\n' \
+         "$XORG_INVOCATION_ID" >&2
       exit 2
    fi
    xorg_exit_attempts=$((xorg_exit_attempts - 1))
    sleep 1
 done
-[ ! -e "/proc/$XORG_MAIN_PID" ] || {
-   printf 'recorded Xorg PID still exists: %s\n' "$XORG_MAIN_PID" >&2
-   exit 2
-}
+printf '%s\n' "$xorg_unit_snapshot" \
+   > "$EVIDENCE_DIR/xorg-unit-final-state.txt"
+if [ "$xorg_load_state:$xorg_active_state" = loaded:failed ]; then
+   sudo systemctl reset-failed "$XORG_UNIT"
+fi
 sudo systemctl start "$DISPLAY_MANAGER_UNIT"
 systemctl is-active --quiet "$DISPLAY_MANAGER_UNIT"
 ```
 
-The display manager restarts only after the recorded Xorg process exits. If the
-Xorg launch or suite aborts, execute this same PID-scoped restoration sequence
+The display manager restarts only after systemd reports that the recorded,
+run-scoped unit invocation is inactive, failed with no main process, or removed.
+PID reuse and another normal headless run have no effect on that decision. A
+host with untrusted privileged software creating system units concurrently is
+outside this operator procedure; suspend hardware testing on that host. If the
+Xorg launch or suite aborts, execute this same unit-scoped restoration sequence
 from the independent control session.
 
 ## Preserve silicon safety and negative controls
@@ -360,8 +515,9 @@ the loader-selection and renderer gates; it never substitutes for them.
 ## Retain evidence by class
 
 Keep device identity, render-node access, loader selection, renderer identity,
-Xorg provider selection, Xorg command line and `MainPID`, suite results, and
-kernel logs as separate artifacts. Record the Mesa source SHA, build identity,
-tool paths, tool versions, suite command, and environment allowlist beside them,
-then hash the admitted bundle. Build success, provider identity, conformance
-movement, and kernel or silicon behavior remain separate claims.
+Xorg provider selection, Xorg command line, run-scoped unit name, `MainPID`,
+`InvocationID`, initial and final unit states, suite results, and kernel logs as
+separate artifacts. Record the Mesa source SHA, build identity, tool paths,
+tool versions, suite command, and environment allowlist beside them, then hash
+the admitted bundle. Build success, provider identity, conformance movement,
+and kernel or silicon behavior remain separate claims.
