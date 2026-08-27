@@ -599,7 +599,7 @@ if with_tests
       ['vl/vl_mpeg12_dump.c', 'vl/tests/vl_mpeg12_dump_test.c'],
       include_directories : [inc_include, inc_src, inc_gallium,
                              include_directories('vl')],
-      dependencies : [idep_mesautil],
+      dependencies : [dep_bcrypt, idep_mesautil],
     ),
     suite: 'gallium',
   )
@@ -957,7 +957,7 @@ libgalliumvl = static_library(
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
   include_directories : [inc_gallium, inc_include, inc_src],
-  dependencies : [idep_nir, idep_mesautil],
+  dependencies : [dep_bcrypt, idep_nir, idep_mesautil],
   build_by_default : false,
 )
 

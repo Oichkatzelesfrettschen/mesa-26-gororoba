@@ -14,12 +14,18 @@
 
 struct pipe_context;
 struct pipe_sampler_view;
+struct pipe_video_buffer;
 
 #define VL_MPEG12_DUMP_MAX_STAGES 3
 #define VL_MPEG12_DUMP_MAX_PLANES 3
+#define VL_MPEG12_DUMP_SESSION_ATTEMPTS 4096
 
 struct vl_mpeg12_dump_io {
-   FILE *(*open_unique)(const char *path, int mode);
+   /* Returns a heap allocation that the caller releases with free(). */
+   char *(*absolute_path)(const char *path);
+   int (*random_bytes)(void *data, size_t size);
+   int (*open_unique)(const char *path, int mode, FILE **stream_out,
+                      bool *created_out);
    size_t (*write)(const void *data, size_t size, size_t count, FILE *stream);
    int (*sync_file)(FILE *stream);
    int (*close)(FILE *stream);
@@ -68,6 +74,11 @@ vl_mpeg12_dump_cleanup(struct vl_mpeg12_dump *dump);
 
 bool
 vl_mpeg12_dump_enabled(const struct vl_mpeg12_dump *dump);
+
+int
+vl_mpeg12_dump_stage_from_video_buffer(struct vl_mpeg12_dump_stage *stage,
+                                       const char *name,
+                                       struct pipe_video_buffer *buffer);
 
 int
 vl_mpeg12_dump_reserve_frame(struct vl_mpeg12_dump *dump,

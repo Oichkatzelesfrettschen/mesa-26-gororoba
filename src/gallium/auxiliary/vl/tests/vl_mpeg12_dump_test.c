@@ -14,6 +14,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
 
+#include "util/detect_os.h"
 #include "util/format/u_format.h"
 #include "util/os_file.h"
 #include "util/u_math.h"
@@ -24,6 +25,18 @@
 #define FIXTURE_PLANE_COUNT 3
 #define FIXTURE_LAYER_COUNT 4
 #define FIXTURE_DATA_SIZE 512
+
+#if DETECT_OS_WINDOWS
+#include <direct.h>
+#define TEST_CHANGE_DIRECTORY _chdir
+#define TEST_GET_CURRENT_DIRECTORY _getcwd
+#define TEST_PATH_SEPARATOR "\\"
+#else
+#include <unistd.h>
+#define TEST_CHANGE_DIRECTORY chdir
+#define TEST_GET_CURRENT_DIRECTORY getcwd
+#define TEST_PATH_SEPARATOR "/"
+#endif
 
 static unsigned failures;
 
@@ -276,7 +289,9 @@ payload_path(char *path, size_t capacity,
 {
    char filename[1024];
    return expected_payload_filename(filename, sizeof(filename), stage, plane) &&
-          make_path(path, capacity, "%s/frame-%020" PRIu64 "/payload/%s",
+          make_path(path, capacity,
+                    "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64
+                    TEST_PATH_SEPARATOR "payload" TEST_PATH_SEPARATOR "%s",
                     dump->session_path, frame, filename);
 }
 
@@ -332,7 +347,9 @@ manifest_is_complete(const struct vl_mpeg12_dump *dump,
 {
    char path[2048];
    if (!make_path(path, sizeof(path),
-                  "%s/frame-%020" PRIu64 "/payload/manifest.tsv",
+                  "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64
+                  TEST_PATH_SEPARATOR "payload" TEST_PATH_SEPARATOR
+                  "manifest.tsv",
                   dump->session_path, frame))
       return false;
 
@@ -415,7 +432,8 @@ check_complete_frame(const struct vl_mpeg12_dump *dump,
 
    char complete_path[2048];
    CHECK(make_path(complete_path, sizeof(complete_path),
-                   "%s/frame-%020" PRIu64 "/complete",
+                   "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64
+                   TEST_PATH_SEPARATOR "complete",
                    dump->session_path, frame) &&
             vl_mpeg12_dump_default_io()->mkdir(complete_path, 0500) == -EEXIST,
          "the complete directory atomically marks an admissible frame");
@@ -437,16 +455,23 @@ remove_frame(const struct vl_mpeg12_dump *dump,
       }
    }
    if (make_path(path, sizeof(path),
-                 "%s/frame-%020" PRIu64 "/payload/manifest.tsv",
+                 "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64
+                 TEST_PATH_SEPARATOR "payload" TEST_PATH_SEPARATOR
+                 "manifest.tsv",
                  dump->session_path, frame))
       io->remove_file(path);
-   if (make_path(path, sizeof(path), "%s/frame-%020" PRIu64 "/complete",
+   if (make_path(path, sizeof(path),
+                 "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64
+                 TEST_PATH_SEPARATOR "complete",
                  dump->session_path, frame))
       io->remove_directory(path);
-   if (make_path(path, sizeof(path), "%s/frame-%020" PRIu64 "/payload",
+   if (make_path(path, sizeof(path),
+                 "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64
+                 TEST_PATH_SEPARATOR "payload",
                  dump->session_path, frame))
       io->remove_directory(path);
-   if (make_path(path, sizeof(path), "%s/frame-%020" PRIu64,
+   if (make_path(path, sizeof(path),
+                 "%s" TEST_PATH_SEPARATOR "frame-%020" PRIu64,
                  dump->session_path, frame))
       io->remove_directory(path);
 }
@@ -468,6 +493,8 @@ enum fault_mode {
    FAULT_SYNC_DIRECTORY,
    FAULT_MKDIR_FAILURE,
    FAULT_MKDIR_COLLISION,
+   FAULT_OPEN_COLLISION,
+   FAULT_STREAM_CREATION,
 };
 
 static enum fault_mode active_fault;
@@ -482,16 +509,67 @@ static unsigned fault_remove_directory_calls;
 static unsigned fault_remove_directory_target;
 static unsigned fault_mkdir_calls;
 static char fault_last_mkdir_path[2048];
+static char fault_collision_path[2048];
 static bool fault_triggered;
+static const uint8_t collision_sentinel[] = {
+   0x63, 0x6f, 0x6e, 0x74, 0x65, 0x73, 0x74, 0x65, 0x64,
+};
 
-static FILE *
-fault_open_unique(const char *path, int mode)
+static int
+fault_open_unique(const char *path, int mode, FILE **stream_out,
+                  bool *created_out)
 {
-   FILE *stream = vl_mpeg12_dump_default_io()->open_unique(path, mode);
    ++fault_open_calls;
    fault_current_file = fault_open_calls;
    fault_current_write_calls = 0;
-   return stream;
+
+   const struct vl_mpeg12_dump_io *io = vl_mpeg12_dump_default_io();
+   if (active_fault == FAULT_OPEN_COLLISION &&
+       fault_current_file == fault_target && !fault_triggered) {
+      int length = snprintf(fault_collision_path,
+                            sizeof(fault_collision_path), "%s", path);
+      if (length < 0 || (size_t)length >= sizeof(fault_collision_path)) {
+         errno = ENAMETOOLONG;
+         return -ENAMETOOLONG;
+      }
+
+      FILE *collision_stream = NULL;
+      bool collision_created = false;
+      int collision_result = io->open_unique(
+         path, mode, &collision_stream, &collision_created);
+      if (collision_result)
+         return collision_result;
+      if (!collision_stream || !collision_created)
+         return -EIO;
+
+      collision_result = fwrite(collision_sentinel, 1,
+                                sizeof(collision_sentinel),
+                                collision_stream) == sizeof(collision_sentinel)
+         ? io->sync_file(collision_stream)
+         : -EIO;
+      int close_result = io->close(collision_stream);
+      if (!collision_result && close_result != 0)
+         collision_result = -EIO;
+      if (collision_result)
+         return collision_result;
+      fault_triggered = true;
+   }
+
+   if (active_fault == FAULT_STREAM_CREATION &&
+       fault_current_file == fault_target && !fault_triggered) {
+      int result = io->open_unique(path, mode, stream_out, created_out);
+      if (result)
+         return result;
+      if (!*stream_out || !*created_out)
+         return -EIO;
+      if (io->close(*stream_out) != 0)
+         return -EIO;
+      *stream_out = NULL;
+      fault_triggered = true;
+      return -ENOMEM;
+   }
+
+   return io->open_unique(path, mode, stream_out, created_out);
 }
 
 static size_t
@@ -626,6 +704,7 @@ reset_fault(enum fault_mode mode, unsigned target)
    fault_remove_directory_target = 0;
    fault_mkdir_calls = 0;
    fault_last_mkdir_path[0] = '\0';
+   fault_collision_path[0] = '\0';
    fault_triggered = false;
 }
 
@@ -663,14 +742,103 @@ check_failure_leaves_no_frame(const char *root,
    reset_fault(FAULT_NONE, 0);
 }
 
+static void
+check_stream_creation_cleanup_failure_is_explicit(
+   const char *root, struct dump_fixture *fixture)
+{
+   struct vl_mpeg12_dump_io io = fault_io();
+   struct vl_mpeg12_dump dump;
+   reset_fault(FAULT_NONE, 0);
+   CHECK(vl_mpeg12_dump_init_with_io(&dump, root, &io) == 0,
+         "the stream-creation-failure session is created");
+
+   reset_fault(FAULT_STREAM_CREATION, 1);
+   fault_remove_file_target = 1;
+   enum vl_mpeg12_dump_frame_state frame_state;
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EACCES,
+         "a created-file cleanup failure supersedes stream creation failure");
+   CHECK(frame_state == VL_MPEG12_DUMP_FRAME_RETAINED && fault_triggered,
+         "a created file that cannot be removed is reported as retained");
+
+   char path[2048];
+   CHECK(payload_path(path, sizeof(path), &dump, 0, &fixture->stages[0], 0) &&
+            vl_mpeg12_dump_default_io()->remove_file(path) == 0,
+         "the retained empty payload is classified and removed");
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "payload",
+                   dump.session_path, 0) &&
+            vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
+         "the retained payload directory is removed");
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u",
+                   dump.session_path, 0) &&
+            vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
+         "the retained frame directory is removed");
+   remove_session(&dump);
+   reset_fault(FAULT_NONE, 0);
+}
+
 static unsigned session_collision_mkdir_calls;
+static unsigned session_identity_calls;
+static unsigned session_exhaustion_mkdir_calls;
+static char first_session_collision_path[2048];
+
+static void
+session_identity_for_serial(void *data, size_t size, uint64_t serial)
+{
+   uint8_t *bytes = data;
+   for (unsigned index = 0; index < size; ++index) {
+      unsigned shift = (index % sizeof(serial)) * 8;
+      uint8_t byte = (uint8_t)(serial >> shift);
+      bytes[index] = index < sizeof(serial) ? byte : (uint8_t)~byte;
+   }
+}
+
+static int
+session_identity_random_bytes(void *data, size_t size)
+{
+   if (!data || size != 16)
+      return -EINVAL;
+   ++session_identity_calls;
+   session_identity_for_serial(data, size, session_identity_calls);
+   return 0;
+}
+
+static int
+session_alternating_random_bytes(void *data, size_t size)
+{
+   if (!data || size != 16)
+      return -EINVAL;
+   ++session_identity_calls;
+   session_identity_for_serial(data, size, 1 + session_identity_calls % 2);
+   return 0;
+}
+
+static int
+session_exhaustion_mkdir(const char *path, int mode)
+{
+   (void)path;
+   (void)mode;
+   ++session_exhaustion_mkdir_calls;
+   return -EEXIST;
+}
 
 static int
 session_collision_mkdir(const char *path, int mode)
 {
    ++session_collision_mkdir_calls;
-   if (session_collision_mkdir_calls == 1)
+   if (session_collision_mkdir_calls == 1) {
+      int length = snprintf(first_session_collision_path,
+                            sizeof(first_session_collision_path), "%s", path);
+      if (length < 0 || (size_t)length >= sizeof(first_session_collision_path))
+         return -ENAMETOOLONG;
       return -EEXIST;
+   }
+   CHECK(strcmp(first_session_collision_path, path) != 0,
+         "a session collision regenerates the random identity");
    return vl_mpeg12_dump_default_io()->mkdir(path, mode);
 }
 
@@ -679,6 +847,37 @@ init_with_temporary_io(struct vl_mpeg12_dump *dump, const char *root)
 {
    struct vl_mpeg12_dump_io io = *vl_mpeg12_dump_default_io();
    return vl_mpeg12_dump_init_with_io(dump, root, &io);
+}
+
+static char *
+copy_absolute_path_with_malloc(const char *path)
+{
+   char *default_path = vl_mpeg12_dump_default_io()->absolute_path(path);
+   if (!default_path)
+      return NULL;
+
+   size_t size = strlen(default_path) + 1;
+   char *copy = malloc(size);
+   if (copy)
+      memcpy(copy, default_path, size);
+   else
+      errno = ENOMEM;
+   free(default_path);
+   return copy;
+}
+
+static void
+check_absolute_path_allocator_contract(const char *root)
+{
+   struct vl_mpeg12_dump_io io = *vl_mpeg12_dump_default_io();
+   io.absolute_path = copy_absolute_path_with_malloc;
+
+   struct vl_mpeg12_dump dump;
+   int result = vl_mpeg12_dump_init_with_io(&dump, root, &io);
+   CHECK(result == 0,
+         "an injected absolute path uses the documented allocator contract");
+   if (!result)
+      remove_session(&dump);
 }
 
 static void
@@ -703,7 +902,9 @@ check_cleanup_failure_is_explicit(const char *root,
          "cleanup failure preserves the attempted decoded-frame identity");
 
    char path[2048];
-   CHECK(make_path(path, sizeof(path), "%s/frame-%020u/complete",
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "complete",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == -ENOENT,
          "an incomplete frame never gains the completion marker");
@@ -720,16 +921,19 @@ check_cleanup_failure_is_explicit(const char *root,
                                    &fixture->stages[1], 1),
          "the retained failed-payload name is representable");
    CHECK(make_path(path, sizeof(path),
-                   "%s/frame-%020u/payload/%s",
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "payload" TEST_PATH_SEPARATOR "%s",
                    dump.session_path, 0, filename) &&
             vl_mpeg12_dump_default_io()->remove_file(path) == 0,
          "the deliberately retained failed payload is classified and removed");
    CHECK(make_path(path, sizeof(path),
-                   "%s/frame-%020u/payload",
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "payload",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the deliberately retained payload directory is removed");
-   CHECK(make_path(path, sizeof(path), "%s/frame-%020u",
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the deliberately retained incomplete frame is removed");
@@ -759,7 +963,9 @@ check_directory_removal_failure_is_explicit(const char *root,
          "cleanup attempts the payload-directory removal once");
 
    char path[2048];
-   CHECK(make_path(path, sizeof(path), "%s/frame-%020u/complete",
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "complete",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == -ENOENT,
          "directory-cleanup failure never admits the incomplete frame");
@@ -772,11 +978,13 @@ check_directory_removal_failure_is_explicit(const char *root,
    remove_frame(&dump, fixture, 1);
 
    CHECK(make_path(path, sizeof(path),
-                   "%s/frame-%020u/payload",
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "payload",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the retained empty payload directory is classified and removed");
-   CHECK(make_path(path, sizeof(path), "%s/frame-%020u",
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the retained incomplete frame directory is classified and removed");
@@ -797,16 +1005,19 @@ check_leaf_collision_preserves_namespace(const char *root,
    reset_fault(FAULT_MKDIR_COLLISION, 2);
    CHECK(dump_next_frame_with_state(
             &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
-            &frame_state) != 0 &&
+            &frame_state) == -EEXIST &&
             frame_state == VL_MPEG12_DUMP_FRAME_RETAINED && fault_triggered,
          "a colliding payload directory is retained without replacement");
 
    char path[2048];
-   CHECK(make_path(path, sizeof(path), "%s/frame-%020u/payload",
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u"
+                   TEST_PATH_SEPARATOR "payload",
                    dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the injected payload collision remains empty and removable");
-   CHECK(make_path(path, sizeof(path), "%s/frame-%020u", dump.session_path,
+   CHECK(make_path(path, sizeof(path),
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u", dump.session_path,
                    0) &&
             vl_mpeg12_dump_default_io()->remove_directory(path) == 0,
          "the frame containing the payload collision remains classified");
@@ -822,6 +1033,45 @@ check_leaf_collision_preserves_namespace(const char *root,
    reset_fault(FAULT_NONE, 0);
    remove_frame(&dump, fixture, 1);
    remove_session(&dump);
+}
+
+static void
+check_file_collision_preserves_namespace(const char *root,
+                                         struct dump_fixture *fixture)
+{
+   struct vl_mpeg12_dump_io io = fault_io();
+   struct vl_mpeg12_dump dump;
+   reset_fault(FAULT_NONE, 0);
+   CHECK(vl_mpeg12_dump_init_with_io(&dump, root, &io) == 0,
+         "the file-collision session is created");
+
+   enum vl_mpeg12_dump_frame_state frame_state;
+   reset_fault(FAULT_OPEN_COLLISION, 1);
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EEXIST &&
+            frame_state == VL_MPEG12_DUMP_FRAME_RETAINED && fault_triggered,
+         "a colliding raw payload retains the contested frame");
+   CHECK(file_matches(fault_collision_path, collision_sentinel,
+                      sizeof(collision_sentinel)),
+         "the colliding raw payload remains byte-exact");
+   remove_frame(&dump, fixture, 0);
+
+   reset_fault(FAULT_OPEN_COLLISION, 10);
+   CHECK(dump_next_frame_with_state(
+            &dump, &fixture->pipe, fixture->stages, FIXTURE_STAGE_COUNT,
+            &frame_state) == -EEXIST &&
+            frame_state == VL_MPEG12_DUMP_FRAME_RETAINED && fault_triggered,
+         "a colliding manifest retains every completed raw payload");
+   CHECK(file_matches(fault_collision_path, collision_sentinel,
+                      sizeof(collision_sentinel)),
+         "the colliding manifest remains byte-exact");
+   CHECK(payload_matches(&dump, fixture, 1, 0, 0) &&
+            payload_matches(&dump, fixture, 1, 2, 2),
+         "manifest collision retains the complete raw payload set");
+   remove_frame(&dump, fixture, 1);
+   remove_session(&dump);
+   reset_fault(FAULT_NONE, 0);
 }
 
 static void
@@ -918,6 +1168,218 @@ check_source_span_validation(void)
          "the final mapped byte must fit the host address space");
 }
 
+#if DETECT_OS_WINDOWS
+static void
+check_windows_absolute_path_contract(void)
+{
+   const struct vl_mpeg12_dump_io *io = vl_mpeg12_dump_default_io();
+   static const struct {
+      const char *path;
+      const char *expected;
+      const char *message;
+   } accepted_paths[] = {
+      {"C:\\dump", "\\\\?\\C:\\dump",
+       "an absolute drive path gains the extended prefix"},
+      {"C:/dump/../evidence", "\\\\?\\C:\\evidence",
+       "a drive path uses native separators and canonical components"},
+      {"C:\\", "\\\\?\\C:\\",
+       "a drive root retains its root separator"},
+      {"\\\\server\\share\\dump",
+       "\\\\?\\UNC\\server\\share\\dump",
+       "a complete UNC path gains the extended UNC prefix"},
+      {"//server/share/dump/../evidence",
+       "\\\\?\\UNC\\server\\share\\evidence",
+       "a UNC path uses native separators and canonical components"},
+      {"\\\\server\\share\\", "\\\\?\\UNC\\server\\share",
+       "a UNC share root has one canonical spelling"},
+      {"\\\\?\\C:\\dump", "\\\\?\\C:\\dump",
+       "an extended drive path remains absolute"},
+      {"\\\\?\\C:\\dump\\..\\evidence",
+       "\\\\?\\C:\\evidence",
+       "an extended drive path is canonicalized"},
+      {"\\\\?\\C:\\a\\..", "\\\\?\\C:\\",
+       "an extended drive path cannot lose its root separator"},
+      {"\\\\?\\UNC\\server\\share\\dump",
+       "\\\\?\\UNC\\server\\share\\dump",
+       "an extended UNC path preserves its complete share root"},
+      {"\\\\?\\unc\\server\\share\\dump",
+       "\\\\?\\UNC\\server\\share\\dump",
+       "the extended UNC namespace token has one canonical spelling"},
+   };
+
+   for (unsigned index = 0; index < ARRAY_SIZE(accepted_paths); ++index) {
+      char *absolute = io->absolute_path(accepted_paths[index].path);
+      CHECK(absolute &&
+               strcmp(absolute, accepted_paths[index].expected) == 0,
+            accepted_paths[index].message);
+      free(absolute);
+   }
+
+   static const char invalid_utf8[] = {(char)0xc3, 0x28, 0};
+
+   static const struct {
+      const char *path;
+      const char *message;
+   } rejected_paths[] = {
+      {"", "an empty path is rejected"},
+      {"C:", "a drive designator without a root is rejected"},
+      {"C:relative", "an ordinary drive-relative path is rejected"},
+      {"\\dump", "a drive-root-relative path is rejected"},
+      {"/dump", "a slash-root-relative path is rejected"},
+      {"1:\\dump", "a nonalphabetic drive designator is rejected"},
+      {"\\\\server", "an ordinary UNC path requires a share"},
+      {"\\\\server\\",
+       "an ordinary UNC path requires a nonempty share"},
+      {"\\\\?\\C:relative",
+       "an extended drive-relative path is rejected"},
+      {"\\\\?\\1:\\dump",
+       "an extended drive requires an alphabetic designator"},
+      {"\\\\?\\", "an empty extended namespace is rejected"},
+      {"\\\\?\\UNC\\server",
+       "an extended UNC path requires a share"},
+      {"\\\\?\\UNC\\server\\",
+       "an extended UNC path requires a nonempty share"},
+      {"\\\\?\\UNC\\\\share",
+       "an extended UNC path requires a nonempty server"},
+      {"\\\\.\\C:\\dump",
+       "a Win32 device path is rejected"},
+      {"\\??\\C:\\dump", "an NT object-manager path is rejected"},
+      {"\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\dump",
+       "the extended GLOBALROOT device namespace is rejected"},
+      {"\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\dump",
+       "an extended volume device namespace is rejected"},
+      {"\\\\?\\PIPE\\dump",
+       "an extended named-pipe device namespace is rejected"},
+      {invalid_utf8, "invalid UTF-8 is rejected"},
+   };
+
+   for (unsigned index = 0; index < ARRAY_SIZE(rejected_paths); ++index) {
+      errno = 0;
+      char *absolute = io->absolute_path(rejected_paths[index].path);
+      CHECK(!absolute && errno == EINVAL, rejected_paths[index].message);
+      free(absolute);
+   }
+
+   errno = 0;
+   char *absolute = io->absolute_path(NULL);
+   CHECK(!absolute && errno == EINVAL, "a null path is rejected");
+   free(absolute);
+}
+#endif
+
+static bool
+make_session_identity_path(char *path, size_t capacity, const char *root,
+                           uint64_t serial)
+{
+   uint8_t identity[16];
+   session_identity_for_serial(identity, sizeof(identity), serial);
+   static const char hex[] = "0123456789abcdef";
+   char identity_hex[sizeof(identity) * 2 + 1];
+   for (unsigned index = 0; index < sizeof(identity); ++index) {
+      identity_hex[index * 2] = hex[identity[index] >> 4];
+      identity_hex[index * 2 + 1] = hex[identity[index] & 0xf];
+   }
+   identity_hex[sizeof(identity_hex) - 1] = '\0';
+
+   return make_path(path, capacity,
+                    "%s" TEST_PATH_SEPARATOR "mpeg12-dump-session-%s",
+                    root, identity_hex);
+}
+
+static void
+check_retained_random_sessions_do_not_exhaust_namespace(const char *root)
+{
+   const struct vl_mpeg12_dump_io *io = vl_mpeg12_dump_default_io();
+   unsigned created_count = 0;
+   char path[2048];
+
+   for (unsigned serial = 1; serial <= 1024; ++serial) {
+      if (!make_session_identity_path(path, sizeof(path), root, serial)) {
+         CHECK(false, "the retained random session path is representable");
+         break;
+      }
+      int result = io->mkdir(path, 0700);
+      CHECK(result == 0, "the retained sequential session is created");
+      if (result)
+         break;
+      ++created_count;
+   }
+
+   struct vl_mpeg12_dump_io collision_io = *io;
+   collision_io.random_bytes = session_identity_random_bytes;
+   session_identity_calls = 0;
+   struct vl_mpeg12_dump dump;
+   int init_result = vl_mpeg12_dump_init_with_io(
+      &dump, root, &collision_io);
+   CHECK(init_result == 0 && session_identity_calls == 1025,
+         "1,024 retained random sessions advance to a free identity");
+   if (!init_result)
+      remove_session(&dump);
+
+   for (unsigned serial = created_count; serial > 0; --serial) {
+      CHECK(make_session_identity_path(path, sizeof(path), root, serial) &&
+               io->remove_directory(path) == 0,
+            "the retained random session fixture is removed");
+   }
+}
+
+static void
+check_session_collision_exhaustion_is_bounded(const char *root)
+{
+   struct vl_mpeg12_dump_io io = *vl_mpeg12_dump_default_io();
+   io.random_bytes = session_alternating_random_bytes;
+   io.mkdir = session_exhaustion_mkdir;
+   session_identity_calls = 0;
+   session_exhaustion_mkdir_calls = 0;
+
+   struct vl_mpeg12_dump dump;
+   CHECK(vl_mpeg12_dump_init_with_io(&dump, root, &io) == -EEXIST,
+         "a fully colliding session namespace returns EEXIST");
+   CHECK(session_identity_calls == VL_MPEG12_DUMP_SESSION_ATTEMPTS &&
+            session_exhaustion_mkdir_calls == VL_MPEG12_DUMP_SESSION_ATTEMPTS,
+         "alternating colliding identities stop at the declared bound");
+   CHECK(!vl_mpeg12_dump_enabled(&dump),
+         "session exhaustion never enables a dump namespace");
+}
+
+static void
+check_relative_root_is_anchored(const char *root,
+                                struct dump_fixture *fixture)
+{
+   char original_directory[4096] = {0};
+   CHECK(TEST_GET_CURRENT_DIRECTORY(original_directory,
+                                    sizeof(original_directory)) != NULL,
+         "the original working directory is recorded");
+   if (!original_directory[0])
+      return;
+
+   struct vl_mpeg12_dump dump;
+   int init_result = vl_mpeg12_dump_init(&dump, root);
+   CHECK(init_result == 0, "the relative-root session is created");
+   if (init_result)
+      return;
+
+   int change_result = TEST_CHANGE_DIRECTORY(root);
+   CHECK(change_result == 0,
+         "the process working directory changes after session creation");
+   int dump_result = change_result == 0
+      ? dump_next_frame(&dump, &fixture->pipe, fixture->stages,
+                        FIXTURE_STAGE_COUNT)
+      : -EIO;
+   int restore_result = TEST_CHANGE_DIRECTORY(original_directory);
+   CHECK(restore_result == 0, "the original working directory is restored");
+   if (restore_result)
+      return;
+
+   CHECK(dump_result == 0,
+         "the anchored session remains usable after a working-directory change");
+   if (!dump_result) {
+      check_complete_frame(&dump, fixture, 0);
+      remove_frame(&dump, fixture, 0);
+   }
+   remove_session(&dump);
+}
+
 int
 main(void)
 {
@@ -933,8 +1395,15 @@ main(void)
    }
 
    check_session_root_sync_failure(root);
+   check_absolute_path_allocator_contract(root);
    check_frame_reservation_overflow(root);
    check_source_span_validation();
+#if DETECT_OS_WINDOWS
+   check_windows_absolute_path_contract();
+#endif
+   check_retained_random_sessions_do_not_exhaust_namespace(root);
+   check_session_collision_exhaustion_is_bounded(root);
+   check_relative_root_is_anchored(root, &fixture);
 
    if (vl_mpeg12_dump_init(&first, root) != 0) {
       fputs("FAIL: the first decoder session is created\n", stderr);
@@ -952,11 +1421,15 @@ main(void)
 
    struct vl_mpeg12_dump_io collision_io = *vl_mpeg12_dump_default_io();
    struct vl_mpeg12_dump collision_retry_dump;
+   collision_io.random_bytes = session_identity_random_bytes;
    collision_io.mkdir = session_collision_mkdir;
    session_collision_mkdir_calls = 0;
+   session_identity_calls = 0;
+   first_session_collision_path[0] = '\0';
    CHECK(vl_mpeg12_dump_init_with_io(&collision_retry_dump, root,
                                      &collision_io) == 0 &&
-            session_collision_mkdir_calls == 2,
+            session_collision_mkdir_calls == 2 &&
+            session_identity_calls == 2,
          "session creation retries an existing cross-process namespace");
    remove_session(&collision_retry_dump);
 
@@ -986,7 +1459,8 @@ main(void)
          "the empty-collision session is created");
    char empty_frame_path[2048];
    CHECK(make_path(empty_frame_path, sizeof(empty_frame_path),
-                   "%s/frame-%020u", empty_collision_dump.session_path, 0) &&
+                   "%s" TEST_PATH_SEPARATOR "frame-%020u",
+                   empty_collision_dump.session_path, 0) &&
             vl_mpeg12_dump_default_io()->mkdir(empty_frame_path, 0700) == 0,
          "the empty destination frame is reserved by an earlier producer");
    CHECK(dump_next_frame(&empty_collision_dump, &fixture.pipe,
@@ -1040,11 +1514,14 @@ main(void)
       root, &fixture, FAULT_SYNC_FILE, 1, -ENOSPC,
       "an early payload synchronization failure prevents admission");
    check_failure_leaves_no_frame(
-      root, &fixture, FAULT_SYNC_FILE, 5, -ENOSPC,
+      root, &fixture, FAULT_SYNC_FILE, 9, -ENOSPC,
       "a late payload synchronization failure removes earlier payloads");
    check_failure_leaves_no_frame(
       root, &fixture, FAULT_SYNC_FILE, 10, -ENOSPC,
       "a manifest synchronization failure prevents admission");
+   check_failure_leaves_no_frame(
+      root, &fixture, FAULT_STREAM_CREATION, 1, -ENOMEM,
+      "a created payload without a stream is removed before admission");
    check_failure_leaves_no_frame(
       root, &fixture, FAULT_SYNC_DIRECTORY, 1, -EIO,
       "a payload-directory synchronization failure prevents publication");
@@ -1059,6 +1536,8 @@ main(void)
       "a completion-marker creation failure removes the unadmitted frame");
    check_postcommit_sync_failure_preserves_frame(root, &fixture);
    check_leaf_collision_preserves_namespace(root, &fixture);
+   check_file_collision_preserves_namespace(root, &fixture);
+   check_stream_creation_cleanup_failure_is_explicit(root, &fixture);
    check_cleanup_failure_is_explicit(root, &fixture);
    check_directory_removal_failure_is_explicit(root, &fixture);
 

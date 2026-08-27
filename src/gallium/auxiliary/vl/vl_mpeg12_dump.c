@@ -9,16 +9,17 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
+#include "pipe/p_video_codec.h"
 
 #include "util/box.h"
 #include "util/detect_os.h"
 #include "util/format/u_format.h"
 #include "util/ralloc.h"
-#include "util/u_atomic.h"
 #include "util/u_math.h"
 
 #if DETECT_OS_WINDOWS
@@ -26,9 +27,12 @@
 #include <io.h>
 #include <wchar.h>
 #include <windows.h>
+#include <bcrypt.h>
+#define VL_MPEG12_DUMP_PATH_SEPARATOR "\\"
 #else
 #include <sys/stat.h>
 #include <unistd.h>
+#define VL_MPEG12_DUMP_PATH_SEPARATOR "/"
 #endif
 
 struct vl_mpeg12_dump_entry {
@@ -51,8 +55,6 @@ struct vl_mpeg12_dump_entry {
    bool created;
 };
 
-static uint32_t dump_session_serial;
-
 static int
 io_error(void)
 {
@@ -69,6 +71,7 @@ windows_error(void)
       return -EEXIST;
    case ERROR_FILE_NOT_FOUND:
    case ERROR_PATH_NOT_FOUND:
+   case ERROR_INVALID_DRIVE:
       return -ENOENT;
    case ERROR_ACCESS_DENIED:
    case ERROR_SHARING_VIOLATION:
@@ -76,10 +79,15 @@ windows_error(void)
    case ERROR_DISK_FULL:
       return -ENOSPC;
    case ERROR_INVALID_NAME:
+   case ERROR_INVALID_PARAMETER:
    case ERROR_NO_UNICODE_TRANSLATION:
       return -EINVAL;
    case ERROR_FILENAME_EXCED_RANGE:
+   case ERROR_INSUFFICIENT_BUFFER:
       return -ENAMETOOLONG;
+   case ERROR_NOT_ENOUGH_MEMORY:
+   case ERROR_OUTOFMEMORY:
+      return -ENOMEM;
    case ERROR_NOT_SUPPORTED:
       return -ENOTSUP;
    default:
@@ -87,9 +95,248 @@ windows_error(void)
    }
 }
 
+static bool
+windows_ascii_equal_case_insensitive(wchar_t left, wchar_t right)
+{
+   if (left >= L'a' && left <= L'z')
+      left -= L'a' - L'A';
+   if (right >= L'a' && right <= L'z')
+      right -= L'a' - L'A';
+   return left == right;
+}
+
+static bool
+windows_prefix_equal_case_insensitive(const wchar_t *path,
+                                      const wchar_t *prefix)
+{
+   while (*prefix) {
+      if (!*path || !windows_ascii_equal_case_insensitive(*path, *prefix))
+         return false;
+      ++path;
+      ++prefix;
+   }
+   return true;
+}
+
+enum windows_path_kind {
+   WINDOWS_PATH_INVALID,
+   WINDOWS_PATH_RELATIVE,
+   WINDOWS_PATH_DRIVE,
+   WINDOWS_PATH_UNC,
+   WINDOWS_PATH_EXTENDED_DRIVE,
+   WINDOWS_PATH_EXTENDED_UNC,
+};
+
+static bool
+windows_component_is_dot_reference(const wchar_t *start, const wchar_t *end)
+{
+   size_t length = (size_t)(end - start);
+   return (length == 1 && start[0] == L'.') ||
+          (length == 2 && start[0] == L'.' && start[1] == L'.');
+}
+
+static bool
+windows_drive_path_is_absolute(const wchar_t *path)
+{
+   bool drive_letter = (path[0] >= L'A' && path[0] <= L'Z') ||
+                       (path[0] >= L'a' && path[0] <= L'z');
+   return drive_letter && path[1] == L':' && path[2] == L'\\';
+}
+
+static const wchar_t *
+windows_unc_root_end(const wchar_t *components)
+{
+   const wchar_t *server_end = wcschr(components, L'\\');
+   if (!components[0] || !server_end || server_end == components ||
+       windows_component_is_dot_reference(components, server_end))
+      return NULL;
+
+   const wchar_t *share = server_end + 1;
+   if (!share[0] || share[0] == L'\\')
+      return NULL;
+
+   const wchar_t *share_end = wcschr(share, L'\\');
+   if (!share_end)
+      share_end = share + wcslen(share);
+   if (windows_component_is_dot_reference(share, share_end))
+      return NULL;
+   return share_end;
+}
+
+static enum windows_path_kind
+windows_extended_path_kind(const wchar_t *path)
+{
+   if (wcsncmp(path, L"\\\\?\\", 4) != 0)
+      return WINDOWS_PATH_INVALID;
+
+   const wchar_t *components = path + 4;
+   if (windows_drive_path_is_absolute(components))
+      return WINDOWS_PATH_EXTENDED_DRIVE;
+
+   if (windows_prefix_equal_case_insensitive(components, L"UNC\\") &&
+       windows_unc_root_end(components + 4))
+      return WINDOWS_PATH_EXTENDED_UNC;
+
+   return WINDOWS_PATH_INVALID;
+}
+
+static enum windows_path_kind
+windows_standard_path_kind(const wchar_t *path)
+{
+   if (windows_drive_path_is_absolute(path))
+      return WINDOWS_PATH_DRIVE;
+
+   if (path[0] == L'\\' && path[1] == L'\\' && path[2] != L'?' &&
+       path[2] != L'.' && windows_unc_root_end(path + 2))
+      return WINDOWS_PATH_UNC;
+
+   return WINDOWS_PATH_INVALID;
+}
+
+static enum windows_path_kind
+windows_input_path_kind(const wchar_t *path)
+{
+   if (!path[0])
+      return WINDOWS_PATH_INVALID;
+   if (wcsncmp(path, L"\\\\?\\", 4) == 0)
+      return windows_extended_path_kind(path);
+   if (wcsncmp(path, L"\\\\.\\", 4) == 0 ||
+       wcsncmp(path, L"\\??\\", 4) == 0)
+      return WINDOWS_PATH_INVALID;
+   if (path[0] == L'\\' && path[1] == L'\\')
+      return windows_standard_path_kind(path);
+   if (path[0] && path[1] == L':')
+      return windows_drive_path_is_absolute(path) ? WINDOWS_PATH_DRIVE
+                                                  : WINDOWS_PATH_INVALID;
+   if (path[0] == L'\\')
+      return WINDOWS_PATH_INVALID;
+   return WINDOWS_PATH_RELATIVE;
+}
+
+static const wchar_t *
+windows_path_components(const wchar_t *path, enum windows_path_kind kind)
+{
+   switch (kind) {
+   case WINDOWS_PATH_DRIVE:
+      return path + 3;
+   case WINDOWS_PATH_EXTENDED_DRIVE:
+      return path + 7;
+   case WINDOWS_PATH_UNC: {
+      const wchar_t *root_end = windows_unc_root_end(path + 2);
+      return root_end && *root_end == L'\\' ? root_end + 1 : root_end;
+   }
+   case WINDOWS_PATH_EXTENDED_UNC: {
+      const wchar_t *root_end = windows_unc_root_end(path + 8);
+      return root_end && *root_end == L'\\' ? root_end + 1 : root_end;
+   }
+   default:
+      return NULL;
+   }
+}
+
+static size_t
+windows_path_root_length(const wchar_t *path, enum windows_path_kind kind)
+{
+   switch (kind) {
+   case WINDOWS_PATH_DRIVE:
+      return 3;
+   case WINDOWS_PATH_EXTENDED_DRIVE:
+      return 7;
+   case WINDOWS_PATH_UNC: {
+      const wchar_t *root_end = windows_unc_root_end(path + 2);
+      return root_end ? (size_t)(root_end - path) : 0;
+   }
+   case WINDOWS_PATH_EXTENDED_UNC: {
+      const wchar_t *root_end = windows_unc_root_end(path + 8);
+      return root_end ? (size_t)(root_end - path) : 0;
+   }
+   default:
+      return 0;
+   }
+}
+
+static void
+windows_trim_trailing_separators(wchar_t *path, enum windows_path_kind kind)
+{
+   size_t root_length = windows_path_root_length(path, kind);
+   size_t length = wcslen(path);
+   while (length > root_length && path[length - 1] == L'\\')
+      path[--length] = L'\0';
+}
+
+static bool
+windows_path_is_canonical(const wchar_t *path, enum windows_path_kind kind)
+{
+   enum windows_path_kind actual_kind =
+      kind == WINDOWS_PATH_EXTENDED_DRIVE || kind == WINDOWS_PATH_EXTENDED_UNC
+         ? windows_extended_path_kind(path)
+         : windows_standard_path_kind(path);
+   if (actual_kind != kind)
+      return false;
+
+   const wchar_t *component = windows_path_components(path, kind);
+   if (!component)
+      return false;
+
+   while (*component) {
+      const wchar_t *component_end = wcschr(component, L'\\');
+      if (!component_end)
+         component_end = component + wcslen(component);
+      if (component_end == component ||
+          windows_component_is_dot_reference(component, component_end))
+         return false;
+      component = *component_end ? component_end + 1 : component_end;
+   }
+   return true;
+}
+
+static wchar_t *
+windows_get_full_path(const wchar_t *path)
+{
+   DWORD required_count = GetFullPathNameW(path, 0, NULL, NULL);
+   if (!required_count) {
+      int result = windows_error();
+      errno = -result;
+      return NULL;
+   }
+
+   for (;;) {
+      if (required_count == UINT32_MAX ||
+          (size_t)required_count + 1 > SIZE_MAX / sizeof(wchar_t)) {
+         errno = ENAMETOOLONG;
+         return NULL;
+      }
+      size_t capacity = (size_t)required_count + 1;
+      wchar_t *absolute = ralloc_array(NULL, wchar_t, capacity);
+      if (!absolute) {
+         errno = ENOMEM;
+         return NULL;
+      }
+
+      DWORD absolute_length =
+         GetFullPathNameW(path, (DWORD)capacity, absolute, NULL);
+      if (!absolute_length) {
+         int result = windows_error();
+         ralloc_free(absolute);
+         errno = -result;
+         return NULL;
+      }
+      if ((size_t)absolute_length < capacity)
+         return absolute;
+
+      ralloc_free(absolute);
+      required_count = absolute_length;
+   }
+}
+
 static wchar_t *
 windows_path_from_utf8(const char *path)
 {
+   if (!path || !path[0]) {
+      errno = EINVAL;
+      return NULL;
+   }
+
    int converted_count = MultiByteToWideChar(
       CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
    if (!converted_count) {
@@ -97,8 +344,12 @@ windows_path_from_utf8(const char *path)
       return NULL;
    }
 
-   wchar_t *converted =
-      ralloc_array(NULL, wchar_t, (size_t)converted_count);
+   if ((size_t)converted_count > SIZE_MAX / sizeof(wchar_t)) {
+      errno = ENAMETOOLONG;
+      return NULL;
+   }
+   wchar_t *converted = ralloc_array(NULL, wchar_t,
+                                     (size_t)converted_count);
    if (!converted) {
       errno = ENOMEM;
       return NULL;
@@ -110,45 +361,68 @@ windows_path_from_utf8(const char *path)
       return NULL;
    }
 
-   bool extended = converted_count > 4 && converted[0] == L'\\' &&
-                   converted[1] == L'\\' && converted[2] == L'?' &&
-                   converted[3] == L'\\';
-   wchar_t *absolute = converted;
-   if (!extended) {
-      DWORD absolute_count = GetFullPathNameW(converted, 0, NULL, NULL);
-      if (!absolute_count) {
-         int result = windows_error();
-         ralloc_free(converted);
-         errno = -result;
-         return NULL;
-      }
-
-      absolute = ralloc_array(NULL, wchar_t, (size_t)absolute_count);
-      if (!absolute) {
-         ralloc_free(converted);
-         errno = ENOMEM;
-         return NULL;
-      }
-      DWORD absolute_length =
-         GetFullPathNameW(converted, absolute_count, absolute, NULL);
-      ralloc_free(converted);
-      if (!absolute_length || absolute_length >= absolute_count) {
-         int result = windows_error();
-         ralloc_free(absolute);
-         errno = -result;
-         return NULL;
-      }
+   for (wchar_t *character = converted; *character; ++character) {
+      if (*character == L'/')
+         *character = L'\\';
    }
 
-   if (extended)
+   enum windows_path_kind input_kind = windows_input_path_kind(converted);
+   if (input_kind == WINDOWS_PATH_INVALID) {
+      ralloc_free(converted);
+      errno = EINVAL;
+      return NULL;
+   }
+
+   wchar_t *absolute = windows_get_full_path(converted);
+   ralloc_free(converted);
+   if (!absolute)
+      return NULL;
+
+   if (input_kind == WINDOWS_PATH_EXTENDED_DRIVE &&
+       wcsncmp(absolute, L"\\\\?\\", 4) == 0 &&
+       ((absolute[4] >= L'A' && absolute[4] <= L'Z') ||
+        (absolute[4] >= L'a' && absolute[4] <= L'z')) &&
+       absolute[5] == L':' && absolute[6] == L'\0') {
+      absolute[6] = L'\\';
+      absolute[7] = L'\0';
+   }
+
+   bool input_is_extended = input_kind == WINDOWS_PATH_EXTENDED_DRIVE ||
+                            input_kind == WINDOWS_PATH_EXTENDED_UNC;
+   enum windows_path_kind absolute_kind = input_is_extended
+      ? windows_extended_path_kind(absolute)
+      : windows_standard_path_kind(absolute);
+   bool absolute_preserves_explicit_root =
+      input_kind == WINDOWS_PATH_RELATIVE || absolute_kind == input_kind;
+   if (absolute_kind == WINDOWS_PATH_INVALID ||
+       !absolute_preserves_explicit_root) {
+      ralloc_free(absolute);
+      errno = EINVAL;
+      return NULL;
+   }
+
+   windows_trim_trailing_separators(absolute, absolute_kind);
+   if (absolute_kind == WINDOWS_PATH_EXTENDED_UNC) {
+      absolute[4] = L'U';
+      absolute[5] = L'N';
+      absolute[6] = L'C';
+   }
+   if (!windows_path_is_canonical(absolute, absolute_kind)) {
+      ralloc_free(absolute);
+      errno = EINVAL;
+      return NULL;
+   }
+
+   if (input_is_extended)
       return absolute;
 
-   bool unc = absolute[0] == L'\\' && absolute[1] == L'\\';
+   bool unc = absolute_kind == WINDOWS_PATH_UNC;
    const wchar_t *prefix = unc ? L"\\\\?\\UNC\\" : L"\\\\?\\";
    size_t prefix_count = unc ? 8 : 4;
    size_t source_skip = unc ? 2 : 0;
    size_t source_count = wcslen(absolute + source_skip) + 1;
-   if (source_count > SIZE_MAX - prefix_count) {
+   if (source_count > SIZE_MAX - prefix_count ||
+       prefix_count + source_count > SIZE_MAX / sizeof(wchar_t)) {
       ralloc_free(absolute);
       errno = ENAMETOOLONG;
       return NULL;
@@ -165,17 +439,116 @@ windows_path_from_utf8(const char *path)
    memcpy(extended_path + prefix_count, absolute + source_skip,
           source_count * sizeof(*extended_path));
    ralloc_free(absolute);
+   enum windows_path_kind extended_kind = unc ? WINDOWS_PATH_EXTENDED_UNC
+                                               : WINDOWS_PATH_EXTENDED_DRIVE;
+   if (!windows_path_is_canonical(extended_path, extended_kind)) {
+      ralloc_free(extended_path);
+      errno = EINVAL;
+      return NULL;
+   }
    return extended_path;
 }
 #endif
 
-static FILE *
-default_open_unique(const char *path, int mode)
+static char *
+default_absolute_path(const char *path)
 {
 #if DETECT_OS_WINDOWS
    wchar_t *wide_path = windows_path_from_utf8(path);
    if (!wide_path)
       return NULL;
+
+   int utf8_count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                        wide_path, -1, NULL, 0, NULL, NULL);
+   if (!utf8_count) {
+      ralloc_free(wide_path);
+      errno = EINVAL;
+      return NULL;
+   }
+
+   char *absolute_path = malloc((size_t)utf8_count);
+   if (!absolute_path) {
+      ralloc_free(wide_path);
+      errno = ENOMEM;
+      return NULL;
+   }
+   int written_count = WideCharToMultiByte(
+      CP_UTF8, WC_ERR_INVALID_CHARS, wide_path, -1, absolute_path, utf8_count,
+      NULL, NULL);
+   if (written_count != utf8_count) {
+      ralloc_free(wide_path);
+      free(absolute_path);
+      errno = written_count ? EIO : EINVAL;
+      return NULL;
+   }
+   ralloc_free(wide_path);
+   return absolute_path;
+#else
+   char *resolved_path = realpath(path, NULL);
+   if (!resolved_path)
+      return NULL;
+   return resolved_path;
+#endif
+}
+
+static int
+default_random_bytes(void *data, size_t size)
+{
+   if (!data && size)
+      return -EINVAL;
+
+#if DETECT_OS_WINDOWS
+   if (size > ULONG_MAX)
+      return -EOVERFLOW;
+   return BCryptGenRandom(NULL, data, (ULONG)size,
+                          BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0
+      ? 0
+      : -EIO;
+#else
+   int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+   flags |= O_CLOEXEC;
+#endif
+   errno = 0;
+   int descriptor = open("/dev/urandom", flags);
+   if (descriptor < 0)
+      return io_error();
+
+   uint8_t *bytes = data;
+   size_t offset = 0;
+   int result = 0;
+   while (offset < size) {
+      ssize_t count = read(descriptor, bytes + offset, size - offset);
+      if (count < 0 && errno == EINTR)
+         continue;
+      if (count <= 0) {
+         result = count < 0 ? io_error() : -EIO;
+         break;
+      }
+      offset += (size_t)count;
+   }
+
+   errno = 0;
+   if (close(descriptor) != 0 && !result)
+      result = io_error();
+   return result;
+#endif
+}
+
+static int
+default_open_unique(const char *path, int mode, FILE **stream_out,
+                    bool *created_out)
+{
+   if (!path || !stream_out || !created_out)
+      return -EINVAL;
+
+   *stream_out = NULL;
+   *created_out = false;
+   errno = 0;
+#if DETECT_OS_WINDOWS
+   wchar_t *wide_path = windows_path_from_utf8(path);
+   if (!wide_path)
+      return io_error();
    int descriptor = _wopen(wide_path,
                            _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY |
                               _O_NOINHERIT,
@@ -188,11 +561,13 @@ default_open_unique(const char *path, int mode)
    int descriptor = open(path, flags, mode);
 #endif
    if (descriptor < 0) {
+      int result = io_error();
 #if DETECT_OS_WINDOWS
       ralloc_free(wide_path);
 #endif
-      return NULL;
+      return result;
    }
+   *created_out = true;
 
 #if DETECT_OS_WINDOWS
    FILE *stream = _fdopen(descriptor, "wb");
@@ -200,20 +575,24 @@ default_open_unique(const char *path, int mode)
    FILE *stream = fdopen(descriptor, "wb");
 #endif
    if (!stream) {
-      int saved_errno = errno;
+      int result = io_error();
+      errno = 0;
 #if DETECT_OS_WINDOWS
-      _close(descriptor);
-      _wremove(wide_path);
+      if (_close(descriptor) != 0)
 #else
-      close(descriptor);
-      remove(path);
+      if (close(descriptor) != 0)
 #endif
-      errno = saved_errno;
+         result = io_error();
+#if DETECT_OS_WINDOWS
+      ralloc_free(wide_path);
+#endif
+      return result;
    }
 #if DETECT_OS_WINDOWS
    ralloc_free(wide_path);
 #endif
-   return stream;
+   *stream_out = stream;
+   return 0;
 }
 
 static int
@@ -322,6 +701,8 @@ default_sync_directory(const char *path)
 }
 
 static const struct vl_mpeg12_dump_io default_io = {
+   .absolute_path = default_absolute_path,
+   .random_bytes = default_random_bytes,
    .open_unique = default_open_unique,
    .write = fwrite,
    .sync_file = default_sync_file,
@@ -355,9 +736,22 @@ path_component_is_valid(const char *component)
 static bool
 io_is_complete(const struct vl_mpeg12_dump_io *io)
 {
-   return io && io->open_unique && io->write && io->sync_file && io->close &&
-          io->remove_file && io->remove_directory && io->mkdir &&
-          io->sync_directory;
+   return io && io->absolute_path && io->random_bytes && io->open_unique &&
+          io->write && io->sync_file && io->close && io->remove_file &&
+          io->remove_directory && io->mkdir && io->sync_directory;
+}
+
+static const char *
+path_separator_after(const char *path)
+{
+   size_t length = strlen(path);
+   bool trailing_separator =
+      length && path[length - 1] == VL_MPEG12_DUMP_PATH_SEPARATOR[0];
+#if DETECT_OS_WINDOWS
+   trailing_separator = trailing_separator ||
+                        (length && path[length - 1] == '/');
+#endif
+   return trailing_separator ? "" : VL_MPEG12_DUMP_PATH_SEPARATOR;
 }
 
 int
@@ -374,33 +768,60 @@ vl_mpeg12_dump_init_with_io(struct vl_mpeg12_dump *dump,
    if (!root_path || !root_path[0])
       return 0;
 
-   for (unsigned attempt = 0; attempt < 1024; ++attempt) {
-      uint32_t serial = p_atomic_inc_return(&dump_session_serial);
-      char *session_path = ralloc_asprintf(
-         NULL, "%s/mpeg12-dump-session-%08" PRIu32, root_path, serial);
-      if (!session_path)
-         return -ENOMEM;
+   errno = 0;
+   char *absolute_root = dump->io.absolute_path(root_path);
+   if (!absolute_root)
+      return io_error();
 
-      int result = dump->io.mkdir(session_path, 0700);
+   for (unsigned attempt = 0; attempt < VL_MPEG12_DUMP_SESSION_ATTEMPTS;
+        ++attempt) {
+      uint8_t identity[16];
+      int result = dump->io.random_bytes(identity, sizeof(identity));
+      if (result) {
+         free(absolute_root);
+         return result < 0 ? result : -EIO;
+      }
+
+      static const char hex[] = "0123456789abcdef";
+      char identity_hex[sizeof(identity) * 2 + 1];
+      for (unsigned index = 0; index < sizeof(identity); ++index) {
+         identity_hex[index * 2] = hex[identity[index] >> 4];
+         identity_hex[index * 2 + 1] = hex[identity[index] & 0xf];
+      }
+      identity_hex[sizeof(identity_hex) - 1] = '\0';
+
+      char *session_path = ralloc_asprintf(
+         NULL, "%s%smpeg12-dump-session-%s", absolute_root,
+         path_separator_after(absolute_root), identity_hex);
+      if (!session_path)
+         result = -ENOMEM;
+      else
+         result = dump->io.mkdir(session_path, 0700);
+
       if (result == 0) {
-         result = dump->io.sync_directory(root_path);
+         result = dump->io.sync_directory(absolute_root);
          if (!result) {
             dump->session_path = session_path;
+            free(absolute_root);
             return 0;
          }
 
          int cleanup_result = dump->io.remove_directory(session_path);
          if (!cleanup_result)
-            cleanup_result = dump->io.sync_directory(root_path);
+            cleanup_result = dump->io.sync_directory(absolute_root);
          ralloc_free(session_path);
+         free(absolute_root);
          return cleanup_result ? cleanup_result : result;
       }
 
       ralloc_free(session_path);
-      if (result != -EEXIST)
+      if (result != -EEXIST) {
+         free(absolute_root);
          return result;
+      }
    }
 
+   free(absolute_root);
    return -EEXIST;
 }
 
@@ -424,6 +845,28 @@ bool
 vl_mpeg12_dump_enabled(const struct vl_mpeg12_dump *dump)
 {
    return dump && dump->session_path;
+}
+
+int
+vl_mpeg12_dump_stage_from_video_buffer(struct vl_mpeg12_dump_stage *stage,
+                                       const char *name,
+                                       struct pipe_video_buffer *buffer)
+{
+   if (!stage || !name || !buffer || !buffer->get_sampler_view_planes ||
+       buffer->buffer_format == PIPE_FORMAT_NONE)
+      return -EINVAL;
+
+   unsigned plane_count = util_format_get_num_planes(buffer->buffer_format);
+   struct pipe_sampler_view **planes =
+      buffer->get_sampler_view_planes(buffer);
+   if (!planes || !plane_count || plane_count > VL_MPEG12_DUMP_MAX_PLANES)
+      return -EIO;
+
+   stage->name = name;
+   stage->buffer_format = buffer->buffer_format;
+   stage->planes = planes;
+   stage->plane_count = plane_count;
+   return 0;
 }
 
 int
@@ -582,24 +1025,30 @@ dump_plane(const struct vl_mpeg12_dump *dump,
       stage->name, storage_plane, level, first_layer, last_layer,
       width, height, layer_count, storage_format_name, view_format_name);
    if (entry->filename)
-      entry->path = ralloc_asprintf(NULL, "%s/%s", payload_path,
-                                    entry->filename);
+      entry->path = ralloc_asprintf(
+         NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR "%s", payload_path,
+         entry->filename);
    if (!entry->filename || !entry->path) {
       pipe->texture_unmap(pipe, transfer);
       free_entry(entry);
       return -ENOMEM;
    }
 
-   errno = 0;
-   FILE *stream = dump->io.open_unique(entry->path, 0600);
-   if (!stream) {
-      int result = io_error();
+   FILE *stream = NULL;
+   int result = dump->io.open_unique(entry->path, 0600, &stream,
+                                     &entry->created);
+   if (result) {
       pipe->texture_unmap(pipe, transfer);
       return result;
    }
-   entry->created = true;
+   if (!stream || !entry->created) {
+      if (stream)
+         dump->io.close(stream);
+      pipe->texture_unmap(pipe, transfer);
+      return -EIO;
+   }
 
-   int result = 0;
+   result = 0;
    for (unsigned layer = 0; !result && layer < layer_count; ++layer) {
       for (unsigned row = 0; !result && row < rows_per_layer; ++row) {
          const uint8_t *source = map +
@@ -647,25 +1096,31 @@ write_manifest(const struct vl_mpeg12_dump *dump,
                char **manifest_path_out,
                bool *manifest_created_out)
 {
-   char *manifest_path = ralloc_asprintf(NULL, "%s/manifest.tsv", payload_path);
+   char *manifest_path = ralloc_asprintf(
+      NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR "manifest.tsv", payload_path);
    if (!manifest_path)
       return -ENOMEM;
 
-   errno = 0;
-   FILE *stream = dump->io.open_unique(manifest_path, 0600);
-   if (!stream) {
-      int result = io_error();
+   FILE *stream = NULL;
+   int result = dump->io.open_unique(manifest_path, 0600, &stream,
+                                     manifest_created_out);
+   if (result) {
       ralloc_free(manifest_path);
       return result;
    }
-   *manifest_created_out = true;
+   if (!stream || !*manifest_created_out) {
+      if (stream)
+         dump->io.close(stream);
+      ralloc_free(manifest_path);
+      return -EIO;
+   }
 
    static const char header[] =
       "stage\tbuffer_format\tstorage_format\tview_format\tstorage_plane\t"
       "level\tfirst_layer\tlast_layer\t"
       "width\theight\tlayer_count\trow_bytes\trows_per_layer\t"
       "total_bytes\tfile\n";
-   int result = write_all(&dump->io, stream, header, sizeof(header) - 1);
+   result = write_all(&dump->io, stream, header, sizeof(header) - 1);
 
    for (unsigned index = 0; !result && index < entry_count; ++index) {
       const struct vl_mpeg12_dump_entry *entry = &entries[index];
@@ -729,7 +1184,8 @@ cleanup_frame(const struct vl_mpeg12_dump *dump,
 
       if (manifest_created) {
          char *manifest_path =
-            ralloc_asprintf(NULL, "%s/manifest.tsv", payload_path);
+            ralloc_asprintf(NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR
+                                  "manifest.tsv", payload_path);
          if (!manifest_path)
             record_cleanup_result(&result, -ENOMEM);
          else
@@ -743,7 +1199,9 @@ cleanup_frame(const struct vl_mpeg12_dump *dump,
          if (!filename || !entries[index - 1].created)
             continue;
 
-         char *path = ralloc_asprintf(NULL, "%s/%s", payload_path, filename);
+         char *path = ralloc_asprintf(
+            NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR "%s", payload_path,
+            filename);
          if (!path)
             record_cleanup_result(&result, -ENOMEM);
          else
@@ -798,9 +1256,12 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
    }
 
    char *frame_path = ralloc_asprintf(
-      NULL, "%s/frame-%020" PRIu64, dump->session_path, frame);
-   char *payload_path = ralloc_asprintf(NULL, "%s/payload", frame_path);
-   char *complete_path = ralloc_asprintf(NULL, "%s/complete", frame_path);
+      NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR "frame-%020" PRIu64,
+      dump->session_path, frame);
+   char *payload_path = ralloc_asprintf(
+      NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR "payload", frame_path);
+   char *complete_path = ralloc_asprintf(
+      NULL, "%s" VL_MPEG12_DUMP_PATH_SEPARATOR "complete", frame_path);
    if (!frame_path || !payload_path || !complete_path) {
       ralloc_free(frame_path);
       ralloc_free(payload_path);
@@ -811,7 +1272,7 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
    bool frame_created = false;
    bool payload_created = false;
    bool complete_created = false;
-   bool complete_collision = false;
+   bool publication_collision = false;
 
    int result = dump->io.mkdir(frame_path, 0700);
    if (result) {
@@ -847,6 +1308,8 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
       result = write_manifest(dump, payload_path, entries, entry_count,
                               &manifest_path, &manifest_created);
 
+   publication_collision = result == -EEXIST;
+
    if (!result)
       result = dump->io.sync_directory(payload_path);
 
@@ -861,14 +1324,14 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
     * admitted payload and reports that its crash durability remains uncertain. */
    if (!result) {
       result = dump->io.mkdir(complete_path, 0500);
-      complete_collision = result == -EEXIST;
+      publication_collision = result == -EEXIST;
    }
    if (!result)
       complete_created = true;
    if (!result)
       result = dump->io.sync_directory(frame_path);
 
-   if (result && !complete_created && !complete_collision) {
+   if (result && !complete_created && !publication_collision) {
       int cleanup_result = cleanup_frame(
          dump, frame_path, payload_path, entries, entry_count, manifest_created,
          frame_created, payload_created);
@@ -878,7 +1341,7 @@ vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
       }
    } else if (complete_created) {
       *frame_state_out = VL_MPEG12_DUMP_FRAME_ADMITTED;
-   } else if (complete_collision) {
+   } else if (publication_collision) {
       *frame_state_out = VL_MPEG12_DUMP_FRAME_RETAINED;
    }
 

@@ -1591,6 +1591,10 @@ if not cc.links('''#include <stdint.h>
 endif
 
 dep_ws2_32 = cc.find_library('ws2_32', required : with_platform_windows)
+dep_bcrypt = null_dep
+if host_machine.system() == 'windows' and with_gallium
+  dep_bcrypt = cc.find_library('bcrypt', required : true)
+endif
 
 # Check for standard headers and functions
 if (cc.has_header_symbol('sys/sysmacros.h', 'major') and
