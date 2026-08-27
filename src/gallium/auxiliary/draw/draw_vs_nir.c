@@ -651,6 +651,7 @@ draw_vs_nir_lower(nir_shader *nir)
  * coverage (in particular that nir_if / nir_loop survive to the interpreter and
  * are not flattened away before draw). */
 DEBUG_GET_ONCE_BOOL_OPTION(draw_nir_exec_stats, "DRAW_NIR_EXEC_STATS", false)
+DEBUG_GET_ONCE_BOOL_OPTION(draw_nir_telemetry, "DRAW_NIR_TELEMETRY", false)
 
 static void
 draw_vs_nir_count_cf(struct exec_list *list, unsigned *n_if, unsigned *n_loop)
@@ -724,12 +725,7 @@ draw_vs_nir_dump_stats(nir_function_impl *impl, const char *name)
 bool
 draw_vs_nir_telemetry_enabled(void)
 {
-   static int gate = -1;
-   if (gate < 0) {
-      const char *e = getenv("DRAW_NIR_TELEMETRY");
-      gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
-   }
-   return gate == 1;
+   return debug_get_option_draw_nir_telemetry();
 }
 
 bool

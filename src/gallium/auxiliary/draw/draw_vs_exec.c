@@ -31,6 +31,7 @@
   *   Brian Paul
   */
 
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -45,6 +46,9 @@
 #include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_scan.h"
 #include "tgsi/tgsi_exec.h"
+
+DEBUG_GET_ONCE_BOOL_OPTION(draw_nir_force_bridge,
+                           "DRAW_NIR_FORCE_BRIDGE", false)
 
 struct exec_vertex_shader {
    struct draw_vertex_shader base;
@@ -242,21 +246,26 @@ vs_exec_delete(UNUSED struct draw_context *draw, struct draw_vertex_shader *dvs)
 }
 
 
+bool
+draw_vs_nir_force_bridge_enabled(void)
+{
+   return debug_get_option_draw_nir_force_bridge();
+}
+
+
 struct draw_vertex_shader *
 draw_create_vs_exec(struct draw_context *draw,
                     const struct pipe_shader_state *state)
 {
    if (state->type == PIPE_SHADER_IR_NIR) {
       /* DRAW_NIR_FORCE_BRIDGE=1 routes every NIR vertex shader through the
-       * nir_to_tgsi bridge below.  The supported() verdict itself is
-       * untouched, so a driver that pre-filters on it keeps its own
-       * admission unchanged. */
-      static int force_bridge = -1;
-      if (force_bridge < 0) {
-         const char *e = getenv("DRAW_NIR_FORCE_BRIDGE");
-         force_bridge = (e && strcmp(e, "1") == 0) ? 1 : 0;
-      }
-      if (!force_bridge && draw_vs_nir_supported(state))
+       * nir_to_tgsi bridge below.  draw_create_vertex_shader is the
+       * production caller (rg --fixed-strings 'draw_create_vs_exec(' src/).
+       * r300_draw_init_vertex_shader separately applies supported() before
+       * entering Draw (rg --fixed-strings 'draw_vs_nir_supported(' src/), so
+       * the force-bridge option leaves that driver's admission unchanged. */
+      if (!draw_vs_nir_force_bridge_enabled() &&
+          draw_vs_nir_supported(state))
          return draw_create_vs_nir(draw, state);
    }
 

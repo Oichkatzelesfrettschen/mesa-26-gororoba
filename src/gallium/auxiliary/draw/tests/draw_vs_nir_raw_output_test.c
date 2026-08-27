@@ -34,6 +34,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "c11/threads.h"
+
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
@@ -49,6 +51,7 @@
 #include "nir_builder.h"
 #include "nir/nir_to_tgsi.h"
 
+#include "util/u_atomic.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
 
@@ -67,6 +70,62 @@ static unsigned g_fail;
          g_fail++;                                                             \
       }                                                                        \
    } while (0)
+
+
+struct option_probe_result {
+   int *start;
+   bool completed;
+   bool force_bridge;
+   bool telemetry;
+};
+
+static int
+read_draw_nir_options(void *data)
+{
+   struct option_probe_result *result = data;
+   while (!p_atomic_read(result->start))
+      thrd_yield();
+
+   result->force_bridge = draw_vs_nir_force_bridge_enabled();
+   result->telemetry = draw_vs_nir_telemetry_enabled();
+   result->completed = true;
+   return 0;
+}
+
+static void
+test_draw_nir_option_first_use(void)
+{
+   enum { probe_thread_count = 16 };
+   thrd_t threads[probe_thread_count];
+   struct option_probe_result results[probe_thread_count] = {0};
+   int start = 0;
+   unsigned created_thread_count = 0;
+
+   setenv("DRAW_NIR_FORCE_BRIDGE", "0", 1);
+   setenv("DRAW_NIR_TELEMETRY", "0", 1);
+   for (unsigned thread_index = 0;
+        thread_index < probe_thread_count; thread_index++) {
+      results[thread_index].start = &start;
+      if (thrd_create(&threads[thread_index], read_draw_nir_options,
+                      &results[thread_index]) != thrd_success)
+         break;
+      created_thread_count++;
+   }
+
+   p_atomic_set(&start, 1);
+   bool options_match = created_thread_count == probe_thread_count;
+   for (unsigned thread_index = 0;
+        thread_index < created_thread_count; thread_index++) {
+      int thread_result;
+      if (thrd_join(threads[thread_index], &thread_result) != thrd_success ||
+          thread_result != 0 || !results[thread_index].completed ||
+          results[thread_index].force_bridge ||
+          results[thread_index].telemetry)
+         options_match = false;
+   }
+   CHECK(options_match,
+         "concurrent first use reads stable Draw NIR options");
+}
 
 /* ---- shader builders (each execution path owns a fresh nir_shader) ---- */
 
@@ -843,6 +902,8 @@ run_case(struct draw_context *draw, const struct raw_case *tc)
 int
 main(void)
 {
+   test_draw_nir_option_first_use();
+
    /* Force the C exec path so both run_linear implementations take their
     * scalar route. */
    setenv("DRAW_USE_LLVM", "0", 1);
