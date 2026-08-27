@@ -169,6 +169,11 @@ def layout_values(tmp_path: Path) -> dict[str, Path | str]:
         "builddir": build_root / "build",
         "prefix": build_root / "prefix",
         "sysconfdir": tmp_path / "etc",
+        "profile": "test-profile",
+        "hostenv": "test-hostenv",
+        "mode": "default",
+        "compiler_chain": "direct",
+        "compiler_family": "llvm",
     }
 
 
@@ -1358,6 +1363,37 @@ def test_require_identity_fields_reports_value_drift(
             expected,
             tmp_path / "identity.json",
         )
+
+
+def test_base_identity_payload_records_build_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+
+    payload = source_root_control.base_identity_payload(values)
+
+    assert {
+        field: payload[field]
+        for field in (
+            "profile",
+            "hostenv",
+            "mode",
+            "compiler_chain",
+            "compiler_family",
+        )
+    } == {
+        "profile": "test-profile",
+        "hostenv": "test-hostenv",
+        "mode": "default",
+        "compiler_chain": "direct",
+        "compiler_family": "llvm",
+    }
 
 
 def test_require_identity_record_accepts_exact_final_record(

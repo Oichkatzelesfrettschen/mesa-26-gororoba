@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 IDENTITY_FILENAME = ".gororoba-source-identity.json"
 ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
 SOURCE_VIEW_DIRECTORY = ".gororoba-source-view"
@@ -527,8 +527,20 @@ def require_clean_external_source(source_root: Path) -> None:
 
 
 def resolved_inputs() -> dict[str, Path | str]:
-    input_identifier("GOROROBA_PROFILE_INPUT")
-    input_identifier("GOROROBA_HOSTENV_INPUT")
+    profile = input_identifier("GOROROBA_PROFILE_INPUT")
+    hostenv = input_identifier("GOROROBA_HOSTENV_INPUT")
+    mode = input_enum(
+        "GOROROBA_MODE_INPUT",
+        frozenset(("", "stable")),
+    )
+    compiler_chain = input_enum(
+        "GOROROBA_COMPILER_CHAIN_INPUT",
+        frozenset(("ccache", "direct", "distcc")),
+    )
+    compiler_family = input_enum(
+        "GOROROBA_COMPILER_FAMILY_INPUT",
+        frozenset(("gnu", "llvm")),
+    )
     source_root = input_path("GOROROBA_TOPSRC_INPUT")
     source_commit, source_tree = source_identity(source_root)
     build_root = input_path("GOROROBA_BUILD_ROOT_INPUT")
@@ -545,6 +557,11 @@ def resolved_inputs() -> dict[str, Path | str]:
         "builddir": builddir,
         "prefix": prefix,
         "sysconfdir": sysconfdir,
+        "profile": profile,
+        "hostenv": hostenv,
+        "mode": mode or "default",
+        "compiler_chain": compiler_chain,
+        "compiler_family": compiler_family,
         "control_root": repository_root,
         "control_commit": control_commit,
         "control_tree": control_tree,
@@ -1317,6 +1334,11 @@ def base_identity_payload(
         "builddir": str(values["builddir"]),
         "prefix": str(values["prefix"]),
         "sysconfdir": str(values["sysconfdir"]),
+        "profile": str(values["profile"]),
+        "hostenv": str(values["hostenv"]),
+        "mode": str(values["mode"]),
+        "compiler_chain": str(values["compiler_chain"]),
+        "compiler_family": str(values["compiler_family"]),
     }
 
 
