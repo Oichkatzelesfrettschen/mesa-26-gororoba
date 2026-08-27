@@ -235,6 +235,17 @@ mutation, postflight, journal replay, and deterministic ledger generation.
 Its journal binds the immutable pre-resolution frontier hash so later closed
 state cannot rewrite the mutation denominator.
 
+The v2 recovery journal records an ordered frontier subsequence when exact
+threads were resolved independently before the batch-wide mutation.  Each
+entry carries its own merged commit, pull request, merge time, resolution
+observation, and second live verification.  The `record` command verifies the
+pull request merge, commit ancestry, canonical-target parity with `main`, the
+retained discussion URL, and two resolved-state queries.  It never mutates a
+GitHub thread.  The fiftieth entry becomes complete only after one additional
+query proves all 50 exact IDs resolved together.  Offline tests exercise the
+journal and ledger invariants; live network observations remain confined to
+the command itself.
+
 ## Closed classified third-batch frontier
 
 `review-thread-classifications/merged-thread-frontier-92b67f719e7b/assessments.tsv`
