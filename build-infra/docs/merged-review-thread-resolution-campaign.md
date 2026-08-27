@@ -319,8 +319,9 @@ campaign state and closure merge identity.
 ## Classified fifth-batch frontier
 
 `review-thread-classifications/merged-thread-frontier-after-TvpLc/assessments.tsv`
-classifies the exact fifth-batch denominator against merged main
-`b2b68f46810c9808386f5b7a38adde70352f7050`.  The generated
+initially classified the exact fifth-batch denominator against merged main
+`b2b68f46810c9808386f5b7a38adde70352f7050`; later row transitions retain
+their newer merged evidence commits explicitly.  The generated
 `action-frontier.tsv` preserves retained chronological order and binds each
 row to its exact GraphQL ID, current evidence owner, required observation,
 falsifier, and merged evidence commit when one exists.
@@ -328,8 +329,8 @@ falsifier, and merged evidence commit when one exists.
 | State | Threads | Required transition |
 | --- | ---: | --- |
 | actionable | 0 | None |
-| fixed on merged main | 3 | Publish this assessment, then resolve exact IDs |
-| closed as fixed | 42 | Retain exact merge and post-resolution evidence |
+| fixed on merged main | 0 | None |
+| closed as fixed | 45 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -372,9 +373,8 @@ paths cover inactive and removed units, PID reuse, replacement invocations,
 failed state, malformed identity, timeout, and direct-signal regression.  The
 complete headless group is resolved and re-queried after merged-main
 qualification.
-Every recorded GitHub thread is resolved and re-queried.  The journal remains
-incomplete until every one of the 50 retained thread IDs is resolved and the
-batch-wide postflight succeeds.
+All 50 recorded GitHub threads are resolved and re-queried.  The journal is
+complete, and its batch-wide postflight records the final verification time.
 
 Eight re-audited rows are closed with exact-ID resolution evidence.  The
 current guidance uses the fork-specific AMD Vulkan scope.  PR 1902's unchanged
@@ -431,7 +431,7 @@ fixture pass.  PR 1932 re-audits all four targets at merge commit
 `b918e1135f318e3253a3fc76cea94bdbbae6c560`; all four exact GitHub threads are
 resolved and re-queried.
 
-The three remaining mechanisms are fixed on merged main.  PR 1934 merge commit
+The final three mechanisms are fixed on merged main and closed.  PR 1934 merge commit
 `3b355908198285831108be57003bdfbd69a796cb` stores the RS480 standing-route
 composite in screen-owned state and covers both mixed-screen creation orders
 plus alternating consumers.  PR 1936 merge commit
@@ -458,10 +458,10 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 47 resolved and three unresolved exact IDs.  Their
-repair commits are ancestors of `origin/main`, and their declared target files
-match between each repair commit and the current candidate.  The three exact
-IDs remain unresolved until this merged-main assessment is published.
+Live GraphQL state reports all 50 exact IDs resolved.  The three final repair
+commits are ancestors of `origin/main`, their declared target files match the
+current candidate, and the terminal journal binds each resolution to its
+repair PR and post-resolution verification time.
 
 ## Verification
 

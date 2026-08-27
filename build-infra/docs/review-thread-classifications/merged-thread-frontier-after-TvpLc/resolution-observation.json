@@ -1,5 +1,5 @@
 {
-  "complete": false,
+  "complete": true,
   "entries": [
     {
       "disposition": "superseded",
@@ -282,6 +282,15 @@
     },
     {
       "disposition": "fixed",
+      "evidence_commit": "3b355908198285831108be57003bdfbd69a796cb",
+      "evidence_pr": 1934,
+      "merged_at": "2026-08-27T17:46:17Z",
+      "resolved_at": "2026-08-27T19:44:46Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Vt0L8",
+      "verified_at": "2026-08-27T19:44:46Z"
+    },
+    {
+      "disposition": "fixed",
       "evidence_commit": "e7656d6bf70d3492a70200cbfb97f8fb646b7c58",
       "evidence_pr": 1908,
       "merged_at": "2026-08-27T04:50:07Z",
@@ -423,10 +432,28 @@
       "resolved_at": "2026-08-27T16:53:56Z",
       "thread_id": "PRRT_kwDOR3YK5M6V3PUz",
       "verified_at": "2026-08-27T16:53:57Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "b058622f9f395c151befc9c0294230cd383815d6",
+      "evidence_pr": 1936,
+      "merged_at": "2026-08-27T18:44:51Z",
+      "resolved_at": "2026-08-27T19:44:47Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Wgag8",
+      "verified_at": "2026-08-27T19:44:47Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "7cc2fad09eac2f38dd1cbec2a26f32c7a1366f1b",
+      "evidence_pr": 1937,
+      "merged_at": "2026-08-27T19:27:47Z",
+      "resolved_at": "2026-08-27T19:44:48Z",
+      "thread_id": "PRRT_kwDOR3YK5M6WhUFS",
+      "verified_at": "2026-08-27T19:44:48Z"
     }
   ],
   "frontier_sha256": "8dde8893acceeb3346868e21c02758c2eede84cc0b070e2460eeac7b0d99c4ff",
-  "post_verified_at": null,
+  "post_verified_at": "2026-08-27T19:44:49Z",
   "schema": "mesa-review-thread-resolution-v2",
   "started_at": "2026-08-27T09:49:03Z"
 }
