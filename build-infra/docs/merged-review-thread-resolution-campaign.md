@@ -40,9 +40,9 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   re-audit to the preceding evidence commit.
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
-  recovery journal, generated action frontier, and resolution ledger.  Three
-  independently merged repairs are closed, and 37 actionable rows require
-  merged repairs before exact-ID resolution.
+  recovery journal, generated action frontier, and resolution ledger.  Thirteen
+  rows are closed, and 37 actionable rows require merged repairs before
+  exact-ID resolution.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -327,10 +327,9 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| fixed on merged main | 5 | Resolve exact ID after the assessment merges |
-| superseded | 5 | Resolve exact ID after the assessment merges |
 | actionable | 37 | Implement, test, merge, synchronize, then resolve |
-| closed | 3 | Retain exact merge and post-resolution evidence |
+| closed as fixed | 8 | Retain exact merge and post-resolution evidence |
+| closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
 `ed31e4154700485767c60038102a46077574d1f9` uses:
@@ -353,10 +352,11 @@ The ordered recovery journal records three independently merged DRM-shim
 repairs.  PR 1912 binds raw-alias backing identity to merge commit
 `400df9e74aeacc6917410a887a3bf33bf5fda167`; PR 1900 binds the preload-test
 SPDX header to `4b0c1f55abd1c9d84022973e14fd40d639426ec9`; and PR 1913 binds large-lock
-layout normalization to `05023afc27fcc9fb0637ecacfa425d9fc4263a81`.
-Each exact GitHub thread is resolved and re-queried.  The journal remains
-incomplete until every one of the 50 retained thread IDs is resolved and the
-batch-wide postflight succeeds.
+layout normalization to `05023afc27fcc9fb0637ecacfa425d9fc4263a81`.  PR 1916
+binds ten re-audited fixed or superseded rows to merge commit
+`a2bfd6032c81faa75994dfd4f57b279200a0776f`.  Every recorded GitHub thread is
+resolved and re-queried.  The journal remains incomplete until every one of
+the 50 retained thread IDs is resolved and the batch-wide postflight succeeds.
 
 The surviving mechanisms cover a complete headless GL provider and session
 workflow; AMD driver-root predicates and artifacts; Hybrid-TCL evidence
@@ -367,17 +367,18 @@ DRM-shim descriptor, lock, and write-only identity semantics; transactional,
 calibrated MPEG-12 surface dumps; Draw semantic provenance; and width-correct
 Radeon info queries.
 
-The fixed rows cover component-prefixed guidance history, HBTCL executable
-identity, nonempty stack-manifest Build IDs, root-independent source-view
-tests, Meson wrap population, and state-token render registration.  Current
-SPDX-only and canonical-loader policies supersede five historical requests.
+The closed fixed rows cover component-prefixed guidance history, HBTCL
+executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
+state-token render registration, and the three DRM-shim repairs.  SPDX-only,
+canonical-loader, merge-subject, and emoji-scope policies supersede five
+historical requests.
 Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-All 50 live GraphQL nodes remain unresolved.  Exact-ID mutation begins only
-after every actionable mechanism is merged and all rows are reclassified
-against synchronized `main`.
+Live GraphQL state reports 13 resolved and 37 unresolved exact IDs.  Each
+remaining ID resolves only after its actionable mechanism is merged and
+reclassified against synchronized `main`.
 
 ## Verification
 
