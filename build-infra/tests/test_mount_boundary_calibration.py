@@ -6,7 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest  # type: ignore[import-not-found]
+import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parent / "mount_boundary_calibration.py"
 MODULE_SPEC = importlib.util.spec_from_file_location(
@@ -28,7 +28,7 @@ def test_accepts_caller_mapped_private_mount_namespace() -> None:
     )
 
 
-@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+@pytest.mark.parametrize(
     ("uid_fields", "process_namespace", "caller_namespace", "diagnostic"),
     (
         (["0", "0", "4294967295"], "mnt:[2]", "mnt:[1]", "user namespace"),
@@ -50,3 +50,18 @@ def test_rejects_unproven_namespace_isolation(
             process_namespace,
             caller_namespace,
         )
+
+
+def test_create_audit_root_honors_tmpdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_temporary_root = tmp_path / "selected-temporary-root"
+    selected_temporary_root.mkdir()
+    monkeypatch.setenv("TMPDIR", str(selected_temporary_root))
+    monkeypatch.setattr(mount_boundary_calibration.tempfile, "tempdir", None)
+
+    audit_root = mount_boundary_calibration.create_audit_root()
+
+    assert audit_root.parent == selected_temporary_root
+    assert audit_root.name.startswith("mesa-mount-boundary.")
