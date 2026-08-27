@@ -41,8 +41,9 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Thirty-four rows are closed, and the
-  16 actionable rows require merged repairs.
+  append-only evidence-refresh ledger.  Thirty-four rows are closed, two are
+  fixed on merged main pending exact-ID resolution, and 14 actionable rows
+  require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -327,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 16 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 0 | None |
+| actionable | 14 | Implement, test, merge, synchronize, then resolve |
+| fixed on merged main | 2 | Merge this re-audit, then resolve and record |
 | closed as fixed | 29 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
@@ -379,19 +380,26 @@ batch-wide postflight succeeds.
 Eight re-audited rows are closed with exact-ID resolution evidence.  The
 current guidance uses the fork-specific AMD Vulkan scope.  PR 1902's unchanged
 driver-root audit passes all 67 calibrations and the live three-root check.
-PR 1903's unchanged
-HBTCL document separates the unsignaled VAP/GA stall from completed stale-US
-draws and binds demand to the hash-verified 108-cell census.  PR 1904's
+PR 1903's unchanged HBTCL document separates the unsignaled VAP/GA stall from
+completed stale-US draws and binds demand to the hash-verified 108-cell census.
+PR 1904's
 unchanged CAVLC comments name the independent oracle and exact coefficient
 index bounds; the focused block test passes from the retained qualification
 build.
 
-The surviving actionable mechanisms cover stack-manifest dependency and
-digest contracts; attribute-isolated external-source materialization; install
-and build-control identity; thread-safe Draw options; per-screen R2VB route
-state; DRM-shim descriptor, lock, and write-only identity semantics;
-transactional, calibrated MPEG-12 surface dumps; Draw semantic provenance; and
-width-correct Radeon info queries.
+Two RS482 stack-manifest rows are fixed on merged main by PR 1905 merge commit
+`82b7f3491b25b02063d31952b566c873ca5b2d8e`.  A clean Python 3.14 environment
+installs the pinned `jsonschema` 4.26.0 requirement and passes all four schema
+tests.  The shared identity definitions and mutation corpus reject short,
+long, and final-newline SHA-256 and Git-object strings.  Both exact GitHub
+threads remain unresolved until this re-audit merges.
+
+The surviving actionable mechanisms cover temporary-root selection;
+clean-filter- and archive-attribute-isolated source views; installation-success
+and build-control identity; nonnull Draw decline reasons and thread-safe
+options; Draw discovery provenance and TEXCOORD/GENERIC comment accuracy; the
+positive dash-spacing rule; per-screen R2VB state; width-correct Radeon info
+queries; and write-only DRM-shim token identity.
 
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
@@ -405,9 +413,10 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 34 resolved and 16 unresolved exact IDs.  The 16
-unresolved rows require their actionable mechanisms to merge before exact-ID
-resolution.
+Live GraphQL state reports 34 resolved and 16 unresolved exact IDs.  Two
+unresolved rows have verified merged-main fixes and resolve after this re-audit
+merges.  The other 14 require their actionable mechanisms to merge before
+exact-ID resolution.
 
 ## Verification
 
