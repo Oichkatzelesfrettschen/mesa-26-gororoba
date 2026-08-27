@@ -41,8 +41,9 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Forty-three rows are closed, and seven
-  actionable rows require merged repairs.
+  append-only evidence-refresh ledger.  Forty-three rows are closed, four are
+  fixed on merged main pending exact-ID resolution, and three actionable rows
+  require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -327,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 7 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 0 | None |
+| actionable | 3 | Implement, test, merge, synchronize, then resolve |
+| fixed on merged main | 4 | Merge this re-audit, then resolve and record |
 | closed as fixed | 38 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
@@ -417,10 +418,21 @@ PR 1930 re-audits all five targets at merge commit
 `9651cd7102e5e3ec93296c5265535ed00fe27172`; all five exact GitHub threads are
 resolved and re-queried.
 
-The surviving actionable mechanisms cover archive-attribute-isolated source
-views; installation-success and build-control identity; the positive
-dash-spacing rule; per-screen R2VB state; width-correct Radeon info queries;
-and write-only DRM-shim token identity.
+Four rows are fixed on merged main.  PR 1900 installs the positive double-hyphen
+rule, and PR 1901 merge commit
+`bc38bb8840c92d4b64d9f25d5d83c5f2345007c7` is its unchanged evidence owner.
+PR 1909 isolates source archives from repository-local attributes.  PR 1910
+holds identities provisional until installation succeeds.  PR 1911 merge
+commit `767de3c3f4dda9cef71d83fa3076d90561cd5f61` records all five build controls.
+PR 1918 merge commit `59593fda660a7603789c895c479c2bb38d5140fa` is the
+unchanged archive source-and-test owner.  PR 1922 merge commit
+`20286a21d04942790561bc931ea332eb59b6214b` is the unchanged Makefile owner.
+All 125 source-root tests and the complete source-root selection integration
+fixture pass.  The four exact GitHub threads remain unresolved until this
+re-audit merges.
+
+The surviving actionable mechanisms cover per-screen R2VB state, width-correct
+Radeon info queries, and write-only DRM-shim token identity.
 
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
@@ -434,8 +446,9 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 43 resolved and seven unresolved exact IDs.  The
-seven unresolved rows require their actionable mechanisms to merge before
+Live GraphQL state reports 43 resolved and seven unresolved exact IDs.  Four
+unresolved rows have verified merged-main fixes and resolve after this re-audit
+merges.  The other three require their actionable mechanisms to merge before
 exact-ID resolution.
 
 ## Verification
