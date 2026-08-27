@@ -75,11 +75,16 @@ write_target(const char *dir, const char *name, const void *data, size_t size)
 static void
 report(const char *label, const struct r300_triangle_coverage_verdict *v)
 {
-   printf("[oracle] %s coverage_exact=%d canary=%d interior=%u analytic=%u "
-          "exterior=%u ambiguous=%u mismatch=%u\n",
-          label, v->coverage_exact, v->canary_pass, v->interior_pixels,
-          v->analytic_pixels, v->exterior_pixels, v->ambiguous_pixels,
-          v->mismatch_pixels);
+   printf("[oracle] %s judged=%d coverage_exact=%d canary=%d interior=%u "
+          "analytic=%u exterior=%u ambiguous=%u mismatch=%u\n",
+          label, v->judged, v->coverage_exact, v->canary_pass,
+          v->interior_pixels, v->analytic_pixels, v->exterior_pixels,
+          v->ambiguous_pixels, v->mismatch_pixels);
+   if (!v->judged)
+      printf("[oracle] %s verdict refused: the shape or the retained "
+             "footprint left the producer's domain, so the zero counters "
+             "carry no claim about the render\n",
+             label);
    fflush(stdout);
 }
 
@@ -476,8 +481,8 @@ main(int argc, char **argv)
              : "");
    fflush(stdout);
 
-   const bool pass = render_verdict.coverage_exact &&
-                     render_verdict.canary_pass &&
+   const bool pass = render_verdict.judged && render_verdict.coverage_exact &&
+                     render_verdict.canary_pass && sample_verdict.judged &&
                      sample_verdict.coverage_exact &&
                      sample_verdict.canary_pass;
 
