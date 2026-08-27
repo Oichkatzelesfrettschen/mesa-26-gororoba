@@ -177,6 +177,29 @@ def layout_values(tmp_path: Path) -> dict[str, Path | str]:
     }
 
 
+def isolate_fixture_build_namespace(
+    values: dict[str, Path | str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_root = values["build_root"]
+    control_root = values["control_root"]
+    assert isinstance(build_root, Path)
+    assert isinstance(control_root, Path)
+    build_namespace = build_root.parent
+    build_namespace.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source_root_control.validate_owned_namespace(build_namespace, os.getuid())
+
+    def fixture_owned_build_namespaces(repository_root: Path) -> tuple[Path, ...]:
+        assert repository_root == control_root
+        return (build_namespace,)
+
+    monkeypatch.setattr(
+        source_root_control,
+        "owned_build_namespaces",
+        fixture_owned_build_namespaces,
+    )
+
+
 def set_captured_revisions(
     values: dict[str, Path | str],
     monkeypatch: pytest.MonkeyPatch,
@@ -226,8 +249,12 @@ def committed_repository(repository: Path, object_format: str = "sha1") -> Path:
     return source_file
 
 
-def source_view_values(tmp_path: Path) -> dict[str, Path | str]:
+def source_view_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path | str]:
     values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
     source_root = values["source_root"]
     build_root = values["build_root"]
     assert isinstance(source_root, Path)
@@ -288,13 +315,9 @@ def test_validate_layout_accepts_isolated_external_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    build_namespace = tmp_path / ".mesa-26-gororoba-builds"
-    monkeypatch.setattr(
-        source_root_control,
-        "owned_build_namespaces",
-        lambda _repository_root: (build_namespace,),
-    )
-    source_root_control.validate_layout("build", layout_values(tmp_path))
+    values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
+    source_root_control.validate_layout("build", values)
 
 
 @pytest.mark.parametrize("operation", ("build", "clean", "configure", "test"))
@@ -303,13 +326,8 @@ def test_validate_layout_rejects_builddir_inside_source_view(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
-    build_namespace = tmp_path / ".mesa-26-gororoba-builds"
-    monkeypatch.setattr(
-        source_root_control,
-        "owned_build_namespaces",
-        lambda _repository_root: (build_namespace,),
-    )
     values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
     values["builddir"] = source_root_control.source_view_path(values) / "nested-build"
     with pytest.raises(
         source_root_control.ControlError,
@@ -322,13 +340,8 @@ def test_validate_layout_rejects_prefix_equal_to_source_view(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    build_namespace = tmp_path / ".mesa-26-gororoba-builds"
-    monkeypatch.setattr(
-        source_root_control,
-        "owned_build_namespaces",
-        lambda _repository_root: (build_namespace,),
-    )
     values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
     values["prefix"] = source_root_control.source_view_path(values)
     with pytest.raises(
         source_root_control.ControlError,
@@ -397,8 +410,10 @@ def test_validate_layout_rejects_nested_git_worktree_before_archive(
 
 def test_validate_layout_rejects_bare_repository_ancestor(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
     namespace = tmp_path / ".mesa-26-gororoba-builds"
     bare_repository = namespace / "retained.git"
     bare_repository.mkdir(parents=True)
@@ -421,8 +436,10 @@ def test_validate_layout_rejects_bare_repository_ancestor(
 
 def test_validate_layout_rejects_nested_bare_repository(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
     builddir = values["builddir"]
     assert isinstance(builddir, Path)
     bare_repository = builddir / "retained.git"
@@ -564,7 +581,10 @@ def test_owned_build_namespaces_reject_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(source_root_control.os, "getuid", lambda: 0)
-    with pytest.raises(source_root_control.ControlError):
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="root cannot own Mesa build namespaces",
+    ):
         source_root_control.owned_build_namespaces(tmp_path / "control")
 
 
@@ -1094,7 +1114,7 @@ def test_prepare_source_view_archives_exact_source_and_replaces_owned_view(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    values = source_view_values(tmp_path)
+    values = source_view_values(tmp_path, monkeypatch)
     source_root = values["source_root"]
     assert isinstance(source_root, Path)
     subprojects = source_root / "subprojects"
@@ -1158,7 +1178,7 @@ def test_prepare_source_view_rejects_unhashed_wrap_before_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    values = source_view_values(tmp_path)
+    values = source_view_values(tmp_path, monkeypatch)
     source_root = values["source_root"]
     assert isinstance(source_root, Path)
     subprojects = source_root / "subprojects"
@@ -1200,7 +1220,7 @@ def test_final_identity_consumers_reject_source_view_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    values = source_view_values(tmp_path)
+    values = source_view_values(tmp_path, monkeypatch)
     monkeypatch.setattr(
         source_root_control,
         "require_clean_external_source",
@@ -1226,7 +1246,7 @@ def test_provisional_cleanup_accepts_mesons_source_view_population(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    values = source_view_values(tmp_path)
+    values = source_view_values(tmp_path, monkeypatch)
     monkeypatch.setattr(
         source_root_control,
         "require_clean_external_source",
