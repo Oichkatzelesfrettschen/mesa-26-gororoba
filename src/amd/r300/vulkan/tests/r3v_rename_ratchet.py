@@ -46,14 +46,20 @@ LEDGER = "docs/r3v-rename-allowlist.txt"
 # The ratchet names the tokens it scans for.
 SELF = "src/amd/r300/vulkan/tests/r3v_rename_ratchet.py"
 SKIP_DIRS = {".git", "__pycache__"}
-# Retained review-thread evidence: raw GraphQL responses recorded verbatim
-# from the forge, which quote whatever spelling a pull request carried at
-# the time.  The ratchet governs maintained source and documentation, so
-# these bytes leave the token scan and take an integrity check instead --
-# the sibling manifest.json pins each one by SHA-256, so a raw file that
-# changed fails here rather than passing as evidence.
-IMMUTABLE_EVIDENCE = re.compile(
-    r"^build-infra/docs/review-thread-frontiers/[^/]+/raw/")
+# Retained review-thread evidence: forge responses recorded verbatim,
+# which quote whatever spelling a pull request carried at the time.  The
+# ratchet governs maintained source and documentation, so these bytes
+# leave the token scan and take an integrity check instead.  A directory
+# directly under EVIDENCE_ROOT holding a manifest.json with a files dict
+# is a sealed bundle, and that dict is the whole definition of what the
+# bundle contains: every other file in it is pinned by SHA-256 or fails
+# as evidence outside the seal.  Membership rather than a path prefix
+# decides, so a capture shape the tree has not used yet -- a response
+# written beside raw/ rather than inside it -- is covered the moment the
+# manifest names it.  manifest.json is the seal rather than the
+# evidence, so it stays in the token scan, and a directory carrying no
+# manifest is unsealed and scanned the same way.
+EVIDENCE_ROOT = "build-infra/docs/review-thread-frontiers"
 EVIDENCE_MANIFEST = "manifest.json"
 TEXT_SUFFIXES = {
     ".build", ".options", ".c", ".h", ".py", ".sh", ".md", ".txt", ".rst",
@@ -98,33 +104,52 @@ def scan_files(root: Path):
             yield path
 
 
-def immutable_evidence(root: Path) -> list[Path]:
-    return [path for path in scan_files(root)
-            if IMMUTABLE_EVIDENCE.match(path.relative_to(root).as_posix())]
+def bundle_seal(root: Path, rel: str) -> tuple[str, str, dict] | None:
+    """The sealed bundle holding rel, as (bundle, bundle-relative path,
+    pinned files), or None when rel sits outside a sealed bundle.  The
+    seal is the manifest, so a directory without one holds no evidence
+    and its files stay in the token scan."""
+    prefix = f"{EVIDENCE_ROOT}/"
+    if not rel.startswith(prefix):
+        return None
+    tail = rel[len(prefix):].split("/")
+    if len(tail) < 2:
+        return None
+    bundle = f"{prefix}{tail[0]}"
+    inner = "/".join(tail[1:])
+    if inner == EVIDENCE_MANIFEST:
+        return None
+    try:
+        files = json.loads((root / bundle / EVIDENCE_MANIFEST).read_text(
+            encoding="utf-8")).get("files", {})
+    except (OSError, ValueError):
+        return None
+    if not isinstance(files, dict):
+        return None
+    return bundle, inner, files
+
+
+def immutable_evidence(root: Path) -> list[tuple[Path, str, dict]]:
+    found = []
+    for path in scan_files(root):
+        seal = bundle_seal(root, path.relative_to(root).as_posix())
+        if seal is not None:
+            found.append((path, seal[1], seal[2]))
+    return found
 
 
 def check_evidence_integrity(root: Path) -> list[str]:
-    """Every immutable raw file matches the digest its bundle manifest
+    """Every file inside a sealed bundle matches the digest its manifest
     pins.  A file the manifest does not name cannot be shown immutable,
     so it fails the same way a modified one does."""
     failures: list[str] = []
-    manifests: dict[Path, dict[str, str]] = {}
-    for path in immutable_evidence(root):
+    for path, inner, files in immutable_evidence(root):
         rel = path.relative_to(root).as_posix()
-        bundle = path.parent.parent
-        if bundle not in manifests:
-            manifest = bundle / EVIDENCE_MANIFEST
-            try:
-                manifests[bundle] = json.loads(
-                    manifest.read_text(encoding="utf-8")).get("files", {})
-            except (OSError, ValueError):
-                manifests[bundle] = {}
-        key = f"raw/{path.name}"
-        pinned = manifests[bundle].get(key)
+        pinned = files.get(inner)
         if pinned is None:
             failures.append(
                 f"{rel}: immutable evidence outside the bundle manifest; "
-                f"{EVIDENCE_MANIFEST} pins no {key}")
+                f"{EVIDENCE_MANIFEST} pins no {inner}")
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != pinned:
@@ -138,7 +163,7 @@ def find_hits(root: Path) -> dict[tuple[str, str], list[int]]:
     hits: dict[tuple[str, str], list[int]] = {}
     for path in scan_files(root):
         rel = path.relative_to(root).as_posix()
-        if rel in (LEDGER, SELF) or IMMUTABLE_EVIDENCE.match(rel):
+        if rel in (LEDGER, SELF) or bundle_seal(root, rel) is not None:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -282,6 +307,43 @@ def selftest() -> int:
         manifest.write_text(json.dumps({"files": {}}), encoding="utf-8")
         expect("immutable-evidence-unpinned", check(root, good), True,
                "outside the bundle manifest")
+
+        # Membership rather than a path prefix decides, so a capture
+        # written beside raw/ is covered the moment the manifest pins it
+        # and fails as maintained source until then.
+        beside = bundle / "selected-threads.json"
+        beside.write_text('{"body": "R300VK_DEBUG"}\n', encoding="utf-8")
+        pin(evidence.read_text(encoding="utf-8"))
+        expect("capture-beside-raw-unpinned", check(root, good), True,
+               "outside the bundle manifest")
+        manifest.write_text(json.dumps({"files": {
+            "raw/merged-prs-0001.json": hashlib.sha256(
+                evidence.read_bytes()).hexdigest(),
+            "selected-threads.json": hashlib.sha256(
+                beside.read_bytes()).hexdigest()}}), encoding="utf-8")
+        expect("capture-beside-raw-pinned", check(root, good), False)
+
+        # The manifest is the seal rather than the evidence, so its own
+        # bytes stay in the token scan.
+        sealed = json.loads(manifest.read_text(encoding="utf-8"))
+        sealed["note"] = "R300VK_DEBUG"
+        manifest.write_text(json.dumps(sealed), encoding="utf-8")
+        expect("manifest-itself-scanned", check(root, good), True,
+               "R300VK spelling outside")
+        manifest.write_text(json.dumps({"files": {
+            "raw/merged-prs-0001.json": hashlib.sha256(
+                evidence.read_bytes()).hexdigest(),
+            "selected-threads.json": hashlib.sha256(
+                beside.read_bytes()).hexdigest()}}), encoding="utf-8")
+
+        # A directory under the evidence root carrying no manifest is
+        # unsealed, so it is maintained content and the scan reaches it.
+        unsealed = (root / EVIDENCE_ROOT / "merged-pr-range-fixture")
+        unsealed.mkdir(parents=True)
+        (unsealed / "action-frontier.tsv").write_text(
+            "row\tR300VK_DEBUG\n", encoding="utf-8")
+        expect("unsealed-directory-scanned", check(root, good), True,
+               "R300VK spelling outside")
 
     failed = [label for label, ok in checks if not ok]
     for label, ok in checks:

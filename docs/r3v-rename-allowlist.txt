@@ -13,3 +13,6 @@
 # Format: path<TAB>token<TAB>replacement<TAB>owner<TAB>removal_condition
 build-infra/docs/last-100-pr-review-comment-audit.md	r300vk	r3v	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
 build-infra/docs/last-100-pr-review-comment-audit.md	R300VK	R3V_	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
+build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/action-frontier.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in
+build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/assessments.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in
+build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/pre-resolution-frontier.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in
