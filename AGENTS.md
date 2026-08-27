@@ -631,7 +631,7 @@ Structure agent-loaded Markdown documents with clean, predictable formatting:
 Maintain clean, ASCII-compatible text across all checked-in documentation:
 - Keep documentation free of emoji.
 - Use standard typography: choose straight quotes over curly quotes, `--` over em dashes, and `...` over ellipsis glyphs.
-- Enforce space-free closed double-hyphen delimiters: close `--` tightly against adjacent words without surrounding whitespace (`word--word`), ensuring punctuation remains fully closed.
+- Enforce closed double-hyphen delimiters: join `--` tightly to adjacent words (`word--word`), keeping punctuation fully closed.
 - Retain meaningful scientific and mathematical symbols: mathematical operators, Greek letters in ISA and equation text, arrows in state transition maps, box-drawing characters in descriptor and packet diagrams, degree symbols, and micro signs.
 - Preserve author and copyright names in their original spellings, including accented characters and Unicode copyright symbols in upstream attribution lines (`Copyright (c) 2024 Vitaliy Triang3l Kuzmin`).
 
@@ -888,7 +888,7 @@ Consult `docs/strict-clean-definition.md` before executing repository cleanup, b
 
 ## Key subsystems
 
-Navigate Gallium drivers and shared compiler components via standard Mesa layout conventions under `src/gallium/` and `src/compiler/`. Access the two out-of-Gallium Vulkan drivers under `src/amd/`:
+Navigate Gallium drivers and shared compiler components via standard Mesa layout conventions under `src/gallium/` and `src/compiler/`. Access the two fork-specific out-of-Gallium Vulkan drivers under `src/amd/`:
 - Terakan: `src/amd/terascale/vulkan/`
 - [[R3V: `src/amd/r300/vulkan/`]]
 

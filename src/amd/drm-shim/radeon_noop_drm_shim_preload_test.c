@@ -1,7 +1,4 @@
-/*
- * Copyright 2021 Emma Anholt
- * SPDX-License-Identifier: MIT
- */
+/* SPDX-License-Identifier: MIT */
 
 #include <dlfcn.h>
 #include <dirent.h>
