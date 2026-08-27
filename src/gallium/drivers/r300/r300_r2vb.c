@@ -5709,6 +5709,16 @@ r300_r2vb_plan_effective_admission(const struct r300_r2vb_producer_plan *plan,
                                    enum r300_r2vb_position_space space,
                                    unsigned num_position_inputs)
 {
+    /* The forced writer is reached only after the under-budget path has
+     * separately admitted a split.  Its plan remains SINGLE because the
+     * baseline producer fits; a non-SINGLE plan or a closed spill1 gate is a
+     * shadow mismatch, not another route interpretation. */
+    if (writer == R300_R2VB_MEMO_WRITER_FORCED_FLOAT_SPLIT)
+        return budget_escape_enabled && !allow_computed_varying &&
+                       num_position_inputs != 0 &&
+                       plan->action == R300_R2VB_PLAN_SINGLE
+                   ? R300_R2VB_ADMIT_SPLIT
+                   : R300_R2VB_ADMIT_REJECT;
     /* The typed diagnostic writer records exactly what its contract admits:
      * the typed gate never widens or narrows the legacy mapping, and the
      * spill1 gate never overrides a typed-contract decline, so the two gates
@@ -5832,6 +5842,9 @@ static bool r300_r2vb_producer_fits_budget(struct r300_context *r300,
                         "r2vb_force_split under_budget=1 space=%s admitted=1\n",
                         space_i ? "window" : "clip");
                 *memo = R300_R2VB_ADMIT_SPLIT;
+                r300_r2vb_plan_shadow_check(
+                    r300, allow_computed_varying, space, *memo,
+                    R300_R2VB_MEMO_WRITER_FORCED_FLOAT_SPLIT);
                 return true;
             }
             fprintf(stderr,

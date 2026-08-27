@@ -97,19 +97,19 @@ Two measurement instruments feed the compaction research from this stack:
 - Producer-resource census (`r300_r2vb_producer_census.c`): every corpus
   specimen runs the plan chain and records post-compiler statistics under
   named phases (`walk` for the diagnostic candidate walk;
-  `selected-baseline`, `pass-a`, `pass-b` for explicit recompiles of the
-  plan-selected programs), with fail-closed capture (overflow and
-  truncation are recorded conditions, not silent losses) and deterministic
-  transcripts.
+  `selected-baseline`, `selected-pass-a`, and `selected-pass-b` for explicit
+  recompiles of the plan-selected programs), with fail-closed capture
+  (overflow and truncation are recorded conditions, not silent losses) and
+  deterministic transcripts.
 
-The identity test (`r300_r2vb_admission_cso_identity_test.c`, on the
-admission-cso-identity branch until the closure bundle banks) closes the
-remaining trust gap: the program measured for admission and the program the
-producer CSO compiles are memcmp-identical `r300_fragment_program_code`
-emissions with value-identical constant lists, on the baseline and both
-split halves, in both position spaces.  The whole-struct comparison is sound
-because the struct is pointer-free and both storage paths start zeroed;
-`code_offset` packs instruction counts, not addresses.
+The registered `r300-r2vb-admission-cso-identity` test
+(`r300_r2vb_admission_cso_identity_test.c`) closes the remaining trust gap:
+the program measured for admission and the program the producer CSO compiles
+are memcmp-identical `r300_fragment_program_code` emissions with
+value-identical constant lists, on the baseline and both split halves, in
+both position spaces.  The whole-struct comparison is sound because the
+struct is pointer-free and both storage paths start zeroed; `code_offset`
+packs instruction counts, not addresses.
 
 ## Coefficient derivations
 
@@ -124,13 +124,16 @@ a named measurement.  The derivations, in dependency order:
   spacing exceeds 1 and exactness fails.  Proven mechanically: the Rocq/Flocq
   FLX(17) refinement in open_gororoba is `FP24Representable.v`
   `fp24_int_exact_inclusive`, and the integer-window half is
-  `IDCT8DP4ExactBound.v` `dp8_exact_threshold`; the transform application is
-  `R2VBTransformDP4.v` `mvp4_rows_exact`, extracted to C through CertiRocq.
-- `8 * B^2 <= 2^17` (the DP4-chain exactness bound): an 8-term dot-product
-  row (the IDCT8 shape, and the general 8-wide MAC accumulation) sums 8
-  products each bounded by `B^2`; the accumulator peak is `8 * B^2`, and
-  exactness requires the peak inside the window.  Decomposed:
-  `B^2 <= 2^14`, so `B <= 2^7 = 128`.
+  `IDCT8DP4ExactBound.v` `dp8_exact_threshold`.  The mathematical transform
+  application is `R2VBTransformDP4.v` `mvp4_rows_exact`; the backend's exact
+  stepwise accumulation order remains a separate proof obligation.
+- `8 * B^2 <= 2^17` (the DP4-chain magnitude threshold): an 8-term
+  dot-product row (the IDCT8 shape, and the general 8-wide MAC accumulation)
+  sums 8 products each bounded by `B^2`; the absolute-sum ceiling is
+  `8 * B^2`.  Decomposed, `B^2 <= 2^14`, so `B <= 2^7 = 128`.  Exact backend
+  execution additionally requires every scheduled intermediate to stay in
+  the window in the emitted accumulation order; that ordering statement has
+  not landed.
 - `B <= 128` inclusive versus `B <= 127` strict: the inclusive exactness
   threshold is 128, because `8 * 128^2 = 2^17` is itself exactly
   representable.  The production gate holds at 127 as a fail-closed
@@ -184,10 +187,12 @@ properties, each with its implementing mechanism:
    rather than amending the prediction.  The planner campaign's wrong
    first diagnosis stands banked because of this rule.
 5. Calibrated instruments: every verdict-producing test proves itself on
-   known-good and known-bad inputs before its verdicts count.  The
-   telemetry calibration damages a retained file in place and requires the
-   atomic republish; the census requires deterministic transcripts twice;
-   the plan oracle carries admit and decline rows for every reason class.
+   known-good and known-bad inputs before its verdicts count.  The telemetry
+   calibration damages a retained file in place and requires the atomic
+   republish; the census requires deterministic transcripts twice.  The plan
+   oracle directly covers its named semantic, range, carry, cut, and
+   half-compile classes; `OUT_OF_MEMORY`, `BACKEND`, and
+   `OVER_ALU_NO_SPLIT` still lack direct named oracle rows.
 6. Machine-readable verdict first: a run's sweep writes the structured
    verdict (counts, tokens, criteria) before prose interpretation, so the
    interpretation cannot silently substitute for the data.
@@ -203,13 +208,17 @@ properties, each with its implementing mechanism:
 
 ## Instrument calibration state
 
-| Instrument | Checks | Calibration classes |
-|---|---|---|
-| Plan oracle (`r300_r2vb_plan_oracle_test`) | 87 | admit/decline per reason; both spaces; cv=0/cv=1 cell semantics; typed rows in both directions |
-| Census (`r300_r2vb_producer_census`) | 264 | per-specimen expectations mirror the route-chain oracle; determinism run twice; fail-closed capture; row table complete against the corpus manifest, missing/extra member calibrated |
-| Telemetry (`r300_r2vb_telemetry_test`) | 18 | closed/open gate; dedup; full-hash name; damaged-file republish; structural-reject non-retention |
-| Identity (`r300_r2vb_admission_cso_identity_test`) | 36 | program + constant identity, baseline and halves, both spaces |
-| Shadow counter | corpus-level | zero on the closure corpus with engagement proven |
+<!-- markdownlint-disable MD013 -->
+
+| Instrument | Source `CHECK` sites | Calibration classes |
+| --- | --- | --- |
+| Plan oracle (`r300_r2vb_plan_oracle_test`) | 139 | single/split/reject; forced-split shadow match/mismatch; both spaces; cv=0/cv=1 cell semantics; typed, range, carry, cut, and half-compile classes; no direct `OUT_OF_MEMORY`, `BACKEND`, or `OVER_ALU_NO_SPLIT` row |
+| Census (`r300_r2vb_producer_census`) | 18 | per-specimen expectations mirror the route-chain oracle; determinism run twice; fail-closed capture; row table complete against the corpus manifest, missing/extra member calibrated |
+| Telemetry (`r300_r2vb_telemetry_test`) | 73 | closed/open gate; dedup; full-hash name; damaged-file republish; structural-reject non-retention |
+| Identity (`r300_r2vb_admission_cso_identity_test`) | 15 | program + constant identity, baseline and halves, both spaces |
+| Shadow counter | not source-counted | zero on the closure corpus with engagement proven |
+
+<!-- markdownlint-enable MD013 -->
 
 All instrument runs hold under clang and gcc `-Werror` trees and under
 ASan+UBSan with zero reports; the sanitizer gate on the identity branch

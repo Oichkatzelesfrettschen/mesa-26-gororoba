@@ -294,6 +294,20 @@ main(void)
             &plan, R300_R2VB_MEMO_WRITER_TYPED_DIAGNOSTIC, true, false,
             R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_REJECT,
          "matrix: typed writer, single plan -> reject");
+   CHECK(r300_r2vb_plan_effective_admission(
+            &plan, R300_R2VB_MEMO_WRITER_FORCED_FLOAT_SPLIT, true, false,
+            R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_SPLIT,
+         "matrix: forced writer, single plan, spill1 on -> split");
+   CHECK(r300_r2vb_plan_effective_admission(
+            &plan, R300_R2VB_MEMO_WRITER_FORCED_FLOAT_SPLIT, false, false,
+            R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_REJECT,
+         "matrix: forced writer, single plan, spill1 off -> reject");
+
+   plan.action = R300_R2VB_PLAN_SPLIT;
+   CHECK(r300_r2vb_plan_effective_admission(
+            &plan, R300_R2VB_MEMO_WRITER_FORCED_FLOAT_SPLIT, true, false,
+            R300_R2VB_POSITION_CLIP, 1) == R300_R2VB_ADMIT_REJECT,
+         "matrix: forced writer, mismatched split plan -> reject");
 
    plan = admit_template();
    plan.action = R300_R2VB_PLAN_REJECT;
