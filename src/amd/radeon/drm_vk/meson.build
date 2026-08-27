@@ -25,7 +25,7 @@ libradeon_drm_vk = static_library(
 )
 
 if with_tests
-  foreach t : ['bo', 'cs', 'reloc']
+  foreach t : ['device', 'bo', 'cs', 'reloc']
     test(
       'radeon-drm-vk-' + t,
       executable(
