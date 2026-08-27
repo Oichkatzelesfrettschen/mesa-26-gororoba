@@ -39,9 +39,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   original merge and resolution chronology while binding a later current-main
   re-audit to the preceding evidence commit.
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
-  fifth batch's 50-row assessment, generated action frontier, and resolution
-  ledger.  Its 38 actionable rows require merged repairs before exact-ID
-  resolution.
+  fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
+  recovery journal, generated action frontier, and resolution ledger.  Three
+  independently merged repairs are closed, and 37 actionable rows require
+  merged repairs before exact-ID resolution.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -326,9 +327,36 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| fixed on merged main | 7 | Resolve exact ID after the assessment merges |
+| fixed on merged main | 5 | Resolve exact ID after the assessment merges |
 | superseded | 5 | Resolve exact ID after the assessment merges |
-| actionable | 38 | Implement, test, merge, synchronize, then resolve |
+| actionable | 37 | Implement, test, merge, synchronize, then resolve |
+| closed | 3 | Retain exact merge and post-resolution evidence |
+
+The uid-0 source-root replay at merged main
+`ed31e4154700485767c60038102a46077574d1f9` uses:
+
+```sh
+sudo -A env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python3 -m pytest -q \
+  build-infra/tests/test_source_root_control.py \
+  build-infra/tests/test_mount_boundary_calibration.py
+```
+
+The replay produces 119 passes and six failures.  Each failure reaches the
+global root namespace guard before its fixture-specific bare-repository or
+source-view assertion.  The
+`source-view-bare-repository-root-uid-isolation` and
+`source-view-test-root-uid-isolation` rows are actionable, and the generated
+frontier carries no merged-evidence claim for either row.
+
+The ordered recovery journal records three independently merged DRM-shim
+repairs.  PR 1912 binds raw-alias backing identity to merge commit
+`400df9e74aeacc6917410a887a3bf33bf5fda167`; PR 1900 binds the preload-test
+SPDX header to `4b0c1f55abd1c9d84022973e14fd40d639426ec9`; and PR 1913 binds large-lock
+layout normalization to `05023afc27fcc9fb0637ecacfa425d9fc4263a81`.
+Each exact GitHub thread is resolved and re-queried.  The journal remains
+incomplete until every one of the 50 retained thread IDs is resolved and the
+batch-wide postflight succeeds.
 
 The surviving mechanisms cover a complete headless GL provider and session
 workflow; AMD driver-root predicates and artifacts; Hybrid-TCL evidence
