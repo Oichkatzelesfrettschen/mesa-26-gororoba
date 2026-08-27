@@ -41,9 +41,8 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Twenty-six rows are closed, eight more
-  are fixed on merged main pending exact-ID resolution, and the 16 actionable
-  rows require merged repairs.
+  append-only evidence-refresh ledger.  Thirty-four rows are closed, and the
+  16 actionable rows require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -329,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 | State | Threads | Required transition |
 | --- | ---: | --- |
 | actionable | 16 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 8 | Merge this re-audit, then resolve and record |
-| closed as fixed | 21 | Retain exact merge and post-resolution evidence |
+| fixed on merged main | 0 | None |
+| closed as fixed | 29 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -377,10 +376,10 @@ Every recorded GitHub thread is resolved and re-queried.  The journal remains
 incomplete until every one of the 50 retained thread IDs is resolved and the
 batch-wide postflight succeeds.
 
-Eight re-audited rows are fixed on merged main and remain administratively
-unresolved until this evidence publication merges.  The current guidance uses
-the fork-specific AMD Vulkan scope.  PR 1902's unchanged driver-root audit
-passes all 67 calibrations and the live three-root check.  PR 1903's unchanged
+Eight re-audited rows are closed with exact-ID resolution evidence.  The
+current guidance uses the fork-specific AMD Vulkan scope.  PR 1902's unchanged
+driver-root audit passes all 67 calibrations and the live three-root check.
+PR 1903's unchanged
 HBTCL document separates the unsignaled VAP/GA stall from completed stale-US
 draws and binds demand to the hash-verified 108-cell census.  PR 1904's
 unchanged CAVLC comments name the independent oracle and exact coefficient
@@ -406,10 +405,9 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 26 resolved and 24 unresolved exact IDs.  Eight
-unresolved IDs have verified merged-main fixes and resolve after this re-audit
-merges.  The other 16 require their actionable mechanisms to merge before
-exact-ID resolution.
+Live GraphQL state reports 34 resolved and 16 unresolved exact IDs.  The 16
+unresolved rows require their actionable mechanisms to merge before exact-ID
+resolution.
 
 ## Verification
 
