@@ -67,6 +67,7 @@
 #include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "drm_shim.h"
+#include "drm_shim_fcntl_lock.h"
 
 #ifndef CLOSE_RANGE_CLOEXEC
 #define CLOSE_RANGE_CLOEXEC (1U << 2)
@@ -8308,65 +8309,6 @@ fcntl_is_lock_query(int cmd)
    return false;
 }
 
-static bool
-fcntl_uses_large_lock(int cmd)
-{
-#if defined(F_GETLK64) && F_GETLK64 != F_GETLK
-   if (cmd == F_GETLK64)
-      return true;
-#endif
-#if defined(F_SETLK64) && F_SETLK64 != F_SETLK
-   if (cmd == F_SETLK64)
-      return true;
-#endif
-#if defined(F_SETLKW64) && F_SETLKW64 != F_SETLKW
-   if (cmd == F_SETLKW64)
-      return true;
-#endif
-   return false;
-}
-
-static bool
-fcntl_normalize_lock_range(int fd, struct flock *lock)
-{
-   off64_t base;
-   switch (lock->l_whence) {
-   case SEEK_SET:
-      base = 0;
-      break;
-   case SEEK_CUR:
-      base = lseek64(fd, 0, SEEK_CUR);
-      if (base < 0)
-         return false;
-      break;
-   case SEEK_END:
-      base = 0;
-      break;
-   default:
-      errno = EINVAL;
-      return false;
-   }
-
-   off64_t start;
-   if (__builtin_add_overflow(base, (off64_t)lock->l_start, &start) ||
-       start < 0) {
-      errno = EINVAL;
-      return false;
-   }
-   if (lock->l_len < 0) {
-      off64_t lower_bound;
-      if (__builtin_add_overflow(start, (off64_t)lock->l_len,
-                                 &lower_bound) ||
-          lower_bound < 0) {
-         errno = EINVAL;
-         return false;
-      }
-   }
-   lock->l_whence = SEEK_SET;
-   lock->l_start = start;
-   return true;
-}
-
 PUBLIC int
 fcntl(int fd, int cmd, ...)
 {
@@ -8432,20 +8374,17 @@ fcntl(int fd, int cmd, ...)
          return real_fcntl(fd, cmd, user_lock);
       }
 
-      union {
-         struct flock native;
-         struct flock64 large;
-      } lock_storage;
-      size_t lock_size =
-         fcntl_uses_large_lock(cmd)
-            ? sizeof(lock_storage.large)
-            : sizeof(lock_storage.native);
+      union drm_shim_fcntl_lock lock_storage;
+      enum drm_shim_fcntl_lock_layout lock_layout =
+         drm_shim_fcntl_command_lock_layout(cmd);
+      size_t lock_size = drm_shim_fcntl_lock_size(lock_layout);
       if (!copy_fixed_from_user(&lock_storage, user_lock, lock_size)) {
          drm_shim_fd_put(shim_fd);
          fd_operation_guard_release(&guard);
          return -1;
       }
-      struct flock *lock = &lock_storage.native;
+      short lock_type =
+         drm_shim_fcntl_lock_type(&lock_storage, lock_layout);
 
       if (shim_fd->path_only) {
          drm_shim_fd_put(shim_fd);
@@ -8461,23 +8400,50 @@ fcntl(int fd, int cmd, ...)
          fd_operation_guard_release(&guard);
          return -1;
       }
-      if ((!query && lock->l_type == F_RDLCK &&
+      if ((!query && lock_type == F_RDLCK &&
            (status_flags & O_ACCMODE) == O_WRONLY) ||
-          (!query && lock->l_type == F_WRLCK &&
+          (!query && lock_type == F_WRLCK &&
            (status_flags & O_ACCMODE) == O_RDONLY)) {
          drm_shim_fd_put(shim_fd);
          fd_operation_guard_release(&guard);
          errno = EBADF;
          return -1;
       }
-      if (!fcntl_normalize_lock_range(fd, lock)) {
+
+      off64_t base;
+      switch (drm_shim_fcntl_lock_whence(&lock_storage,
+                                         lock_layout)) {
+      case SEEK_SET:
+      case SEEK_END:
+         base = 0;
+         break;
+      case SEEK_CUR:
+         base = lseek64(fd, 0, SEEK_CUR);
+         if (base < 0) {
+            drm_shim_fd_put(shim_fd);
+            fd_operation_guard_release(&guard);
+            return -1;
+         }
+         break;
+      default:
+         drm_shim_fd_put(shim_fd);
+         fd_operation_guard_release(&guard);
+         errno = EINVAL;
+         return -1;
+      }
+      if (!drm_shim_fcntl_normalize_lock(&lock_storage,
+                                         lock_layout, base)) {
          drm_shim_fd_put(shim_fd);
          fd_operation_guard_release(&guard);
          return -1;
       }
 
       fd_operation_guard_release(&guard);
-      int ret = real_fcntl(fd, cmd, lock);
+      void *normalized_lock =
+         lock_layout == DRM_SHIM_FCNTL_LOCK_FLOCK64
+            ? (void *)&lock_storage.large
+            : (void *)&lock_storage.native;
+      int ret = real_fcntl(fd, cmd, normalized_lock);
       drm_shim_fd_put(shim_fd);
       if (ret == 0 && fcntl_is_lock_query(cmd) &&
           !copy_fixed_to_user(user_lock, &lock_storage, lock_size))

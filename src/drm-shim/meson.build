@@ -36,6 +36,40 @@ if with_tests
     dependencies: dep_libdrm,
   )
 
+  drm_shim_i686_test_args = [
+    '-m32',
+    '-march=i686',
+    '-mtune=generic',
+  ]
+  drm_shim_i686_runtime_available = false
+  if not meson.is_cross_build() or meson.can_run_host_binaries()
+    drm_shim_i686_runtime_probe = cc.run(
+      'int main(void) { return 0; }',
+      args: drm_shim_i686_test_args,
+      name: 'i686 C runtime for drm-shim ABI tests',
+    )
+    drm_shim_i686_runtime_available = (
+      drm_shim_i686_runtime_probe.compiled() and
+      drm_shim_i686_runtime_probe.returncode() == 0
+    )
+  endif
+  if drm_shim_i686_runtime_available
+    drm_shim_fcntl_large_lock_abi_test = executable(
+      'drm_shim_fcntl_large_lock_abi_test',
+      'tests/fcntl_large_lock_abi.c',
+      c_args: drm_shim_i686_test_args,
+      link_args: ['-m32'],
+      include_directories: include_directories('.'),
+    )
+    test(
+      'drm-shim-fcntl-large-lock-abi',
+      drm_shim_fcntl_large_lock_abi_test,
+      suite: ['drm-shim'],
+    )
+  else
+    message('drm-shim i686 ABI test disabled: executable runtime unavailable')
+  endif
+
   if cc.get_define(
     '__GLIBC__',
     prefix: '#include <features.h>',
