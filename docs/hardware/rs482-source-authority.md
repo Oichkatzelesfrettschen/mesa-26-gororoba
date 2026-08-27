@@ -198,13 +198,29 @@ evidence and leaves the source-to-payload claim open. The value
   independently reproducible equivalence record.
 
 The calibrated verifier accepts a legacy specimen and both current and
-post-cutover v2 specimens. It rejects a malformed source pin, a kernel manifest
+post-cutover v2 specimens. It rejects malformed or incorrectly sized Git and
+SHA-256 identities, empty or nonhexadecimal Build IDs, a kernel manifest
 without the module Build ID, a Radeon DDX manifest without DDX provenance, and
-a post-cutover kernel manifest without equivalence evidence:
+a post-cutover kernel manifest without equivalence evidence. The
+[`jsonschema`](https://github.com/python-jsonschema/jsonschema) 4.26.0 package
+implements the Draft 2020-12 validation used by this test and supports every
+repository Python target. The requirements file pins this sole direct Python
+dependency. Install it in a dedicated environment before running the offline
+verifier:
 
 ```sh
-python3 docs/hardware/tests/test_rs482_stack_manifest_schema.py -v
+rs482_schema_venv=$(mktemp -d)
+python3 -m venv "$rs482_schema_venv"
+"$rs482_schema_venv/bin/python" -m pip install \
+  --requirement docs/hardware/tests/requirements-rs482-stack-manifest.txt
+"$rs482_schema_venv/bin/python" -c \
+  'from importlib.metadata import version; print(version("jsonschema"))'
+"$rs482_schema_venv/bin/python" \
+  docs/hardware/tests/test_rs482_stack_manifest_schema.py -v
 ```
+
+Dependency installation is the only package-resolution step. The verifier
+reads the tracked schema and fixtures without network access.
 
 ## Registry currency
 

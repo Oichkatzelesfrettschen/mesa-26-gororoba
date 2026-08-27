@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Calibrate the RS482 stack manifest schema on accepted and rejected claims."""
+"""Calibrate accepted and rejected RS482 stack manifest claims."""
 
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-
 TEST_ROOT = Path(__file__).resolve().parent
 FIXTURE_ROOT = TEST_ROOT / "rs482-stack-manifest-schema"
 SCHEMA_PATH = TEST_ROOT.parent / "rs482-stack-manifest.schema.json"
+MUTATION_FIXTURE_NAME = "invalid-v2-identity-mutations.json"
 
 VALID_FIXTURES = (
     "valid-legacy.json",
@@ -42,6 +43,21 @@ INVALID_FIXTURES = {
         "message_fragment": "'equivalence' is a required property",
     },
 }
+
+
+def replace_path_value(
+    instance: dict[str, object], path: tuple[str, ...], replacement: object
+) -> None:
+    if not path:
+        raise ValueError("mutation path must contain at least one component")
+
+    parent = instance
+    for component in path[:-1]:
+        child = parent.get(component)
+        if not isinstance(child, dict):
+            raise TypeError(f"mutation path component {component!r} is not an object")
+        parent = child
+    parent[path[-1]] = replacement
 
 
 def load_json(path: Path) -> dict[str, object]:
@@ -73,15 +89,50 @@ class RS482StackManifestSchemaTests(unittest.TestCase):
             with self.subTest(fixture=fixture_name):
                 instance = load_json(FIXTURE_ROOT / fixture_name)
                 errors = list(self.validator.iter_errors(instance))
-                self.assertEqual(1, len(errors), [error.message for error in errors])
+                self.assertEqual(
+                    1,
+                    len(errors),
+                    [error.message for error in errors],
+                )
                 error = errors[0]
                 self.assertEqual(expectation["path"], tuple(error.absolute_path))
                 self.assertEqual(expectation["validator"], error.validator)
                 if "message_fragment" in expectation:
                     self.assertIn(expectation["message_fragment"], error.message)
 
+    def test_rejects_identity_value_mutations(self) -> None:
+        mutation_fixture = load_json(FIXTURE_ROOT / MUTATION_FIXTURE_NAME)
+        base_fixture_name = mutation_fixture.get("base_fixture")
+        mutations = mutation_fixture.get("mutations")
+        self.assertIsInstance(base_fixture_name, str)
+        self.assertIsInstance(mutations, list)
+        base_instance = load_json(FIXTURE_ROOT / str(base_fixture_name))
+
+        for mutation in mutations:
+            self.assertIsInstance(mutation, dict)
+            mutation_name = mutation.get("name")
+            mutation_path = mutation.get("path")
+            expected_validator = mutation.get("validator")
+            self.assertIsInstance(mutation_name, str)
+            self.assertIsInstance(mutation_path, list)
+            self.assertTrue(
+                all(isinstance(component, str) for component in mutation_path)
+            )
+            self.assertIsInstance(expected_validator, str)
+
+            with self.subTest(mutation=mutation_name):
+                candidate = copy.deepcopy(base_instance)
+                path = tuple(mutation_path)
+                replace_path_value(candidate, path, mutation.get("value"))
+                errors = list(self.validator.iter_errors(candidate))
+                error_paths = {tuple(error.absolute_path) for error in errors}
+                validators = {error.validator for error in errors}
+                self.assertTrue(errors)
+                self.assertEqual({path}, error_paths)
+                self.assertIn(expected_validator, validators)
+
     def test_fixture_inventory_is_exact(self) -> None:
-        expected = set(VALID_FIXTURES) | set(INVALID_FIXTURES)
+        expected = set(VALID_FIXTURES) | set(INVALID_FIXTURES) | {MUTATION_FIXTURE_NAME}
         observed = {path.name for path in FIXTURE_ROOT.glob("*.json")}
         self.assertEqual(expected, observed)
 

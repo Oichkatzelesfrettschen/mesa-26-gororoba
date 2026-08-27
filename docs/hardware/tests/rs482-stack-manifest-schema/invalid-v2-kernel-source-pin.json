@@ -43,7 +43,7 @@
       "source_repository": "radeon-custom",
       "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "source_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "source_pin_sha256": "not-a-sha256",
+      "source_pin_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag",
       "source_archive_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
       "release_repository": "radeon-custom",
       "release_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
