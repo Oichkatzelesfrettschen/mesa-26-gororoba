@@ -12,6 +12,7 @@
 #include "c11/threads.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -68,8 +69,19 @@ void radeon_drm_vk_device_finish(struct radeon_drm_vk_device *device);
 int radeon_drm_vk_device_getparam(struct radeon_drm_vk_device *device,
                                   uint32_t param, uint32_t *value);
 
-/* DRM_RADEON_INFO wrapper. Returns 0 or a negative errno. */
-int radeon_drm_vk_device_info(struct radeon_drm_vk_device *device,
-                              uint32_t request, uint32_t *value);
+/* DRM_RADEON_INFO wrappers select only requests with the declared kernel
+ * result width.  A width mismatch, unknown request, or null output returns
+ * -EINVAL before the ioctl.  Caller storage changes only after success.
+ * RADEON_INFO_CRTC_FROM_ID, RADEON_INFO_WANT_HYPERZ,
+ * RADEON_INFO_WANT_CMASK, RADEON_INFO_RING_WORKING, and
+ * RADEON_INFO_READ_REG read the caller's initial u32 selector before replacing
+ * it with the result. */
+int radeon_drm_vk_device_info_u32(struct radeon_drm_vk_device *device,
+                                  uint32_t request, uint32_t *value);
+int radeon_drm_vk_device_info_u64(struct radeon_drm_vk_device *device,
+                                  uint32_t request, uint64_t *value);
+int radeon_drm_vk_device_info_u32_array(
+   struct radeon_drm_vk_device *device, uint32_t request, uint32_t *values,
+   size_t value_count);
 
 #endif /* RADEON_DRM_VK_DEVICE_H */
