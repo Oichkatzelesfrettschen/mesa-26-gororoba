@@ -897,11 +897,11 @@ struct r300_r2vb_producer_bo_draw {
     struct pipe_resource *slot_resource;
     struct r300_r2vb_model_fetch model;
 
-    /* Output authority: the producer render target, proven identical to
-     * the bound framebuffer color target.  Its relocation rides the
-     * dirty framebuffer state atom, so the fixed custom command size
-     * carries only the two input-array relocations and the recorded
-     * output relocation index is diagnostic. */
+    /* Output authority: an owned raw buffer target whose FP32x4 format,
+     * level-free shape, GTT backing, and physical byte extent match the
+     * producer layout.  The shared raw-target prologue emits its relocation;
+     * the fixed custom command size carries only the two input-array
+     * relocations, and the recorded output relocation index is diagnostic. */
     struct pipe_resource *output_resource;
     uint64_t output_required_bytes;
     uint64_t output_valid_bytes;

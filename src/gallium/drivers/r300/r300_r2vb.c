@@ -4323,25 +4323,29 @@ bool r300_r2vb_producer_bo_draw_validate(
         r2vb_bo_draw_validate_decline("binding_check");
         goto fail;
     }
-    /* Output authority: the producer writes count FP32x4 texels through the
-     * selected raster layout from offset zero of the bound framebuffer color
-     * target.  Validation proves the framebuffer dimensions, complete physical
-     * storage including the poisonable tail, exact producer format, and GTT
-     * placement the calibrated delivery observed. */
+    /* Output authority: the shared raw-target prologue writes count FP32x4
+     * texels through the selected raster layout from offset zero of this
+     * transaction-owned buffer.  Validation proves the level-free buffer
+     * shape, complete physical storage including the poisonable tail, exact
+     * producer format, and GTT placement the calibrated delivery observed. */
     {
-        const struct pipe_framebuffer_state *fb =
-            (const struct pipe_framebuffer_state *)r300->fb_state.state;
         struct r300_resource *outres = r300_resource(output_resource);
-        if (!fb || fb->nr_cbufs < 1 ||
-            fb->cbufs[0].texture != output_resource) {
-            r2vb_bo_draw_validate_decline("output_identity");
+        if (output_resource->target != PIPE_BUFFER) {
+            r2vb_bo_draw_validate_decline("output_target");
             goto fail;
         }
-        if (!outres->buf && !outres->malloced_buffer) {
+        if (output_resource->last_level != 0 ||
+            output_resource->height0 != 1 || output_resource->depth0 != 1 ||
+            output_resource->array_size != 1 || output_resource->nr_samples != 0 ||
+            output_resource->nr_storage_samples != 0) {
+            r2vb_bo_draw_validate_decline("output_shape");
+            goto fail;
+        }
+        if (!outres->buf) {
             r2vb_bo_draw_validate_decline("output_backing");
             goto fail;
         }
-        if (outres->buf && outres->domain != RADEON_DOMAIN_GTT) {
+        if (outres->domain != RADEON_DOMAIN_GTT) {
             r2vb_bo_draw_validate_decline("output_domain");
             goto fail;
         }
@@ -4349,10 +4353,7 @@ bool r300_r2vb_producer_bo_draw_validate(
             r2vb_bo_draw_validate_decline("output_format");
             goto fail;
         }
-        if (fb->width < out->layout.width ||
-            fb->height < out->layout.height ||
-            (uint64_t)output_resource->width0 <
-                out->layout.storage_bytes) {
+        if ((uint64_t)output_resource->width0 < out->layout.storage_bytes) {
             r2vb_bo_draw_validate_decline("output_extent");
             goto fail;
         }
@@ -4419,10 +4420,11 @@ bool r300_r2vb_producer_bo_draw_stage_cs(
      * below always binds to the final command stream. */
     r300_r2vb_reserve_bo_draw_cs(r300, txn->required_cs_dwords);
     /* Complete-list validation: every buffer the draw touches -- the
-     * ordinary dirty-state resources and the three producer BOs --
-     * enters the list before cs_validate.  A validation failure flushes
-     * and drops the additions, so the retry re-adds the complete
-     * population; a second failure declines with no register written. */
+     * ordinary dirty-state resources and the three producer BOs -- enters the
+     * list before cs_validate.  A validation failure flushes, rearms the atoms,
+     * and drops the additions, so the retry first reserves for the replacement
+     * dirty set and then re-adds the complete population.  A second failure
+     * declines with no register written. */
     bool retried = false;
 retry:
     r300_add_state_buffers(r300, false, NULL);
@@ -4441,6 +4443,7 @@ retry:
         if (retried)
             return false;
         retried = true;
+        r300_r2vb_reserve_bo_draw_cs(r300, txn->required_cs_dwords);
         goto retry;
     }
     /* The validation may have flushed; re-prove the derived-state words
@@ -4564,179 +4567,6 @@ void r300_r2vb_producer_bo_draw_fini(struct r300_r2vb_producer_bo_draw *txn)
     txn->slot_reloc_index = -1;
     txn->model_reloc_index = -1;
     txn->output_reloc_index = -1;
-}
-
-/* No-submit B0-B4 capture of the shipped producer BO-fetch draw.  Fires
- * once from a real flush under the transaction's own exact gate
- * (R300_R2VB_SLOT_FETCH=1) plus R300_R2VB_BO_DRAW=capture.  Builds the
- * calibrated fixture -- the derived stream state is produced through the
- * same streams/fetch/interface helpers the immediate producer uses, so
- * it round-trips from_state by construction -- allocates real GTT slot,
- * model, and output BOs, installs a framebuffer whose cbufs[0] is the
- * output target for validation, then for each of the five widths
- * runs the real validate -> stage_cs -> emit through the live winsys and
- * flushes RADEON_FLUSH_NOOP.  R300_TRACE captures each IB before
- * DRM_RADEON_CS, so the run carries zero submission and the decoded
- * isolated custom range proves the 64-dword size is count-independent
- * except the VF_MAX_VTX_INDX and DRAW_VBUF_2 count words. */
-bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
-                                        bool from_flush)
-{
-    static bool fired = false;
-    if (!from_flush || fired)
-        return false;
-    if (!r300_r2vb_slot_fetch_gate_value(getenv("R300_R2VB_SLOT_FETCH")))
-        return false;
-    if (!r300_r2vb_option_is(getenv("R300_R2VB_BO_DRAW"), "capture"))
-        return false;
-    fired = true;
-
-    static const uint32_t widths[5] = { 3, 2048, 2049, 4095, 4096 };
-    const uint32_t max_w = 4096;
-
-    /* Calibrated producer fixture: single-generic FS, the exact RS words
-     * from the immediate-producer decode, and one measured position
-     * input at source location and rank zero. */
-    struct r300_shader_semantics fs;
-    r300_shader_semantics_reset(&fs);
-    fs.generic[0] = 0;
-    fs.num_generic = 1;
-    fs.num_total = 1;
-
-    struct r300_rs_block rs;
-    memset(&rs, 0, sizeof(rs));
-    rs.vap_vtx_state_cntl = 0x5555;
-    rs.vap_vsm_vtx_assm = R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0;
-    rs.vap_out_vtx_fmt[0] = R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
-    rs.vap_out_vtx_fmt[1] = 4;
-    rs.ip[0] = R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
-               R300_RS_SEL_T(R300_RS_SEL_C1) | R300_RS_SEL_R(R300_RS_SEL_C2) |
-               R300_RS_SEL_Q(R300_RS_SEL_C3);
-    rs.count = R300_IT_COUNT(4) | R300_HIRES_EN;
-    rs.inst[0] = R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
-                 R300_RS_INST_TEX_ADDR(0);
-
-    struct r300_r2vb_producer_plan plan;
-    memset(&plan, 0, sizeof(plan));
-    plan.status = R300_R2VB_PLAN_READY;
-    plan.action = R300_R2VB_PLAN_SINGLE;
-    plan.key.space = R300_R2VB_POSITION_WINDOW;
-    plan.has_typed_source = false;
-    plan.num_position_inputs = 1;
-    plan.position_source.app_driver_location = 0;
-    plan.position_source.location_rank = 0;
-    plan.position_source.valid = true;
-
-    /* The derived stream state the immediate producer would build for a
-     * FLOAT_3 model at model destination vector 6 and slot at 0. */
-    struct r300_r2vb_producer_streams st;
-    struct r300_r2vb_producer_fetch ft;
-    struct r300_r2vb_producer_interface it;
-    if (!r300_r2vb_producer_streams_init(0, 0, 12, PIPE_FORMAT_R32G32B32_FLOAT,
-                                         0, &st) ||
-        !r300_r2vb_producer_fetch_init(&st, max_w, (uint64_t)max_w * 16,
-                                       (uint64_t)max_w * 12, &ft) ||
-        !r300_r2vb_producer_interface_init(&ft, 0, 6, &it))
-        return false;
-    struct r300_vertex_stream_state psc;
-    memset(&psc, 0, sizeof(psc));
-    for (unsigned i = 0; i < 8; i++) {
-        psc.vap_prog_stream_cntl[i] = it.prog_stream_cntl[i];
-        psc.vap_prog_stream_cntl_ext[i] = it.prog_stream_cntl_ext[i];
-    }
-    psc.count = 1;
-
-    struct pipe_resource *slot_res =
-        r2vb_create_selftest_bo(r300, (uint32_t)max_w * 16, 0);
-    struct pipe_resource *model_res =
-        r2vb_create_selftest_bo(r300, (uint32_t)max_w * 12, 0);
-    struct pipe_resource *out_res =
-        r2vb_create_selftest_bo(r300, (uint32_t)max_w * 16, 0);
-    if (!slot_res || !model_res || !out_res) {
-        pipe_resource_reference(&slot_res, NULL);
-        pipe_resource_reference(&model_res, NULL);
-        pipe_resource_reference(&out_res, NULL);
-        return false;
-    }
-
-    /* Install the output as the framebuffer color target so validate's
-     * identity check passes; keep the current state and restore it. */
-    void *saved_fb = r300->fb_state.state;
-    struct pipe_framebuffer_state cap_fb;
-    memset(&cap_fb, 0, sizeof(cap_fb));
-    cap_fb.width = max_w;
-    cap_fb.height = 1;
-    cap_fb.nr_cbufs = 1;
-    cap_fb.cbufs[0].texture = out_res;
-    cap_fb.cbufs[0].format = PIPE_FORMAT_R32G32B32A32_FLOAT;
-    r300->fb_state.state = &cap_fb;
-
-    /* Isolate the fixed-range length capture from enclosing dirty state:
-     * r300_add_state_buffers reads the parallel r300->fb_cbufs surface
-     * array and the aa/textures atoms, which do not match this synthetic
-     * framebuffer.  Clearing the dirty flags and dirty-atom span keeps the
-     * staged resource list to the three producer BOs and the emitted PM4 to
-     * the custom range; the state is restored after the capture so the
-     * enclosing flush is unaffected. */
-    bool saved_fb_dirty = r300->fb_state.dirty;
-    bool saved_aa_dirty = r300->aa_state.dirty;
-    bool saved_tex_dirty = r300->textures_state.dirty;
-    struct r300_atom *saved_first = r300->first_dirty;
-    struct r300_atom *saved_last = r300->last_dirty;
-    r300->fb_state.dirty = false;
-    r300->aa_state.dirty = false;
-    r300->textures_state.dirty = false;
-    r300->first_dirty = NULL;
-    r300->last_dirty = NULL;
-
-    struct pipe_vertex_buffer vb;
-    memset(&vb, 0, sizeof(vb));
-    vb.buffer_offset = 0;
-    vb.buffer.resource = model_res;
-    struct pipe_vertex_element ve;
-    memset(&ve, 0, sizeof(ve));
-    ve.src_offset = 0;
-    ve.src_stride = 12;
-    ve.src_format = PIPE_FORMAT_R32G32B32_FLOAT;
-    ve.vertex_buffer_index = 0;
-
-    for (unsigned w = 0; w < 5; w++) {
-        struct r300_r2vb_slot_layout layout;
-        struct r300_r2vb_producer_bo_draw txn;
-        r300_r2vb_producer_bo_draw_init(&txn);
-        bool ok =
-            r300_r2vb_slot_layout_init_policy(
-                widths[w], R300_R2VB_LAYOUT_LEGACY_ROW, &layout) &&
-            r300_r2vb_producer_bo_draw_validate(
-                r300, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1, &layout,
-                slot_res, out_res, 0, widths[w],
-                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
-            r300_r2vb_producer_bo_draw_stage_cs(r300, &txn, &plan, &fs, &rs,
-                                                &psc) &&
-            r300_r2vb_producer_bo_draw_emit(r300, &txn);
-        fprintf(stderr,
-                "r2vb_bo_draw_capture width=%u ok=%d cs_dwords=%u "
-                "slot_reloc=%d model_reloc=%d\n",
-                widths[w], ok, r300_r2vb_producer_bo_draw_cs_dwords(),
-                txn.slot_reloc_index, txn.model_reloc_index);
-        r300_r2vb_producer_bo_draw_fini(&txn);
-        /* Discard the capture IB before DRM_RADEON_CS. */
-        r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
-        if (!ok)
-            break;
-    }
-
-    r300->fb_state.dirty = saved_fb_dirty;
-    r300->aa_state.dirty = saved_aa_dirty;
-    r300->textures_state.dirty = saved_tex_dirty;
-    r300->first_dirty = saved_first;
-    r300->last_dirty = saved_last;
-    r300->fb_state.state = saved_fb;
-    pipe_resource_reference(&slot_res, NULL);
-    pipe_resource_reference(&model_res, NULL);
-    pipe_resource_reference(&out_res, NULL);
-    fprintf(stderr, "r2vb_bo_draw_capture done (no-submit; RADEON_FLUSH_NOOP)\n");
-    return true;
 }
 
 /* The materialization helper joins the emission arm with the LOAD_VBPNTR
@@ -8046,26 +7876,13 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         r300_r2vb_reserve_bo_draw_cs(r300, 160);
     }
     if (!why) {
-        /* validate() proves output authority against the bound framebuffer
-         * color target; this producer form carries that authority in the
-         * shared prologue's raw COLOROFFSET0 retarget + relocation instead
-         * of an emitted framebuffer atom, so the identity is stated to the
-         * pure-inspection validate through a local framebuffer view and the
-         * application state pointer is restored before any emission. */
-        void *saved_fb = r300->fb_state.state;
-        struct pipe_framebuffer_state pfb;
-        memset(&pfb, 0, sizeof(pfb));
-        pfb.width = (uint16_t)layout->width;
-        pfb.height = (uint16_t)layout->height;
-        pfb.nr_cbufs = 1;
-        pfb.cbufs[0].texture = clip;
-        pfb.cbufs[0].format = PIPE_FORMAT_R32G32B32A32_FLOAT;
-        r300->fb_state.state = &pfb;
+        /* validate() takes ownership of the raw FP32x4 buffer authority that
+         * the shared COLOROFFSET0 prologue relocates.  Application framebuffer
+         * state remains independent of this transaction. */
         bool validated = r300_r2vb_producer_bo_draw_validate(
             r300, plan, &pfs->shader->inputs, rs, &psc, vb, ve,
             effective_velem_count, effective_vertex_buffer_count, layout,
             slot_res, clip, effective_start, count, space, msrc, &txn);
-        r300->fb_state.state = saved_fb;
         if (!validated)
             why = "validate";
     }
