@@ -169,6 +169,9 @@ bool
 draw_vs_nir_supported(const struct pipe_shader_state *state);
 
 bool
+draw_vs_nir_force_bridge_enabled(void);
+
+bool
 draw_vs_nir_telemetry_enabled(void);
 
 #if DRAW_LLVM_AVAILABLE
