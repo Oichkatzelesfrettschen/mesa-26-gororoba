@@ -36,6 +36,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   fourth batch's 50-row assessment, immutable pre-resolution frontier,
   SHA-256-bound mutation journal, generated terminal frontier, and resolution
   ledger.
+- `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
+  fifth batch's 50-row assessment, generated action frontier, and resolution
+  ledger.  Its 38 actionable rows require merged repairs before exact-ID
+  resolution.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -296,6 +300,42 @@ at `2026-08-27T01:11:19Z`; the final live verification completed at
 `2026-08-27T01:12:05Z`.  The terminal frontier and ledger contain 50 closed,
 re-verified rows.  The batch registry remains the canonical owner of terminal
 campaign state and closure merge identity.
+
+## Classified fifth-batch frontier
+
+`review-thread-classifications/merged-thread-frontier-after-TvpLc/assessments.tsv`
+classifies the exact fifth-batch denominator against merged main
+`b2b68f46810c9808386f5b7a38adde70352f7050`.  The generated
+`action-frontier.tsv` preserves retained chronological order and binds each
+row to its exact GraphQL ID, current evidence owner, required observation,
+falsifier, and merged evidence commit when one exists.
+
+| State | Threads | Required transition |
+| --- | ---: | --- |
+| fixed on merged main | 7 | Resolve exact ID after the assessment merges |
+| superseded | 5 | Resolve exact ID after the assessment merges |
+| actionable | 38 | Implement, test, merge, synchronize, then resolve |
+
+The surviving mechanisms cover a complete headless GL provider and session
+workflow; AMD driver-root predicates and artifacts; Hybrid-TCL evidence
+separation; CAVLC comment accuracy; stack-manifest dependency and digest
+contracts; attribute-isolated external-source materialization; install and
+build-control identity; thread-safe Draw options; per-screen R2VB route state;
+DRM-shim descriptor, lock, and write-only identity semantics; transactional,
+calibrated MPEG-12 surface dumps; Draw semantic provenance; and width-correct
+Radeon info queries.
+
+The fixed rows cover component-prefixed guidance history, HBTCL executable
+identity, nonempty stack-manifest Build IDs, root-independent source-view
+tests, Meson wrap population, and state-token render registration.  Current
+SPDX-only and canonical-loader policies supersede five historical requests.
+Static source and Git history establish these code-state dispositions;
+runtime, conformance, performance, and silicon claims remain outside this
+assessment.
+
+All 50 live GraphQL nodes remain unresolved.  Exact-ID mutation begins only
+after every actionable mechanism is merged and all rows are reclassified
+against synchronized `main`.
 
 ## Verification
 
