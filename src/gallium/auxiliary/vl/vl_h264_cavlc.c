@@ -217,10 +217,13 @@ vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
    if (total_coeff == 0)
       return true;                 /* a coded-but-empty block is valid */
 
-   /* The counts stay in locals through the indexing below.  Each helper takes
-    * a pointer into *out, so a compiler that reloads out->total_coeff after a
-    * call loses the bound this function just proved, and the locals keep the
-    * bound where the indices are formed. */
+   /* total_coeff and trailing_ones stay local after coeff_token, and the
+    * capacity check proves total_coeff <= max_num_coeff <=
+    * VL_H264_CAVLC_MAX_COEFF.  vl_h264_cavlc_decode_levels receives out->level,
+    * and vl_h264_cavlc_total_zeros receives &out->total_zeros; retaining the
+    * local total_coeff preserves that bound across both calls for the level[i]
+    * and run[i] indices.  The scan-order combine separately checks coeff_num
+    * against max_num_coeff before indexing out->coeff. */
    if (!vl_h264_cavlc_decode_levels(reader, total_coeff, trailing_ones,
                                     out->level))
       return false;
