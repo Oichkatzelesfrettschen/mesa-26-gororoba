@@ -36,6 +36,7 @@
 #include "vl_zscan.h"
 #include "vl_idct.h"
 #include "vl_mc.h"
+#include "vl_mpeg12_dump.h"
 
 #include "vl_vertex_buffers.h"
 #include "vl_video_buffer.h"
@@ -80,7 +81,7 @@ struct vl_mpeg12_decoder
    unsigned current_buffer;
    struct vl_mpeg12_buffer *dec_buffers[4];
 
-   unsigned dump_frame;
+   struct vl_mpeg12_dump dump;
 
    struct list_head buffer_privates;
 };
