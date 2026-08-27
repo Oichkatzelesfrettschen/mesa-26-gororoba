@@ -372,7 +372,11 @@ bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords)
  * model, and output BOs -- passes cs_validate. */
 void r300_r2vb_reserve_bo_draw_cs(struct r300_context *r300, unsigned cs_dwords)
 {
-    r300_reserve_cs_dwords(r300, PREP_EMIT_STATES, cs_dwords);
+    if (r300_reserve_cs_dwords(r300, PREP_EMIT_STATES, cs_dwords)) {
+        /* The flush rearms every atom, so the replacement CS needs a fresh
+         * reservation that includes the expanded dirty-state budget. */
+        r300_reserve_cs_dwords(r300, PREP_EMIT_STATES, cs_dwords);
+    }
 }
 
 /*****************************************************************************

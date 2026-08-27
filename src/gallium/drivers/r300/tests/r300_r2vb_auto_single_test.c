@@ -1572,6 +1572,9 @@ static struct {
    unsigned adds;
    unsigned validates;
    unsigned fail_validates; /* decrement-to-zero failure script */
+   unsigned space_checks;
+   unsigned space_dwords[8];
+   struct r300_atom *validate_failure_rearm_atom;
    struct pb_buffer_lean *seen[8];
    unsigned num_seen;
 } g_fws;
@@ -1605,6 +1608,9 @@ fws_validate(struct radeon_cmdbuf *rcs)
       g_fws.fail_validates--;
       g_fws.num_seen = 0;
       memset(g_fws.seen, 0, sizeof(g_fws.seen));
+      if (g_fws.validate_failure_rearm_atom)
+         r300_mark_atom_dirty(&g_context,
+                              g_fws.validate_failure_rearm_atom);
       return false;
    }
    return true;
@@ -1613,6 +1619,9 @@ fws_validate(struct radeon_cmdbuf *rcs)
 static bool
 fws_check_space(struct radeon_cmdbuf *rcs, unsigned dw)
 {
+   if (g_fws.space_checks < ARRAY_SIZE(g_fws.space_dwords))
+      g_fws.space_dwords[g_fws.space_checks] = dw;
+   g_fws.space_checks++;
    return true;
 }
 
@@ -2433,12 +2442,15 @@ check_logical_binding(void)
             "txn: the output layout is valid");
       struct fake_buffer *slotfb = (struct fake_buffer *)fake_resource_create(
          &g_screen.screen, &(struct pipe_resource){ .width0 = 4096 * 16 });
-      /* Output authority fixture: a CPU-shadow color target bound as the
-       * framebuffer's first color buffer, one row of FP32x4 texels. */
+      /* Output authority fixture: a raw GTT-backed buffer whose byte extent
+       * holds the complete FP32x4 producer layout. */
       struct r300_resource outshadow;
       memset(&outshadow, 0, sizeof(outshadow));
+      outshadow.b.target = PIPE_BUFFER;
       outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes;
       outshadow.b.height0 = 1;
+      outshadow.b.depth0 = 1;
+      outshadow.b.array_size = 1;
       outshadow.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
       pipe_reference_init(&outshadow.b.reference, 1);
       uint8_t *outbytes = calloc(1, (size_t)txn_layout.storage_bytes);
@@ -2527,8 +2539,11 @@ check_logical_binding(void)
                });
          struct r300_resource grid_output;
          memset(&grid_output, 0, sizeof(grid_output));
+         grid_output.b.target = PIPE_BUFFER;
          grid_output.b.width0 = (uint32_t)grid_layout.storage_bytes;
          grid_output.b.height0 = 1;
+         grid_output.b.depth0 = 1;
+         grid_output.b.array_size = 1;
          grid_output.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
          pipe_reference_init(&grid_output.b.reference, 1);
          uint8_t *grid_output_bytes =
@@ -2536,9 +2551,6 @@ check_logical_binding(void)
          grid_output.malloced_buffer = grid_output_bytes;
          grid_output.buf = (struct pb_buffer_lean *)grid_output_bytes;
          grid_output.domain = RADEON_DOMAIN_GTT;
-         tfb.width = grid_layout.width;
-         tfb.height = grid_layout.height;
-         tfb.cbufs[0].texture = &grid_output.b;
          r300_r2vb_producer_bo_draw_init(&txn);
          CHECK(grid_model_bytes && grid_slot && grid_output_bytes &&
                   r300_r2vb_producer_bo_draw_validate(
@@ -2560,9 +2572,6 @@ check_logical_binding(void)
          }
          free(grid_output_bytes);
          free(grid_model_bytes);
-         tfb.width = txn_layout.width;
-         tfb.height = txn_layout.height;
-         tfb.cbufs[0].texture = &outshadow.b;
       }
 
       /* Failure edges: each fallible layer declines and leaves no
@@ -2672,26 +2681,28 @@ check_logical_binding(void)
                !txn.slot_resource && !txn.model.resource &&
                !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: a live PSC EXT mismatch declines after reconstruction");
-      /* Output-authority negatives: framebuffer identity, extent, and
+      /* Output-authority negatives: raw-buffer identity, shape, extent, and
        * format each decline after materialization with nothing retained. */
-      tfb.cbufs[0].texture = &slotfb->r.b;
+      outshadow.b.target = PIPE_TEXTURE_2D;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.slot_resource && !txn.model.resource &&
                !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
-            "txn: an output that is not the bound color target declines");
-      tfb.cbufs[0].texture = &outshadow.b;
-      tfb.width = txn_layout.width - 1;
+            "txn: a non-buffer output target declines");
+      outshadow.b.target = PIPE_BUFFER;
+      outshadow.b.last_level = 1;
+      outshadow.b.array_size = 2;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn) &&
                !txn.slot_resource && !txn.model.resource &&
                !txn.output_resource && txn.state == R300_R2VB_BO_DRAW_EMPTY,
-            "txn: a one-pixel-short framebuffer extent declines");
-      tfb.width = txn_layout.width;
+            "txn: a mipmapped or layered buffer shape declines");
+      outshadow.b.last_level = 0;
+      outshadow.b.array_size = 1;
       outshadow.b.width0 = (uint32_t)txn_layout.storage_bytes - 1;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
@@ -2729,6 +2740,31 @@ check_logical_binding(void)
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "cs: validate builds the transaction for staging");
+      uint8_t rebound_output_backing = 0;
+      struct r300_resource rebound_output;
+      memset(&rebound_output, 0, sizeof(rebound_output));
+      rebound_output.b.target = PIPE_BUFFER;
+      rebound_output.b.width0 = (uint32_t)txn_layout.storage_bytes;
+      rebound_output.b.height0 = 1;
+      rebound_output.b.depth0 = 1;
+      rebound_output.b.array_size = 1;
+      rebound_output.b.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+      rebound_output.buf =
+         (struct pb_buffer_lean *)&rebound_output_backing;
+      rebound_output.domain = RADEON_DOMAIN_GTT;
+      struct pipe_framebuffer_state rebound_fb = tfb;
+      rebound_fb.cbufs[0].texture = &rebound_output.b;
+      struct r300_surface rebound_surface;
+      memset(&rebound_surface, 0, sizeof(rebound_surface));
+      rebound_surface.base.texture = &rebound_output.b;
+      rebound_surface.domain = RADEON_DOMAIN_GTT;
+      bool saved_fb_dirty = g_context.fb_state.dirty;
+      struct r300_atom *saved_rebind_first_dirty = g_context.first_dirty;
+      struct r300_atom *saved_rebind_last_dirty = g_context.last_dirty;
+      struct pipe_surface *saved_fb_cbuf = g_context.fb_cbufs[0];
+      g_context.fb_state.state = &rebound_fb;
+      g_context.fb_cbufs[0] = &rebound_surface.base;
+      r300_mark_atom_dirty(&g_context, &g_context.fb_state);
       CHECK(!r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
             "cs: emission before READY declines");
       unsigned stage_cdw = g_context.cs.current.cdw;
@@ -2738,8 +2774,12 @@ check_logical_binding(void)
       CHECK(txn.state == R300_R2VB_BO_DRAW_READY &&
                txn.slot_reloc_index >= 0 && txn.model_reloc_index >= 0 &&
                txn.output_reloc_index >= 0 && g_fws.validates == 1 &&
+               g_fws.seen[txn.output_reloc_index] == outshadow.buf &&
+               fws_lookup_buffer(&g_context.cs, rebound_output.buf) >= 0 &&
+               fws_lookup_buffer(&g_context.cs, rebound_output.buf) !=
+                  txn.output_reloc_index &&
                g_context.cs.current.cdw == stage_cdw,
-            "cs: READY holds validated relocation indices, zero registers");
+            "cs: dirty framebuffer rebind preserves the owned output relocation");
       CHECK(!r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
                                                  &rs, &psc),
             "cs: staging twice declines");
@@ -2759,23 +2799,45 @@ check_logical_binding(void)
       CHECK(!r300_r2vb_producer_bo_draw_emit(&g_context, &txn),
             "cs: emitting twice declines");
       r300_r2vb_producer_bo_draw_fini(&txn);
+      g_context.fb_state.state = &tfb;
+      g_context.fb_state.dirty = saved_fb_dirty;
+      g_context.first_dirty = saved_rebind_first_dirty;
+      g_context.last_dirty = saved_rebind_last_dirty;
+      g_context.fb_cbufs[0] = saved_fb_cbuf;
 
-      /* A first validation failure retries the complete population; the
-       * retry re-adds both the ordinary state buffers and the three
-       * producer BOs, so the relocation indices come from the final CS. */
+      /* A first validation failure rearms state in the replacement CS.  The
+       * retry reserves the expanded dirty budget before re-adding both the
+       * ordinary state buffers and the three producer BOs, so the relocation
+       * indices come from the final CS. */
       r300_r2vb_producer_bo_draw_init(&txn);
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
                R300_R2VB_POSITION_WINDOW, NULL, &txn),
             "cs: validate for the retry row");
+      struct r300_atom saved_gpu_flush = g_context.gpu_flush;
+      struct r300_atom *saved_first_dirty = g_context.first_dirty;
+      struct r300_atom *saved_last_dirty = g_context.last_dirty;
+      const unsigned rearmed_state_dwords = 17;
+      g_context.gpu_flush.dirty = false;
+      g_context.gpu_flush.size = rearmed_state_dwords;
+      g_context.first_dirty = NULL;
+      g_context.last_dirty = NULL;
       memset(&g_fws, 0, sizeof(g_fws));
       g_fws.fail_validates = 1;
+      g_fws.validate_failure_rearm_atom = &g_context.gpu_flush;
       CHECK(r300_r2vb_producer_bo_draw_stage_cs(&g_context, &txn, &plan, &fs,
                                                 &rs, &psc) &&
                txn.state == R300_R2VB_BO_DRAW_READY && g_fws.validates == 2 &&
-               txn.slot_reloc_index >= 0,
-            "cs: a validation flush retries the complete population once");
+               g_fws.space_checks == 2 &&
+               g_fws.space_dwords[1] ==
+                  g_fws.space_dwords[0] + rearmed_state_dwords &&
+               txn.output_reloc_index >= 0 &&
+               g_fws.seen[txn.output_reloc_index] == outshadow.buf,
+            "cs: validation retry reserves the rearmed dirty-state budget");
+      g_context.gpu_flush = saved_gpu_flush;
+      g_context.first_dirty = saved_first_dirty;
+      g_context.last_dirty = saved_last_dirty;
       r300_r2vb_producer_bo_draw_fini(&txn);
 
       /* A second validation failure declines cleanly: VALIDATED state

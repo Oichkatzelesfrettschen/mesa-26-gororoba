@@ -343,11 +343,4 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
                                            unsigned flush_flags,
                                            struct pipe_fence_handle **out_fence);
 
-/* No-submit B0-B4 capture of the shipped producer BO-fetch draw across
- * the five widths {3, 2048, 2049, 4095, 4096}.  Gated on
- * R300_R2VB_SLOT_FETCH=1 plus R300_R2VB_BO_DRAW=capture, fires once from
- * flush, and flushes RADEON_FLUSH_NOOP so no IB reaches DRM_RADEON_CS. */
-bool r300_r2vb_bo_draw_capture_selftest(struct r300_context *r300,
-                                        bool from_flush);
-
 #endif
