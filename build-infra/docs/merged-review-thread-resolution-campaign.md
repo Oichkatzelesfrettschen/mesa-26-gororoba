@@ -41,9 +41,8 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Thirty-four rows are closed, two are
-  fixed on merged main pending exact-ID resolution, and 14 actionable rows
-  require merged repairs.
+  append-only evidence-refresh ledger.  Thirty-six rows are closed, and the
+  14 actionable rows require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -329,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 | State | Threads | Required transition |
 | --- | ---: | --- |
 | actionable | 14 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 2 | Merge this re-audit, then resolve and record |
-| closed as fixed | 29 | Retain exact merge and post-resolution evidence |
+| fixed on merged main | 0 | None |
+| closed as fixed | 31 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -387,12 +386,14 @@ unchanged CAVLC comments name the independent oracle and exact coefficient
 index bounds; the focused block test passes from the retained qualification
 build.
 
-Two RS482 stack-manifest rows are fixed on merged main by PR 1905 merge commit
+Two RS482 stack-manifest rows are fixed by PR 1905 merge commit
 `82b7f3491b25b02063d31952b566c873ca5b2d8e`.  A clean Python 3.14 environment
 installs the pinned `jsonschema` 4.26.0 requirement and passes all four schema
 tests.  The shared identity definitions and mutation corpus reject short,
-long, and final-newline SHA-256 and Git-object strings.  Both exact GitHub
-threads remain unresolved until this re-audit merges.
+long, and final-newline SHA-256 and Git-object strings.  PR 1925 re-audits the
+unchanged merged-main targets at merge commit
+`34cfba8dc91dd24f52649e6a6ea19f1299836d17`; both exact GitHub threads are
+resolved and re-queried.
 
 The surviving actionable mechanisms cover temporary-root selection;
 clean-filter- and archive-attribute-isolated source views; installation-success
@@ -413,10 +414,9 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 34 resolved and 16 unresolved exact IDs.  Two
-unresolved rows have verified merged-main fixes and resolve after this re-audit
-merges.  The other 14 require their actionable mechanisms to merge before
-exact-ID resolution.
+Live GraphQL state reports 36 resolved and 14 unresolved exact IDs.  The 14
+unresolved rows require their actionable mechanisms to merge before exact-ID
+resolution.
 
 ## Verification
 

@@ -201,6 +201,24 @@
     },
     {
       "disposition": "fixed",
+      "evidence_commit": "82b7f3491b25b02063d31952b566c873ca5b2d8e",
+      "evidence_pr": 1905,
+      "merged_at": "2026-08-27T04:09:24Z",
+      "resolved_at": "2026-08-27T16:12:22Z",
+      "thread_id": "PRRT_kwDOR3YK5M6VAnck",
+      "verified_at": "2026-08-27T16:12:22Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "82b7f3491b25b02063d31952b566c873ca5b2d8e",
+      "evidence_pr": 1905,
+      "merged_at": "2026-08-27T04:09:24Z",
+      "resolved_at": "2026-08-27T16:12:23Z",
+      "thread_id": "PRRT_kwDOR3YK5M6VAncm",
+      "verified_at": "2026-08-27T16:12:23Z"
+    },
+    {
+      "disposition": "fixed",
       "evidence_commit": "59593fda660a7603789c895c479c2bb38d5140fa",
       "evidence_pr": 1918,
       "merged_at": "2026-08-27T10:15:22Z",
