@@ -135,8 +135,11 @@ main(int argc, char **argv)
                                       : VK_FORMAT_R8G8B8A8_UNORM;
 
    /* The oracle's expected interior is the texel through the reference
-    * target's UNORM8 conversion; the reference shape carries geometry,
-    * pitch, and lane order, and its color_bits take the texel.
+    * target's UNORM8 conversion, passed to the verdict as an admitted
+    * value.  The reference shape carries geometry, pitch, and lane
+    * order alone: this cell's fragment color arrives through the TX
+    * unit, so it drives no R300_PFS_PARAM_0 constant and color_bits
+    * name nothing it executes.
     */
    struct r300_triangle_render_shape shape;
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
@@ -144,7 +147,6 @@ main(int argc, char **argv)
       R3V_SAMPLED_TEXEL_R / 255.0f, R3V_SAMPLED_TEXEL_G / 255.0f,
       R3V_SAMPLED_TEXEL_B / 255.0f, R3V_SAMPLED_TEXEL_A / 255.0f,
    };
-   memcpy(shape.color_bits, texel_rgba, sizeof(texel_rgba));
    const uint32_t color_bytes =
       r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
    const uint32_t predicted_dword =
@@ -853,19 +855,24 @@ main(int argc, char **argv)
       clear_dword, color_map, color_bytes, &verdict);
    const uint32_t *pixels = color_map;
    const uint32_t cx = shape.width / 2, cy = (shape.height * 3) / 8;
-   printf("[oracle] coverage_exact=%d canary=%d interior=%u analytic=%u "
-          "exterior=%u ambiguous=%u mismatch=%u\n",
-          verdict.coverage_exact, verdict.canary_pass, verdict.interior_pixels,
-          verdict.analytic_pixels, verdict.exterior_pixels,
-          verdict.ambiguous_pixels, verdict.mismatch_pixels);
+   printf("[oracle] judged=%d coverage_exact=%d canary=%d interior=%u "
+          "analytic=%u exterior=%u ambiguous=%u mismatch=%u\n",
+          verdict.judged, verdict.coverage_exact, verdict.canary_pass,
+          verdict.interior_pixels, verdict.analytic_pixels,
+          verdict.exterior_pixels, verdict.ambiguous_pixels,
+          verdict.mismatch_pixels);
+   if (!verdict.judged)
+      printf("[oracle] verdict refused: the shape or the retained "
+             "footprint left the producer's domain, so the zero counters "
+             "carry no claim about the render\n");
    printf("[oracle] centroid (%u,%u)=0x%08x predicted 0x%08x corner "
           "(0,0)=0x%08x\n",
           cx, cy, pixels[cy * shape.pitch_pixels + cx], predicted_dword,
           pixels[0]);
    fflush(stdout);
-   bool oracle_pass = verdict.coverage_exact && verdict.canary_pass &&
-                        pixels[cy * shape.pitch_pixels + cx] ==
-                           predicted_dword;
+   bool oracle_pass = verdict.judged && verdict.coverage_exact &&
+                      verdict.canary_pass &&
+                      pixels[cy * shape.pitch_pixels + cx] == predicted_dword;
    if (texture_rows) {
       const uint32_t lower_read = pixels[44 * shape.pitch_pixels + 32];
       printf("[oracle] lower (32,44)=0x%08x predicted 0x%08x\n", lower_read,
