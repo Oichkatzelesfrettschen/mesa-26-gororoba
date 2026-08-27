@@ -9,10 +9,11 @@
  * level state machine, the total_zeros/run_before parse, and the scan-order
  * combine against a separate implementation.  The vectors cover an empty block,
  * a single coefficient, two adjacent levels, a level with a zero run, a dense
- * block on the nC>=2 table, and a chroma DC 2x2 block.  The decisive
- * spec-value check is the later real-bitstream oracle gate.  One negative
- * vector pins the capacity contract: a max_num_coeff past the block's array
- * capacity is rejected with the caller's block left untouched.
+ * block on the nC>=2 table, and a chroma DC 2x2 block.  For every vector, the
+ * oracle requires block.total_coeff == vec->total_coeff and every
+ * block.coeff[i] == vec->coeff[i].  One negative vector pins the capacity
+ * contract: a max_num_coeff past the block's array capacity is rejected with
+ * the caller's block left untouched.
  */
 
 #include <stdint.h>
