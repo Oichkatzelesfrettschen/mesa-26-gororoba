@@ -47,6 +47,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   recovery journal, generated action frontier, resolution ledger, and
   append-only evidence-refresh ledger.  All 50 exact rows are closed and
   re-verified.
+- `review-thread-classifications/merged-thread-frontier-after-WhUFS/` owns the
+  sixth batch's 50-row assessment, generated action frontier, and empty
+  resolution ledger.  Its 33 actionable rows require merged repairs, while two
+  hardware-evidence rows retain their explicit RS482 observation gates.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third, fourth, and fifth batch
@@ -489,6 +493,39 @@ Live GraphQL state reports all 50 exact IDs resolved.  The three final repair
 commits are ancestors of `origin/main`, their declared target files match the
 current candidate, and the terminal journal binds each resolution to its
 repair PR and post-resolution verification time.
+
+## Classified sixth-batch frontier
+
+`review-thread-classifications/merged-thread-frontier-after-WhUFS/assessments.tsv`
+classifies the exact sixth-batch denominator against merged main
+`c6c629d0071f1d0e4f64bcfd642fc9dbe69d0867`.  The generated
+`action-frontier.tsv` keeps the retained chronological order and binds every
+row to its exact GraphQL ID, current source evidence, required observation,
+falsifier, and merged evidence commit when one exists.
+
+| State | Threads | Required transition |
+| --- | ---: | --- |
+| fixed on merged main | 10 | Resolve exact ID from merged evidence |
+| superseded by merged main | 5 | Resolve exact ID from successor |
+| actionable | 33 | Implement, test, merge, synchronize, then resolve |
+| pending RS482 evidence | 2 | Execute the declared hardware oracle |
+
+The fixed and superseded rows cover DRM-shim exec locators and residue
+calibration, source-header policy, r300 compiler initialization, the qualified
+native triangle path, deletion of the Gallium-backed Vulkan lane, GPU-producer
+WINDOW routing, route ownership, and producer-specific arming.  Static source
+and Git history establish those code-state dispositions.
+
+The actionable rows retain concrete repair gates for clean source identity,
+DRM-shim selected-device and provenance handling, native clipping and carrier
+ownership, evidence pins, Terakan state and lifetime checks, runner process and
+input semantics, dispatch analysis, exact producer payload identity, and
+producer replay interpretation.  The intensity-blend and C1C packet rows stay
+pending until their exact RS482 oracles produce retained evidence.
+
+Every captured GitHub node remains unresolved.  Resolution begins only after
+the applicable assessment, repair, or hardware-evidence transition is present
+on synchronized `main` and the exact node is re-queried.
 
 ## Verification
 
