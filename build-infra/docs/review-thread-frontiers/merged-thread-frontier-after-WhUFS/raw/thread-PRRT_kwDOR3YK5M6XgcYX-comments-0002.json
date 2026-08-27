@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Fixed in the follow-up commit: the completion BO allocates and folds into the relocation list before the deferred execution runs, so relocation growth, completion creation, and completion reference all precede the first application-memory write; an allocation failure returns with the target untouched. The hazard gate still follows execution -- the deferred work is CPU-side and the gate guards the ioctl alone.",
+              "commit": {
+                "oid": "b7807ee3b1b2281083cba17ce6e477b2a1b5f5f6"
+              },
+              "createdAt": "2026-08-08T20:14:49Z",
+              "databaseId": 3741528843,
+              "id": "PRRC_kwDOR3YK5M7fAzML",
+              "originalCommit": {
+                "oid": "b7807ee3b1b2281083cba17ce6e477b2a1b5f5f6"
+              },
+              "updatedAt": "2026-08-08T20:14:50Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1275#discussion_r3741528843"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQyMDoxNDo0OVrO3wMzCw==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6XgcYX"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQyMDoxMToxNVrO3wMZ0A==",
+    "threadId": "PRRT_kwDOR3YK5M6XgcYX"
+  }
+}

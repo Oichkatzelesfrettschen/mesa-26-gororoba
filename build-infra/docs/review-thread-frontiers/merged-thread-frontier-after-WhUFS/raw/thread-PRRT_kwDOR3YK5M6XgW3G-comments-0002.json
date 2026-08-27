@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Fixed in b7807ee3b1b: the native linear B8G8R8A8 features carry VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT, matching the usage vkCreateImage admits.",
+              "commit": {
+                "oid": "0bd753cfd67dfa41adc8ad5b52f463d9a7709d1e"
+              },
+              "createdAt": "2026-08-08T20:00:23Z",
+              "databaseId": 3741498083,
+              "id": "PRRC_kwDOR3YK5M7fArrj",
+              "originalCommit": {
+                "oid": "0bd753cfd67dfa41adc8ad5b52f463d9a7709d1e"
+              },
+              "updatedAt": "2026-08-08T20:00:23Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1275#discussion_r3741498083"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQyMDowMDoyM1rO3wK64w==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6XgW3G"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQxOTo1NjowOFrO3wKWvQ==",
+    "threadId": "PRRT_kwDOR3YK5M6XgW3G"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Merged-main source and host-test witness at 34d05bc659a keeps this row evidence-bound. The r300-r2vb-reingest-state oracle proves packet predicates and dword accounting only; it does not execute PM4 or establish radeon CS-validator acceptance. No current-main RS482 dmesg or retained gated DRM_RADEON_CS run is available here, so this row remains open. The required evidence is an exact-SHA gated run with R300_HB_TCL=1, R300_R2VB_TIMING=submit, R300_RAW_SUBMIT_ACCEPTED=1, retained dmesg before/after, and a bounded CS/completion outcome. A validator rejection, dmesg validation error, reset, or completion failure falsifies the source-only boundary.",
+              "commit": {
+                "oid": "41264baef8e109e54f09236876bf8d527ac0798e"
+              },
+              "createdAt": "2026-08-12T15:06:22Z",
+              "databaseId": 3767644975,
+              "id": "PRRC_kwDOR3YK5M7gkbMv",
+              "originalCommit": {
+                "oid": "41264baef8e109e54f09236876bf8d527ac0798e"
+              },
+              "updatedAt": "2026-08-12T15:06:22Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1540#discussion_r3767644975"
+            },
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current C1C path remains hardware-bound. The RS482 host has PCI 1002:5974 and radeon, but dmesg is denied by the host policy; the gated C1C probe reaches the existing R300_HB_TCL=1 assertion instead of a CS-validator result. I leave this thread unresolved until the required dmesg and direct RS482 PM4/runtime witness are available.",
+              "commit": {
+                "oid": "41264baef8e109e54f09236876bf8d527ac0798e"
+              },
+              "createdAt": "2026-08-12T17:34:48Z",
+              "databaseId": 3768793275,
+              "id": "PRRC_kwDOR3YK5M7gozi7",
+              "originalCommit": {
+                "oid": "41264baef8e109e54f09236876bf8d527ac0798e"
+              },
+              "updatedAt": "2026-08-12T17:34:48Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1540#discussion_r3768793275"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo0OFrO4KM4uw==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6Ym2kE"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNDozNjo1OVrO4I3rDw==",
+    "threadId": "PRRT_kwDOR3YK5M6Ym2kE"
+  }
+}

@@ -24,9 +24,13 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   pages, exact query text, default-branch identity, every selected comment,
   hashes, and the chronological stop proof.
 - `review-thread-frontiers/merged-thread-frontier-after-TvpLc/` preserves the
-  active fifth-batch raw denominator.  Its manifest binds thirteen
+  closed fifth-batch raw denominator.  Its manifest binds thirteen
   request/response pages, exact query text, default-branch identity, every
   selected comment, hashes, and the chronological stop proof.
+- `review-thread-frontiers/merged-thread-frontier-after-WhUFS/` preserves the
+  active sixth-batch raw denominator.  Its manifest binds sixteen pull-request
+  pages, seven comment-continuation pages, exact query text, default-branch
+  identity, every selected comment, hashes, and the chronological stop proof.
 - `review-thread-classifications/merged-thread-frontier-92b67f719e7b/` owns the
   third batch's 50-row assessment, immutable pre-resolution frontier,
   SHA-256-bound mutation journal, generated terminal frontier, and resolution
@@ -41,12 +45,12 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Forty-seven rows are closed, and three
-  actionable rows require merged repairs.
+  append-only evidence-refresh ledger.  All 50 exact rows are closed and
+  re-verified.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
-  views of the closed second batch.  The third and fourth batch terminal views
-  remain in their batch-scoped classification directories.
+  views of the closed second batch.  The third, fourth, and fifth batch
+  terminal views remain in their batch-scoped classification directories.
 - `../scripts/review_thread_frontier.py` validates the frontier, resolution
   ledger, and evidence-refresh chain offline.  Its unit tests calibrate
   duplicate identity, ordering, false merged evidence, owner-path drift,
@@ -154,7 +158,7 @@ text, raw responses, normalized selected threads, every selected comment body
 and author, and their hashes live in
 `review-thread-frontiers/merged-thread-frontier-after-QY6A8/`.
 
-### Active captured fifth frontier
+### Closed fifth frontier
 
 The fifth batch is anchored to merged `main`
 `63d7eb1226bb4257f3d92cb8c7f4196215c213fb`.  The authenticated owned-origin
@@ -175,6 +179,29 @@ retained request cursors prove the thirteen pages are contiguous.  Exact query
 text, raw responses, normalized selected threads, every selected comment body
 and author, and their hashes live in
 `review-thread-frontiers/merged-thread-frontier-after-TvpLc/`.
+
+### Active captured sixth frontier
+
+The sixth batch is anchored to merged `main`
+`47135b3e0a18caa2f5ca8d0ed46c5abc245a5429`.  The authenticated owned-origin
+capture scanned 1,600 merged pull requests across sixteen ascending pages and
+observed 128 unresolved threads among 3,264 total review threads before the
+chronological stop.
+
+- Rank 1 is `PRRT_kwDOR3YK5M6WhUFW`, created
+  `2026-08-05T02:01:43Z` on PR 1232.
+- Rank 50 is `PRRT_kwDOR3YK5M6ZIj8L`, created
+  `2026-08-14T01:24:56Z` on PR 1593.
+- The last scanned pull request is PR 1632, created
+  `2026-08-17T04:59:47Z`.
+
+The pull-request connection is ordered by `createdAt` ascending, and a review
+comment cannot predate its pull request.  PR 1632 therefore establishes that
+every unscanned pull request was created after the rank-50 comment.  Retained
+request cursors prove that the sixteen pull-request pages and seven continued
+comment pages are contiguous.  Exact query text, raw responses, normalized
+selected threads, every selected comment body and author, and their hashes
+live in `review-thread-frontiers/merged-thread-frontier-after-WhUFS/`.
 
 ## First-batch classification
 
