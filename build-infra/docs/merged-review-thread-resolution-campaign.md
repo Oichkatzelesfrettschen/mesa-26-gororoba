@@ -327,8 +327,8 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 35 | Implement, test, merge, synchronize, then resolve |
-| closed as fixed | 10 | Retain exact merge and post-resolution evidence |
+| actionable | 32 | Implement, test, merge, synchronize, then resolve |
+| closed as fixed | 13 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -347,8 +347,8 @@ the production root-account rejection retains its exact diagnostic.  PR 1918
 binds both fixes to merged main, and both exact GitHub threads are resolved and
 re-queried.
 
-The ordered recovery journal records three independently merged DRM-shim
-repairs.  PR 1912 binds raw-alias backing identity to merge commit
+The ordered recovery journal records independently merged repairs.  PR 1912
+binds raw-alias backing identity to merge commit
 `400df9e74aeacc6917410a887a3bf33bf5fda167`; PR 1900 binds the preload-test
 SPDX header to `4b0c1f55abd1c9d84022973e14fd40d639426ec9`; and PR 1913 binds large-lock
 layout normalization to `05023afc27fcc9fb0637ecacfa425d9fc4263a81`.  PR 1916
@@ -356,6 +356,13 @@ binds ten re-audited fixed or superseded rows to merge commit
 `a2bfd6032c81faa75994dfd4f57b279200a0776f`.  PR 1918 binds the source-root
 fixture isolation repairs to `59593fda660a7603789c895c479c2bb38d5140fa` and
 re-audits the Meson-wrap finalization evidence at the same merged commit.
+PR 1920 binds the MPEG-12 dump namespace, transactional-write verdict, and
+calibration rows to `2721b9314aed7d55615d5fbf4f8247b4d0fe84fc` after clean
+Clang, Valgrind, MinGW, mutation, and merged-main qualification.  Four review
+threads created on PR 1920 are outside the retained fifth-batch denominator;
+their MC entrypoint, random namespace, Windows path, and anchored-root repairs
+are present at the same merge commit, and all four exact IDs are resolved and
+re-queried.
 Every recorded GitHub thread is resolved and re-queried.  The journal remains
 incomplete until every one of the 50 retained thread IDs is resolved and the
 batch-wide postflight succeeds.
@@ -372,13 +379,15 @@ Radeon info queries.
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
 root-independent source-view fixtures, state-token render registration, and
-the three DRM-shim repairs.  SPDX-only, canonical-loader, merge-subject, and
-emoji-scope policies supersede five historical requests.
+the three DRM-shim repairs.  They also cover random MPEG-12 dump namespaces,
+transactional failure verdicts, and calibrated stage-boundary payloads.
+SPDX-only, canonical-loader, merge-subject, and emoji-scope policies supersede
+five historical requests.
 Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 15 resolved and 35 unresolved exact IDs.  Each
+Live GraphQL state reports 18 resolved and 32 unresolved exact IDs.  Each
 remaining ID resolves only after its actionable mechanism is merged and
 reclassified against synchronized `main`.
 
