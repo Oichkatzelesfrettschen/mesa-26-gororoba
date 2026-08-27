@@ -8,13 +8,12 @@
  * performs before searching the TGSI-keyed shader info.  Consumers that moved
  * from the semantic-pair entry point to the location entry point must observe
  * the identical output index, so this harness pins each translation against
- * the literal (semantic, index) pair the caller previously wrote.
+ * its required literal (semantic, index) pair.
  *
- * The generic range is the case that can silently shift: under
- * needs_texcoord_semantic the VAR range and the TEX range share one GENERIC
- * index space with different offsets.  Every draw stage scans its NIR with
- * nir_tgsi_scan_shader(nir, info, true), so the overlay pins that flag set and
- * VARYING_SLOT_VAR0 + n resolves to (GENERIC, n) over the whole range.
+ * The VAR and TEX ranges can silently drift.  With needs_texcoord_semantic set,
+ * they occupy separate TGSI semantic domains: VAR0 + n maps to (GENERIC, n),
+ * while TEX0 + n maps to (TEXCOORD, n).  The overlay pins both mappings over
+ * their complete ranges.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,8 +46,7 @@ int
 main(void)
 {
    /* The r300 SW-TCL vertex-layout closure: every location its emit and
-    * lookup sites address, against the semantic pair each site held before
-    * the overlay. */
+    * lookup sites address, against the semantic pair each site requires. */
    CHECK(VARYING_SLOT_POS,  TGSI_SEMANTIC_POSITION, 0);
    CHECK(VARYING_SLOT_PSIZ, TGSI_SEMANTIC_PSIZE,    0);
    CHECK(VARYING_SLOT_COL0, TGSI_SEMANTIC_COLOR,    0);
@@ -83,9 +81,10 @@ main(void)
       }
    }
 
-   /* The texcoord range shares the GENERIC space with the VAR range under a
-    * different offset, so a caller that addresses TEXn must see TEXCOORD
-    * rather than a GENERIC index colliding with VAR0. */
+   /* The texcoord range occupies the TEXCOORD domain, separate from the VAR
+    * range's GENERIC domain.  A caller that addresses TEXn must therefore see
+    * (TEXCOORD, n), never a GENERIC index that can be confused with
+    * VAR0 + n. */
    for (unsigned i = 0; i <= VARYING_SLOT_TEX7 - VARYING_SLOT_TEX0; i++) {
       enum tgsi_semantic name;
       unsigned index;
