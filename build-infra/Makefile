@@ -172,6 +172,7 @@ override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classi
 override REVIEW_THREAD_RESOLUTION_TOOL := $(CURDIR)/scripts/review_thread_resolution.py
 override REVIEW_THREAD_TVPLC_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/action-frontier.tsv
 override REVIEW_THREAD_TVPLC_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/resolution-ledger.tsv
+override REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/evidence-refresh-ledger.tsv
 override REVIEW_THREAD_TVPLC_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-thread-frontier-after-TvpLc
 override REVIEW_THREAD_TVPLC_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/assessments.tsv
 override REVIEW_THREAD_TVPLC_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/pre-resolution-frontier.tsv
@@ -566,6 +567,7 @@ review-thread-frontier-check:
 	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_TVPLC_FRONTIER) \
 		--ledger $(REVIEW_THREAD_TVPLC_LEDGER) \
+		--evidence-refresh-ledger $(REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER) \
 		--batch-size 50 \
 		--repo-root $(CURDIR)/.. \
 		--main-ref origin/main \

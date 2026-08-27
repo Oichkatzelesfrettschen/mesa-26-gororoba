@@ -40,9 +40,9 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   re-audit to the preceding evidence commit.
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
-  recovery journal, generated action frontier, and resolution ledger.  Thirteen
-  rows are closed, and 37 actionable rows require merged repairs before
-  exact-ID resolution.
+  recovery journal, generated action frontier, resolution ledger, and
+  append-only evidence-refresh ledger.  Fifteen rows are closed.  The 35
+  actionable rows require merged repairs before exact-ID resolution.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -327,12 +327,12 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 37 | Implement, test, merge, synchronize, then resolve |
-| closed as fixed | 8 | Retain exact merge and post-resolution evidence |
+| actionable | 35 | Implement, test, merge, synchronize, then resolve |
+| closed as fixed | 10 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
-`ed31e4154700485767c60038102a46077574d1f9` uses:
+`59593fda660a7603789c895c479c2bb38d5140fa` uses:
 
 ```sh
 sudo -A env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
@@ -341,12 +341,11 @@ sudo -A env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   build-infra/tests/test_mount_boundary_calibration.py
 ```
 
-The replay produces 119 passes and six failures.  Each failure reaches the
-global root namespace guard before its fixture-specific bare-repository or
-source-view assertion.  The
-`source-view-bare-repository-root-uid-isolation` and
-`source-view-test-root-uid-isolation` rows are actionable, and the generated
-frontier carries no merged-evidence claim for either row.
+The replay passes all 125 tests.  Shared fixture namespaces let the six
+affected cases reach their bare-repository and source-view assertions while
+the production root-account rejection retains its exact diagnostic.  PR 1918
+binds both fixes to merged main, and both exact GitHub threads are resolved and
+re-queried.
 
 The ordered recovery journal records three independently merged DRM-shim
 repairs.  PR 1912 binds raw-alias backing identity to merge commit
@@ -354,9 +353,12 @@ repairs.  PR 1912 binds raw-alias backing identity to merge commit
 SPDX header to `4b0c1f55abd1c9d84022973e14fd40d639426ec9`; and PR 1913 binds large-lock
 layout normalization to `05023afc27fcc9fb0637ecacfa425d9fc4263a81`.  PR 1916
 binds ten re-audited fixed or superseded rows to merge commit
-`a2bfd6032c81faa75994dfd4f57b279200a0776f`.  Every recorded GitHub thread is
-resolved and re-queried.  The journal remains incomplete until every one of
-the 50 retained thread IDs is resolved and the batch-wide postflight succeeds.
+`a2bfd6032c81faa75994dfd4f57b279200a0776f`.  PR 1918 binds the source-root
+fixture isolation repairs to `59593fda660a7603789c895c479c2bb38d5140fa` and
+re-audits the Meson-wrap finalization evidence at the same merged commit.
+Every recorded GitHub thread is resolved and re-queried.  The journal remains
+incomplete until every one of the 50 retained thread IDs is resolved and the
+batch-wide postflight succeeds.
 
 The surviving mechanisms cover a complete headless GL provider and session
 workflow; AMD driver-root predicates and artifacts; Hybrid-TCL evidence
@@ -369,14 +371,14 @@ Radeon info queries.
 
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
-state-token render registration, and the three DRM-shim repairs.  SPDX-only,
-canonical-loader, merge-subject, and emoji-scope policies supersede five
-historical requests.
+root-independent source-view fixtures, state-token render registration, and
+the three DRM-shim repairs.  SPDX-only, canonical-loader, merge-subject, and
+emoji-scope policies supersede five historical requests.
 Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 13 resolved and 37 unresolved exact IDs.  Each
+Live GraphQL state reports 15 resolved and 35 unresolved exact IDs.  Each
 remaining ID resolves only after its actionable mechanism is merged and
 reclassified against synchronized `main`.
 
