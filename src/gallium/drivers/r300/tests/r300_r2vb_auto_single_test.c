@@ -109,6 +109,161 @@ check_floor_parser(void)
 }
 
 static void
+check_screen_scoped_runtime_config(void)
+{
+   const struct r300_r2vb_runtime_environment standing_environment = {
+      .standing = "1",
+   };
+
+   for (unsigned creation_order = 0; creation_order < 2; creation_order++) {
+      struct r300_r2vb_runtime_config rs480_config;
+      struct r300_r2vb_runtime_config other_config;
+
+      if (creation_order == 0) {
+         r300_r2vb_runtime_config_init(&rs480_config, true,
+                                       &standing_environment);
+         r300_r2vb_runtime_config_init(&other_config, false,
+                                       &standing_environment);
+      } else {
+         r300_r2vb_runtime_config_init(&other_config, false,
+                                       &standing_environment);
+         r300_r2vb_runtime_config_init(&rs480_config, true,
+                                       &standing_environment);
+      }
+
+      char label[160];
+      snprintf(label, sizeof(label),
+               "runtime config: RS480 standing defaults survive creation order %u",
+               creation_order);
+      CHECK(rs480_config.route_enabled &&
+               rs480_config.standing_defaults_enabled &&
+               rs480_config.auto_single_enabled &&
+               rs480_config.auto_single_vertex_floor == 16384 &&
+               rs480_config.slot_fetch_enabled &&
+               rs480_config.slot_grid_enabled &&
+               rs480_config.raw_submit_accepted,
+            label);
+
+      snprintf(label, sizeof(label),
+               "runtime config: non-RS480 screen stays closed in creation order %u",
+               creation_order);
+      CHECK(!other_config.standing_defaults_enabled &&
+               !other_config.route_enabled &&
+               !other_config.auto_single_enabled &&
+               other_config.auto_single_vertex_floor == 0 &&
+               !other_config.slot_fetch_enabled &&
+               !other_config.slot_grid_enabled &&
+               !other_config.raw_submit_accepted,
+            label);
+
+      const struct r300_screen rs480_screen = {
+         .r2vb = rs480_config,
+      };
+      const struct r300_screen other_screen = {
+         .r2vb = other_config,
+      };
+      const struct r300_screen *const consumer_sequence[3] = {
+         creation_order == 0 ? &rs480_screen : &other_screen,
+         creation_order == 0 ? &other_screen : &rs480_screen,
+         creation_order == 0 ? &rs480_screen : &other_screen,
+      };
+      for (unsigned sequence_index = 0; sequence_index < 3;
+           sequence_index++) {
+         const bool expect_enabled = (sequence_index != 1) ==
+                                     (creation_order == 0);
+         const struct r300_r2vb_runtime_config *observed =
+            r300_screen_r2vb_config(consumer_sequence[sequence_index]);
+         snprintf(label, sizeof(label),
+                  "runtime config: screen consumer sequence %u/%u selects its owner",
+                  creation_order, sequence_index);
+         CHECK(observed->standing_defaults_enabled == expect_enabled &&
+                  observed->route_enabled == expect_enabled &&
+                  observed->auto_single_enabled == expect_enabled &&
+                  observed->auto_single_vertex_floor ==
+                     (expect_enabled ? 16384 : 0) &&
+                  observed->slot_fetch_enabled == expect_enabled &&
+                  observed->slot_grid_enabled == expect_enabled &&
+                  observed->raw_submit_accepted == expect_enabled,
+               label);
+      }
+   }
+
+   const struct r300_r2vb_runtime_environment explicit_environment = {
+      .standing = "1",
+      .route = "0",
+      .auto_single = "1",
+      .auto_single_min_vertices = "8192",
+      .slot_fetch = "",
+      .slot_grid = "true",
+      .raw_submit_accepted = "0",
+   };
+   struct r300_r2vb_runtime_config explicit_config;
+   r300_r2vb_runtime_config_init(&explicit_config, true,
+                                 &explicit_environment);
+   CHECK(explicit_config.standing_defaults_enabled &&
+            !explicit_config.route_enabled &&
+            explicit_config.auto_single_enabled &&
+            explicit_config.auto_single_vertex_floor == 8192 &&
+            !explicit_config.slot_fetch_enabled &&
+            !explicit_config.slot_grid_enabled &&
+            !explicit_config.raw_submit_accepted,
+         "runtime config: every explicit member overrides the standing default");
+
+   const struct r300_r2vb_runtime_environment malformed_environment = {
+      .standing = "1",
+      .route = "1 ",
+      .auto_single = "1",
+      .auto_single_min_vertices = "+16384",
+      .slot_fetch = "01",
+      .slot_grid = "yes",
+      .raw_submit_accepted = "true",
+   };
+   struct r300_r2vb_runtime_config malformed_config;
+   r300_r2vb_runtime_config_init(&malformed_config, true,
+                                 &malformed_environment);
+   CHECK(malformed_config.standing_defaults_enabled &&
+            !malformed_config.route_enabled &&
+            !malformed_config.auto_single_enabled &&
+            malformed_config.auto_single_vertex_floor == 0 &&
+            !malformed_config.slot_fetch_enabled &&
+            !malformed_config.slot_grid_enabled &&
+            !malformed_config.raw_submit_accepted,
+         "runtime config: malformed explicit values fail closed");
+
+   const struct r300_r2vb_runtime_environment manual_environment = {
+      .route = "1",
+      .auto_single = "1",
+      .auto_single_min_vertices = "4096",
+      .slot_fetch = "1",
+      .slot_grid = "1",
+      .raw_submit_accepted = "1",
+   };
+   struct r300_r2vb_runtime_config manual_config;
+   r300_r2vb_runtime_config_init(&manual_config, false, &manual_environment);
+   CHECK(!manual_config.standing_defaults_enabled &&
+            manual_config.route_enabled && manual_config.auto_single_enabled &&
+            manual_config.auto_single_vertex_floor == 4096 &&
+            manual_config.slot_fetch_enabled && manual_config.slot_grid_enabled &&
+            manual_config.raw_submit_accepted,
+         "runtime config: explicit member gates remain available off RS480");
+
+   struct r300_r2vb_runtime_environment mutable_environment = {
+      .standing = "1",
+   };
+   struct r300_r2vb_runtime_config captured_config;
+   r300_r2vb_runtime_config_init(&captured_config, true,
+                                 &mutable_environment);
+   mutable_environment.standing = "0";
+   mutable_environment.route = "0";
+   mutable_environment.raw_submit_accepted = "0";
+   CHECK(captured_config.route_enabled &&
+            captured_config.auto_single_enabled &&
+            captured_config.auto_single_vertex_floor == 16384 &&
+            captured_config.raw_submit_accepted,
+         "runtime config: a screen retains its captured decisions");
+}
+
+static void
 check_mode_compatibility(void)
 {
    struct r300_r2vb_auto_single_mode_values values;
@@ -2468,7 +2623,7 @@ check_logical_binding(void)
       r300_r2vb_producer_bo_draw_init(&txn);
       /* Transaction-owned gate: gate off declines as the first fallible
        * operation, before the model upload retains anything. */
-      unsetenv("R300_R2VB_SLOT_FETCH");
+      g_screen.r2vb.slot_fetch_enabled = false;
       CHECK(!r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
@@ -2478,7 +2633,7 @@ check_logical_binding(void)
                !txn.output_resource &&
                txn.state == R300_R2VB_BO_DRAW_EMPTY,
             "txn: gate off declines before any upload");
-      setenv("R300_R2VB_SLOT_FETCH", "1", 1);
+      g_screen.r2vb.slot_fetch_enabled = true;
       CHECK(r300_r2vb_producer_bo_draw_validate(
                &g_context, &plan, &fs, &rs, &psc, &vb, &ve, 1, 1,
                &txn_layout, &slotfb->r.b, &outshadow.b, 0, TCOUNT,
@@ -2876,7 +3031,7 @@ check_logical_binding(void)
       g_context.cs.current.cdw = 0;
 
       g_context.fb_state.state = NULL;
-      unsetenv("R300_R2VB_SLOT_FETCH");
+      g_screen.r2vb.slot_fetch_enabled = false;
       pipe_resource_reference(&(struct pipe_resource *){ &tiny->r.b }, NULL);
       pipe_resource_reference(&(struct pipe_resource *){ &slotfb->r.b }, NULL);
       free(outbytes);
@@ -3039,6 +3194,8 @@ main(void)
    check_gate_parser();
    printf("auto-single floor parser:\n");
    check_floor_parser();
+   printf("screen-scoped R2VB runtime config:\n");
+   check_screen_scoped_runtime_config();
    printf("auto-single mode compatibility:\n");
    check_mode_compatibility();
    printf("auto-single policy matrix:\n");

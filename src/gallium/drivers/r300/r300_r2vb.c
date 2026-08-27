@@ -356,7 +356,9 @@ static bool r300_r2vb_clip_classify_enabled(void)
  * delivery submit; anything else (partial, mixed, unsafe w, unsupported
  * draw state) falls the whole draw back to gallivm.  No per-triangle
  * splitting -- geometric clipping is edge generation's job. */
-static bool r300_r2vb_auto_single_armed(uint32_t *floor_out);
+static bool
+r300_r2vb_auto_single_armed(const struct r300_context *r300,
+                            uint32_t *floor_out);
 
 static bool
 r300_r2vb_clip_route_enabled(const struct r300_context *r300)
@@ -1941,7 +1943,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     struct r300_r2vb_slot_layout layout;
     if (!r300_r2vb_slot_layout_select(
             num_vertices, getenv("R300_R2VB_SLOT_LAYOUT"),
-            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            r300_screen_r2vb_config(r300->screen)->slot_grid_enabled,
             &layout))
         return;
     if ((uint64_t)output_gart_bo_offset + layout.storage_bytes >
@@ -2396,12 +2398,13 @@ struct r2vb_selftest_config {
 
 static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg,
                                      bool from_flush, bool already_fired,
-                                     bool query_active, bool rs48x_capable)
+                                     bool query_active, bool rs48x_capable,
+                                     bool raw_submit_allowed)
 {
    static unsigned diagnostics_reported;
     const char *hb_tcl = getenv("R300_HB_TCL");
     const char *mode = getenv("R300_R2VB_TIMING");
-    const char *raw_submit_accepted = getenv("R300_RAW_SUBMIT_ACCEPTED");
+    const char *raw_submit_accepted = raw_submit_allowed ? "1" : NULL;
 
     memset(cfg, 0, sizeof(*cfg));
     cfg->action = r300_r2vb_select_selftest_action(
@@ -2501,7 +2504,9 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     struct r2vb_selftest_config cfg;
     r2vb_get_selftest_config(&cfg, from_flush, fired,
                              r300->query_current != NULL,
-                             rs48x_r2vb_capable);
+                             rs48x_r2vb_capable,
+                             r300_screen_r2vb_config(r300->screen)
+                                 ->raw_submit_accepted);
 
     if (cfg.action == R300_R2VB_SELFTEST_DECLINE)
         return false;
@@ -2553,7 +2558,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     struct r300_r2vb_slot_layout selftest_layout;
     if (!r300_r2vb_slot_layout_select(
             cfg.num_vertices, getenv("R300_R2VB_SLOT_LAYOUT"),
-            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            r300_screen_r2vb_config(r300->screen)->slot_grid_enabled,
             &selftest_layout)) {
         free(heap_attrs);
         return false;
@@ -4230,7 +4235,7 @@ bool r300_r2vb_producer_bo_draw_validate(
     }
     /* Transaction-owned gate: the exact opt-in is the first fallible
      * operation, so a gate-off call declines before the model upload. */
-    if (!r300_r2vb_slot_fetch_gate_value(getenv("R300_R2VB_SLOT_FETCH"))) {
+    if (!r300_screen_r2vb_config(r300->screen)->slot_fetch_enabled) {
         r2vb_bo_draw_validate_decline("slot_fetch_gate");
         return false;
     }
@@ -4897,6 +4902,141 @@ bool r300_r2vb_auto_single_floor_value(const char *value, uint32_t *floor)
     return true;
 }
 
+enum r300_r2vb_runtime_gate_state {
+    R300_R2VB_RUNTIME_GATE_UNSET = 0,
+    R300_R2VB_RUNTIME_GATE_DISABLED,
+    R300_R2VB_RUNTIME_GATE_ENABLED,
+};
+
+struct r300_r2vb_runtime_config_inputs {
+    enum r300_r2vb_runtime_gate_state standing;
+    enum r300_r2vb_runtime_gate_state route;
+    enum r300_r2vb_runtime_gate_state auto_single;
+    bool auto_single_floor_present;
+    bool auto_single_floor_valid;
+    uint32_t auto_single_vertex_floor;
+    enum r300_r2vb_runtime_gate_state slot_fetch;
+    enum r300_r2vb_runtime_gate_state slot_grid;
+    enum r300_r2vb_runtime_gate_state raw_submit_accepted;
+};
+
+static enum r300_r2vb_runtime_gate_state
+r300_r2vb_runtime_gate_state_value(const char *value)
+{
+    if (!value)
+        return R300_R2VB_RUNTIME_GATE_UNSET;
+    return strcmp(value, "1") == 0 ? R300_R2VB_RUNTIME_GATE_ENABLED
+                                   : R300_R2VB_RUNTIME_GATE_DISABLED;
+}
+
+static void
+r300_r2vb_runtime_floor_input_init(
+    struct r300_r2vb_runtime_config_inputs *inputs, const char *value)
+{
+    uint32_t floor = 0;
+    inputs->auto_single_floor_present = value != NULL;
+    inputs->auto_single_floor_valid =
+        r300_r2vb_auto_single_floor_value(value, &floor);
+    inputs->auto_single_vertex_floor =
+        inputs->auto_single_floor_valid ? floor : 0;
+}
+
+static bool
+r300_r2vb_runtime_gate_resolve(enum r300_r2vb_runtime_gate_state state,
+                               bool standing_default)
+{
+    return state == R300_R2VB_RUNTIME_GATE_UNSET
+               ? standing_default
+               : state == R300_R2VB_RUNTIME_GATE_ENABLED;
+}
+
+static void
+r300_r2vb_runtime_config_resolve(
+    struct r300_r2vb_runtime_config *config, bool is_rs480,
+    const struct r300_r2vb_runtime_config_inputs *inputs)
+{
+    const bool standing_enabled =
+        is_rs480 && inputs->standing == R300_R2VB_RUNTIME_GATE_ENABLED;
+    const bool floor_valid = inputs->auto_single_floor_present
+                                 ? inputs->auto_single_floor_valid
+                                 : standing_enabled;
+    uint32_t floor = inputs->auto_single_vertex_floor;
+    if (!inputs->auto_single_floor_present && standing_enabled)
+        floor = 16384;
+
+    config->standing_defaults_enabled = standing_enabled;
+    config->route_enabled =
+        r300_r2vb_runtime_gate_resolve(inputs->route, standing_enabled);
+    config->auto_single_enabled =
+        r300_r2vb_runtime_gate_resolve(inputs->auto_single,
+                                       standing_enabled) &&
+        floor_valid;
+    config->auto_single_vertex_floor = floor_valid ? floor : 0;
+    config->slot_fetch_enabled =
+        r300_r2vb_runtime_gate_resolve(inputs->slot_fetch, standing_enabled);
+    config->slot_grid_enabled =
+        r300_r2vb_runtime_gate_resolve(inputs->slot_grid, standing_enabled);
+    config->raw_submit_accepted = r300_r2vb_runtime_gate_resolve(
+        inputs->raw_submit_accepted, standing_enabled);
+}
+
+static void
+r300_r2vb_runtime_config_inputs_init(
+    struct r300_r2vb_runtime_config_inputs *inputs,
+    const struct r300_r2vb_runtime_environment *environment)
+{
+    memset(inputs, 0, sizeof(*inputs));
+    inputs->standing = r300_r2vb_runtime_gate_state_value(
+        environment ? environment->standing : NULL);
+    inputs->route = r300_r2vb_runtime_gate_state_value(
+        environment ? environment->route : NULL);
+    inputs->auto_single = r300_r2vb_runtime_gate_state_value(
+        environment ? environment->auto_single : NULL);
+    r300_r2vb_runtime_floor_input_init(
+        inputs, environment ? environment->auto_single_min_vertices : NULL);
+    inputs->slot_fetch = r300_r2vb_runtime_gate_state_value(
+        environment ? environment->slot_fetch : NULL);
+    inputs->slot_grid = r300_r2vb_runtime_gate_state_value(
+        environment ? environment->slot_grid : NULL);
+    inputs->raw_submit_accepted = r300_r2vb_runtime_gate_state_value(
+        environment ? environment->raw_submit_accepted : NULL);
+}
+
+void
+r300_r2vb_runtime_config_init(
+    struct r300_r2vb_runtime_config *config, bool is_rs480,
+    const struct r300_r2vb_runtime_environment *environment)
+{
+    struct r300_r2vb_runtime_config_inputs inputs;
+    r300_r2vb_runtime_config_inputs_init(&inputs, environment);
+    r300_r2vb_runtime_config_resolve(config, is_rs480, &inputs);
+}
+
+void
+r300_r2vb_runtime_config_init_from_process(
+    struct r300_r2vb_runtime_config *config, bool is_rs480)
+{
+    struct r300_r2vb_runtime_config_inputs inputs = {0};
+
+    /* Parse each result before the next getenv call because the returned
+     * storage may be overwritten by a later environment lookup. */
+    inputs.standing = r300_r2vb_runtime_gate_state_value(
+        getenv("R300_R2VB_STANDING"));
+    inputs.route = r300_r2vb_runtime_gate_state_value(
+        getenv("R300_R2VB_ROUTE"));
+    inputs.auto_single = r300_r2vb_runtime_gate_state_value(
+        getenv("R300_R2VB_AUTO_SINGLE"));
+    r300_r2vb_runtime_floor_input_init(
+        &inputs, getenv("R300_R2VB_AUTO_SINGLE_MIN_VERTICES"));
+    inputs.slot_fetch = r300_r2vb_runtime_gate_state_value(
+        getenv("R300_R2VB_SLOT_FETCH"));
+    inputs.slot_grid = r300_r2vb_runtime_gate_state_value(
+        getenv("R300_R2VB_SLOT_GRID"));
+    inputs.raw_submit_accepted = r300_r2vb_runtime_gate_state_value(
+        getenv("R300_RAW_SUBMIT_ACCEPTED"));
+    r300_r2vb_runtime_config_resolve(config, is_rs480, &inputs);
+}
+
 bool
 r300_r2vb_auto_single_mode_values_compatible(
     const struct r300_r2vb_auto_single_mode_values *values)
@@ -5032,7 +5172,7 @@ r300_r2vb_auto_single_note_outcome(
     struct r300_r2vb_slot_layout layout;
     bool layout_available = r300_r2vb_slot_layout_select(
         draw->count, getenv("R300_R2VB_SLOT_LAYOUT"),
-        r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+        r300_screen_r2vb_config(r300->screen)->slot_grid_enabled,
         &layout);
     fprintf(stderr,
             "r2vb_auto_single_outcome gate=1 hash=%s"
@@ -5194,24 +5334,15 @@ r300_r2vb_auto_single_policy(const struct r300_r2vb_producer_plan *clip_plan,
     return R300_R2VB_AUTO_SINGLE_OK;
 }
 
-/* Canary arming (both gates cached once): exact "1" plus a valid floor. */
-static bool r300_r2vb_auto_single_armed(uint32_t *floor_out)
+/* The screen owns the exact-value gate decision and its validated floor. */
+static bool
+r300_r2vb_auto_single_armed(const struct r300_context *r300,
+                            uint32_t *floor_out)
 {
-    static int armed = -1;
-    static uint32_t floor;
-    if (armed < 0) {
-        uint32_t f = 0;
-        armed = (r300_r2vb_auto_single_gate_value(
-                     getenv("R300_R2VB_AUTO_SINGLE")) &&
-                 r300_r2vb_auto_single_floor_value(
-                     getenv("R300_R2VB_AUTO_SINGLE_MIN_VERTICES"), &f))
-                    ? 1
-                    : 0;
-        floor = f;
-    }
     if (floor_out)
-        *floor_out = floor;
-    return armed == 1;
+        *floor_out =
+            r300_screen_r2vb_config(r300->screen)->auto_single_vertex_floor;
+    return r300_screen_r2vb_config(r300->screen)->auto_single_enabled;
 }
 
 /* Diagnostic typed-split gate (R300_R2VB_TYPED_SPLIT): the exact value 1
@@ -5979,19 +6110,15 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                           const struct pipe_draw_info *info,
                           const struct pipe_draw_start_count_bias *draw)
 {
-    /* Gate read once: this runs on every draw, so do not getenv per call. */
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("R300_R2VB_ROUTE");
-        enabled = (e && strcmp(e, "1") == 0) ? 1 : 0;
-    }
+    const bool enabled = r300_screen_r2vb_config(r300->screen)->route_enabled;
     /* Telemetry-only observation: with the route gate closed and the
      * telemetry print gate or retain directory armed, the standing workload
      * still classifies -- the plan cache measures each candidate cell once
      * and the telemetry note records and retains it -- and every draw then
      * declines, so gallivm renders exactly as with both gates closed.  The
-     * gates are process-constant, so the observation marker written into the
-     * admission memo below is never consulted by the routing path. */
+     * route decision is stable for the screen lifetime, so the observation
+     * marker written into the admission memo below is never consulted by the
+     * routing path. */
     static int observe = -1;
     if (observe < 0)
         observe = r300_r2vb_telemetry_observation_enabled() ? 1 : 0;
@@ -6234,7 +6361,7 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
     uint32_t auto_floor = 0;
-    bool auto_armed = r300_r2vb_auto_single_armed(&auto_floor);
+    bool auto_armed = r300_r2vb_auto_single_armed(r300, &auto_floor);
     if (!gate && !auto_armed)
         return false;
     enum r300_r2vb_verdict route_verdict =
@@ -6260,7 +6387,7 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         struct r300_r2vb_slot_layout layout;
         bool layout_available = r300_r2vb_slot_layout_select(
             draw->count, getenv("R300_R2VB_SLOT_LAYOUT"),
-            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            r300_screen_r2vb_config(r300->screen)->slot_grid_enabled,
             &layout);
         const char *bo_draw_mode = getenv("R300_R2VB_BO_DRAW");
         const struct r300_r2vb_auto_single_mode_values mode_values = {
@@ -6288,10 +6415,10 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
             .uses_grid_layout =
                 layout_available &&
                 layout.policy == R300_R2VB_LAYOUT_GRID_2048,
-            .slot_fetch_enabled = r300_r2vb_slot_fetch_gate_value(
-                getenv("R300_R2VB_SLOT_FETCH")),
-            .raw_submit_accepted = r300_r2vb_option_is(
-                getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"),
+            .slot_fetch_enabled =
+                r300_screen_r2vb_config(r300->screen)->slot_fetch_enabled,
+            .raw_submit_accepted =
+                r300_screen_r2vb_config(r300->screen)->raw_submit_accepted,
             .bo_draw_mode_compatible =
                 !bo_draw_mode ||
                 r300_r2vb_bo_draw_delivery_mode_value(bo_draw_mode),
@@ -7731,7 +7858,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
      * Capture uses its separate path because RADEON_FLUSH_NOOP discards the
      * command stream before DRM_RADEON_CS. */
     if (action != R2VB_BO_DRAW_ACTION_CAPTURE &&
-        !r300_r2vb_option_is(getenv("R300_RAW_SUBMIT_ACCEPTED"), "1"))
+        !r300_screen_r2vb_config(r300->screen)->raw_submit_accepted)
         why = "raw_submit_gate";
     /* Diagnostic width modes admit exactly the layout boundary counts: 2048
      * and 2049 (the first one-row frontier, silicon-green), 2559/2560/2561
@@ -8687,7 +8814,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     struct r300_r2vb_slot_layout layout;
     if (!r300_r2vb_slot_layout_select(
             count, getenv("R300_R2VB_SLOT_LAYOUT"),
-            r300_r2vb_slot_grid_gate_value(getenv("R300_R2VB_SLOT_GRID")),
+            r300_screen_r2vb_config(r300->screen)->slot_grid_enabled,
             &layout)) {
         r2vb_clear_producer_bookkeeping(r300);
         free(model);
@@ -8961,8 +9088,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                     struct r300_r2vb_slot_layout clipped_layout;
                     bool layout_ok = r300_r2vb_slot_layout_select(
                         (uint32_t)n2, getenv("R300_R2VB_SLOT_LAYOUT"),
-                        r300_r2vb_slot_grid_gate_value(
-                            getenv("R300_R2VB_SLOT_GRID")),
+                        r300_screen_r2vb_config(r300->screen)
+                            ->slot_grid_enabled,
                         &clipped_layout);
                     struct pipe_resource *cbo =
                         layout_ok

@@ -788,34 +788,14 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
 
-    /* R300_R2VB_STANDING=1 arms the RS480-family R2VB route as one gate:
-     * the route classifier, the AUTO_SINGLE admission at the 16384-vertex
-     * floor, the BO-fetch producer, the 2048-wide grid layout, and the
-     * delivery consent.  setenv with overwrite 0 sets only the member
-     * gates the environment leaves unset, so an explicit member value
-     * wins.  The AUTO_SINGLE policy re-measures every candidate draw
-     * through the plan cache, each decline names its reason and falls
-     * back to gallivm, and the admission and outcome lines record the
-     * fallback.  The gate binds to CHIP_RS480 and opens on the exact
-     * value 1. */
-    if (r300screen->caps.family == CHIP_RS480 &&
-        r300_r2vb_standing_gate_value(getenv("R300_R2VB_STANDING"))) {
-        /* R300_R2VB_FLOAT2_SOURCE stays outside this list: the F32_2
-         * source is an exact-value experimental gate consumed only by
-         * no-submit capture fixtures, and the standing route never arms
-         * it. */
-        static const char *const standing_gates[][2] = {
-            { "R300_R2VB_ROUTE", "1" },
-            { "R300_R2VB_AUTO_SINGLE", "1" },
-            { "R300_R2VB_AUTO_SINGLE_MIN_VERTICES", "16384" },
-            { "R300_R2VB_SLOT_FETCH", "1" },
-            { "R300_R2VB_SLOT_GRID", "1" },
-            { "R300_RAW_SUBMIT_ACCEPTED", "1" },
-        };
-        for (unsigned i = 0; i < ARRAY_SIZE(standing_gates); i++)
-            setenv(standing_gates[i][0], standing_gates[i][1], 0);
+    /* The standing route supplies RS480-only defaults without changing the
+     * process environment.  Each explicit option is parsed before the next
+     * environment lookup, so zero, empty, and malformed values stay closed. */
+    r300_r2vb_runtime_config_init_from_process(
+        &r300screen->r2vb, r300screen->caps.family == CHIP_RS480);
+    if (r300_screen_r2vb_config(r300screen)->standing_defaults_enabled) {
         fprintf(stderr,
-                "r300: R2VB standing route armed (RS480-family measured "
+                "r300: R2VB standing defaults captured (RS480-family measured "
                 "domain)\n");
     }
 
