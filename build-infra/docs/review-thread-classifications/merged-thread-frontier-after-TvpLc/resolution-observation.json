@@ -30,6 +30,15 @@
     },
     {
       "disposition": "fixed",
+      "evidence_commit": "a658cfdaed0260b20491c89e7e5710ced3ca1fb4",
+      "evidence_pr": 1923,
+      "merged_at": "2026-08-27T15:54:47Z",
+      "resolved_at": "2026-08-27T15:57:58Z",
+      "thread_id": "PRRT_kwDOR3YK5M6TxVhn",
+      "verified_at": "2026-08-27T15:57:58Z"
+    },
+    {
+      "disposition": "fixed",
       "evidence_commit": "20286a21d04942790561bc931ea332eb59b6214b",
       "evidence_pr": 1922,
       "merged_at": "2026-08-27T15:43:02Z",
@@ -111,12 +120,75 @@
     },
     {
       "disposition": "fixed",
+      "evidence_commit": "4ef62b7e547e76ef64806f2b0d8fc07edb98fe9d",
+      "evidence_pr": 1902,
+      "merged_at": "2026-08-27T03:25:38Z",
+      "resolved_at": "2026-08-27T15:57:59Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Ty_L1",
+      "verified_at": "2026-08-27T15:57:59Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "4ef62b7e547e76ef64806f2b0d8fc07edb98fe9d",
+      "evidence_pr": 1902,
+      "merged_at": "2026-08-27T03:25:38Z",
+      "resolved_at": "2026-08-27T15:58:00Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Ty_L2",
+      "verified_at": "2026-08-27T15:58:00Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "4ef62b7e547e76ef64806f2b0d8fc07edb98fe9d",
+      "evidence_pr": 1902,
+      "merged_at": "2026-08-27T03:25:38Z",
+      "resolved_at": "2026-08-27T15:58:01Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Ty_L3",
+      "verified_at": "2026-08-27T15:58:01Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "3bc0603dc2dd0d00e13cfbef5554ba700aa78ac0",
+      "evidence_pr": 1903,
+      "merged_at": "2026-08-27T03:41:56Z",
+      "resolved_at": "2026-08-27T15:58:02Z",
+      "thread_id": "PRRT_kwDOR3YK5M6TzUAO",
+      "verified_at": "2026-08-27T15:58:03Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "3bc0603dc2dd0d00e13cfbef5554ba700aa78ac0",
+      "evidence_pr": 1903,
+      "merged_at": "2026-08-27T03:41:56Z",
+      "resolved_at": "2026-08-27T15:58:03Z",
+      "thread_id": "PRRT_kwDOR3YK5M6TzUAP",
+      "verified_at": "2026-08-27T15:58:04Z"
+    },
+    {
+      "disposition": "fixed",
       "evidence_commit": "a2bfd6032c81faa75994dfd4f57b279200a0776f",
       "evidence_pr": 1916,
       "merged_at": "2026-08-27T09:58:33Z",
       "resolved_at": "2026-08-27T10:00:27Z",
       "thread_id": "PRRT_kwDOR3YK5M6TzUAQ",
       "verified_at": "2026-08-27T10:00:27Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "9025fe619e85f28f3ee0dd510abeeb27adfbbc70",
+      "evidence_pr": 1904,
+      "merged_at": "2026-08-27T03:51:13Z",
+      "resolved_at": "2026-08-27T15:58:04Z",
+      "thread_id": "PRRT_kwDOR3YK5M6T0Eow",
+      "verified_at": "2026-08-27T15:58:05Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "9025fe619e85f28f3ee0dd510abeeb27adfbbc70",
+      "evidence_pr": 1904,
+      "merged_at": "2026-08-27T03:51:13Z",
+      "resolved_at": "2026-08-27T15:58:06Z",
+      "thread_id": "PRRT_kwDOR3YK5M6T0Eoz",
+      "verified_at": "2026-08-27T15:58:06Z"
     },
     {
       "disposition": "fixed",
