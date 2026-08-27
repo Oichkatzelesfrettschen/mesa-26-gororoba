@@ -1530,13 +1530,19 @@ install: source-root-check vostro-prefix-check
 	      echo "Meson setup failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" write-identity; \
 	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
-	    $(SUDO) $(MESON) install --no-rebuild --only-changed -C "$(BUILDDIR)"; \
+	    $(SUDO) $(MESON) install --no-rebuild --only-changed -C "$(BUILDDIR)" || { \
+	      echo "Meson install failed; source identity remains provisional" >&2; \
+	      exit 2; \
+	    }; \
 	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
 	    : "ownership so a later non-sudo makepkg of the same builddir can rewrite"; \
 	    : "it instead of failing package() with a PermissionError under fakeroot"; \
-	    $(SUDO) chown -R "$$(id -un):$$(id -gn)" "$(BUILDDIR)/meson-logs"; \
+	    $(SUDO) chown -R "$$(id -un):$$(id -gn)" "$(BUILDDIR)/meson-logs" || { \
+	      echo "Meson install log ownership restore failed; source identity remains provisional" >&2; \
+	      exit 2; \
+	    }; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" write-identity; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    echo "[install] complete; releasing flock"'
 
@@ -2762,6 +2768,63 @@ source-root-selection-test:
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	post_setup_failure_meson="$$tmpdir/post-setup-failure-meson"; \
+	{ \
+		printf '%s\n' '#!/bin/sh' 'set -eu' \
+			'case "$$1" in' \
+			'setup) exit 0 ;;' \
+			'install) : > "$$0.install-invoked"; exit 73 ;;' \
+			'*) exit 64 ;;' \
+			'esac'; \
+	} > "$$post_setup_failure_meson"; \
+	chmod 700 "$$post_setup_failure_meson"; \
+	if post_setup_failure_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" install \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESON="$$post_setup_failure_meson" \
+		SUDO=env 2>&1 )"; then \
+		echo "FAIL  install finalized identity after post-setup failure" >&2; \
+		exit 1; \
+	fi; \
+	test -f "$$post_setup_failure_meson.install-invoked" || { \
+		echo "FAIL  post-setup install fixture did not reach installation" >&2; \
+		exit 1; \
+	}; \
+	printf '%s\n' "$$post_setup_failure_output" | \
+		grep -F "Meson install failed; source identity remains provisional" \
+		>/dev/null || { \
+		echo "FAIL  post-setup install failure returned the wrong diagnostic" >&2; \
+		printf '%s\n' "$$post_setup_failure_output" >&2; exit 1; \
+	}; \
+	grep -F '"state": "provisional"' \
+		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		>/dev/null || { \
+		echo "FAIL  post-setup install failure left the root identity final" >&2; \
+		exit 1; \
+	}; \
+	mkdir -p "$$identity_prefix"; \
+	touch "$$identity_prefix/libgallium-partial-install.so"; \
+	if partial_artifact_output="$$( $(MAKE) --no-print-directory \
+		-C "$(CURDIR)" artifact-check \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  artifact-check accepted a partial failed install" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$partial_artifact_output" | \
+		grep -F "expected final" >/dev/null || { \
+		echo "FAIL  partial install returned the wrong artifact diagnostic" >&2; \
+		printf '%s\n' "$$partial_artifact_output" >&2; exit 1; \
+	}; \
+	echo "OK    post-setup install failure keeps identities provisional"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" install \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
@@ -2772,7 +2835,7 @@ source-root-selection-test:
 		echo "FAIL  successful install wrote mismatched transactions" >&2; \
 		exit 1; \
 	}; \
-	echo "OK    install setup revokes and finalizes one source transaction"; \
+	echo "OK    successful install finalizes one source transaction"; \
 	mkdir -p "$$identity_prefix"; \
 	touch "$$identity_prefix/libgallium-source-root-test.so"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" artifact-check \
