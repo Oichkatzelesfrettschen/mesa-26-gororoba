@@ -273,10 +273,6 @@ pstip_destroy(struct draw_stage *stage)
 {
    struct pstip_stage *pstip = pstip_stage(stage);
 
-   for (unsigned i = 0; i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
-      pipe_sampler_view_reference(&pstip->state.sampler_views[i], NULL);
-   }
-
    pstip->pipe->delete_sampler_state(pstip->pipe, pstip->sampler_cso);
 
    pipe_resource_reference(&pstip->texture, NULL);
@@ -472,8 +468,6 @@ draw_install_pstipple_stage(struct draw_context *draw,
    if (!pstip)
       goto fail;
 
-   draw->pipeline.pstipple = &pstip->stage;
-
    /* save original driver functions */
    pstip->driver_create_fs_state = pipe->create_fs_state;
    pstip->driver_bind_fs_state = pipe->bind_fs_state;
@@ -496,6 +490,8 @@ draw_install_pstipple_stage(struct draw_context *draw,
    pstip->sampler_cso = util_pstipple_create_sampler(pipe);
    if (!pstip->sampler_cso)
       goto fail;
+
+   draw->pipeline.pstipple = &pstip->stage;
 
    /* override the driver's functions */
    pipe->create_fs_state = pstip_create_fs_state;
