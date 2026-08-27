@@ -1,3 +1,7 @@
 thread_id	previous_evidence_commit	evidence_commit	verified_at	refresh_note
 PRRT_kwDOR3YK5M6VINus	a2bfd6032c81faa75994dfd4f57b279200a0776f	59593fda660a7603789c895c479c2bb38d5140fa	2026-08-27T10:17:07Z	source-view-meson-wrap-finalization-preserved-after-fixture-namespace-isolation
 PRRT_kwDOR3YK5M6V3PUs	a2bfd6032c81faa75994dfd4f57b279200a0776f	60c34e778d475469fae20e0714de79464bc42136	2026-08-27T16:48:03Z	The Draw test retains an SPDX license grant, and the new-file policy retains copyright only for a verified legal holder
+PRRT_kwDOR3YK5M6VuETV	a2bfd6032c81faa75994dfd4f57b279200a0776f	7cc2fad09eac2f38dd1cbec2a26f32c7a1366f1b	2026-08-27T19:37:24Z	state-token-registration-identity-preserved-after-readable-write-only-witness
+PRRT_kwDOR3YK5M6VuETX	400df9e74aeacc6917410a887a3bf33bf5fda167	7cc2fad09eac2f38dd1cbec2a26f32c7a1366f1b	2026-08-27T19:37:24Z	raw-alias-backing-identity-preserved-after-readable-write-only-witness
+PRRT_kwDOR3YK5M6VuETZ	4b0c1f55abd1c9d84022973e14fd40d639426ec9	7cc2fad09eac2f38dd1cbec2a26f32c7a1366f1b	2026-08-27T19:39:20Z	preload-test-spdx-only-header-preserved-after-write-only-state-token-coverage
+PRRT_kwDOR3YK5M6VuETa	05023afc27fcc9fb0637ecacfa425d9fc4263a81	7cc2fad09eac2f38dd1cbec2a26f32c7a1366f1b	2026-08-27T19:39:20Z	large-lock-type-normalization-preserved-after-write-only-state-token-test-hooks

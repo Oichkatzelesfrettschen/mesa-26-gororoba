@@ -327,8 +327,8 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 3 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 0 | None |
+| actionable | 0 | None |
+| fixed on merged main | 3 | Publish this assessment, then resolve exact IDs |
 | closed as fixed | 42 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
@@ -431,8 +431,20 @@ fixture pass.  PR 1932 re-audits all four targets at merge commit
 `b918e1135f318e3253a3fc76cea94bdbbae6c560`; all four exact GitHub threads are
 resolved and re-queried.
 
-The surviving actionable mechanisms cover per-screen R2VB state, width-correct
-Radeon info queries, and write-only DRM-shim token identity.
+The three remaining mechanisms are fixed on merged main.  PR 1934 merge commit
+`3b355908198285831108be57003bdfbd69a796cb` stores the RS480 standing-route
+composite in screen-owned state and covers both mixed-screen creation orders
+plus alternating consumers.  PR 1936 merge commit
+`b058622f9f395c151befc9c0294230cd383815d6` classifies all 39 current
+DRM_RADEON_INFO requests by kernel ABI layout and routes them through typed
+u32, u64, or exact-array wrappers with pre-ioctl validation.  PR 1937 merge
+commit `7cc2fad09eac2f38dd1cbec2a26f32c7a1366f1b` preserves O_WRONLY while
+validating the same state-token device and inode through a readable witness;
+direct opens, inherited exec, SCM_RIGHTS transfer, wrong-inode rejection,
+descriptor closure, and registry cleanup pass.  The evidence-refresh ledger
+re-audits the unchanged state-token registration, raw-alias backing identity,
+preload-test SPDX header, and large-lock normalization mechanisms at the same
+DRM-shim merge commit.
 
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
@@ -446,9 +458,10 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 47 resolved and three unresolved exact IDs.  The
-three unresolved rows require their actionable mechanisms to merge before
-exact-ID resolution.
+Live GraphQL state reports 47 resolved and three unresolved exact IDs.  Their
+repair commits are ancestors of `origin/main`, and their declared target files
+match between each repair commit and the current candidate.  The three exact
+IDs remain unresolved until this merged-main assessment is published.
 
 ## Verification
 
