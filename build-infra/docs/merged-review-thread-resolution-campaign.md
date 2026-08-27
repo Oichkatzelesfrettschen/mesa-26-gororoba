@@ -28,6 +28,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   SHA-256-bound mutation journal, generated terminal frontier, and resolution
   ledger.  Keeping these paths batch-scoped preserves the second batch's
   terminal global views without overwriting history.
+- `review-thread-classifications/merged-thread-frontier-after-QY6A8/` owns the
+  fourth batch's 50-row assessment, generated action frontier, and resolution
+  ledger.  The action frontier stays unresolved until this assessment is on
+  merged `main` and the exact-ID mutation run completes.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third batch's terminal views remain in
@@ -144,8 +148,8 @@ The source/history audit classifies the 50 rows as:
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| fixed on merged main | 34 | Re-query, resolve exact ID, re-query, record ledger |
-| superseded by merged mechanism | 9 | Re-query, resolve exact ID, re-query, record ledger |
+| fixed on merged main | 34 | Resolve exact ID; verify; record |
+| superseded by merged mechanism | 9 | Resolve exact ID; verify; record |
 | actionable | 7 | Implement, test, merge, synchronize, then resolve |
 
 The seven actionable rows collapse into five mechanism-coherent changes:
@@ -174,8 +178,8 @@ or state-mismatched rows.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| fixed on merged main | 48 | Re-query, resolve exact ID, re-query, record ledger |
-| superseded by removed build targets | 2 | Re-query, resolve exact ID, re-query, record ledger |
+| fixed on merged main | 48 | Resolve exact ID; verify; record |
+| superseded by removed build targets | 2 | Resolve exact ID; verify; record |
 | actionable | 0 | None |
 
 The two findings that survived the initial source audit both governed the Palm
@@ -209,8 +213,8 @@ evidence commit.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| fixed on merged main | 40 | Re-query, resolve exact ID, re-query, record ledger |
-| superseded by a merged mechanism | 10 | Re-query, resolve exact ID, re-query, record ledger |
+| fixed on merged main | 40 | Resolve exact ID; verify; record |
+| superseded by a merged mechanism | 10 | Resolve exact ID; verify; record |
 | actionable | 0 | None |
 
 The merged repairs cover install locking and status propagation, public source
@@ -231,6 +235,37 @@ at `2026-08-26T21:33:23Z`; the final live verification completed at
 `2026-08-26T21:34:09Z`.  The terminal frontier and ledger contain 50 closed,
 re-verified rows.  The batch registry remains the canonical owner of terminal
 campaign state and closure merge identity.
+
+## Classified fourth-batch frontier
+
+`review-thread-classifications/merged-thread-frontier-after-QY6A8/assessments.tsv`
+classifies the exact fourth-batch denominator against merged main
+`e3cc1217ce4b664a3d23e0441cb0e84e4a03b623`.  The generated
+`action-frontier.tsv` preserves the retained chronological order and binds
+each row to its discussion URL, current evidence owner, falsifier, and merged
+evidence commit.
+
+| State | Threads | Required transition |
+| --- | ---: | --- |
+| fixed on merged main | 35 | Resolve exact ID; verify; record |
+| superseded by a merged mechanism | 15 | Resolve exact ID; verify; record |
+| actionable | 0 | None |
+
+The merged mechanisms cover CSO teardown ownership, distcc volunteer parsing
+and compiler-pair probes, dynamic NIR output spans, opt-scoped Vulkan layers,
+Hybrid-TCL and producer-design evidence contracts, source-domain witness
+semantics, forced-split shadow admission, owned producer BO staging,
+validation-flush reservation, and RS482 stack-manifest payload identity.
+Superseded rows govern retired planning vocabulary, replaced typed-gate and
+source-domain drafts, the rewritten uploader failure oracle, the deleted
+Gallium-backed Vulkan image lane, and the SPDX-only verified-holder policy.
+Static source and Git history establish these code-state dispositions;
+runtime, conformance, performance, and RS482 silicon claims remain outside
+this closure.
+
+All 50 live GraphQL nodes remain unresolved.  Exact-ID mutation begins only
+after this assessment merges, preserving merged-main evidence as the closure
+authority.
 
 ## Verification
 
