@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -839,6 +840,51 @@ def test_require_clean_worktree_detects_staged_only_change(
             repository,
             "test worktree",
         )
+
+
+def test_require_clean_worktree_bypasses_repository_clean_filter(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    source_file = committed_repository(repository)
+    attributes_file = repository / ".gitattributes"
+    attributes_file.write_text("meson.build filter=ambient\n", encoding="utf-8")
+    commit_repository(repository, "test: select ambient clean filter")
+
+    filter_marker = tmp_path / "clean-filter-executed"
+    filter_command = f"sed '/^ambient-only$/d'; : > {shlex.quote(str(filter_marker))}"
+    source_root_control.run_git(
+        repository,
+        "config",
+        "filter.ambient.clean",
+        filter_command,
+    )
+    source_file.write_text(
+        "project('clean')\nambient-only\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(source_root_control.ControlError, match="is dirty"):
+        source_root_control.require_clean_worktree(repository, "test worktree")
+    assert not filter_marker.exists()
+
+
+def test_require_clean_worktree_accepts_checkout_line_endings_and_detects_mutation(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    source_file = committed_repository(repository)
+    attributes_file = repository / ".gitattributes"
+    attributes_file.write_text("meson.build text eol=crlf\n", encoding="utf-8")
+    commit_repository(repository, "test: select checkout line endings")
+    source_file.write_bytes(b"project('clean')\r\n")
+
+    source_root_control.require_clean_worktree(repository, "test worktree")
+
+    source_file.write_bytes(b"project('clean')\r\nmutation\r\n")
+
+    with pytest.raises(source_root_control.ControlError, match="is dirty"):
+        source_root_control.require_clean_worktree(repository, "test worktree")
 
 
 def test_require_clean_worktree_rejects_ignored_subproject_sources(

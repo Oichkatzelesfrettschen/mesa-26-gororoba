@@ -399,8 +399,11 @@ def run_trusted_boundary_case(
         "boundary-mount-build",
         "probe",
     )
-    previous_owned_build_namespaces = getattr(context.module, "owned_build_namespaces")
-    setattr(
+    previous_owned_build_namespaces = getattr(  # noqa: B009
+        context.module,
+        "owned_build_namespaces",
+    )
+    setattr(  # noqa: B010
         context.module,
         "owned_build_namespaces",
         lambda _repository_root: (trusted_boundary,),
@@ -432,7 +435,7 @@ def run_trusted_boundary_case(
             "trusted boundary after bind mount",
         )
     finally:
-        setattr(
+        setattr(  # noqa: B010
             context.module,
             "owned_build_namespaces",
             previous_owned_build_namespaces,
@@ -456,17 +459,17 @@ def run_calibration(
     except OSError as error:
         fail(f"cannot create victim sentinel {sentinel}: {error}")
 
-    setattr(
+    setattr(  # noqa: B010
         module,
         "owned_build_namespaces",
         lambda _repository_root: (build_namespace,),
     )
-    setattr(
+    setattr(  # noqa: B010
         module,
         "validate_owned_namespace",
         lambda selected_namespace, _user_id: selected_namespace,
     )
-    setattr(
+    setattr(  # noqa: B010
         module,
         "build_namespace_parent_boundary",
         lambda _namespace, _repository_root: audit_root,
@@ -533,18 +536,17 @@ def cleanup_calibration(
     return diagnostics
 
 
+def create_audit_root() -> Path:
+    return Path(tempfile.mkdtemp(prefix="mesa-mount-boundary."))
+
+
 def execute_calibration(
     module: ModuleType,
     control_root: Path,
     mount_executable: Path,
     umount_executable: Path,
 ) -> None:
-    audit_root = Path(
-        tempfile.mkdtemp(
-            prefix="mesa-mount-boundary.",
-            dir="/tmp",
-        )
-    )
+    audit_root = create_audit_root()
     sentinel = audit_root / "victim" / "sentinel"
     mounted_paths: list[Path] = []
     try:

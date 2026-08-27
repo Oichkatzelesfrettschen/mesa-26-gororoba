@@ -172,6 +172,28 @@ def run_git(
     return result.stdout.strip()
 
 
+def run_git_bytes(
+    root: Path,
+    *arguments: str,
+    input_data: bytes | None = None,
+    extra_environment: dict[str, str] | None = None,
+) -> bytes:
+    command = git_command(root, *arguments)
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        env=git_environment(extra_environment),
+        input=input_data,
+        shell=False,
+    )
+    if result.returncode != 0:
+        diagnostic_bytes = result.stderr.strip() or result.stdout.strip()
+        diagnostic = diagnostic_bytes.decode("utf-8", errors="replace")
+        fail(f"{' '.join(command)} failed: {diagnostic}")
+    return result.stdout
+
+
 def run_git_archive(root: Path, commit: str, output: Path) -> None:
     command = git_command(
         root,
@@ -214,6 +236,228 @@ def source_identity(source_root: Path) -> tuple[str, str]:
     return commit, tree
 
 
+def file_identity(path_status: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        path_status.st_dev,
+        path_status.st_ino,
+        path_status.st_mode,
+        path_status.st_size,
+        path_status.st_mtime_ns,
+    )
+
+
+def isolated_checkout_environment(
+    root: Path,
+    index_environment: dict[str, str],
+    temporary_root: Path,
+) -> dict[str, str]:
+    object_format = run_git(root, "rev-parse", "--show-object-format")
+    if object_format not in {"sha1", "sha256"}:
+        fail(f"unsupported Git object format: {object_format}")
+    object_directory = Path(
+        run_git(
+            root,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        )
+    ).resolve(strict=True)
+    isolated_git_directory = temporary_root / "isolated.git"
+    command = [
+        "git",
+        "init",
+        "--bare",
+        "--quiet",
+        f"--object-format={object_format}",
+        str(isolated_git_directory),
+    ]
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        cwd=temporary_root,
+        env=git_environment(),
+        shell=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        diagnostic = result.stderr.strip() or result.stdout.strip()
+        fail(f"{' '.join(command)} failed: {diagnostic}")
+    return {
+        **index_environment,
+        "GIT_DIR": str(isolated_git_directory),
+        "GIT_OBJECT_DIRECTORY": str(object_directory),
+        "GIT_WORK_TREE": str(root),
+    }
+
+
+def expected_checkout_bytes(
+    root: Path,
+    relative_path_bytes: bytes,
+    expected_object_id: bytes,
+    checkout_environment: dict[str, str],
+) -> bytes:
+    relative_path = os.fsdecode(relative_path_bytes)
+    return run_git_bytes(
+        root,
+        "cat-file",
+        "--filters",
+        f"--path={relative_path}",
+        expected_object_id.decode("ascii"),
+        extra_environment=checkout_environment,
+    )
+
+
+def tracked_worktree_matches_head(
+    root: Path,
+    index_environment: dict[str, str],
+    label: str,
+    temporary_root: Path,
+) -> bool:
+    raw_entries = run_git_bytes(
+        root,
+        "ls-files",
+        "--stage",
+        "-z",
+        extra_environment=index_environment,
+    )
+    regular_entries: list[tuple[bytes, bytes, os.stat_result]] = []
+
+    for raw_entry in raw_entries.split(b"\0"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, relative_path_bytes = raw_entry.split(b"\t", 1)
+            mode, expected_object_id, stage = metadata.split()
+        except ValueError:
+            fail(f"{label} contains a malformed tracked-file entry")
+        if stage != b"0":
+            fail(f"{label} contains an unmerged tracked-file entry")
+
+        relative_path = Path(os.fsdecode(relative_path_bytes))
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            fail(f"{label} contains an unsafe tracked path: {relative_path}")
+        worktree_path = root / relative_path
+        try:
+            path_status = worktree_path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            fail(f"cannot inspect {label} tracked path {worktree_path}: {error}")
+
+        if mode in (b"100644", b"100755"):
+            if not stat.S_ISREG(path_status.st_mode):
+                return False
+            expected_executable = mode == b"100755"
+            if bool(path_status.st_mode & 0o111) != expected_executable:
+                return False
+            regular_entries.append(
+                (relative_path_bytes, expected_object_id, path_status)
+            )
+            continue
+
+        if mode == b"120000":
+            if not stat.S_ISLNK(path_status.st_mode):
+                return False
+            try:
+                link_target = os.fsencode(os.readlink(worktree_path))
+                post_read_status = worktree_path.lstat()
+            except OSError as error:
+                fail(f"cannot read {label} tracked link {worktree_path}: {error}")
+            if file_identity(path_status) != file_identity(post_read_status):
+                return False
+            actual_object_id = run_git_bytes(
+                root,
+                "hash-object",
+                "--stdin",
+                input_data=link_target,
+            ).strip()
+            if actual_object_id != expected_object_id:
+                return False
+            continue
+
+        if mode == b"160000":
+            if not stat.S_ISDIR(path_status.st_mode):
+                return False
+            submodule_commit = run_git(
+                worktree_path,
+                "rev-parse",
+                "--verify",
+                "HEAD^{commit}",
+            )
+            if submodule_commit.encode("ascii") != expected_object_id:
+                return False
+            require_clean_worktree(
+                worktree_path,
+                f"{label} submodule {relative_path}",
+            )
+            continue
+
+        fail(f"{label} contains unsupported tracked mode {mode.decode('ascii')}")
+
+    batch_entries = [entry for entry in regular_entries if b"\n" not in entry[0]]
+    newline_entries = [entry for entry in regular_entries if b"\n" in entry[0]]
+    actual_object_ids: dict[bytes, bytes] = {}
+    if batch_entries:
+        path_input = b"".join(
+            relative_path_bytes + b"\n"
+            for relative_path_bytes, _expected_object_id, _path_status in batch_entries
+        )
+        batch_output = run_git_bytes(
+            root,
+            "hash-object",
+            "--no-filters",
+            "--stdin-paths",
+            input_data=path_input,
+        ).splitlines()
+        if len(batch_output) != len(batch_entries):
+            fail(f"{label} raw tracked-file hash count differs")
+        actual_object_ids.update(
+            (entry[0], object_id)
+            for entry, object_id in zip(batch_entries, batch_output, strict=True)
+        )
+    for relative_path_bytes, _expected_object_id, _path_status in newline_entries:
+        newline_relative_path = os.fsdecode(relative_path_bytes)
+        actual_object_ids[relative_path_bytes] = run_git_bytes(
+            root,
+            "hash-object",
+            "--no-filters",
+            "--",
+            newline_relative_path,
+        ).strip()
+
+    checkout_environment: dict[str, str] | None = None
+    for relative_path_bytes, expected_object_id, initial_status in regular_entries:
+        worktree_path = root / Path(os.fsdecode(relative_path_bytes))
+        if actual_object_ids[relative_path_bytes] != expected_object_id:
+            if checkout_environment is None:
+                checkout_environment = isolated_checkout_environment(
+                    root,
+                    index_environment,
+                    temporary_root,
+                )
+            expected_bytes = expected_checkout_bytes(
+                root,
+                relative_path_bytes,
+                expected_object_id,
+                checkout_environment,
+            )
+            try:
+                actual_bytes = worktree_path.read_bytes()
+            except OSError:
+                return False
+            if actual_bytes != expected_bytes:
+                return False
+        try:
+            post_hash_status = worktree_path.lstat()
+        except OSError:
+            return False
+        if file_identity(initial_status) != file_identity(post_hash_status):
+            return False
+    return True
+
+
 def require_clean_worktree(root: Path, label: str) -> None:
     staged_result = run_git_process(
         root,
@@ -239,26 +483,12 @@ def require_clean_worktree(root: Path, label: str) -> None:
             "HEAD",
             extra_environment=index_environment,
         )
-        refresh_result = run_git_process(
+        tracked_matches = tracked_worktree_matches_head(
             root,
-            "update-index",
-            "--really-refresh",
-            extra_environment=index_environment,
+            index_environment,
+            label,
+            Path(directory),
         )
-        if refresh_result.returncode not in (0, 1):
-            diagnostic = refresh_result.stderr.strip() or refresh_result.stdout.strip()
-            fail(f"failed to refresh {label} worktree state: {diagnostic}")
-        tracked_result = run_git_process(
-            root,
-            "diff-files",
-            "--quiet",
-            "--ignore-submodules=none",
-            "--",
-            extra_environment=index_environment,
-        )
-        if tracked_result.returncode not in (0, 1):
-            diagnostic = tracked_result.stderr.strip() or tracked_result.stdout.strip()
-            fail(f"failed to verify {label} tracked state: {diagnostic}")
         untracked = run_git(
             root,
             "ls-files",
@@ -280,7 +510,7 @@ def require_clean_worktree(root: Path, label: str) -> None:
             "subprojects",
             extra_environment=index_environment,
         )
-        if tracked_result.returncode == 1 or untracked or ignored_subprojects:
+        if not tracked_matches or untracked or ignored_subprojects:
             fail(f"{label} is dirty: {root}")
 
 
@@ -1012,7 +1242,7 @@ def source_view_content_digest(source_view: Path) -> str:
                 entry_status = entry.stat(follow_symlinks=False)
             except OSError as error:
                 fail(f"cannot stat source view entry {entry.path}: {error}")
-            mode_bytes = f"{stat.S_IMODE(entry_status.st_mode):04o}".encode("utf-8")
+            mode_bytes = f"{stat.S_IMODE(entry_status.st_mode):04o}".encode()
             digest_frame(digest, b"path", path_bytes)
             digest_frame(digest, b"mode", mode_bytes)
             if stat.S_ISDIR(entry_status.st_mode):
@@ -1649,23 +1879,35 @@ def main() -> int:
     values = resolved_inputs()
 
     if arguments.command == "resolve-make":
+        source_root = values["source_root"]
+        control_root_path = values["control_root"]
+        build_root = values["build_root"]
+        builddir = values["builddir"]
+        prefix = values["prefix"]
+        sysconfdir = values["sysconfdir"]
+        assert isinstance(source_root, Path)
+        assert isinstance(control_root_path, Path)
+        assert isinstance(build_root, Path)
+        assert isinstance(builddir, Path)
+        assert isinstance(prefix, Path)
+        assert isinstance(sysconfdir, Path)
         fields = (
-            values["source_root"],
-            values["build_root"],
-            values["builddir"],
-            values["prefix"],
-            values["sysconfdir"],
+            source_root,
+            build_root,
+            builddir,
+            prefix,
+            sysconfdir,
             values["source_commit"],
             values["source_tree"],
             values["control_commit"],
             values["control_tree"],
-            values["control_root"],
-            path_anchor(values["source_root"]),
-            path_anchor(values["control_root"]),
-            path_anchor(values["build_root"]),
-            path_anchor(values["builddir"]),
-            path_anchor(values["prefix"]),
-            path_anchor(values["sysconfdir"]),
+            control_root_path,
+            path_anchor(source_root),
+            path_anchor(control_root_path),
+            path_anchor(build_root),
+            path_anchor(builddir),
+            path_anchor(prefix),
+            path_anchor(sysconfdir),
         )
         print(" ".join(str(field) for field in fields))
     elif arguments.command == "check-source":
