@@ -23,6 +23,10 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   fourth-batch raw denominator.  Its manifest binds twelve request/response
   pages, exact query text, default-branch identity, every selected comment,
   hashes, and the chronological stop proof.
+- `review-thread-frontiers/merged-thread-frontier-after-TvpLc/` preserves the
+  active fifth-batch raw denominator.  Its manifest binds thirteen
+  request/response pages, exact query text, default-branch identity, every
+  selected comment, hashes, and the chronological stop proof.
 - `review-thread-classifications/merged-thread-frontier-92b67f719e7b/` owns the
   third batch's 50-row assessment, immutable pre-resolution frontier,
   SHA-256-bound mutation journal, generated terminal frontier, and resolution
@@ -120,7 +124,7 @@ text, raw responses, normalized selected threads, every selected comment body
 and author, and their hashes live in
 `review-thread-frontiers/merged-thread-frontier-92b67f719e7b/`.
 
-### Active captured fourth frontier
+### Closed fourth frontier
 
 The fourth batch is anchored to merged `main`
 `74e17e547d51997ffb074a92b1f74bef56c702a0`.  The authenticated private-repo
@@ -141,6 +145,28 @@ retained request cursors prove the twelve pages are contiguous.  Exact query
 text, raw responses, normalized selected threads, every selected comment body
 and author, and their hashes live in
 `review-thread-frontiers/merged-thread-frontier-after-QY6A8/`.
+
+### Active captured fifth frontier
+
+The fifth batch is anchored to merged `main`
+`63d7eb1226bb4257f3d92cb8c7f4196215c213fb`.  The authenticated owned-origin
+capture scanned 1,300 merged pull requests across thirteen ascending pages and
+observed 70 unresolved threads among 2,882 total review threads.
+
+- Rank 1 is `PRRT_kwDOR3YK5M6Tw9uC`, created
+  `2026-07-25T15:59:22Z` on PR 1194.
+- Rank 50 is `PRRT_kwDOR3YK5M6WhUFS`, created
+  `2026-08-05T02:01:43Z` on PR 1232.
+- The last scanned pull request is PR 1331, created
+  `2026-08-11T17:48:32Z`.
+
+The pull-request connection is ordered by `createdAt` ascending, and a review
+comment cannot predate its pull request.  PR 1331 therefore establishes that
+every unscanned pull request was created after the rank-50 comment.  The
+retained request cursors prove the thirteen pages are contiguous.  Exact query
+text, raw responses, normalized selected threads, every selected comment body
+and author, and their hashes live in
+`review-thread-frontiers/merged-thread-frontier-after-TvpLc/`.
 
 ## First-batch classification
 

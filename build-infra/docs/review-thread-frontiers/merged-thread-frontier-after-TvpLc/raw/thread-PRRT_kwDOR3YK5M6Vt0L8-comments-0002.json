@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current r300_screen.c path still stores the standing and R2VB decisions in process-global environment/function-static state. A complete repair needs per-screen state threaded through classification and gate ownership, plus reverse creation-order tests. I leave this architecture row unresolved rather than treating a comment or host-only observation as a fix.",
+              "commit": {
+                "oid": "623c9312ded1dc0a0553db503e7f9feba4b8dcb1"
+              },
+              "createdAt": "2026-08-12T17:34:50Z",
+              "databaseId": 3768793444,
+              "id": "PRRC_kwDOR3YK5M7gozlk",
+              "originalCommit": {
+                "oid": "623c9312ded1dc0a0553db503e7f9feba4b8dcb1"
+              },
+              "updatedAt": "2026-08-12T17:34:50Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1215#discussion_r3768793444"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo1MFrO4KM5ZA==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6Vt0L8"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wMlQwNDoyODo0MlrO3GgFHA==",
+    "threadId": "PRRT_kwDOR3YK5M6Vt0L8"
+  }
+}

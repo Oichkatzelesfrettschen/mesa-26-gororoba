@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Fixed in the follow-up commit: the carrier descriptor allocates via vk_zalloc on cmd_buffer->vk.pool->alloc and releases via vk_free on the same allocator, in the draw path, the failure path, and release_recording. The installed cell IB and reference storage keep the install_ib ownership model shared with the device-internal emitters, whose allocations originate in common non-Vulkan code; folding those into the pool allocator is a follow-up spanning the private routes.",
+              "commit": {
+                "oid": "c0e1b82a7c6fe69f20f913ae7efa8f69cfb2cdde"
+              },
+              "createdAt": "2026-08-08T20:42:22Z",
+              "databaseId": 3741584320,
+              "id": "PRRC_kwDOR3YK5M7fBAvA",
+              "originalCommit": {
+                "oid": "c0e1b82a7c6fe69f20f913ae7efa8f69cfb2cdde"
+              },
+              "updatedAt": "2026-08-08T20:42:22Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1275#discussion_r3741584320"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQyMDo0MjoyMlrO3wQLwA==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6Xglay"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQyMDozODo0NFrO3wPw-Q==",
+    "threadId": "PRRT_kwDOR3YK5M6Xglay"
+  }
+}

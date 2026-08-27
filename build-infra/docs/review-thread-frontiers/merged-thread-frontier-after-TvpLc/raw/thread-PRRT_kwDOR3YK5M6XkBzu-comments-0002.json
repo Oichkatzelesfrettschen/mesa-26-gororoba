@@ -1,0 +1,73 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Audited against merged main c193451587f6e84116ae1f4714b5a37446dc7053. The native cell intentionally admits only identity perspective divide (w == 1) with x/y in [-1, 1] and z in [0, 1]; another stream returns the initialization failure that the queue maps to device loss. Full arbitrary homogeneous perspective division and clipping needs a separate vertex execution design and independent calibration, outside this bounded arming fix. No hardware claim is made, so this residual remains unresolved.",
+              "commit": {
+                "oid": "6451171b460408efd14af8415fb0401e63e7c4bc"
+              },
+              "createdAt": "2026-08-12T04:57:02Z",
+              "databaseId": 3763703967,
+              "id": "PRRC_kwDOR3YK5M7gVZCf",
+              "originalCommit": {
+                "oid": "6451171b460408efd14af8415fb0401e63e7c4bc"
+              },
+              "updatedAt": "2026-08-12T04:57:02Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1277#discussion_r3763703967"
+            },
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Merged main retains an explicit bounded carrier contract: r3v_native_cell.c rejects non-unit w and vertices outside the admitted NDC volume, while the public harness calibrates in-domain vertices plus w=2 and NaN refusal. The current three-vertex carrier and fixed IB cannot implement Vulkan homogeneous clipping, generated primitive topology, interpolation, and viewport mapping without a separate mechanism. The host/drm-shim surface passes r3v-native-public-surface, r3v-native-vertex-carrier, r3v-native-triangle-cell-closed, and r3v-native-triangle-cell-open (4/4); this is not hardware or runtime evidence. The thread stays unresolved. A future fix requires perspective division, all relevant clip-plane crossings, clipped-output representation, and calibrated proof that valid non-unit-w streams no longer become device loss.",
+              "commit": {
+                "oid": "6451171b460408efd14af8415fb0401e63e7c4bc"
+              },
+              "createdAt": "2026-08-12T13:42:11Z",
+              "databaseId": 3766930754,
+              "id": "PRRC_kwDOR3YK5M7ghs1C",
+              "originalCommit": {
+                "oid": "6451171b460408efd14af8415fb0401e63e7c4bc"
+              },
+              "updatedAt": "2026-08-12T13:42:11Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1277#discussion_r3766930754"
+            },
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current merged tree still rejects arbitrary homogeneous positions at this cell; it does not yet own a native clip-space representation, six-plane clipping, finite-W handling, interpolation, or fan triangulation. No clipper implementation or RS482 runtime witness exists, so the VK_ERROR_DEVICE_LOST path remains an evidence-bound open item. I leave this thread unresolved until a complete native clipper and its focused tests are present.",
+              "commit": {
+                "oid": "6451171b460408efd14af8415fb0401e63e7c4bc"
+              },
+              "createdAt": "2026-08-12T17:34:45Z",
+              "databaseId": 3768792985,
+              "id": "PRRC_kwDOR3YK5M7gozeZ",
+              "originalCommit": {
+                "oid": "6451171b460408efd14af8415fb0401e63e7c4bc"
+              },
+              "updatedAt": "2026-08-12T17:34:45Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1277#discussion_r3768792985"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo0NVrO4KM3mQ==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6XkBzu"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOVQwNToyNToyNlrO3xXHYA==",
+    "threadId": "PRRT_kwDOR3YK5M6XkBzu"
+  }
+}
