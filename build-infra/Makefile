@@ -153,15 +153,15 @@ export GOROROBA_HOSTENV_INPUT
 
 override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
 override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
-override REVIEW_THREAD_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-92b67f719e7b/action-frontier.tsv
-override REVIEW_THREAD_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-92b67f719e7b/resolution-ledger.tsv
+override REVIEW_THREAD_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/action-frontier.tsv
+override REVIEW_THREAD_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/resolution-ledger.tsv
 override REVIEW_THREAD_FRONTIER_TOOL := $(CURDIR)/scripts/review_thread_frontier.py
-override REVIEW_THREAD_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-thread-frontier-92b67f719e7b
+override REVIEW_THREAD_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-thread-frontier-after-QY6A8
 override REVIEW_THREAD_CAPTURE_TOOL := $(CURDIR)/scripts/review_thread_batch_capture.py
-override REVIEW_THREAD_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-92b67f719e7b/assessments.tsv
+override REVIEW_THREAD_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/assessments.tsv
 override REVIEW_THREAD_CLASSIFICATION_TOOL := $(CURDIR)/scripts/review_thread_classification.py
-override REVIEW_THREAD_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-92b67f719e7b/pre-resolution-frontier.tsv
-override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-92b67f719e7b/resolution-observation.json
+override REVIEW_THREAD_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/pre-resolution-frontier.tsv
+override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/resolution-observation.json
 override REVIEW_THREAD_RESOLUTION_TOOL := $(CURDIR)/scripts/review_thread_resolution.py
 override REVIEW_THREAD_ARCHIVE_FRONTIER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/action-frontier.tsv
 override REVIEW_THREAD_ARCHIVE_LEDGER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/resolution-ledger.tsv
@@ -512,7 +512,7 @@ review-thread-frontier-check:
 		--capture-frontier $(REVIEW_THREAD_CAPTURE)/frontier.tsv \
 		--assessments $(REVIEW_THREAD_CLASSIFICATION) \
 		--output $(REVIEW_THREAD_FRONTIER) \
-		--batch-id merged-review-thread-closure-batch-0003 \
+		--batch-id merged-review-thread-closure-batch-0004 \
 		--batch-size 50
 	python3 $(REVIEW_THREAD_RESOLUTION_TOOL) check \
 		--frontier $(REVIEW_THREAD_PRE_RESOLUTION_FRONTIER) \
