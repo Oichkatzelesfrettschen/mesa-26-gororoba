@@ -41,8 +41,9 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Fifteen rows are closed.  The 35
-  actionable rows require merged repairs before exact-ID resolution.
+  append-only evidence-refresh ledger.  Twenty-six rows are closed, eight more
+  are fixed on merged main pending exact-ID resolution, and the 16 actionable
+  rows require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -327,8 +328,9 @@ falsifier, and merged evidence commit when one exists.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| actionable | 32 | Implement, test, merge, synchronize, then resolve |
-| closed as fixed | 13 | Retain exact merge and post-resolution evidence |
+| actionable | 16 | Implement, test, merge, synchronize, then resolve |
+| fixed on merged main | 8 | Merge this re-audit, then resolve and record |
+| closed as fixed | 21 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -363,23 +365,40 @@ threads created on PR 1920 are outside the retained fifth-batch denominator;
 their MC entrypoint, random namespace, Windows path, and anchored-root repairs
 are present at the same merge commit, and all four exact IDs are resolved and
 re-queried.
+PR 1922 binds the eight unresolved headless-runner rows to
+`20286a21d04942790561bc931ea332eb59b6214b`.  The lifecycle repair gives each
+Xorg run a persisted 128-bit systemd unit name and requires its live
+`InvocationID` and `MainPID` before systemd stops the unit.  Ten calibrated
+paths cover inactive and removed units, PID reuse, replacement invocations,
+failed state, malformed identity, timeout, and direct-signal regression.  The
+complete headless group is resolved and re-queried after merged-main
+qualification.
 Every recorded GitHub thread is resolved and re-queried.  The journal remains
 incomplete until every one of the 50 retained thread IDs is resolved and the
 batch-wide postflight succeeds.
 
-The surviving mechanisms cover a complete headless GL provider and session
-workflow; AMD driver-root predicates and artifacts; Hybrid-TCL evidence
-separation; CAVLC comment accuracy; stack-manifest dependency and digest
-contracts; attribute-isolated external-source materialization; install and
-build-control identity; thread-safe Draw options; per-screen R2VB route state;
-DRM-shim descriptor, lock, and write-only identity semantics; transactional,
-calibrated MPEG-12 surface dumps; Draw semantic provenance; and width-correct
-Radeon info queries.
+Eight re-audited rows are fixed on merged main and remain administratively
+unresolved until this evidence publication merges.  The current guidance uses
+the fork-specific AMD Vulkan scope.  PR 1902's unchanged driver-root audit
+passes all 67 calibrations and the live three-root check.  PR 1903's unchanged
+HBTCL document separates the unsignaled VAP/GA stall from completed stale-US
+draws and binds demand to the hash-verified 108-cell census.  PR 1904's
+unchanged CAVLC comments name the independent oracle and exact coefficient
+index bounds; the focused block test passes from the retained qualification
+build.
+
+The surviving actionable mechanisms cover stack-manifest dependency and
+digest contracts; attribute-isolated external-source materialization; install
+and build-control identity; thread-safe Draw options; per-screen R2VB route
+state; DRM-shim descriptor, lock, and write-only identity semantics;
+transactional, calibrated MPEG-12 surface dumps; Draw semantic provenance; and
+width-correct Radeon info queries.
 
 The closed fixed rows cover component-prefixed guidance history, HBTCL
 executable identity, nonempty stack-manifest Build IDs, Meson wrap population,
 root-independent source-view fixtures, state-token render registration, and
-the three DRM-shim repairs.  They also cover random MPEG-12 dump namespaces,
+the three DRM-shim repairs.  They also cover the target-bound headless GL
+provider and run-scoped Xorg lifecycle, random MPEG-12 dump namespaces,
 transactional failure verdicts, and calibrated stage-boundary payloads.
 SPDX-only, canonical-loader, merge-subject, and emoji-scope policies supersede
 five historical requests.
@@ -387,9 +406,10 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 18 resolved and 32 unresolved exact IDs.  Each
-remaining ID resolves only after its actionable mechanism is merged and
-reclassified against synchronized `main`.
+Live GraphQL state reports 26 resolved and 24 unresolved exact IDs.  Eight
+unresolved IDs have verified merged-main fixes and resolve after this re-audit
+merges.  The other 16 require their actionable mechanisms to merge before
+exact-ID resolution.
 
 ## Verification
 
