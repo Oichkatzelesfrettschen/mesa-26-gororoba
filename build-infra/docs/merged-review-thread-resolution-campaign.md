@@ -41,9 +41,8 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-TvpLc/` owns the
   fifth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, resolution ledger, and
-  append-only evidence-refresh ledger.  Thirty-eight rows are closed, five are
-  fixed on merged main pending exact-ID resolution, and seven actionable rows
-  require merged repairs.
+  append-only evidence-refresh ledger.  Forty-three rows are closed, and seven
+  actionable rows require merged repairs.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third and fourth batch terminal views
@@ -329,8 +328,8 @@ falsifier, and merged evidence commit when one exists.
 | State | Threads | Required transition |
 | --- | ---: | --- |
 | actionable | 7 | Implement, test, merge, synchronize, then resolve |
-| fixed on merged main | 5 | Merge this re-audit, then resolve and record |
-| closed as fixed | 33 | Retain exact merge and post-resolution evidence |
+| fixed on merged main | 0 | None |
+| closed as fixed | 38 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 
 The uid-0 source-root replay at merged main
@@ -414,7 +413,9 @@ the production caller and r300 prefilter searches.  PR 1929 merge commit
 `60c34e778d475469fae20e0714de79464bc42136` names all seven direct NIR scan
 sites and states the separate VAR-to-GENERIC and TEX-to-TEXCOORD mappings.
 The focused Clang 22 build and output-location oracle pass at the repair SHA.
-All five exact GitHub threads remain unresolved until this re-audit merges.
+PR 1930 re-audits all five targets at merge commit
+`9651cd7102e5e3ec93296c5265535ed00fe27172`; all five exact GitHub threads are
+resolved and re-queried.
 
 The surviving actionable mechanisms cover archive-attribute-isolated source
 views; installation-success and build-control identity; the positive
@@ -433,9 +434,8 @@ Static source and Git history establish these code-state dispositions;
 runtime, conformance, performance, and silicon claims remain outside this
 assessment.
 
-Live GraphQL state reports 38 resolved and 12 unresolved exact IDs.  Five
-unresolved rows have verified merged-main fixes and resolve after this re-audit
-merges.  The other seven require their actionable mechanisms to merge before
+Live GraphQL state reports 43 resolved and seven unresolved exact IDs.  The
+seven unresolved rows require their actionable mechanisms to merge before
 exact-ID resolution.
 
 ## Verification

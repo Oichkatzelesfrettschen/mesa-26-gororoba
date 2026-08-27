@@ -254,6 +254,15 @@
       "verified_at": "2026-08-27T10:00:31Z"
     },
     {
+      "disposition": "fixed",
+      "evidence_commit": "e7656d6bf70d3492a70200cbfb97f8fb646b7c58",
+      "evidence_pr": 1908,
+      "merged_at": "2026-08-27T04:50:07Z",
+      "resolved_at": "2026-08-27T16:53:51Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Vtysx",
+      "verified_at": "2026-08-27T16:53:51Z"
+    },
+    {
       "disposition": "superseded",
       "evidence_commit": "a2bfd6032c81faa75994dfd4f57b279200a0776f",
       "evidence_pr": 1916,
@@ -261,6 +270,24 @@
       "resolved_at": "2026-08-27T10:00:33Z",
       "thread_id": "PRRT_kwDOR3YK5M6Vty4O",
       "verified_at": "2026-08-27T10:00:33Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "e7656d6bf70d3492a70200cbfb97f8fb646b7c58",
+      "evidence_pr": 1908,
+      "merged_at": "2026-08-27T04:50:07Z",
+      "resolved_at": "2026-08-27T16:53:52Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Vt1sV",
+      "verified_at": "2026-08-27T16:53:52Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "e7656d6bf70d3492a70200cbfb97f8fb646b7c58",
+      "evidence_pr": 1908,
+      "merged_at": "2026-08-27T04:50:07Z",
+      "resolved_at": "2026-08-27T16:53:53Z",
+      "thread_id": "PRRT_kwDOR3YK5M6Vt1sX",
+      "verified_at": "2026-08-27T16:53:54Z"
     },
     {
       "disposition": "fixed",
@@ -342,6 +369,24 @@
       "resolved_at": "2026-08-27T10:00:36Z",
       "thread_id": "PRRT_kwDOR3YK5M6V3PUs",
       "verified_at": "2026-08-27T10:00:37Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "60c34e778d475469fae20e0714de79464bc42136",
+      "evidence_pr": 1929,
+      "merged_at": "2026-08-27T16:38:38Z",
+      "resolved_at": "2026-08-27T16:53:55Z",
+      "thread_id": "PRRT_kwDOR3YK5M6V3PUx",
+      "verified_at": "2026-08-27T16:53:55Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "60c34e778d475469fae20e0714de79464bc42136",
+      "evidence_pr": 1929,
+      "merged_at": "2026-08-27T16:38:38Z",
+      "resolved_at": "2026-08-27T16:53:56Z",
+      "thread_id": "PRRT_kwDOR3YK5M6V3PUz",
+      "verified_at": "2026-08-27T16:53:57Z"
     }
   ],
   "frontier_sha256": "8dde8893acceeb3346868e21c02758c2eede84cc0b070e2460eeac7b0d99c4ff",
