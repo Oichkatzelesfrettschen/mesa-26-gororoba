@@ -1,0 +1,73 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The saturate-specific RS482 oracle is now retained in evidence PR #386: https://github.com/Oichkatzelesfrettschen/steinmarder-r300/pull/386\n\nThe safe EGL surfaceless GL test uses `GL_INTENSITY8`, `C_d=0.50`, and cases `(C_s,A_s)=(0.25,0.75)` and `(0.75,0.25)`. The OpenGL oracle expects `0.625` and `0.6875`.\n\nFour complete profiles with the merged carrier-safe ZERO mapping return `0.4980354` for both cases. Profiles exposing native `SRC_ALPHA_SATURATE` return `0.5607834` and `0.8745041`, matching a source-color alias rather than the spec factor. The calibrated selftest passes known-good and known-bad classifications, and the retained log binds the oracle source, binary, runner, host, format, state, and loader hashes.\n\nThis evidence rejects both preserving native SAT and retaining ZERO as a conformant completion. The row stays unresolved: a future fix must supply fragment alpha independently of the one-component carrier and reproduce `0.625` and `0.6875`; that is the explicit falsifier. No Mesa behavior change is proposed by this evidence PR.",
+              "commit": {
+                "oid": "e891ad8e4480fcf71087ad5f9f901e81fe36a2f7"
+              },
+              "createdAt": "2026-08-12T12:05:35Z",
+              "databaseId": 3766222804,
+              "id": "PRRC_kwDOR3YK5M7ge__U",
+              "originalCommit": {
+                "oid": "e891ad8e4480fcf71087ad5f9f901e81fe36a2f7"
+              },
+              "updatedAt": "2026-08-12T12:05:35Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1476#discussion_r3766222804"
+            },
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Evidence-bound status on merged main: origin/main still maps RGB SRC_ALPHA_SATURATE to ZERO for R300_BLEND_TARGET_INTENSITY in r300_state_inlines.h:37-43, and the direct blend-factor test asserts that mapping. The safe GL-only RS482 run (PCI 1002:5974, GL_RENDERER ATI RS480; dmesg access denied) is retained at /var/tmp/r300-intensity-saturate-vostro1000-20260812.log, SHA256 346297801d57cb81102952f0f8cbd96e7a6d2256f15e5f01205e45b7bd452525. Its calibrated intensity cases expect 0.625 and 0.6875; retained profiles classify the observed mapping as ZERO, source_color_alias, or other, and the carrier-safe ZERO profiles return 0.4980354 for both cases. A native SRC_ALPHA_SATURATE profile returns source-color-alias values rather than the spec factor. This evidence falsifies both retaining native SAT and treating ZERO as a conformant completion. The row remains unresolved. Explicit falsifier: a reviewed mechanism that supplies fragment alpha independently of the one-component carrier, followed by a safe GL-only exact-RS482 run reproducing both expected values. No Mesa behavior change or hardware claim is made here.",
+              "commit": {
+                "oid": "e891ad8e4480fcf71087ad5f9f901e81fe36a2f7"
+              },
+              "createdAt": "2026-08-12T13:54:38Z",
+              "databaseId": 3767040171,
+              "id": "PRRC_kwDOR3YK5M7giHir",
+              "originalCommit": {
+                "oid": "e891ad8e4480fcf71087ad5f9f901e81fe36a2f7"
+              },
+              "updatedAt": "2026-08-12T13:54:38Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1476#discussion_r3767040171"
+            },
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "The current r300 state mapping still lacks a saturate-specific intensity-target oracle. The existing RS480 evidence covers unit-alpha ONE and SRC_ALPHA cases only; it does not establish SRC_ALPHA_SATURATE for I8 or I32 destinations. I leave this hardware/conformance row unresolved until a spec-grounded test and exact silicon result or a conformant fallback are retained.",
+              "commit": {
+                "oid": "e891ad8e4480fcf71087ad5f9f901e81fe36a2f7"
+              },
+              "createdAt": "2026-08-12T17:34:47Z",
+              "databaseId": 3768793138,
+              "id": "PRRC_kwDOR3YK5M7gozgy",
+              "originalCommit": {
+                "oid": "e891ad8e4480fcf71087ad5f9f901e81fe36a2f7"
+              },
+              "updatedAt": "2026-08-12T17:34:47Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1476#discussion_r3768793138"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxNzozNDo0N1rO4KM4Mg==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6YiLxm"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0xMlQxMDozMTo1MVrO4HJ_Fg==",
+    "threadId": "PRRT_kwDOR3YK5M6YiLxm"
+  }
+}

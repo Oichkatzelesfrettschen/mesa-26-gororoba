@@ -1,0 +1,39 @@
+{
+  "query": "thread-comments",
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "login": "Oichkatzelesfrettschen"
+              },
+              "body": "Fixed in b7807ee3b1b: the queue completes every declared wait through vk_sync_wait before the deferred gather and clear run, and fires the submit's signal set through vk_sync_signal_many after the bounded completion wait, so the dependency chain holds in both directions.",
+              "commit": {
+                "oid": "b7807ee3b1b2281083cba17ce6e477b2a1b5f5f6"
+              },
+              "createdAt": "2026-08-08T20:00:22Z",
+              "databaseId": 3741498053,
+              "id": "PRRC_kwDOR3YK5M7fArrF",
+              "originalCommit": {
+                "oid": "0bd753cfd67dfa41adc8ad5b52f463d9a7709d1e"
+              },
+              "updatedAt": "2026-08-08T20:00:22Z",
+              "url": "https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba/pull/1275#discussion_r3741498053"
+            }
+          ],
+          "pageInfo": {
+            "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQyMDowMDoyMlrO3wK6xQ==",
+            "hasNextPage": false
+          }
+        },
+        "id": "PRRT_kwDOR3YK5M6XgW3D"
+      }
+    }
+  },
+  "variables": {
+    "cursor": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0wOFQxOTo1NjowOFrO3wKWuA==",
+    "threadId": "PRRT_kwDOR3YK5M6XgW3D"
+  }
+}
