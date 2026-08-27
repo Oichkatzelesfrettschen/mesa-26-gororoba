@@ -1,0 +1,102 @@
+/*
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef VL_MPEG12_DUMP_H
+#define VL_MPEG12_DUMP_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#include "util/format/u_formats.h"
+
+struct pipe_context;
+struct pipe_sampler_view;
+struct pipe_video_buffer;
+
+#define VL_MPEG12_DUMP_MAX_STAGES 3
+#define VL_MPEG12_DUMP_MAX_PLANES 3
+#define VL_MPEG12_DUMP_SESSION_ATTEMPTS 4096
+
+struct vl_mpeg12_dump_io {
+   /* Returns a heap allocation that the caller releases with free(). */
+   char *(*absolute_path)(const char *path);
+   int (*random_bytes)(void *data, size_t size);
+   int (*open_unique)(const char *path, int mode, FILE **stream_out,
+                      bool *created_out);
+   size_t (*write)(const void *data, size_t size, size_t count, FILE *stream);
+   int (*sync_file)(FILE *stream);
+   int (*close)(FILE *stream);
+   int (*remove_file)(const char *path);
+   int (*remove_directory)(const char *path);
+   int (*mkdir)(const char *path, int mode);
+   int (*sync_directory)(const char *path);
+};
+
+struct vl_mpeg12_dump {
+   char *session_path;
+   uint64_t frame;
+   struct vl_mpeg12_dump_io io;
+};
+
+struct vl_mpeg12_dump_stage {
+   const char *name;
+   enum pipe_format buffer_format;
+   struct pipe_sampler_view **planes;
+   unsigned plane_count;
+};
+
+enum vl_mpeg12_dump_frame_state {
+   /* No publisher-owned path from the attempted frame remains. */
+   VL_MPEG12_DUMP_FRAME_CLEANED,
+   /* Collision or cleanup failure retains a frame without confirmed admission. */
+   VL_MPEG12_DUMP_FRAME_RETAINED,
+   /* The publisher created the completion marker.  A nonzero result
+    * means the admitted marker's final parent-directory sync failed. */
+   VL_MPEG12_DUMP_FRAME_ADMITTED,
+};
+
+const struct vl_mpeg12_dump_io *
+vl_mpeg12_dump_default_io(void);
+
+int
+vl_mpeg12_dump_init(struct vl_mpeg12_dump *dump, const char *root_path);
+
+int
+vl_mpeg12_dump_init_with_io(struct vl_mpeg12_dump *dump,
+                            const char *root_path,
+                            const struct vl_mpeg12_dump_io *io);
+
+void
+vl_mpeg12_dump_cleanup(struct vl_mpeg12_dump *dump);
+
+bool
+vl_mpeg12_dump_enabled(const struct vl_mpeg12_dump *dump);
+
+int
+vl_mpeg12_dump_stage_from_video_buffer(struct vl_mpeg12_dump_stage *stage,
+                                       const char *name,
+                                       struct pipe_video_buffer *buffer);
+
+int
+vl_mpeg12_dump_reserve_frame(struct vl_mpeg12_dump *dump,
+                             uint64_t *frame_out);
+
+int
+vl_mpeg12_dump_validate_source_span(unsigned layer_count,
+                                    uint64_t layer_stride,
+                                    unsigned rows_per_layer,
+                                    uint64_t row_stride,
+                                    size_t row_bytes);
+
+int
+vl_mpeg12_dump_frame(struct vl_mpeg12_dump *dump,
+                     uint64_t frame,
+                     struct pipe_context *pipe,
+                     const struct vl_mpeg12_dump_stage *stages,
+                     unsigned stage_count,
+                     enum vl_mpeg12_dump_frame_state *frame_state_out);
+
+#endif /* VL_MPEG12_DUMP_H */

@@ -70,13 +70,25 @@ else
   driver_swrast = declare_dependency()
 endif
 
-# Render-to-texture verification of the H.264 4x4 inverse-transform fragment
-# programs (vl_h264_idct.c) on a software screen.  Placed here, after the sw
-# rasterizer is in scope: it creates a softpipe screen over the null winsys
-# directly (no pipe loader, which would drag in the full driver matrix), links
-# the video library for the shader builders, and libgallium for the
-# CSO/draw/readback path.
+# Video-path regression tests on a software screen.  Placed here, after the sw
+# rasterizer is in scope: each test creates a softpipe screen over the null
+# winsys directly, avoiding the full pipe-loader driver matrix while linking
+# the video library and Gallium helpers it exercises.
 if with_tests and with_gallium_softpipe
+  test('vl-mpeg12-mc-dump-stage',
+    executable(
+      'vl_mpeg12_mc_dump_stage_test',
+      'auxiliary/vl/tests/vl_mpeg12_mc_dump_stage_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
+
   test('vl-h264-idct',
     executable(
       'vl_h264_idct_test',

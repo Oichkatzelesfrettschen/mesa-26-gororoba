@@ -80,6 +80,7 @@ sp_destroy_tex_tile_cache(struct softpipe_tex_tile_cache *tc)
          tc->pipe->texture_unmap(tc->pipe, tc->tex_trans);
       }
 
+      pipe_resource_reference(&tc->texture, NULL);
       FREE( tc );
    }
 }

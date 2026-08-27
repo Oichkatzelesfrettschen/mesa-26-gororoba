@@ -287,7 +287,7 @@ vl_video_buffer_sampler_view_planes(struct pipe_video_buffer *buffer)
 
 error:
    for (i = 0; i < num_planes; ++i)
-      pipe->sampler_view_release(pipe, buf->sampler_view_planes[i]);
+      pipe_sampler_view_release_ptr(&buf->sampler_view_planes[i]);
 
    return NULL;
 }
@@ -347,8 +347,9 @@ vl_video_buffer_sampler_view_components(struct pipe_video_buffer *buffer)
    return buf->sampler_view_components;
 
 error:
-   for (i = 0; i < buf->num_sampler_view_components; ++i)
-      pipe->sampler_view_release(pipe, buf->sampler_view_components[i]);
+   for (i = 0; i < component; ++i)
+      pipe_sampler_view_release_ptr(&buf->sampler_view_components[i]);
+   buf->num_sampler_view_components = 0;
 
    return NULL;
 }

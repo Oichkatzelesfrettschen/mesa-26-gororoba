@@ -480,6 +480,8 @@ files_libgalliumvl = files(
   'vl/vl_mpeg12_bitstream.h',
   'vl/vl_mpeg12_decoder.c',
   'vl/vl_mpeg12_decoder.h',
+  'vl/vl_mpeg12_dump.c',
+  'vl/vl_mpeg12_dump.h',
   'vl/vl_proc.c',
   'vl/vl_proc.h',
   'vl/vl_zscan.c',
@@ -591,6 +593,17 @@ libgallium = static_library(
 )
 
 if with_tests
+  test('vl-mpeg12-dump',
+    executable(
+      'vl_mpeg12_dump_test',
+      ['vl/vl_mpeg12_dump.c', 'vl/tests/vl_mpeg12_dump_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [dep_bcrypt, idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
   test('vl-nir-vertex-io',
     executable(
       'vl_nir_vertex_io_test',
@@ -944,7 +957,7 @@ libgalliumvl = static_library(
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
   include_directories : [inc_gallium, inc_include, inc_src],
-  dependencies : [idep_nir, idep_mesautil],
+  dependencies : [dep_bcrypt, idep_nir, idep_mesautil],
   build_by_default : false,
 )
 

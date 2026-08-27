@@ -27,11 +27,13 @@
 
 #include <math.h>
 #include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <string.h>
 
-#include "util/box.h"
 #include "util/format/u_format.h"
+#include "util/os_misc.h"
+#include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
 #include "util/u_surface.h"
@@ -619,6 +621,7 @@ vl_mpeg12_destroy(struct pipe_video_codec *decoder)
       if (dec->dec_buffers[i])
          vl_mpeg12_destroy_buffer(dec->dec_buffers[i]);
 
+   vl_mpeg12_dump_cleanup(&dec->dump);
    dec->context->destroy(dec->context);
 
    FREE(dec);
@@ -855,76 +858,40 @@ vl_mpeg12_decode_bitstream(struct pipe_video_codec *decoder,
    vl_mpg12_bs_decode(&buf->bs, target, desc, num_buffers, buffers, sizes);
 }
 
-/* VL_MPEG12_DUMP_DIR names a writable directory; when set, end_frame writes
- * the fenced stage surfaces of the frame it just flushed as raw files:
- * the zscan/dequant output (idct_source planes), the first-pass IDCT output
- * (mc_source planes), and the decode-target planes.  texture_map with
- * PIPE_MAP_READ synchronizes on the flush, so each file holds the GPU
- * result at that stage boundary.  The filename carries frame, stage, plane,
- * extent, and pixel format, so the raw payload is self-describing. */
-static void
-dump_stage_plane(struct pipe_context *pipe, struct pipe_resource *tex,
-                 const char *dir, unsigned frame, const char *stage,
-                 unsigned plane)
-{
-   struct pipe_transfer *transfer;
-   struct pipe_box box;
-   unsigned depth = tex->target == PIPE_TEXTURE_3D ? tex->depth0
-                                                   : tex->array_size;
-   unsigned bpp = util_format_get_blocksize(tex->format);
-   uint8_t *map;
-   char path[1024];
-   FILE *f;
-   unsigned y, z;
-
-   u_box_3d(0, 0, 0, tex->width0, tex->height0, depth, &box);
-   map = pipe->texture_map(pipe, tex, 0, PIPE_MAP_READ, &box, &transfer);
-   if (!map)
-      return;
-
-   snprintf(path, sizeof(path), "%s/f%03u_%s_p%u_%ux%ux%u_%s.raw",
-            dir, frame, stage, plane, tex->width0, tex->height0, depth,
-            util_format_short_name(tex->format));
-   f = fopen(path, "wb");
-   if (f) {
-      for (z = 0; z < depth; ++z)
-         for (y = 0; y < tex->height0; ++y)
-            fwrite(map + (size_t)z * transfer->layer_stride
-                       + (size_t)y * transfer->stride,
-                   bpp, tex->width0, f);
-      fclose(f);
-   }
-   pipe->texture_unmap(pipe, transfer);
-}
-
-static void
+/* VL_MPEG12_DUMP_DIR names an existing writable directory.  Decoder creation
+ * reserves an exclusive session below it.  Each end_frame read-map copies the
+ * submitted coefficient, first-pass IDCT, and output sampler views into an
+ * exclusive payload directory.  A frame becomes admissible evidence only after
+ * every payload and the manifest are durable and the empty complete directory
+ * atomically records that state. */
+static int
 dump_stage_surfaces(struct vl_mpeg12_decoder *dec,
-                    struct pipe_video_buffer *target, const char *dir)
+                    struct pipe_video_buffer *target,
+                    uint64_t frame,
+                    enum vl_mpeg12_dump_frame_state *frame_state_out)
 {
-   struct pipe_sampler_view **sv;
-   unsigned i;
+   struct vl_mpeg12_dump_stage stages[VL_MPEG12_DUMP_MAX_STAGES];
+   unsigned stage_count = 0;
 
    if (dec->idct_source) {
-      sv = dec->idct_source->get_sampler_view_planes(dec->idct_source);
-      for (i = 0; sv && i < VL_NUM_COMPONENTS; ++i)
-         if (sv[i])
-            dump_stage_plane(dec->context, sv[i]->texture, dir,
-                             dec->dump_frame, "coeff", i);
+      if (vl_mpeg12_dump_stage_from_video_buffer(
+             &stages[stage_count], "coeff", dec->idct_source) != 0)
+         return -EIO;
+      ++stage_count;
    }
 
-   sv = dec->mc_source->get_sampler_view_planes(dec->mc_source);
-   for (i = 0; sv && i < VL_NUM_COMPONENTS; ++i)
-      if (sv[i])
-         dump_stage_plane(dec->context, sv[i]->texture, dir,
-                          dec->dump_frame, "stage1", i);
+   if (vl_mpeg12_dump_stage_from_video_buffer(
+          &stages[stage_count], "stage1", dec->mc_source) != 0)
+      return -EIO;
+   ++stage_count;
 
-   sv = target->get_sampler_view_planes(target);
-   for (i = 0; sv && i < VL_NUM_COMPONENTS; ++i)
-      if (sv[i])
-         dump_stage_plane(dec->context, sv[i]->texture, dir,
-                          dec->dump_frame, "out", i);
+   if (vl_mpeg12_dump_stage_from_video_buffer(
+          &stages[stage_count], "out", target) != 0)
+      return -EIO;
+   ++stage_count;
 
-   ++dec->dump_frame;
+   return vl_mpeg12_dump_frame(&dec->dump, frame, dec->context, stages,
+                               stage_count, frame_state_out);
 }
 
 static int
@@ -1036,10 +1003,27 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
    ++dec->current_buffer;
    dec->current_buffer %= 4;
 
-   {
-      const char *dump_dir = getenv("VL_MPEG12_DUMP_DIR");
-      if (dump_dir && dump_dir[0])
-         dump_stage_surfaces(dec, target, dump_dir);
+   if (vl_mpeg12_dump_enabled(&dec->dump)) {
+      uint64_t dump_frame = dec->dump.frame;
+      enum vl_mpeg12_dump_frame_state frame_state =
+         VL_MPEG12_DUMP_FRAME_CLEANED;
+      int dump_result = vl_mpeg12_dump_reserve_frame(&dec->dump, &dump_frame);
+      if (!dump_result)
+         dump_result =
+            dump_stage_surfaces(dec, target, dump_frame, &frame_state);
+      if (dump_result) {
+         const char *frame_disposition =
+            frame_state == VL_MPEG12_DUMP_FRAME_ADMITTED
+               ? "admitted with uncertain marker durability"
+               : frame_state == VL_MPEG12_DUMP_FRAME_RETAINED
+               ? "retained without confirmed publisher admission"
+               : "cleaned";
+         debug_printf("vl/mpeg12 dump frame %" PRIu64 " failed (%s): %s\n",
+                      dump_frame, frame_disposition,
+                      dump_result < 0 ? strerror(-dump_result)
+                                      : "unknown error");
+         return dump_result;
+      }
    }
 
    return 0;
@@ -1254,8 +1238,11 @@ init_mc_source_widthout_idct(struct vl_mpeg12_decoder *dec, const struct format_
    struct pipe_video_buffer templat;
 
    formats[0] = formats[1] = formats[2] = format_config->mc_source_format;
-   assert(pipe_format_to_chroma_format(formats[0]) == dec->base.chroma_format);
    memset(&templat, 0, sizeof(templat));
+   /* The MC entrypoint owns three Y/U/V resources.  IYUV supplies the
+    * 4:2:0 buffer identity while each resource retains the single-channel
+    * mc_source_format storage identity. */
+   templat.buffer_format = PIPE_FORMAT_IYUV;
    templat.width = dec->base.width;
    templat.height = dec->base.height;
    dec->mc_source = vl_video_buffer_create_ex
@@ -1327,6 +1314,7 @@ vl_create_mpeg12_decoder(struct pipe_context *context,
    const unsigned block_size_pixels = VL_BLOCK_WIDTH * VL_BLOCK_HEIGHT;
    const struct format_config *format_config;
    struct vl_mpeg12_decoder *dec;
+   int dump_result;
 
    assert(u_reduce_video_profile(templat->profile) == PIPE_VIDEO_FORMAT_MPEG12);
 
@@ -1427,6 +1415,15 @@ vl_create_mpeg12_decoder(struct pipe_context *context,
       goto error_pipe_state;
 
    list_inithead(&dec->buffer_privates);
+
+   dump_result = vl_mpeg12_dump_init(
+      &dec->dump, os_get_option("VL_MPEG12_DUMP_DIR"));
+   if (dump_result) {
+      debug_printf("vl/mpeg12 dump session creation failed: %s\n",
+                   strerror(-dump_result));
+      vl_mpeg12_destroy(&dec->base);
+      return NULL;
+   }
 
    return &dec->base;
 

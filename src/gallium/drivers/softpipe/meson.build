@@ -71,3 +71,19 @@ driver_softpipe = declare_dependency(
   compile_args : '-DGALLIUM_SOFTPIPE',
   link_with : libsoftpipe
 )
+
+if with_tests
+  test(
+    'softpipe-tex-tile-cache-reference',
+    executable(
+      'sp_tex_tile_cache_test',
+      files('tests/sp_tex_tile_cache_test.c'),
+      include_directories : [
+        inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+      ],
+      link_with : [libsoftpipe, libgallium],
+      dependencies : [idep_mesautil],
+    ),
+    suite : ['softpipe'],
+  )
+endif
