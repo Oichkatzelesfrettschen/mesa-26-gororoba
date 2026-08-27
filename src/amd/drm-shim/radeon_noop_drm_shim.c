@@ -4227,7 +4227,241 @@ test_descriptor_lock_contracts(void)
 }
 
 static void
-test_fd_identity_fallback(int fd, uint16_t expected_device_id)
+test_fd_identity_exact_or_refuse(int fd, uint16_t expected_device_id)
+{
+   struct drm_radeon_gem_create create = {
+      .size = 4096,
+      .alignment = 4096,
+      .initial_domain = RADEON_GEM_DOMAIN_GTT,
+   };
+   int ret = ioctl(fd, DRM_IOCTL_RADEON_GEM_CREATE, &create);
+   TEST_CHECK(ret == 0 && create.handle,
+              "fd exact-identity GEM create returned %d handle %u "
+              "errno %d",
+              ret, create.handle, errno);
+   if (!create.handle)
+      return;
+
+   static const int unavailable_errors[][2] = {
+      {EINVAL, EPERM},
+      {ENOSYS, ENOSYS},
+   };
+   for (size_t index = 0;
+        index < ARRAY_SIZE(unavailable_errors); index++) {
+      drm_shim_test_force_fd_identity_errors(
+         unavailable_errors[index][0],
+         unavailable_errors[index][1]);
+      uint32_t device_id = UINT32_MAX;
+      struct drm_radeon_info info = {
+         .request = RADEON_INFO_DEVICE_ID,
+         .value = (uintptr_t)&device_id,
+      };
+      errno = 0;
+      ret = ioctl(fd, DRM_IOCTL_RADEON_INFO, &info);
+      int ioctl_errno = errno;
+      drm_shim_test_force_fd_identity_errors(0, 0);
+      TEST_CHECK(ret == -1 && ioctl_errno == ENOTTY &&
+                    device_id == UINT32_MAX,
+                 "fd exact-identity refusal %zu returned %d errno %d "
+                 "device 0x%x",
+                 index, ret, ioctl_errno, device_id);
+   }
+
+   drm_shim_test_force_fd_identity_errors(EPERM, 0);
+   drm_shim_test_force_kcmp_result(true, 0);
+   uint32_t device_id = UINT32_MAX;
+   struct drm_radeon_info info = {
+      .request = RADEON_INFO_DEVICE_ID,
+      .value = (uintptr_t)&device_id,
+   };
+   ret = ioctl(fd, DRM_IOCTL_RADEON_INFO, &info);
+   int ioctl_errno = errno;
+   drm_shim_test_force_kcmp_result(false, 0);
+   drm_shim_test_force_fd_identity_errors(0, 0);
+   TEST_CHECK(ret == 0 && device_id == expected_device_id,
+              "fd exact-identity kcmp continuation returned %d errno %d "
+              "device 0x%x",
+              ret, ioctl_errno, device_id);
+
+   int raw_alias = syscall(SYS_dup, fd);
+   TEST_CHECK(raw_alias >= 0,
+              "fd exact-identity raw duplicate failed with errno %d",
+              errno);
+   if (raw_alias >= 0) {
+      drm_shim_test_force_fd_identity_errors(EINVAL, EPERM);
+      struct drm_radeon_gem_busy busy = {
+         .handle = create.handle,
+         .domain = UINT32_MAX,
+      };
+      errno = 0;
+      ret = ioctl(raw_alias, DRM_IOCTL_RADEON_GEM_BUSY, &busy);
+      ioctl_errno = errno;
+      drm_shim_test_force_fd_identity_errors(0, 0);
+      TEST_CHECK(ret == -1 && ioctl_errno == ENOTTY &&
+                    busy.domain == UINT32_MAX,
+                 "fd exact-identity raw duplicate refusal returned %d "
+                 "errno %d domain 0x%x",
+                 ret, ioctl_errno, busy.domain);
+
+      drm_shim_test_force_fd_identity_errors(EPERM, 0);
+      drm_shim_test_force_kcmp_result(true, 0);
+      busy.domain = UINT32_MAX;
+      ret = ioctl(raw_alias, DRM_IOCTL_RADEON_GEM_BUSY, &busy);
+      ioctl_errno = errno;
+      drm_shim_test_force_kcmp_result(false, 0);
+      drm_shim_test_force_fd_identity_errors(0, 0);
+      TEST_CHECK(ret == 0 && busy.domain == RADEON_GEM_DOMAIN_GTT,
+                 "fd exact-identity kcmp continuation returned %d "
+                 "errno %d domain 0x%x",
+                 ret, ioctl_errno, busy.domain);
+      close(raw_alias);
+   }
+
+   int stale_fd = syscall(SYS_dup, fd);
+   TEST_CHECK(stale_fd >= 0,
+              "fd exact-identity stale duplicate failed with errno %d",
+              errno);
+   if (stale_fd >= 0) {
+      int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+      TEST_CHECK(null_fd >= 0,
+                 "fd exact-identity /dev/null open failed with errno %d",
+                 errno);
+      if (null_fd >= 0) {
+         ret = syscall(SYS_dup3, null_fd, stale_fd, O_CLOEXEC);
+         TEST_CHECK(ret == stale_fd,
+                    "fd exact-identity raw replacement returned %d "
+                    "errno %d",
+                    ret, errno);
+         drm_shim_test_force_fd_identity_errors(EINVAL, EPERM);
+         device_id = UINT32_MAX;
+         errno = 0;
+         ret = ioctl(stale_fd, DRM_IOCTL_RADEON_INFO, &info);
+         ioctl_errno = errno;
+         drm_shim_test_force_fd_identity_errors(0, 0);
+         TEST_CHECK(ret == -1 && ioctl_errno == ENOTTY &&
+                       device_id == UINT32_MAX,
+                    "fd exact-identity stale mapping routed ioctl: %d "
+                    "errno %d device 0x%x",
+                    ret, ioctl_errno, device_id);
+         close(null_fd);
+      }
+      close(stale_fd);
+   }
+
+   char reopen_path[64];
+   int path_length =
+      snprintf(reopen_path, sizeof(reopen_path),
+               "/proc/thread-self/fd/%d", fd);
+   TEST_CHECK(path_length > 0 && path_length < (int)sizeof(reopen_path),
+              "fd exact-identity reopen path length is %d", path_length);
+   int independent_fd =
+      path_length > 0 && path_length < (int)sizeof(reopen_path)
+         ? syscall(SYS_openat, AT_FDCWD, reopen_path,
+                   O_RDWR | O_CLOEXEC, 0)
+         : -1;
+   TEST_CHECK(independent_fd >= 0,
+              "fd exact-identity independent reopen failed with errno %d",
+              errno);
+
+   struct flock application_lock = {
+      .l_type = F_WRLCK,
+      .l_whence = SEEK_SET,
+      .l_start = INT64_C(0x5000000000000000),
+      .l_len = 1,
+   };
+   bool application_lock_set =
+      syscall(SYS_fcntl, fd, F_OFD_SETLK, &application_lock) == 0;
+   TEST_CHECK(application_lock_set,
+              "fd exact-identity OFD lock setup failed with errno %d",
+              errno);
+
+   if (independent_fd >= 0) {
+      struct stat source_status;
+      struct stat independent_status;
+      ret = syscall(SYS_fstat, fd, &source_status);
+      int independent_stat_result =
+         syscall(SYS_fstat, independent_fd, &independent_status);
+      TEST_CHECK(ret == 0 && independent_stat_result == 0 &&
+                    source_status.st_dev == independent_status.st_dev &&
+                    source_status.st_ino == independent_status.st_ino,
+                 "fd exact-identity metadata calibration returned %d/%d "
+                 "device %llu/%llu inode %llu/%llu",
+                 ret, independent_stat_result,
+                 (unsigned long long)source_status.st_dev,
+                 (unsigned long long)independent_status.st_dev,
+                 (unsigned long long)source_status.st_ino,
+                 (unsigned long long)independent_status.st_ino);
+
+      struct flock lock_before = application_lock;
+      int lock_query_result =
+         syscall(SYS_fcntl, independent_fd, F_OFD_GETLK, &lock_before);
+      TEST_CHECK(!application_lock_set ||
+                    (lock_query_result == 0 &&
+                     lock_before.l_type == F_WRLCK &&
+                     lock_before.l_whence == SEEK_SET &&
+                     lock_before.l_start == application_lock.l_start &&
+                     lock_before.l_len == application_lock.l_len &&
+                     lock_before.l_pid == -1),
+                 "fd exact-identity separate-OFD calibration returned %d "
+                 "type %d start %lld length %lld pid %d errno %d",
+                 lock_query_result, lock_before.l_type,
+                 (long long)lock_before.l_start,
+                 (long long)lock_before.l_len, lock_before.l_pid, errno);
+
+      drm_shim_test_force_fd_identity_errors(EINVAL, EPERM);
+      struct drm_radeon_gem_busy independent_busy = {
+         .handle = create.handle,
+         .domain = UINT32_MAX,
+      };
+      errno = 0;
+      ret =
+         ioctl(independent_fd, DRM_IOCTL_RADEON_GEM_BUSY,
+               &independent_busy);
+      ioctl_errno = errno;
+      drm_shim_test_force_fd_identity_errors(0, 0);
+      TEST_CHECK(ret == -1 && ioctl_errno == ENOTTY &&
+                    independent_busy.domain == UINT32_MAX,
+                 "fd exact-identity independent reopen refusal returned "
+                 "%d errno %d domain 0x%x",
+                 ret, ioctl_errno, independent_busy.domain);
+
+      struct flock lock_after = application_lock;
+      lock_query_result =
+         syscall(SYS_fcntl, independent_fd, F_OFD_GETLK, &lock_after);
+      TEST_CHECK(!application_lock_set ||
+                    (lock_query_result == 0 &&
+                     lock_after.l_type == lock_before.l_type &&
+                     lock_after.l_whence == lock_before.l_whence &&
+                     lock_after.l_start == lock_before.l_start &&
+                     lock_after.l_len == lock_before.l_len &&
+                     lock_after.l_pid == lock_before.l_pid),
+                 "fd exact-identity refusal changed OFD lock: %d type %d "
+                 "start %lld length %lld pid %d errno %d",
+                 lock_query_result, lock_after.l_type,
+                 (long long)lock_after.l_start,
+                 (long long)lock_after.l_len, lock_after.l_pid, errno);
+      close(independent_fd);
+   }
+
+   if (application_lock_set) {
+      application_lock.l_type = F_UNLCK;
+      ret = syscall(SYS_fcntl, fd, F_OFD_SETLK, &application_lock);
+      TEST_CHECK(ret == 0,
+                 "fd exact-identity OFD lock cleanup returned %d errno %d",
+                 ret, errno);
+   }
+
+   struct drm_gem_close close_bo = {
+      .handle = create.handle,
+   };
+   ret = ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+   TEST_CHECK(ret == 0,
+              "fd exact-identity GEM close returned %d errno %d",
+              ret, errno);
+}
+
+static void
+test_fd_identity_contract(int fd, uint16_t expected_device_id)
 {
    int original_descriptor_flags = fcntl(fd, F_GETFD);
    TEST_CHECK(original_descriptor_flags >= 0,
@@ -4249,17 +4483,7 @@ test_fd_identity_fallback(int fd, uint16_t expected_device_id)
    if (original_descriptor_flags & FD_CLOEXEC)
       (void)ioctl(fd, FIOCLEX);
 
-   struct drm_radeon_gem_create fallback_create = {
-      .size = 4096,
-      .alignment = 4096,
-      .initial_domain = RADEON_GEM_DOMAIN_GTT,
-   };
-   int ret =
-      ioctl(fd, DRM_IOCTL_RADEON_GEM_CREATE, &fallback_create);
-   TEST_CHECK(ret == 0 && fallback_create.handle,
-              "fd identity mutable-state GEM create returned %d "
-              "handle %u errno %d",
-              ret, fallback_create.handle, errno);
+   int ret;
    off64_t seek_result = lseek64(fd, 17, SEEK_SET);
    TEST_CHECK(seek_result == 17,
               "fd identity lseek returned %lld errno %d",
@@ -4351,183 +4575,7 @@ test_fd_identity_fallback(int fd, uint16_t expected_device_id)
       close(readonly_render_fd);
    }
 
-   if (fallback_create.handle) {
-      drm_shim_test_force_fd_identity_errors(EINVAL, EPERM);
-      struct drm_radeon_gem_busy busy = {
-         .handle = fallback_create.handle,
-         .domain = UINT32_MAX,
-      };
-      ret = ioctl(fd, DRM_IOCTL_RADEON_GEM_BUSY, &busy);
-      drm_shim_test_force_fd_identity_errors(0, 0);
-      TEST_CHECK(ret == 0 &&
-                    busy.domain == RADEON_GEM_DOMAIN_GTT,
-                 "fd identity lseek/read/unlock fallback returned %d "
-                 "domain 0x%x errno %d",
-                 ret, busy.domain, errno);
-      struct drm_gem_close close_bo = {
-         .handle = fallback_create.handle,
-      };
-      ret = ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-      TEST_CHECK(ret == 0,
-                 "fd identity mutable-state GEM close returned %d "
-                 "errno %d",
-                 ret, errno);
-   }
-
-   static const int errors[][2] = {
-      {EINVAL, EPERM},
-      {ENOSYS, ENOSYS},
-   };
-
-   for (size_t i = 0; i < ARRAY_SIZE(errors); i++) {
-      drm_shim_test_force_fd_identity_errors(errors[i][0], errors[i][1]);
-      uint32_t device_id = UINT32_MAX;
-      struct drm_radeon_info info = {
-         .request = RADEON_INFO_DEVICE_ID,
-         .value = (uintptr_t)&device_id,
-      };
-      ret = ioctl(fd, DRM_IOCTL_RADEON_INFO, &info);
-      drm_shim_test_force_fd_identity_errors(0, 0);
-      TEST_CHECK(ret == 0 && device_id == expected_device_id,
-                 "fd identity fallback %zu returned %d device 0x%x "
-                 "errno %d",
-                 i, ret, device_id, errno);
-   }
-
-   drm_shim_test_force_fd_identity_errors(EPERM, 0);
-   drm_shim_test_force_kcmp_result(true, 0);
-   uint32_t device_id = UINT32_MAX;
-   struct drm_radeon_info info = {
-      .request = RADEON_INFO_DEVICE_ID,
-      .value = (uintptr_t)&device_id,
-   };
-   ret = ioctl(fd, DRM_IOCTL_RADEON_INFO, &info);
-   drm_shim_test_force_kcmp_result(false, 0);
-   drm_shim_test_force_fd_identity_errors(0, 0);
-   TEST_CHECK(ret == 0 && device_id == expected_device_id,
-              "fd identity kcmp continuation returned %d device 0x%x "
-              "errno %d",
-              ret, device_id, errno);
-
-   int stale_fd = syscall(SYS_dup, fd);
-   TEST_CHECK(stale_fd >= 0,
-              "fd identity stale duplicate failed with errno %d", errno);
-   if (stale_fd >= 0) {
-      struct stat status;
-      ret = fstat(stale_fd, &status);
-      TEST_CHECK(ret == 0 && S_ISCHR(status.st_mode),
-                 "fd identity stale calibration returned %d mode 0%o",
-                 ret, status.st_mode);
-      null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
-      TEST_CHECK(null_fd >= 0,
-                 "fd identity /dev/null open failed with errno %d",
-                 errno);
-      if (null_fd >= 0) {
-         ret = syscall(SYS_dup3, null_fd, stale_fd, O_CLOEXEC);
-         TEST_CHECK(ret == stale_fd,
-                    "fd identity raw replacement returned %d errno %d",
-                    ret, errno);
-         drm_shim_test_force_fd_identity_errors(EINVAL, EPERM);
-         memset(&status, 0, sizeof(status));
-         ret = fstat(stale_fd, &status);
-         TEST_CHECK(ret == 0 &&
-                       (!S_ISCHR(status.st_mode) ||
-                        major(status.st_rdev) != DRM_MAJOR ||
-                        minor(status.st_rdev) != 128),
-                    "fd identity stale mapping rewrote replacement: %d "
-                    "mode 0%o device %u:%u",
-                    ret, status.st_mode, major(status.st_rdev),
-                    minor(status.st_rdev));
-         device_id = UINT32_MAX;
-         errno = 0;
-         ret = ioctl(stale_fd, DRM_IOCTL_RADEON_INFO, &info);
-         TEST_CHECK(ret == -1 && errno == ENOTTY &&
-                       device_id == UINT32_MAX,
-                    "fd identity stale mapping routed ioctl: %d errno %d "
-                    "device 0x%x",
-                    ret, errno, device_id);
-         drm_shim_test_force_fd_identity_errors(0, 0);
-         close(null_fd);
-      }
-      close(stale_fd);
-   }
-
-   struct drm_radeon_gem_create same_inode_create = {
-      .size = 4096,
-      .alignment = 4096,
-      .initial_domain = RADEON_GEM_DOMAIN_GTT,
-   };
-   ret =
-      ioctl(fd, DRM_IOCTL_RADEON_GEM_CREATE, &same_inode_create);
-   TEST_CHECK(ret == 0 && same_inode_create.handle,
-              "fd identity same-inode GEM create returned %d handle %u",
-              ret, same_inode_create.handle);
-   int same_inode_fd = syscall(SYS_dup, fd);
-   TEST_CHECK(same_inode_fd >= 0,
-              "fd identity same-inode duplicate failed with errno %d",
-              errno);
-   if (ret == 0 && same_inode_fd >= 0) {
-      struct stat status;
-      ret = fstat(same_inode_fd, &status);
-      TEST_CHECK(ret == 0 && S_ISCHR(status.st_mode),
-                 "fd identity same-inode calibration returned %d "
-                 "mode 0%o",
-                 ret, status.st_mode);
-
-      const char *synthetic_root =
-         drm_shim_test_synthetic_root_path();
-      char render_path[PATH_MAX];
-      int path_length =
-         snprintf(render_path, sizeof(render_path),
-                  "%s/dev/dri/renderD128", synthetic_root);
-      TEST_CHECK(path_length > 0 &&
-                    path_length < (int)sizeof(render_path),
-                 "fd identity same-inode path length is %d",
-                 path_length);
-      int independent_fd =
-         syscall(SYS_openat, AT_FDCWD, render_path,
-                 O_RDWR | O_CLOEXEC, 0);
-      TEST_CHECK(independent_fd >= 0,
-                 "fd identity same-inode raw open failed with errno %d",
-                 errno);
-      if (independent_fd >= 0) {
-         ret =
-            syscall(SYS_dup3, independent_fd, same_inode_fd,
-                    O_CLOEXEC);
-         TEST_CHECK(ret == same_inode_fd,
-                    "fd identity same-inode replacement returned %d "
-                    "errno %d",
-                    ret, errno);
-         syscall(SYS_close, independent_fd);
-
-         drm_shim_test_force_fd_identity_errors(EINVAL, EPERM);
-         struct drm_radeon_gem_busy busy = {
-            .handle = same_inode_create.handle,
-            .domain = UINT32_MAX,
-         };
-         errno = 0;
-         ret =
-            ioctl(same_inode_fd, DRM_IOCTL_RADEON_GEM_BUSY, &busy);
-         drm_shim_test_force_fd_identity_errors(0, 0);
-         TEST_CHECK(ret == -1 && errno == ENOENT &&
-                       busy.domain == UINT32_MAX,
-                    "fd identity same-inode replacement exposed handle: "
-                    "%d errno %d domain 0x%x",
-                    ret, errno, busy.domain);
-      }
-      close(same_inode_fd);
-   } else if (same_inode_fd >= 0) {
-      close(same_inode_fd);
-   }
-   if (same_inode_create.handle) {
-      struct drm_gem_close close_bo = {
-         .handle = same_inode_create.handle,
-      };
-      ret = ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-      TEST_CHECK(ret == 0,
-                 "fd identity same-inode GEM close returned %d errno %d",
-                 ret, errno);
-   }
+   test_fd_identity_exact_or_refuse(fd, expected_device_id);
 
    int backing_baseline = drm_shim_test_live_bo_backing_files();
    int abandoned_fd =
@@ -5981,7 +6029,7 @@ test_synthetic_filesystem(int fd, uint16_t expected_device_id)
    test_deep_dirfd_synthetic_link();
    test_path_snapshot_confinement();
    test_fcntl_lock_pointer_validation(fd);
-   test_fd_identity_fallback(fd, expected_device_id);
+   test_fd_identity_contract(fd, expected_device_id);
    test_sealed_identity_exactness(fd);
    test_descriptor_lock_contracts();
    test_fd_identity_first_discovery();
@@ -6229,9 +6277,31 @@ test_claimed_namespace_map_miss(void)
    return test_failures ? 1 : 0;
 }
 
+static int
+test_fd_exact_identity_or_refuse(void)
+{
+   if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+      return 1;
+
+   int render_fd =
+      open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   TEST_CHECK(render_fd >= 0,
+              "fd exact-identity render open failed with errno %d",
+              errno);
+   if (render_fd < 0)
+      return 1;
+
+   test_fd_identity_exact_or_refuse(render_fd, 0x5974);
+   close(render_fd);
+   return test_failures ? 1 : 0;
+}
+
 int
 main(int argc, char **argv)
 {
+   if (argc == 2 &&
+       strcmp(argv[1], "fd-exact-identity-or-refuse") == 0)
+      return test_fd_exact_identity_or_refuse();
    if (argc == 2 && strcmp(argv[1], "claimed-namespace-map-miss") == 0)
       return test_claimed_namespace_map_miss();
    if (argc == 2 && strcmp(argv[1], "fork-parent-exit-first") == 0)
