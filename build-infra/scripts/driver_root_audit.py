@@ -13,20 +13,39 @@ its driver-named pass-through leaf, and its installed artifact definitions.
 Every family is entered from `src/amd/meson.build`; moving a call under a
 different condition changes the set of configurations that build its ICD.
 
-Artifact identity is read from the definitions rather than from the presence
-of a name: an assignment target, a comment, or a stale reference keeps the
-substring after the installed DSO or manifest output has been renamed.  The
-audit matches the `shared_library()` name argument and the ICD
-`custom_target()` output, which are what the loader and the ICD manifests
-actually spell.
+Artifact identity is read from Meson's own syntax tree rather than from the
+presence of a name: an assignment target, a comment, an inactive branch, or a
+stale string carries no build authority.  The audit binds one top-level
+installed `shared_library()` and one named installed ICD `custom_target()` to
+each family contract, including the complete output expression and install
+directory.
 """
 
 import argparse
-import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+try:
+    from mesonbuild import mparser
+except ImportError:
+    mparser = None
+
+
+class UnknownManifestFormError(ValueError):
+    """Report a manifest-form value outside the finite family contract."""
+
+    def __init__(self, manifest_form):
+        super().__init__(f"unknown manifest form: {manifest_form}")
+
+
+class FixtureContractError(ValueError):
+    """Report a synthetic tree that cannot satisfy fixture ownership."""
+
+    def __init__(self, family_root, reason):
+        super().__init__(f"{reason}: {family_root}")
+
 
 # Each family contract owns the entry predicate, direct-root identity, loader
 # library, and installed manifest form.  Keeping these fields together prevents
@@ -73,101 +92,130 @@ RETAINED_EVIDENCE_PREFIXES = (
 )
 
 
-def strip_meson_comment(line):
-    """Remove a Meson comment while preserving hash characters in strings."""
-    active_quote = None
-    escaped = False
-    for character_index, character in enumerate(line):
-        if escaped:
-            escaped = False
-            continue
-        if active_quote:
-            if character == "\\":
-                escaped = True
-            elif character == active_quote:
-                active_quote = None
-            continue
-        if character in ("'", '"'):
-            active_quote = character
-        elif character == "#":
-            return line[:character_index]
-    return line
+def parse_meson_source(text, filename, parser_module=mparser):
+    """Parse one Meson file through the Meson version that builds the tree."""
+    if parser_module is None:
+        return None, [f"{filename}: Meson Python parser is unavailable"]
+    try:
+        return parser_module.Parser(text, filename).parse(), []
+    except parser_module.ParseException as error:
+        return None, [f"{filename}: Meson syntax error at line {error.lineno}"]
 
 
-def strip_meson_comments(text):
-    """Drop `#` comments so a commented-out subdir() never satisfies the gate."""
-    return "\n".join(strip_meson_comment(line) for line in text.splitlines())
+def unwrap_parenthesized(node):
+    """Return the expression inside any syntactic parenthesis wrappers."""
+    while isinstance(node, mparser.ParenthesizedNode):
+        node = node.inner
+    return node
 
 
-def normalize_meson_expression(expression):
-    """Collapse irrelevant whitespace while preserving expression tokens."""
-    return " ".join(expression.split())
+def describe_meson_condition(node):
+    """Return a stable description for a control-context diagnostic."""
+    node = unwrap_parenthesized(node)
+    if isinstance(node, mparser.IdNode):
+        return node.value
+    if isinstance(node, mparser.BooleanNode):
+        return str(node.value).lower()
+    return f"{type(node).__name__} at line {node.lineno}"
 
 
-def parse_meson_subdir_calls(text):
-    """Return subdir calls with the complete active Meson control stack."""
-    active_blocks = []
-    calls = []
-    failures = []
-    subdir_pattern = re.compile(r"subdir\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
-
-    for line_number, source_line in enumerate(text.splitlines(), start=1):
-        statement = strip_meson_comment(source_line).strip()
-        if not statement:
-            continue
-
-        if_match = re.fullmatch(r"if\s+(.+)", statement)
-        elif_match = re.fullmatch(r"elif\s+(.+)", statement)
-        foreach_match = re.fullmatch(r"foreach\s+(.+)", statement)
-        if if_match:
-            condition = normalize_meson_expression(if_match.group(1))
-            active_blocks.append(("if", f"if {condition}"))
-            continue
-        if elif_match:
-            if not active_blocks or active_blocks[-1][0] != "if":
-                failures.append(f"line {line_number}: elif without matching if")
-            else:
-                condition = normalize_meson_expression(elif_match.group(1))
-                active_blocks[-1] = ("if", f"elif {condition}")
-            continue
-        if statement == "else":
-            if not active_blocks or active_blocks[-1][0] != "if":
-                failures.append(f"line {line_number}: else without matching if")
-            else:
-                active_blocks[-1] = ("if", "else")
-            continue
-        if statement == "endif":
-            if not active_blocks or active_blocks[-1][0] != "if":
-                failures.append(f"line {line_number}: endif without matching if")
-            else:
-                active_blocks.pop()
-            continue
-        if foreach_match:
-            expression = normalize_meson_expression(foreach_match.group(1))
-            active_blocks.append(("foreach", f"foreach {expression}"))
-            continue
-        if statement == "endforeach":
-            if not active_blocks or active_blocks[-1][0] != "foreach":
-                failures.append(
-                    f"line {line_number}: endforeach without matching foreach"
+def iter_meson_statements(block, contexts=()):
+    """Yield statements with the exact Meson AST control path that owns them."""
+    for statement in block.lines:
+        yield statement, contexts
+        if isinstance(statement, mparser.IfClauseNode):
+            for branch_index, branch in enumerate(statement.ifs):
+                branch_name = "if" if branch_index == 0 else "elif"
+                condition = describe_meson_condition(branch.condition)
+                yield from iter_meson_statements(
+                    branch.block, contexts + (f"{branch_name} {condition}",)
                 )
-            else:
-                active_blocks.pop()
-            continue
-
-        subdir_match = subdir_pattern.fullmatch(statement)
-        if subdir_match:
-            calls.append(
-                {
-                    "path": subdir_match.group(1),
-                    "contexts": tuple(block[1] for block in active_blocks),
-                }
+            if not isinstance(statement.elseblock, mparser.EmptyNode):
+                yield from iter_meson_statements(
+                    statement.elseblock.block, contexts + ("else",)
+                )
+        elif isinstance(statement, mparser.ForeachClauseNode):
+            variables = ", ".join(variable.value for variable in statement.varnames)
+            yield from iter_meson_statements(
+                statement.block, contexts + (f"foreach {variables}",)
             )
 
-    if active_blocks:
-        contexts = " -> ".join(block[1] for block in active_blocks)
-        failures.append(f"unterminated Meson control stack: {contexts}")
-    return calls, failures
+
+def statement_function(statement):
+    """Return a direct function call made by one Meson statement."""
+    if isinstance(statement, mparser.FunctionNode):
+        return statement
+    if isinstance(statement, mparser.AssignmentNode) and isinstance(
+        statement.value, mparser.FunctionNode
+    ):
+        return statement.value
+    return None
+
+
+def regular_string(node):
+    """Match a regular literal across Meson 1.4 and unified string nodes."""
+    format_string_class = getattr(mparser, "FormatStringNode", ())
+    return (
+        isinstance(node, mparser.StringNode)
+        and not isinstance(node, format_string_class)
+        and not getattr(node, "is_fstring", False)
+        and not getattr(node, "is_multiline", False)
+    )
+
+
+def literal_string(node, expected):
+    """Match one regular, non-formatted Meson string literal exactly."""
+    return regular_string(node) and node.value == expected
+
+
+def first_literal_argument(call):
+    """Return the first positional regular string argument, when present."""
+    if not call.args.arguments:
+        return None
+    argument = call.args.arguments[0]
+    if not regular_string(argument):
+        return None
+    return argument.value
+
+
+def collect_meson_calls(tree, function_name):
+    """Return direct calls to one function with their active control paths."""
+    calls = []
+    for statement, contexts in iter_meson_statements(tree):
+        call = statement_function(statement)
+        if call is not None and call.func_name.value == function_name:
+            calls.append({"call": call, "contexts": contexts})
+    return calls
+
+
+def contracted_predicate_writes(tree, predicates):
+    """Return contracted predicate names written or shadowed in an entry file."""
+    writes = set()
+    for statement, _ in iter_meson_statements(tree):
+        if isinstance(statement, mparser.AssignmentNode):
+            if statement.var_name.value in predicates:
+                writes.add(statement.var_name.value)
+        elif isinstance(statement, mparser.ForeachClauseNode):
+            writes.update(
+                variable.value
+                for variable in statement.varnames
+                if variable.value in predicates
+            )
+        call = statement_function(statement)
+        if call is None or call.func_name.value not in {
+            "set_variable",
+            "unset_variable",
+        }:
+            continue
+        predicate = first_literal_argument(call)
+        if predicate in predicates:
+            writes.add(predicate)
+    return writes
+
+
+def family_relative_path(family_root, entry_file):
+    """Return the subdir argument from one entry file to a family root."""
+    return str(Path(family_root).relative_to(Path(entry_file).parent))
 
 
 def check_entry_points(root, failures):
@@ -186,13 +234,21 @@ def check_entry_points(root, failures):
             failures.append(f"missing build entry point: {entry_file}")
             parsed_entries[entry_file] = None
             continue
-        calls, parse_failures = parse_meson_subdir_calls(
-            entry.read_text(encoding="utf-8", errors="replace")
+        tree, parse_failures = parse_meson_source(
+            entry.read_text(encoding="utf-8", errors="replace"), entry_file
         )
-        parsed_entries[entry_file] = calls
-        failures.extend(
-            f"{entry_file}: {parse_failure}" for parse_failure in parse_failures
-        )
+        parsed_entries[entry_file] = tree
+        failures.extend(parse_failures)
+
+        if tree is None:
+            continue
+        predicates = {
+            contract["entry_points"][entry_file]
+            for contract in AMD_VULKAN_FAMILIES.values()
+            if entry_file in contract["entry_points"]
+        }
+        for predicate in sorted(contracted_predicate_writes(tree, predicates)):
+            failures.append(f"{entry_file} writes contracted predicate {predicate}")
 
     for family_root, contract in AMD_VULKAN_FAMILIES.items():
         meson = root / family_root / "meson.build"
@@ -201,11 +257,17 @@ def check_entry_points(root, failures):
                 f"missing driver root meson.build: {family_root}/meson.build"
             )
         for entry_file, predicate in contract["entry_points"].items():
-            calls = parsed_entries[entry_file]
-            if calls is None:
+            tree = parsed_entries[entry_file]
+            if tree is None:
                 continue
-            relative = str(Path(family_root).relative_to(Path(entry_file).parent))
-            matching_calls = [call for call in calls if call["path"] == relative]
+            relative = family_relative_path(family_root, entry_file)
+            matching_calls = [
+                call
+                for call in collect_meson_calls(tree, "subdir")
+                if first_literal_argument(call["call"]) == relative
+                and len(call["call"].args.arguments) == 1
+                and not call["call"].args.kwargs
+            ]
             expected_contexts = (f"if {predicate}",)
             if len(matching_calls) != 1:
                 failures.append(
@@ -222,43 +284,114 @@ def check_entry_points(root, failures):
                 )
 
 
-def installed_manifest_pattern(contract):
-    """Build the complete installed-manifest output expression pattern."""
-    stem = re.escape(contract["manifest_stem"])
-    quote = r"(?P<quote>['\"])"
+def meson_keyword(call, name):
+    """Return one named Meson function argument, when present."""
+    for key, value in call.args.kwargs.items():
+        if key.value == name:
+            return value
+    return None
+
+
+def meson_true(node):
+    """Return whether an AST node is the literal Meson boolean true."""
+    return isinstance(node, mparser.BooleanNode) and node.value is True
+
+
+def host_cpu_call(node):
+    """Return whether a node is the exact host_machine.cpu() expression."""
+    node = unwrap_parenthesized(node)
+    return (
+        isinstance(node, mparser.MethodNode)
+        and isinstance(node.source_object, mparser.IdNode)
+        and node.source_object.value == "host_machine"
+        and node.name.value == "cpu"
+        and not node.args.arguments
+        and not node.args.kwargs
+    )
+
+
+def manifest_output_matches(node, contract):
+    """Match one family's complete installed ICD output expression."""
+    node = unwrap_parenthesized(node)
+    stem = contract["manifest_stem"]
     if contract["manifest_form"] == "cpu-format":
-        return re.compile(
-            r"(?m)^[ \t]*output\s*:\s*" + quote + stem + r"\.@0@\.json(?P=quote)"
-            r"\s*\.format\s*\(\s*host_machine\.cpu\s*\(\s*\)\s*\)\s*,"
+        return (
+            isinstance(node, mparser.MethodNode)
+            and literal_string(node.source_object, f"{stem}.@0@.json")
+            and node.name.value == "format"
+            and len(node.args.arguments) == 1
+            and not node.args.kwargs
+            and host_cpu_call(node.args.arguments[0])
         )
     if contract["manifest_form"] == "suffix-variable":
-        return re.compile(
-            r"(?m)^[ \t]*output\s*:\s*" + quote + stem + r"\.(?P=quote)"
-            r"\s*\+\s*vulkan_manifest_suffix\s*,"
+        return (
+            isinstance(node, mparser.ArithmeticNode)
+            and node.operator.value == "+"
+            and literal_string(node.left, f"{stem}.")
+            and isinstance(unwrap_parenthesized(node.right), mparser.IdNode)
+            and unwrap_parenthesized(node.right).value == "vulkan_manifest_suffix"
         )
-    raise ValueError(f"unknown manifest form: {contract['manifest_form']}")
+    return False
+
+
+def active_installed_library(call_record, library_name):
+    """Match one top-level installed loader shared library."""
+    call = call_record["call"]
+    return (
+        not call_record["contexts"]
+        and first_literal_argument(call) == library_name
+        and meson_true(meson_keyword(call, "install"))
+    )
+
+
+def active_installed_manifest(call_record, contract):
+    """Match one top-level installed ICD manifest custom target."""
+    call = call_record["call"]
+    install_dir = unwrap_parenthesized(meson_keyword(call, "install_dir"))
+    return (
+        not call_record["contexts"]
+        and first_literal_argument(call) == contract["manifest_stem"]
+        and manifest_output_matches(meson_keyword(call, "output"), contract)
+        and meson_true(meson_keyword(call, "install"))
+        and isinstance(install_dir, mparser.IdNode)
+        and install_dir.value == "with_vulkan_icd_dir"
+    )
 
 
 def check_artifacts(root, failures):
-    """Require the DSO name argument and the ICD manifest output."""
+    """Require active installed loader and ICD manifest target definitions."""
     for family_root, contract in AMD_VULKAN_FAMILIES.items():
         meson_rel = f"{family_root}/meson.build"
         meson = root / meson_rel
         if not meson.is_file():
             continue
-        body = strip_meson_comments(meson.read_text(encoding="utf-8", errors="replace"))
-        # shared_library('<name>', ...): the first positional argument is the
-        # library name the loader resolves, and it may sit on its own line.
+        tree, parse_failures = parse_meson_source(
+            meson.read_text(encoding="utf-8", errors="replace"), meson_rel
+        )
+        failures.extend(parse_failures)
+        if tree is None:
+            continue
+
         dso = contract["shared_library"]
-        if not re.search(
-            r"(?m)^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*)?"
-            r"shared_library\s*\(\s*['\"]%s['\"]" % re.escape(dso),
-            body,
-        ):
-            failures.append(f"{meson_rel} defines no shared_library named {dso}")
-        if not installed_manifest_pattern(contract).search(body):
+        library_matches = [
+            call
+            for call in collect_meson_calls(tree, "shared_library")
+            if active_installed_library(call, dso)
+        ]
+        if len(library_matches) != 1:
             failures.append(
-                f"{meson_rel} emits no installed ICD manifest named "
+                f"{meson_rel} defines no unique active installed "
+                f"shared_library named {dso}"
+            )
+
+        manifest_matches = [
+            call
+            for call in collect_meson_calls(tree, "custom_target")
+            if active_installed_manifest(call, contract)
+        ]
+        if len(manifest_matches) != 1:
+            failures.append(
+                f"{meson_rel} emits no unique active installed ICD manifest named "
                 f"{contract['installed_manifest']}"
             )
 
@@ -321,7 +454,7 @@ def fixture_manifest_expression(contract):
         return f"'{stem}.@0@.json'.format(host_machine.cpu())"
     if contract["manifest_form"] == "suffix-variable":
         return f"'{stem}.' + vulkan_manifest_suffix"
-    raise ValueError(f"unknown manifest form: {contract['manifest_form']}")
+    raise UnknownManifestFormError(contract["manifest_form"])
 
 
 def _write_family(base, family, artifacts_ok=True, manifest_expression=None):
@@ -335,10 +468,13 @@ def _write_family(base, family, artifacts_ok=True, manifest_expression=None):
             "lib = shared_library(\n"
             f"  '{contract['shared_library']}',\n"
             "  project_files,\n"
+            "  install : true,\n"
             ")\n"
             "icd = custom_target(\n"
-            "  'icd',\n"
+            f"  '{contract['manifest_stem']}',\n"
             f"  output : {output_expression},\n"
+            "  install_dir : with_vulkan_icd_dir,\n"
+            "  install : true,\n"
             ")\n"
         )
     elif contract:
@@ -347,10 +483,14 @@ def _write_family(base, family, artifacts_ok=True, manifest_expression=None):
         body += (
             f"lib{contract['shared_library']} = shared_library(\n"
             "  'vulkan_renamed',\n"
+            "  install : true,\n"
             ")\n"
             f"# {contract['manifest_stem']}\n"
             "icd = custom_target(\n"
+            "  'renamed_icd',\n"
             "  output : 'renamed_icd.@0@.json',\n"
+            "  install_dir : with_vulkan_icd_dir,\n"
+            "  install : true,\n"
             ")\n"
         )
     (base / family / "meson.build").write_text(body, encoding="utf-8")
@@ -362,7 +502,7 @@ def _stage_good(base):
     for family_root, contract in AMD_VULKAN_FAMILIES.items():
         _write_family(base, family_root)
         for entry_file, predicate in contract["entry_points"].items():
-            relative = str(Path(family_root).relative_to(Path(entry_file).parent))
+            relative = family_relative_path(family_root, entry_file)
             entry_blocks.setdefault(entry_file, []).append(
                 f"if {predicate}\n  subdir('{relative}')\nendif\n"
             )
@@ -379,14 +519,14 @@ def _replace_family_entry(base, family_root, replacement):
     """Replace one synthetic family's complete entry block exactly once."""
     contract = AMD_VULKAN_FAMILIES[family_root]
     if len(contract["entry_points"]) != 1:
-        raise ValueError(f"fixture requires one entry point: {family_root}")
+        raise FixtureContractError(family_root, "fixture requires one entry point")
     entry_file, predicate = next(iter(contract["entry_points"].items()))
-    relative = str(Path(family_root).relative_to(Path(entry_file).parent))
+    relative = family_relative_path(family_root, entry_file)
     original = f"if {predicate}\n  subdir('{relative}')\nendif\n"
     entry_path = base / entry_file
     body = entry_path.read_text(encoding="utf-8")
     if body.count(original) != 1:
-        raise ValueError(f"fixture entry block is not unique: {family_root}")
+        raise FixtureContractError(family_root, "fixture entry block is not unique")
     entry_path.write_text(body.replace(original, replacement, 1), encoding="utf-8")
 
 
@@ -395,10 +535,101 @@ def artifact_failures(family_root):
     contract = AMD_VULKAN_FAMILIES[family_root]
     meson_rel = f"{family_root}/meson.build"
     return [
-        f"{meson_rel} defines no shared_library named " f"{contract['shared_library']}",
-        f"{meson_rel} emits no installed ICD manifest named "
+        f"{meson_rel} defines no unique active installed shared_library named "
+        f"{contract['shared_library']}",
+        f"{meson_rel} emits no unique active installed ICD manifest named "
         f"{contract['installed_manifest']}",
     ]
+
+
+def append_parser_self_test_cases(cases):
+    """Add Meson syntax and parser-availability calibration cases."""
+    malformed_control_cases = (
+        ("elif-without-if", "elif feature\n"),
+        ("else-without-if", "else\n"),
+        ("endif-without-if", "endif\n"),
+        ("endforeach-without-foreach", "endforeach\n"),
+        ("unterminated-if", "if feature\n"),
+        ("unterminated-foreach", "foreach item : items\n"),
+    )
+    for case_name, source in malformed_control_cases:
+        filename = f"{case_name}.build"
+        _, parse_failures = parse_meson_source(source, filename)
+        cases.append(
+            (
+                f"known-bad: {case_name}",
+                parse_failures,
+                [f"{filename}: Meson syntax error at line 1"],
+            )
+        )
+
+    _, unavailable_parser_failures = parse_meson_source(
+        "", "unavailable-parser.build", parser_module=None
+    )
+    cases.append(
+        (
+            "known-bad: unavailable Meson parser",
+            unavailable_parser_failures,
+            ["unavailable-parser.build: Meson Python parser is unavailable"],
+        )
+    )
+
+
+def append_predicate_write_self_test_cases(cases, temporary_root):
+    """Add every supported contracted-predicate write mechanism."""
+    predicate_write_cases = (
+        ("assignment", "with_ati_r300_vk = false\n"),
+        ("plus assignment", "with_ati_r300_vk += true\n"),
+        (
+            "foreach shadow",
+            "foreach with_ati_r300_vk : []\nendforeach\n",
+        ),
+        (
+            "set_variable write",
+            "set_variable('with_ati_r300_vk', false)\n",
+        ),
+        (
+            "unset_variable write",
+            "unset_variable('with_ati_r300_vk')\n",
+        ),
+    )
+    canonical_r3v_entry = "if with_ati_r300_vk\n  subdir('r300/vulkan')\nendif\n"
+    for case_name, write_statement in predicate_write_cases:
+        bad = temporary_root / f"predicate-{case_name.replace(' ', '-')}"
+        _stage_good(bad)
+        _replace_family_entry(
+            bad,
+            "src/amd/r300/vulkan",
+            write_statement + canonical_r3v_entry,
+        )
+        cases.append(
+            (
+                f"known-bad: contracted predicate {case_name}",
+                check_tree(bad),
+                ["src/amd/meson.build writes contracted predicate " "with_ati_r300_vk"],
+            )
+        )
+
+
+def report_self_test_cases(cases):
+    """Compare every calibrated failure set and print the exact differences."""
+    all_cases_match = True
+    for label, failures, expected in cases:
+        # Synthetic trees are outside Git, so tracked-path scanning has no
+        # authority there; the same path is calibrated by the live-tree run.
+        failures = [
+            failure for failure in failures if not failure.startswith("git grep failed")
+        ]
+        if sorted(failures) == sorted(expected):
+            print(f"OK    {label}: {len(failures)} failure(s) as expected")
+            continue
+        all_cases_match = False
+        print(f"MISCALIBRATED  {label}")
+        for line in sorted(set(expected) - set(failures)):
+            print(f"        expected, absent: {line}")
+        for line in sorted(set(failures) - set(expected)):
+            print(f"        unexpected: {line}")
+    return all_cases_match
 
 
 def self_test():
@@ -410,40 +641,7 @@ def self_test():
     third still fires, which is how a verdict producer goes quietly blind.
     """
     cases = []
-
-    malformed_control_cases = (
-        (
-            "elif without matching if",
-            "elif feature\n",
-            "line 1: elif without matching if",
-        ),
-        ("else without matching if", "else\n", "line 1: else without matching if"),
-        ("endif without matching if", "endif\n", "line 1: endif without matching if"),
-        (
-            "endforeach without matching foreach",
-            "endforeach\n",
-            "line 1: endforeach without matching foreach",
-        ),
-        (
-            "unterminated if control",
-            "if feature\n",
-            "unterminated Meson control stack: if feature",
-        ),
-        (
-            "unterminated foreach control",
-            "foreach item : items\n",
-            "unterminated Meson control stack: foreach item : items",
-        ),
-    )
-    for case_name, source, expected_failure in malformed_control_cases:
-        _, parse_failures = parse_meson_subdir_calls(source)
-        cases.append(
-            (
-                f"known-bad: {case_name}",
-                parse_failures,
-                [expected_failure],
-            )
-        )
+    append_parser_self_test_cases(cases)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -513,17 +711,55 @@ def self_test():
             )
         )
 
-        # A quoted spelling of the call carries no Meson build authority.
-        bad = tmp / "entry-in-string"
+        # Meson's lexer owns comments and hash characters inside strings.
+        good = tmp / "entry-comments-and-hash-string"
+        _stage_good(good)
+        _replace_family_entry(
+            good,
+            "src/amd/r300/vulkan",
+            "if with_ati_r300_vk # exact family predicate\n"
+            "  message('a#b')\n"
+            "  subdir('r300/vulkan') # direct family root\n"
+            "endif\n",
+        )
+        cases.append(("known-good: comments and hash string", check_tree(good), []))
+
+        # Parentheses and explicit line continuation preserve the same AST
+        # predicate identity as the canonical spelling.
+        good = tmp / "entry-parenthesized-predicate"
+        _stage_good(good)
+        _replace_family_entry(
+            good,
+            "src/amd/r300/vulkan",
+            "if(with_ati_r300_vk)\n  subdir('r300/vulkan')\nendif\n",
+        )
+        cases.append(("known-good: parenthesized predicate", check_tree(good), []))
+
+        good = tmp / "entry-continued-predicate"
+        _stage_good(good)
+        _replace_family_entry(
+            good,
+            "src/amd/r300/vulkan",
+            "if \\\n  with_ati_r300_vk\n  subdir('r300/vulkan')\nendif\n",
+        )
+        cases.append(("known-good: continued predicate", check_tree(good), []))
+
+        # A multiline string containing complete control syntax and the exact
+        # call carries no Meson build authority.
+        bad = tmp / "entry-in-multiline-string"
         _stage_good(bad)
         _replace_family_entry(
             bad,
             "src/amd/r300/vulkan",
-            "if with_ati_r300_vk\n" "  message(\"subdir('r300/vulkan')\")\n" "endif\n",
+            "message('''\n"
+            "if with_ati_r300_vk\n"
+            "  subdir('r300/vulkan')\n"
+            "endif\n"
+            "''')\n",
         )
         cases.append(
             (
-                "known-bad: entry only in string",
+                "known-bad: entry only in multiline string",
                 check_tree(bad),
                 [
                     "src/amd/meson.build must enter r300/vulkan exactly once under "
@@ -539,7 +775,7 @@ def self_test():
             entry_file, expected_predicate = next(
                 iter(contract["entry_points"].items())
             )
-            relative = str(Path(family_root).relative_to(Path(entry_file).parent))
+            relative = family_relative_path(family_root, entry_file)
             _replace_family_entry(
                 bad, family_root, f"if false\n  subdir('{relative}')\nendif\n"
             )
@@ -572,6 +808,8 @@ def self_test():
                 ],
             )
         )
+
+        append_predicate_write_self_test_cases(cases, tmp)
 
         # An added nested condition narrows the exact family enable domain.
         bad = tmp / "r3v-nested-predicate"
@@ -654,7 +892,7 @@ def self_test():
                 check_tree(bad),
                 [
                     "src/amd/meson.build enters r300/vulkan under "
-                    "if with_ati_r300_vk -> foreach driver : enabled_drivers; "
+                    "if with_ati_r300_vk -> foreach driver; "
                     "expected only if with_ati_r300_vk",
                 ],
             )
@@ -691,6 +929,181 @@ def self_test():
                 )
             )
 
+        # Complete target spellings inside a multiline string remain inert AST
+        # data even when both active definitions have drifted.
+        bad = tmp / "r3v-artifacts-only-in-multiline-string"
+        _stage_good(bad)
+        _write_family(bad, "src/amd/r300/vulkan", artifacts_ok=False)
+        r3v_meson = bad / "src/amd/r300/vulkan/meson.build"
+        r3v_meson.write_text(
+            r3v_meson.read_text(encoding="utf-8")
+            + "stale_targets = '''\n"
+            + "lib = shared_library(\n"
+            + "  'vulkan_r3v',\n"
+            + "  install : true,\n"
+            + ")\n"
+            + "icd = custom_target(\n"
+            + "  'r3v_icd',\n"
+            + "  output : 'r3v_icd.@0@.json'.format(host_machine.cpu()),\n"
+            + "  install_dir : with_vulkan_icd_dir,\n"
+            + "  install : true,\n"
+            + ")\n"
+            + "'''\n",
+            encoding="utf-8",
+        )
+        cases.append(
+            (
+                "known-bad: R3V artifacts only in multiline string",
+                check_tree(bad),
+                artifact_failures("src/amd/r300/vulkan"),
+            )
+        )
+
+        # Loader identity belongs to one installed top-level target.  A
+        # non-installed target or a spelling retained under an inactive block
+        # carries no loader authority.
+        for family_root, contract in AMD_VULKAN_FAMILIES.items():
+            bad = tmp / f"{contract['driver_leaf']}-library-not-installed"
+            _stage_good(bad)
+            meson_path = bad / family_root / "meson.build"
+            meson_body = meson_path.read_text(encoding="utf-8")
+            meson_path.write_text(
+                meson_body.replace("  install : true,\n", "  install : false,\n", 1),
+                encoding="utf-8",
+            )
+            cases.append(
+                (
+                    f"known-bad: {contract['driver_leaf']} library not installed",
+                    check_tree(bad),
+                    [artifact_failures(family_root)[0]],
+                )
+            )
+
+            bad = tmp / f"{contract['driver_leaf']}-library-only-inactive"
+            _stage_good(bad)
+            meson_path = bad / family_root / "meson.build"
+            meson_body = meson_path.read_text(encoding="utf-8")
+            meson_path.write_text(
+                meson_body.replace(
+                    f"'{contract['shared_library']}'", "'vulkan_renamed'", 1
+                )
+                + "if false\n"
+                + "  disabled_lib = shared_library(\n"
+                + f"    '{contract['shared_library']}',\n"
+                + "    project_files,\n"
+                + "    install : true,\n"
+                + "  )\n"
+                + "endif\n",
+                encoding="utf-8",
+            )
+            cases.append(
+                (
+                    f"known-bad: {contract['driver_leaf']} library only inactive",
+                    check_tree(bad),
+                    [artifact_failures(family_root)[0]],
+                )
+            )
+
+        # Manifest identity, output, and installation properties belong to one
+        # named top-level custom target.
+        for family_root, contract in AMD_VULKAN_FAMILIES.items():
+            manifest_tail = (
+                "  install_dir : with_vulkan_icd_dir,\n" "  install : true,\n" ")\n"
+            )
+
+            bad = tmp / f"{contract['driver_leaf']}-manifest-not-installed"
+            _stage_good(bad)
+            meson_path = bad / family_root / "meson.build"
+            meson_body = meson_path.read_text(encoding="utf-8")
+            meson_path.write_text(
+                meson_body.replace(
+                    manifest_tail,
+                    "  install_dir : with_vulkan_icd_dir,\n"
+                    "  install : false,\n"
+                    ")\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            cases.append(
+                (
+                    f"known-bad: {contract['driver_leaf']} manifest not installed",
+                    check_tree(bad),
+                    [artifact_failures(family_root)[1]],
+                )
+            )
+
+            bad = tmp / f"{contract['driver_leaf']}-manifest-wrong-install-dir"
+            _stage_good(bad)
+            meson_path = bad / family_root / "meson.build"
+            meson_body = meson_path.read_text(encoding="utf-8")
+            meson_path.write_text(
+                meson_body.replace(
+                    "install_dir : with_vulkan_icd_dir",
+                    "install_dir : get_option('datadir')",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            cases.append(
+                (
+                    f"known-bad: {contract['driver_leaf']} manifest wrong install dir",
+                    check_tree(bad),
+                    [artifact_failures(family_root)[1]],
+                )
+            )
+
+            bad = tmp / f"{contract['driver_leaf']}-manifest-helper-only"
+            _stage_good(bad)
+            meson_path = bad / family_root / "meson.build"
+            meson_body = meson_path.read_text(encoding="utf-8")
+            output_expression = fixture_manifest_expression(contract)
+            meson_path.write_text(
+                meson_body.replace(
+                    f"  '{contract['manifest_stem']}',\n",
+                    "  'renamed_icd',\n",
+                    1,
+                )
+                + "helper_icd = custom_target(\n"
+                + f"  '{contract['manifest_stem']}',\n"
+                + f"  output : {output_expression},\n"
+                + "  install_dir : with_vulkan_icd_dir,\n"
+                + "  install : false,\n"
+                + ")\n",
+                encoding="utf-8",
+            )
+            cases.append(
+                (
+                    f"known-bad: {contract['driver_leaf']} manifest helper only",
+                    check_tree(bad),
+                    [artifact_failures(family_root)[1]],
+                )
+            )
+
+        # Meson AST identity is independent of line layout and a trailing comma
+        # on the final keyword argument.
+        for family_root, contract in AMD_VULKAN_FAMILIES.items():
+            good = tmp / f"{contract['driver_leaf']}-compact-artifacts"
+            _stage_good(good)
+            output_expression = fixture_manifest_expression(contract)
+            (good / family_root / "meson.build").write_text(
+                "project_files = []\n"
+                + "lib = shared_library("
+                + f"'{contract['shared_library']}', project_files, install : true)\n"
+                + "icd = custom_target("
+                + f"'{contract['manifest_stem']}', install : true, "
+                + "install_dir : with_vulkan_icd_dir, "
+                + f"output : {output_expression})\n",
+                encoding="utf-8",
+            )
+            cases.append(
+                (
+                    f"known-good: {contract['driver_leaf']} compact artifacts",
+                    check_tree(good),
+                    [],
+                )
+            )
+
         # Wrong extensions and arbitrary suffixes cannot satisfy an installed
         # manifest output contract.
         for family_root, contract in AMD_VULKAN_FAMILIES.items():
@@ -717,7 +1130,9 @@ def self_test():
             meson_body = meson_path.read_text(encoding="utf-8")
             meson_path.write_text(
                 meson_body.replace(valid_expression, "'renamed_icd.json'", 1)
-                + f'stale_manifest = "output : {valid_expression},"\n',
+                + "stale_manifest = '''\n"
+                + f"output : {valid_expression},\n"
+                + "'''\n",
                 encoding="utf-8",
             )
             cases.append(
@@ -806,22 +1221,7 @@ def self_test():
             )
         )
 
-    ok = True
-    for label, failures, expected in cases:
-        # The synthetic trees are not Git repositories, so the tracked-file
-        # scan reports its own failure there; it is calibrated against the
-        # real tree by the run this gate performs in the build.
-        failures = [f for f in failures if not f.startswith("git grep failed")]
-        if sorted(failures) == sorted(expected):
-            print(f"OK    {label}: {len(failures)} failure(s) as expected")
-        else:
-            ok = False
-            print(f"MISCALIBRATED  {label}")
-            for line in sorted(set(expected) - set(failures)):
-                print(f"        expected, absent: {line}")
-            for line in sorted(set(failures) - set(expected)):
-                print(f"        unexpected: {line}")
-    return ok
+    return report_self_test_cases(cases)
 
 
 def main():
