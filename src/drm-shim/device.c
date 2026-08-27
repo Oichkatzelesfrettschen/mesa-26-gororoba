@@ -98,7 +98,7 @@ struct drm_shim_linux_dirent64 {
 };
 
 static bool
-drm_shim_fd_backing_matches(const struct shim_fd *shim_fd, int fd);
+drm_shim_fd_metadata_matches(const struct shim_fd *shim_fd, int fd);
 static void drm_shim_forget_non_cloexec_fd_locked(int fd);
 void
 drm_shim_file_release_posix_locks(struct shim_fd *shim_fd);
@@ -2025,7 +2025,7 @@ drm_shim_fd_collect_internal(int **fds, size_t *count)
    hash_table_foreach(shim_device.fd_map, entry) {
       const struct shim_fd *shim_fd = entry->data;
       if (shim_fd->identity_fd >= 0 &&
-          drm_shim_fd_backing_matches(
+          drm_shim_fd_metadata_matches(
              shim_fd, shim_fd->identity_fd))
          identity_fds[index++] = shim_fd->identity_fd;
       if (shim_fd->lock_proxy_fd >= 0 &&
@@ -2046,7 +2046,7 @@ drm_shim_fd_collect_internal(int **fds, size_t *count)
         pin; pin = pin->next) {
       const struct shim_fd *shim_fd = pin->shim_fd;
       if (shim_fd->identity_fd >= 0 &&
-          drm_shim_fd_backing_matches(
+          drm_shim_fd_metadata_matches(
              shim_fd, shim_fd->identity_fd))
          identity_fds[index++] = shim_fd->identity_fd;
       if (shim_fd->lock_proxy_fd >= 0 &&
@@ -2067,7 +2067,7 @@ drm_shim_fd_collect_internal(int **fds, size_t *count)
            shim_device.diverged_fd_objects;
         shim_fd; shim_fd = shim_fd->next_diverged) {
       if (shim_fd->identity_fd >= 0 &&
-          drm_shim_fd_backing_matches(
+          drm_shim_fd_metadata_matches(
              shim_fd, shim_fd->identity_fd))
          identity_fds[index++] = shim_fd->identity_fd;
       if (shim_fd->lock_proxy_fd >= 0 &&
@@ -2238,13 +2238,19 @@ enum drm_shim_fd_match {
 static enum drm_shim_fd_match
 drm_shim_fd_matches(const struct shim_fd *shim_fd, int fd)
 {
+   /* open(2) creates a new open file description even when a
+    * /proc/thread-self/fd/N path resolves to the same inode, while dup(2)
+    * aliases share one open file description.  Device and inode metadata
+    * can reject different backing files, but only F_DUPFD_QUERY or
+    * KCMP_FILE can affirm that two descriptors share state.
+    */
+   if (!drm_shim_fd_metadata_matches(shim_fd, fd))
+      return DRM_SHIM_FD_MATCH_NO;
+
    if (shim_fd->fd < 0)
       return DRM_SHIM_FD_MATCH_UNKNOWN;
 
-   struct stat witness_status;
-   if (syscall(SYS_fstat, shim_fd->fd, &witness_status) < 0 ||
-       witness_status.st_dev != shim_fd->backing_dev ||
-       witness_status.st_ino != shim_fd->backing_ino)
+   if (!drm_shim_fd_metadata_matches(shim_fd, shim_fd->fd))
       return DRM_SHIM_FD_MATCH_NO;
 
 #ifdef F_DUPFD_QUERY
@@ -2320,7 +2326,7 @@ drm_shim_fd_is_internal(int fd)
    hash_table_foreach(shim_device.fd_map, entry) {
       const struct shim_fd *shim_fd = entry->data;
       if ((shim_fd->identity_fd == fd &&
-           drm_shim_fd_backing_matches(shim_fd, fd)) ||
+           drm_shim_fd_metadata_matches(shim_fd, fd)) ||
           ((shim_fd->lock_proxy_fd == fd ||
             (shim_fd->owns_lock_proxy_anchor &&
              shim_fd->lock_proxy_anchor_fd == fd)) &&
@@ -2336,7 +2342,7 @@ drm_shim_fd_is_internal(int fd)
               shim_device.diverged_fd_objects;
            shim_fd; shim_fd = shim_fd->next_diverged) {
          if ((shim_fd->identity_fd == fd &&
-              drm_shim_fd_backing_matches(shim_fd, fd)) ||
+              drm_shim_fd_metadata_matches(shim_fd, fd)) ||
              ((shim_fd->lock_proxy_fd == fd ||
                (shim_fd->owns_lock_proxy_anchor &&
                 shim_fd->lock_proxy_anchor_fd == fd)) &&
@@ -2353,7 +2359,7 @@ drm_shim_fd_is_internal(int fd)
            pin; pin = pin->next) {
          const struct shim_fd *shim_fd = pin->shim_fd;
          if ((shim_fd->identity_fd == fd &&
-              drm_shim_fd_backing_matches(shim_fd, fd)) ||
+              drm_shim_fd_metadata_matches(shim_fd, fd)) ||
              ((shim_fd->lock_proxy_fd == fd ||
                (shim_fd->owns_lock_proxy_anchor &&
                 shim_fd->lock_proxy_anchor_fd == fd)) &&
@@ -2369,14 +2375,6 @@ drm_shim_fd_is_internal(int fd)
    return internal;
 }
 
-static bool
-drm_shim_fd_backing_matches(const struct shim_fd *shim_fd, int fd)
-{
-   (void)shim_fd;
-   (void)fd;
-   return false;
-}
-
 static struct shim_fd *
 drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
 {
@@ -2390,9 +2388,6 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
       if (direct_match == DRM_SHIM_FD_MATCH_YES)
          return direct_shim_fd;
       if (direct_match == DRM_SHIM_FD_MATCH_UNKNOWN) {
-         if (direct_shim_fd->path_only &&
-             drm_shim_fd_metadata_matches(direct_shim_fd, fd))
-            return direct_shim_fd;
          errno = EOPNOTSUPP;
          return NULL;
       }
@@ -2401,6 +2396,7 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
       direct && direct_match == DRM_SHIM_FD_MATCH_NO;
 
    struct shim_fd *result = NULL;
+   bool identity_unknown = false;
    hash_table_foreach(shim_device.fd_map, entry) {
       struct shim_fd *candidate = entry->data;
       if (candidate == direct_shim_fd)
@@ -2411,6 +2407,8 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
          result = candidate;
          break;
       }
+      if (candidate_match == DRM_SHIM_FD_MATCH_UNKNOWN)
+         identity_unknown = true;
    }
    if (!result) {
       for (struct shim_fd *candidate =
@@ -2418,11 +2416,14 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
            candidate; candidate = candidate->next_diverged) {
          if (candidate == direct_shim_fd)
             continue;
-         if (drm_shim_fd_matches(candidate, fd) ==
-             DRM_SHIM_FD_MATCH_YES) {
+         enum drm_shim_fd_match candidate_match =
+            drm_shim_fd_matches(candidate, fd);
+         if (candidate_match == DRM_SHIM_FD_MATCH_YES) {
             result = candidate;
             break;
          }
+         if (candidate_match == DRM_SHIM_FD_MATCH_UNKNOWN)
+            identity_unknown = true;
       }
    }
    if (!result) {
@@ -2431,14 +2432,21 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
          struct shim_fd *candidate = pin->shim_fd;
          if (candidate == direct_shim_fd)
             continue;
-         if (drm_shim_fd_matches(candidate, fd) ==
-             DRM_SHIM_FD_MATCH_YES) {
+         enum drm_shim_fd_match candidate_match =
+            drm_shim_fd_matches(candidate, fd);
+         if (candidate_match == DRM_SHIM_FD_MATCH_YES) {
             result = candidate;
             break;
          }
+         if (candidate_match == DRM_SHIM_FD_MATCH_UNKNOWN)
+            identity_unknown = true;
       }
    }
    if (!result) {
+      if (identity_unknown) {
+         errno = EOPNOTSUPP;
+         return NULL;
+      }
       if (direct_is_stale) {
          drm_shim_forget_non_cloexec_fd_locked(fd);
          _mesa_hash_table_remove(shim_device.fd_map, direct);
@@ -2499,13 +2507,22 @@ drm_shim_fd_register_detected(int fd, bool enable_state)
 
    struct shim_fd *replaced = NULL;
    mtx_lock(&shim_device.lock);
+   errno = 0;
    struct shim_fd *existing =
       drm_shim_fd_find_locked(fd, &replaced);
+   int find_error = errno;
    if (existing) {
       mtx_unlock(&shim_device.lock);
       drm_shim_fd_put(replaced);
       drm_shim_fd_put(new_shim_fd);
       return 0;
+   }
+   if (find_error == EOPNOTSUPP) {
+      mtx_unlock(&shim_device.lock);
+      drm_shim_fd_put(replaced);
+      drm_shim_fd_put(new_shim_fd);
+      errno = find_error;
+      return -find_error;
    }
 
    struct hash_entry *old_entry =
@@ -2723,9 +2740,7 @@ drm_shim_fd_adopt_raw_aliases(int fd)
          enum drm_shim_fd_match candidate_match =
             drm_shim_fd_matches(source, candidate);
          bool still_same =
-            candidate_match == DRM_SHIM_FD_MATCH_YES ||
-            (candidate_match == DRM_SHIM_FD_MATCH_UNKNOWN &&
-             drm_shim_fd_backing_matches(source, candidate));
+            candidate_match == DRM_SHIM_FD_MATCH_YES;
          if (!existing && still_same) {
             p_atomic_inc(&source->refcount);
             struct hash_entry *inserted =

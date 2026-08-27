@@ -123,6 +123,13 @@ if with_tests
     timeout: 30,
     suite: ['amd', 'drm-shim'],
   )
+  test(
+    'radeon-noop-drm-shim-exact-identity-or-refuse',
+    radeon_noop_drm_shim_test,
+    args: ['fd-exact-identity-or-refuse'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
 
   if cc.get_define(
     '__GLIBC__',
