@@ -391,8 +391,50 @@ check_provider_surface(bool legacy)
 }
 
 static void
+check_render_open_modes(void)
+{
+   static const struct {
+      const char *name;
+      int open_flags;
+      bool path_only;
+   } open_modes[] = {
+      {"O_WRONLY", O_WRONLY, false},
+      {"O_RDONLY", O_RDONLY, false},
+      {"O_RDWR", O_RDWR, false},
+      {"O_PATH", O_PATH, true},
+   };
+   for (size_t mode_index = 0;
+        mode_index < sizeof(open_modes) / sizeof(open_modes[0]);
+        mode_index++) {
+      int mode_fd =
+         open(render_path, open_modes[mode_index].open_flags | O_CLOEXEC);
+      CHECK(mode_fd >= 0, "%s render open failed with errno %d",
+            open_modes[mode_index].name, errno);
+      if (mode_fd < 0)
+         continue;
+
+      int status_flags = fcntl(mode_fd, F_GETFL);
+      if (open_modes[mode_index].path_only) {
+         CHECK(status_flags >= 0 &&
+                  (status_flags & O_PATH) == O_PATH,
+               "%s render open returned status flags 0x%x",
+               open_modes[mode_index].name, status_flags);
+      } else {
+         CHECK(status_flags >= 0 &&
+                  (status_flags & O_ACCMODE) ==
+                     open_modes[mode_index].open_flags,
+               "%s render open returned status flags 0x%x",
+               open_modes[mode_index].name, status_flags);
+      }
+      check_render_fd(mode_fd, open_modes[mode_index].path_only, true);
+      close(mode_fd);
+   }
+}
+
+static void
 check_loaded_surface(void)
 {
+   check_render_open_modes();
    int fd = open(render_path, O_RDWR);
    CHECK(fd >= 0, "open render node failed with errno %d", errno);
    if (fd < 0)
@@ -451,13 +493,15 @@ application_atexit(void)
 static int
 run_exec_child(int argc, char **argv)
 {
-   if (argc != 4)
+   if (argc != 5)
       return 2;
    int fd = atoi(argv[2]);
    int path_fd = atoi(argv[3]);
+   int write_only_fd = atoi(argv[4]);
    check_provider_surface(use_legacy_stat);
    check_render_fd(fd, false, false);
    check_render_fd(path_fd, true, false);
+   check_render_fd(write_only_fd, false, false);
    int fresh_fd = open(render_path, O_RDWR | O_CLOEXEC);
    CHECK(fresh_fd >= 0 && query_device_id(fresh_fd),
          "fresh post-exec render identity failed with errno %d", errno);
@@ -471,13 +515,15 @@ check_inherited_exec(const char *self, const char *child_mode)
 {
    int fd = open(render_path, O_RDWR);
    int path_fd = open(render_path, O_PATH);
-   CHECK(fd >= 0 && path_fd >= 0,
-         "inherited descriptors are %d and %d errno %d",
-         fd, path_fd, errno);
-   if (fd < 0 || path_fd < 0)
+   int write_only_fd = open(render_path, O_WRONLY);
+   CHECK(fd >= 0 && path_fd >= 0 && write_only_fd >= 0,
+         "inherited descriptors are %d, %d, and %d errno %d",
+         fd, path_fd, write_only_fd, errno);
+   if (fd < 0 || path_fd < 0 || write_only_fd < 0)
       goto cleanup;
    CHECK((fcntl(fd, F_GETFD) & FD_CLOEXEC) == 0 &&
-            (fcntl(path_fd, F_GETFD) & FD_CLOEXEC) == 0,
+            (fcntl(path_fd, F_GETFD) & FD_CLOEXEC) == 0 &&
+            (fcntl(write_only_fd, F_GETFD) & FD_CLOEXEC) == 0,
          "inherited descriptors unexpectedly have FD_CLOEXEC");
 
    pid_t child = fork();
@@ -485,9 +531,13 @@ check_inherited_exec(const char *self, const char *child_mode)
    if (child == 0) {
       char fd_text[32];
       char path_fd_text[32];
+      char write_only_fd_text[32];
       snprintf(fd_text, sizeof(fd_text), "%d", fd);
       snprintf(path_fd_text, sizeof(path_fd_text), "%d", path_fd);
-      execl(self, self, child_mode, fd_text, path_fd_text, NULL);
+      snprintf(write_only_fd_text, sizeof(write_only_fd_text), "%d",
+               write_only_fd);
+      execl(self, self, child_mode, fd_text, path_fd_text,
+            write_only_fd_text, NULL);
       _exit(127);
    }
    if (child > 0) {
@@ -507,6 +557,8 @@ cleanup:
       close(fd);
    if (path_fd >= 0)
       close(path_fd);
+   if (write_only_fd >= 0)
+      close(write_only_fd);
 }
 
 static int

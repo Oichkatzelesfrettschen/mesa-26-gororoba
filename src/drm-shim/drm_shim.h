@@ -207,6 +207,10 @@ void drm_shim_test_force_reaper_getdents_eintr_once(bool force);
 void drm_shim_test_force_fd_identity_errors(int duplicate_query_error,
                                             int kcmp_error);
 void drm_shim_test_force_kcmp_result(bool force, int result);
+void drm_shim_test_force_state_token_readable_witness(int witness_fd);
+int drm_shim_test_state_token_readable_witness_fd(void);
+int drm_shim_test_rejected_state_token_fd(void);
+bool drm_shim_test_fd_is_registered(int fd);
 void drm_shim_test_arm_fd_discovery_barrier(int ready_fd,
                                             int release_fd);
 void drm_shim_test_internal_fds(int *root_fd, int *lease_fd);
