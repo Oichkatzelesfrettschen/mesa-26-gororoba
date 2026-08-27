@@ -1464,8 +1464,8 @@ case_cache_lifetime(struct r300_context *r300)
    info.mode = MESA_PRIM_TRIANGLES;
    info.instance_count = 1;
    struct pipe_draw_start_count_bias draw = { .count = 3 };
-   unsetenv("R300_R2VB_AUTO_SINGLE");
-   unsetenv("R300_R2VB_AUTO_SINGLE_MIN_VERTICES");
+   r300->screen->r2vb.auto_single_enabled = false;
+   r300->screen->r2vb.auto_single_vertex_floor = 0;
    unsetenv("R300_R2VB_BUDGET_ESCAPE");
    unsetenv("R300_R2VB_BO_DRAW");
    unsetenv("R300_R2VB_DIVIDE");

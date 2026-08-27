@@ -22,6 +22,37 @@ struct pipe_resource;
 struct pipe_vertex_element;
 struct nir_shader;
 
+/* Raw option values for resolving one screen configuration.  A non-NULL
+ * member is an explicit override, including an empty or malformed value. */
+struct r300_r2vb_runtime_environment {
+    const char *standing;
+    const char *route;
+    const char *auto_single;
+    const char *auto_single_min_vertices;
+    const char *slot_fetch;
+    const char *slot_grid;
+    const char *raw_submit_accepted;
+};
+
+/* Immutable R2VB route decisions owned by one screen.  The composite
+ * standing gate supplies RS480 defaults; explicit member values retain
+ * exact-value, fail-closed parsing and take precedence over those defaults. */
+struct r300_r2vb_runtime_config {
+    bool standing_defaults_enabled;
+    bool route_enabled;
+    bool auto_single_enabled;
+    uint32_t auto_single_vertex_floor;
+    bool slot_fetch_enabled;
+    bool slot_grid_enabled;
+    bool raw_submit_accepted;
+};
+
+void r300_r2vb_runtime_config_init(
+    struct r300_r2vb_runtime_config *config, bool is_rs480,
+    const struct r300_r2vb_runtime_environment *environment);
+void r300_r2vb_runtime_config_init_from_process(
+    struct r300_r2vb_runtime_config *config, bool is_rs480);
+
 /* Classify the effective rasterized primitive used by the Draw and R2VB
  * routes. Polygon-mode POINT triangles enter the point path alongside POINTS.
  * r300_draw_vbo and r300_swtcl_draw_vbo in r300_render.c and

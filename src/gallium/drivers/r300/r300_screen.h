@@ -9,6 +9,7 @@
 
 #include "amd/r300/common/r300_chipset.h"
 #include "r300_hb_tcl.h"
+#include "r300_r2vb.h"
 #include "winsys/radeon_winsys.h"
 #include "pipe/p_screen.h"
 #include "util/disk_cache.h"
@@ -42,6 +43,9 @@ struct r300_screen {
 #include "r300_debug_options.h"
     } options;
 
+    /* Route gates captured once for this screen after chipset discovery. */
+    struct r300_r2vb_runtime_config r2vb;
+
     /* RS482 hybrid-TCL VAP resource config, kept separate from caps.has_tcl.
      * Populated once at screen create by r300_hb_tcl_init; the static
      * TCL_BYPASS VAP_CNTL setup reads it through r300_hb_tcl_vap_cntl. */
@@ -52,6 +56,12 @@ struct r300_screen {
      * r300_is_format_supported. */
     bool experimental_ati2n;
 };
+
+static inline const struct r300_r2vb_runtime_config *
+r300_screen_r2vb_config(const struct r300_screen *screen)
+{
+    return &screen->r2vb;
+}
 
 
 /* Convenience cast wrappers. */
