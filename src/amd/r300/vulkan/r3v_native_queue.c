@@ -243,12 +243,37 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
              c[2].write_domain != 0 || c[3].read_domains != 0 ||
              c[3].write_domain != RADEON_GEM_DOMAIN_GTT;
    }
-   case R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS:
-      /* The concatenated stream is the recording's own, so no offline
-       * emitter reproduces the digest the gate would compare it
-       * against; the kind reports unfrozen and the armed path refuses.
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS: {
+      /* Two render-shape cells concatenated, the second bound to the
+       * merged indices; r300_tcl_bypass_triangle_multi_pass_emit
+       * reproduces the stream, so the digest carries the geometry.  The
+       * frozen facts are the merged binding: two to four entries, each
+       * a vertex page read alone or a color target written alone, since
+       * an entry carrying both directions is a role alias the emitter
+       * admits no binding for.  Every deferred draw has executed.
        */
-      return true;
+      if (cmd_buffer->deferred_draws[0].pending ||
+          cmd_buffer->deferred_draws[1].pending ||
+          cmd_buffer->reference_count < R300_TRIANGLE_RENDER_SLOT_COUNT ||
+          cmd_buffer->reference_count > 2 * R300_TRIANGLE_RENDER_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *c = cmd_buffer->references;
+      if (c[R300_TRIANGLE_SLOT_VERTEX].read_domains != RADEON_GEM_DOMAIN_GTT ||
+          c[R300_TRIANGLE_SLOT_VERTEX].write_domain != 0 ||
+          c[R300_TRIANGLE_SLOT_COLOR].read_domains != 0 ||
+          c[R300_TRIANGLE_SLOT_COLOR].write_domain != RADEON_GEM_DOMAIN_GTT)
+         return true;
+      for (uint32_t i = R300_TRIANGLE_RENDER_SLOT_COUNT;
+           i < cmd_buffer->reference_count; i++) {
+         const bool vertex_page = c[i].read_domains == RADEON_GEM_DOMAIN_GTT &&
+                                  c[i].write_domain == 0;
+         const bool color_target = c[i].read_domains == 0 &&
+                                   c[i].write_domain == RADEON_GEM_DOMAIN_GTT;
+         if (!vertex_page && !color_target)
+            return true;
+      }
+      return false;
+   }
    case R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE: {
       /* The declared shapes are the geometry and the digest carries
        * them; the frozen facts are the merged binding the recorder

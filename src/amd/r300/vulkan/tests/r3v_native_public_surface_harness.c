@@ -1233,6 +1233,42 @@ main(void)
                    native_two_draw->references[b].handle);
       }
 
+      /* The offline two-pass emitter reproduces the recorded stream:
+       * both passes are the reference shape with the pipeline's
+       * fragment constant -- the reference fragment program writes
+       * opaque green -- the second bound to its own carrier (index 2)
+       * and target (index 3), so the digest the arming gate would
+       * compare is computable with no recording.
+       */
+      {
+         struct r300_triangle_multi_pass mp;
+         memset(&mp, 0, sizeof(mp));
+         r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
+         r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
+         const float pipeline_constant[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+         for (unsigned pass = 0; pass < 2; pass++)
+            for (unsigned c = 0; c < 4; c++)
+               memcpy(&mp.pass[pass].color_bits[c], &pipeline_constant[c],
+                      sizeof(float));
+         mp.second_vertex_index = 2;
+         mp.second_color_index = 3;
+         struct r300_tcl_bypass_triangle_ib offline;
+         assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &offline) == 0);
+         assert(offline.ib_size_dwords == native_two_draw->ib_size_dwords);
+         uint32_t offline_differing = 0;
+         for (uint32_t i = 0; i < offline.ib_size_dwords; i++) {
+            if (offline.ib[i] != native_two_draw->ib[i]) {
+               if (offline_differing < 8)
+                  fprintf(stderr,
+                          "two-draw dword %u: recorded 0x%08x offline 0x%08x\n",
+                          i, native_two_draw->ib[i], offline.ib[i]);
+               offline_differing++;
+            }
+         }
+         assert(offline_differing == 0);
+         r300_tcl_bypass_triangle_release(&offline);
+      }
+
       /* The concatenation is the recording's own stream, so no offline
        * emitter reproduces the digest the arming gate would compare it
        * against.  The multi-pass kind is what carries that: its geometry

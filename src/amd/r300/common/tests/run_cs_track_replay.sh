@@ -74,11 +74,25 @@ fi
 # for the cell: three FLOAT_4 vertices in one page, and a 64-pixel-pitch
 # ARGB8888 target with the canary row the output oracle reads.
 color_bytes=$((64 * 65 * 4))
-cat > "${workdir}/bundle.txt" <<BUNDLE
+case "${cell_arg}" in
+    *--multi-pass*)
+        # The two-pass stream binds its second cell at indices 2 and 3.
+        cat > "${workdir}/bundle.txt" <<BUNDLE
+family rs480
+bo 0 role=vertex size=4096 read_domains=0x2 write_domain=0x0
+bo 1 role=color size=${color_bytes} read_domains=0x0 write_domain=0x2
+bo 2 role=vertex size=4096 read_domains=0x2 write_domain=0x0
+bo 3 role=color size=${color_bytes} read_domains=0x0 write_domain=0x2
+BUNDLE
+        ;;
+    *)
+        cat > "${workdir}/bundle.txt" <<BUNDLE
 family rs480
 bo 0 role=vertex size=4096 read_domains=0x2 write_domain=0x0
 bo 1 role=color size=${color_bytes} read_domains=0x0 write_domain=0x2
 BUNDLE
+        ;;
+esac
 if [ ! -s "${workdir}/bundle.txt" ]; then
     echo "bundle write failed" >&2
     exit 1

@@ -2895,6 +2895,112 @@ r3v_native_record_composed_render_sample(
    return VK_SUCCESS;
 }
 
+/* Records the two-pass cell: the first pass installs its render-shape
+ * cell over its own vertex page and color target, and the second pass
+ * appends its cell through r3v_native_cmd_buffer_append_ib, the route
+ * the public two-draw command buffer takes.  The caller's declared
+ * binding must equal the one the handles produce under the winsys
+ * first-add rule, which is what makes the offline emitter's stream the
+ * recorded one.
+ */
+VkResult
+r3v_native_record_multi_pass(VkCommandBuffer commandBuffer,
+                             VkDeviceMemory firstVertexMemory,
+                             VkDeviceMemory firstColorMemory,
+                             VkDeviceMemory secondVertexMemory,
+                             VkDeviceMemory secondColorMemory,
+                             const struct r300_triangle_multi_pass *mp)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, first_vertex, firstVertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, first_color, firstColorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, second_vertex, secondVertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, second_color, secondColorMemory);
+
+   if (cmd_buffer == NULL || first_vertex == NULL || first_color == NULL ||
+       second_vertex == NULL || second_color == NULL || mp == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   if (r300_tcl_bypass_triangle_multi_pass_binding_validate(mp) != 0)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   /* The binding the handles produce: a second vertex page equal to the
+    * first takes index 0, else the next unused index; the second color
+    * likewise from index 1.  The roles within a pass stay distinct, and
+    * a role crossing (a vertex page that is a color target) has no
+    * admitted binding, so it refuses here as it does at the emitter.
+    */
+   if (first_vertex->bo.handle == first_color->bo.handle ||
+       second_vertex->bo.handle == second_color->bo.handle ||
+       second_vertex->bo.handle == first_color->bo.handle ||
+       second_color->bo.handle == first_vertex->bo.handle)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: two-pass roles alias one GEM object");
+   const uint32_t vertex_index =
+      second_vertex->bo.handle == first_vertex->bo.handle ? 0u : 2u;
+   const uint32_t color_index =
+      second_color->bo.handle == first_color->bo.handle
+         ? 1u
+         : (vertex_index == 0u ? 2u : 3u);
+   if (vertex_index != mp->second_vertex_index ||
+       color_index != mp->second_color_index)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: the declared binding (%u, %u) is not "
+                       "the one the handles produce (%u, %u)",
+                       mp->second_vertex_index, mp->second_color_index,
+                       vertex_index, color_index);
+
+   struct r3v_native_memory *const vertex[2] = { first_vertex,
+                                                 second_vertex };
+   struct r3v_native_memory *const color[2] = { first_color, second_color };
+   for (unsigned pass = 0; pass < 2; pass++) {
+      struct r300_tcl_bypass_triangle_ib cell;
+      const int emitted =
+         r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[pass], &cell);
+      if (emitted != 0)
+         return vk_error(device,
+                         r3v_native_cell_vk_result_from_errno(emitted));
+      struct r3v_native_bo_reference *references =
+         calloc(R300_TRIANGLE_RENDER_SLOT_COUNT, sizeof(*references));
+      if (references == NULL) {
+         r300_tcl_bypass_triangle_release(&cell);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      references[R300_TRIANGLE_SLOT_VERTEX] =
+         (struct r3v_native_bo_reference){
+            .handle = vertex[pass]->bo.handle,
+            .read_domains = RADEON_GEM_DOMAIN_GTT,
+            .write_domain = 0,
+            .memory = vertex[pass],
+         };
+      references[R300_TRIANGLE_SLOT_COLOR] = (struct r3v_native_bo_reference){
+         .handle = color[pass]->bo.handle,
+         .read_domains = 0,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color[pass],
+      };
+      if (pass == 0) {
+         r3v_native_cmd_buffer_install_ib(
+            cmd_buffer, R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE, cell.ib,
+            cell.ib_size_dwords, references, R300_TRIANGLE_RENDER_SLOT_COUNT);
+         cell.ib = NULL;
+         r300_tcl_bypass_triangle_release(&cell);
+         continue;
+      }
+      const VkResult appended = r3v_native_cmd_buffer_append_ib(
+         device, cmd_buffer, &cell, references,
+         R300_TRIANGLE_RENDER_SLOT_COUNT);
+      free(references);
+      r300_tcl_bypass_triangle_release(&cell);
+      if (appended != VK_SUCCESS)
+         return appended;
+   }
+   return VK_SUCCESS;
+}
+
 /* Records the multisample resolve cell: the render half draws the
  * reference triangle into a sample-expanded surface with the subsample
  * set live, then the resolve half covers the extent under

@@ -1483,6 +1483,22 @@ VkResult r3v_native_record_composed_render_sample(
    VkDeviceMemory sampleColorMemory,
    const struct r300_triangle_composed_render_sample *composed);
 
+/* Records the two-pass cell through the same primitives the public
+ * render-pass route takes: the first pass installs its render-shape
+ * cell and the second appends its own through
+ * r3v_native_cmd_buffer_append_ib, which merges the references by
+ * handle and binds the appended payloads.  The binding the caller
+ * declares in mp must be the one the four handles produce under the
+ * first-add rule, so the offline emitter's digest is the recorded
+ * stream's; a disagreeing declaration refuses before the append.
+ */
+struct r300_triangle_multi_pass;
+VkResult r3v_native_record_multi_pass(
+   VkCommandBuffer commandBuffer, VkDeviceMemory firstVertexMemory,
+   VkDeviceMemory firstColorMemory, VkDeviceMemory secondVertexMemory,
+   VkDeviceMemory secondColorMemory,
+   const struct r300_triangle_multi_pass *mp);
+
 /* The multisample resolve cell's five slots reach four buffer objects,
  * since both halves render into the one multisample surface.
  */

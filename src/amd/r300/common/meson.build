@@ -847,6 +847,16 @@ test(
   args : [r300_triangle_manifest, '--triangles', '2'],
   suite : ['r300'],
 )
+# The two-pass stream through the same parser and tracker: two
+# contract-prefixed cells, the second's relocations naming indices 2 and
+# 3 of a four-entry list, so every reloc the second cell consumes
+# resolves inside the chunk.
+test(
+  'r300-multi-pass-cs-track-replay',
+  files('tests/run_cs_track_replay.sh')[0],
+  args : [r300_triangle_manifest, '--multi-pass'],
+  suite : ['r300'],
+)
 
 # The 2D solid-fill direct-write control cell: the emitter, its oracle,
 # the manifest writer, and the offline kernel-parser replay with the
