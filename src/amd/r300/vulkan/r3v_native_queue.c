@@ -1660,6 +1660,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             &device->plan_capture, cmd_buffer, &relocs, reference_indices,
             completion_index, completion.bo.size);
          if (recorded != 0) {
+            const uint32_t relocation_count = relocs.count;
             free(reference_indices);
             radeon_drm_vk_completion_finish(&device->drm, &completion);
             radeon_drm_vk_reloc_list_finish(&relocs);
@@ -1672,7 +1673,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                                 "r3v-native: submission carries %u "
                                 "relocations, outside the plan schema",
-                                relocs.count);
+                                relocation_count);
             }
             return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                              "r3v-native: plan capture refused the "
