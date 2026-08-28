@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 RETAINED_EVIDENCE_PREFIXES = (
@@ -320,9 +322,39 @@ def allowed_identifier_names(path: str, line: str) -> frozenset[str]:
     return allowed
 
 
+def policy_implementation_identifier_violations(
+    text: str, starting_line_number: int
+) -> list[str]:
+    identifiers_by_line: dict[int, set[str]] = {}
+    try:
+        token_stream = tokenize.generate_tokens(io.StringIO(text).readline)
+        for token_info in token_stream:
+            if token_info.type == tokenize.NAME and (
+                "gororoba" in token_info.string.lower()
+                or RETIRED_QUALIFICATION_TERM.fullmatch(token_info.string)
+            ):
+                line_number = starting_line_number + token_info.start[0] - 1
+                identifiers_by_line.setdefault(line_number, set()).add(
+                    token_info.string
+                )
+    except (IndentationError, tokenize.TokenError) as error:
+        return [
+            f"{POLICY_IMPLEMENTATION_FILE}:{starting_line_number}: "
+            f"cannot tokenize policy implementation: {error}"
+        ]
+
+    return [
+        f"{POLICY_IMPLEMENTATION_FILE}:{line_number}: retired code identifier: "
+        + ", ".join(sorted(identifier_names))
+        for line_number, identifier_names in sorted(identifiers_by_line.items())
+    ]
+
+
 def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]:
-    if retained_evidence(path) or path == POLICY_IMPLEMENTATION_FILE:
+    if retained_evidence(path):
         return []
+    if path == POLICY_IMPLEMENTATION_FILE:
+        return policy_implementation_identifier_violations(text, starting_line_number)
     findings: list[str] = []
     for retired_match in RETIRED_QUALIFICATION_TERM.finditer(text):
         line_number = starting_line_number + text.count("\n", 0, retired_match.start())
@@ -459,6 +491,24 @@ def self_test() -> int:
             "src/example.py",
             f"def {retired_identifier}_helper():\n    pass\n",
             True,
+        ),
+        (
+            POLICY_IMPLEMENTATION_FILE,
+            f"def {retired_identifier}_helper():\n    pass\n",
+            True,
+        ),
+        (
+            POLICY_IMPLEMENTATION_FILE,
+            f"{retired_mixed_case_identifier}_VALUE = 1\n",
+            True,
+        ),
+        (POLICY_IMPLEMENTATION_FILE, "decision_grade = True\n", True),
+        (
+            POLICY_IMPLEMENTATION_FILE,
+            f'RETIRED_NAME = "{retired_identifier}"\n'
+            'RETIRED_QUALIFICATION_NAME = "decision-grade"\n'
+            f"# {retired_mixed_case_identifier} remains test data.\n",
+            False,
         ),
         ("src/example.py", f"def {retired_identifier}():\n    pass\n", True),
         (
