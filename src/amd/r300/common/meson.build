@@ -30,18 +30,7 @@ r300_common_contract_files = files(
   'r300_zb_depth_state.c',
 )
 
-# These implementation units still reside in common while the P2 ownership
-# cutover is pending.  Keeping the exceptions named separately prevents the
-# archive from laundering a Vulkan front end or product policy into the
-# durable common contract: the consumer census continues to require their
-# MOVE_TO_R3V_* dispositions.
-r300_common_pending_r3v_move_files = files(
-  'r300_compute_spirv.c',
-  'r300_delivery_route.c',
-  'r300_vertex_spirv.c',
-)
-
-r300_common_files = r300_common_contract_files + r300_common_pending_r3v_move_files
+r300_common_files = r300_common_contract_files
 
 libr300_common = static_library(
   'r300_common',
@@ -194,21 +183,6 @@ r300_carrier_policy_test = executable(
 test(
   'r300-carrier-policy',
   r300_carrier_policy_test,
-  suite : ['r300'],
-)
-
-r300_delivery_route_test = executable(
-  'r300_delivery_route_test',
-  files('r300_delivery_route.c', 'tests/r300_delivery_route_test.c'),
-  c_args : r300_format_contract_test_c_args,
-  include_directories : [r300_format_contract_test_includes,
-                         include_directories('.')],
-  dependencies : [idep_mesautil],
-  gnu_symbol_visibility : 'hidden',
-)
-test(
-  'r300-delivery-route',
-  r300_delivery_route_test,
   suite : ['r300'],
 )
 
@@ -747,26 +721,6 @@ r300_triangle_manifest = executable(
                          include_directories('.')],
   dependencies : [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
-)
-
-# The writer's own artifacts, checked against each other: the unit test
-# proves the helper, this proves the executable published what the helper
-# computed.
-test(
-  'r300-spirv-refusal-reasons',
-  prog_python,
-  args : [files('tests/r300_spirv_refusal_reasons.py'),
-          files('tests/r300_spirv_refusal_reasons.txt'),
-          files('r300_vertex_spirv.c'), files('r300_compute_spirv.c')],
-  suite : ['r300'],
-)
-test(
-  'r300-spirv-refusal-reasons-selftest',
-  prog_python,
-  args : [files('tests/r300_spirv_refusal_reasons.py'), '--selftest',
-          files('tests/r300_spirv_refusal_reasons.txt'),
-          files('r300_vertex_spirv.c'), files('r300_compute_spirv.c')],
-  suite : ['r300'],
 )
 
 test(

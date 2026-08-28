@@ -4,8 +4,8 @@
  * Vertex delivery route selection for the native TCL-bypass draw.
  */
 
-#ifndef R300_DELIVERY_ROUTE_H
-#define R300_DELIVERY_ROUTE_H
+#ifndef R3V_DELIVERY_ROUTE_H
+#define R3V_DELIVERY_ROUTE_H
 
 /* The two delivery routes the deferred draw owns.  The CPU gather is
  * the default and the semantic oracle; its lane dispatch (portable
@@ -40,9 +40,9 @@
  * a wider admitted set is a separate measurement and does not inherit
  * these decisions.
  */
-enum r300_delivery_route {
-   R300_DELIVERY_ROUTE_CPU = 0,
-   R300_DELIVERY_ROUTE_R2VB_HOST_MODEL = 1,
+enum r3v_delivery_route {
+   R3V_DELIVERY_ROUTE_CPU = 0,
+   R3V_DELIVERY_ROUTE_R2VB_HOST_MODEL = 1,
    /* The device-side producer: the carrier is written by the R2VB
     * producer pass instead of a host copy.  Selecting it takes both
     * experimental gates at their exact values, and only F32_4 -- the
@@ -54,7 +54,7 @@ enum r300_delivery_route {
     * cannot execute a producer submission refuses the draw by name
     * rather than downgrading silently.
     */
-   R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER = 2,
+   R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER = 2,
    /* The device-side producer fetching the application's vertex BO
     * through the two-array fetched body, with a driver-owned slot BO as
     * the first array, instead of embedding the gathered records as
@@ -65,7 +65,7 @@ enum r300_delivery_route {
     * own composition identity, retained on silicon per width.  The third
     * gate keeps the qualified immediate route reachable beside it.
     */
-   R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED = 3,
+   R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED = 3,
 };
 
 /* The coordinate space the selected route leaves in the carrier.  Both
@@ -81,8 +81,8 @@ enum r300_carrier_position_space {
    R300_CARRIER_POSITION_WINDOW = 1,
 };
 
-struct r300_delivery_route_decision {
-   enum r300_delivery_route route;
+struct r3v_delivery_route_decision {
+   enum r3v_delivery_route route;
    enum r300_carrier_position_space position_space;
    /* The clause that selected the route, for refusal reports and
     * evidence records.
@@ -102,10 +102,10 @@ struct r300_delivery_route_decision {
  * model widths; the fetched gate alone, or with only one producer gate,
  * selects nothing.
  */
-void r300_delivery_route_resolve(const char *gate_value,
+void r3v_delivery_route_resolve(const char *gate_value,
                                  const char *gpu_gate_value,
                                  const char *fetched_gate_value,
                                  int format_id,
-                                 struct r300_delivery_route_decision *out);
+                                 struct r3v_delivery_route_decision *out);
 
-#endif /* R300_DELIVERY_ROUTE_H */
+#endif /* R3V_DELIVERY_ROUTE_H */

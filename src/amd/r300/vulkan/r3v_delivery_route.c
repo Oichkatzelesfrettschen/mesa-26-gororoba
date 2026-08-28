@@ -2,16 +2,16 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "r300_delivery_route.h"
-#include "r300_vertex_format.h"
+#include "r3v_delivery_route.h"
+#include "amd/r300/common/r300_vertex_format.h"
 
 #include <string.h>
 
 void
-r300_delivery_route_resolve(const char *gate_value,
+r3v_delivery_route_resolve(const char *gate_value,
                             const char *gpu_gate_value,
                             const char *fetched_gate_value, int format_id,
-                            struct r300_delivery_route_decision *out)
+                            struct r3v_delivery_route_decision *out)
 {
    /* The host-side routes copy application values into the carrier, so
     * the decision declares clip space here; the GPU producer clause
@@ -20,7 +20,7 @@ r300_delivery_route_resolve(const char *gate_value,
     */
    out->position_space = R300_CARRIER_POSITION_CLIP;
    if (gate_value == NULL || strcmp(gate_value, "1") != 0) {
-      out->route = R300_DELIVERY_ROUTE_CPU;
+      out->route = R3V_DELIVERY_ROUTE_CPU;
       out->reason = "CPU gather default; the R2VB gate takes the exact "
                     "value 1";
       return;
@@ -28,7 +28,7 @@ r300_delivery_route_resolve(const char *gate_value,
    if (format_id != R300_VERTEX_FORMAT_F32_4 &&
        format_id != R300_VERTEX_FORMAT_F32_3 &&
        format_id != R300_VERTEX_FORMAT_F32_2) {
-      out->route = R300_DELIVERY_ROUTE_CPU;
+      out->route = R3V_DELIVERY_ROUTE_CPU;
       out->reason = "CPU gather; the R2VB host model delivers F32_4, "
                     "F32_3, and F32_2 alone";
       return;
@@ -40,7 +40,7 @@ r300_delivery_route_resolve(const char *gate_value,
        * gathered F32_4 dwords and stays F32_4 alone.
        */
       if (fetched_gate_value != NULL && strcmp(fetched_gate_value, "1") == 0) {
-         out->route = R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED;
+         out->route = R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED;
          out->position_space = R300_CARRIER_POSITION_WINDOW;
          out->reason =
             format_id == R300_VERTEX_FORMAT_F32_4
@@ -56,13 +56,13 @@ r300_delivery_route_resolve(const char *gate_value,
          return;
       }
       if (format_id == R300_VERTEX_FORMAT_F32_4) {
-         out->route = R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER;
+         out->route = R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER;
          out->position_space = R300_CARRIER_POSITION_WINDOW;
          out->reason = "R2VB GPU producer by exact experimental opt-in; "
                        "F32_4 identity delivery holds on RS482 silicon";
          return;
       }
    }
-   out->route = R300_DELIVERY_ROUTE_R2VB_HOST_MODEL;
+   out->route = R3V_DELIVERY_ROUTE_R2VB_HOST_MODEL;
    out->reason = "R2VB host model by exact experimental opt-in";
 }

@@ -4,7 +4,7 @@
  * Direct SPIR-V admission for the vertex-job IR.
  */
 
-#include "r300_vertex_spirv.h"
+#include "r3v_vertex_spirv.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +17,7 @@
 enum {
    SPV_MAGIC = 0x07230203u,
 
-   R300_VERTEX_SPIRV_ID_BOUND_MAX = 4096,
+   R3V_VERTEX_SPIRV_ID_BOUND_MAX = 4096,
 
    OP_SOURCE = 3,
    OP_SOURCE_EXTENSION = 4,
@@ -1177,7 +1177,7 @@ admit_words(const uint32_t *words, size_t word_count, uint32_t exec_model,
       return false;
    }
    const uint32_t bound = words[3];
-   if (bound == 0 || bound > R300_VERTEX_SPIRV_ID_BOUND_MAX) {
+   if (bound == 0 || bound > R3V_VERTEX_SPIRV_ID_BOUND_MAX) {
       *reason = "result-id bound outside the admitted module size";
       return false;
    }
@@ -1197,7 +1197,7 @@ admit_words(const uint32_t *words, size_t word_count, uint32_t exec_model,
    return admitted;
 }
 
-bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
+bool r3v_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
                                 const char *entry_name,
                                 struct r300_vertex_job *job,
                                 const char **reason)
@@ -1213,7 +1213,7 @@ bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
    return true;
 }
 
-bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
+bool r3v_fragment_constant_color_from_spirv(const uint32_t *words,
                                              size_t word_count,
                                              const char *entry_name,
                                              uint32_t color_bits[4],
@@ -1226,7 +1226,7 @@ bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
                       color_bits, reason);
 }
 
-bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
+bool r3v_fragment_varying_passthrough_from_spirv(const uint32_t *words,
                                                   size_t word_count,
                                                   const char *entry_name,
                                                   const char **reason)
@@ -1239,7 +1239,7 @@ bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
                       &scratch, unused_color, reason);
 }
 
-bool r300_fragment_sampled_texture_from_spirv(const uint32_t *words,
+bool r3v_fragment_sampled_texture_from_spirv(const uint32_t *words,
                                               size_t word_count,
                                               const char *entry_name,
                                               const char **reason)

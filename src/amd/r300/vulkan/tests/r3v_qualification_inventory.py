@@ -66,6 +66,7 @@ R300_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
 )
 
 R3V_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
+    "r3v-delivery-route",
     "r3v-native-float2-tuple-cell",
     "r3v-native-float2-tuple-arming-runner",
     "r3v-native-float2-tuple-cell-closed",
@@ -94,7 +95,6 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r300-fragment-binary",
     "r300-first-draw-state",
     "r300-tcl-bypass-triangle",
-    "r300-delivery-route",
     "r300-r2vb-carrier-delivery",
     "r300-grid-fold",
     "r300-common-boundary-audit-selftest",

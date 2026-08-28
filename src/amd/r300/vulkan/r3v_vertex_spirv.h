@@ -9,10 +9,10 @@
  * refuses by name before any job field publishes.
  */
 
-#ifndef R300_VERTEX_SPIRV_H
-#define R300_VERTEX_SPIRV_H
+#ifndef R3V_VERTEX_SPIRV_H
+#define R3V_VERTEX_SPIRV_H
 
-#include "r300_vertex_job.h"
+#include "amd/r300/common/r300_vertex_job.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -35,7 +35,7 @@
  * refusal.
  * entry_name binds the OpEntryPoint literal byte for byte.
  */
-bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
+bool r3v_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
                                 const char *entry_name,
                                 struct r300_vertex_job *job,
                                 const char **reason);
@@ -46,7 +46,7 @@ bool r300_vertex_job_from_spirv(const uint32_t *words, size_t word_count,
  * color_bits receives the four 32-bit lane patterns verbatim; any
  * other module shape refuses with *reason naming the construct.
  */
-bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
+bool r3v_fragment_constant_color_from_spirv(const uint32_t *words,
                                              size_t word_count,
                                              const char *entry_name,
                                              uint32_t color_bits[4],
@@ -56,10 +56,10 @@ bool r300_fragment_constant_color_from_spirv(const uint32_t *words,
  * a straight-line Fragment entry function whose single store writes
  * the loaded location-0 vec4 input to the location-0 output unchanged.
  * A constant-color module refuses here and a pass-through module
- * refuses in r300_fragment_constant_color_from_spirv, so a pipeline
+ * refuses in r3v_fragment_constant_color_from_spirv, so a pipeline
  * names the fragment shape it binds.
  */
-bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
+bool r3v_fragment_varying_passthrough_from_spirv(const uint32_t *words,
                                                   size_t word_count,
                                                   const char *entry_name,
                                                   const char **reason);
@@ -69,9 +69,9 @@ bool r300_fragment_varying_passthrough_from_spirv(const uint32_t *words,
  * combined image sampler, sampling it at the location-0 varying's xy,
  * and storing the texel to the location-0 output.
  */
-bool r300_fragment_sampled_texture_from_spirv(const uint32_t *words,
+bool r3v_fragment_sampled_texture_from_spirv(const uint32_t *words,
                                               size_t word_count,
                                               const char *entry_name,
                                               const char **reason);
 
-#endif /* R300_VERTEX_SPIRV_H */
+#endif /* R3V_VERTEX_SPIRV_H */

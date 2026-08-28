@@ -4,8 +4,10 @@
 The durable boundary puts Gallium adapters under `src/gallium/drivers/r300`,
 NIR adapters under `src/amd/r300/compiler`, Vulkan objects and front ends
 under `src/amd/r300/vulkan`, and neutral job executors under
-`src/amd/r300/cpu`.  The current Gallium-backed Vulkan exception is censused
-below and expires during P2.
+`src/amd/r300/cpu`.  The direct SPIR-V admitters and the delivery route
+policy live with the Vulkan product as `src/amd/r300/vulkan/r3v_*_spirv.*`
+and `r3v_delivery_route.*`; only the neutral job IR they produce and the
+hardware plans they select stay here.
 
 A common component has one of two durable grounds:
 
@@ -25,10 +27,10 @@ decision rules below.
   component.
 - `KEEP_SILICON_CONTRACT`: the component has a registered standalone proof of
   an API-neutral R300 contract.  A production consumer is optional.
-- `MOVE_TO_R3V_FRONTEND`: the component interprets an API input for the native
-  Vulkan product and moves with that front end.
-- `MOVE_TO_R3V_POLICY`: the component selects native Vulkan product behavior
-  rather than describing hardware and moves with that policy.
+
+A component that interprets an API input or selects product behavior belongs
+under `src/amd/r300/vulkan` with the front end or policy it serves; the census
+refuses any other decision word.
 
 Consumer tags name build domains: `r300g`, `compiler`, `native`, and `cpu`.
 `none` means the component is an evidence producer rather than a production
@@ -57,7 +59,6 @@ executables with `main()` rather than driver objects.
 | `r300_compute_job.h`<br>`r300_vertex_job.h` | Neutral compute and vertex job IR. | `compiler`, `native`, `cpu` | `r300-cpu-compute-job`, `r300-cpu-vertex-job`, `r300-vertex-front-end-parity` | `KEEP_SHARED` |
 | `r300_compute_identity_carrier.c`<br>`r300_compute_identity_carrier_contract.c`<br>`r300_compute_identity_carrier.h` | The identity verb's raster lowering and typed route certificate: the fetched producer pass over a storage-buffer input as F32_4 records into a storage-buffer output as one C4_32_FP slot row, with the FP24 host model of the delivery. | `native` | `r300-compute-identity-carrier`, `r300-compute-identity-carrier-cs-track-replay`, `r300-operation-ledger` | `KEEP_SILICON_CONTRACT` |
 | `r300_compute_verb.c`<br>`r300_compute_verb.h` | The finite compute verb ledger: typed operation and route identities, kernel shape, raster unit, exactness class, route status, evidence strength and claim scope, per-verb gate, refusal classes, and the failure clauses every compute route obeys. | `native` | `r300-compute-verb-ledger`, `r300-operation-ledger` | `KEEP_SILICON_CONTRACT` |
-| `r300_compute_spirv.c`<br>`r300_compute_spirv.h`<br>`r300_vertex_spirv.c`<br>`r300_vertex_spirv.h` | Direct SPIR-V admission into neutral jobs.  SPIR-V is the Vulkan front-end input, not an R300 hardware contract. | `native` | `r3v-native-compute-frontend`, `r3v-native-pipeline-frontend`, `r300-vertex-front-end-parity` | `MOVE_TO_R3V_FRONTEND` |
 | `r300_carrier_policy.c`<br>`r300_carrier_policy.h` | Operation-tagged numeric-domain, carrier-encoding, format, and stride inventory for candidate raster-backed operations; registration alone does not certify route liveness. | `compiler` | `r300-carrier-policy`, `r300-carrier-format-pipe`, `r300-operation-ledger` | `KEEP_SILICON_CONTRACT` |
 | `r300_pm4_builder.c`<br>`r300_pm4_builder.h` | Bounded PM4 word construction and error propagation. | `r300g`, `native` | `r300-pm4-builder` | `KEEP_SHARED` |
 | `r300_pm4_compose.c`<br>`r300_pm4_compose.h` | Role-based PM4 fragment composition and relocation rebasing. | `native` | `r300-pm4-compose`, `r300-r2vb-reingest-compose-parity` | `KEEP_SILICON_CONTRACT` |
@@ -75,7 +76,6 @@ executables with `main()` rather than driver objects.
 | `r300_r2vb_fetched_producer.c`<br>`r300_r2vb_fetched_producer.h` | R2VB producer fetching the application vertex BO through the two-array fetched body, and its composed route over the four BO roles. | `native` | `r300-r2vb-fetched-producer`, `r300-r2vb-fetched-route-replay-f32_4`, `r300-r2vb-fetched-route-replay-f32_3`, `r300-r2vb-fetched-route-replay-f32_2` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_public_route.c`<br>`r300_r2vb_public_route.h` | Producer and TCL-bypass consumer composed into one hardware plan. | `none` | `r300-r2vb-public-route`, `r300-r2vb-public-route-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_zb_depth_state.c`<br>`r300_zb_depth_state.h`<br>`r300_zb_depth_control_cell.c`<br>`r300_zb_depth_control_cell.h` | Z-buffer binding/test state and the dual-oracle depth control cell. | `native` | `r300-zb-depth-state`, `r300-zb-depth-control-cell`, `r300-zb-depth-control-replay` | `KEEP_SILICON_CONTRACT` |
-| `r300_delivery_route.c`<br>`r300_delivery_route.h` | Environment-gated CPU/R2VB route selection and measured default policy. | `native` | `r300-delivery-route` | `MOVE_TO_R3V_POLICY` |
 | `r300_direct_write_manifest.c` | Test-only direct-write evidence writer. | `none` | `r300-direct-write-manifest-integration`, `r300-direct-write-cs-track-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_compute_identity_carrier_manifest.c` | Test-only compute identity carrier evidence writer (ib.bin, manifest.json). | `none` | `r300-compute-identity-carrier-cs-track-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_fetched_route_manifest.c` | Test-only fetched-route evidence writer (ib.bin, bo_table.json, manifest.json per source width). | `none` | `r300-r2vb-fetched-route-replay-f32_4`, `r300-r2vb-fetched-route-replay-f32_3`, `r300-r2vb-fetched-route-replay-f32_2` | `KEEP_SILICON_CONTRACT` |
@@ -133,16 +133,15 @@ with its exact adapter and a known-bad calibration.
 
 ## Migration consequences
 
-The direct-SPIR-V readers move to the Vulkan front end because their only
+The direct-SPIR-V readers (`src/amd/r300/vulkan/r3v_vertex_spirv.c`,
+`r3v_compute_spirv.c`) live in the Vulkan front end because their only
 production input is Vulkan SPIR-V.  The NIR-to-job path remains in the r300
-compiler for r300g, and both front ends continue to meet at the neutral job IR
-through the parity tests.  Until that P2 source move lands, the two readers and
-the delivery-route selector are named in
-`r300_common_pending_r3v_move_files`: one archive owns their object bytes, but
-the build arrangement does not supersede their `MOVE_TO_R3V_*` dispositions.
+compiler for r300g, and both front ends meet at the neutral job IR through
+`r300-vertex-front-end-parity`.
 
-The delivery-route selector moves to Vulkan because its environment gates and
-measured default choose one R3V execution policy.  The R2VB passes and PM4
+The delivery-route selector (`src/amd/r300/vulkan/r3v_delivery_route.c`)
+lives in Vulkan because its environment gates and measured default choose one
+R3V execution policy.  The R2VB passes and PM4
 plans remain common because their tests establish packet, relocation, numeric,
 and cache-publication contracts independently of Vulkan object lifetime.
 

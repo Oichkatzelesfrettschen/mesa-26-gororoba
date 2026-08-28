@@ -9,10 +9,10 @@
  * refuses by name before any job field publishes.
  */
 
-#ifndef R300_COMPUTE_SPIRV_H
-#define R300_COMPUTE_SPIRV_H
+#ifndef R3V_COMPUTE_SPIRV_H
+#define R3V_COMPUTE_SPIRV_H
 
-#include "r300_compute_job.h"
+#include "amd/r300/common/r300_compute_job.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -29,9 +29,9 @@
  * unspecified on refusal.
  * entry_name binds the OpEntryPoint literal byte for byte.
  */
-bool r300_compute_job_from_spirv(const uint32_t *words, size_t word_count,
+bool r3v_compute_job_from_spirv(const uint32_t *words, size_t word_count,
                                  const char *entry_name,
                                  struct r300_compute_job *job,
                                  const char **reason);
 
-#endif /* R300_COMPUTE_SPIRV_H */
+#endif /* R3V_COMPUTE_SPIRV_H */

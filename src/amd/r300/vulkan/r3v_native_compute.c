@@ -15,7 +15,7 @@
 #include "r3v_physical_device.h"
 
 #include "amd/r300/common/r300_compute_identity_carrier.h"
-#include "amd/r300/common/r300_compute_spirv.h"
+#include "amd/r300/vulkan/r3v_compute_spirv.h"
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/cpu/r300_cpu_compute_job.h"
@@ -523,7 +523,7 @@ create_compute_pipeline(struct r3v_native_device *device,
 
    struct r300_compute_job job;
    const char *reason = NULL;
-   if (!r300_compute_job_from_spirv((const uint32_t *)module->data,
+   if (!r3v_compute_job_from_spirv((const uint32_t *)module->data,
                                     module->size / 4, info->stage.pName,
                                     &job, &reason)) {
       return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,

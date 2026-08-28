@@ -15,13 +15,6 @@ from r300_common_boundary_audit import source_lines
 DECISIONS = {
     "KEEP_SHARED",
     "KEEP_SILICON_CONTRACT",
-    "MOVE_TO_R3V_FRONTEND",
-    "MOVE_TO_R3V_POLICY",
-}
-PENDING_R3V_MOVE_DECISIONS = {
-    "r300_compute_spirv.c": "MOVE_TO_R3V_FRONTEND",
-    "r300_vertex_spirv.c": "MOVE_TO_R3V_FRONTEND",
-    "r300_delivery_route.c": "MOVE_TO_R3V_POLICY",
 }
 CONSUMERS = {
     "r300g",
@@ -159,17 +152,8 @@ def _source_universe(repo_root: Path) -> set[Path]:
 def common_library_sources(repo_root: Path) -> set[Path]:
     """Return the one production object set and refuse split ownership."""
     meson_path = "src/amd/r300/common/meson.build"
-    contracts = _meson_files(
+    registered = _meson_files(
         repo_root, meson_path, "r300_common_contract_files")
-    pending = _meson_files(
-        repo_root, meson_path, "r300_common_pending_r3v_move_files")
-    pending_names = {path.name for path in pending}
-    if pending_names != set(PENDING_R3V_MOVE_DECISIONS):
-        raise ValueError(
-            "pending R3V move source set changed: "
-            f"expected {sorted(PENDING_R3V_MOVE_DECISIONS)!r}, "
-            f"got {sorted(pending_names)!r}")
-    registered = contracts | pending
     common = (repo_root / "src/amd/r300/common").resolve()
     expected = {
         path.resolve()
@@ -367,7 +351,6 @@ def production_consumers(repo_root: Path) -> dict[str, frozenset[str]]:
 def validate_rows(rows: list[CensusRow], source_files: set[str],
                   test_names: set[str],
                   actual_consumers: dict[str, frozenset[str]],
-                  required_decisions: dict[str, str] | None = None,
                   ) -> list[str]:
     findings: list[str] = []
     seen: dict[str, int] = {}
@@ -398,21 +381,14 @@ def validate_rows(rows: list[CensusRow], source_files: set[str],
         if row.decision == "KEEP_SILICON_CONTRACT" and not row.proofs:
             findings.append(
                 f"row {row_number}: KEEP_SILICON_CONTRACT needs a proof")
-        if row.decision.startswith("MOVE_TO_R3V_") and row.consumers != {
-                "native"}:
+        if row.decision not in DECISIONS:
             findings.append(
-                f"row {row_number}: {row.decision} requires native alone")
+                f"row {row_number}: unknown owner decision {row.decision}")
 
     for name in sorted(source_files - set(seen)):
         findings.append(f"uncensused common source: {name}")
     for name in sorted(name for name, count in seen.items() if count > 1):
         findings.append(f"common source appears {seen[name]} times: {name}")
-    for name, expected in sorted((required_decisions or {}).items()):
-        matching = [row for row in rows if name in row.files]
-        if len(matching) == 1 and matching[0].decision != expected:
-            findings.append(
-                f"{name}: pending move requires {expected}, got "
-                f"{matching[0].decision}")
     return findings
 
 
@@ -436,8 +412,7 @@ def check(repo_root: Path) -> int:
     except (OSError, UnicodeError, ValueError) as error:
         print(f"consumer census input error: {error}", file=sys.stderr)
         return 2
-    findings = validate_rows(
-        rows, source_files, tests, consumers, PENDING_R3V_MOVE_DECISIONS)
+    findings = validate_rows(rows, source_files, tests, consumers)
     if findings:
         print("\n".join(findings))
         return 1
@@ -499,31 +474,19 @@ def _selftest_production_consumers() -> bool:
         _write_fixture(
             root, "src/amd/r300/common/meson.build",
             "r300_common_contract_files = "
-            "files('shared.c', 'orphan.c')\n"
-            "r300_common_pending_r3v_move_files = files(\n"
-            "  'r300_compute_spirv.c',\n"
-            "  'r300_delivery_route.c',\n"
-            "  'r300_vertex_spirv.c',\n"
-            ")\n")
+            "files('shared.c', 'orphan.c')\n")
         _write_fixture(root, "src/amd/r300/common/shared.c", "")
         _write_fixture(root, "src/amd/r300/common/orphan.c", "")
-        for name in PENDING_R3V_MOVE_DECISIONS:
-            _write_fixture(root, f"src/amd/r300/common/{name}", "")
         _write_fixture(
             root, "src/amd/r300/common/evidence_manifest.c", "")
         for name in (
                 "shared.h", "cpu_only.h", "foreign_owned.h",
-                "native_arm.h",
-                "orphan.h", "r300_compute_spirv.h",
-                "r300_delivery_route.h", "r300_vertex_spirv.h"):
+                "native_arm.h", "orphan.h"):
             _write_fixture(root, f"src/amd/r300/common/{name}", "")
 
         _write_fixture(
             root, "src/amd/r300/vulkan/native.c",
-            '#include "../common/shared.h"\n'
-            '#include "../common/r300_compute_spirv.h"\n'
-            '#include "../common/r300_delivery_route.h"\n'
-            '#include "../common/r300_vertex_spirv.h"\n')
+            '#include "../common/shared.h"\n')
 
         measured = production_consumers(root)
         expected = {
@@ -534,12 +497,6 @@ def _selftest_production_consumers() -> bool:
             "native_arm.h": frozenset(("native",)),
             "orphan.h": frozenset(),
             "orphan.c": frozenset(),
-            "r300_compute_spirv.h": frozenset(("native",)),
-            "r300_compute_spirv.c": frozenset(("native",)),
-            "r300_delivery_route.h": frozenset(("native",)),
-            "r300_delivery_route.c": frozenset(("native",)),
-            "r300_vertex_spirv.h": frozenset(("native",)),
-            "r300_vertex_spirv.c": frozenset(("native",)),
             "evidence_manifest.c": frozenset(),
         }
         if measured != expected:
@@ -614,21 +571,17 @@ def selftest() -> int:
             ("contract.h",), frozenset(("none",)), (),
             "KEEP_SILICON_CONTRACT")], sources, tests, consumers, 1),
         ("unregistered-proof", [good, contract], sources, set(), consumers, 1),
-        ("move-with-two-consumers", [CensusRow(
-            ("shared.c",), frozenset(("native", "cpu")), (),
+        ("unknown-decision", [CensusRow(
+            ("shared.c",), frozenset(("r300g", "native")), (),
             "MOVE_TO_R3V_FRONTEND"), contract], sources, tests, consumers, 1),
         ("consumer-drift", [good, contract], sources, tests, {
             "shared.c": frozenset(("r300g",)),
             "contract.h": frozenset(),
         }, 1),
-        ("required-move-drift", [good, contract], sources, tests, consumers,
-         1),
     )
     for name, rows, case_sources, case_tests, case_consumers, expected in cases:
-        required = ({"contract.h": "MOVE_TO_R3V_POLICY"}
-                    if name == "required-move-drift" else None)
         actual = 1 if validate_rows(
-            rows, case_sources, case_tests, case_consumers, required) else 0
+            rows, case_sources, case_tests, case_consumers) else 0
         if actual != expected:
             print(f"selftest {name}: expected {expected}, got {actual}")
             return 1

@@ -1,6 +1,6 @@
 # Vertex front-end parity manifest: BLAKE3 of the shapes both live front
 # ends -- the NIR front end (compiler/r300_vertex_job_nir.c) and the direct
-# SPIR-V admitter (common/r300_vertex_spirv.c) -- accept over one job IR.
+# SPIR-V admitter (vulkan/r3v_vertex_spirv.c) -- accept over one job IR.
 # identity_vertex binds the module bytes, the canonical job both front ends
 # produce bit-identically (every attribute slot format, then the live
 # instruction and constant prefixes), and the executed carrier over the reference

@@ -10,7 +10,7 @@
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_direct_write.h"
-#include "amd/r300/common/r300_delivery_route.h"
+#include "amd/r300/vulkan/r3v_delivery_route.h"
 #include "amd/r300/common/r300_r2vb_carrier_delivery.h"
 #include "amd/r300/common/r300_r2vb_fetched_producer.h"
 #include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
@@ -1229,7 +1229,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                          "r3v-native: carrier memory is not CPU-mappable "
                          "at submission");
    } else {
-      /* Delivery route selection lives in r300_delivery_route_resolve:
+      /* Delivery route selection lives in r3v_delivery_route_resolve:
        * the CPU gather is the default and the semantic oracle, and the
        * R2VB identity delivery engages only on the exact opt-in value
        * and the formats it models.  Under the R2VB route the delivery
@@ -1238,8 +1238,8 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        * divergence falsifies the identity control and refuses the draw
        * rather than submitting bytes the two routes disagree on.
        */
-      struct r300_delivery_route_decision route_decision;
-      r300_delivery_route_resolve(device->r2vb_delivery_gate,
+      struct r3v_delivery_route_decision route_decision;
+      r3v_delivery_route_resolve(device->r2vb_delivery_gate,
                                   device->r2vb_gpu_delivery_gate,
                                   device->r2vb_fetched_gate,
                                   stream.format_id, &route_decision);
@@ -1249,9 +1249,9 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        * double opt-in therefore refuses the draw by name instead of
        * downgrading to a host copy the caller did not select.
        */
-      if (route_decision.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER ||
+      if (route_decision.route == R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER ||
           route_decision.route ==
-             R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED) {
+             R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED) {
          result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                             "r3v-native: %s; live producer submission "
                             "routes through the attended cell surface",
@@ -1264,7 +1264,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        * dereference happens on the host, an instanced draw, and every
        * other admitted job execute on the CPU interpreter route. */
       const bool r2vb_route =
-         route_decision.route == R300_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
+         route_decision.route == R3V_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && !draw->indexed &&
          draw->cull_mode == VK_CULL_MODE_NONE &&
          !draw->sample_mask_zero &&
@@ -1770,16 +1770,16 @@ r3v_native_deferred_draw_admit_gpu_producer(
     * resolves on its format and the admissions below refuse a job
     * reading any other slot by name; a job that leaves slot 0 unread
     * resolves through the INVALID format to the CPU route. */
-   struct r300_delivery_route_decision route;
-   r300_delivery_route_resolve(device->r2vb_delivery_gate,
+   struct r3v_delivery_route_decision route;
+   r3v_delivery_route_resolve(device->r2vb_delivery_gate,
                                device->r2vb_gpu_delivery_gate,
                                device->r2vb_fetched_gate,
                                (draw->stream_mask & 1u)
                                   ? draw->streams[0].format_id
                                   : R300_VERTEX_FORMAT_INVALID,
                                &route);
-   if (route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED &&
-       route.route != R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER)
+   if (route.route != R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED &&
+       route.route != R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER)
       return VK_SUCCESS;
    /* Both producer routes fetch the source records as one linear range
     * (embedded immediates or the VBPNTR array); an indexed draw
@@ -1819,7 +1819,7 @@ r3v_native_deferred_draw_admit_gpu_producer(
                        "source range for one instance; an instanced draw "
                        "executes on the CPU route");
    }
-   if (route.route == R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED)
+   if (route.route == R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED)
       return admit_fetched_producer(device, cmd_buffer);
 
    if (device->gpu_producer_quarantined) {

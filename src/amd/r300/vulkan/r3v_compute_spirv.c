@@ -4,7 +4,7 @@
  * Direct SPIR-V admission for the compute-job IR.
  */
 
-#include "r300_compute_spirv.h"
+#include "r3v_compute_spirv.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +17,7 @@
 enum {
    SPV_MAGIC = 0x07230203u,
 
-   R300_COMPUTE_SPIRV_ID_BOUND_MAX = 4096,
+   R3V_COMPUTE_SPIRV_ID_BOUND_MAX = 4096,
 
    OP_SOURCE = 3,
    OP_SOURCE_EXTENSION = 4,
@@ -829,7 +829,7 @@ admit_module(const uint32_t *words, size_t word_count,
    return true;
 }
 
-bool r300_compute_job_from_spirv(const uint32_t *words, size_t word_count,
+bool r3v_compute_job_from_spirv(const uint32_t *words, size_t word_count,
                                  const char *entry_name,
                                  struct r300_compute_job *job,
                                  const char **reason)
@@ -842,7 +842,7 @@ bool r300_compute_job_from_spirv(const uint32_t *words, size_t word_count,
       return false;
    }
    const uint32_t bound = words[3];
-   if (bound == 0 || bound > R300_COMPUTE_SPIRV_ID_BOUND_MAX) {
+   if (bound == 0 || bound > R3V_COMPUTE_SPIRV_ID_BOUND_MAX) {
       *reason = "result-id bound outside the admitted module size";
       return false;
    }

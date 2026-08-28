@@ -1,5 +1,5 @@
-# Refusal reasons named by r300_vertex_spirv.c and r300_compute_spirv.c,
-# one per line; r300_spirv_refusal_reasons.py keeps this ledger equal
+# Refusal reasons named by r3v_vertex_spirv.c and r3v_compute_spirv.c,
+# one per line; r3v_spirv_refusal_reasons.py keeps this ledger equal
 # to the set the sources carry.
 LocalSize execution mode absent
 SPIR-V extension outside the admitted grammar

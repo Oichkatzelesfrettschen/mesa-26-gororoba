@@ -88,7 +88,7 @@ def selftest(sources: list[str], ledger: str) -> int:
            "'fresh reason'")
     if not ok:
         return STATUS_MISMATCH
-    print("r300_spirv_refusal_reasons: known-good, missing-row, extra-row, "
+    print("r3v_spirv_refusal_reasons: known-good, missing-row, extra-row, "
           "duplicate-row, and new-source-reason verdicts calibrated")
     return STATUS_OK
 
@@ -100,7 +100,7 @@ def main(argv: list[str]) -> int:
         run_selftest = True
         args = args[1:]
     if len(args) < 2:
-        print("usage: r300_spirv_refusal_reasons.py [--selftest] <ledger> "
+        print("usage: r3v_spirv_refusal_reasons.py [--selftest] <ledger> "
               "<source>...", file=sys.stderr)
         return STATUS_USAGE
     ledger = Path(args[0]).read_text(encoding="utf-8")
@@ -111,7 +111,7 @@ def main(argv: list[str]) -> int:
     if failures:
         print("\n".join(failures))
         return STATUS_MISMATCH
-    print(f"r300_spirv_refusal_reasons: {len(ledger_rows(ledger)[0])} "
+    print(f"r3v_spirv_refusal_reasons: {len(ledger_rows(ledger)[0])} "
           "reasons match the ledger")
     return STATUS_OK
 

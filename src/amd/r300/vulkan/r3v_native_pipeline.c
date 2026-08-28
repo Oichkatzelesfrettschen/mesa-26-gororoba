@@ -11,7 +11,7 @@
 
 #include "amd/r300/common/r300_us_source_read.h"
 #include "amd/r300/common/r300_vertex_format.h"
-#include "amd/r300/common/r300_vertex_spirv.h"
+#include "amd/r300/vulkan/r3v_vertex_spirv.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
 #include "vk_log.h"
@@ -49,7 +49,7 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
 }
 
 /* SPIR-V ingestion for the semantic front end: the direct word-stream
- * admitter in common/r300_vertex_spirv.c, so the driver reads the
+ * admitter in vulkan/r3v_vertex_spirv.c, so the driver reads the
  * module itself with no intermediate compiler representation.
  * Specialization and stage flags stay outside the admitted subset, and
  * the entry name is pinned to "main": the admitted grammar carries one
@@ -218,7 +218,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    size_t vs_words = 0;
    const uint32_t *vs_data = stage_words(vertex, &vs_words);
    if (vs_data == NULL ||
-       !r300_vertex_job_from_spirv(vs_data, vs_words, vertex->pName, job,
+       !r3v_vertex_job_from_spirv(vs_data, vs_words, vertex->pName, job,
                                    &reason))
       return false;
 
@@ -229,16 +229,16 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    *varying = r300_vertex_job_has_varying(job);
    *sampled = false;
    if (*varying) {
-      if (r300_fragment_varying_passthrough_from_spirv(
+      if (r3v_fragment_varying_passthrough_from_spirv(
              fs_data, fs_words, fragment->pName, &reason))
          return true;
       /* The varying job's other fragment shape samples the set-0
        * binding-0 combined image sampler at the varying's xy. */
-      *sampled = r300_fragment_sampled_texture_from_spirv(
+      *sampled = r3v_fragment_sampled_texture_from_spirv(
          fs_data, fs_words, fragment->pName, &reason);
       return *sampled;
    }
-   return r300_fragment_constant_color_from_spirv(fs_data, fs_words,
+   return r3v_fragment_constant_color_from_spirv(fs_data, fs_words,
                                                   fragment->pName,
                                                   color_bits, &reason) &&
           constant_color_on_fp24_lattice(color_bits);
