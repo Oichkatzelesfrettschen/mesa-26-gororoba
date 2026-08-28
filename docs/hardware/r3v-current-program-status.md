@@ -427,6 +427,21 @@ above is rung zero; the ladder after it runs in this order:
    rather than on a value the predicted dword absorbs (bundle
    steinmarder-r300
    `r3v-native-layered-and-height-one-texture-silicon-pass-rs482`).
+   Each of those receipts carried the point check alone, because the
+   runner filled the render shape's `color_bits` with the texel and
+   those values sit off the FP24 s1e7m16 lattice, so the coverage
+   producer refused and reported every counter zero.  A cell whose
+   fragment color arrives through the TX unit drives no
+   `R300_PFS_PARAM_0` constant, so the verdict now admits on geometry
+   alone and carries a `judged` flag that separates a refusal from a
+   total mismatch.  Replaying the narrowed verdict over the retained
+   `color_target.bin` of each arm supplies the region result the
+   receipts lacked: `sampled`, `bgra`, `layer`, `row1`, and, under the
+   two-texel model their `[shape]` lines name, `split-rows` and `wide`
+   are each coverage-exact over the full 64x64 footprint, 1152 interior
+   pixels against 1152 analytic with a clean canary and no mismatch.
+   The retained first sampled take reproduces its recorded deviation,
+   which calibrates the replay against a known-bad input.
    Open inside the rung: the render family's own layer ceiling answers
    to the creation gate rather than to a run; the
    volume type and its view (18 cases) need a TX volume route, the
@@ -644,13 +659,30 @@ above is rung zero; the ladder after it runs in this order:
    for pixel.  The sentinel is what separates the failure modes: a
    sample interior reading it names a texture fetch ahead of the render
    half's publication, so the coherency edge, rather than the coverage,
-   carries a deviation there.  Open: the silicon receipt, which takes
-   one attended session on RS482.  Behind it, a recording contract
+   carries a deviation there.  The cell holds the silicon
+   receipt: one attended submission on RS482 under the authorization the
+   arming report matched on all five declarations, `vkQueueSubmit`
+   returning 0, both coverage verdicts reading `judged=1
+   coverage_exact=1 canary=1` with 1152 interior pixels against 1152
+   analytic and no mismatch, the sample centroid reading the render
+   half's draw dword `0xdf20609f`, and an empty dmesg delta over an
+   unchanged boot.  The two retained targets are byte-identical across
+   the full footprint, so the sample half reproduced the render half
+   pixel for pixel rather than at the centroid alone, and the corner and
+   canary row both hold the `0xa5a5a5a5` seed.  The falsifier that names
+   the coherency edge -- a sample interior reading the seed, which would
+   place the texture fetch ahead of the render half's publication -- did
+   not fire, so the render half's `RB3D_DSTCACHE_CTLSTAT` flush-dirty
+   plus free-3D-tags publishes the color writes before the sample half's
+   `TX_INVALTAGS` on this silicon.  The submission ran inside a
+   hardware-armed SB600 counter over `DRM_IOCTL_RADEON_CS` through fence
+   completion, a 134 us guarded interval against the 1.7 s operational
+   grace.  Open behind it, a recording contract
    admitting a second render pass and a second deferred draw per command
    buffer, which the one-pass bound refuses today
    (`r3v_CmdBeginRenderPass`) because `deferred_draw` carries one clear,
-   one carrier, and one vertex execution; it waits on the receipt, since
-   a conformance case reaching the path moves no row until the cell
+   one carrier, and one vertex execution; the receipt opens it, since
+   a conformance case reaching the path moves a row now that the cell
    holds silicon evidence.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
