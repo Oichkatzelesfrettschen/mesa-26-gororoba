@@ -218,6 +218,12 @@ struct drm_shim_state_token_header {
    pthread_mutex_t lock;
 };
 
+enum drm_shim_state_token_class {
+   DRM_SHIM_STATE_TOKEN_INVALID,
+   DRM_SHIM_STATE_TOKEN_CURRENT_DEVICE,
+   DRM_SHIM_STATE_TOKEN_OTHER_DEVICE,
+};
+
 enum drm_shim_state_namespace_state {
    DRM_SHIM_STATE_NAMESPACE_PREPARED = 1,
    DRM_SHIM_STATE_NAMESPACE_ACTIVE = 2,
@@ -476,15 +482,15 @@ drm_shim_state_token_identifier_valid(const char identifier[33])
    return identifier[32] == '\0';
 }
 
-static bool
-drm_shim_state_token_readable_parse(
+static enum drm_shim_state_token_class
+drm_shim_state_token_readable_classify(
    int fd, struct drm_shim_state_token_header *header)
 {
    struct stat status;
    if (syscall(SYS_fstat, fd, &status) < 0 ||
        !S_ISREG(status.st_mode) ||
        status.st_size < (off_t)sysconf(_SC_PAGESIZE))
-      return false;
+      return DRM_SHIM_STATE_TOKEN_INVALID;
 
    /* The raw syscall keeps the header read outside the shim's own pread
     * interposer, which takes the device lock. */
@@ -504,17 +510,12 @@ drm_shim_state_token_readable_parse(
        !drm_shim_state_token_identifier_valid(candidate.marker) ||
        !drm_shim_state_token_identifier_valid(candidate.state_id) ||
        strcmp(candidate.driver_name, shim_device.driver_name) != 0)
-      return false;
-
-   char marker[33];
-   drm_shim_render_marker_token(marker);
-   if (memcmp(candidate.marker, marker, sizeof(marker)) != 0)
-      return false;
+      return DRM_SHIM_STATE_TOKEN_INVALID;
 
    char name[DRM_SHIM_STATE_TOKEN_NAME_CAPACITY];
    size_t name_length;
    if (!drm_shim_memfd_name_read(fd, name, sizeof(name), &name_length))
-      return false;
+      return DRM_SHIM_STATE_TOKEN_INVALID;
 
    int expected_length =
       snprintf(NULL, 0, "%s:%s:%s:%s:%s",
@@ -522,7 +523,7 @@ drm_shim_state_token_readable_parse(
                candidate.instance, candidate.marker,
                candidate.state_id, candidate.driver_name);
    if (expected_length < 0 || (size_t)expected_length != name_length)
-      return false;
+      return DRM_SHIM_STATE_TOKEN_INVALID;
 
    char expected_name[DRM_SHIM_STATE_TOKEN_NAME_CAPACITY];
    if (snprintf(expected_name, sizeof(expected_name),
@@ -532,19 +533,23 @@ drm_shim_state_token_readable_parse(
                 candidate.state_id, candidate.driver_name) !=
        expected_length ||
        memcmp(name, expected_name, name_length) != 0)
-      return false;
+      return DRM_SHIM_STATE_TOKEN_INVALID;
 
    *header = candidate;
-   return true;
+   char marker[33];
+   drm_shim_render_marker_token(marker);
+   return memcmp(candidate.marker, marker, sizeof(marker)) == 0
+             ? DRM_SHIM_STATE_TOKEN_CURRENT_DEVICE
+             : DRM_SHIM_STATE_TOKEN_OTHER_DEVICE;
 }
 
-static bool
-drm_shim_state_token_name_parse(int fd,
-                                struct drm_shim_state_token_header *header)
+static enum drm_shim_state_token_class
+drm_shim_state_token_name_classify(
+   int fd, struct drm_shim_state_token_header *header)
 {
    int status_flags = syscall(SYS_fcntl, fd, F_GETFL);
    if (status_flags < 0)
-      return false;
+      return DRM_SHIM_STATE_TOKEN_INVALID;
 
    int readable_fd = fd;
    if ((status_flags & O_PATH) != O_PATH &&
@@ -556,13 +561,22 @@ drm_shim_state_token_name_parse(int fd,
        */
       readable_fd = drm_shim_readable_witness(fd);
       if (readable_fd < 0)
-         return false;
+         return DRM_SHIM_STATE_TOKEN_INVALID;
    }
 
-   bool parsed = drm_shim_state_token_readable_parse(readable_fd, header);
+   enum drm_shim_state_token_class token_class =
+      drm_shim_state_token_readable_classify(readable_fd, header);
    if (readable_fd != fd)
       syscall(SYS_close, readable_fd);
-   return parsed;
+   return token_class;
+}
+
+static bool
+drm_shim_state_token_name_parse(int fd,
+                                struct drm_shim_state_token_header *header)
+{
+   return drm_shim_state_token_name_classify(fd, header) ==
+          DRM_SHIM_STATE_TOKEN_CURRENT_DEVICE;
 }
 
 /* Recovers a state token's identity from its memfd name alone.  An O_PATH
@@ -883,6 +897,7 @@ drm_shim_inherited_identity_locator(char instance[33])
    int status_flags = syscall(SYS_fcntl, locator, F_GETFL);
    char observed_instance[33];
    bool locator_is_anchor = false;
+   bool locator_is_other_device = false;
    if (status_flags < 0 || (status_flags & O_PATH) == O_PATH) {
       free(value);
       errno = EBADF;
@@ -896,14 +911,22 @@ drm_shim_inherited_identity_locator(char instance[33])
        * and drm_shim_render_node_open backs each render fd with a
        * per-open state-token memfd whose
        * drm_shim_state_token_header names the instance under this
-       * driver's marker; the header parse validates all three.
+       * driver's marker; the header classification validates all three
+       * before comparing the selected-device marker.
+       * Reference trace: (rg --fixed-strings
+       * -e drm_shim_fd_prepare_exec -e drm_shim_render_node_open
+       * -e drm_shim_state_token_header src/drm-shim)
        */
       struct drm_shim_state_token_header header;
-      if (!drm_shim_state_token_name_parse(locator, &header)) {
+      enum drm_shim_state_token_class token_class =
+         drm_shim_state_token_name_classify(locator, &header);
+      if (token_class == DRM_SHIM_STATE_TOKEN_INVALID) {
          free(value);
          errno = EBADF;
          return -1;
       }
+      locator_is_other_device =
+         token_class == DRM_SHIM_STATE_TOKEN_OTHER_DEVICE;
       memcpy(observed_instance, header.instance,
              sizeof(observed_instance));
    }
@@ -911,6 +934,11 @@ drm_shim_inherited_identity_locator(char instance[33])
               sizeof(observed_instance)) != 0) {
       free(value);
       errno = EBADF;
+      return -1;
+   }
+   if (locator_is_other_device) {
+      free(value);
+      errno = ENOENT;
       return -1;
    }
 
@@ -924,6 +952,9 @@ drm_shim_inherited_identity_locator(char instance[33])
        * memfd under the inherited instance name, and inherited
        * descriptors match through the instance-name parse paths in
        * drm_shim_render_identity_parse.
+       * Reference trace: (rg --fixed-strings
+       * -e drm_shim_create_identity_anchor
+       * -e drm_shim_render_identity_parse src/drm-shim)
        */
       memcpy(shim_device.render_instance, locator_instance,
              sizeof(shim_device.render_instance));
