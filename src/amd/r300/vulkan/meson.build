@@ -860,6 +860,22 @@ r3v_native_attended_sampled = executable(
 # through r3v_native_record_composed_render_sample and drives it to a
 # live DRM_RADEON_CS on RS482 silicon, where the render half's target is
 # the sample half's texture and both targets take one coverage verdict.
+r3v_native_attended_multi_pass = executable(
+  'r3v_native_attended_multi_pass',
+  files('tests/r3v_native_attended_multi_pass.c',
+        'tests/r3v_native_recovery_waiver.c',
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
   files('tests/r3v_native_attended_composed.c',
@@ -1543,6 +1559,32 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  # Two-pass recorder on the same fixture: the first pass installs, the
+  # second appends through the public route's primitive, the offline
+  # emitter reproduces the stream, and the mutation modes arm digests
+  # of streams the recorder never installs.
+  r3v_native_multi_pass_cell_harness = executable(
+    'r3v_native_multi_pass_cell_harness',
+    files('tests/r3v_native_multi_pass_cell_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach multi_pass_mode : ['bound', 'shared', 'alias', 'mutated-flush',
+                             'mutated-second-state']
+    test(
+      'r3v-native-multi-pass-cell-@0@'.format(multi_pass_mode),
+      r3v_native_multi_pass_cell_harness,
+      args : [multi_pass_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # Multisample resolve recorder on the same shim fixture: five slots
   # reach four buffer objects, the multisample surface is the
   # recording's own device-local allocation carrying a write alone, and
@@ -2214,6 +2256,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   test(
     'r3v-native-composed-record',
     r3v_native_attended_composed,
+    args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-multi-pass-record',
+    r3v_native_attended_multi_pass,
     args : [meson.current_build_dir(), '--record-only'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],

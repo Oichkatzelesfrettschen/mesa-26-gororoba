@@ -1739,6 +1739,167 @@ find_reg_write(const uint32_t *ib, uint32_t count, uint32_t reg, bool last)
  * sample half's texture-tag invalidate, so the color writes publish
  * before the fetch reads them.
  */
+/* A relocation NOP payload names its index times four. */
+#define RELOC_PAYLOAD(index) ((index) * 4u)
+
+/* Counts the PACKET0 writes to one register across a stream. */
+static uint32_t
+count_reg_writes(const uint32_t *ib, uint32_t dwords, uint32_t reg)
+{
+   uint32_t writes = 0;
+   for (uint32_t i = 0; i < dwords;) {
+      const uint32_t header = ib[i];
+      if ((header >> 30) != 0) {
+         i += 2 + ((header >> 16) & 0x3fff);
+         continue;
+      }
+      const uint32_t count = ((header >> 16) & 0x3fff) + 1;
+      const uint32_t base = (header & 0x1fff) * 4;
+      for (uint32_t k = 0; k < count; k++)
+         if (base + 4 * k == reg)
+            writes++;
+      i += 1 + count;
+   }
+   return writes;
+}
+
+/* The two-pass cell is two render-shape cells, the second bound to the
+ * merged indices; every binding the merge produces emits, every alias
+ * or skipped index refuses, and each pass keeps its own contract and
+ * flush.
+ */
+static void
+test_multi_pass_cell(void)
+{
+   struct r300_triangle_multi_pass mp;
+   memset(&mp, 0, sizeof(mp));
+   r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
+   r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
+   mp.second_vertex_index = 2;
+   mp.second_color_index = 3;
+
+   struct r300_tcl_bypass_triangle_ib one, two;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&mp.pass[0], &one) ==
+          0);
+   assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == 0);
+   assert(two.ib_size_dwords == 2 * one.ib_size_dwords);
+   assert(two.reloc_site_count == R300_TRIANGLE_MULTI_PASS_SITE_COUNT);
+   assert(r300_tcl_bypass_triangle_multi_pass_reference_count(&mp) == 4);
+   assert(memcmp(two.ib, one.ib, one.ib_size_dwords * sizeof(uint32_t)) ==
+          0);
+
+   /* The second half is the first cell with its two payloads rebound:
+    * the vertex site names index 2 and the color site index 3.
+    */
+   uint32_t differing = 0;
+   for (uint32_t i = 0; i < one.ib_size_dwords; i++)
+      if (two.ib[one.ib_size_dwords + i] != one.ib[i])
+         differing++;
+   assert(differing == 2);
+   for (uint32_t i = 2; i < 4; i++) {
+      const struct r300_tcl_bypass_triangle_reloc_site *s =
+         &two.reloc_sites[i];
+      assert(s->ib_index >= one.ib_size_dwords);
+      assert(two.ib[s->ib_index] ==
+             RELOC_PAYLOAD(s->slot == R300_TRIANGLE_SLOT_VERTEX
+                                             ? mp.second_vertex_index
+                                             : mp.second_color_index));
+   }
+   for (uint32_t i = 0; i < 2; i++)
+      assert(two.ib[two.reloc_sites[i].ib_index] ==
+             RELOC_PAYLOAD(two.reloc_sites[i].slot));
+
+   /* Each pass flushes its destination cache and re-establishes the
+    * contract's color target: two writes of each across the stream,
+    * one per half.
+    */
+   assert(count_reg_writes(two.ib, two.ib_size_dwords,
+                           R300_RB3D_DSTCACHE_CTLSTAT) ==
+          2 * count_reg_writes(one.ib, one.ib_size_dwords,
+                               R300_RB3D_DSTCACHE_CTLSTAT));
+   assert(count_reg_writes(one.ib, one.ib_size_dwords,
+                           R300_RB3D_DSTCACHE_CTLSTAT) >= 1);
+   assert(count_reg_writes(two.ib, two.ib_size_dwords,
+                           R300_RB3D_COLOROFFSET0) == 2);
+
+   /* The bound form binds no further. */
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &two, r300_tcl_bypass_triangle_composed_slot_index,
+             R300_TRIANGLE_SLOT_COUNT) != 0);
+   r300_tcl_bypass_triangle_release(&two);
+
+   /* Every binding the merge produces, with its reference count. */
+   const uint32_t admitted[4][3] = {
+      { 0, 1, 2 }, { 0, 2, 3 }, { 2, 1, 3 }, { 2, 3, 4 }
+   };
+   for (unsigned i = 0; i < 4; i++) {
+      mp.second_vertex_index = admitted[i][0];
+      mp.second_color_index = admitted[i][1];
+      assert(r300_tcl_bypass_triangle_multi_pass_binding_validate(&mp) == 0);
+      assert(r300_tcl_bypass_triangle_multi_pass_reference_count(&mp) ==
+             admitted[i][2]);
+      assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == 0);
+      for (uint32_t s = 2; s < 4; s++) {
+         const bool vertex_site =
+            two.reloc_sites[s].slot == R300_TRIANGLE_SLOT_VERTEX;
+         assert(two.ib[two.reloc_sites[s].ib_index] ==
+                RELOC_PAYLOAD(vertex_site ? admitted[i][0] : admitted[i][1]));
+      }
+      r300_tcl_bypass_triangle_release(&two);
+   }
+
+   /* Aliases and skipped indices refuse: a vertex page that is the first
+    * color target (1), a color target that is a vertex page (0, or 2
+    * beside an own vertex page), and an index past the next unused one.
+    */
+   const uint32_t refused[6][2] = {
+      { 1, 3 }, { 2, 0 }, { 0, 0 }, { 2, 2 }, { 0, 3 }, { 3, 1 }
+   };
+   for (unsigned i = 0; i < 6; i++) {
+      mp.second_vertex_index = refused[i][0];
+      mp.second_color_index = refused[i][1];
+      assert(r300_tcl_bypass_triangle_multi_pass_binding_validate(&mp) ==
+             -EINVAL);
+      assert(r300_tcl_bypass_triangle_multi_pass_reference_count(&mp) == 0);
+      assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == -EINVAL);
+   }
+
+   /* A second pass with its own fragment constant moves the four
+    * PFS_PARAM payloads of the second half and nothing in the first.
+    */
+   mp.second_vertex_index = 2;
+   mp.second_color_index = 3;
+   struct r300_tcl_bypass_triangle_ib reference_two;
+   assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &reference_two) ==
+          0);
+   const float green[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+   for (unsigned c = 0; c < 4; c++)
+      memcpy(&mp.pass[1].color_bits[c], &green[c], sizeof(float));
+   assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == 0);
+   assert(two.ib_size_dwords == reference_two.ib_size_dwords);
+   uint32_t moved_first = 0, moved_second = 0;
+   for (uint32_t i = 0; i < two.ib_size_dwords; i++) {
+      if (two.ib[i] == reference_two.ib[i])
+         continue;
+      if (i < one.ib_size_dwords)
+         moved_first++;
+      else
+         moved_second++;
+   }
+   assert(moved_first == 0);
+   assert(moved_second == 4);
+   r300_tcl_bypass_triangle_release(&two);
+   r300_tcl_bypass_triangle_release(&reference_two);
+
+   /* An off-lattice second constant refuses at the second pass's own
+    * render-shape admission.
+    */
+   const float off = 0.1f;
+   memcpy(&mp.pass[1].color_bits[0], &off, sizeof(float));
+   assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == -EINVAL);
+   r300_tcl_bypass_triangle_release(&one);
+}
+
 static void
 test_composed_render_sample_cell(void)
 {
@@ -2986,6 +3147,7 @@ int
 main(void)
 {
    test_sampled_cell_stream_and_refusals();
+   test_multi_pass_cell();
    test_composed_render_sample_cell();
    test_composed_reloc_payloads_bind_to_merged_indices();
    test_family_emit_deviates_in_count_words_alone();

@@ -2021,6 +2021,94 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
 }
 
 int
+r300_tcl_bypass_triangle_multi_pass_binding_validate(
+   const struct r300_triangle_multi_pass *mp)
+{
+   if (mp == NULL)
+      return -EINVAL;
+   const uint32_t v = mp->second_vertex_index, c = mp->second_color_index;
+   /* Vertex index 1 is the first color target; 3 skips index 2. */
+   if (v != 0 && v != 2)
+      return -EINVAL;
+   /* Color index 0 is a vertex page; with a shared vertex page the next
+    * unused index is 2, with an own page it is 3 and 2 is that page.
+    */
+   if (v == 0 ? (c != 1 && c != 2) : (c != 1 && c != 3))
+      return -EINVAL;
+   return 0;
+}
+
+uint32_t
+r300_tcl_bypass_triangle_multi_pass_reference_count(
+   const struct r300_triangle_multi_pass *mp)
+{
+   if (r300_tcl_bypass_triangle_multi_pass_binding_validate(mp) != 0)
+      return 0;
+   return 2u + (mp->second_vertex_index == 2 ? 1u : 0u) +
+          (mp->second_color_index >= 2 ? 1u : 0u);
+}
+
+int
+r300_tcl_bypass_triangle_multi_pass_emit(
+   const struct r300_triangle_multi_pass *mp,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   memset(out, 0, sizeof(*out));
+   if (r300_tcl_bypass_triangle_multi_pass_binding_validate(mp) != 0)
+      return -EINVAL;
+
+   struct r300_tcl_bypass_triangle_ib first, second;
+   int rc = r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[0], &first);
+   if (rc != 0)
+      return rc;
+   rc = r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[1], &second);
+   if (rc != 0) {
+      r300_tcl_bypass_triangle_release(&first);
+      return rc;
+   }
+   /* The first cell's slot numbers are its merged indices, so it stays
+    * in its emitted form; the second binds to the positions the merge
+    * assigns it.
+    */
+   uint32_t slot_index[R300_TRIANGLE_RENDER_SLOT_COUNT] = { 0 };
+   slot_index[R300_TRIANGLE_SLOT_VERTEX] = mp->second_vertex_index;
+   slot_index[R300_TRIANGLE_SLOT_COLOR] = mp->second_color_index;
+   rc = r300_tcl_bypass_triangle_bind_reloc_indices(
+      &second, slot_index, R300_TRIANGLE_RENDER_SLOT_COUNT);
+   if (rc != 0) {
+      r300_tcl_bypass_triangle_release(&first);
+      r300_tcl_bypass_triangle_release(&second);
+      return rc;
+   }
+
+   const uint32_t dwords = first.ib_size_dwords + second.ib_size_dwords;
+   uint32_t *ib = calloc(dwords, sizeof(uint32_t));
+   if (ib == NULL) {
+      r300_tcl_bypass_triangle_release(&first);
+      r300_tcl_bypass_triangle_release(&second);
+      return -ENOMEM;
+   }
+   memcpy(ib, first.ib, first.ib_size_dwords * sizeof(uint32_t));
+   memcpy(ib + first.ib_size_dwords, second.ib,
+          second.ib_size_dwords * sizeof(uint32_t));
+
+   uint32_t site = 0;
+   for (uint32_t i = 0; i < first.reloc_site_count; i++)
+      out->reloc_sites[site++] = first.reloc_sites[i];
+   for (uint32_t i = 0; i < second.reloc_site_count; i++) {
+      out->reloc_sites[site] = second.reloc_sites[i];
+      out->reloc_sites[site++].ib_index += first.ib_size_dwords;
+   }
+   out->reloc_site_count = site;
+   out->ib = ib;
+   out->ib_size_dwords = dwords;
+   out->owns_ib = true;
+   r300_tcl_bypass_triangle_release(&first);
+   r300_tcl_bypass_triangle_release(&second);
+   return 0;
+}
+
+int
 r300_tcl_bypass_triangle_composed_render_sample_emit(
    const struct r300_triangle_composed_render_sample *composed,
    struct r300_tcl_bypass_triangle_ib *out)

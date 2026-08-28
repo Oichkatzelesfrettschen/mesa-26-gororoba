@@ -41,13 +41,20 @@ main(int argc, char **argv)
     * reference.
     */
    bool varying = false;
+   /* --multi-pass writes the two-pass stream: two reference render-shape
+    * cells, the second at merged indices 2 and 3, in the bound form the
+    * recorder installs, with a four-entry bo_table.
+    */
+   bool multi_pass = false;
    /* --triangles N writes the cell family member of N triangles: the
     * host expansion of an N-instance draw, differing from the single
     * triangle in the vertex-index bound and the draw count alone. */
    uint32_t triangles = 1;
    bool usage_error = argc < 2;
    for (int a = 2; a < argc && !usage_error; a++) {
-      if (strcmp(argv[a], "--varying") == 0) {
+      if (strcmp(argv[a], "--multi-pass") == 0) {
+         multi_pass = true;
+      } else if (strcmp(argv[a], "--varying") == 0) {
          varying = true;
       } else if (strcmp(argv[a], "--triangles") == 0 && a + 1 < argc) {
          char *end = NULL;
@@ -65,11 +72,78 @@ main(int argc, char **argv)
    }
    if (usage_error) {
       fprintf(stderr,
-              "usage: %s <output-directory> [--varying] [--triangles N]\n",
+              "usage: %s <output-directory> [--varying] [--triangles N] "
+              "[--multi-pass]\n",
               argv[0]);
       return 2;
    }
    const char *dir = argv[1];
+
+   if (multi_pass) {
+      struct r300_triangle_multi_pass mp;
+      memset(&mp, 0, sizeof(mp));
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
+      const float green[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+      for (unsigned i = 0; i < 4; i++)
+         memcpy(&mp.pass[1].color_bits[i], &green[i], sizeof(float));
+      mp.second_vertex_index = 2;
+      mp.second_color_index = 3;
+      struct r300_tcl_bypass_triangle_ib cell;
+      if (r300_tcl_bypass_triangle_multi_pass_emit(&mp, &cell) != 0) {
+         fprintf(stderr, "two-pass emission failed\n");
+         return 1;
+      }
+      uint8_t *ib_bytes = malloc(cell.ib_size_dwords * sizeof(uint32_t));
+      if (ib_bytes == NULL) {
+         r300_tcl_bypass_triangle_release(&cell);
+         return 1;
+      }
+      r300_triangle_ib_serialize(cell.ib, cell.ib_size_dwords, ib_bytes);
+      int rc = write_file(dir, "ib.bin", ib_bytes,
+                          cell.ib_size_dwords * sizeof(uint32_t));
+      free(ib_bytes);
+      char bo_table[768];
+      int bo_table_len = snprintf(
+         bo_table, sizeof(bo_table),
+         "{\n"
+         "  \"slots\": [\n"
+         "    {\"slot\": 0, \"role\": \"vertex\", \"domain\": \"GTT\","
+         " \"size\": 4096},\n"
+         "    {\"slot\": 1, \"role\": \"color\", \"domain\": \"GTT\","
+         " \"size\": %u},\n"
+         "    {\"slot\": 2, \"role\": \"vertex\", \"domain\": \"GTT\","
+         " \"size\": 4096},\n"
+         "    {\"slot\": 3, \"role\": \"color\", \"domain\": \"GTT\","
+         " \"size\": %u}\n"
+         "  ]\n"
+         "}\n",
+         (unsigned)R300_TRIANGLE_COLOR_BYTES,
+         (unsigned)R300_TRIANGLE_COLOR_BYTES);
+      rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
+      char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+      r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, ib_blake3_hex);
+      char manifest[512];
+      int manifest_len = snprintf(
+         manifest, sizeof(manifest),
+         "{\n"
+         "  \"schema\": \"r300-tcl-bypass-cell/1\",\n"
+         "  \"cell_kind\": \"two-pass-render-shapes-bound\",\n"
+         "  \"emitter\": \"r300_tcl_bypass_triangle\",\n"
+         "  \"ib_dwords\": %u,\n"
+         "  \"ib_blake3\": \"%s\",\n"
+         "  \"second_vertex_index\": 2,\n"
+         "  \"second_color_index\": 3\n"
+         "}\n",
+         cell.ib_size_dwords, ib_blake3_hex);
+      rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
+      r300_tcl_bypass_triangle_release(&cell);
+      if (rc == 0)
+         printf("r300_triangle_manifest: wrote the two-pass ib.bin, "
+                "bo_table.json, manifest.json to %s\n",
+                dir);
+      return rc;
+   }
 
    /* The manifest hashes the reference fragment binary separately, so it
     * resolves the same binary the reference emission bakes into the IB.

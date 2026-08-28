@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native_render_shape_args.h"
 #include "r3v_native_msaa_arms.h"
+#include "r3v_native_multi_pass_arms.h"
 #include "r3v_native_sampled_arms.h"
 
 #include "util/mesa-blake3.h"
@@ -66,6 +67,11 @@ static uint32_t cell_composed_sample_offset;
 static bool cell_msaa = false;
 static bool cell_msaa_clear = false;
 static uint32_t cell_msaa_sample_count;
+/* --multi-pass selects the two-pass cell: two reference render-shape
+ * cells, the second with its own vertex page, color target, and
+ * fragment constant, emitted in the bound form the recorder installs.
+ */
+static bool cell_multi_pass = false;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -89,6 +95,11 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
       if (bound != 0)
          r300_tcl_bypass_triangle_release(cell);
       return bound;
+   }
+   if (cell_multi_pass) {
+      struct r300_triangle_multi_pass mp;
+      r3v_native_multi_pass_reference(&mp);
+      return r300_tcl_bypass_triangle_multi_pass_emit(&mp, cell);
    }
    if (cell_msaa) {
       struct r300_triangle_msaa_resolve msaa;
@@ -260,6 +271,9 @@ main(int argc, char **argv)
       cell_composed_sample_offset =
          (uint32_t)strtoul(argv[argi + 1], NULL, 0);
       argi += 2;
+   } else if (argc >= argi + 1 && strcmp(argv[argi], "--multi-pass") == 0) {
+      cell_multi_pass = true;
+      argi += 1;
    } else if (argc >= argi + 2 && (strcmp(argv[argi], "--msaa") == 0 ||
                                    strcmp(argv[argi], "--msaa-clear") == 0)) {
       cell_msaa = true;

@@ -764,17 +764,32 @@ above is rung zero; the ladder after it runs in this order:
    queue's own merge over the result staying idempotent.  Each half opens
    with its own first-draw contract and closes with the
    destination-cache flush, so no state crosses the boundary -- the
-   coherency edge this rung's receipt holds on silicon.  The
-   concatenation is the recording's own stream, so no offline emitter
-   reproduces the digest the arming gate compares against: the
-   `triangle_multi_pass` kind reports its geometry unfrozen and an armed
-   submission refuses before any ioctl, while the plan capture and
-   replay routes, whose plan binds the exact recorded stream at capture,
-   execute it.  Open behind that: an offline emitter for the
-   concatenation, which is what would let a two-cell buffer reach an
-   attended arming, and the GPU producer route, which composes one
-   consumer stream over one carrier and judges one read-back, so a
-   second pass beside it refuses by name.
+   coherency edge this rung's receipt holds on silicon.
+   `r300_tcl_bypass_triangle_multi_pass_emit` reproduces the
+   concatenation offline: two render-shape cells, the second bound to
+   the merged indices the winsys first-add rule assigns (a shared page
+   or target keeps index 0 or 1, an own one takes the next unused
+   index, vertex before color), with every role alias and skipped index
+   refused at the binding.  The public two-draw command buffer
+   reproduces that stream dword for dword in `r3v-native-public-surface`
+   once the emitter is told the pipeline's fragment constant, so the
+   `triangle_multi_pass` kind reports its geometry frozen -- two to four
+   merged references, each a vertex page read alone or a color target
+   written alone, every deferred draw executed -- and the digest decides
+   at the gate.  `r3v_native_record_multi_pass` records the cell through
+   the install-then-append primitives the public route takes;
+   `r3v-native-multi-pass-cell-{bound,shared,alias,mutated-flush,
+   mutated-second-state}` pin the recording contract, the armed
+   admission, and the refusals of an aliased role and of digests naming
+   a stream the recorder never installs, and
+   `r300-multi-pass-cs-track-replay` walks the stream through the kernel
+   parser over a four-entry relocation list.  The attended runner
+   `r3v_native_attended_multi_pass` and its procedure
+   (`docs/hardware/r3v-native-attended-multi-pass-procedure.md`) carry
+   the one two-draw submission; silicon unrun.  Open behind that: the
+   GPU producer route, which composes one consumer stream over one
+   carrier and judges one read-back, so a second pass beside it refuses
+   by name.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated

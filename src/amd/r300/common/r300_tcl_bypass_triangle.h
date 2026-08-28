@@ -828,6 +828,58 @@ void r300_tcl_bypass_triangle_interior_oracle(
    const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_interior_verdict *verdict);
 
+/* The two-pass cell: two render-shape cells concatenated the way a
+ * command buffer that records two render passes with a draw each is
+ * installed.  The first cell's relocation payloads name its own slots,
+ * which are the first two merged indices; the second cell's payloads
+ * are bound to the merged positions the winsys rule assigns them --
+ * first-add order, one entry per handle -- so the emitted stream is the
+ * recorded stream dword for dword and its digest is the one the arming
+ * gate compares.  Each cell opens with its own first-draw contract and
+ * closes with the RB3D_DSTCACHE_CTLSTAT flush, so no state crosses the
+ * pass boundary.
+ *
+ * The binding admits a second pass that shares the first pass's vertex
+ * page (index 0) or color target (index 1) or brings its own (the next
+ * unused index, vertex before color).  A vertex page that is a color
+ * target, a color target that is a vertex page, or a second color that
+ * is the second vertex aliases two roles over one buffer object, which
+ * the render cell's ownership of its target excludes; an index that
+ * skips a position names an entry the merge never creates.
+ */
+struct r300_triangle_multi_pass {
+   struct r300_triangle_render_shape pass[2];
+   /* Merged relocation index of the second pass's vertex page: 0 (the
+    * first pass's page) or 2 (its own).
+    */
+   uint32_t second_vertex_index;
+   /* Merged relocation index of the second pass's color target: 1 (the
+    * first pass's target), or the next unused index, 2 when the vertex
+    * page is shared and 3 when it is not.
+    */
+   uint32_t second_color_index;
+};
+
+/* One color and one vertex site per pass. */
+#define R300_TRIANGLE_MULTI_PASS_SITE_COUNT 4u
+
+/* Returns 0 when the binding is one the merge produces, else -EINVAL. */
+int r300_tcl_bypass_triangle_multi_pass_binding_validate(
+   const struct r300_triangle_multi_pass *mp);
+
+/* The merged reference count the binding implies: 2, 3, or 4. */
+uint32_t r300_tcl_bypass_triangle_multi_pass_reference_count(
+   const struct r300_triangle_multi_pass *mp);
+
+/* Emits the two-pass stream in its bound form.  Returns 0 or a negative
+ * errno; the caller owns the returned IB.  The result binds no further:
+ * its second-pass payloads already name merged indices, so
+ * r300_tcl_bypass_triangle_bind_reloc_indices refuses it.
+ */
+int r300_tcl_bypass_triangle_multi_pass_emit(
+   const struct r300_triangle_multi_pass *mp,
+   struct r300_tcl_bypass_triangle_ib *out);
+
 /* The subsample positions the multisample modes place, in the 1/12
  * subpixel grid GB_TILE_CONFIG.SUBPIXEL selects, as the (x, y) pairs
  * GB_MSPOS0 and GB_MSPOS1 carry in nibble lanes.  Sample count 1 puts
