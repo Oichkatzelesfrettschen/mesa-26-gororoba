@@ -86,4 +86,19 @@ r3v_native_multi_pass_public_flat_reference(
    out->second_color_index = 3;
 }
 
+/* The public direct GA Flat two-draw form: both passes carry the
+ * varying through color 0 under the canonical direct plan
+ * (r300_flat_color0_plan_direct_first), so the GA's provoking-vertex
+ * selection, not host replication, chooses each pass's value.  The
+ * binding stays (2, 3).
+ */
+static inline void
+r3v_native_multi_pass_public_flat_color0_reference(
+   struct r300_triangle_multi_pass *out)
+{
+   r3v_native_multi_pass_public_flat_reference(out);
+   out->pass[0].flat_color0 = true;
+   out->pass[1].flat_color0 = true;
+}
+
 #endif /* R3V_NATIVE_MULTI_PASS_ARMS_H */

@@ -13,6 +13,7 @@
 
 struct r300_fragment_binary;
 struct r300_first_draw_contract;
+struct r300_flat_color0_plan;
 
 /* BO slots the cell references; the transport binds slot order to the
  * relocation-list order at submission.
@@ -87,6 +88,16 @@ struct r300_tcl_bypass_triangle_params {
     * eight dwords per vertex at a 32-byte stride.
     */
    bool varying;
+   /* When set (requires varying, a first-draw contract, and no texture
+    * sampling), the varying rides the TCL-bypass color 0 vector instead
+    * of TEX0: the PSC lands the record's second FLOAT_4 in vector 2,
+    * VAP_OUTPUT_VTX_FMT_0 declares COLOR_0_PRESENT, and the GA/RS
+    * interpolation state comes from the contract the plan was applied
+    * to (r300_flat_color0_plan_apply_contract), so the cell writes no
+    * RS block of its own.  The fragment binary stays the pass-through:
+    * RS_INST_0 delivers color 0 into the US input TEX0 filled.
+    */
+   const struct r300_flat_color0_plan *flat_color0;
    /* When set, the cell samples texture unit 0: the varying vertex path
     * carries the TEX0 coordinate, the TX block programs one enabled
     * unit -- nearest filters, clamp-to-edge wraps, W8Z8Y8X8 texels over
@@ -329,6 +340,25 @@ int r300_tcl_bypass_triangle_clip_space_family_emit(
    uint32_t source_triangle_count,
    struct r300_tcl_bypass_triangle_ib *out);
 
+/* The direct Flat cell family: the varying record shape through color
+ * 0 under a plan the contract carries.  The family form admits the
+ * canonical direct plan alone (r300_flat_color0_plan_validate) and is
+ * the route's emitter; the plan form realizes any plan, so a
+ * calibration mutation's byte deviation is observable and its refusal
+ * by the family form is a separate fact.  clip_space selects the
+ * clipper's output triangle count from a source count, as the varying
+ * clip-space family does.
+ */
+int r300_tcl_bypass_triangle_flat_color0_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_flat_color0_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+int r300_tcl_bypass_triangle_flat_color0_plan_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_flat_color0_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+
 /* The cell's render geometry.  The manifest publishes these and the contract
  * resolution derives scissor, clip, and pitch from them, so one change moves
  * every consumer together.  The allocation carries one row past the render
@@ -531,6 +561,12 @@ struct r300_triangle_render_shape {
     * it per pass.
     */
    bool varying;
+   /* When set with varying, the pass carries the varying through the
+    * color 0 vector under the canonical direct Flat plan
+    * (r300_flat_color0_plan_direct_first): hardware provoking-vertex
+    * selection rather than host replication.
+    */
+   bool flat_color0;
 };
 
 /* The composed render-then-sample cell: one stream renders the first
@@ -852,6 +888,28 @@ void r300_tcl_bypass_triangle_coverage_oracle(
    const uint32_t *interior_dwords, uint32_t interior_dword_count,
    uint32_t exterior_dword, const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_coverage_verdict *verdict);
+
+/* The expected target of a draw whose every interior pixel carries one
+ * dword: the analytic interior at interior_dword, every other dword of
+ * the footprint -- exterior, canary rows, and the bytes below the
+ * target offset -- at exterior_dword, and each pixel center exactly on
+ * an edge at exterior_dword as well.  The buffer is the shape's full
+ * footprint: target_offset plus pitch * (height + canary rows) dwords.
+ * Returns 0 or -EINVAL for an inadmissible shape or a short buffer.
+ */
+int r300_tcl_bypass_triangle_expected_target(
+   const struct r300_triangle_render_shape *shape, uint32_t interior_dword,
+   uint32_t exterior_dword, uint32_t *pixels, uint32_t size_bytes);
+
+/* Byte comparison of two targets over the footprint, skipping the
+ * pixel centers exactly on an edge, whose coverage the fill rule
+ * decides.  Returns the number of differing dwords, or a negative errno
+ * for an inadmissible shape or a short buffer; judged reports whether
+ * the comparison ran.
+ */
+int r300_tcl_bypass_triangle_target_compare(
+   const struct r300_triangle_render_shape *shape, const uint32_t *expected,
+   const uint32_t *observed, uint32_t size_bytes, bool *judged);
 
 /* The analytic interior alone, for a target whose exterior carries no
  * predicted value: a render whose load op is

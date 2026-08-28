@@ -1,44 +1,53 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Attended public Flat two-draw cell: records two render passes with a
- * draw each through the application-shaped Vulkan surface under one
- * pipeline whose vertex output and fragment input carry the Flat
- * decoration, and drives the concatenated stream to a live
- * DRM_RADEON_CS on RS482 silicon.  The vertex module writes the
- * position doubled as the varying, so the three vertices carry three
- * distinct saturated colors; each pass draws the triangle in its own
- * vertex order, so the provoking vertex -- the first, per the Vulkan
- * core provoking-vertex rule -- differs between the passes.  The CPU
- * delivery route replicates the provoking vertex's varying into the
- * other two records ahead of the clip-space carrier
- * (r3v_post_vs_lower_triangles), and the hardware keeps its Gouraud
- * TEX0 interpolation over records that agree, so a target whose whole
- * interior holds its pass's first-vertex color, with neither other
- * input color anywhere, is the receipt for end-to-end Vulkan Flat
- * through CPU provoking-value replication.  It is no receipt for
- * hardware flat shading: GA_COLOR_CONTROL stays at the first-draw
- * contract's Gouraud value.  Before the submission the runner digests
- * the recorded indirect buffer and refuses unless it equals the
- * offline emitter's, so the authorization names the bytes the command
- * processor reads.  Runs only under the authorization and procedure in
- * docs/hardware/r3v-native-attended-public-flat-two-draw-procedure.md;
+ * Attended public direct GA Flat two-draw cell: records two render
+ * passes with a draw each through the application-shaped Vulkan
+ * surface under one pipeline whose vertex output and fragment input
+ * carry the Flat decoration, and drives the concatenated stream to a
+ * live DRM_RADEON_CS on RS482 silicon.  The pipeline selects the direct
+ * hardware route (r3v_interpolation_lowering.h): the varying rides the
+ * TCL-bypass color 0 vector, each draw's first-draw contract programs
+ * GA_COLOR_CONTROL with RGB0 and ALPHA0 FLAT and PROVOKING_VERTEX_FIRST
+ * and routes color 0 through RS_IP_0 / RS_INST_0 into US input 0
+ * (r300_flat_color0_plan.h), and the CPU route keeps the three
+ * vertices' distinct values in the carrier because every triangle's
+ * clipping class is ACCEPT.  The vertex module writes distinct red,
+ * green, and alpha per vertex, so the hardware's provoking selection is
+ * judged on RGB and on alpha alone; each pass draws the triangle in its
+ * own vertex order, so the provoking vertex differs between the passes.
+ * The expected targets come from the CPU replication oracle
+ * (r3v_post_vs_lower_triangles over the same records, then the analytic
+ * coverage), retained before the submission; the receipt is byte
+ * equality of each target with its expected image, since the direct and
+ * the replication command streams necessarily differ.  Before the
+ * submission the runner digests the recorded indirect buffer and
+ * refuses unless it equals the offline emitter's, and refuses unless
+ * the plan's registers hold their words ahead of both draws.  Runs only
+ * under the authorization and procedure in
+ * docs/hardware/r3v-native-attended-public-flat-color0-two-draw-procedure.md;
  * every stage prints and flushes before it runs.
  */
 
 #include "r3v_native.h"
+#include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_watchdog_guard.h"
 
+#include "amd/r300/common/r300_first_draw_state.h"
+#include "amd/r300/common/r300_flat_color0_plan.h"
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "r3v_native_multi_pass_arms.h"
 
 #include "util/mesa-blake3.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -74,17 +83,63 @@ gate_open(const char *name)
    return value != NULL && strcmp(value, "1") == 0;
 }
 
-/* The saturated color the Flat vertex module derives from a position:
- * fma(position, 2, 0), then the color buffer's UNORM8 clamp, which the
- * oracle's packer applies through unorm8_round.
+/* The color the RGBA Flat vertex module derives from a position:
+ * fma(position, (2, 2, 0, 0), 0) for red and green, and the dot
+ * dot(position, (0.5333333, 0, 0, 0.55)), w = 1 carrying the alpha
+ * offset, placed in the alpha lane; then the color buffer's UNORM8
+ * conversion, which the oracle's packer applies through unorm8_round.
+ * Each predicted alpha sits a quarter step from the nearest UNORM8
+ * boundary, so the job's dot rounding cannot move the byte.
  */
+static void
+flat_tint(const float *position, float tint[4])
+{
+   tint[0] = position[0] * 2.0f;
+   tint[1] = position[1] * 2.0f;
+   tint[2] = 0.0f;
+   tint[3] = position[0] * 0.53333333f + position[3] * 0.55f;
+}
+
 static uint32_t
 flat_tint_dword(const struct r300_triangle_render_shape *shape,
                 const float *position)
 {
-   const float tint[4] = { position[0] * 2.0f, position[1] * 2.0f,
-                           position[2] * 2.0f, position[3] * 2.0f };
+   float tint[4];
+   flat_tint(position, tint);
    return r300_tcl_bypass_triangle_pack_unorm8_dword(shape->lanes, tint);
+}
+
+/* The CPU replication oracle over one pass's three records in draw
+ * order: the qualified post-vertex lowering replicates the provoking
+ * vertex's tint across the triangle, and the packed result is the one
+ * dword the pass's whole interior is expected to hold.  Refuses when
+ * the lowering leaves the three records apart.
+ */
+static bool
+replication_oracle_dword(const struct r300_triangle_render_shape *shape,
+                         const float *ndc_triangle, const uint32_t order[3],
+                         uint32_t *out)
+{
+   uint32_t records[3 * 8];
+   for (unsigned v = 0; v < 3; v++) {
+      float tint[4];
+      flat_tint(&ndc_triangle[order[v] * 4], tint);
+      memcpy(&records[v * 8], &ndc_triangle[order[v] * 4], 4 * sizeof(float));
+      memcpy(&records[v * 8 + 4], tint, sizeof(tint));
+   }
+   const struct r3v_post_vs_lowering lowering = {
+      .flat_mask = 1u,
+      .provoking_vertex = R3V_POST_VS_PROVOKING_VERTEX_FIRST,
+   };
+   if (r3v_post_vs_lower_triangles(&lowering, records, 1u, 8u) != 0)
+      return false;
+   if (memcmp(&records[4], &records[12], 4 * sizeof(uint32_t)) != 0 ||
+       memcmp(&records[4], &records[20], 4 * sizeof(uint32_t)) != 0)
+      return false;
+   float tint[4];
+   memcpy(tint, &records[4], sizeof(tint));
+   *out = r300_tcl_bypass_triangle_pack_unorm8_dword(shape->lanes, tint);
+   return true;
 }
 
 static void
@@ -158,34 +213,61 @@ main(int argc, char **argv)
     * one-shot token is spent on a stream the authorization does not
     * name.
     */
+   if (gate_open("R3V_NATIVE_FLAT_REPLICATION_PINNED")) {
+      fprintf(stderr, "R3V_NATIVE_FLAT_REPLICATION_PINNED=1 pins the "
+              "replication route; the direct GA cell needs it unset\n");
+      return 2;
+   }
    if (!record_only &&
        (gate_open("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") ||
         gate_open("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") ||
         gate_open("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL"))) {
       fprintf(stderr,
-              "the Flat two-draw cell runs on the CPU route; every "
+              "the direct GA Flat two-draw cell runs on the CPU route; "
+              "every "
               "R3V_NATIVE_R2VB_*_EXPERIMENTAL gate stays unset\n");
       return 2;
    }
 
    /* The stream the public route records: both passes the reference
-    * shape carrying the TEX0 varying, bound at merged indices 2 and 3.
-    * The vertex order, and with it the provoking value, rides the
-    * vertex stream and leaves the stream bytes unchanged.
+    * shape carrying the varying through color 0 under the canonical
+    * direct plan, bound at merged indices 2 and 3.  The vertex order,
+    * and with it the provoking value, rides the vertex stream and
+    * leaves the stream bytes unchanged.
     */
    struct r300_triangle_multi_pass mp;
-   r3v_native_multi_pass_public_flat_reference(&mp);
+   r3v_native_multi_pass_public_flat_color0_reference(&mp);
+   struct r300_flat_color0_plan plan;
+   r300_flat_color0_plan_direct_first(&plan);
+   struct r300_first_draw_contract base_contract;
+   if (r300_tcl_bypass_triangle_reference_contract(&base_contract) != 0) {
+      fprintf(stderr, "the reference contract refused to resolve\n");
+      return 1;
+   }
+   uint32_t ga_base = 0;
+   bool ga_found = false;
+   for (uint32_t i = 0; i < base_contract.count; i++) {
+      if (base_contract.entries[i].reg == R300_GA_COLOR_CONTROL) {
+         ga_base = base_contract.entries[i].value;
+         ga_found = true;
+      }
+   }
+   if (!ga_found) {
+      fprintf(stderr, "the reference contract carries no GA_COLOR_CONTROL "
+              "clause\n");
+      return 1;
+   }
 
    const uint32_t color_bytes =
       r300_tcl_bypass_triangle_render_shape_color_bytes(&mp.pass[0]);
 
    /* The reference triangle in NDC, A, B, C, and each pass's draw
     * order: the first pass draws B, C, A and the second C, A, B, so
-    * the first pass's provoking vertex is B (saturated red) and the
-    * second's C (saturated green), while A (black after the clamp) is a
+    * the first pass's provoking vertex is B (red, alpha 0.95) and the
+    * second's C (green, alpha 0.55), while A (black, alpha 0.15) is a
     * non-provoking input of both.  Every pass sees three distinct
-    * inputs, and each pass's provoking color is the other pass's
-    * non-provoking one.
+    * inputs in RGB and in alpha, and each pass's provoking color is the
+    * other pass's non-provoking one.
     */
    static const float ndc_triangle[R300_TRIANGLE_VERTEX_DWORDS] = {
       -0.75f, -0.75f, 0.0f, 1.0f,
@@ -196,8 +278,25 @@ main(int argc, char **argv)
    uint32_t vertex_dword[3];
    for (unsigned v = 0; v < 3; v++)
       vertex_dword[v] = flat_tint_dword(&mp.pass[0], &ndc_triangle[v * 4]);
-   const uint32_t first_dword = vertex_dword[pass_order[0][0]];
-   const uint32_t second_dword = vertex_dword[pass_order[1][0]];
+   uint32_t first_dword = 0, second_dword = 0;
+   if (!replication_oracle_dword(&mp.pass[0], ndc_triangle, pass_order[0],
+                                 &first_dword) ||
+       !replication_oracle_dword(&mp.pass[1], ndc_triangle, pass_order[1],
+                                 &second_dword) ||
+       first_dword != vertex_dword[pass_order[0][0]] ||
+       second_dword != vertex_dword[pass_order[1][0]]) {
+      fprintf(stderr, "the CPU replication oracle and the first-vertex "
+              "model disagree\n");
+      return 1;
+   }
+   /* The alpha lane alone must separate every pair, so an alpha the
+    * hardware interpolates while RGB stays flat is observable. */
+   for (unsigned a = 0; a < 3; a++)
+      for (unsigned b = a + 1; b < 3; b++)
+         if ((vertex_dword[a] >> 24) == (vertex_dword[b] >> 24)) {
+            fprintf(stderr, "vertex alphas are not pairwise distinct\n");
+            return 1;
+         }
    if (first_dword == second_dword || first_dword == vertex_dword[0] ||
        second_dword == vertex_dword[0] ||
        first_dword == R300_TRIANGLE_COLOR_SENTINEL ||
@@ -219,33 +318,68 @@ main(int argc, char **argv)
    const uint32_t ib_dwords = armed.ib_size_dwords;
    r300_tcl_bypass_triangle_release(&armed);
 
-   printf("[shape] public Flat two-draw, two varying passes %ux%u pitch "
-          "%u, binding (%u, %u), %u IB dwords, cell blake3 %.8s\n",
+   printf("[shape] public direct GA Flat two-draw, two color-0 passes "
+          "%ux%u pitch %u, binding (%u, %u), %u IB dwords, cell blake3 "
+          "%.8s\n",
           mp.pass[0].width, mp.pass[0].height, mp.pass[0].pitch_pixels,
           mp.second_vertex_index, mp.second_color_index, ib_dwords, digest);
    printf("[predict] vertex colors A=0x%08x B=0x%08x C=0x%08x; first pass "
           "draws B, C, A and its interior reads 0x%08x; second pass draws "
           "C, A, B and its interior reads 0x%08x; exterior 0x%08x and "
-          "canary clean on both\n",
+          "canary clean on both; GA_COLOR_CONTROL 0x%08x, RS_COUNT 0x%08x, "
+          "RS_IP_0 0x%08x, RS_INST_0 0x%08x ahead of each draw\n",
           vertex_dword[0], vertex_dword[1], vertex_dword[2], first_dword,
-          second_dword, R300_TRIANGLE_COLOR_SENTINEL);
+          second_dword, R300_TRIANGLE_COLOR_SENTINEL,
+          r300_flat_color0_plan_ga_color_control(&plan, ga_base),
+          r300_flat_color0_plan_rs_count(&plan),
+          r300_flat_color0_plan_rs_ip_0(&plan),
+          r300_flat_color0_plan_rs_inst_0(&plan));
    printf("[predict] falsifier: a recorded stream whose digest differs "
-          "from the emitter's refuses before any ioctl; any interior "
-          "pixel holding a non-provoking input color names another "
-          "vertex selected or an interpolated varying; a target exact "
-          "under the other pass's provoking color names state crossing "
-          "the pass boundary; a second target holding the sentinel names "
-          "a second cell the command processor never reached\n");
+          "from the emitter's, or whose plan registers do not hold their "
+          "words ahead of both draws, refuses before any ioctl; any "
+          "interior pixel holding a non-provoking input color names "
+          "another vertex selected; an interior pixel whose RGB is the "
+          "provoking one under another alpha names alpha interpolated "
+          "while RGB stays flat; any other interior dword names an "
+          "interpolated varying or a color-lane conversion the oracle "
+          "does not model; a target exact under the other pass's "
+          "provoking color names state crossing the pass boundary; a "
+          "second target holding the sentinel names a second cell the "
+          "command processor never reached\n");
    fflush(stdout);
 
-   /* This runner retains the replication receipt: the pin holds every
-    * Flat interface on host replication, so the recorded stream stays
-    * the TEX0 two-pass emitter's after the direct GA route became the
-    * selector's default (r3v_interpolation_lowering.h). */
-   setenv("R3V_NATIVE_FLAT_REPLICATION_PINNED", "1", 1);
-   printf("[route] R3V_NATIVE_FLAT_REPLICATION_PINNED=1: host "
-          "provoking-value replication\n");
-   fflush(stdout);
+   /* The expected targets, generated through the replication oracle's
+    * dwords over the analytic coverage and retained ahead of the
+    * submission; the receipt is byte equality with these.
+    */
+   uint32_t *expected[2] = { calloc(1, color_bytes), calloc(1, color_bytes) };
+   if (expected[0] == NULL || expected[1] == NULL ||
+       r300_tcl_bypass_triangle_expected_target(
+          &mp.pass[0], first_dword, R300_TRIANGLE_COLOR_SENTINEL,
+          expected[0], color_bytes) != 0 ||
+       r300_tcl_bypass_triangle_expected_target(
+          &mp.pass[1], second_dword, R300_TRIANGLE_COLOR_SENTINEL,
+          expected[1], color_bytes) != 0) {
+      fprintf(stderr, "the expected targets refused to generate\n");
+      return 1;
+   }
+   if (!record_only &&
+       (r3v_native_evidence_write_file(evidence_dir, "first_expected.bin",
+                                       expected[0], color_bytes) != 0 ||
+        r3v_native_evidence_write_file(evidence_dir, "second_expected.bin",
+                                       expected[1], color_bytes) != 0)) {
+      fprintf(stderr, "expected target retention failed\n");
+      return 1;
+   }
+   {
+      char expected_digest[2][BLAKE3_OUT_LEN * 2 + 1];
+      for (unsigned p = 0; p < 2; p++)
+         r300_triangle_ib_digest_hex(expected[p], color_bytes / 4u,
+                                     expected_digest[p]);
+      printf("[predict] expected targets blake3 first %.8s second %.8s\n",
+             expected_digest[0], expected_digest[1]);
+      fflush(stdout);
+   }
 
    const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
    if (declared != NULL && declared[0] != '\0' &&
@@ -558,9 +692,8 @@ main(int argc, char **argv)
       },
       NULL, &layout));
 
-   /* One pipeline over the Flat module pair for both passes: the
-    * saturated Flat vertex module writes the doubled position as a Flat
-    * location-0 output, and the Flat fragment module writes its Flat
+   /* One pipeline over the Flat module pair for both passes: the RGBA
+    * Flat vertex module writes its tint as a Flat location-0 output, and the Flat fragment module writes its Flat
     * location-0 input as the color, so the pipeline's shader-interface
     * record links one Flat varying.  Two pipelines over the same pair
     * would carry the same record; the passes differ in vertex order
@@ -571,8 +704,8 @@ main(int argc, char **argv)
       device,
       &(VkShaderModuleCreateInfo){
          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-         .codeSize = sizeof(r3v_reference_vertex_flat_saturated_spirv),
-         .pCode = r3v_reference_vertex_flat_saturated_spirv,
+         .codeSize = sizeof(r3v_reference_vertex_flat_rgba_spirv),
+         .pCode = r3v_reference_vertex_flat_rgba_spirv,
       },
       NULL, &vs));
    VkPipeline pipeline[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
@@ -699,12 +832,16 @@ main(int argc, char **argv)
       _mesa_blake3_format(hex, hash);
       printf("[interface] blake3 %.8s varying_mask=0x%x flat_mask=0x%x "
              "noperspective_mask=0x%x post_vs.flat_mask=0x%x "
-             "provoking=%u\n",
+             "provoking=%u route=%s\n",
              hex, native_pipeline->shader_interface.varying_mask,
              native_pipeline->shader_interface.flat_mask,
              native_pipeline->shader_interface.noperspective_mask,
              native_pipeline->post_vs.flat_mask,
-             native_pipeline->post_vs.provoking_vertex);
+             native_pipeline->post_vs.provoking_vertex,
+             native_pipeline->interpolation_route ==
+                   R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0
+                ? "direct-ga-color0"
+                : "replicate");
       fflush(stdout);
       if (native_pipeline->shader_interface.varying_mask != 1u ||
           native_pipeline->shader_interface.flat_mask != 1u ||
@@ -712,9 +849,10 @@ main(int argc, char **argv)
           native_pipeline->post_vs.provoking_vertex !=
              R3V_POST_VS_PROVOKING_VERTEX_FIRST ||
           native_pipeline->interpolation_route !=
-             R3V_INTERPOLATION_ROUTE_REPLICATE) {
+             R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0) {
          fprintf(stderr, "the pipeline's interface is not one Flat varying "
-                 "with the first provoking vertex\n");
+                 "with the first provoking vertex on the direct GA "
+                 "route\n");
          return 1;
       }
    }
@@ -794,10 +932,12 @@ main(int argc, char **argv)
    if (native->deferred_draw_count != 2 ||
        native->deferred_draws[0].post_vs.flat_mask != 1u ||
        native->deferred_draws[1].post_vs.flat_mask != 1u ||
+       !native->deferred_draws[0].direct_flat ||
+       !native->deferred_draws[1].direct_flat ||
        native->deferred_draws[0].first_vertex != 0 ||
        native->deferred_draws[1].first_vertex != 3) {
-      fprintf(stderr, "the two deferred draws do not both carry the Flat "
-              "lowering over their own vertex order\n");
+      fprintf(stderr, "the two deferred draws do not both carry the direct "
+              "Flat route over their own vertex order\n");
       if (!record_only)
          r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
       return 2;
@@ -830,8 +970,26 @@ main(int argc, char **argv)
       return 2;
    }
 
+   /* The plan's registers ahead of both draws, read from the recorded
+    * bytes themselves: each draw's own contract establishes them.
+    */
+   const int state_draws = r300_flat_color0_plan_stream_check(
+      &plan, ga_base, native->ib, native->ib_size_dwords);
+   printf("[state] direct plan registers established ahead of %d draw(s)\n",
+          state_draws);
+   fflush(stdout);
+   if (state_draws != 2) {
+      fprintf(stderr, "the recorded stream does not establish the direct "
+              "plan ahead of both draws; refusing ahead of the ioctl\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 2;
+   }
+
    if (record_only) {
       printf("record: ACCEPTED\n");
+      free(expected[0]);
+      free(expected[1]);
       fflush(stdout);
       vkDestroyCommandPool(device, pool, NULL);
       for (unsigned i = 0; i < 2; i++) {
@@ -924,6 +1082,74 @@ main(int argc, char **argv)
       }
    }
 
+   /* The witness that the hardware selected: the carriers the device
+    * fetched still hold three distinct records per pass with record 0
+    * the provoking tint, so host replication did not run.  Direct
+    * selection and replication produce byte-identical targets by
+    * construction; this read is the one observation that separates
+    * them.  The carrier is host memory the device only reads, so the
+    * bytes are the host's own.
+    */
+   bool carrier_witness = true;
+   {
+      VK_FROM_HANDLE(r3v_native_device, native_device, device);
+      for (unsigned p = 0; p < 2; p++) {
+         struct r3v_native_memory *carrier = native->owned_carriers[p];
+         void *carrier_map = NULL;
+         if (carrier == NULL ||
+             radeon_drm_vk_bo_map(&native_device->drm, &carrier->bo,
+                                  &carrier_map) != 0) {
+            printf("[witness] pass %u carrier unreadable\n", p);
+            carrier_witness = false;
+            continue;
+         }
+         const float *records = carrier_map;
+         bool distinct = true;
+         for (unsigned a = 0; a < 3; a++)
+            for (unsigned b = a + 1; b < 3; b++)
+               distinct &= memcmp(&records[a * 8 + 4], &records[b * 8 + 4],
+                                  4 * sizeof(float)) != 0;
+         float provoking_tint[4];
+         flat_tint(&ndc_triangle[pass_order[p][0] * 4], provoking_tint);
+         const bool first_is_provoking =
+            memcmp(&records[4], provoking_tint, sizeof(provoking_tint)) == 0;
+         printf("[witness] pass %u carrier records distinct=%d "
+                "record0_is_provoking=%d\n",
+                p, distinct, first_is_provoking);
+         carrier_witness &= distinct && first_is_provoking;
+         radeon_drm_vk_bo_unmap(&native_device->drm, &carrier->bo,
+                                carrier_map);
+      }
+      fflush(stdout);
+   }
+
+   /* Byte equality with the retained expected targets, the receipt's
+    * oracle; and the alpha discriminator: interior pixels whose RGB is
+    * the provoking one under another alpha.
+    */
+   int differing[2] = { 0, 0 };
+   uint32_t alpha_deviates[2] = { 0, 0 };
+   for (unsigned p = 0; p < 2; p++) {
+      bool judged = false;
+      differing[p] = r300_tcl_bypass_triangle_target_compare(
+         &mp.pass[p], expected[p], maps[p], color_bytes, &judged);
+      const uint32_t provoking = vertex_dword[pass_order[p][0]];
+      const uint32_t *rows = maps[p];
+      for (uint32_t y = 0; y < mp.pass[p].height; y++)
+         for (uint32_t x = 0; x < mp.pass[p].width; x++) {
+            const uint32_t px = rows[y * mp.pass[p].pitch_pixels + x];
+            if (expected[p][y * mp.pass[p].pitch_pixels + x] == provoking &&
+                px != provoking &&
+                (px & 0x00ffffffu) == (provoking & 0x00ffffffu))
+               alpha_deviates[p]++;
+         }
+      printf("[oracle] %s-vs-expected judged=%d differing=%d "
+             "alpha_deviates=%u\n",
+             p == 0 ? "first" : "second", judged, differing[p],
+             alpha_deviates[p]);
+   }
+   fflush(stdout);
+
    const uint32_t *second_pixels = second_map;
    const uint32_t cx = mp.pass[1].width / 2;
    const uint32_t cy = (mp.pass[1].height * 3) / 8;
@@ -937,32 +1163,49 @@ main(int argc, char **argv)
       own[1].judged && own[1].analytic_pixels != 0 &&
       own[1].interior_pixels == 0 &&
       own[1].exterior_pixels == mp.pass[1].width * mp.pass[1].height;
-   const bool crossed = falsifier[0][0].coverage_exact ||
-                        falsifier[0][1].coverage_exact ||
-                        falsifier[1][0].coverage_exact ||
-                        falsifier[1][1].coverage_exact;
+   bool falsifiers_judged = true;
+   bool crossed = false;
+   for (unsigned p = 0; p < 2; p++)
+      for (unsigned f = 0; f < 2; f++) {
+         falsifiers_judged &= falsifier[p][f].judged;
+         crossed |= falsifier[p][f].judged && falsifier[p][f].coverage_exact;
+      }
    const bool other_vertex_present =
       falsifier_interior[0] != 0 || falsifier_interior[1] != 0;
    const bool own_exact = own[0].judged && own[0].coverage_exact &&
                           own[0].canary_pass && own[1].judged &&
                           own[1].coverage_exact && own[1].canary_pass;
+   const bool bytes_equal = differing[0] == 0 && differing[1] == 0;
+   const bool alpha_interpolated =
+      alpha_deviates[0] != 0 || alpha_deviates[1] != 0;
    printf("[classify] %s\n",
-          crossed ? "a target is exact under a non-provoking input; the "
-                    "route selected another vertex or state crossed the "
+          !carrier_witness
+             ? "the carriers do not hold three distinct records with the "
+               "provoking first; the hardware route was not exercised"
+          : crossed ? "a target is exact under a non-provoking input; the "
+                    "GA selected another vertex or state crossed the "
                     "pass boundary"
           : other_vertex_present
              ? "a non-provoking input color appears inside a target; the "
-               "varying interpolated or another vertex was selected"
+               "GA selected another vertex or the varying interpolated"
+          : alpha_interpolated
+             ? "the provoking RGB appears under another alpha; alpha "
+               "interpolated while RGB stayed flat"
           : second_unreached
              ? "the second target holds the sentinel; the command "
                "processor never reached the second cell"
-          : own_exact
-             ? "each target carries its own pass's first-vertex color "
-               "over the analytic triangle and no other input color"
+          : own_exact && bytes_equal
+             ? "each target is byte-equal to the replication oracle's "
+               "expected image: its own pass's first-vertex RGBA over the "
+               "analytic triangle and no other value"
              : "prediction deviated; the deviation is the finding");
    fflush(stdout);
 
-   const bool pass_verdict = own_exact && !crossed && !other_vertex_present;
+   const bool pass_verdict = own_exact && bytes_equal && falsifiers_judged &&
+                             carrier_witness && !crossed &&
+                             !other_vertex_present && !alpha_interpolated;
+   free(expected[0]);
+   free(expected[1]);
 
    stage("teardown");
    vkUnmapMemory(device, target[0].memory);
@@ -985,12 +1228,11 @@ main(int argc, char **argv)
 
    printf("[verdict] %s\n",
           pass_verdict
-             ? "end-to-end Vulkan Flat delivered through CPU "
-               "provoking-value replication: each target holds its own "
-               "pass's first-vertex color alone; hardware flat shading "
-               "is not claimed"
-          : crossed || other_vertex_present
-             ? "the route selected, interpolated, or crossed a "
+             ? "end-to-end Vulkan Flat (RGBA) delivered through RS482 GA "
+               "provoking-vertex selection over color 0: each target is "
+               "byte-equal to the CPU replication oracle's expected image"
+          : crossed || other_vertex_present || alpha_interpolated
+             ? "the GA selected, interpolated, or crossed a "
                "non-provoking value; the route is classified, not "
                "adjusted"
           : second_unreached

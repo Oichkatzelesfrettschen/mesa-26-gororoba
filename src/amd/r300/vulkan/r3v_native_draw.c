@@ -549,6 +549,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
       cmd_buffer->pass_target_layer_offset, pipeline->varying,
+      pipeline->interpolation_route ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled);
    if (result != VK_SUCCESS) {
@@ -585,6 +587,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .post_vs = pipeline->post_vs,
+      .direct_flat = pipeline->interpolation_route ==
+                     R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_offset = cmd_buffer->pass_target->memory_offset +
                             cmd_buffer->pass_target_layer_offset,

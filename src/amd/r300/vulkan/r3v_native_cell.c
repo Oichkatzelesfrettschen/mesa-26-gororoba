@@ -16,6 +16,7 @@
 #include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
+#include "amd/r300/common/r300_flat_color0_plan.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
@@ -328,10 +329,19 @@ fill_color(struct r3v_native_device *device,
 static int
 emit_triangle_cell_for_position_space(
    const struct r300_triangle_render_shape *shape, bool varying,
-   uint32_t source_triangle_count,
+   bool flat_color0, uint32_t source_triangle_count,
    const struct r3v_native_sampled_texture *sampled, bool clip_space,
    struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (sampled == NULL && varying && flat_color0) {
+      /* The direct GA Flat route: the canonical plan alone, carried
+       * by each draw's own contract prefix. */
+      struct r300_flat_color0_plan plan;
+      r300_flat_color0_plan_direct_first(&plan);
+      return r300_tcl_bypass_triangle_flat_color0_family_emit(
+         shape->width, shape->height, clip_space, source_triangle_count,
+         &plan, cell);
+   }
    if (sampled != NULL) {
       if (clip_space) {
          return r300_tcl_bypass_triangle_clip_space_sampled_emit(
@@ -373,7 +383,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *vertex_memory,
                                struct r3v_native_memory *color_memory,
                                const struct r300_triangle_render_shape *shape,
-                               bool clip_space, bool varying,
+                               bool clip_space, bool varying, bool flat_color0,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
                                   *sampled)
@@ -429,7 +439,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    int emit_result = 0;
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
-         shape, varying, triangle_count, sampled, false, &window_cell);
+         shape, varying, flat_color0, triangle_count, sampled, false,
+         &window_cell);
       if (emit_result != 0)
          return vk_error(device,
                          r3v_native_cell_vk_result_from_errno(emit_result));
@@ -437,7 +448,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
 
    struct r300_tcl_bypass_triangle_ib cell = {0};
    emit_result = emit_triangle_cell_for_position_space(
-      shape, varying, triangle_count, sampled, clip_space, &cell);
+      shape, varying, flat_color0, triangle_count, sampled, clip_space,
+      &cell);
    if (emit_result != 0)
       r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
@@ -550,8 +562,8 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    struct r300_triangle_render_shape shape;
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
-                                         color_memory, &shape, false, false, 1,
-                                         NULL);
+                                         color_memory, &shape, false, false,
+                                         false, 1, NULL);
 }
 
 VkResult
@@ -560,7 +572,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
-   bool varying, uint32_t triangle_count, const uint32_t color_bits[4],
+   bool varying, bool flat_color0, uint32_t triangle_count,
+   const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -611,7 +624,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, true, varying,
-                                         triangle_count, sampled);
+                                         flat_color0, triangle_count, sampled);
 }
 
 /* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume
@@ -1263,6 +1276,9 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        * with a record outside the bound, an indexed draw whose
        * dereference happens on the host, an instanced draw, and every
        * other admitted job execute on the CPU interpreter route. */
+      /* flat_mask == 0 also keeps every Flat draw, the direct GA route
+       * included, on the CPU route below, where the clipping-class
+       * check runs (r3v_interpolation_lowering.h). */
       const bool r2vb_route =
          route_decision.route == R3V_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && draw->post_vs.flat_mask == 0 &&
@@ -1322,8 +1338,29 @@ execute_one_deferred_draw(struct r3v_native_device *device,
           * values and the rasterizer's interpolation of equal
           * endpoints is the flat value. */
          if (gathered == 0) {
-            gathered = r3v_post_vs_lower_triangles(
-               &draw->post_vs, staged, source_triangle_count, record_dwords);
+            /* The direct GA route keeps each triangle's distinct
+             * values -- the GA selects the provoking vertex's color 0
+             * per primitive -- only while every source triangle's
+             * clipping class is ACCEPT; a fan the clipper emits from a
+             * partially clipped triangle carries vertices the source
+             * never had, so the list is replicated ahead of the
+             * clipper, and the GA's selection over equal endpoints is
+             * the identity. */
+            bool direct_flat =
+               draw->direct_flat &&
+               route_decision.position_space == R300_CARRIER_POSITION_CLIP;
+            for (uint32_t t = 0; direct_flat && t < source_triangle_count;
+                 t++) {
+               direct_flat =
+                  r3v_interpolation_clip_class_of_triangle(
+                     &staged[(size_t)t * 3u * record_dwords],
+                     record_dwords) == R3V_INTERPOLATION_CLIP_ACCEPT;
+            }
+            if (!direct_flat) {
+               gathered = r3v_post_vs_lower_triangles(
+                  &draw->post_vs, staged, source_triangle_count,
+                  record_dwords);
+            }
          }
       }
       if (result == VK_SUCCESS && gathered != 0) {

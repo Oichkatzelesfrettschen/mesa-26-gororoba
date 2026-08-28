@@ -2,6 +2,7 @@
 
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_first_draw_state.h"
+#include "r300_flat_color0_plan.h"
 #include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
 #include "r300_r2vb_producer_fs_block.h"
@@ -37,6 +38,11 @@
  * reads.
  */
 #define R300_TRIANGLE_VARYING_DST_VEC 6u
+
+/* The color 0 vector of the same layout: the carrier the GA's
+ * provoking-vertex selection and RS_IP_0's color pointer 0 read.
+ */
+#define R300_TRIANGLE_COLOR0_DST_VEC 2u
 
 /* Holds the bare-cell state plus the two-dword-per-clause first-draw
  * contract prefix; the prefix emission checks its room against this bound
@@ -172,6 +178,14 @@ emit_triangle_stream_into(
         (params->texture_lanes != R300_TRIANGLE_LANES_B8G8R8A8 &&
          params->texture_lanes != R300_TRIANGLE_LANES_R8G8B8A8)))
       return -EINVAL;
+   /* The color-0 carrier is a varying record shape whose interpolation
+    * state the contract establishes; the sampled cell's TX coordinate
+    * rides TEX0 and keeps its own RS block.
+    */
+   const bool flat_color0 = params->flat_color0 != NULL;
+   if (flat_color0 && (!params->varying || params->sampled ||
+                       params->first_draw_contract == NULL))
+      return -EINVAL;
    const uint32_t record_dwords = params->varying ? 8u : 4u;
    const uint32_t record_bytes = record_dwords * 4u;
    const uint32_t first_segment_triangle_count =
@@ -245,7 +259,8 @@ emit_triangle_stream_into(
                    ? (R300_DATA_TYPE_FLOAT_4 |
                       (0 << R300_DST_VEC_LOC_SHIFT)) |
                         ((R300_DATA_TYPE_FLOAT_4 |
-                          (R300_TRIANGLE_VARYING_DST_VEC
+                          ((flat_color0 ? R300_TRIANGLE_COLOR0_DST_VEC
+                                        : R300_TRIANGLE_VARYING_DST_VEC)
                            << R300_DST_VEC_LOC_SHIFT) |
                           R300_LAST_VEC)
                          << 16)
@@ -260,12 +275,15 @@ emit_triangle_stream_into(
    r300_pm4_packet0(&b, R300_VAP_PROG_STREAM_CNTL_EXT_0, psc_ext_identity,
                     ARRAY_SIZE(psc_ext_identity));
    r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_0,
-                R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
+                R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT |
+                   (flat_color0 ? R300_VAP_OUTPUT_VTX_FMT_0__COLOR_0_PRESENT
+                                : 0));
    r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_1,
-                params->varying ? R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS
-                                : 0);
+                params->varying && !flat_color0
+                   ? R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS
+                   : 0);
    r300_pm4_reg(&b, R300_VAP_VTX_SIZE, record_dwords);
-   if (params->varying) {
+   if (params->varying && !flat_color0) {
       /* The assembler admits position plus texture coordinate 0, and
        * the RS routes that varying: RS_COUNT declares four interpolated
        * components with no rasterized colors, RS_IP_0 reads texture
@@ -677,8 +695,11 @@ r300_tcl_bypass_triangle_reference_contract(
 static int
 family_emit_triangle_stream(
    uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
+   const struct r300_flat_color0_plan *flat_color0,
    struct r300_tcl_bypass_triangle_ib *out)
 {
+   if (flat_color0 != NULL)
+      varying = true;
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
        triangle_count > R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES)
@@ -710,6 +731,8 @@ family_emit_triangle_stream(
       return rc;
    }
    rc = r300_tcl_bypass_triangle_set_target_format(&contract);
+   if (rc == 0 && flat_color0 != NULL)
+      rc = r300_flat_color0_plan_apply_contract(flat_color0, &contract);
    if (rc != 0) {
       r300_fragment_binary_finish(&fs);
       return rc;
@@ -722,6 +745,7 @@ family_emit_triangle_stream(
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
       .varying = varying,
+      .flat_color0 = flat_color0,
       .triangle_count = triangle_count,
    };
    rc = emit_triangle_stream(&params, triangle_count, out);
@@ -737,7 +761,7 @@ family_emit(uint32_t width, uint32_t height, bool varying,
        triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
       return -EINVAL;
    return family_emit_triangle_stream(width, height, varying, triangle_count,
-                                      out);
+                                      NULL, out);
 }
 
 static int
@@ -767,7 +791,44 @@ r300_tcl_bypass_triangle_clip_space_family_emit(
    if (rc != 0)
       return rc;
    return family_emit_triangle_stream(width, height, varying,
-                                      output_triangle_count, out);
+                                      output_triangle_count, NULL, out);
+}
+
+int
+r300_tcl_bypass_triangle_flat_color0_plan_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_flat_color0_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (plan == NULL || out == NULL)
+      return -EINVAL;
+   uint32_t output_triangle_count = triangle_count;
+   if (clip_space) {
+      const int rc =
+         clip_output_triangle_count(triangle_count, &output_triangle_count);
+      if (rc != 0)
+         return rc;
+   } else if (triangle_count < 1u ||
+              triangle_count > R300_TRIANGLE_MAX_TRIANGLES) {
+      return -EINVAL;
+   }
+   return family_emit_triangle_stream(width, height, true,
+                                      output_triangle_count, plan, out);
+}
+
+int
+r300_tcl_bypass_triangle_flat_color0_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_flat_color0_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (out != NULL)
+      memset(out, 0, sizeof(*out));
+   const int rc = r300_flat_color0_plan_validate(plan);
+   if (rc != 0)
+      return rc;
+   return r300_tcl_bypass_triangle_flat_color0_plan_emit(
+      width, height, clip_space, triangle_count, plan, out);
 }
 
 static int
@@ -2273,6 +2334,12 @@ static int
 multi_pass_emit_one(const struct r300_triangle_render_shape *pass,
                     bool clip_space, struct r300_tcl_bypass_triangle_ib *out)
 {
+   if (pass->varying && pass->flat_color0) {
+      struct r300_flat_color0_plan plan;
+      r300_flat_color0_plan_direct_first(&plan);
+      return r300_tcl_bypass_triangle_flat_color0_family_emit(
+         pass->width, pass->height, clip_space, 1u, &plan, out);
+   }
    if (pass->varying) {
       return clip_space
                 ? r300_tcl_bypass_triangle_clip_space_family_emit(
@@ -2551,4 +2618,74 @@ r300_triangle_draw_dword(const struct r300_tcl_bypass_triangle_ib *ib)
       i += 1 + count;
    }
    return found;
+}
+
+int
+r300_tcl_bypass_triangle_expected_target(
+   const struct r300_triangle_render_shape *shape, uint32_t interior_dword,
+   uint32_t exterior_dword, uint32_t *pixels, uint32_t size_bytes)
+{
+   if (shape == NULL || pixels == NULL ||
+       r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
+      return -EINVAL;
+   const uint32_t pitch = shape->pitch_pixels;
+   const uint64_t footprint_bytes =
+      (uint64_t)shape->target_offset +
+      (uint64_t)pitch * (shape->height + R300_TRIANGLE_CANARY_ROWS) *
+         sizeof(uint32_t);
+   if (size_bytes < footprint_bytes)
+      return -EINVAL;
+   const uint32_t footprint_dwords = (uint32_t)(footprint_bytes / 4u);
+   for (uint32_t i = 0; i < footprint_dwords; i++)
+      pixels[i] = exterior_dword;
+   const struct triangle_geometry g =
+      triangle_geometry_at(shape->width, shape->height);
+   uint32_t *rows = pixels + shape->target_offset / 4u;
+   for (uint32_t y = 0; y < shape->height; y++) {
+      for (uint32_t x = 0; x < shape->width; x++) {
+         if (triangle_center_class(&g, (float)x + 0.5f, (float)y + 0.5f) ==
+             1)
+            rows[y * pitch + x] = interior_dword;
+      }
+   }
+   return 0;
+}
+
+int
+r300_tcl_bypass_triangle_target_compare(
+   const struct r300_triangle_render_shape *shape, const uint32_t *expected,
+   const uint32_t *observed, uint32_t size_bytes, bool *judged)
+{
+   if (judged != NULL)
+      *judged = false;
+   if (shape == NULL || expected == NULL || observed == NULL ||
+       r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
+      return -EINVAL;
+   const uint32_t pitch = shape->pitch_pixels;
+   const uint64_t footprint_bytes =
+      (uint64_t)shape->target_offset +
+      (uint64_t)pitch * (shape->height + R300_TRIANGLE_CANARY_ROWS) *
+         sizeof(uint32_t);
+   if (size_bytes < footprint_bytes)
+      return -EINVAL;
+   const uint32_t footprint_dwords = (uint32_t)(footprint_bytes / 4u);
+   const uint32_t offset_dwords = shape->target_offset / 4u;
+   const struct triangle_geometry g =
+      triangle_geometry_at(shape->width, shape->height);
+   int differing = 0;
+   for (uint32_t i = 0; i < footprint_dwords; i++) {
+      if (i >= offset_dwords) {
+         const uint32_t rel = i - offset_dwords;
+         const uint32_t y = rel / pitch, x = rel % pitch;
+         if (y < shape->height && x < shape->width &&
+             triangle_center_class(&g, (float)x + 0.5f, (float)y + 0.5f) <
+                0)
+            continue;
+      }
+      if (expected[i] != observed[i])
+         differing++;
+   }
+   if (judged != NULL)
+      *judged = true;
+   return differing;
 }

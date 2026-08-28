@@ -484,6 +484,29 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->shader_interface = admitted.shader_interface;
    r3v_post_vs_lowering_from_interface(&pipeline->shader_interface,
                                        &pipeline->post_vs);
+   /* The record-time route: a Flat interface executes on the CPU
+    * route (the R2VB host model admits flat_mask == 0 alone), the
+    * admission above pinned the triangle-list topology, the
+    * pass-through fragment binary reads US input 0 -- the RS
+    * destination color 0 lands in -- when the module pair carries the
+    * varying without texture sampling, and RS480's GA_COLOR_CONTROL
+    * carries PROVOKING_VERTEX_FIRST.  The clipping class is judged per
+    * triangle at execution. */
+   const struct r3v_interpolation_query interpolation = {
+      /* Every Flat interface executes on the CPU route: the R2VB host
+       * model's admission in r3v_native_cell.c requires flat_mask == 0. */
+      .cpu_delivery = true,
+      .triangle_list = true,
+      .clip_class = R3V_INTERPOLATION_CLIP_ACCEPT,
+      .link = &pipeline->shader_interface,
+      .rs_destination_available = varying && !sampled,
+      .fragment_consumes_destination = varying && !sampled,
+      .provoking_first_representable = true,
+   };
+   pipeline->interpolation_route =
+      device->flat_replication_pin != NULL
+         ? R3V_INTERPOLATION_ROUTE_REPLICATE
+         : r3v_interpolation_route_select(&interpolation, NULL);
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

@@ -32,6 +32,78 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
    return written == size ? 0 : 1;
 }
 
+/* Emits a bound two-pass stream and writes its ib.bin, four-slot
+ * bo_table.json, and manifest.json, the cell_kind field naming which
+ * pass shape produced it.  clip_space selects
+ * r300_tcl_bypass_triangle_clip_space_multi_pass_emit over the plain
+ * two-pass emitter; both route through r300_triangle_multi_pass, so the
+ * merged relocation indices (2, 3) and the four-entry bo_table are the
+ * same shape for every caller.
+ */
+static int
+write_multi_pass_cell(const char *dir, struct r300_triangle_multi_pass *mp,
+                      bool clip_space, const char *cell_kind)
+{
+   struct r300_tcl_bypass_triangle_ib cell;
+   const int emit_rc =
+      clip_space ? r300_tcl_bypass_triangle_clip_space_multi_pass_emit(mp, &cell)
+                 : r300_tcl_bypass_triangle_multi_pass_emit(mp, &cell);
+   if (emit_rc != 0) {
+      fprintf(stderr, "two-pass emission failed\n");
+      return 1;
+   }
+   uint8_t *ib_bytes = malloc(cell.ib_size_dwords * sizeof(uint32_t));
+   if (ib_bytes == NULL) {
+      r300_tcl_bypass_triangle_release(&cell);
+      return 1;
+   }
+   r300_triangle_ib_serialize(cell.ib, cell.ib_size_dwords, ib_bytes);
+   int rc = write_file(dir, "ib.bin", ib_bytes,
+                       cell.ib_size_dwords * sizeof(uint32_t));
+   free(ib_bytes);
+   char bo_table[768];
+   int bo_table_len = snprintf(
+      bo_table, sizeof(bo_table),
+      "{\n"
+      "  \"slots\": [\n"
+      "    {\"slot\": 0, \"role\": \"vertex\", \"domain\": \"GTT\","
+      " \"size\": 4096},\n"
+      "    {\"slot\": 1, \"role\": \"color\", \"domain\": \"GTT\","
+      " \"size\": %u},\n"
+      "    {\"slot\": 2, \"role\": \"vertex\", \"domain\": \"GTT\","
+      " \"size\": 4096},\n"
+      "    {\"slot\": 3, \"role\": \"color\", \"domain\": \"GTT\","
+      " \"size\": %u}\n"
+      "  ]\n"
+      "}\n",
+      (unsigned)R300_TRIANGLE_COLOR_BYTES,
+      (unsigned)R300_TRIANGLE_COLOR_BYTES);
+   rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
+   char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, ib_blake3_hex);
+   char manifest[512];
+   int manifest_len = snprintf(
+      manifest, sizeof(manifest),
+      "{\n"
+      "  \"schema\": \"r300-tcl-bypass-cell/1\",\n"
+      "  \"cell_kind\": \"%s\",\n"
+      "  \"emitter\": \"r300_tcl_bypass_triangle\",\n"
+      "  \"ib_dwords\": %u,\n"
+      "  \"ib_blake3\": \"%s\",\n"
+      "  \"second_vertex_index\": %u,\n"
+      "  \"second_color_index\": %u\n"
+      "}\n",
+      cell_kind, cell.ib_size_dwords, ib_blake3_hex, mp->second_vertex_index,
+      mp->second_color_index);
+   rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
+   r300_tcl_bypass_triangle_release(&cell);
+   if (rc == 0)
+      printf("r300_triangle_manifest: wrote the two-pass ib.bin, "
+             "bo_table.json, manifest.json to %s\n",
+             dir);
+   return rc;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -46,6 +118,24 @@ main(int argc, char **argv)
     * recorder installs, with a four-entry bo_table.
     */
    bool multi_pass = false;
+   /* --flat-color0 writes the direct two-pass Flat stream: both passes
+    * carry varying=true and flat_color0=true, so each pass routes
+    * through r300_tcl_bypass_triangle_flat_color0_family_emit under the
+    * canonical direct plan (r300_flat_color0_plan_direct_first) and the
+    * clip-space multi-pass emitter -- the varying rides color 0 under
+    * hardware provoking-vertex selection, with no host replication.
+    */
+   bool flat_color0 = false;
+   /* --flat-replicate writes the same two-pass shape with varying=true
+    * alone: each pass routes through
+    * r300_tcl_bypass_triangle_clip_space_family_emit, the host
+    * replicating the varying to every vertex of a primitive rather than
+    * the GA selecting one provoking vertex.  Same merged relocation
+    * layout (second_vertex_index 2, second_color_index 3) as
+    * --flat-color0, so the two manifests are two register-plan
+    * mutations of one shape, not two different shapes.
+    */
+   bool flat_replicate = false;
    /* --triangles N writes the cell family member of N triangles: the
     * host expansion of an N-instance draw, differing from the single
     * triangle in the vertex-index bound and the draw count alone. */
@@ -54,6 +144,10 @@ main(int argc, char **argv)
    for (int a = 2; a < argc && !usage_error; a++) {
       if (strcmp(argv[a], "--multi-pass") == 0) {
          multi_pass = true;
+      } else if (strcmp(argv[a], "--flat-color0") == 0) {
+         flat_color0 = true;
+      } else if (strcmp(argv[a], "--flat-replicate") == 0) {
+         flat_replicate = true;
       } else if (strcmp(argv[a], "--varying") == 0) {
          varying = true;
       } else if (strcmp(argv[a], "--triangles") == 0 && a + 1 < argc) {
@@ -73,7 +167,7 @@ main(int argc, char **argv)
    if (usage_error) {
       fprintf(stderr,
               "usage: %s <output-directory> [--varying] [--triangles N] "
-              "[--multi-pass]\n",
+              "[--multi-pass] [--flat-color0] [--flat-replicate]\n",
               argv[0]);
       return 2;
    }
@@ -89,60 +183,27 @@ main(int argc, char **argv)
          memcpy(&mp.pass[1].color_bits[i], &green[i], sizeof(float));
       mp.second_vertex_index = 2;
       mp.second_color_index = 3;
-      struct r300_tcl_bypass_triangle_ib cell;
-      if (r300_tcl_bypass_triangle_multi_pass_emit(&mp, &cell) != 0) {
-         fprintf(stderr, "two-pass emission failed\n");
-         return 1;
+      return write_multi_pass_cell(dir, &mp, false,
+                                   "two-pass-render-shapes-bound");
+   }
+
+   if (flat_color0 || flat_replicate) {
+      struct r300_triangle_multi_pass mp;
+      memset(&mp, 0, sizeof(mp));
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
+      mp.pass[0].varying = true;
+      mp.pass[1].varying = true;
+      if (flat_color0) {
+         mp.pass[0].flat_color0 = true;
+         mp.pass[1].flat_color0 = true;
       }
-      uint8_t *ib_bytes = malloc(cell.ib_size_dwords * sizeof(uint32_t));
-      if (ib_bytes == NULL) {
-         r300_tcl_bypass_triangle_release(&cell);
-         return 1;
-      }
-      r300_triangle_ib_serialize(cell.ib, cell.ib_size_dwords, ib_bytes);
-      int rc = write_file(dir, "ib.bin", ib_bytes,
-                          cell.ib_size_dwords * sizeof(uint32_t));
-      free(ib_bytes);
-      char bo_table[768];
-      int bo_table_len = snprintf(
-         bo_table, sizeof(bo_table),
-         "{\n"
-         "  \"slots\": [\n"
-         "    {\"slot\": 0, \"role\": \"vertex\", \"domain\": \"GTT\","
-         " \"size\": 4096},\n"
-         "    {\"slot\": 1, \"role\": \"color\", \"domain\": \"GTT\","
-         " \"size\": %u},\n"
-         "    {\"slot\": 2, \"role\": \"vertex\", \"domain\": \"GTT\","
-         " \"size\": 4096},\n"
-         "    {\"slot\": 3, \"role\": \"color\", \"domain\": \"GTT\","
-         " \"size\": %u}\n"
-         "  ]\n"
-         "}\n",
-         (unsigned)R300_TRIANGLE_COLOR_BYTES,
-         (unsigned)R300_TRIANGLE_COLOR_BYTES);
-      rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
-      char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
-      r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, ib_blake3_hex);
-      char manifest[512];
-      int manifest_len = snprintf(
-         manifest, sizeof(manifest),
-         "{\n"
-         "  \"schema\": \"r300-tcl-bypass-cell/1\",\n"
-         "  \"cell_kind\": \"two-pass-render-shapes-bound\",\n"
-         "  \"emitter\": \"r300_tcl_bypass_triangle\",\n"
-         "  \"ib_dwords\": %u,\n"
-         "  \"ib_blake3\": \"%s\",\n"
-         "  \"second_vertex_index\": 2,\n"
-         "  \"second_color_index\": 3\n"
-         "}\n",
-         cell.ib_size_dwords, ib_blake3_hex);
-      rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
-      r300_tcl_bypass_triangle_release(&cell);
-      if (rc == 0)
-         printf("r300_triangle_manifest: wrote the two-pass ib.bin, "
-                "bo_table.json, manifest.json to %s\n",
-                dir);
-      return rc;
+      mp.second_vertex_index = 2;
+      mp.second_color_index = 3;
+      return write_multi_pass_cell(
+         dir, &mp, true,
+         flat_color0 ? "two-pass-flat-color0-direct"
+                     : "two-pass-flat-color0-replicated");
    }
 
    /* The manifest hashes the reference fragment binary separately, so it

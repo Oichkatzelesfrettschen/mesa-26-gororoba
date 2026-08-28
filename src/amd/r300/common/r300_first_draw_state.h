@@ -123,6 +123,17 @@ r300_first_draw_state_dwords(const struct r300_first_draw_contract *contract)
    return contract->count * 2;
 }
 
+/* Sets the contract's single clause for reg to value.  Returns 0, or
+ * -EINVAL when the contract carries no entry for reg or more than one,
+ * either of which leaves the emitted value ambiguous.
+ */
+int r300_first_draw_contract_set_entry(struct r300_first_draw_contract *contract,
+                                       uint32_t reg, uint32_t value);
+
+/* True for a type-3 header whose opcode is one of the 3D draw packets
+ * the checkers treat as a draw boundary. */
+bool r300_first_draw_is_draw_packet(uint32_t header);
+
 /* Sets the contract's single US_OUT_FMT_0 clause to the render target's
  * output format.  The contract resolves that clause to the neutral
  * EXPLICIT_DISABLE value, and the format a cell writes belongs to its

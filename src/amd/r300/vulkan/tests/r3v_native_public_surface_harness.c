@@ -32,6 +32,7 @@
 #include <sys/utsname.h>
 
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_flat_color0_plan.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 
 #include "vk_semaphore.h"
@@ -311,6 +312,33 @@ carrier_varying_mismatch_count(const float *records, const float expected[4])
       }
    }
    return mismatches;
+}
+
+/* True when a carrier record's varying (dwords 4..7) matches expected
+ * within 1e-6 on alpha and exactly on rgb: the direct GA Flat route
+ * carries the provoking vertex's color through PFS interpolation
+ * hardware, so the delivered alpha tolerates the RS/US datapath's
+ * rounding while rgb stays bit-exact. */
+static bool
+carrier_record_varying_matches(const float *records, uint32_t record,
+                               const float expected[4])
+{
+   const float *varying = &records[record * 8 + 4];
+   return varying[0] == expected[0] && varying[1] == expected[1] &&
+          varying[2] == expected[2] &&
+          fabsf(varying[3] - expected[3]) <= 1e-6f;
+}
+
+/* True when two carrier records' rgb lanes differ: the reference tints
+ * (0,0,0), (1,0,0), (0,1,0) never collide in rgb, so this is a cheap,
+ * rounding-independent discriminator for "the GA selected a different
+ * provoking vertex here". */
+static bool
+carrier_record_rgb_distinct(const float *records, uint32_t a, uint32_t b)
+{
+   const float *va = &records[a * 8 + 4];
+   const float *vb = &records[b * 8 + 4];
+   return va[0] != vb[0] || va[1] != vb[1] || va[2] != vb[2];
 }
 
 /* A module with every OpDecorate Flat removed: the interface reads
@@ -1328,11 +1356,21 @@ main(void)
             r3v_reference_fragment_varying_spirv;
          smooth_pass_shape.fragment_bytes =
             sizeof(r3v_reference_fragment_varying_spirv);
+         /* The direct GA route is the selector's default for a
+          * one-Flat-vec4 interface (r3v_interpolation_lowering.h); this
+          * isolation check reads host replication's record shape, so it
+          * pins the Flat pipeline to R3V_INTERPOLATION_ROUTE_REPLICATE
+          * for its own scope. */
+         VK_FROM_HANDLE(r3v_native_device, isolation_pin_device, device);
+         setenv("R3V_NATIVE_FLAT_REPLICATION_PINNED", "1", 1);
+         r3v_native_device_refresh_delivery_gates(isolation_pin_device);
          VkPipeline flat_pass = VK_NULL_HANDLE, smooth_pass = VK_NULL_HANDLE;
          assert(make_pipeline(&flat_pass_shape, pass, layout, &flat_pass) ==
                 VK_SUCCESS);
          assert(make_pipeline(&smooth_pass_shape, pass, layout,
                               &smooth_pass) == VK_SUCCESS);
+         unsetenv("R3V_NATIVE_FLAT_REPLICATION_PINNED");
+         r3v_native_device_refresh_delivery_gates(isolation_pin_device);
          VkCommandBuffer isolation_cmd = fresh_cmd();
          vkCmdBeginRenderPass(isolation_cmd, &first_begin,
                               VK_SUBPASS_CONTENTS_INLINE);
@@ -1596,9 +1634,18 @@ main(void)
             .fragment_words = r3v_reference_fragment_flat_spirv,
             .fragment_bytes = sizeof(r3v_reference_fragment_flat_spirv),
          };
+         VK_FROM_HANDLE(r3v_native_device, flat_pin_device, device);
+         setenv("R3V_NATIVE_FLAT_REPLICATION_PINNED", "1", 1);
+         r3v_native_device_refresh_delivery_gates(flat_pin_device);
          VkPipeline flat_two_draw = VK_NULL_HANDLE;
          assert(make_pipeline(&flat_two_draw_shape, pass, layout,
                               &flat_two_draw) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_flat_pipeline,
+                        flat_two_draw);
+         assert(native_flat_pipeline->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_REPLICATE);
+         unsetenv("R3V_NATIVE_FLAT_REPLICATION_PINNED");
+         r3v_native_device_refresh_delivery_gates(flat_pin_device);
          static const uint32_t order[2][3] = { { 1, 2, 0 }, { 2, 0, 1 } };
          float *stream = NULL;
          float stream_backup[24];
@@ -1714,6 +1761,181 @@ main(void)
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                             (void **)&stream) == VK_SUCCESS);
          memcpy(stream, stream_backup, sizeof(stream_backup));
+         vkUnmapMemory(device, vertex_memory);
+      }
+
+      /* The direct GA Flat two-draw form: the same six-record B,C,A
+       * then C,A,B stream drives the direct-plan module pair, so the
+       * GA_COLOR_CONTROL provoking-vertex field, not host replication,
+       * selects each pass's color 0 record.  The per-vertex rgba
+       * module writes each vertex's own doubled position into rgb, so
+       * a distinct provoking selection per pass is directly observable
+       * in the carrier bytes.
+       */
+      {
+         struct pipeline_shape direct_flat_shape = {
+            .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .stride = 16,
+            .blend_enable = VK_FALSE,
+            .vertex_words = r3v_reference_vertex_flat_rgba_spirv,
+            .vertex_bytes = sizeof(r3v_reference_vertex_flat_rgba_spirv),
+            .fragment_words = r3v_reference_fragment_flat_spirv,
+            .fragment_bytes = sizeof(r3v_reference_fragment_flat_spirv),
+         };
+         VkPipeline direct_flat_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&direct_flat_shape, pass, layout,
+                              &direct_flat_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_direct_pipeline,
+                        direct_flat_pipeline);
+         assert(native_direct_pipeline->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0);
+
+         static const uint32_t direct_order[2][3] = { { 1, 2, 0 },
+                                                       { 2, 0, 1 } };
+         float *direct_stream = NULL;
+         float direct_stream_backup[24];
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&direct_stream) == VK_SUCCESS);
+         memcpy(direct_stream_backup, direct_stream,
+               sizeof(direct_stream_backup));
+         for (unsigned p = 0; p < 2; p++)
+            for (unsigned v = 0; v < 3; v++)
+               memcpy(&direct_stream[(p * 3 + v) * 4],
+                     &ndc_triangle[direct_order[p][v] * 4], 16);
+         vkUnmapMemory(device, vertex_memory);
+
+         VkCommandBuffer direct_cmd = fresh_cmd();
+         vkCmdBeginRenderPass(direct_cmd, &first_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(direct_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           direct_flat_pipeline);
+         vkCmdBindVertexBuffers(direct_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(direct_cmd, 3, 1, 0, 0);
+         vkCmdEndRenderPass(direct_cmd);
+         vkCmdBeginRenderPass(direct_cmd, &second_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(direct_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           direct_flat_pipeline);
+         vkCmdBindVertexBuffers(direct_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(direct_cmd, 3, 1, 3, 0);
+         vkCmdEndRenderPass(direct_cmd);
+         assert(vkEndCommandBuffer(direct_cmd) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_direct, direct_cmd);
+         assert(native_direct->cell_kind ==
+                R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS);
+         assert(native_direct->deferred_draw_count == 2 &&
+                native_direct->deferred_draws[0].direct_flat &&
+                native_direct->deferred_draws[1].direct_flat &&
+                native_direct->deferred_draws[0].first_vertex == 0 &&
+                native_direct->deferred_draws[1].first_vertex == 3);
+
+         struct r300_triangle_multi_pass direct_mp;
+         r3v_native_multi_pass_public_flat_color0_reference(&direct_mp);
+         struct r300_tcl_bypass_triangle_ib direct_cell;
+         assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+                   &direct_mp, &direct_cell) == 0);
+         assert(direct_cell.ib_size_dwords == native_direct->ib_size_dwords);
+         assert(memcmp(direct_cell.ib, native_direct->ib,
+                       direct_cell.ib_size_dwords * sizeof(uint32_t)) == 0);
+
+         struct r300_flat_color0_plan direct_plan;
+         r300_flat_color0_plan_direct_first(&direct_plan);
+         assert(r300_flat_color0_plan_stream_check(
+                   &direct_plan, 0x0003aaaau, native_direct->ib,
+                   native_direct->ib_size_dwords) == 2);
+
+         char direct_digest[BLAKE3_OUT_LEN * 2 + 1];
+         r300_triangle_ib_digest_hex(direct_cell.ib,
+                                     direct_cell.ib_size_dwords,
+                                     direct_digest);
+         r300_tcl_bypass_triangle_release(&direct_cell);
+
+         char direct_manifest_template[] =
+            "/tmp/r3v-public-direct-flat-two-draw-XXXXXX";
+         const char *direct_manifest_dir = mkdtemp(direct_manifest_template);
+         assert(direct_manifest_dir != NULL);
+         struct utsname direct_host;
+         assert(uname(&direct_host) == 0);
+         setenv("R3V_NATIVE_MANIFEST_DIR", direct_manifest_dir, 1);
+         setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+         setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", direct_digest, 1);
+         setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", direct_host.release,
+               1);
+         setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+                R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+         r3v_native_device_from_handle(device)->manifest_dir =
+            direct_manifest_dir;
+         r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
+         r3v_native_device_from_handle(device)->arming_provider =
+            &r3v_native_shim_arming_provider;
+         const VkResult direct_result = vkQueueSubmit(
+            queue, 1,
+            &(VkSubmitInfo){
+               .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+               .commandBufferCount = 1,
+               .pCommandBuffers = &direct_cmd,
+            },
+            VK_NULL_HANDLE);
+         assert(direct_result == VK_SUCCESS);
+         unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+         unsetenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
+         unsetenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
+         unsetenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+         unsetenv("R3V_NATIVE_MANIFEST_DIR");
+         r3v_native_device_from_handle(device)->arming_provider = NULL;
+         r3v_native_device_from_handle(device)->manifest_dir = NULL;
+         r3v_native_device_from_handle(device)->submit_hazard_accepted = false;
+
+         /* r3v_reference_vertex_flat_rgba_spirv writes
+          * tint = fma(position, (2, 2, 0, 0), 0) with alpha replaced by
+          * dot(position, (0.5333333, 0, 0, 0.55)): each source vertex
+          * carries its own doubled position in rgb and a distinct
+          * alpha, so a provoking selection is directly legible in the
+          * carrier without needing a discrete color palette.  Pass 1
+          * draws B, C, A: the FIRST-provoking GA selects B's record for
+          * every carrier triangle.  Pass 2 draws C, A, B: the GA
+          * selects C's.  The three source tints never collide in rgb,
+          * so the three records inside one carrier stay pairwise
+          * distinct only when the GA reads per-primitive, not a single
+          * replicated value.
+          */
+         VK_FROM_HANDLE(r3v_native_device, native_direct_device, device);
+         float direct_tints[3][4];
+         for (unsigned v = 0; v < 3; v++) {
+            const float x = ndc_triangle[v * 4 + 0];
+            const float y = ndc_triangle[v * 4 + 1];
+            direct_tints[v][0] = 2.0f * x;
+            direct_tints[v][1] = 2.0f * y;
+            direct_tints[v][2] = 0.0f;
+            direct_tints[v][3] = 0.533333302f * x + 0.550000012f;
+         }
+         const uint32_t expected_provoking[2] = { 1, 2 }; /* B, then C */
+         for (unsigned p = 0; p < 2; p++) {
+            void *carrier_map = NULL;
+            assert(radeon_drm_vk_bo_map(
+                      &native_direct_device->drm,
+                      &native_direct->owned_carriers[p]->bo,
+                      &carrier_map) == 0);
+            const float *records = carrier_map;
+            assert(carrier_nondegenerate_triangle_count(records, 8) == 1);
+            assert(carrier_record_varying_matches(
+                      records, 0, direct_tints[expected_provoking[p]]));
+            assert(carrier_record_rgb_distinct(records, 0, 1));
+            assert(carrier_record_rgb_distinct(records, 0, 2));
+            assert(carrier_record_rgb_distinct(records, 1, 2));
+            radeon_drm_vk_bo_unmap(&native_direct_device->drm,
+                                   &native_direct->owned_carriers[p]->bo,
+                                   carrier_map);
+         }
+         vkDestroyPipeline(device, direct_flat_pipeline, NULL);
+
+         /* Restore every record the six-record stream overwrote. */
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&direct_stream) == VK_SUCCESS);
+         memcpy(direct_stream, direct_stream_backup,
+               sizeof(direct_stream_backup));
          vkUnmapMemory(device, vertex_memory);
       }
 
@@ -3954,9 +4176,17 @@ main(void)
       indexed_flat_shape.fragment_words = r3v_reference_fragment_flat_spirv;
       indexed_flat_shape.fragment_bytes =
          sizeof(r3v_reference_fragment_flat_spirv);
+      /* The direct GA route is the selector's default for a
+       * one-Flat-vec4 interface; this check reads host replication's
+       * record shape, so it pins the pipeline to
+       * R3V_INTERPOLATION_ROUTE_REPLICATE for its own scope. */
+      setenv("R3V_NATIVE_FLAT_REPLICATION_PINNED", "1", 1);
+      r3v_native_device_refresh_delivery_gates(native_device);
       VkPipeline indexed_flat_pipeline = VK_NULL_HANDLE;
       assert(make_pipeline(&indexed_flat_shape, pass, layout,
                            &indexed_flat_pipeline) == VK_SUCCESS);
+      unsetenv("R3V_NATIVE_FLAT_REPLICATION_PINNED");
+      r3v_native_device_refresh_delivery_gates(native_device);
       VkCommandBuffer indexed_flat_cmd = record_indexed_triangle_draw(
          &begin_pass, indexed_flat_pipeline, vertex_buffer, index_buffer);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_indexed_flat,
