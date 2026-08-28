@@ -11,7 +11,8 @@
  * 9-6), so it is not here.
  *
  * The codeword tables themselves are in vl_h264_cavlc_tables.h, generated
- * mechanically from the spec PDF; a bounded prefix matcher reads them.
+ * mechanically by extract_h264_cavlc_tables.py from the spec PDF; a bounded
+ * prefix matcher reads them.
  */
 
 #ifndef vl_h264_cavlc_h

@@ -10,10 +10,12 @@
  * (ITU-T H.264 sec 7.3.3) from the NAL's RBSP, using the SPS/PPS for the
  * variable field widths and conditionals, and produces the per-slice state the
  * macroblock loop needs: slice type, the running QP base, the deblock override,
- * and the active reference count.  Scope is Constrained Baseline: I and P slices
- * with CAVLC; the picture-order-count and reference-list-modification
- * and marking syntax are parsed in full so the bit position stays aligned even
- * where the field is not retained.
+ * and the active reference count.  Scope is frame-raster Constrained Baseline:
+ * I and P slices with CAVLC; the picture-order-count and reference-list-
+ * modification and marking syntax are parsed in full so the bit position stays
+ * aligned even where the field is not retained.  Field-coded slices are
+ * consumed through bottom_field_flag and rejected because the macroblock
+ * decoder uses a single frame-raster neighbor topology.
  */
 
 #ifndef vl_h264_slice_parser_h
@@ -58,8 +60,9 @@ struct vl_h264_slice_header {
  * here).  The picture supplies the active PPS and SPS.  It returns false when
  * the PPS/SPS are missing, the PPS selects CABAC, the slice type is outside
  * the I/P subset defined by ITU-T H.264 sec. 7.3.3 and Annex A.2.1, a checked
- * SPS range is invalid under sec. 7.4.2.1.1, or ref_pic_list_modification
- * lacks the idc=3 terminator required by sec. 7.3.3.1.
+ * SPS range is invalid under sec. 7.4.2.1.1, a field-coded slice is presented,
+ * or ref_pic_list_modification lacks the idc=3 terminator required by sec.
+ * 7.3.3.1.
  */
 bool vl_h264_parse_slice_header(struct vl_h264_reader *reader,
                                 const struct pipe_h264_picture_desc *picture,
