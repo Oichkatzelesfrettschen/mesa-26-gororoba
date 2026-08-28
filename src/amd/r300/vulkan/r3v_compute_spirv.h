@@ -23,10 +23,11 @@
  * loaded 32-bit word, both addressed by the flattened global
  * invocation index into runtime arrays of 4-byte-stride words at
  * member offset zero, against two distinct storage-buffer bindings on
- * descriptor set 0.  Shared memory, barriers, atomics, arithmetic on
- * the address, control flow, and every opcode outside the recognized
- * grammar refuse with *reason naming the construct; the job is
- * unspecified on refusal.
+ * descriptor set 0.  The admitted LocalSize and dispatch domain use
+ * singleton Y/Z axes because the storage address is gl_GlobalInvocationID.x.
+ * Shared memory, barriers, atomics, arithmetic on the address, control flow,
+ * and every opcode outside the recognized grammar refuse with *reason
+ * naming the construct; the job is unspecified on refusal.
  * entry_name binds the OpEntryPoint literal byte for byte.
  */
 bool r3v_compute_job_from_spirv(const uint32_t *words, size_t word_count,

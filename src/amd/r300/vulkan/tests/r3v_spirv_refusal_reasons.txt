@@ -2,6 +2,7 @@
 # one per line; r3v_spirv_refusal_reasons.py keeps this ledger equal
 # to the set the sources carry.
 LocalSize execution mode absent
+LocalSize outside the x-only invocation domain
 SPIR-V extension outside the admitted grammar
 SPIR-V magic number absent
 WorkgroupSize constant disagrees with LocalSize

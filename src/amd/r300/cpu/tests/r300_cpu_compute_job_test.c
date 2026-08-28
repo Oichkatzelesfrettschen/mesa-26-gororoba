@@ -78,10 +78,19 @@ static void test_refusals_leave_output_untouched(void)
                                        sizeof(input), output,
                                        sizeof(output)) == -EINVAL);
 
-   const uint32_t zero_group[3] = { 1, 0, 1 };
-   assert(r300_cpu_compute_job_execute(&job, zero_group, input,
-                                       sizeof(input), output,
-                                       sizeof(output)) == -EINVAL);
+   /* Vulkan permits a dispatch with an empty workgroup grid.  Every zero
+    * axis returns a successful no-op, including when no range is mapped.
+    */
+   for (unsigned axis = 0; axis < 3; axis++) {
+      uint32_t zero_group[3] = { 1, 1, 1 };
+      zero_group[axis] = 0;
+      uint32_t invocations = UINT32_MAX;
+      assert(r300_cpu_compute_job_invocations(&job, zero_group,
+                                              &invocations) == 0);
+      assert(invocations == 0);
+      assert(r300_cpu_compute_job_execute(&job, zero_group, NULL, 0, NULL,
+                                          0) == 0);
+   }
 
    /* One byte short on either range refuses before any write. */
    assert(r300_cpu_compute_job_execute(&job, one_group, input,
@@ -98,12 +107,49 @@ static void test_refusals_leave_output_untouched(void)
                                        sizeof(input), NULL,
                                        sizeof(output)) == -EINVAL);
 
-   /* Overlapping ranges refuse: the copy would order-depend. */
-   assert(r300_cpu_compute_job_execute(&job, one_group, output,
-                                       sizeof(output), output,
-                                       sizeof(output)) == -EINVAL);
+   /* Exact aliases are elementwise-safe and leave the input unchanged. */
+   uint32_t alias[64];
+   for (uint32_t i = 0; i < 64; i++)
+      alias[i] = 0x12340000u + i;
+   uint32_t alias_copy[64];
+   memcpy(alias_copy, alias, sizeof(alias));
+   assert(r300_cpu_compute_job_execute(&job, one_group, alias,
+                                       sizeof(alias), alias,
+                                       sizeof(alias)) == 0);
+   assert(memcmp(alias, alias_copy, sizeof(alias)) == 0);
+
+   /* Partial overlap still refuses: the copy would order-depend. */
+   uint32_t overlap[65] = { 0 };
+   assert(r300_cpu_compute_job_execute(&job, one_group, overlap,
+                                       sizeof(overlap), overlap + 1,
+                                       sizeof(overlap) - sizeof(*overlap)) ==
+          -EINVAL);
 
    assert(memcmp(output, poison, sizeof(output)) == 0);
+}
+
+static void test_x_only_dispatch_domain(void)
+{
+   struct r300_compute_job job = identity_job();
+   const uint32_t one_group[3] = { 1, 1, 1 };
+   uint32_t invocations = 0;
+
+   struct r300_compute_job y_local = job;
+   y_local.local_size[1] = 2;
+   assert(r300_cpu_compute_job_validate(&y_local) == -EINVAL);
+   assert(r300_cpu_compute_job_invocations(&y_local, one_group,
+                                           &invocations) == -EINVAL);
+
+   struct r300_compute_job z_local = job;
+   z_local.local_size[2] = 2;
+   assert(r300_cpu_compute_job_validate(&z_local) == -EINVAL);
+
+   const uint32_t y_groups[3] = { 1, 2, 1 };
+   assert(r300_cpu_compute_job_invocations(&job, y_groups,
+                                           &invocations) == -EINVAL);
+   const uint32_t z_groups[3] = { 1, 1, 2 };
+   assert(r300_cpu_compute_job_invocations(&job, z_groups,
+                                           &invocations) == -EINVAL);
 }
 
 static void test_invocation_bounds(void)
@@ -122,17 +168,14 @@ static void test_invocation_bounds(void)
    assert(r300_cpu_compute_job_invocations(&job, past_bound,
                                            &invocations) == -ERANGE);
 
-   /* A product that wraps 32 bits refuses through the running 64-bit
-    * bound rather than wrapping.
-    */
-   const uint32_t wrapping[3] = { 0x10000u, 0x10000u, 4 };
-   assert(r300_cpu_compute_job_invocations(&job, wrapping,
+   /* The X product is checked before its 32-bit result narrows. */
+   const uint32_t x_overflow[3] = { 1u << 25, 1, 1 };
+   assert(r300_cpu_compute_job_invocations(&job, x_overflow,
                                            &invocations) == -ERANGE);
 
    /* A workgroup volume past the ceiling refuses at validation. */
    struct r300_compute_job huge_local = job;
-   huge_local.local_size[0] = R300_COMPUTE_JOB_MAX_INVOCATIONS;
-   huge_local.local_size[1] = 2;
+   huge_local.local_size[0] = R300_COMPUTE_JOB_MAX_INVOCATIONS + 1;
    assert(r300_cpu_compute_job_validate(&huge_local) == -ERANGE);
 }
 
@@ -140,6 +183,7 @@ int main(void)
 {
    test_exact_bytes();
    test_refusals_leave_output_untouched();
+   test_x_only_dispatch_domain();
    test_invocation_bounds();
    printf("r300-cpu-compute-job: all cases passed\n");
    return 0;
