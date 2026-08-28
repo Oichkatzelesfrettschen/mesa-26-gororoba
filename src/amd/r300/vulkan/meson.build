@@ -60,6 +60,23 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # Shader-interface record: the fixtures' qualifiers read back per
+  # location and built-in, the two-stage link matches and refuses by
+  # name, and every record's canonical serialization pins to a BLAKE3
+  # digest so a dropped qualifier is a digest movement.
+  test(
+    'r3v-shader-interface',
+    executable(
+      'r3v_shader_interface_test',
+      files('tests/r3v_shader_interface_test.c', 'r3v_shader_interface.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
+      dependencies : [idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Delivery route policy: the R2VB gate opens on the exact value alone,
   # the format set is closed, and every refused input lands on the CPU
   # route with a naming reason.
@@ -83,7 +100,8 @@ if with_tests
     prog_python,
     args : [files('tests/r3v_spirv_refusal_reasons.py'),
             files('tests/r3v_spirv_refusal_reasons.txt'),
-            files('r3v_vertex_spirv.c'), files('r3v_compute_spirv.c')],
+            files('r3v_vertex_spirv.c'), files('r3v_compute_spirv.c'),
+            files('r3v_shader_interface.c')],
     suite : ['r3v'],
   )
   test(
@@ -91,7 +109,8 @@ if with_tests
     prog_python,
     args : [files('tests/r3v_spirv_refusal_reasons.py'), '--selftest',
             files('tests/r3v_spirv_refusal_reasons.txt'),
-            files('r3v_vertex_spirv.c'), files('r3v_compute_spirv.c')],
+            files('r3v_vertex_spirv.c'), files('r3v_compute_spirv.c'),
+            files('r3v_shader_interface.c')],
     suite : ['r3v'],
   )
 
@@ -139,6 +158,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_shader_interface.c',
   'r3v_vertex_spirv.c',
 )
 

@@ -145,3 +145,48 @@ vertex program exceeds the instruction budget
 vertex varying output left unwritten
 vertex varying outside location 0
 workgroup shared memory
+Centroid or Sample interpolation outside the admitted grammar
+ClipDistance or CullDistance outside a vertex float array output
+ClipDistance plus CullDistance outside the combined budget of 8
+Flat and NoPerspective on one interface location
+PointSize outside a vertex output
+Position outside a vertex vec4 output
+built-in outside the admitted interface
+entry point interface names a non-variable
+entry point interface outside the reader's table
+fragment input without a vertex output at its location
+id bound outside the interface reader's table
+instruction length outside the module
+integer varying without Flat
+interface array length outside an integer constant
+interface array of an undefined element type
+interface block member of an undefined type
+interface block member outside the eight-member table
+interface block mixes built-in and located members
+interface block without a Location
+interface component span outside the four components of a location
+interface constant redefines an id
+interface location outside a 32-bit scalar or vector
+interface location outside the 16-location budget
+interface reader allocation failed
+interface type redefines an id
+interface variable of an undefined type
+interface variable outside an Input or Output pointer
+interface variable redefines an id
+interface variable without a Location
+interpolation qualifier on a boundary that carries none
+interpolation qualifiers conflict across the components of one location
+interpolation qualifiers conflict across the stages
+link outside a vertex and a fragment record
+malformed entry point
+malformed interface constant
+malformed interface decoration
+malformed interface type
+malformed interface variable
+module outside the SPIR-V header
+module without the requested entry point
+two interface objects claim one component
+two scalar kinds share one interface location
+varying outside the float vec4 the vertex carrier executes
+vertex output and fragment input shapes differ
+vertex output without a fragment consumer

@@ -11,6 +11,7 @@
 
 #include "amd/r300/common/r300_us_source_read.h"
 #include "amd/r300/common/r300_vertex_format.h"
+#include "amd/r300/vulkan/r3v_shader_interface.h"
 #include "amd/r300/vulkan/r3v_vertex_spirv.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
@@ -195,7 +196,8 @@ vertex_input_admit(const VkPipelineVertexInputStateCreateInfo *vi,
 static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
-                        bool *sampled, uint32_t color_bits[4])
+                        bool *sampled, uint32_t color_bits[4],
+                        struct r3v_shader_interface_link *interface)
 {
    if (info->stageCount != 2)
       return false;
@@ -217,14 +219,28 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    const char *reason;
    size_t vs_words = 0;
    const uint32_t *vs_data = stage_words(vertex, &vs_words);
-   if (vs_data == NULL ||
-       !r3v_vertex_job_from_spirv(vs_data, vs_words, vertex->pName, job,
-                                   &reason))
-      return false;
-
    size_t fs_words = 0;
    const uint32_t *fs_data = stage_words(fragment, &fs_words);
-   if (fs_data == NULL)
+   if (vs_data == NULL || fs_data == NULL)
+      return false;
+
+   /* The stage boundary links first: every qualifier the modules
+    * declare is recorded and matched across the two stages before the
+    * job lowering reads the vertex body, so a qualifier the lowering
+    * cannot yet execute refuses here by name rather than vanishing. */
+   struct r3v_shader_interface vs_interface, fs_interface;
+   if (!r3v_shader_interface_from_spirv(vs_data, vs_words, vertex->pName,
+                                        R3V_SHADER_INTERFACE_STAGE_VERTEX,
+                                        &vs_interface, &reason) ||
+       !r3v_shader_interface_from_spirv(fs_data, fs_words, fragment->pName,
+                                        R3V_SHADER_INTERFACE_STAGE_FRAGMENT,
+                                        &fs_interface, &reason) ||
+       !r3v_shader_interface_link(&vs_interface, &fs_interface, interface,
+                                  &reason))
+      return false;
+
+   if (!r3v_vertex_job_from_spirv(vs_data, vs_words, vertex->pName, job,
+                                   &reason))
       return false;
    *varying = r300_vertex_job_has_varying(job);
    *sampled = false;
@@ -408,7 +424,7 @@ create_pipeline(struct r3v_native_device *device,
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
        !stages_build_vertex_job(info, &job, &varying, &sampled,
-                                color_bits) ||
+                                color_bits, &admitted.shader_interface) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
@@ -465,6 +481,7 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
+   pipeline->shader_interface = admitted.shader_interface;
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

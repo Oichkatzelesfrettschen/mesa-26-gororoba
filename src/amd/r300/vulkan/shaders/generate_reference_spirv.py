@@ -47,6 +47,20 @@ STAGES = (
      HERE / "r3v_reference_vertex_instance_index.vert"),
     ("r3v_reference_vertex_vertex_index_spirv",
      HERE / "r3v_reference_vertex_vertex_index.vert"),
+    ("r3v_reference_vertex_flat_spirv", HERE / "r3v_reference_vertex_flat.vert"),
+    ("r3v_reference_fragment_flat_spirv", HERE / "r3v_reference_fragment_flat.frag"),
+    ("r3v_reference_vertex_mixed_spirv", HERE / "r3v_reference_vertex_mixed.vert"),
+    ("r3v_reference_fragment_mixed_spirv", HERE / "r3v_reference_fragment_mixed.frag"),
+    ("r3v_reference_fragment_noperspective_spirv", HERE / "r3v_reference_fragment_noperspective.frag"),
+    ("r3v_reference_vertex_clip_cull_spirv", HERE / "r3v_reference_vertex_clip_cull.vert"),
+    ("r3v_reference_vertex_block_spirv", HERE / "r3v_reference_vertex_block.vert"),
+    ("r3v_reference_fragment_block_spirv", HERE / "r3v_reference_fragment_block.frag"),
+    ("r3v_reference_vertex_scalar_spirv", HERE / "r3v_reference_vertex_scalar.vert"),
+    ("r3v_reference_fragment_scalar_spirv", HERE / "r3v_reference_fragment_scalar.frag"),
+    ("r3v_reference_vertex_int_spirv", HERE / "r3v_reference_vertex_int.vert"),
+    ("r3v_reference_fragment_int_spirv", HERE / "r3v_reference_fragment_int.frag"),
+    ("r3v_reference_vertex_components_spirv", HERE / "r3v_reference_vertex_components.vert"),
+    ("r3v_reference_fragment_components_spirv", HERE / "r3v_reference_fragment_components.frag"),
 )
 
 
