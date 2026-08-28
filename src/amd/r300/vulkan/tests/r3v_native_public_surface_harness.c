@@ -25,6 +25,11 @@
 #include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_multi_pass_arms.h"
+#include "r3v_native_shim_arming.h"
+
+#include "util/mesa-blake3.h"
+
+#include <sys/utsname.h>
 
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
@@ -1279,16 +1284,77 @@ main(void)
          r300_tcl_bypass_triangle_release(&offline);
       }
 
-      /* The concatenation is the recording's own stream, so no offline
-       * emitter reproduces the digest the arming gate would compare it
-       * against.  The multi-pass kind is what carries that: its geometry
-       * predicate reports unfrozen, so an armed submission refuses
-       * before any ioctl, and the plan capture and replay routes, whose
-       * plan binds the exact recorded stream at capture, are where the
-       * concatenation executes.  Submitting here would lose the device
-       * for every fixture that follows, so the kind assertion above
-       * stands for the refusal.
+      /* The public form reaches the arming gate with both deferred
+       * draws pending, and the multi-pass predicate freezes that form,
+       * so an armed submission under the emitter's digest admits on the
+       * shim: the two load-op clears realize on the host and the noop
+       * command stream completes.  The gate reopens only for this
+       * submission; every fixture that follows runs closed.
        */
+      {
+         struct r300_triangle_multi_pass armed_mp;
+         r3v_native_multi_pass_public_reference(&armed_mp);
+         struct r300_tcl_bypass_triangle_ib armed_cell;
+         assert(r300_tcl_bypass_triangle_multi_pass_emit(&armed_mp,
+                                                          &armed_cell) == 0);
+         char armed_digest[BLAKE3_OUT_LEN * 2 + 1];
+         r300_triangle_ib_digest_hex(armed_cell.ib, armed_cell.ib_size_dwords,
+                                     armed_digest);
+         r300_tcl_bypass_triangle_release(&armed_cell);
+         char manifest_template[] = "/tmp/r3v-public-two-draw-XXXXXX";
+         const char *manifest_dir = mkdtemp(manifest_template);
+         assert(manifest_dir != NULL);
+         struct utsname host;
+         assert(uname(&host) == 0);
+         setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
+         setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+         setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", armed_digest, 1);
+         setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
+         setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+                R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+         /* The device captured its evidence directory and its hazard
+          * gate at creation, when the environment named neither, so the
+          * armed submission binds both on the device itself for this
+          * one call; the environment stays closed throughout.
+          */
+         r3v_native_device_from_handle(device)->manifest_dir = manifest_dir;
+         r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
+         r3v_native_device_from_handle(device)->arming_provider =
+            &r3v_native_shim_arming_provider;
+         const VkResult armed_result = vkQueueSubmit(
+            queue, 1,
+            &(VkSubmitInfo){
+               .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+               .commandBufferCount = 1,
+               .pCommandBuffers = &two_draw_cmd,
+            },
+            VK_NULL_HANDLE);
+         assert(armed_result == VK_SUCCESS);
+         unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+         unsetenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
+         unsetenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
+         unsetenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+         unsetenv("R3V_NATIVE_MANIFEST_DIR");
+         r3v_native_device_from_handle(device)->arming_provider = NULL;
+         r3v_native_device_from_handle(device)->manifest_dir = NULL;
+         r3v_native_device_from_handle(device)->submit_hazard_accepted = false;
+
+         /* Each pass's load-op clear reached its own target on the host;
+          * the noop stream wrote nothing.
+          */
+         assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&first_map) == VK_SUCCESS);
+         assert(vkMapMemory(device, second_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&second_map) == VK_SUCCESS);
+         assert(first_map[0] == 0xffff0000u &&
+                first_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+                   0xffff0000u);
+         assert(second_map[0] == 0xff0000ffu &&
+                second_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+                   0xff0000ffu);
+         vkUnmapMemory(device, color_memory);
+         vkUnmapMemory(device, second_memory);
+      }
 
       vkDestroyFramebuffer(device, second_framebuffer, NULL);
       vkDestroyImageView(device, second_view, NULL);

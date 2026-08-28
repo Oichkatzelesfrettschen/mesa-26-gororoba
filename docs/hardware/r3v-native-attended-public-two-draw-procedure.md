@@ -106,6 +106,41 @@ exterior=2944 mismatch=0`; both crossed lines report
 - A nonzero dmesg delta or a lockup ends the boot under the shared
   procedure's rollback rules.
 
+## Result
+
+### First attempt: refused ahead of the ioctl
+
+The first attended attempt on RS482, boot
+`e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main `8e4c01d4aaf`, armed
+against cell blake3 `44959464`, returned `vkQueueSubmit` -4
+(`VK_ERROR_DEVICE_LOST`) with the watchdog never armed, a zero guarded
+interval, an empty dmesg delta, an unchanged boot, and the attempt
+token absent, so the refusal landed inside the driver ahead of
+`DRM_IOCTL_RADEON_CS` and the attempt stayed unspent.  The `[record]`
+line agreed (`recorded 44959464 emitted 44959464`, kind 16, four
+references, two deferred draws), and the retained submit object shows
+the composed relocation list: four command references plus the
+completion fence.  None of the written falsifiers named this outcome,
+so it opened a root-cause analysis rather than a prediction change.
+
+Root cause, from `r3v_native_queue.c`: the inline submit path
+evaluates `cell_geometry_unfrozen` ahead of
+`r3v_native_cmd_buffer_execute_deferred_draws`, and the multi-pass
+predicate as frozen for the recorder route required both deferred
+draws to be non-pending.  The public route's deferred draws are pending
+at that point and stay pending across every submission, because each
+submit re-reads the vertex stream and re-clears, so the public form
+could never reach the gate frozen; the arming verdict reported the
+nonmaximum-extent refusal and the queue returned device loss before
+the ioctl.  The drm-shim never exercised this path: the public-surface
+harness compared the recorded stream against the emitter and stopped
+short of an armed submission under a comment that predicted exactly
+this refusal.  The fix freezes both forms in the predicate -- both
+deferred draws pending over extents inside the render family, or
+neither -- and the harness now armed-submits the public two-draw on the
+shim, where the two load-op clears realize on the host and the noop
+stream completes.
+
 ## Retained record
 
 The shared procedure's record plus `first_target.bin` and
