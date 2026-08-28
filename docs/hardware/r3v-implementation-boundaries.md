@@ -371,7 +371,7 @@ native_queue=$(function_body \
 printf '%s\n' "$native_queue" | rg -n --fixed-strings \
   -e 'VK_QUEUE_GRAPHICS_BIT' -e 'compute_queue_claimed'
 rg -n --fixed-strings -e 'compute_queue_claimed' \
-  -e 'R3V_NATIVE_REFUSAL_RESULT' -e 'r300_compute_job_from_spirv' \
+  -e 'R3V_NATIVE_REFUSAL_RESULT' -e 'r3v_compute_job_from_spirv' \
   src/amd/r300/vulkan/r3v_native_compute.c
 
 # Extension table and dispatch overlay.
@@ -800,12 +800,12 @@ the capability ladder's work.
 | Former lane capability | Surviving mechanism | Evidence class |
 |---|---|---|
 | Vulkan commands lowered into Gallium CSOs and `pipe_context` replay | one fixed render cell, recorded through public `vkCmd*` over a bounded render-pass/pipeline/draw vocabulary | silicon, one qualified payload |
-| NIR ingress through `nir_to_rc` | `r300_vertex_job_from_spirv` and `r300_fragment_constant_color_from_spirv` admit the straight-line vec4 shapes from SPIR-V words directly (no NIR); the NIR front end `r300_vertex_job_from_nir` remains in `compiler/` as the Gallium consumer's path over the same common job IR, held to parity by `r300-vertex-front-end-parity` | host unit |
+| NIR ingress through `nir_to_rc` | `r3v_vertex_job_from_spirv` and `r3v_fragment_constant_color_from_spirv` admit the straight-line vec4 shapes from SPIR-V words directly (no NIR); the NIR front end `r300_vertex_job_from_nir` remains in `compiler/` as the Gallium consumer's path over the same common job IR, held to parity by `r300-vertex-front-end-parity` | host unit |
 | NIR compatibility through `nir_to_tgsi` for Draw shapes | covered by the `nir_to_rc` and CPU-vertex-execution rows: `nir_to_tgsi` is r300g's internal bridge into the Draw module (`draw_vs_exec.c`), the ICD never calls it, and no Vulkan-reachable shape resolves only through it | host unit, through the covering rows |
 | CPU vertex execution over Gallium Draw SW TCL | `r300_cpu_vertex_job_execute` over the job IR | host unit, and silicon through the cell's carrier |
 | R300 graphics state: VAP, PSC, RS, US, TX, CB, ZB, ROP, viewport, raster | the cell's fixed state vector alone | silicon, one state vector |
 | R2VB producer, CB export, cache publication, TCL-bypass re-ingest | public GPU-producer route, one payload, F32_4 position stream, three vertices | silicon, one payload |
-| Graphics-as-compute: `VK_QUEUE_COMPUTE_BIT` and `vkCmdDispatch` over raster kernels and multipass carriers, behind the `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL` gate | native compute surface behind the same exact gate: `r300_compute_job_from_spirv` admits the identity-map kernel from SPIR-V words directly (no NIR), storage-buffer descriptors on set 0, one recorded dispatch per command buffer, `r300_cpu_compute_job_execute` at submission; every out-of-subset module refuses at pipeline creation, closing the Gallium lane's admitted-but-unmatched no-op | host unit and end-to-end shim dispatch; raster-carrier execution and the wider verb corpus are the open widening axes |
+| Graphics-as-compute: `VK_QUEUE_COMPUTE_BIT` and `vkCmdDispatch` over raster kernels and multipass carriers, behind the `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL` gate | native compute surface behind the same exact gate: `r3v_compute_job_from_spirv` admits the identity-map kernel from SPIR-V words directly (no NIR), storage-buffer descriptors on set 0, one recorded dispatch per command buffer, `r300_cpu_compute_job_execute` at submission; every out-of-subset module refuses at pipeline creation, closing the Gallium lane's admitted-but-unmatched no-op | host unit and end-to-end shim dispatch; raster-carrier execution and the wider verb corpus are the open widening axes |
 | Video: Gallium VL MPEG-1/MPEG-2 shader decode | reclassified out of the Vulkan surface: `libgalliumvl` decode reaches applications through the GL state trackers alone, neither ICD names a `VK_KHR_video_*` symbol, so it retires with the GL carve-out above | not an R3V capability |
 | Memory and transfers: maps, uploads, copies, blits, clears | GEM-backed memory, one linear `B8G8R8A8_UNORM` transfer surface | host model, and silicon for the cell's carrier |
 | Queue and completion | owned Radeon DRM submission with fence retirement | silicon |
@@ -962,7 +962,7 @@ mechanisms are:
   family, and a command buffer carries either the qualified render
   pass or copies, so the attachment path and the qualified render
   cell never see a transfer image.
-- the delivery route resolver (`r300_delivery_route_resolve`): the one
+- the delivery route resolver (`r3v_delivery_route_resolve`): the one
   home of the route policy the deferred draw consults -- CPU gather by
   default, the R2VB host model on the exact gate value and the three
   modeled formats, every refused input landing on the CPU route with a
@@ -1459,8 +1459,8 @@ does not promote another.
     tuple pass and its manifest replay prove the userspace/kernel
     agreement offline (`r300-r2vb-float2-tuple-replay`, per
     `docs/hardware/r300-r2vb-float2-source-contract.md`), and
-    `r300_delivery_route_resolve` carries the
-    `R300_DELIVERY_ROUTE_R2VB_GPU_PRODUCER` value behind the exact
+    `r3v_delivery_route_resolve` carries the
+    `R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER` value behind the exact
     double opt-in. Each staged cell runs under its own operator-armed digest.
 12. Extend native image, transfer, and resource-scoped synchronization
     semantics; the bounded linear transfer family and its host-order barrier

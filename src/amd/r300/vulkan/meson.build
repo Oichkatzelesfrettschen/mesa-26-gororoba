@@ -50,13 +50,48 @@ if with_tests
     executable(
       'r3v_native_pipeline_frontend_test',
       files('tests/r3v_native_pipeline_frontend_test.c',
-            '../common/r300_vertex_spirv.c',
+            'r3v_vertex_spirv.c',
             '../cpu/r300_cpu_vertex.c', '../cpu/r300_cpu_vertex_job.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
       dependencies : [dep_m],
       gnu_symbol_visibility : 'hidden',
     ),
+    suite : ['r3v'],
+  )
+
+  # Delivery route policy: the R2VB gate opens on the exact value alone,
+  # the format set is closed, and every refused input lands on the CPU
+  # route with a naming reason.
+  test(
+    'r3v-delivery-route',
+    executable(
+      'r3v_delivery_route_test',
+      files('r3v_delivery_route.c', 'tests/r3v_delivery_route_test.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
+  # The SPIR-V admitters name every refused construct through a string
+  # literal; the ledger enumerates that rejection surface so a new or
+  # removed reason reports as a ledger movement.
+  test(
+    'r3v-spirv-refusal-reasons',
+    prog_python,
+    args : [files('tests/r3v_spirv_refusal_reasons.py'),
+            files('tests/r3v_spirv_refusal_reasons.txt'),
+            files('r3v_vertex_spirv.c'), files('r3v_compute_spirv.c')],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-spirv-refusal-reasons-selftest',
+    prog_python,
+    args : [files('tests/r3v_spirv_refusal_reasons.py'), '--selftest',
+            files('tests/r3v_spirv_refusal_reasons.txt'),
+            files('r3v_vertex_spirv.c'), files('r3v_compute_spirv.c')],
     suite : ['r3v'],
   )
 
@@ -70,7 +105,7 @@ if with_tests
     executable(
       'r3v_native_compute_frontend_test',
       files('tests/r3v_native_compute_frontend_test.c',
-            '../common/r300_compute_spirv.c',
+            'r3v_compute_spirv.c',
             '../cpu/r300_cpu_compute_job.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
@@ -85,6 +120,8 @@ icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
 # Radeon DRM transport with no Gallium runtime ownership; the
 # separation-audit test proves the library carries no Gallium entry symbol.
 r3v_native_files = files(
+  'r3v_compute_spirv.c',
+  'r3v_delivery_route.c',
   'r3v_native_arming.c',
   'r3v_native_cell.c',
   'r3v_native_cmd.c',
@@ -102,6 +139,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_vertex_spirv.c',
 )
 
 # The ICD compiles with no Gallium include root: PIPE_FORMAT_* comes from

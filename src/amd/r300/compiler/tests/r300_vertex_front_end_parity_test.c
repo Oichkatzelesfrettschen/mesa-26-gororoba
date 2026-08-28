@@ -4,7 +4,7 @@
  * Calibration and parity for the two vertex front ends over one job
  * IR: the NIR front end (compiler/r300_vertex_job_nir.c, the Gallium
  * consumer's path) and the direct SPIR-V admitter
- * (common/r300_vertex_spirv.c, the native ICD's path) must agree on
+ * (vulkan/r3v_vertex_spirv.c, the native ICD's path) must agree on
  * the reference modules -- identical jobs, identical color bits, and
  * identical refusals -- and the NIR front end's builder-made
  * arithmetic shapes must lower to the job IR and execute to exact
@@ -15,7 +15,7 @@
 #undef NDEBUG
 
 #include "amd/r300/common/r300_vertex_format.h"
-#include "amd/r300/common/r300_vertex_spirv.h"
+#include "amd/r300/vulkan/r3v_vertex_spirv.h"
 #include "amd/r300/compiler/r300_vertex_job_nir.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 #include "compiler/spirv/spirv_info.h"
@@ -442,7 +442,7 @@ static void test_front_end_parity(void)
    const char *reason = NULL;
    assert(r300_vertex_job_from_nir(nir, &nir_job, &reason));
    ralloc_free(nir);
-   assert(r300_vertex_job_from_spirv(
+   assert(r3v_vertex_job_from_spirv(
       r3v_reference_vertex_spirv,
       sizeof(r3v_reference_vertex_spirv) / 4, "main", &direct_job, &reason));
    assert(memcmp(&nir_job, &direct_job, sizeof(nir_job)) == 0);
@@ -484,7 +484,7 @@ static void test_front_end_parity(void)
    uint32_t nir_color[4], direct_color[4];
    assert(r300_fragment_nir_constant_color(nir, nir_color, &reason));
    ralloc_free(nir);
-   assert(r300_fragment_constant_color_from_spirv(
+   assert(r3v_fragment_constant_color_from_spirv(
       r3v_reference_fragment_spirv,
       sizeof(r3v_reference_fragment_spirv) / 4,
       "main", direct_color, &reason));
@@ -504,7 +504,7 @@ static void test_front_end_parity(void)
    memset(&nir_job, 0, sizeof(nir_job));
    assert(r300_vertex_job_from_nir(nir, &nir_job, &reason));
    ralloc_free(nir);
-   assert(r300_vertex_job_from_spirv(
+   assert(r3v_vertex_job_from_spirv(
       r3v_reference_vertex_arith_spirv,
       sizeof(r3v_reference_vertex_arith_spirv) / 4, "main", &direct_job,
       &reason));
@@ -538,11 +538,11 @@ static void test_front_end_parity(void)
              r3v_reference_identity_map_spirv,
              sizeof(r3v_reference_identity_map_spirv) / 4,
              MESA_SHADER_VERTEX, "main") == NULL);
-   assert(!r300_vertex_job_from_spirv(
+   assert(!r3v_vertex_job_from_spirv(
       r3v_reference_identity_map_spirv,
       sizeof(r3v_reference_identity_map_spirv) / 4, "main", &direct_job,
       &reason));
-   assert(!r300_vertex_job_from_spirv(
+   assert(!r3v_vertex_job_from_spirv(
       r3v_reference_scatter_reject_spirv,
       sizeof(r3v_reference_scatter_reject_spirv) / 4, "main", &direct_job,
       &reason));

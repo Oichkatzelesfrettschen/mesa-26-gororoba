@@ -633,7 +633,7 @@ if with_tests
   r300_vertex_front_end_parity_test = executable(
     'r300_vertex_front_end_parity_test',
     files('../../../amd/r300/compiler/tests/r300_vertex_front_end_parity_test.c',
-          '../../../amd/r300/common/r300_vertex_spirv.c',
+          '../../../amd/r300/vulkan/r3v_vertex_spirv.c',
           '../../../amd/r300/cpu/r300_cpu_vertex.c',
           '../../../amd/r300/cpu/r300_cpu_vertex_job.c'),
     c_args : r300_test_c_args,

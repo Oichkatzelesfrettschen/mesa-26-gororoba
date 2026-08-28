@@ -68,7 +68,7 @@ and the first is admissible only against a declared arithmetic semantics.
 
 ## Route topology
 
-`r300_delivery_route_resolve` takes the three cached gate values and the source
+`r3v_delivery_route_resolve` takes the three cached gate values and the source
 format and returns one decision: the CPU route by default, the R2VB host model
 under `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1`, the immediate GPU producer
 with `R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL=1` added, and the fetched GPU

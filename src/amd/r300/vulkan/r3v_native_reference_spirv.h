@@ -11,8 +11,8 @@
 
 /* The word arrays are the reference modules the harnesses and the
  * front-end parity tests read; pipeline creation admits a stage by the
- * semantics its words carry (r300_vertex_job_from_spirv,
- * r300_fragment_constant_color_from_spirv), so these blobs are one
+ * semantics its words carry (r3v_vertex_job_from_spirv,
+ * r3v_fragment_constant_color_from_spirv), so these blobs are one
  * admitted specimen rather than the admission itself.  The GLSL sources
  * live in shaders/r3v_reference_triangle.{vert,frag}: the vertex
  * program is the pretransformed-position pass-through the TCL-bypass

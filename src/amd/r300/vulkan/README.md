@@ -190,7 +190,7 @@ in `docs/hardware/r3v-implementation-boundaries.md`.
 Behind the exact `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1` opt-in the one queue
 family advertises `VK_QUEUE_COMPUTE_BIT`; `r3v_CreateComputePipelines` admits
 the identity-map kernel from SPIR-V words directly into the common compute
-job (`src/amd/r300/common/r300_compute_spirv.c`), storage-buffer
+job (`src/amd/r300/vulkan/r3v_compute_spirv.c`), storage-buffer
 descriptors bind on set 0, one dispatch records per command buffer, and
 `r300_cpu_compute_job_execute` runs it at submission.  Every module outside
 the admitted subset refuses at pipeline creation, so no admitted pipeline
@@ -242,7 +242,9 @@ src/amd/r300/
   common/                  R300-neutral format, source-contract, fragment-
                            binary, and triangle-cell vocabulary
   vulkan/                  the r3v ICD: Vulkan objects over the Radeon DRM
-                           transport (r3v_native_*.c)
+                           transport (r3v_native_*.c), the direct SPIR-V
+                           admitters (r3v_vertex_spirv.c, r3v_compute_spirv.c),
+                           and the delivery route policy (r3v_delivery_route.c)
 
 src/gallium/drivers/r300/
   r300_public.h            r300 extraction interface

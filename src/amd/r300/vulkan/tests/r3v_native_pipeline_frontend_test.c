@@ -13,7 +13,7 @@
 #undef NDEBUG
 
 #include "amd/r300/common/r300_vertex_format.h"
-#include "amd/r300/common/r300_vertex_spirv.h"
+#include "amd/r300/vulkan/r3v_vertex_spirv.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
 #include "r3v_native_reference_spirv.h"
@@ -41,7 +41,7 @@ static void test_reference_vertex_module(void)
 {
    struct r300_vertex_job job;
    const char *reason = NULL;
-   bool admitted = r300_vertex_job_from_spirv(
+   bool admitted = r3v_vertex_job_from_spirv(
       r3v_reference_vertex_spirv, WORDS(r3v_reference_vertex_spirv),
       "main", &job,
       &reason);
@@ -76,7 +76,7 @@ static void test_reference_fragment_module(void)
 {
    uint32_t color[4];
    const char *reason = NULL;
-   assert(r300_fragment_constant_color_from_spirv(
+   assert(r3v_fragment_constant_color_from_spirv(
       r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
       "main",
       color, &reason));
@@ -108,7 +108,7 @@ static void test_reference_fragment_module(void)
       at += len;
    }
    assert(patched);
-   assert(r300_fragment_constant_color_from_spirv(red, WORDS(red),
+   assert(r3v_fragment_constant_color_from_spirv(red, WORDS(red),
    "main", color,
                                                   &reason));
    assert(color[0] == 0x3f800000u && color[1] == 0 && color[2] == 0 &&
@@ -125,17 +125,17 @@ static void test_reference_sampled_module(void)
 {
    const char *reason = NULL;
    uint32_t color[4];
-   assert(r300_fragment_sampled_texture_from_spirv(
+   assert(r3v_fragment_sampled_texture_from_spirv(
       r3v_reference_fragment_sampled_spirv,
       WORDS(r3v_reference_fragment_sampled_spirv), "main", &reason));
-   assert(!r300_fragment_constant_color_from_spirv(
+   assert(!r3v_fragment_constant_color_from_spirv(
       r3v_reference_fragment_sampled_spirv,
       WORDS(r3v_reference_fragment_sampled_spirv), "main", color,
       &reason));
-   assert(!r300_fragment_varying_passthrough_from_spirv(
+   assert(!r3v_fragment_varying_passthrough_from_spirv(
       r3v_reference_fragment_sampled_spirv,
       WORDS(r3v_reference_fragment_sampled_spirv), "main", &reason));
-   assert(!r300_fragment_sampled_texture_from_spirv(
+   assert(!r3v_fragment_sampled_texture_from_spirv(
       r3v_reference_fragment_varying_spirv,
       WORDS(r3v_reference_fragment_varying_spirv), "main", &reason));
 
@@ -157,7 +157,7 @@ static void test_reference_sampled_module(void)
          at += len;
       }
       assert(patched);
-      assert(!r300_fragment_sampled_texture_from_spirv(
+      assert(!r3v_fragment_sampled_texture_from_spirv(
          bad, WORDS(bad), "main", &reason));
    }
 }
@@ -170,7 +170,7 @@ static void test_reference_arith_module(void)
 {
    struct r300_vertex_job job;
    const char *reason = NULL;
-   bool admitted = r300_vertex_job_from_spirv(
+   bool admitted = r3v_vertex_job_from_spirv(
       r3v_reference_vertex_arith_spirv,
       WORDS(r3v_reference_vertex_arith_spirv), "main", &job, &reason);
    if (!admitted)
@@ -220,7 +220,7 @@ static void test_reference_varying_modules(void)
 {
    struct r300_vertex_job job;
    const char *reason = NULL;
-   bool admitted = r300_vertex_job_from_spirv(
+   bool admitted = r3v_vertex_job_from_spirv(
       r3v_reference_vertex_varying_spirv,
       WORDS(r3v_reference_vertex_varying_spirv), "main", &job, &reason);
    if (!admitted)
@@ -260,22 +260,22 @@ static void test_reference_varying_modules(void)
       }
    }
 
-   assert(r300_fragment_varying_passthrough_from_spirv(
+   assert(r3v_fragment_varying_passthrough_from_spirv(
       r3v_reference_fragment_varying_spirv,
       WORDS(r3v_reference_fragment_varying_spirv), "main", &reason));
    /* Each fragment admitter refuses the other's shape. */
    uint32_t color[4];
-   assert(!r300_fragment_constant_color_from_spirv(
+   assert(!r3v_fragment_constant_color_from_spirv(
       r3v_reference_fragment_varying_spirv,
       WORDS(r3v_reference_fragment_varying_spirv), "main", color, &reason));
    assert(strcmp(reason, "fragment shader reads an input") == 0);
-   assert(!r300_fragment_varying_passthrough_from_spirv(
+   assert(!r3v_fragment_varying_passthrough_from_spirv(
       r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
       "main", &reason));
    assert(strcmp(reason,
                  "fragment program outside the varying pass-through") == 0);
    /* The position-only modules keep lowering to varying-free jobs. */
-   assert(r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+   assert(r3v_vertex_job_from_spirv(r3v_reference_vertex_spirv,
                                      WORDS(r3v_reference_vertex_spirv),
                                      "main", &job, &reason));
    assert(!r300_vertex_job_has_varying(&job));
@@ -322,7 +322,7 @@ static void test_varying_module_known_bads(void)
    memcpy(removed, m, store_at * 4);
    memcpy(removed + store_at, m + store_at + store_len,
           (n - store_at - store_len) * 4);
-   assert(!r300_vertex_job_from_spirv(removed, n - store_len, "main", &job,
+   assert(!r3v_vertex_job_from_spirv(removed, n - store_len, "main", &job,
                                       &reason));
    assert(strcmp(reason, "vertex varying output left unwritten") == 0);
    /* Doubled: the store repeated in place. */
@@ -331,7 +331,7 @@ static void test_varying_module_known_bads(void)
    memcpy(doubled + store_at + store_len, m + store_at, store_len * 4);
    memcpy(doubled + store_at + 2 * store_len, m + store_at + store_len,
           (n - store_at - store_len) * 4);
-   assert(!r300_vertex_job_from_spirv(doubled, n + store_len, "main", &job,
+   assert(!r3v_vertex_job_from_spirv(doubled, n + store_len, "main", &job,
                                       &reason));
    assert(strcmp(reason, "second varying store") == 0);
 }
@@ -349,7 +349,7 @@ static void test_reference_two_attribute_module(void)
    const char *reason = NULL;
    const uint32_t *m = r3v_reference_vertex_two_attributes_spirv;
    const size_t n = WORDS(r3v_reference_vertex_two_attributes_spirv);
-   bool admitted = r300_vertex_job_from_spirv(m, n, "main", &job, &reason);
+   bool admitted = r3v_vertex_job_from_spirv(m, n, "main", &job, &reason);
    if (!admitted)
       fprintf(stderr, "reference two-attribute refusal: %s\n", reason);
    assert(admitted);
@@ -405,16 +405,16 @@ static void test_reference_two_attribute_module(void)
    /* The color input relocated beyond the slot count. */
    const unsigned color_index = m[location_at[0]] == 1 ? 0 : 1;
    mutated[location_at[color_index]] = R300_VERTEX_JOB_MAX_INPUTS;
-   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(!r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(strcmp(reason,
                  "vertex input location beyond the attribute slots") == 0);
    /* The color input relocated onto the position's location. */
    mutated[location_at[color_index]] = 0;
-   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(!r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(strcmp(reason, "two vertex inputs at one location") == 0);
    /* The slot count itself admits: location 15 is the last slot. */
    mutated[location_at[color_index]] = R300_VERTEX_JOB_MAX_INPUTS - 1;
-   assert(r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(r300_vertex_job_input_mask(&job) ==
           (1u | 1u << (R300_VERTEX_JOB_MAX_INPUTS - 1)));
 }
@@ -429,7 +429,7 @@ static void test_reference_instance_modules(void)
 {
    struct r300_vertex_job job;
    const char *reason = NULL;
-   bool admitted = r300_vertex_job_from_spirv(
+   bool admitted = r3v_vertex_job_from_spirv(
       r3v_reference_vertex_instance_offset_spirv,
       WORDS(r3v_reference_vertex_instance_offset_spirv), "main", &job,
       &reason);
@@ -442,7 +442,7 @@ static void test_reference_instance_modules(void)
 
    const uint32_t *m = r3v_reference_vertex_instance_index_spirv;
    const size_t n = WORDS(r3v_reference_vertex_instance_index_spirv);
-   admitted = r300_vertex_job_from_spirv(m, n, "main", &job, &reason);
+   admitted = r3v_vertex_job_from_spirv(m, n, "main", &job, &reason);
    if (!admitted)
       fprintf(stderr, "reference instance-index refusal: %s\n", reason);
    assert(admitted);
@@ -475,7 +475,7 @@ static void test_reference_instance_modules(void)
 
    const uint32_t *vm = r3v_reference_vertex_vertex_index_spirv;
    const size_t vn = WORDS(r3v_reference_vertex_vertex_index_spirv);
-   admitted = r300_vertex_job_from_spirv(vm, vn, "main", &job, &reason);
+   admitted = r3v_vertex_job_from_spirv(vm, vn, "main", &job, &reason);
    if (!admitted)
       fprintf(stderr, "reference vertex-index refusal: %s\n", reason);
    assert(admitted);
@@ -519,18 +519,18 @@ static void test_reference_instance_modules(void)
    /* The builtin renamed outside the two index builtins. */
    memcpy(mutated, m, n * 4);
    mutated[builtin_at] = 5;
-   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(!r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(strcmp(reason, "int vertex input outside the VertexIndex and "
                          "InstanceIndex builtins") == 0);
    /* The builtin renamed to VertexIndex admits as that value. */
    mutated[builtin_at] = 42;
-   assert(r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(r300_vertex_job_reads_system_value(
       &job, R300_VERTEX_JOB_SV_VERTEX_INDEX));
    /* The builtin loaded as a float. */
    memcpy(mutated, m, n * 4);
    mutated[int_load_at + 1] = (uint32_t)float_type;
-   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(!r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(strcmp(reason, "system value loaded outside its int type") == 0);
    /* The conversion's operand redirected at the position load's result
     * id: the module loads the position after the conversion, so the id
@@ -538,7 +538,7 @@ static void test_reference_instance_modules(void)
     * loaded system value. */
    memcpy(mutated, m, n * 4);
    mutated[convert_at + 3] = m[position_load_at + 2];
-   assert(!r300_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
+   assert(!r3v_vertex_job_from_spirv(mutated, n, "main", &job, &reason));
    assert(strcmp(reason, "conversion outside a loaded system value to "
                          "float") == 0);
 }
@@ -551,29 +551,29 @@ static void test_module_refusals(void)
    const char *reason = NULL;
 
    /* The compute modules carry the GLCompute entry model. */
-   assert(!r300_vertex_job_from_spirv(r3v_reference_identity_map_spirv,
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_identity_map_spirv,
                                       WORDS(r3v_reference_identity_map_spirv),
                                       "main",
                                       &job, &reason));
-   assert(!r300_vertex_job_from_spirv(r3v_reference_scatter_reject_spirv,
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_scatter_reject_spirv,
                                       WORDS(r3v_reference_scatter_reject_spirv),
                                       "main",
                                       &job, &reason));
 
    /* Stage crosses: the fragment module refuses as a vertex program
     * and the vertex module as a fragment program. */
-   assert(!r300_vertex_job_from_spirv(r3v_reference_fragment_spirv,
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_fragment_spirv,
                                       WORDS(r3v_reference_fragment_spirv),
                                       "main",
                                       &job, &reason));
-   assert(!r300_fragment_constant_color_from_spirv(
+   assert(!r3v_fragment_constant_color_from_spirv(
       r3v_reference_vertex_spirv, WORDS(r3v_reference_vertex_spirv),
       "main", color,
       &reason));
 
    /* The fragment path admits constants alone, so the arithmetic
     * module refuses there. */
-   assert(!r300_fragment_constant_color_from_spirv(
+   assert(!r3v_fragment_constant_color_from_spirv(
       r3v_reference_vertex_arith_spirv,
       WORDS(r3v_reference_vertex_arith_spirv), "main", color, &reason));
 }
@@ -586,21 +586,21 @@ static void test_malformed_streams(void)
    struct r300_vertex_job job;
    const char *reason = NULL;
 
-   assert(!r300_vertex_job_from_spirv(NULL, 0, "main", &job, &reason));
-   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv, 4,
+   assert(!r3v_vertex_job_from_spirv(NULL, 0, "main", &job, &reason));
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_vertex_spirv, 4,
                                       "main", &job,
                                       &reason));
 
    uint32_t bad_magic[WORDS(r3v_reference_vertex_spirv)];
    memcpy(bad_magic, r3v_reference_vertex_spirv, sizeof(bad_magic));
    bad_magic[0] ^= 1;
-   assert(!r300_vertex_job_from_spirv(bad_magic, WORDS(bad_magic),
+   assert(!r3v_vertex_job_from_spirv(bad_magic, WORDS(bad_magic),
    "main", &job,
                                       &reason));
 
    for (size_t count = 5; count < WORDS(r3v_reference_vertex_spirv);
         count++) {
-      assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv, count,
+      assert(!r3v_vertex_job_from_spirv(r3v_reference_vertex_spirv, count,
                                          "main",
                                          &job, &reason));
    }
@@ -614,19 +614,19 @@ static void test_entry_name_binding(void)
 {
    struct r300_vertex_job job;
    const char *reason = NULL;
-   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_vertex_spirv,
                                       WORDS(r3v_reference_vertex_spirv),
                                       "other", &job, &reason));
    assert(strcmp(reason, "entry point name outside the request") == 0);
-   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_vertex_spirv,
                                       WORDS(r3v_reference_vertex_spirv),
                                       "mai", &job, &reason));
    assert(strcmp(reason, "entry point name outside the request") == 0);
-   assert(!r300_vertex_job_from_spirv(r3v_reference_vertex_spirv,
+   assert(!r3v_vertex_job_from_spirv(r3v_reference_vertex_spirv,
                                       WORDS(r3v_reference_vertex_spirv),
                                       NULL, &job, &reason));
    uint32_t color[4];
-   assert(!r300_fragment_constant_color_from_spirv(
+   assert(!r3v_fragment_constant_color_from_spirv(
       r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
       "other", color, &reason));
    assert(strcmp(reason, "entry point name outside the request") == 0);
@@ -644,7 +644,7 @@ static void test_short_final_instruction(void)
    words[WORDS(r3v_reference_vertex_spirv)] = (1u << 16) | 19u;
    struct r300_vertex_job job;
    const char *reason = NULL;
-   assert(!r300_vertex_job_from_spirv(words, WORDS(words), "main", &job,
+   assert(!r3v_vertex_job_from_spirv(words, WORDS(words), "main", &job,
                                       &reason));
    assert(strcmp(reason, "instruction after the final output store") == 0);
 }
@@ -680,7 +680,7 @@ static void test_instruction_after_store(void)
           (n - store_end) * 4);
    struct r300_vertex_job job;
    const char *reason = NULL;
-   assert(!r300_vertex_job_from_spirv(words, n + load_len, "main", &job,
+   assert(!r3v_vertex_job_from_spirv(words, n + load_len, "main", &job,
                                       &reason));
    assert(strcmp(reason, "instruction after the final output store") == 0);
 }
@@ -698,7 +698,7 @@ static void test_mutation_sweep(void)
       for (uint32_t bit = 0; bit < 32; bit += 7) {
          memcpy(mutated, r3v_reference_vertex_spirv, sizeof(mutated));
          mutated[word] ^= 1u << bit;
-         if (!r300_vertex_job_from_spirv(mutated, WORDS(mutated), "main", &job,
+         if (!r3v_vertex_job_from_spirv(mutated, WORDS(mutated), "main", &job,
                                          &reason))
             continue;
          assert(job.instruction_count == 2);

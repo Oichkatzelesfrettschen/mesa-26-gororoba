@@ -4,7 +4,7 @@ RS482 (Radeon Xpress 1100/1150, PCI `1002:5974`, `CHIP_RS480`, R300-class
 integrated graphics, vertex engine absent) runs its admitted compute kernels on
 the CPU direct-SPIR-V route. That route is the oracle every GPU result is
 measured against and the measured default for small draws
-(`src/amd/r300/common/r300_compute_spirv.c`, executed by
+(`src/amd/r300/vulkan/r3v_compute_spirv.c`, executed by
 `r300_cpu_compute_job_execute`). This atlas names, for every unit from the PM4
 command stream down to the color backend, the arithmetic the unit performs, the
 numeric domains it performs it in, and the evidence that backs each statement,

@@ -11,7 +11,7 @@
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
 #undef NDEBUG
 
-#include "amd/r300/common/r300_compute_spirv.h"
+#include "amd/r300/vulkan/r3v_compute_spirv.h"
 #include "amd/r300/cpu/r300_cpu_compute_job.h"
 
 #include "r3v_native_reference_spirv.h"
@@ -29,7 +29,7 @@ static void test_reference_identity_module(void)
 {
    struct r300_compute_job job;
    const char *reason = NULL;
-   bool admitted = r300_compute_job_from_spirv(
+   bool admitted = r3v_compute_job_from_spirv(
       r3v_reference_identity_map_spirv,
       sizeof(r3v_reference_identity_map_spirv) / 4, "main", &job, &reason);
    if (!admitted)
@@ -70,7 +70,7 @@ static void test_reference_bitwise_not_module(void)
 {
    struct r300_compute_job job;
    const char *reason = NULL;
-   bool admitted = r300_compute_job_from_spirv(
+   bool admitted = r3v_compute_job_from_spirv(
       r3v_reference_bitwise_not_spirv,
       sizeof(r3v_reference_bitwise_not_spirv) / 4, "main", &job, &reason);
    if (!admitted)
@@ -139,7 +139,7 @@ static void test_unread_complement_refuses(void)
 
    struct r300_compute_job job;
    const char *reason = NULL;
-   assert(!r300_compute_job_from_spirv(mutated, words, "main", &job,
+   assert(!r3v_compute_job_from_spirv(mutated, words, "main", &job,
                                        &reason));
    assert(strcmp(reason,
                  "stored value leaves the bitwise complement unread") == 0);
@@ -152,7 +152,7 @@ static void test_reference_scatter_module(void)
 {
    struct r300_compute_job job;
    const char *reason = NULL;
-   bool admitted = r300_compute_job_from_spirv(
+   bool admitted = r3v_compute_job_from_spirv(
       r3v_reference_scatter_reject_spirv,
       sizeof(r3v_reference_scatter_reject_spirv) / 4, "main", &job, &reason);
    assert(!admitted);
@@ -167,7 +167,7 @@ static void test_wrong_stage_refuses(void)
 {
    struct r300_compute_job job;
    const char *reason = NULL;
-   bool admitted = r300_compute_job_from_spirv(
+   bool admitted = r3v_compute_job_from_spirv(
       r3v_reference_vertex_spirv,
       sizeof(r3v_reference_vertex_spirv) / 4, "main", &job, &reason);
    assert(!admitted);
@@ -185,8 +185,8 @@ static void test_malformed_streams_refuse(void)
       sizeof(r3v_reference_identity_map_spirv) / 4;
 
    /* Empty and header-only streams. */
-   assert(!r300_compute_job_from_spirv(NULL, 0, "main", &job, &reason));
-   assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
+   assert(!r3v_compute_job_from_spirv(NULL, 0, "main", &job, &reason));
+   assert(!r3v_compute_job_from_spirv(r3v_reference_identity_map_spirv,
                                        4, "main", &job, &reason));
 
    /* A wrong magic number. */
@@ -194,15 +194,15 @@ static void test_malformed_streams_refuse(void)
    assert(words <= 2048);
    memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
    mutated[0] ^= 1;
-   assert(!r300_compute_job_from_spirv(mutated, words, "main", &job, &reason));
+   assert(!r3v_compute_job_from_spirv(mutated, words, "main", &job, &reason));
 
    /* The OpEntryPoint literal binds to the requested name byte for
     * byte; a NULL request refuses before the module is read.
     */
-   assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
+   assert(!r3v_compute_job_from_spirv(r3v_reference_identity_map_spirv,
                                        words, "other", &job, &reason));
    assert(strcmp(reason, "entry point name outside the request") == 0);
-   assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
+   assert(!r3v_compute_job_from_spirv(r3v_reference_identity_map_spirv,
                                        words, NULL, &job, &reason));
 
    /* A one-word final instruction refuses on its length before any
@@ -211,7 +211,7 @@ static void test_malformed_streams_refuse(void)
     */
    memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
    mutated[words] = (1u << 16) | 19u;
-   assert(!r300_compute_job_from_spirv(mutated, words + 1, "main", &job,
+   assert(!r3v_compute_job_from_spirv(mutated, words + 1, "main", &job,
                                        &reason));
    assert(strcmp(reason, "instruction after the final output store") == 0);
 
@@ -219,7 +219,7 @@ static void test_malformed_streams_refuse(void)
     * either an instruction overruns or the function never completes.
     */
    for (size_t cut = 5; cut < words; cut++) {
-      assert(!r300_compute_job_from_spirv(r3v_reference_identity_map_spirv,
+      assert(!r3v_compute_job_from_spirv(r3v_reference_identity_map_spirv,
                                           cut, "main", &job, &reason));
    }
 
@@ -231,7 +231,7 @@ static void test_malformed_streams_refuse(void)
       memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
       mutated[i] ^= 0x10001u;
       struct r300_compute_job mutated_job;
-      if (r300_compute_job_from_spirv(mutated, words, "main", &mutated_job,
+      if (r3v_compute_job_from_spirv(mutated, words, "main", &mutated_job,
                                       &reason)) {
          assert(mutated_job.op == R300_COMPUTE_JOB_OP_IDENTITY);
          assert(mutated_job.input_binding !=
@@ -248,7 +248,7 @@ static void test_malformed_streams_refuse(void)
       memcpy(mutated, r3v_reference_bitwise_not_spirv, not_words * 4);
       mutated[i] ^= 0x10001u;
       struct r300_compute_job mutated_job;
-      if (r300_compute_job_from_spirv(mutated, not_words, "main",
+      if (r3v_compute_job_from_spirv(mutated, not_words, "main",
                                       &mutated_job, &reason)) {
          assert(mutated_job.op == R300_COMPUTE_JOB_OP_BITWISE_NOT);
          assert(mutated_job.input_binding !=
