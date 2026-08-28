@@ -792,12 +792,30 @@ above is rung zero; the ladder after it runs in this order:
    targets exact under their own constants over 1152 pixels and zero
    under the other's, dmesg delta empty, a 99 us guarded interval, so
    the concatenation carries no state across the boundary and the
-   command processor reaches the second cell.  The shared bindings are
-   drm-shim-held and silicon-unrun, and the public-API two-draw command
-   buffer on hardware is the next step.  Open behind that: the
-   GPU producer route, which composes one consumer stream over one
-   carrier and judges one read-back, so a second pass beside it refuses
-   by name.
+   command processor reaches the second cell.  The public-API two-draw
+   command buffer holds its own receipt at mesa `e84ef39eb3b`
+   (`r3v_native_attended_public_two_draw`,
+   `docs/hardware/r3v-native-attended-public-two-draw-procedure.md`,
+   steinmarder-r300
+   `r3v-native-public-two-draw-first-delivery-rs482`): two render
+   passes with a draw each through images, one render pass, two
+   framebuffers, and one pipeline over each admitted fragment module
+   (the reference module's green and `r3v_reference_fragment_blue_spirv`),
+   the recorded stream digested against the emitter ahead of the ioctl
+   (blake3 `44959464`), both targets exact under their own constants
+   and zero under the other's, a 100 us guarded interval.  Two refused
+   attempts preceded it, each ahead of the ioctl with the attempt
+   unspent: the multi-pass predicate had frozen only the recorder
+   form, so it now freezes the public form too (both deferred draws
+   pending over in-family extents) and `r3v-native-public-surface`
+   armed-submits the public two-draw on the shim; and the runner had
+   fed the clip-space CPU route a window-space payload, so it now
+   writes the NDC reference and refuses ahead of the device any payload
+   that misses the reference window positions.  The shared bindings
+   are drm-shim-held and silicon-unrun.  Open behind that: the GPU
+   producer route, which composes one consumer stream over one carrier
+   and judges one read-back, so a second pass beside it refuses by
+   name.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated

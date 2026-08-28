@@ -171,6 +171,27 @@ now writes the NDC reference and applies the route's transform itself
 ahead of the device, refusing a payload that misses the reference
 window positions.
 
+### Third attempt: delivered
+
+The cell holds its silicon receipt from the third attended submission
+on RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
+`e84ef39eb3b`, under an arming report matching all five declarations
+against cell blake3 `44959464`.  Every predicted value held: the
+`[record]` line agreed (`recorded 44959464 emitted 44959464`, kind
+multi-pass, four references, two deferred draws), both targets
+`coverage_exact=1 canary=1 interior=1152 analytic=1152 exterior=2944
+mismatch=0` under their own constants and `coverage_exact=0
+mismatch=1152` under the other pass's, the second centroid
+`0xff0000ff`, `vkQueueSubmit` 0, an empty dmesg delta, an unchanged
+boot, and a 100 us guarded interval on the production module.  So the
+public route records the emitter's stream, the concatenation executes
+through one indirect buffer, and no state crosses the pass boundary.
+Bundle: steinmarder-r300
+`src/re/r300/results/r3v-native-public-two-draw-first-delivery-rs482`,
+which also retains both refused attempts and the probes that named
+their sites.  The shared bindings stay drm-shim-held and silicon-unrun,
+and the GPU producer route still refuses a second pass by name.
+
 ## Retained record
 
 The shared procedure's record plus `first_target.bin` and
