@@ -543,13 +543,16 @@ submission slice whatever its namespace.
 The dEQP-VK binary reaches the target as a bundle
 `tests/r3v_deqp_provision.py bundle` writes: the binary, its data
 directory, the mustpass corpus selected by `--corpus-pin`, and
-`provenance.json`.  The producer binds the CMake home and build
-directories to the source checkout and selected executable, admits
-ELF64 x86-64 exclusively, records required dynamic symbol versions,
-classifies every decoded instruction through XED against the K8 ISA-set
-boundary, checks the mustpass case count and corpus digest, and keeps the
-output outside every copied input.  The producer revalidates the copied
-mustpass bytes against the same pin before publication.  `verify`
+`provenance.json`.  The producer requires the supplied cache to be the
+build directory's canonical `CMakeCache.txt`, binds its CMake home and
+build directories to the source checkout and selected executable, and
+binds the corpus pin to the tracked blob at the provisioner repository's
+HEAD.  Admission accepts ELF64 x86-64 exclusively, records required
+dynamic symbol versions, classifies every decoded instruction through
+XED against the K8 ISA-set boundary, checks the mustpass case count and
+corpus digest, and keeps the output outside every copied input.  The
+producer revalidates the copied mustpass bytes against the same pin
+before publication.  `verify`
 recomputes the transported ELF and loader identities, requires the
 binary interpreter to resolve to the verifier host's interpreter, and
 uses that trusted loader's `--list` mode with `LD_*` overrides removed to

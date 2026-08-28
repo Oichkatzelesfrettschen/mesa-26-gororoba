@@ -12,9 +12,10 @@ compiler, binutils, ELF64 machine, dynamic-library and symbol-version
 requirements, embedded CTS release name, GNU x86 ISA-needed property,
 XED ISA-set census, the functions whose instructions exceed the K8
 feature set, the checked-in mustpass pin, and the mustpass and data tree
-digests.  Bundle admission binds the CMake source and build directories
-to the selected source and binary, validates the corpus pin, rejects an
-output below any input root, and publishes through one staging rename.
+digests.  Bundle admission binds the canonical CMake cache to its source
+and build directories, binds the corpus pin to its tracked HEAD blob,
+rejects an output below any input root, and publishes through one staging
+rename.
 ``verify`` recomputes the identities and confirms that the target's
 dynamic providers export every required symbol version.  The loader's
 ISA-needed property stays intact; a binary above the baseline requires a
@@ -31,6 +32,7 @@ import re
 import shutil
 import stat
 import struct
+
 # External analysis tools execute as argv sequences with the shell disabled.
 import subprocess  # nosec B404
 import sys
@@ -45,6 +47,7 @@ from r3v_conformance_partition import (
 )
 
 PROVENANCE_VERSION = 2
+CANONICAL_CORPUS_PIN = Path(__file__).resolve().with_name("r3v_conformance_corpus.pin")
 CACHE_PINS = (
     "CMAKE_BUILD_TYPE",
     "DEQP_TARGET",
@@ -124,6 +127,53 @@ def corpus_identity(mustpass_dir, pin_path):
     }
 
 
+def corpus_pin_authority(
+    pin_path,
+    canonical_path=CANONICAL_CORPUS_PIN,
+    repository_root=None,
+):
+    selected_pin = Path(pin_path).resolve()
+    expected_pin = Path(canonical_path).resolve()
+    if selected_pin != expected_pin:
+        raise ProvisionRefusal(
+            f"corpus pin {selected_pin} is not canonical {expected_pin}"
+        )
+    if repository_root is None:
+        repository_root = run(
+            ["git", "-C", str(expected_pin.parent), "rev-parse", "--show-toplevel"]
+        ).strip()
+    repository_root = Path(repository_root).resolve()
+    try:
+        relative_pin = selected_pin.relative_to(repository_root)
+    except ValueError:
+        raise ProvisionRefusal(
+            f"canonical corpus pin {selected_pin} is outside repository "
+            f"{repository_root}"
+        )
+    repository_commit = run(
+        ["git", "-C", str(repository_root), "rev-parse", "HEAD"]
+    ).strip()
+    tracked_blob = run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "rev-parse",
+            f"HEAD:{relative_pin.as_posix()}",
+        ]
+    ).strip()
+    working_blob = run(["git", "hash-object", str(selected_pin)]).strip()
+    if working_blob != tracked_blob:
+        raise ProvisionRefusal(
+            f"canonical corpus pin {relative_pin} differs from HEAD {repository_commit}"
+        )
+    return {
+        "repository_commit": repository_commit,
+        "repository_path": relative_pin.as_posix(),
+        "git_blob": tracked_blob,
+    }
+
+
 def validate_copied_corpus(mustpass_dir, pin_path, expected_identity):
     try:
         copied_identity = corpus_identity(mustpass_dir, pin_path)
@@ -162,8 +212,17 @@ def source_identity(source_root):
 
 
 def cache_pins(cache_path, source_root, binary):
+    cache_file = Path(cache_path)
+    try:
+        cache_mode = cache_file.lstat().st_mode
+    except OSError:
+        cache_mode = 0
+    if not stat.S_ISREG(cache_mode) or cache_file.name != "CMakeCache.txt":
+        raise ProvisionRefusal(
+            f"CMake cache {cache_file} is not a regular canonical CMakeCache.txt"
+        )
     pins = {}
-    for line in Path(cache_path).read_text().splitlines():
+    for line in cache_file.read_text().splitlines():
         m = re.match(r"^([A-Za-z0-9_]+):[A-Z]+=(.*)$", line)
         if m and m.group(1) in CACHE_PINS:
             pins[m.group(1)] = m.group(2)
@@ -178,6 +237,12 @@ def cache_pins(cache_path, source_root, binary):
             raise ProvisionRefusal(f"CMakeCache lacks {key}")
     cache_source = Path(pins["CMAKE_HOME_DIRECTORY"]).resolve()
     cache_build = Path(pins["CMAKE_CACHEFILE_DIR"]).resolve()
+    canonical_cache = cache_build / "CMakeCache.txt"
+    if cache_file.resolve() != canonical_cache.resolve():
+        raise ProvisionRefusal(
+            f"CMake cache {cache_file.resolve()} is not the canonical cache "
+            f"{canonical_cache} declared by its build directory"
+        )
     expected_source = Path(source_root).resolve()
     selected_binary = Path(binary).resolve()
     if cache_source != expected_source:
@@ -362,7 +427,7 @@ def binary_transport_identity(binary):
     """Bind executable bytes to their target-visible ELF and loader identity."""
     b = Path(binary)
     try:
-        mode = b.stat().st_mode
+        mode = b.lstat().st_mode
     except OSError:
         mode = 0
     if not stat.S_ISREG(mode) or not os.access(b, os.X_OK):
@@ -612,6 +677,11 @@ def bundle(args):
     if not src["clean"]:
         raise ProvisionRefusal("source tree is dirty; no bundle is written")
     pins = cache_pins(args.cmake_cache, source_root, binary_path)
+    pin_authority = corpus_pin_authority(
+        args.corpus_pin,
+        getattr(args, "_canonical_corpus_pin", CANONICAL_CORPUS_PIN),
+        getattr(args, "_corpus_pin_repository", None),
+    )
     corpus_pin = corpus_identity(mustpass, args.corpus_pin)
     if corpus_pin["cts_describe"] != src["describe"]:
         raise ProvisionRefusal(
@@ -673,6 +743,7 @@ def bundle(args):
                 "files": mp_count,
                 "source_path": str(mustpass),
                 "corpus_pin": corpus_pin,
+                "pin_authority": pin_authority,
             },
         }
         body = json.dumps(prov, sort_keys=True, separators=(",", ":")).encode()
@@ -707,7 +778,7 @@ def verify(args):
         raise ProvisionRefusal("provenance digest does not match its body")
     transported_binary = out / "deqp-vk"
     try:
-        mode = transported_binary.stat().st_mode
+        mode = transported_binary.lstat().st_mode
     except OSError:
         mode = 0
     if not stat.S_ISREG(mode) or not os.access(transported_binary, os.X_OK):
@@ -782,6 +853,28 @@ def selftest():
         )
         git_environment = os.environ.copy()
         git_environment["GIT_CONFIG_GLOBAL"] = str(global_config)
+
+        def commit_all(repository, message):
+            run(["git", "-C", str(repository), "add", "-A"], env=git_environment)
+            run(
+                [
+                    "git",
+                    "-C",
+                    str(repository),
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "-q",
+                    "-m",
+                    message,
+                ],
+                env=git_environment,
+            )
+
         run(["git", "init", "-q", str(src)], env=git_environment)
         run(
             [
@@ -887,12 +980,16 @@ def selftest():
         mp = d / "mp"
         mp.mkdir()
         (mp / "api.txt").write_text("dEQP-VK.api.x\n")
-        pin = d / "corpus.pin"
+        pin_repository = d / "pin-repository"
+        pin_repository.mkdir()
+        run(["git", "init", "-q", str(pin_repository)], env=git_environment)
+        pin = pin_repository / "r3v_conformance_corpus.pin"
         pin.write_text(
             f"cts_describe\tvulkan-cts-1.0.0.0-1-g{head[:7]}\n"
             "case_count\t1\n"
             f"corpus_sha256\t{hashlib.sha256(b'dEQP-VK.api.x\n').hexdigest()}\n"
         )
+        commit_all(pin_repository, "pin v1 corpus")
         copied_mp = d / "copied-mp"
         shutil.copytree(mp, copied_mp)
         (copied_mp / "api.txt").write_text("dEQP-VK.api.changed\n")
@@ -917,6 +1014,8 @@ def selftest():
                     data_dir=str(data_ or data),
                     mustpass_dir=str(mustpass_ or mp),
                     corpus_pin=str(pin_ or pin),
+                    _canonical_corpus_pin=str(pin),
+                    _corpus_pin_repository=str(pin_repository),
                     isa_allow_symbols=allow,
                     strip_isa_property=strip,
                     startfiles=None,
@@ -936,6 +1035,16 @@ def selftest():
             lambda: validate_copied_corpus(copied_mp, pin, expected_corpus_identity),
             "copied mustpass corpus",
         )
+        ad_hoc_pin = d / "ad-hoc.pin"
+        shutil.copy2(pin, ad_hoc_pin)
+        expect(
+            lambda: do_bundle(d / "out-ad-hoc-pin", pin_=ad_hoc_pin),
+            "is not canonical",
+        )
+        clean_pin_text = pin.read_text()
+        pin.write_text(clean_pin_text.replace("case_count\t1", "case_count\t2"))
+        expect(lambda: do_bundle(d / "out-dirty-pin"), "differs from HEAD")
+        pin.write_text(clean_pin_text)
         out = d / "out"
         do_bundle(out)
         verify(argparse.Namespace(bundle=str(out)))
@@ -944,6 +1053,16 @@ def selftest():
         empty_out.mkdir()
         do_bundle(empty_out)
         verify(argparse.Namespace(bundle=str(empty_out)))
+        symlink_out = d / "out-symlink"
+        do_bundle(symlink_out)
+        external_binary = d / "external-deqp-vk"
+        shutil.copy2(symlink_out / "deqp-vk", external_binary)
+        (symlink_out / "deqp-vk").unlink()
+        (symlink_out / "deqp-vk").symlink_to(external_binary)
+        expect(
+            lambda: verify(argparse.Namespace(bundle=str(symlink_out))),
+            "regular executable",
+        )
         executable_mode = (out / "deqp-vk").stat().st_mode
         (out / "deqp-vk").chmod(executable_mode & ~0o111)
         expect(
@@ -991,8 +1110,12 @@ def selftest():
         )
         (d / "pblend.S").write_text(
             ".text\n.global _start\n_start:\n"
-            " pblendw $0,%xmm1,%xmm0\n xor %edi,%edi\n"
-            " mov $60,%eax\n syscall\n.section .rodata\n"
+            " mov $1,%eax\n cpuid\n test $0x80000,%ecx\n"
+            " jz 1f\n call sse41_path\n1:\n xor %edi,%edi\n"
+            " mov $60,%eax\n syscall\n"
+            ".type sse41_path,@function\nsse41_path:\n"
+            " pblendw $0,%xmm1,%xmm0\n ret\n"
+            ".section .rodata\n"
             f'.string "vulkan-cts-1.0.0.0-1-g{head}"\n'
         )
         pblend = d / "pblend"
@@ -1011,6 +1134,9 @@ def selftest():
             lambda: do_bundle(d / "out-pblend", bin_=pblend, allow=None),
             "no allow pattern admits",
         )
+        pblend_out = d / "out-pblend-admitted"
+        do_bundle(pblend_out, bin_=pblend, allow="^sse41_path$")
+        verify(argparse.Namespace(bundle=str(pblend_out)))
         prov = json.loads((d / "out-recreated" / "provenance.json").read_text())
         prov["binary"]["isa_unadmitted"] = ["f"]
         write_selftest_provenance(d / "out-recreated", prov)
@@ -1061,12 +1187,12 @@ def selftest():
                 str(d / "tagged.S"),
             ]
         )
-        tagged_pin = d / "tagged.pin"
-        tagged_pin.write_text(
+        pin.write_text(
             "cts_describe\tvulkan-cts-2.0.0.0\ncase_count\t1\n"
             f"corpus_sha256\t{hashlib.sha256(b'dEQP-VK.api.x\n').hexdigest()}\n"
         )
-        do_bundle(d / "out-tagged", bin_=tagged, pin_=tagged_pin)
+        commit_all(pin_repository, "pin tagged corpus")
+        do_bundle(d / "out-tagged", bin_=tagged)
         # A shorter version-shaped string ahead of the release name is
         # a decoy the longest match passes over.
         (d / "decoy.S").write_text(
@@ -1102,7 +1228,9 @@ def selftest():
                     binary=str(binary),
                     data_dir=str(data),
                     mustpass_dir=str(mp),
-                    corpus_pin=str(tagged_pin),
+                    corpus_pin=str(pin),
+                    _canonical_corpus_pin=str(pin),
+                    _corpus_pin_repository=str(pin_repository),
                     isa_allow_symbols="(",
                     strip_isa_property=False,
                     startfiles=None,
@@ -1110,51 +1238,68 @@ def selftest():
             ),
             "missing )",
         )
-        bad_cache = d / "bad-cache.txt"
-        bad_cache.write_text(
-            cache.read_text().replace(
+        copied_cache_directory = d / "copied-cache"
+        copied_cache_directory.mkdir()
+        copied_cache = copied_cache_directory / "CMakeCache.txt"
+        copied_cache.write_text(cache.read_text())
+        expect(
+            lambda: do_bundle(d / "out-copied-cache", cache_=copied_cache),
+            "is not the canonical cache",
+        )
+        bad_source_cache_directory = d / "bad-source-cache"
+        bad_source_cache_directory.mkdir()
+        bad_source_cache = bad_source_cache_directory / "CMakeCache.txt"
+        bad_source_cache.write_text(
+            cache.read_text()
+            .replace(
                 f"CMAKE_HOME_DIRECTORY:INTERNAL={src}",
                 f"CMAKE_HOME_DIRECTORY:INTERNAL={d}",
             )
-        )
-        expect(
-            lambda: do_bundle(
-                d / "out-cache-source", cache_=bad_cache, pin_=tagged_pin
-            ),
-            "does not match source root",
-        )
-        bad_cache.write_text(
-            cache.read_text().replace(
+            .replace(
                 f"CMAKE_CACHEFILE_DIR:INTERNAL={d}",
-                f"CMAKE_CACHEFILE_DIR:INTERNAL={src}",
+                f"CMAKE_CACHEFILE_DIR:INTERNAL={bad_source_cache_directory}",
             )
         )
         expect(
-            lambda: do_bundle(d / "out-cache-build", cache_=bad_cache, pin_=tagged_pin),
+            lambda: do_bundle(d / "out-cache-source", cache_=bad_source_cache),
+            "does not match source root",
+        )
+        bad_build_cache_directory = d / "bad-build-cache"
+        bad_build_cache_directory.mkdir()
+        bad_build_cache = bad_build_cache_directory / "CMakeCache.txt"
+        bad_build_cache.write_text(
+            cache.read_text().replace(
+                f"CMAKE_CACHEFILE_DIR:INTERNAL={d}",
+                f"CMAKE_CACHEFILE_DIR:INTERNAL={bad_build_cache_directory}",
+            )
+        )
+        expect(
+            lambda: do_bundle(d / "out-cache-build", cache_=bad_build_cache),
             "outside CMakeCache build directory",
         )
         expect(
-            lambda: do_bundle(src / "provisioned", pin_=tagged_pin),
+            lambda: do_bundle(src / "provisioned"),
             "equal to or below source root",
         )
         expect(
-            lambda: do_bundle(data / "provisioned", pin_=tagged_pin),
+            lambda: do_bundle(data / "provisioned"),
             "equal to or below data directory",
         )
         expect(
-            lambda: do_bundle(mp / "provisioned", pin_=tagged_pin),
+            lambda: do_bundle(mp / "provisioned"),
             "equal to or below mustpass directory",
         )
-        bad_pin = d / "bad.pin"
-        bad_pin.write_text(
-            tagged_pin.read_text().replace("case_count\t1", "case_count\t2")
-        )
-        expect(lambda: do_bundle(d / "out-bad-pin", pin_=bad_pin), "is not the pinned")
+        tagged_pin_text = pin.read_text()
+        pin.write_text(tagged_pin_text.replace("case_count\t1", "case_count\t2"))
+        commit_all(pin_repository, "pin mismatched corpus")
+        expect(lambda: do_bundle(d / "out-bad-pin"), "is not the pinned")
+        pin.write_text(tagged_pin_text)
+        commit_all(pin_repository, "restore tagged corpus")
         binary32 = d / "binary32"
         run(["objcopy", "-O", "elf32-i386", str(binary), str(binary32)])
         binary32.chmod(0o755)
         expect(
-            lambda: do_bundle(d / "out-elf32", bin_=binary32, pin_=tagged_pin),
+            lambda: do_bundle(d / "out-elf32", bin_=binary32),
             "requires ELF64",
         )
         dynamic_source = d / "dynamic.c"
@@ -1183,14 +1328,15 @@ def selftest():
             "version unknown",
         )
         cache.write_text("CMAKE_BUILD_TYPE:STRING=Release\n")
-        expect(lambda: do_bundle(d / "out3", pin_=tagged_pin), "lacks DEQP_TARGET")
+        expect(lambda: do_bundle(d / "out3"), "lacks DEQP_TARGET")
     print(
         "selftest: bundle, verify, non-empty target, tampered corpus, "
-        "copied-corpus admission, tampered provenance, executable mode, "
-        "deterministic elevated ISA "
+        "copied-corpus admission, canonical tracked pin, tampered provenance, "
+        "executable mode and symlink containment, deterministic elevated ISA "
         "note, rejected GNU-property stripping, stale and tagged release "
-        "names, XED-classified SSE4, dirty source, cache source/build "
-        "binding, output containment, corpus pin, ELF64 machine, target "
+        "names, XED-classified SSE4 refusal and scoped admission, dirty source, "
+        "canonical cache source/build binding, output containment, corpus pin, "
+        "ELF64 machine, target "
         "symbol versions, unknown schema, signing isolation, and missing "
         "cache pin each hold"
     )
