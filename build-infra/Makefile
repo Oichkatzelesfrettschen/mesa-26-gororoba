@@ -28,6 +28,8 @@
 #   build-infra/env/*.env                    -- per-host toolchain env
 
 override SHELL := /bin/bash
+override PYTHONDONTWRITEBYTECODE := 1
+export PYTHONDONTWRITEBYTECODE
 
 override BUILD_INFRA_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
 override BUILD_INFRA_ROOT := $(realpath $(dir $(BUILD_INFRA_MAKEFILE)))
@@ -49,6 +51,16 @@ override COMMAND_VARIABLE_WITH_DOLLAR := $(firstword \
 ifneq ($(COMMAND_VARIABLE_WITH_DOLLAR),)
 $(error command-line variable $(COMMAND_VARIABLE_WITH_DOLLAR) contains executable dollar syntax)
 endif
+override LEGACY_NAMESPACE_VARIABLE := $(firstword \
+	$(foreach variable,$(.VARIABLES),\
+		$(if $(findstring GOROROBA_,$(variable)),$(variable))))
+ifneq ($(LEGACY_NAMESPACE_VARIABLE),)
+override LEGACY_NAMESPACE_REPLACEMENT := $(if \
+	$(filter GOROROBA_MESA_ENV,$(LEGACY_NAMESPACE_VARIABLE)),MESA_ENV_FILE,$(if \
+	$(filter GOROROBA_MESA_PREFIX,$(LEGACY_NAMESPACE_VARIABLE)),MESA_INSTALL_PREFIX,$(if \
+	$(filter MESA_GOROROBA_DEPLOY_ACCEPTED,$(LEGACY_NAMESPACE_VARIABLE)),MESA_DEPLOY_ACCEPTED,$(subst GOROROBA_,MESA_,$(LEGACY_NAMESPACE_VARIABLE)))))
+$(error legacy build variable $(LEGACY_NAMESPACE_VARIABLE) is retired; use $(LEGACY_NAMESPACE_REPLACEMENT))
+endif
 
 # --- configurable parameters -------------------------------------------------
 PROFILE  ?= 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
@@ -65,27 +77,30 @@ INSTALL_NAMESPACE ?= mesa
 MODE ?=
 COMPILER_CHAIN ?= ccache
 COMPILER_FAMILY ?= llvm
+REPRODUCIBLE_RUN ?= 0
 override make_shell_quote = '$(subst ','"'"',$(1))'
-override GOROROBA_PROFILE_RAW := $(value PROFILE)
-override GOROROBA_HOSTENV_RAW := $(value HOSTENV)
-override GOROROBA_INSTALL_NAMESPACE_RAW := $(value INSTALL_NAMESPACE)
-override GOROROBA_MODE_RAW := $(value MODE)
-override GOROROBA_COMPILER_CHAIN_RAW := $(value COMPILER_CHAIN)
-override GOROROBA_COMPILER_FAMILY_RAW := $(value COMPILER_FAMILY)
+override MESA_PROFILE_RAW := $(value PROFILE)
+override MESA_HOSTENV_RAW := $(value HOSTENV)
+override MESA_INSTALL_NAMESPACE_RAW := $(value INSTALL_NAMESPACE)
+override MESA_MODE_RAW := $(value MODE)
+override MESA_COMPILER_CHAIN_RAW := $(value COMPILER_CHAIN)
+override MESA_COMPILER_FAMILY_RAW := $(value COMPILER_FAMILY)
+override MESA_REPRODUCIBLE_RUN_RAW := $(value REPRODUCIBLE_RUN)
 override SELECTOR_FIELDS := $(shell \
-	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_RAW)) \
-	GOROROBA_HOSTENV_INPUT=$(call make_shell_quote,$(value GOROROBA_HOSTENV_RAW)) \
-	GOROROBA_INSTALL_NAMESPACE_INPUT=$(call make_shell_quote,$(value GOROROBA_INSTALL_NAMESPACE_RAW)) \
-	GOROROBA_MODE_INPUT=$(call make_shell_quote,$(value GOROROBA_MODE_RAW)) \
-	GOROROBA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_CHAIN_RAW)) \
-	GOROROBA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_FAMILY_RAW)) \
+	MESA_PROFILE_INPUT=$(call make_shell_quote,$(value MESA_PROFILE_RAW)) \
+	MESA_HOSTENV_INPUT=$(call make_shell_quote,$(value MESA_HOSTENV_RAW)) \
+	MESA_INSTALL_NAMESPACE_INPUT=$(call make_shell_quote,$(value MESA_INSTALL_NAMESPACE_RAW)) \
+	MESA_MODE_INPUT=$(call make_shell_quote,$(value MESA_MODE_RAW)) \
+	MESA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_CHAIN_RAW)) \
+	MESA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_FAMILY_RAW)) \
+	MESA_REPRODUCIBLE_RUN_INPUT=$(call make_shell_quote,$(value MESA_REPRODUCIBLE_RUN_RAW)) \
 	python3 $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
 	validate-selectors)
 override SELECTOR_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SELECTOR_RESOLVE_STATUS),0)
 $(error build selector resolution failed)
 endif
-ifneq ($(words $(SELECTOR_FIELDS)),6)
+ifneq ($(words $(SELECTOR_FIELDS)),7)
 $(error build selector control returned an invalid field set)
 endif
 override PROFILE := $(word 1,$(SELECTOR_FIELDS))
@@ -99,9 +114,10 @@ override MODE := $(MODE_SELECTOR)
 endif
 override COMPILER_CHAIN := $(word 5,$(SELECTOR_FIELDS))
 override COMPILER_FAMILY := $(word 6,$(SELECTOR_FIELDS))
+override REPRODUCIBLE_RUN := $(word 7,$(SELECTOR_FIELDS))
 
 override MAKE_VERSION_SUPPORTED := $(shell \
-	GOROROBA_MAKE_VERSION_INPUT=$(call make_shell_quote,$(value MAKE_VERSION)) \
+	MESA_MAKE_VERSION_INPUT=$(call make_shell_quote,$(value MAKE_VERSION)) \
 	python3 $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
 	validate-make-version)
 ifneq ($(MAKE_VERSION_SUPPORTED),yes)
@@ -136,26 +152,30 @@ SYSCONFDIR ?= /etc
 # receives them through the process environment, validates their character
 # domain, resolves symlinks, and returns canonical paths before any recipe
 # interpolates them into shell syntax.
-override GOROROBA_TOPSRC_INPUT := $(value TOPSRC)
-override GOROROBA_BUILD_ROOT_INPUT := $(value BUILD_ROOT)
-override GOROROBA_BUILDDIR_INPUT := $(value BUILDDIR)
-override GOROROBA_PREFIX_INPUT := $(value PREFIX)
-override GOROROBA_SYSCONFDIR_INPUT := $(value SYSCONFDIR)
-override GOROROBA_PROFILE_INPUT := $(value PROFILE)
-override GOROROBA_HOSTENV_INPUT := $(value HOSTENV)
-override GOROROBA_MODE_INPUT := $(value MODE)
-override GOROROBA_COMPILER_CHAIN_INPUT := $(value COMPILER_CHAIN)
-override GOROROBA_COMPILER_FAMILY_INPUT := $(value COMPILER_FAMILY)
-export GOROROBA_TOPSRC_INPUT
-export GOROROBA_BUILD_ROOT_INPUT
-export GOROROBA_BUILDDIR_INPUT
-export GOROROBA_PREFIX_INPUT
-export GOROROBA_SYSCONFDIR_INPUT
-export GOROROBA_PROFILE_INPUT
-export GOROROBA_HOSTENV_INPUT
-export GOROROBA_MODE_INPUT
-export GOROROBA_COMPILER_CHAIN_INPUT
-export GOROROBA_COMPILER_FAMILY_INPUT
+override MESA_TOPSRC_INPUT := $(value TOPSRC)
+override MESA_BUILD_ROOT_INPUT := $(value BUILD_ROOT)
+override MESA_BUILDDIR_INPUT := $(value BUILDDIR)
+override MESA_BUILDDIR_LEXICAL_INPUT := $(value BUILDDIR)
+override MESA_PREFIX_INPUT := $(value PREFIX)
+override MESA_SYSCONFDIR_INPUT := $(value SYSCONFDIR)
+override MESA_PROFILE_INPUT := $(value PROFILE)
+override MESA_HOSTENV_INPUT := $(value HOSTENV)
+override MESA_MODE_INPUT := $(value MODE)
+override MESA_COMPILER_CHAIN_INPUT := $(value COMPILER_CHAIN)
+override MESA_COMPILER_FAMILY_INPUT := $(value COMPILER_FAMILY)
+override MESA_REPRODUCIBLE_RUN_INPUT := $(value REPRODUCIBLE_RUN)
+export MESA_TOPSRC_INPUT
+export MESA_BUILD_ROOT_INPUT
+export MESA_BUILDDIR_INPUT
+export MESA_BUILDDIR_LEXICAL_INPUT
+export MESA_PREFIX_INPUT
+export MESA_SYSCONFDIR_INPUT
+export MESA_PROFILE_INPUT
+export MESA_HOSTENV_INPUT
+export MESA_MODE_INPUT
+export MESA_COMPILER_CHAIN_INPUT
+export MESA_COMPILER_FAMILY_INPUT
+export MESA_REPRODUCIBLE_RUN_INPUT
 
 override SOURCE_ROOT_CONTROL := $(CURDIR)/scripts/source_root_control.py
 override MOUNT_BOUNDARY_CALIBRATION := $(CURDIR)/tests/mount_boundary_calibration.py
@@ -181,16 +201,17 @@ override REVIEW_THREAD_ARCHIVE_FRONTIER := $(CURDIR)/docs/review-thread-frontier
 override REVIEW_THREAD_ARCHIVE_LEDGER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/resolution-ledger.tsv
 override REVIEW_THREAD_ARCHIVE_COMMIT := d6661faf431e4998f5e7d1879b1d6d6eb3c7bf7c
 override SOURCE_ROOT_FIELDS := $(shell \
-	GOROROBA_TOPSRC_INPUT=$(call make_shell_quote,$(value GOROROBA_TOPSRC_INPUT)) \
-	GOROROBA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILD_ROOT_INPUT)) \
-	GOROROBA_BUILDDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_BUILDDIR_INPUT)) \
-	GOROROBA_PREFIX_INPUT=$(call make_shell_quote,$(value GOROROBA_PREFIX_INPUT)) \
-	GOROROBA_SYSCONFDIR_INPUT=$(call make_shell_quote,$(value GOROROBA_SYSCONFDIR_INPUT)) \
-	GOROROBA_PROFILE_INPUT=$(call make_shell_quote,$(value GOROROBA_PROFILE_INPUT)) \
-	GOROROBA_HOSTENV_INPUT=$(call make_shell_quote,$(value GOROROBA_HOSTENV_INPUT)) \
-	GOROROBA_MODE_INPUT=$(call make_shell_quote,$(value GOROROBA_MODE_INPUT)) \
-	GOROROBA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_CHAIN_INPUT)) \
-	GOROROBA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value GOROROBA_COMPILER_FAMILY_INPUT)) \
+	MESA_TOPSRC_INPUT=$(call make_shell_quote,$(value MESA_TOPSRC_INPUT)) \
+	MESA_BUILD_ROOT_INPUT=$(call make_shell_quote,$(value MESA_BUILD_ROOT_INPUT)) \
+	MESA_BUILDDIR_INPUT=$(call make_shell_quote,$(value MESA_BUILDDIR_INPUT)) \
+	MESA_PREFIX_INPUT=$(call make_shell_quote,$(value MESA_PREFIX_INPUT)) \
+	MESA_SYSCONFDIR_INPUT=$(call make_shell_quote,$(value MESA_SYSCONFDIR_INPUT)) \
+	MESA_PROFILE_INPUT=$(call make_shell_quote,$(value MESA_PROFILE_INPUT)) \
+	MESA_HOSTENV_INPUT=$(call make_shell_quote,$(value MESA_HOSTENV_INPUT)) \
+	MESA_MODE_INPUT=$(call make_shell_quote,$(value MESA_MODE_INPUT)) \
+	MESA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_CHAIN_INPUT)) \
+	MESA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_FAMILY_INPUT)) \
+	MESA_REPRODUCIBLE_RUN_INPUT=$(call make_shell_quote,$(value MESA_REPRODUCIBLE_RUN_INPUT)) \
 	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
 override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
@@ -208,37 +229,47 @@ override SOURCE_COMMIT := $(word 6,$(SOURCE_ROOT_FIELDS))
 override SOURCE_TREE := $(word 7,$(SOURCE_ROOT_FIELDS))
 override CONTROL_COMMIT := $(word 8,$(SOURCE_ROOT_FIELDS))
 override CONTROL_TREE := $(word 9,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_CONTROL_ROOT_INPUT := $(word 10,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_SOURCE_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_CONTROL_ROOT_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_BUILD_ROOT_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_BUILDDIR_ANCHOR := $(word 14,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_PREFIX_ANCHOR := $(word 15,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_SYSCONFDIR_ANCHOR := $(word 16,$(SOURCE_ROOT_FIELDS))
-override GOROROBA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
-override GOROROBA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
-override GOROROBA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
-override GOROROBA_CONTROL_TREE_CAPTURED := $(CONTROL_TREE)
-export GOROROBA_CONTROL_ROOT_INPUT
-export GOROROBA_SOURCE_ROOT_ANCHOR
-export GOROROBA_CONTROL_ROOT_ANCHOR
-export GOROROBA_BUILD_ROOT_ANCHOR
-export GOROROBA_BUILDDIR_ANCHOR
-export GOROROBA_PREFIX_ANCHOR
-export GOROROBA_SYSCONFDIR_ANCHOR
-export GOROROBA_SOURCE_COMMIT_CAPTURED
-export GOROROBA_SOURCE_TREE_CAPTURED
-export GOROROBA_CONTROL_COMMIT_CAPTURED
-export GOROROBA_CONTROL_TREE_CAPTURED
+override MESA_CONTROL_ROOT_INPUT := $(word 10,$(SOURCE_ROOT_FIELDS))
+override MESA_SOURCE_ROOT_ANCHOR := $(word 11,$(SOURCE_ROOT_FIELDS))
+override MESA_CONTROL_ROOT_ANCHOR := $(word 12,$(SOURCE_ROOT_FIELDS))
+override MESA_BUILD_ROOT_ANCHOR := $(word 13,$(SOURCE_ROOT_FIELDS))
+override MESA_BUILDDIR_ANCHOR := $(word 14,$(SOURCE_ROOT_FIELDS))
+override MESA_PREFIX_ANCHOR := $(word 15,$(SOURCE_ROOT_FIELDS))
+override MESA_SYSCONFDIR_ANCHOR := $(word 16,$(SOURCE_ROOT_FIELDS))
+override MESA_SOURCE_COMMIT_CAPTURED := $(SOURCE_COMMIT)
+override MESA_SOURCE_TREE_CAPTURED := $(SOURCE_TREE)
+override MESA_CONTROL_COMMIT_CAPTURED := $(CONTROL_COMMIT)
+override MESA_CONTROL_TREE_CAPTURED := $(CONTROL_TREE)
+override MESA_GIT_SHA1_OVERRIDE := $(SOURCE_COMMIT)
+export MESA_CONTROL_ROOT_INPUT
+export MESA_SOURCE_ROOT_ANCHOR
+export MESA_CONTROL_ROOT_ANCHOR
+export MESA_BUILD_ROOT_ANCHOR
+export MESA_BUILDDIR_ANCHOR
+export MESA_PREFIX_ANCHOR
+export MESA_SYSCONFDIR_ANCHOR
+export MESA_SOURCE_COMMIT_CAPTURED
+export MESA_SOURCE_TREE_CAPTURED
+export MESA_CONTROL_COMMIT_CAPTURED
+export MESA_CONTROL_TREE_CAPTURED
+export MESA_GIT_SHA1_OVERRIDE
 # Every later Python check consumes the same physical path tuple that recipes
 # interpolate.  Retaining the caller's symlink spelling here would let a
 # blocked recipe validate a retargeted selector while deleting the path that
 # Make captured before it waited on the build lease.
-override GOROROBA_TOPSRC_INPUT := $(TOPSRC)
-override GOROROBA_BUILD_ROOT_INPUT := $(BUILD_ROOT)
-override GOROROBA_BUILDDIR_INPUT := $(BUILDDIR)
-override GOROROBA_PREFIX_INPUT := $(PREFIX)
-override GOROROBA_SYSCONFDIR_INPUT := $(SYSCONFDIR)
+override MESA_TOPSRC_INPUT := $(TOPSRC)
+override MESA_BUILD_ROOT_INPUT := $(BUILD_ROOT)
+override MESA_BUILDDIR_INPUT := $(BUILDDIR)
+override MESA_PREFIX_INPUT := $(PREFIX)
+override MESA_SYSCONFDIR_INPUT := $(SYSCONFDIR)
+ifeq ($(REPRODUCIBLE_RUN),1)
+override REPRODUCIBLE_SOURCE_CHECK_OUTPUT := $(shell \
+	python3 $(SOURCE_ROOT_CONTROL) check-reproducible-source)
+override REPRODUCIBLE_SOURCE_CHECK_STATUS := $(.SHELLSTATUS)
+ifneq ($(REPRODUCIBLE_SOURCE_CHECK_STATUS),0)
+$(error reproducible source isolation failed)
+endif
+endif
 # Pair-member descriptor: one space-separated row per build variant.
 # Field order: profile hostenv builddir prefix namespace.  Accessors:
 # $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
@@ -266,10 +297,10 @@ ifeq ($(origin LOCK_WAIT),undefined)
 LOCK_WAIT := 7200
 endif
 override BUILD_EXECUTION_FIELDS := $(shell \
-	GOROROBA_JOBS_INPUT=$(call make_shell_quote,$(value JOBS)) \
-	GOROROBA_DISTCC_JOBS_INPUT=$(call make_shell_quote,$(value DISTCC_JOBS)) \
-	GOROROBA_LOCK_WAIT_INPUT=$(call make_shell_quote,$(value LOCK_WAIT)) \
-	GOROROBA_BUILD_LOCK_INPUT=$(call make_shell_quote,$(value BUILD_LOCK)) \
+	MESA_JOBS_INPUT=$(call make_shell_quote,$(value JOBS)) \
+	MESA_DISTCC_JOBS_INPUT=$(call make_shell_quote,$(value DISTCC_JOBS)) \
+	MESA_LOCK_WAIT_INPUT=$(call make_shell_quote,$(value LOCK_WAIT)) \
+	MESA_BUILD_LOCK_INPUT=$(call make_shell_quote,$(value BUILD_LOCK)) \
 	python3 $(SOURCE_ROOT_CONTROL) validate-build-execution)
 override BUILD_EXECUTION_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(BUILD_EXECUTION_RESOLVE_STATUS),0)
@@ -304,7 +335,10 @@ $(FLOCK) -x -w "$(LOCK_WAIT)" 9 || { \
 endef
 
 define CHECK_SOURCE_ROOT
-python3 "$(SOURCE_ROOT_CONTROL)" check-source || exit 2
+python3 "$(SOURCE_ROOT_CONTROL)" check-source || exit 2; \
+if [ "$(REPRODUCIBLE_RUN)" = "1" ]; then \
+  python3 "$(SOURCE_ROOT_CONTROL)" check-reproducible-source || exit 2; \
+fi
 endef
 
 define CHECK_LAYOUT
@@ -350,7 +384,7 @@ endef
 # profile and the per-profile rebuild-/install- targets need no path prefix.
 override CONFIG := $(firstword $(wildcard $(CURDIR)/configs/$(PROFILE).meson $(CURDIR)/configs/alternates/$(PROFILE).meson))
 override ENVFILE := $(CURDIR)/env/$(HOSTENV).env
-override TOOLCHAIN_NATIVE := $(BUILDDIR)/gororoba-toolchain.meson
+override TOOLCHAIN_NATIVE := $(BUILDDIR)/mesa-toolchain.meson
 
 # Compiler family the toolchain overlay resolves.  llvm selects a coherent
 # clang/clang++/llvm-config major and the matching LLVM binutils; gnu selects
@@ -381,7 +415,7 @@ override MESON_SOURCE_ROOT := $(TOPSRC)
 override EXTERNAL_SOURCE_WRAP_ARG :=
 override EXTERNAL_MESON_SETUP_LOCAL_UNSET :=
 else
-override MESON_SOURCE_ROOT := $(BUILD_ROOT)/.gororoba-source-view
+override MESON_SOURCE_ROOT := $(BUILD_ROOT)/.mesa-source-view
 override EXTERNAL_SOURCE_WRAP_ARG := --wrap-mode=default
 override EXTERNAL_MESON_SETUP_LOCAL_UNSET := MESON_PACKAGE_CACHE_DIR
 endif
@@ -412,12 +446,13 @@ override define CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY
 probe_dir="$$(mktemp -d)" && [ -n "$$probe_dir" ] && [ -d "$$probe_dir" ]
 endef
 
-.PHONY: list source-root-check source-root-control-unit-test \
+.PHONY: list source-root-check source-root-control-unit-test remove-identity-v7-build-root \
+        naming-policy-test \
         review-thread-frontier-check review-thread-frontier-live-check \
         review-thread-frontier-unit-test headless-hardware-gl-runner-test \
         source-root-selection-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
-        vostro-prefix-check audit configure build clean clean-all distclean install \
+        vostro-prefix-check audit configure build clean-registered-build clean clean-all distclean install \
         artifact-check test \
         rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
         install-4_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -436,10 +471,11 @@ endef
         rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
         r300-release-profile-contract-test \
+        loader-environment-function-scope-test \
         rebuild-all-tiers audit-werror driver-root-audit \
         build-lease-test build-job-policy-test \
-        pkg-mesa-gororoba deploy-mesa-gororoba \
-        deploy-mesa-gororoba-unit-test \
+        package-mesa deploy-mesa \
+        deploy-mesa-unit-test \
         help
 
 # Component-policy gate: every profile config must stay inside its
@@ -458,27 +494,109 @@ r300-release-profile-contract-test:
 	profile='4_r300_full_release_x86_64v1-clang22-distcc-cache'; \
 	config="$(CURDIR)/configs/alternates/$$profile.meson"; \
 	docs="$(CURDIR)/docs/r300-full-profile-options.md"; \
+	readme="$(CURDIR)/README.md"; \
 	makefile="$(BUILD_INFRA_MAKEFILE)"; \
 	fail() { echo "FAIL  r300 release profile contract: $$*" >&2; exit 1; }; \
 	check_contract() { \
 		contract_config="$$1"; contract_docs="$$2"; contract_makefile="$$3"; \
+		contract_readme="$${4:-$$readme}"; \
 		[ -f "$$contract_config" ] || return 1; \
 		[ -f "$$contract_docs" ] || return 1; \
+		[ -f "$$contract_readme" ] || return 1; \
 		option_count="$$(grep -Ec '^[[:space:]]*build-tests[[:space:]]*=' "$$contract_config" || true)"; \
 		true_count="$$(grep -Ec '^[[:space:]]*build-tests[[:space:]]*=[[:space:]]*true[[:space:]]*$$' "$$contract_config" || true)"; \
 		[ "$$option_count" -eq 1 ] || return 1; \
 		[ "$$true_count" -eq 1 ] || return 1; \
 		grep -F -- 'build-tests = true' "$$contract_docs" >/dev/null || return 1; \
 		grep -F -- 'Those results are build/test evidence and do not establish' "$$contract_docs" >/dev/null || return 1; \
+		grep -F -- 'PREFIX="$$MESA_BUILD_ROOT/prefix" REPRODUCIBLE_RUN=1' "$$contract_readme" >/dev/null || return 1; \
 		rebuild_body="$$(awk '$$0 == "rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache:" { in_target=1; next } in_target && $$0 !~ /^[[:space:]]/ { exit } in_target { print }' "$$contract_makefile")"; \
-		build_line="$$(printf '%s\n' "$$rebuild_body" | grep -n -F -- '$$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba' | cut -d: -f1 || true)"; \
-		test_line="$$(printf '%s\n' "$$rebuild_body" | grep -n -F -- '$$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba' | cut -d: -f1 || true)"; \
+		printf '%s\n' "$$rebuild_body" | grep -F -- '[ "$$(REPRODUCIBLE_RUN)" = "1" ]' >/dev/null || return 1; \
+		for operation in clean-registered-build configure build test; do \
+			printf '%s\n' "$$rebuild_body" | grep -F -- '$$(MAKE) '"$$operation"' PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$$(TOPSRC)" BUILD_ROOT="$$(BUILD_ROOT)"' >/dev/null || return 1; \
+		done; \
+		build_line="$$(printf '%s\n' "$$rebuild_body" | grep -n -F -- '$$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache' | cut -d: -f1 || true)"; \
+		test_line="$$(printf '%s\n' "$$rebuild_body" | grep -n -F -- '$$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache' | cut -d: -f1 || true)"; \
 		[ -n "$$build_line" ] || return 1; \
 		[ -n "$$test_line" ] || return 1; \
 		[ "$$build_line" -lt "$$test_line" ] || return 1; \
+		target_body() { \
+			target_name="$$1"; \
+			awk -v target="$$target_name:" '$$0 == target { in_target=1; next } in_target && $$0 !~ /^[[:space:]]/ { exit } in_target { print }' "$$contract_makefile"; \
+		}; \
+		grep -F -- 'override SELECT_PROFILE_PREFIX = $$(if $$(filter 1,$$(REPRODUCIBLE_RUN)),$$(BUILD_ROOT)/prefix,$$1)' "$$contract_makefile" >/dev/null || return 1; \
+		check_tier_target() { \
+			tier_target="$$1"; tier_profile="$$2"; default_prefix="$$3"; \
+			tier_body="$$(target_body "$$tier_target")"; \
+			for operation in clean-registered-build configure build; do \
+				expected_call='$$(MAKE) '"$$operation"' PROFILE='"$$tier_profile"' HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$$(call SELECT_PROFILE_PREFIX,'"$$default_prefix"')'; \
+				printf '%s\n' "$$tier_body" | grep -F -- "$$expected_call" >/dev/null || return 1; \
+			done; \
+		}; \
+		check_tier_target \
+			rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
+			1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
+			/opt/mesa-gororoba-debug-asan || return 1; \
+		check_tier_target \
+			rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
+			2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
+			/opt/mesa-gororoba-debug-o0 || return 1; \
+		check_tier_target \
+			rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
+			3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
+			/opt/mesa-gororoba-debug-optimized || return 1; \
+		check_release_target() { \
+			release_target="$$1"; release_profile="$$2"; release_prefix="$$3"; shift 3; \
+			release_body="$$(target_body "$$release_target")"; \
+			guard_line="$$(printf '%s\n' "$$release_body" | grep -n -F -- '[ "$$(REPRODUCIBLE_RUN)" = "1" ]' | cut -d: -f1 || true)"; \
+			first_operation="$$1"; \
+			first_operation_line="$$(printf '%s\n' "$$release_body" | grep -n -F -- '$$(MAKE) '"$$first_operation"' PROFILE='"$$release_profile" | cut -d: -f1 || true)"; \
+			[ -n "$$guard_line" ] || return 1; \
+			[ -n "$$first_operation_line" ] || return 1; \
+			[ "$$guard_line" -lt "$$first_operation_line" ] || return 1; \
+			for operation in "$$@"; do \
+				expected_call='$$(MAKE) '"$$operation"' PROFILE='"$$release_profile"' HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX='"$$release_prefix"' REPRODUCIBLE_RUN=1 TOPSRC="$$(TOPSRC)" BUILD_ROOT="$$(BUILD_ROOT)"'; \
+				printf '%s\n' "$$release_body" | grep -F -- "$$expected_call" >/dev/null || return 1; \
+			done; \
+		}; \
+		check_release_target \
+			rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+			3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+			'$$(BUILD_ROOT)/prefix' clean-registered-build configure build || return 1; \
+		check_release_target \
+			rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+			5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+			'$$(BUILD_ROOT)/prefix' clean-registered-build configure build || return 1; \
+		check_release_target \
+			install-4_r300_full_release_x86_64v1-clang22-distcc-cache \
+			4_r300_full_release_x86_64v1-clang22-distcc-cache \
+			'$$(BUILD_ROOT)/prefix' install || return 1; \
+		check_release_target \
+			install-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+			3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+			'$$(BUILD_ROOT)/prefix' install || return 1; \
+		check_release_target \
+			install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+			5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+			'$$(BUILD_ROOT)/prefix' install || return 1; \
+		all_tiers_body="$$(awk '$$0 == "rebuild-all-tiers:" { in_target=1; next } in_target && $$0 !~ /^[[:space:]]/ { exit } in_target { print }' "$$contract_makefile")"; \
+		all_tiers_guard_line="$$(printf '%s\n' "$$all_tiers_body" | grep -n -F -- '[ "$$(REPRODUCIBLE_RUN)" = "1" ]' | cut -d: -f1 || true)"; \
+		all_tiers_first_build_line="$$(printf '%s\n' "$$all_tiers_body" | grep -n -F -- '$$(MAKE) rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache' | cut -d: -f1 || true)"; \
+		[ -n "$$all_tiers_guard_line" ] || return 1; \
+		[ -n "$$all_tiers_first_build_line" ] || return 1; \
+		[ "$$all_tiers_guard_line" -lt "$$all_tiers_first_build_line" ] || return 1; \
+		for tier_target in \
+			rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
+			rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
+			rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
+			rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache; do \
+			tier_profile="$${tier_target#rebuild-}"; \
+			expected_tier_call='$$(MAKE) '"$$tier_target"' REPRODUCIBLE_RUN=1 TOPSRC="$$(TOPSRC)" BUILD_ROOT="$$(BUILD_ROOT)/'"$$tier_profile"'"'; \
+			printf '%s\n' "$$all_tiers_body" | grep -F -- "$$expected_tier_call" >/dev/null || return 1; \
+		done; \
 		grep -F -- '$$(MESON) test -C "$$(BUILDDIR)"' "$$contract_makefile" >/dev/null || return 1; \
 	}; \
-	check_contract "$$config" "$$docs" "$$makefile" || fail "canonical files disagree"; \
+	check_contract "$$config" "$$docs" "$$makefile" "$$readme" || fail "canonical files disagree"; \
 	echo "OK    r300 release profile contract accepts the canonical files"; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf -- "$$tmpdir"' EXIT HUP INT TERM; \
@@ -494,12 +612,74 @@ r300-release-profile-contract-test:
 		fail "known-bad evidence-boundary doc passed"; \
 	fi; \
 	echo "OK    r300 release profile contract rejects an unbounded evidence doc"; \
+	bad_readme="$$tmpdir/README.md"; \
+	sed 's#PREFIX="$$MESA_BUILD_ROOT/prefix"#PREFIX=/opt/local/mesa-26-gororoba#' \
+		"$$readme" > "$$bad_readme"; \
+	if check_contract "$$config" "$$docs" "$$makefile" "$$bad_readme"; then \
+		fail "known-bad shared artifact prefix passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects a shared artifact prefix"; \
 	bad_makefile="$$tmpdir/Makefile"; \
-	grep -F -v -- '$$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba' "$$makefile" > "$$bad_makefile"; \
+	grep -F -v -- '$$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache' "$$makefile" > "$$bad_makefile"; \
 	if check_contract "$$config" "$$docs" "$$bad_makefile"; then \
 		fail "known-bad rebuild target without test passed"; \
 	fi; \
-	echo "OK    r300 release profile contract rejects build-only rebuild wiring"
+	echo "OK    r300 release profile contract rejects build-only rebuild wiring"; \
+	bad_cleanup_makefile="$$tmpdir/Makefile.cleanup"; \
+	sed 's/clean-registered-build PROFILE=/clean PROFILE=/' \
+		"$$makefile" > "$$bad_cleanup_makefile"; \
+	if check_contract "$$config" "$$docs" "$$bad_cleanup_makefile"; then \
+		fail "known-bad release rebuild with ordinary clean passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects ordinary clean in release rebuilds"; \
+	bad_prefix_selector_makefile="$$tmpdir/Makefile.prefix-selector"; \
+	grep -F -v -- 'override SELECT_PROFILE_PREFIX = ' "$$makefile" > "$$bad_prefix_selector_makefile"; \
+	if check_contract "$$config" "$$docs" "$$bad_prefix_selector_makefile"; then \
+		fail "known-bad tier targets without the prefix selector passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects a missing tier prefix selector"; \
+	bad_prefix_makefile="$$tmpdir/Makefile.prefix"; \
+	sed 's#PREFIX=[$$](BUILD_ROOT)/prefix#PREFIX=/opt/local/mesa-26-gororoba#g' \
+		"$$makefile" > "$$bad_prefix_makefile"; \
+	if check_contract "$$config" "$$docs" "$$bad_prefix_makefile"; then \
+		fail "known-bad reproducible targets with a shared prefix passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects shared reproducible prefixes"; \
+	bad_tier_roots_makefile="$$tmpdir/Makefile.tier-roots"; \
+	sed 's#BUILD_ROOT="[$$](BUILD_ROOT)/[^\"]*"#BUILD_ROOT="$$(BUILD_ROOT)"#g' \
+		"$$makefile" > "$$bad_tier_roots_makefile"; \
+	if check_contract "$$config" "$$docs" "$$bad_tier_roots_makefile"; then \
+		fail "known-bad four-tier target with a shared build root passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects shared four-tier build roots"; \
+	remove_target_guard() { \
+		mutation_target="$$1"; mutation_output="$$2"; \
+		awk -v target="$$mutation_target:" ' \
+			$$0 == target { in_target=1 } \
+			in_target && !removed && /\[ "\$$\(REPRODUCIBLE_RUN\)" = "1" \]/ { removed=1; next } \
+			in_target && $$0 != target && $$0 !~ /^[[:space:]]/ { in_target=0 } \
+			{ print } \
+			END { if (!removed) exit 2 }' "$$makefile" > "$$mutation_output"; \
+	}; \
+	for guarded_target in \
+		rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+		rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+		install-4_r300_full_release_x86_64v1-clang22-distcc-cache \
+		install-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+		install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache; do \
+		bad_guard_makefile="$$tmpdir/Makefile.$$guarded_target"; \
+		remove_target_guard "$$guarded_target" "$$bad_guard_makefile"; \
+		if check_contract "$$config" "$$docs" "$$bad_guard_makefile"; then \
+			fail "known-bad $$guarded_target without a preflight passed"; \
+		fi; \
+	done; \
+	echo "OK    r300 release profile contract rejects each unguarded release operation"; \
+	bad_aggregate_makefile="$$tmpdir/Makefile.aggregate"; \
+	grep -F -v -- '[ "$$(REPRODUCIBLE_RUN)" = "1" ]' "$$makefile" > "$$bad_aggregate_makefile"; \
+	if check_contract "$$config" "$$docs" "$$bad_aggregate_makefile"; then \
+		fail "known-bad aggregate target without a preflight passed"; \
+	fi; \
+	echo "OK    r300 release profile contract rejects an unguarded aggregate"
 
 source-root-check:
 	@$(CHECK_SOURCE_ROOT)
@@ -509,12 +689,25 @@ source-root-check:
 	@echo "OK    control root: $(CONTROL_ROOT)"
 	@echo "OK    control commit: $(CONTROL_COMMIT)"
 	@echo "OK    control tree: $(CONTROL_TREE)"
+	@echo "OK    reproducible run: $(REPRODUCIBLE_RUN)"
 
 source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 		python3 -m pytest -q \
 		$(CURDIR)/tests/test_source_root_control.py \
 		$(CURDIR)/tests/test_mount_boundary_calibration.py
+
+remove-identity-v7-build-root: source-root-check
+	@[ "$(REPRODUCIBLE_RUN)" = "0" ] || { echo "schema-7 cleanup requires REPRODUCIBLE_RUN=0" >&2; exit 2; }
+	@$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
+	$(call CHECK_LAYOUT,clean); \
+	python3 "$(SOURCE_ROOT_CONTROL)" remove-identity-v7-build-root; \
+	echo "removed verified schema-7 build root: $(BUILD_ROOT)"
+
+naming-policy-test:
+	python3 $(CURDIR)/scripts/naming_policy.py --self-test
+	python3 $(CURDIR)/scripts/naming_policy.py --repo-root $(CURDIR)/..
 
 # Driver-root gate: each AMD GPU family's Vulkan driver keeps its source root
 # at the family's vulkan/ directory, and the build graph enters it there.
@@ -591,11 +784,12 @@ headless-hardware-gl-runner-test:
 			$(CURDIR)/tests/test_headless_hardware_gl_runner.py
 
 help:
-	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
+	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [TOPSRC=<mesa-worktree>] [REPRODUCIBLE_RUN=0|1] [BUILDDIR=<path>] [PREFIX=<path>] [SYSCONFDIR=<path>]"
 	@echo ""
 	@echo "targets:"
 	@echo "  configure         meson setup the builddir from configs/[alternates/]\$$(PROFILE).meson"
 	@echo "  build             locked ninja -C \$$(BUILDDIR); NINJA_TARGETS=one target, NINJA_ARGS=-k0"
+	@echo "  clean-registered-build skip an absent builddir; otherwise run strict clean"
 	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
 	@echo "  clean-all         remove the fixed repo-local build/ tree (all profiles)"
 	@echo "  distclean         atomically clean + archive \$$(PREFIX) under one lease"
@@ -608,6 +802,9 @@ help:
 	@echo "  headless-hardware-gl-runner-test calibrate transient Xorg unit teardown"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
+	@echo "  remove-identity-v7-build-root remove an exact verified schema-7 build root"
+	@echo "  naming-policy-test reject retired build controls and unclear qualification wording"
+	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
 	@echo "  distcc-gcc-major-probe-test calibrates remote C/C++ dispatch and GNU compiler identity"
@@ -616,13 +813,14 @@ help:
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
 	@echo "  build-lease-test  verify mutation leases and path-safety guards"
 	@echo "  build-job-policy-test verify nproc local jobs and the six-job distcc ceiling"
-	@echo "  deploy-mesa-gororoba install the release package only with MESA_GOROROBA_DEPLOY_ACCEPTED=1"
-	@echo "  deploy-mesa-gororoba-unit-test calibrate consent, package selection, and remote argv"
+	@echo "  deploy-mesa      install the release package only with MESA_DEPLOY_ACCEPTED=1"
+	@echo "  deploy-mesa-unit-test calibrate consent, package selection, and remote argv"
 	@echo "  rebuild-<profile> clean + configure + build; r300 release also runs unit tests"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
 	@echo "profile:   $(PROFILE)"
 	@echo "hostenv:   $(HOSTENV)"
+	@echo "reproducible run: $(REPRODUCIBLE_RUN)"
 	@echo "topsrc:    $(TOPSRC)"
 	@echo "builddir:  $(BUILDDIR)"
 	@echo "prefix:    $(PREFIX)"
@@ -633,6 +831,9 @@ list:
 	for f in configs/*.meson configs/alternates/*.meson; do echo "  $$(basename $$f .meson)"; done
 	@echo "available HOSTENVs (env/*.env):"; \
 	for f in env/*.env; do echo "  $$(basename $$f .env)"; done
+
+loader-environment-function-scope-test:
+	sh $(CURDIR)/packaging/test-loader-environment-function-scope.sh
 
 vostro-prefix-check:
 	@case "$(PROFILE):$(PREFIX)" in \
@@ -764,7 +965,7 @@ distcc-gcc-major-probe-test:
 			return 1; \
 		fi; \
 		if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" || \
-			! printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; then \
+			! printf '%s\n' 'int mesa_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; then \
 			echo "FAIL  cannot prepare distcc volunteer probe: $$distcc_spec" >&2; \
 			return 1; \
 		fi; \
@@ -792,7 +993,7 @@ distcc-gcc-major-probe-test:
 			fi; \
 		fi; \
 		if ! rm -f -- "$$probe_dir/probe.cpp" "$$probe_dir/probe.cpp.o" "$$probe_dir/probe.cpp.err" || \
-			! printf '%s\n' 'int gororoba_distcc_probe_cpp() { return 23; }' > "$$probe_dir/probe.cpp"; then \
+			! printf '%s\n' 'int mesa_distcc_probe_cpp() { return 23; }' > "$$probe_dir/probe.cpp"; then \
 			echo "FAIL  cannot prepare distcc volunteer C++ probe: $$distcc_spec" >&2; \
 			return 1; \
 		fi; \
@@ -935,9 +1136,10 @@ distcc-gcc-major-probe-test:
 	}; \
 	echo "OK    missing GCC identity fails closed"
 
-audit: source-root-check source-root-control-unit-test \
+audit: source-root-check source-root-control-unit-test naming-policy-test \
        headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
+       loader-environment-function-scope-test \
        source-root-selection-test \
        distcc-probe-directory-test \
        distcc-gcc-major-probe-test \
@@ -1019,7 +1221,7 @@ audit: source-root-check source-root-control-unit-test \
 			return 1; \
 		fi; \
 		if ! rm -f -- "$$probe_dir/probe.c" "$$probe_dir/probe.o" "$$probe_dir/probe.err" || \
-			! printf '%s\n' 'int gororoba_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; then \
+			! printf '%s\n' 'int mesa_distcc_probe(void) { return 22; }' > "$$probe_dir/probe.c"; then \
 			echo "FAIL  cannot prepare distcc volunteer probe: $$distcc_spec" >&2; \
 			return 1; \
 		fi; \
@@ -1047,7 +1249,7 @@ audit: source-root-check source-root-control-unit-test \
 			fi; \
 		fi; \
 		if ! rm -f -- "$$probe_dir/probe.cpp" "$$probe_dir/probe.cpp.o" "$$probe_dir/probe.cpp.err" || \
-			! printf '%s\n' 'int gororoba_distcc_probe_cpp() { return 23; }' > "$$probe_dir/probe.cpp"; then \
+			! printf '%s\n' 'int mesa_distcc_probe_cpp() { return 23; }' > "$$probe_dir/probe.cpp"; then \
 			echo "FAIL  cannot prepare distcc volunteer C++ probe: $$distcc_spec" >&2; \
 			return 1; \
 		fi; \
@@ -1100,7 +1302,7 @@ audit: source-root-check source-root-control-unit-test \
 			fail "COMPILER_FAMILY=gnu requires a profile with llvm='disabled'; $(CONFIG) enables LLVM"; \
 			return; \
 		}; \
-		requested_gcc="$${GOROROBA_GCC_VERSION:-}"; \
+		requested_gcc="$${MESA_GCC_VERSION:-}"; \
 		audit_gcc_tool="$$(find_audit_gcc_tool gcc "$$requested_gcc")" || { \
 			if [ -n "$$requested_gcc" ]; then \
 				fail "requested GCC major $$requested_gcc lacks matching gcc-$$requested_gcc"; \
@@ -1147,7 +1349,7 @@ audit: source-root-check source-root-control-unit-test \
 	}; \
 	need_llvm_family() { \
 		need_config="$${1:-1}"; \
-		requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; selected=""; \
+		requested="$${MESA_LLVM_VERSION:-}"; selected=""; \
 		compiler_requirement="$$(llvm_compiler_requirement)"; \
 		if [ -n "$$requested" ]; then \
 			if llvm_has_core "$$requested" "$$need_config"; then selected="$$requested"; \
@@ -1222,10 +1424,10 @@ audit: source-root-check source-root-control-unit-test \
 			if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
 			else ok "distcc hosts use hostname policy"; fi; \
 		else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
-		if [ "$${GOROROBA_DISTCC_JOBS:-}" = "$(DISTCC_JOBS)" ]; then \
+		if [ "$${MESA_DISTCC_JOBS:-}" = "$(DISTCC_JOBS)" ]; then \
 			ok "distcc aggregate build ceiling is $(DISTCC_JOBS) jobs"; \
 		else \
-			fail "distcc aggregate build ceiling is $${GOROROBA_DISTCC_JOBS:-unset}; expected $(DISTCC_JOBS)"; \
+			fail "distcc aggregate build ceiling is $${MESA_DISTCC_JOBS:-unset}; expected $(DISTCC_JOBS)"; \
 		fi; \
 		distcc_slots="$$(printf '%s\n' "$${DISTCC_HOSTS:-}" | grep -oE '/[0-9]+' | tr -d / | awk '{sum += $$1} END {print sum + 0}')"; \
 		if [ "$$distcc_slots" = "$(DISTCC_JOBS)" ]; then \
@@ -1366,7 +1568,7 @@ configure: source-root-check vostro-prefix-check
 	if [ "$(COMPILER_FAMILY)" = "gnu" ]; then \
 		grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)" || { \
 			echo "COMPILER_FAMILY=gnu requires a profile with llvm='disabled'; $(CONFIG) enables LLVM" >&2; exit 1; }; \
-		requested_gcc="$${GOROROBA_GCC_VERSION:-}"; \
+		requested_gcc="$${MESA_GCC_VERSION:-}"; \
 		if [ -n "$$requested_gcc" ]; then \
 			cc_cmd="$$(find_versioned_gcc_tool gcc "$$requested_gcc")" || { \
 				echo "requested GCC major $$requested_gcc lacks gcc-$$requested_gcc" >&2; exit 1; }; \
@@ -1392,7 +1594,7 @@ configure: source-root-check vostro-prefix-check
 		toolchain_label="GCC $$("$$cc_cmd" -dumpversion | sed 's/[.].*//')"; \
 	else \
 	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
-	requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; \
+	requested="$${MESA_LLVM_VERSION:-}"; \
 	llvm_version=""; \
 	if [ -n "$$requested" ]; then \
 		if ! has_core "$$requested" "$$needs_llvm_config"; then \
@@ -1464,7 +1666,7 @@ configure: source-root-check vostro-prefix-check
 		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
-		--prefix="$(PREFIX)" --sysconfdir="$${GOROROBA_SYSCONFDIR_INPUT}" \
+		--prefix="$(PREFIX)" --sysconfdir="$${MESA_SYSCONFDIR_INPUT}" \
 		"$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
 			echo "Meson setup failed; source identity remains provisional" >&2; \
 			exit 2; \
@@ -1482,10 +1684,10 @@ build: source-root-check
 	build_jobs="$(JOBS)"; \
 	case "$(COMPILER_CHAIN):$${CCACHE_PREFIX:-}" in \
 		distcc:*|ccache:distcc|ccache:*/distcc) \
-			build_jobs="$${GOROROBA_DISTCC_JOBS:-$(DISTCC_JOBS)}" ;; \
+			build_jobs="$${MESA_DISTCC_JOBS:-$(DISTCC_JOBS)}" ;; \
 		ccache:*) \
-			[ -z "$${GOROROBA_DISTCC_JOBS:-}" ] || \
-				build_jobs="$$GOROROBA_DISTCC_JOBS" ;; \
+			[ -z "$${MESA_DISTCC_JOBS:-}" ] || \
+				build_jobs="$$MESA_DISTCC_JOBS" ;; \
 	esac; \
 	case "$$build_jobs" in \
 		''|*[!0-9]*|0) echo "invalid Ninja job count: $$build_jobs" >&2; exit 2 ;; \
@@ -1496,6 +1698,14 @@ build: source-root-check
 	build_status=$$?; \
 	$(VERIFY_SOURCE_IDENTITY); \
 	exit "$$build_status"
+
+clean-registered-build:
+	@selected_builddir_state="$$(python3 "$(SOURCE_ROOT_CONTROL)" selected-builddir-state)" || exit 2; \
+	case "$$selected_builddir_state" in \
+		present) $(MAKE) --no-print-directory clean ;; \
+		absent) echo "no registered build exists: $(BUILDDIR)" ;; \
+		*) echo "invalid selected build-directory state: $$selected_builddir_state" >&2; exit 2 ;; \
+	esac
 
 clean:
 	@$(ACQUIRE_BUILD_LOCK) \
@@ -1559,7 +1769,7 @@ install: source-root-check vostro-prefix-check
 	test -d "$(BUILDDIR)" || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	env $(LOCKED_TOOL_ENV) GOROROBA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
+	env $(LOCKED_TOOL_ENV) MESA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
 	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs \
 	      --fields source_root control_root build_root builddir prefix sysconfdir; \
@@ -1572,7 +1782,7 @@ install: source-root-check vostro-prefix-check
 	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
-	      --sysconfdir="$$GOROROBA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
+	      --sysconfdir="$$MESA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
 	      echo "Meson setup failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
@@ -1730,12 +1940,12 @@ build-lease-test:
 		BUILD_ROOT="$$tmpdir" BUILDDIR="$$tmpdir/build" PREFIX="$$tmpdir/prefix" \
 		SYSCONFDIR="$$tmpdir/etc" 2>/dev/null )"; \
 	printf '%s\n' "$$install_plan" | \
-		grep -F -- "GOROROBA_SYSCONFDIR_INPUT=\"$$tmpdir/etc\"" >/dev/null || { \
+		grep -F -- "MESA_SYSCONFDIR_INPUT=\"$$tmpdir/etc\"" >/dev/null || { \
 			echo "FAIL  install omitted canonical SYSCONFDIR transport" >&2; \
 			exit 1; \
 		}; \
 	printf '%s\n' "$$install_plan" | \
-		grep -F -- '--sysconfdir="$$GOROROBA_SYSCONFDIR_INPUT"' >/dev/null || { \
+		grep -F -- '--sysconfdir="$$MESA_SYSCONFDIR_INPUT"' >/dev/null || { \
 			echo "FAIL  install interpolated SYSCONFDIR into locked program text" >&2; \
 			exit 1; \
 		}; \
@@ -1812,9 +2022,11 @@ source-root-selection-test:
 	source_root="$$tmpdir/source"; \
 	mkdir -p "$$source_root"; \
 	git -C "$$source_root" init -q; \
-	touch "$$source_root/meson.build" "$$source_root/meson.options"; \
+	touch "$$source_root/meson.build" "$$source_root/meson.options" \
+		"$$source_root/source_view_bytecode_probe.py"; \
 	printf '/build/\n' > "$$source_root/.gitignore"; \
-	git -C "$$source_root" add .gitignore meson.build meson.options; \
+	git -C "$$source_root" add .gitignore meson.build meson.options \
+		source_view_bytecode_probe.py; \
 	git -C "$$source_root" \
 		-c user.name=source-root-test -c user.email=source-root-test.invalid \
 		commit -qm "test: add Mesa root markers"; \
@@ -1833,29 +2045,30 @@ source-root-selection-test:
 		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o p' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
 		SOURCE_TREE=forged CONTROL_COMMIT=forged CONTROL_TREE=forged \
-		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
-		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
-		GOROROBA_SYSCONFDIR_INPUT=/ \
-		GOROROBA_PROFILE_INPUT=forged \
-		GOROROBA_HOSTENV_INPUT=forged \
-		GOROROBA_PROFILE_RAW=forged GOROROBA_HOSTENV_RAW=forged \
-		GOROROBA_INSTALL_NAMESPACE_RAW=forged GOROROBA_MODE_RAW=forged \
-		GOROROBA_COMPILER_CHAIN_RAW=forged \
-		GOROROBA_COMPILER_FAMILY_RAW=forged \
+		MESA_TOPSRC_INPUT=/ MESA_BUILD_ROOT_INPUT=/ \
+		MESA_BUILDDIR_INPUT=/ MESA_PREFIX_INPUT=/ \
+		MESA_SYSCONFDIR_INPUT=/ \
+		MESA_PROFILE_INPUT=forged \
+		MESA_HOSTENV_INPUT=forged \
+		MESA_PROFILE_RAW=forged MESA_HOSTENV_RAW=forged \
+		MESA_INSTALL_NAMESPACE_RAW=forged MESA_MODE_RAW=forged \
+		MESA_COMPILER_CHAIN_RAW=forged \
+		MESA_COMPILER_FAMILY_RAW=forged \
+		MESA_REPRODUCIBLE_RUN_RAW=forged \
 		MODE_SELECTOR=forged \
-		SELECTOR_FIELDS='forged forged forged forged forged forged' \
+		SELECTOR_FIELDS='forged forged forged forged forged forged forged' \
 		SELECTOR_RESOLVE_STATUS=1 COMMAND_VARIABLE_WITH_DOLLAR=forged \
-		GOROROBA_CONTROL_ROOT_INPUT=/ \
-		GOROROBA_SOURCE_ROOT_ANCHOR=forged \
-		GOROROBA_CONTROL_ROOT_ANCHOR=forged \
-		GOROROBA_BUILD_ROOT_ANCHOR=forged \
-		GOROROBA_BUILDDIR_ANCHOR=forged \
-		GOROROBA_PREFIX_ANCHOR=forged \
-		GOROROBA_SYSCONFDIR_ANCHOR=forged \
-		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
-		GOROROBA_SOURCE_TREE_CAPTURED=forged \
-		GOROROBA_CONTROL_COMMIT_CAPTURED=forged \
-		GOROROBA_CONTROL_TREE_CAPTURED=forged \
+		MESA_CONTROL_ROOT_INPUT=/ \
+		MESA_SOURCE_ROOT_ANCHOR=forged \
+		MESA_CONTROL_ROOT_ANCHOR=forged \
+		MESA_BUILD_ROOT_ANCHOR=forged \
+		MESA_BUILDDIR_ANCHOR=forged \
+		MESA_PREFIX_ANCHOR=forged \
+		MESA_SYSCONFDIR_ANCHOR=forged \
+		MESA_SOURCE_COMMIT_CAPTURED=forged \
+		MESA_SOURCE_TREE_CAPTURED=forged \
+		MESA_CONTROL_COMMIT_CAPTURED=forged \
+		MESA_CONTROL_TREE_CAPTURED=forged \
 		make_shell_quote=forged 2>&1 \
 	)" || { \
 		echo "FAIL  command-line proof inputs replaced resolver authority" >&2; \
@@ -1878,7 +2091,7 @@ source-root-selection-test:
 	selector_marker="$$tmpdir/selector-executed"; \
 	make_selector_input='$$(shell touch '"$$selector_marker"')'; \
 	for selector_name in PROFILE HOSTENV INSTALL_NAMESPACE MODE \
-		COMPILER_CHAIN COMPILER_FAMILY; do \
+		COMPILER_CHAIN COMPILER_FAMILY REPRODUCIBLE_RUN; do \
 		if selector_output="$$( $(MAKE) --no-print-directory \
 			-C "$(CURDIR)" help \
 			"$$selector_name=$$make_selector_input" 2>&1 )"; then \
@@ -1931,7 +2144,7 @@ source-root-selection-test:
 		echo "FAIL  SYSCONFDIR entered locked shell program text" >&2; exit 1; \
 	}; \
 	printf '%s\n' "$$sysconfdir_output" | \
-		grep -F "GOROROBA_SYSCONFDIR_INPUT contains unsupported path characters" \
+		grep -F "MESA_SYSCONFDIR_INPUT contains unsupported path characters" \
 		>/dev/null || { \
 			echo "FAIL  SYSCONFDIR metacharacters returned the wrong diagnostic" >&2; \
 			printf '%s\n' "$$sysconfdir_output" >&2; exit 1; \
@@ -1950,7 +2163,7 @@ source-root-selection-test:
 			echo "FAIL  $$control_name entered shell program text" >&2; exit 1; \
 		}; \
 		printf '%s\n' "$$control_output" | \
-			grep -F "GOROROBA_$${control_name}_INPUT must be a decimal integer" \
+			grep -F "MESA_$${control_name}_INPUT must be a decimal integer" \
 			>/dev/null || { \
 				echo "FAIL  $$control_name returned the wrong diagnostic" >&2; \
 				printf '%s\n' "$$control_output" >&2; exit 1; \
@@ -1966,7 +2179,7 @@ source-root-selection-test:
 		echo "FAIL  BUILD_LOCK entered shell program text" >&2; exit 1; \
 	}; \
 	printf '%s\n' "$$build_lock_output" | \
-		grep -F "GOROROBA_BUILD_LOCK_INPUT contains unsupported path characters" \
+		grep -F "MESA_BUILD_LOCK_INPUT contains unsupported path characters" \
 		>/dev/null || { \
 			echo "FAIL  BUILD_LOCK metacharacters returned the wrong diagnostic" >&2; \
 			printf '%s\n' "$$build_lock_output" >&2; exit 1; \
@@ -2211,8 +2424,8 @@ source-root-selection-test:
 			opt_local_before=absent; \
 		fi; \
 		mount_boundary_output="$$( \
-			GOROROBA_MOUNT_BOUNDARY_CALIBRATION=1 \
-			GOROROBA_CALLER_MOUNT_NAMESPACE="$$caller_mount_namespace" \
+			MESA_MOUNT_BOUNDARY_CALIBRATION=1 \
+			MESA_CALLER_MOUNT_NAMESPACE="$$caller_mount_namespace" \
 			unshare --user --map-root-user --mount bash -c '\
 				set -euo pipefail; \
 				mount --make-rprivate /; \
@@ -2256,11 +2469,11 @@ source-root-selection-test:
 	system_prefix_build_root="$$tmpdir/system-prefix-build"; \
 	for system_prefix in / /boot /dev /etc /home /proc /root /run /sys /tmp /var; do \
 		if env \
-			GOROROBA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
-			GOROROBA_BUILD_ROOT_INPUT="$$system_prefix_build_root" \
-			GOROROBA_BUILDDIR_INPUT="$$system_prefix_build_root/probe" \
-			GOROROBA_PREFIX_INPUT="$$system_prefix" \
-			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			MESA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
+			MESA_BUILD_ROOT_INPUT="$$system_prefix_build_root" \
+			MESA_BUILDDIR_INPUT="$$system_prefix_build_root/probe" \
+			MESA_PREFIX_INPUT="$$system_prefix" \
+			MESA_PROFILE_INPUT="$(PROFILE)" \
 			python3 "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=distclean >/dev/null 2>&1; then \
 			echo "FAIL  distclean layout accepted system prefix $$system_prefix" >&2; \
@@ -2270,11 +2483,11 @@ source-root-selection-test:
 	echo "OK    control-source distclean rejects system top-level prefixes"; \
 	for system_build_root in / /boot /dev /etc /home /proc /root /run /sys /tmp /var /var/lib /var/tmp; do \
 		if env \
-			GOROROBA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
-			GOROROBA_BUILD_ROOT_INPUT="$$system_build_root" \
-			GOROROBA_BUILDDIR_INPUT="$$system_build_root/probe" \
-			GOROROBA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
-			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			MESA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
+			MESA_BUILD_ROOT_INPUT="$$system_build_root" \
+			MESA_BUILDDIR_INPUT="$$system_build_root/probe" \
+			MESA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
+			MESA_PROFILE_INPUT="$(PROFILE)" \
 			python3 "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=distclean >/dev/null 2>&1; then \
 			echo "FAIL  distclean layout accepted system build root $$system_build_root" >&2; \
@@ -2284,11 +2497,11 @@ source-root-selection-test:
 	echo "OK    destructive operations reject system build roots"; \
 	for hostile_home in / /var/lib; do \
 		if HOME="$$hostile_home" env \
-			GOROROBA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
-			GOROROBA_BUILD_ROOT_INPUT="$$hostile_home/gororoba-review" \
-			GOROROBA_BUILDDIR_INPUT="$$hostile_home/gororoba-review/probe" \
-			GOROROBA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
-			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+			MESA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
+			MESA_BUILD_ROOT_INPUT="$$hostile_home/source-root-review" \
+			MESA_BUILDDIR_INPUT="$$hostile_home/source-root-review/probe" \
+			MESA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
+			MESA_PROFILE_INPUT="$(PROFILE)" \
 			python3 "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=clean >/dev/null 2>&1; then \
 			echo "FAIL  HOME=$$hostile_home admitted a destructive root" >&2; \
@@ -2382,6 +2595,40 @@ source-root-selection-test:
 		printf '%s\n' "$$absent_clean_output" >&2; exit 1; \
 	}; \
 	echo "OK    external clean rejects an absent unbound build directory"; \
+	registered_clean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		clean-registered-build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
+		BUILDDIR="$$external_builddir" \
+		BUILD_LOCK="$$tmpdir/external-build.lock" LOCK_WAIT=0 2>&1 )"; \
+	printf '%s\n' "$$registered_clean_output" | \
+		grep -Fx "no registered build exists: $$external_builddir" >/dev/null || { \
+		echo "FAIL  registered clean returned the wrong absent-build diagnostic" >&2; \
+		printf '%s\n' "$$registered_clean_output" >&2; exit 1; \
+	}; \
+	{ [ ! -e "$$external_builddir" ] && [ ! -L "$$external_builddir" ]; } || { \
+		echo "FAIL  registered clean created an absent build directory" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    registered clean leaves an absent build directory untouched"; \
+	ln -s "$$tmpdir/missing-build-target" "$$external_builddir"; \
+	if broken_link_clean_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
+		clean-registered-build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$external_build_root" \
+		BUILDDIR="$$external_builddir" \
+		BUILD_LOCK="$$tmpdir/external-build.lock" LOCK_WAIT=0 2>&1 )"; then \
+		echo "FAIL  registered clean treated a broken symlink as an absent build" >&2; \
+		exit 1; \
+	fi; \
+	if printf '%s\n' "$$broken_link_clean_output" | \
+		grep -F "no registered build exists" >/dev/null; then \
+		echo "FAIL  registered clean skipped a broken build-directory symlink" >&2; \
+		exit 1; \
+	fi; \
+	test -L "$$external_builddir" || { \
+		echo "FAIL  registered clean removed an unbound build-directory symlink" >&2; \
+		exit 1; \
+	}; \
+	echo "OK    registered clean delegates build-directory symlinks to strict clean"; \
 	mkdir -p "$$source_build_root"; \
 	touch "$$source_build_root/sentinel"; \
 	if clean_all_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
@@ -2402,7 +2649,7 @@ source-root-selection-test:
 		PREFIX="$$external_build_root/prefix" \
 		BUILD_LOCK="$$tmpdir/configure.lock" LOCK_WAIT=0 \
 		MESON=meson PROFILE="$(PROFILE)" 2>/dev/null )"; \
-	external_source_view="$$external_build_root/.gororoba-source-view"; \
+	external_source_view="$$external_build_root/.mesa-source-view"; \
 	printf '%s\n' "$$configure_plan" | grep -F "meson setup" >/dev/null && \
 	printf '%s\n' "$$configure_plan" | grep -F "\"$$external_source_view\"" >/dev/null && \
 	printf '%s\n' "$$configure_plan" | grep -F -- "--wrap-mode=default" >/dev/null && \
@@ -2428,7 +2675,7 @@ source-root-selection-test:
 		printf '%s\n' "$$control_configure_plan" >&2; exit 1; \
 	}; \
 	if printf '%s\n' "$$control_configure_plan" | \
-		grep -F ".gororoba-source-view" >/dev/null; then \
+		grep -F ".mesa-source-view" >/dev/null; then \
 		echo "FAIL  control configure planned an external source view" >&2; \
 		exit 1; \
 	fi; \
@@ -2492,7 +2739,7 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/wrap.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 \
 		MESON="$$synthetic_meson" >/dev/null; \
-	wrap_source_view="$$wrap_build_root/.gororoba-source-view"; \
+	wrap_source_view="$$wrap_build_root/.mesa-source-view"; \
 	test -f "$$wrap_source_view/subprojects/Vulkan-Profiles-source/meson.build" || { \
 		echo "FAIL  hashed Vulkan-Profiles fixture was not populated in the source view" >&2; \
 		exit 1; \
@@ -2503,9 +2750,9 @@ source-root-selection-test:
 		exit 1; \
 	}; \
 	grep -F "\"source_view\": \"$$wrap_source_view\"" \
-		"$$wrap_build_root/.gororoba-external-source-identity.json" >/dev/null && \
+		"$$wrap_build_root/.mesa-external-source-identity.json" >/dev/null && \
 	grep -E '"source_view_digest": "sha256:[0-9a-f]{64}"' \
-		"$$wrap_build_root/.gororoba-external-source-identity.json" >/dev/null || { \
+		"$$wrap_build_root/.mesa-external-source-identity.json" >/dev/null || { \
 		echo "FAIL  final identity omitted the source-view path or digest" >&2; \
 		exit 1; \
 	}; \
@@ -2562,7 +2809,7 @@ source-root-selection-test:
 		echo "FAIL  unhashed wrap returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$unhashed_output" >&2; exit 1; \
 	}; \
-	test ! -e "$$unhashed_build_root/.gororoba-source-view" || { \
+	test ! -e "$$unhashed_build_root/.mesa-source-view" || { \
 		echo "FAIL  unhashed wrap published a derived source view" >&2; \
 		exit 1; \
 	}; \
@@ -2620,17 +2867,17 @@ source-root-selection-test:
 		echo "FAIL  Meson failure returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$failed_config_output" >&2; exit 1; \
 	}; \
-	test -f "$$failed_config_root/.gororoba-external-source-identity.json" || { \
+	test -f "$$failed_config_root/.mesa-external-source-identity.json" || { \
 		echo "FAIL  failed configure omitted its provisional root identity" >&2; \
 		exit 1; \
 	}; \
 	grep -F '"state": "provisional"' \
-		"$$failed_config_root/.gororoba-external-source-identity.json" \
+		"$$failed_config_root/.mesa-external-source-identity.json" \
 		>/dev/null || { \
 		echo "FAIL  failed configure did not mark its root provisional" >&2; \
 		exit 1; \
 	}; \
-	test ! -e "$$failed_config_builddir/.gororoba-source-identity.json" || { \
+	test ! -e "$$failed_config_builddir/.mesa-source-identity.json" || { \
 		echo "FAIL  failed configure wrote a finalized build identity" >&2; \
 		exit 1; \
 	}; \
@@ -2660,11 +2907,11 @@ source-root-selection-test:
 		-c user.name=source-root-test -c user.email=source-root-test.invalid \
 		commit -qm "test: prepare source identity"; \
 	env \
-		GOROROBA_TOPSRC_INPUT="$$transaction_source" \
-		GOROROBA_BUILD_ROOT_INPUT="$$transaction_build_root" \
-		GOROROBA_BUILDDIR_INPUT="$$transaction_builddir" \
-		GOROROBA_PREFIX_INPUT="$$transaction_prefix" \
-		GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+		MESA_TOPSRC_INPUT="$$transaction_source" \
+		MESA_BUILD_ROOT_INPUT="$$transaction_build_root" \
+		MESA_BUILDDIR_INPUT="$$transaction_builddir" \
+		MESA_PREFIX_INPUT="$$transaction_prefix" \
+		MESA_PROFILE_INPUT="$(PROFILE)" \
 		python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
 	printf '%s\n' "source drift" >> "$$transaction_source/meson.build"; \
 	git -C "$$transaction_source" add meson.build; \
@@ -2672,11 +2919,11 @@ source-root-selection-test:
 		-c user.name=source-root-test -c user.email=source-root-test.invalid \
 		commit -qm "test: drift prepared source identity"; \
 	if transaction_output="$$( env \
-		GOROROBA_TOPSRC_INPUT="$$transaction_source" \
-		GOROROBA_BUILD_ROOT_INPUT="$$transaction_build_root" \
-		GOROROBA_BUILDDIR_INPUT="$$transaction_builddir" \
-		GOROROBA_PREFIX_INPUT="$$transaction_prefix" \
-		GOROROBA_PROFILE_INPUT="$(PROFILE)" \
+		MESA_TOPSRC_INPUT="$$transaction_source" \
+		MESA_BUILD_ROOT_INPUT="$$transaction_build_root" \
+		MESA_BUILDDIR_INPUT="$$transaction_builddir" \
+		MESA_PREFIX_INPUT="$$transaction_prefix" \
+		MESA_PROFILE_INPUT="$(PROFILE)" \
 		python3 "$(SOURCE_ROOT_CONTROL)" write-identity 2>&1 )"; then \
 		echo "FAIL  identity finalization accepted a different source tuple" >&2; \
 		exit 1; \
@@ -2686,7 +2933,7 @@ source-root-selection-test:
 		echo "FAIL  source transaction drift returned the wrong diagnostic" >&2; \
 		printf '%s\n' "$$transaction_output" >&2; exit 1; \
 	}; \
-	test ! -e "$$transaction_builddir/.gororoba-source-identity.json" || { \
+	test ! -e "$$transaction_builddir/.mesa-source-identity.json" || { \
 		echo "FAIL  source transaction drift wrote a finalized identity" >&2; \
 		exit 1; \
 	}; \
@@ -2719,38 +2966,71 @@ source-root-selection-test:
 		echo "FAIL  configure wrote a forged toolchain path" >&2; \
 		exit 1; \
 	}; \
-	test -f "$$identity_builddir/gororoba-toolchain.meson" || { \
+	test -f "$$identity_builddir/mesa-toolchain.meson" || { \
 		echo "FAIL  configure omitted the selected build toolchain" >&2; \
 		exit 1; \
 	}; \
 	echo "OK    derived build controls override command-line forgeries"; \
-	test -f "$$identity_builddir/.gororoba-source-identity.json" || { \
+	test -f "$$identity_builddir/.mesa-source-identity.json" || { \
 		echo "FAIL  configure omitted the external source identity" >&2; \
 		exit 1; \
 	}; \
-	test -f "$$identity_build_root/.gororoba-external-source-identity.json" || { \
+	test -f "$$identity_build_root/.mesa-external-source-identity.json" || { \
 		echo "FAIL  configure omitted the external build-root identity" >&2; \
 		exit 1; \
 	}; \
+	bytecode_control="$$tmpdir/source-view-bytecode-control"; \
+	mkdir -p "$$bytecode_control"; \
+	touch "$$bytecode_control/source_view_bytecode_probe.py"; \
+	env -u PYTHONDONTWRITEBYTECODE PYTHONPATH="$$bytecode_control" \
+		python3 -c 'import source_view_bytecode_probe'; \
+	find "$$bytecode_control" -path '*/__pycache__/*.pyc' -print -quit | \
+		grep -q . || { \
+		echo "FAIL  Python bytecode control did not create a cache file" >&2; \
+		exit 1; \
+	}; \
+	bytecode_ninja="$$tmpdir/source-view-bytecode-ninja"; \
+	{ \
+		printf '%s\n' '#!/bin/sh' 'set -eu' \
+			'test "$${PYTHONDONTWRITEBYTECODE:-}" = 1' \
+			'test "$$MESA_GIT_SHA1_OVERRIDE" = "$$MESA_SOURCE_COMMIT_CAPTURED"' \
+			'source_view="$$MESA_BUILD_ROOT_INPUT/.mesa-source-view"' \
+			'PYTHONPATH="$$source_view" python3 -c "import source_view_bytecode_probe"'; \
+	} > "$$bytecode_ninja"; \
+	chmod 700 "$$bytecode_ninja"; \
+	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
+		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
+		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
+		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
+		COMPILER_CHAIN=direct NINJA="$$bytecode_ninja" \
+		PYTHONDONTWRITEBYTECODE=0 MESA_GIT_SHA1_OVERRIDE=forged >/dev/null; \
+	if find "$$identity_build_root/.mesa-source-view" \
+		\( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \) \
+		-print -quit | grep -q .; then \
+		echo "FAIL  build tools wrote Python bytecode into the source view" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK    build tools inherit source identity without writing Python bytecode"; \
 	for selector_case in \
-		'profile:GOROROBA_PROFILE_INPUT:selector-profile-drift' \
-		'hostenv:GOROROBA_HOSTENV_INPUT:selector-hostenv-drift' \
-		'mode:GOROROBA_MODE_INPUT:stable' \
-		'compiler_chain:GOROROBA_COMPILER_CHAIN_INPUT:ccache' \
-		'compiler_family:GOROROBA_COMPILER_FAMILY_INPUT:gnu'; do \
+		'profile:MESA_PROFILE_INPUT:selector-profile-drift' \
+		'hostenv:MESA_HOSTENV_INPUT:selector-hostenv-drift' \
+		'mode:MESA_MODE_INPUT:stable' \
+		'compiler_chain:MESA_COMPILER_CHAIN_INPUT:ccache' \
+		'compiler_family:MESA_COMPILER_FAMILY_INPUT:gnu'; do \
 		IFS=: read -r selector_field selector_variable selector_value \
 			<<< "$$selector_case"; \
 		if selector_drift_output="$$( env \
-			GOROROBA_TOPSRC_INPUT="$$source_root" \
-			GOROROBA_BUILD_ROOT_INPUT="$$identity_build_root" \
-			GOROROBA_BUILDDIR_INPUT="$$identity_builddir" \
-			GOROROBA_PREFIX_INPUT="$$identity_prefix" \
-			GOROROBA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
-			GOROROBA_PROFILE_INPUT="$(PROFILE)" \
-			GOROROBA_HOSTENV_INPUT="$(HOSTENV)" \
-			GOROROBA_MODE_INPUT="$(MODE)" \
-			GOROROBA_COMPILER_CHAIN_INPUT=direct \
-			GOROROBA_COMPILER_FAMILY_INPUT=llvm \
+			MESA_TOPSRC_INPUT="$$source_root" \
+			MESA_BUILD_ROOT_INPUT="$$identity_build_root" \
+			MESA_BUILDDIR_INPUT="$$identity_builddir" \
+			MESA_PREFIX_INPUT="$$identity_prefix" \
+			MESA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
+			MESA_PROFILE_INPUT="$(PROFILE)" \
+			MESA_HOSTENV_INPUT="$(HOSTENV)" \
+			MESA_MODE_INPUT="$(MODE)" \
+			MESA_COMPILER_CHAIN_INPUT=direct \
+			MESA_COMPILER_FAMILY_INPUT=llvm \
+			MESA_REPRODUCIBLE_RUN_INPUT=0 \
 			"$$selector_variable=$$selector_value" \
 			python3 "$(SOURCE_ROOT_CONTROL)" verify-identity 2>&1 )"; then \
 			echo "FAIL  identity accepted $$selector_field drift" >&2; \
@@ -2785,29 +3065,30 @@ source-root-selection-test:
 		SOURCE_ROOT_FIELDS='a b c d e f g h i j k l m n o p' \
 		SOURCE_ROOT_RESOLVE_STATUS=1 SOURCE_COMMIT=forged \
 		SOURCE_TREE=forged CONTROL_COMMIT=forged CONTROL_TREE=forged \
-		GOROROBA_TOPSRC_INPUT=/ GOROROBA_BUILD_ROOT_INPUT=/ \
-		GOROROBA_BUILDDIR_INPUT=/ GOROROBA_PREFIX_INPUT=/ \
-		GOROROBA_SYSCONFDIR_INPUT=/ \
-		GOROROBA_PROFILE_INPUT=forged \
-		GOROROBA_HOSTENV_INPUT=forged \
-		GOROROBA_PROFILE_RAW=forged GOROROBA_HOSTENV_RAW=forged \
-		GOROROBA_INSTALL_NAMESPACE_RAW=forged GOROROBA_MODE_RAW=forged \
-		GOROROBA_COMPILER_CHAIN_RAW=forged \
-		GOROROBA_COMPILER_FAMILY_RAW=forged \
+		MESA_TOPSRC_INPUT=/ MESA_BUILD_ROOT_INPUT=/ \
+		MESA_BUILDDIR_INPUT=/ MESA_PREFIX_INPUT=/ \
+		MESA_SYSCONFDIR_INPUT=/ \
+		MESA_PROFILE_INPUT=forged \
+		MESA_HOSTENV_INPUT=forged \
+		MESA_PROFILE_RAW=forged MESA_HOSTENV_RAW=forged \
+		MESA_INSTALL_NAMESPACE_RAW=forged MESA_MODE_RAW=forged \
+		MESA_COMPILER_CHAIN_RAW=forged \
+		MESA_COMPILER_FAMILY_RAW=forged \
+		MESA_REPRODUCIBLE_RUN_RAW=forged \
 		MODE_SELECTOR=forged \
-		SELECTOR_FIELDS='forged forged forged forged forged forged' \
+		SELECTOR_FIELDS='forged forged forged forged forged forged forged' \
 		SELECTOR_RESOLVE_STATUS=1 COMMAND_VARIABLE_WITH_DOLLAR=forged \
-		GOROROBA_CONTROL_ROOT_INPUT=/ \
-		GOROROBA_SOURCE_ROOT_ANCHOR=forged \
-		GOROROBA_CONTROL_ROOT_ANCHOR=forged \
-		GOROROBA_BUILD_ROOT_ANCHOR=forged \
-		GOROROBA_BUILDDIR_ANCHOR=forged \
-		GOROROBA_PREFIX_ANCHOR=forged \
-		GOROROBA_SYSCONFDIR_ANCHOR=forged \
-		GOROROBA_SOURCE_COMMIT_CAPTURED=forged \
-		GOROROBA_SOURCE_TREE_CAPTURED=forged \
-		GOROROBA_CONTROL_COMMIT_CAPTURED=forged \
-		GOROROBA_CONTROL_TREE_CAPTURED=forged >/dev/null; \
+		MESA_CONTROL_ROOT_INPUT=/ \
+		MESA_SOURCE_ROOT_ANCHOR=forged \
+		MESA_CONTROL_ROOT_ANCHOR=forged \
+		MESA_BUILD_ROOT_ANCHOR=forged \
+		MESA_BUILDDIR_ANCHOR=forged \
+		MESA_PREFIX_ANCHOR=forged \
+		MESA_SYSCONFDIR_ANCHOR=forged \
+		MESA_SOURCE_COMMIT_CAPTURED=forged \
+		MESA_SOURCE_TREE_CAPTURED=forged \
+		MESA_CONTROL_COMMIT_CAPTURED=forged \
+		MESA_CONTROL_TREE_CAPTURED=forged >/dev/null; \
 	echo "OK    resolver-owned proof inputs override command-line forgeries"; \
 	if install_failure_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" install \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
@@ -2824,7 +3105,7 @@ source-root-selection-test:
 		printf '%s\n' "$$install_failure_output" >&2; exit 1; \
 	}; \
 	grep -F '"state": "provisional"' \
-		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		"$$identity_build_root/.mesa-external-source-identity.json" \
 		>/dev/null || { \
 		echo "FAIL  failed install left the root identity final" >&2; \
 		exit 1; \
@@ -2878,7 +3159,7 @@ source-root-selection-test:
 		printf '%s\n' "$$post_setup_failure_output" >&2; exit 1; \
 	}; \
 	grep -F '"state": "provisional"' \
-		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		"$$identity_build_root/.mesa-external-source-identity.json" \
 		>/dev/null || { \
 		echo "FAIL  post-setup install failure left the root identity final" >&2; \
 		exit 1; \
@@ -2910,8 +3191,8 @@ source-root-selection-test:
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESON=true SUDO=true >/dev/null; \
-	cmp -s "$$identity_build_root/.gororoba-external-source-identity.json" \
-		"$$identity_builddir/.gororoba-source-identity.json" || { \
+	cmp -s "$$identity_build_root/.mesa-external-source-identity.json" \
+		"$$identity_builddir/.mesa-source-identity.json" || { \
 		echo "FAIL  successful install wrote mismatched transactions" >&2; \
 		exit 1; \
 	}; \
@@ -2952,7 +3233,7 @@ source-root-selection-test:
 		printf '%s\n' "$$reconfigure_output" >&2; exit 1; \
 	}; \
 	grep -F '"state": "provisional"' \
-		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		"$$identity_build_root/.mesa-external-source-identity.json" \
 		>/dev/null || { \
 		echo "FAIL  failed reconfigure left the root identity final" >&2; \
 		exit 1; \
@@ -3016,7 +3297,7 @@ source-root-selection-test:
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
 	grep -F '"state": "final"' \
-		"$$identity_build_root/.gororoba-external-source-identity.json" \
+		"$$identity_build_root/.mesa-external-source-identity.json" \
 		>/dev/null || { \
 		echo "FAIL  successful reconfigure did not finalize its root" >&2; \
 		exit 1; \
@@ -3218,12 +3499,12 @@ source-root-selection-test:
 	retarget_output="$$tmpdir/retarget.output"; \
 	printf '%s\n' \
 		'#!/bin/sh' \
-		': > "$$GOROROBA_RETARGET_READY"' \
-		'while [ ! -e "$$GOROROBA_RETARGET_RELEASE" ]; do sleep 0.01; done' \
+		': > "$$MESA_RETARGET_READY"' \
+		'while [ ! -e "$$MESA_RETARGET_RELEASE" ]; do sleep 0.01; done' \
 		'exec flock "$$@"' > "$$retarget_flock"; \
 	chmod +x "$$retarget_flock"; \
-	GOROROBA_RETARGET_READY="$$retarget_ready" \
-	GOROROBA_RETARGET_RELEASE="$$retarget_release" \
+	MESA_RETARGET_READY="$$retarget_ready" \
+	MESA_RETARGET_RELEASE="$$retarget_release" \
 		$(MAKE) --no-print-directory -C "$(CURDIR)" distclean \
 			TOPSRC="$$source_root" BUILD_ROOT="$$retarget_root" \
 			BUILDDIR="$$retarget_builddir" PREFIX="$$retarget_prefix" \
@@ -3292,8 +3573,8 @@ source-root-selection-test:
 	revision_ready="$$tmpdir/revision.ready"; \
 	revision_release="$$tmpdir/revision.release"; \
 	revision_output="$$tmpdir/revision.output"; \
-	GOROROBA_RETARGET_READY="$$revision_ready" \
-	GOROROBA_RETARGET_RELEASE="$$revision_release" \
+	MESA_RETARGET_READY="$$revision_ready" \
+	MESA_RETARGET_RELEASE="$$revision_release" \
 		$(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 			TOPSRC="$$revision_source" BUILD_ROOT="$$revision_build_root" \
 			BUILDDIR="$$revision_build_root/probe" \
@@ -3301,8 +3582,8 @@ source-root-selection-test:
 			BUILD_LOCK="$$tmpdir/revision.lock" LOCK_WAIT=5 \
 			FLOCK="$$retarget_flock" \
 			SOURCE_COMMIT="$$revision_b" SOURCE_TREE="$$revision_b_tree" \
-			GOROROBA_SOURCE_COMMIT_CAPTURED="$$revision_b" \
-			GOROROBA_SOURCE_TREE_CAPTURED="$$revision_b_tree" \
+			MESA_SOURCE_COMMIT_CAPTURED="$$revision_b" \
+			MESA_SOURCE_TREE_CAPTURED="$$revision_b_tree" \
 			COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true \
 			> "$$revision_output" 2>&1 & \
 	revision_pid=$$!; \
@@ -3504,69 +3785,77 @@ define INSTALL_PAIR
 	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
 endef
 
+override SELECT_PROFILE_PREFIX = $(if $(filter 1,$(REPRODUCIBLE_RUN)),$(BUILD_ROOT)/prefix,$1)
+
 # Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
 # ati_r300 ICD in one artifact (profile 4_).  The registered in-tree unit tests
 # run after the build through the locked `make test` target; their result is
 # build/test evidence, not hardware or CTS/Piglit/dEQP evidence.
 rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "release qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) clean-registered-build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) test PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
 
 install-4_r300_full_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "release qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) install PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
 
 # Canonical full-feature r300 DEBUG build: same surface, assertions live (-O2 -g),
 # installs to the -debug prefix (profile 3_).
 rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) clean-registered-build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
 
 install-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
 
 # Canonical r600/terakan RELEASE build: maximal terakan stack (r600, zink,
 # softpipe, llvmpipe, amd_terascale) plus Rusticl in one artifact (profile 3_).
 # Installs to the release prefix.
 rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) configure PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) build PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "release qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) clean-registered-build PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) configure PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) build PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
 
 install-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "release qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) install PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
 
 # Canonical r600/terakan DEBUG build: same surface, assertions live (-O2 -g),
 # Rusticl live, installs to the -debug prefix (profile 4_).
 rebuild-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) clean-registered-build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
 
 install-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) install PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
 
 # r600/terakan RELEASE build without Rusticl: use when bindgen drift makes
 # Rusticl unbuildable (profile 5_).  Installs to the release prefix.
 rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) configure PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-	$(MAKE) build PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "release qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) clean-registered-build PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) configure PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
+	$(MAKE) build PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
 
 install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "release qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) install PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(BUILD_ROOT)/prefix REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)"
 
 # r600/terakan DEBUG build without Rusticl: use when bindgen drift makes
 # Rusticl unbuildable (profile 6_).  Installs to the -debug prefix.
 rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
-	$(MAKE) build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) clean-registered-build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
 
 install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-optimized
+	$(MAKE) install PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
 
 # PRIME r300 driver: ASan+UBSan+extended sanitizers at -O0 (profile 1_).  SCOPED
 # install to /opt/mesa-gororoba-debug-asan -- NEVER the system Mesa (an ASan
@@ -3575,24 +3864,24 @@ install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
 # PKGBUILD _prefix so the repack stages to the right tree; it is reached only
 # through mesa-gororoba-debug-asan-run.
 rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
-	$(MAKE) configure PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
-	$(MAKE) build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
+	$(MAKE) clean-registered-build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
+	$(MAKE) configure PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
+	$(MAKE) build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
 
 install-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-asan
+	$(MAKE) install PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
 
 # -O0 normal-debug r300 driver, no sanitizer (profile 2_).  SCOPED install to
 # /opt/mesa-gororoba-debug-o0 -- NOT the system Mesa; reached through
 # mesa-gororoba-debug-o0-run.  The prefix must equal the mesa-gororoba-debug-o0
 # PKGBUILD _prefix.
 rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
-	$(MAKE) configure PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
-	$(MAKE) build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
+	$(MAKE) clean-registered-build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
+	$(MAKE) configure PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
+	$(MAKE) build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
 
 install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-gororoba-debug-o0
+	$(MAKE) install PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
 
 # Coherent GPU debug stack ("if one is updated they are all updated"): rebuild the
 # four r300 driver tiers (prime 1_, debug-o0 2_, debug-optimized 3_, release 4_)
@@ -3603,44 +3892,46 @@ install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:
 # mesa-gororoba-debug-tools meta-package pins them together.  Pacman has no
 # atomic "update all"; this target + the meta-package pin are the idiom.  Note: only
 # the debug-optimized and release tiers ever become the /usr system Mesa.
-rebuild-all-tiers: \
-	rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
-	rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
-	rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
-	rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache
+rebuild-all-tiers:
+	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "four-tier qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
+	$(MAKE) rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache"
+	$(MAKE) rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache"
+	$(MAKE) rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache"
+	$(MAKE) rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/4_r300_full_release_x86_64v1-clang22-distcc-cache"
 	@echo "rebuilt the four r300 driver tiers (prime + debug-o0 + debug-optimized + release) from the current tree."
 	@echo "package: for p in mesa-gororoba-debug-asan mesa-gororoba-debug-o0 mesa-gororoba-debug-optimized mesa-gororoba umr-gororoba mesa-gororoba-debug-tools; do (cd packaging/\$$p && makepkg -f --noconfirm); done"
 
 # mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
 # ati_r300/r3v Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
-# pkg-mesa-gororoba runs makepkg and repo-adds the artifact to a local
-# [gororoba] repo; deploy-mesa-gororoba ships it to TARGET_HOST and asks pacman
+# package-mesa runs makepkg and repo-adds the artifact to a local
+# The pacman repository named by MESA_REPO_NAME contains the release package;
+# deploy-mesa ships it to TARGET_HOST and asks pacman
 # to execute the package-declared replacement transaction.  Build
 # on a fast x86-64 host whose llvm major matches the target's llvm-libs.
-# Override the pinned source commit with GOROROBA_COMMIT=<sha>.  Artifacts live
+# Override the pinned source commit with MESA_COMMIT=<sha>.  Artifacts live
 # under ../build/ (the sanctioned build area), not as workspace siblings.
-GOROROBA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
-GOROROBA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-gororoba-pkg)
-GOROROBA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-gororoba-repo)
-GOROROBA_REPO_NAME ?= gororoba
+MESA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
+MESA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-package)
+MESA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-package-repository)
+MESA_REPO_NAME ?= gororoba
 TARGET_HOST        ?= cachyos-vostro1000
-MESA_GOROROBA_DEPLOY_ACCEPTED ?= 0
+MESA_DEPLOY_ACCEPTED ?= 0
 
-pkg-mesa-gororoba:
-	mkdir -p "$(GOROROBA_PKG_DIR)/tmp" "$(GOROROBA_REPO_DIR)"
-	find "$(GOROROBA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(GOROROBA_PKG_DIR)/" {} +
-	[ -z "$(GOROROBA_COMMIT)" ] || sed -i 's/^_commit=.*/_commit=$(GOROROBA_COMMIT)/' "$(GOROROBA_PKG_DIR)/PKGBUILD"
-	cd "$(GOROROBA_PKG_DIR)" && TMPDIR="$(GOROROBA_PKG_DIR)/tmp" SRCDEST="$(GOROROBA_PKG_DIR)" BUILDDIR="$(GOROROBA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
-	cp "$(GOROROBA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst "$(GOROROBA_REPO_DIR)/"
-	repo-add "$(GOROROBA_REPO_DIR)/$(GOROROBA_REPO_NAME).db.tar.zst" "$(GOROROBA_REPO_DIR)"/mesa-gororoba-*.pkg.tar.zst
-	@echo "packaged + repo-added under $(GOROROBA_REPO_DIR); deploy: make deploy-mesa-gororoba TARGET_HOST=<host>"
+package-mesa:
+	mkdir -p "$(MESA_PKG_DIR)/tmp" "$(MESA_REPO_DIR)"
+	find "$(MESA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(MESA_PKG_DIR)/" {} +
+	[ -z "$(MESA_COMMIT)" ] || sed -i 's/^_commit=.*/_commit=$(MESA_COMMIT)/' "$(MESA_PKG_DIR)/PKGBUILD"
+	cd "$(MESA_PKG_DIR)" && TMPDIR="$(MESA_PKG_DIR)/tmp" SRCDEST="$(MESA_PKG_DIR)" BUILDDIR="$(MESA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
+	cp "$(MESA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst "$(MESA_REPO_DIR)/"
+	repo-add "$(MESA_REPO_DIR)/$(MESA_REPO_NAME).db.tar.zst" "$(MESA_REPO_DIR)"/mesa-gororoba-*.pkg.tar.zst
+	@echo "packaged + repo-added under $(MESA_REPO_DIR); deploy: make deploy-mesa TARGET_HOST=<host>"
 
-deploy-mesa-gororoba:
-	python3 $(CURDIR)/scripts/deploy_mesa_gororoba.py \
-		--package-dir "$(GOROROBA_PKG_DIR)" \
+deploy-mesa:
+	python3 $(CURDIR)/scripts/deploy_mesa.py \
+		--package-dir "$(MESA_PKG_DIR)" \
 		--target-host "$(TARGET_HOST)" \
-		--accepted "$(MESA_GOROROBA_DEPLOY_ACCEPTED)"
+		--accepted "$(MESA_DEPLOY_ACCEPTED)"
 
-deploy-mesa-gororoba-unit-test:
+deploy-mesa-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q $(CURDIR)/tests/test_deploy_mesa_gororoba.py
+		python3 -m pytest -q $(CURDIR)/tests/test_deploy_mesa.py

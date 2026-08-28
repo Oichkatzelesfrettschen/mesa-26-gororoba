@@ -307,12 +307,12 @@ main(int argc, char **argv)
 
    calibrate_known_bad();
 
-   /* Decision-grade rows come from a Meson buildtype=release build:
+   /* Qualification rows come from a Meson buildtype=release build:
     * the build system defines R300_CPU_VERTEX_BENCH_MESON_RELEASE
     * there, because compiler macros alone cannot separate release from
     * debugoptimized with b_ndebug.  Any other build marks the row
     * stream itself, so a recorder consuming stdout carries the
-    * non-decision-grade status with the rows.
+    * non-qualification status with the rows.
     */
 #if !defined(R300_CPU_VERTEX_BENCH_MESON_RELEASE) || \
    !defined(NDEBUG) || !defined(__OPTIMIZE__)
@@ -326,7 +326,7 @@ main(int argc, char **argv)
    /* The row stream carries the source identity the binary was built
     * from, so a retained bundle binds the timings to a commit; the
     * clean-tree, declared-SHA, isolated-worktree requirement for a
-    * decision-grade run is procedural and its verdict rides the
+    * qualification run is procedural and its verdict rides the
     * evidence bundle.
     */
    printf("# source%s\n",

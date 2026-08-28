@@ -52,7 +52,7 @@ the task, release
 ICD `r3v_devenv_icd.x86_64.json`, `LD_PRELOAD` of the noop drm-shim,
 `RADEON_GPU_ID=0x5974`, `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1`,
 `--dmesg-command ""`, `--timeout 1800`. Both runs are `evidence_class:
-host-model`, `decision_grade: False` (no `--expect-source-sha` or
+host-model`, with qualification invalid (no `--expect-source-sha` or
 `--source-root`/`--build-root` pinned; this is an exploratory
 classification run, not a qualification run per `Validation expectations`).
 
@@ -385,7 +385,7 @@ loader source citation.
 
 Measured receipts (own Meson build directory, `--dmesg-command ""`,
 `R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1`, evidence class host-model,
-`decision_grade: False`): the `api.object_management` family (457
+qualification invalid): the `api.object_management` family (457
 cases, caselist drawn directly from
 `external/vulkancts/mustpass/main/vk-default/api.txt` rather than the
 partition tool's `generate --mustpass-dir` path: the CTS checkout's

@@ -54,9 +54,11 @@ REPLAY_ARTIFACT = "replay_r300_cs_track"
 FULL_SHA256 = set("0123456789abcdef")
 MODULE_NAME = "radeon"
 MODULE_SYSFS_SRCVERSION = Path("/sys/module/radeon/srcversion")
-MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
+MODULE_DRIVER_TREE_FIELD = "mesa_driver_tree"
+LEGACY_MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
 MODULE_SRCVERSION_CHARS = set(
-    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 
 R300_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
     "r300-r2vb-float2-tuple-pass",
@@ -73,7 +75,8 @@ R3V_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
 )
 
 FLOAT2_TUPLE_REQUIRED_TESTS = (
-    R300_FLOAT2_TUPLE_REQUIRED_TESTS + R3V_FLOAT2_TUPLE_REQUIRED_TESTS)
+    R300_FLOAT2_TUPLE_REQUIRED_TESTS + R3V_FLOAT2_TUPLE_REQUIRED_TESTS
+)
 
 R300_LIVENESS_REQUIRED_TESTS: tuple[str, ...] = (
     "r300-common-liveness-census-selftest",
@@ -370,12 +373,12 @@ def read_runtime_authority(
         running_srcversion = sysfs_path.read_text().strip()
     except OSError:
         return None
-    if (not running_srcversion or
-            any(char not in MODULE_SRCVERSION_CHARS
-                for char in running_srcversion)):
+    if not running_srcversion or any(
+        char not in MODULE_SRCVERSION_CHARS for char in running_srcversion
+    ):
         return None
-    installed_values: dict[str, str] = {}
-    for field in (MODULE_DRIVER_TREE_FIELD, "srcversion"):
+    installed_driver_tree = ""
+    for field in (MODULE_DRIVER_TREE_FIELD, LEGACY_MODULE_DRIVER_TREE_FIELD):
         try:
             result = run_command(
                 ["modinfo", "-F", field, MODULE_NAME],
@@ -385,17 +388,30 @@ def read_runtime_authority(
             )
         except OSError:
             return None
-        if result.returncode != 0:
-            return None
-        installed_values[field] = result.stdout.strip()
-    installed_driver_tree = installed_values[MODULE_DRIVER_TREE_FIELD]
-    installed_srcversion = installed_values["srcversion"]
-    if (len(installed_driver_tree) != 40 or
-            any(char not in FULL_SHA256 for char in installed_driver_tree) or
-            not installed_srcversion or
-            any(char not in MODULE_SRCVERSION_CHARS
-                for char in installed_srcversion) or
-            installed_srcversion != running_srcversion):
+        if result.returncode == 0 and result.stdout.strip():
+            installed_driver_tree = result.stdout.strip()
+            break
+    if not installed_driver_tree:
+        return None
+    try:
+        srcversion_result = run_command(
+            ["modinfo", "-F", "srcversion", MODULE_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if srcversion_result.returncode != 0:
+        return None
+    installed_srcversion = srcversion_result.stdout.strip()
+    if (
+        len(installed_driver_tree) != 40
+        or any(char not in FULL_SHA256 for char in installed_driver_tree)
+        or not installed_srcversion
+        or any(char not in MODULE_SRCVERSION_CHARS for char in installed_srcversion)
+        or installed_srcversion != running_srcversion
+    ):
         return None
     return installed_driver_tree, running_srcversion
 
@@ -434,27 +450,36 @@ def validate_replay_provenance(
         return ("non-isolated-build", False)
 
     kernel_commit = provenance.get("kernel_commit")
-    if (not isinstance(kernel_commit, str) or len(kernel_commit) != 40 or
-            any(char not in FULL_SHA256 for char in kernel_commit)):
+    if (
+        not isinstance(kernel_commit, str)
+        or len(kernel_commit) != 40
+        or any(char not in FULL_SHA256 for char in kernel_commit)
+    ):
         return ("unpinned-kernel-commit", False)
-    if (provenance.get("kernel_tool_source_sha") != kernel_commit or
-            provenance.get("kernel_driver_logic_sha") != kernel_commit):
+    if (
+        provenance.get("kernel_tool_source_sha") != kernel_commit
+        or provenance.get("kernel_driver_logic_sha") != kernel_commit
+    ):
         return ("kernel-authority-mismatch", False)
     source_driver_tree = provenance.get("kernel_driver_logic_tree")
     deployed_driver_tree = provenance.get("deployed_driver_tree")
     running_srcversion = provenance.get("running_module_srcversion")
-    if (not isinstance(source_driver_tree, str) or
-            len(source_driver_tree) != 40 or
-            any(char not in FULL_SHA256 for char in source_driver_tree) or
-            not isinstance(deployed_driver_tree, str) or
-            len(deployed_driver_tree) != 40 or
-            any(char not in FULL_SHA256 for char in deployed_driver_tree)):
+    if (
+        not isinstance(source_driver_tree, str)
+        or len(source_driver_tree) != 40
+        or any(char not in FULL_SHA256 for char in source_driver_tree)
+        or not isinstance(deployed_driver_tree, str)
+        or len(deployed_driver_tree) != 40
+        or any(char not in FULL_SHA256 for char in deployed_driver_tree)
+    ):
         return ("driver-authority-missing", False)
     if deployed_driver_tree != source_driver_tree:
         return ("driver-authority-mismatch", False)
-    if (not isinstance(running_srcversion, str) or not running_srcversion or
-            any(char not in MODULE_SRCVERSION_CHARS
-                for char in running_srcversion)):
+    if (
+        not isinstance(running_srcversion, str)
+        or not running_srcversion
+        or any(char not in MODULE_SRCVERSION_CHARS for char in running_srcversion)
+    ):
         return ("module-srcversion-missing", False)
     if provenance.get("deployed_driver_authority_verified") is not True:
         return ("driver-authority-unverified", False)
@@ -465,8 +490,7 @@ def validate_replay_provenance(
         return ("deployed-driver-tree-runtime-mismatch", False)
     if running_srcversion != runtime_srcversion:
         return ("module-srcversion-runtime-mismatch", False)
-    if (not isinstance(provenance.get("sources"), dict) or
-            not provenance["sources"]):
+    if not isinstance(provenance.get("sources"), dict) or not provenance["sources"]:
         return ("source-provenance-missing", False)
     if not isinstance(provenance.get("compile_argv"), list):
         return ("compile-provenance-missing", False)
@@ -480,8 +504,11 @@ def validate_replay_provenance(
         return ("output-path-mismatch", False)
 
     expected_digest = provenance.get("output_sha256")
-    if (not isinstance(expected_digest, str) or len(expected_digest) != 64 or
-            any(char not in FULL_SHA256 for char in expected_digest)):
+    if (
+        not isinstance(expected_digest, str)
+        or len(expected_digest) != 64
+        or any(char not in FULL_SHA256 for char in expected_digest)
+    ):
         return ("output-digest-malformed", False)
     try:
         digest = hashlib.sha256(tool_path.read_bytes()).hexdigest()
@@ -521,9 +548,11 @@ def replay_provenance_selftest() -> int:
             "deployed_driver_tree": "c" * 40,
             "running_module_srcversion": "FIXTURESRCVERSION0000000",
             "deployed_driver_authority_verified": True,
-            "sources": {"scripts/replay_r300_cs_track.c": {
-                "sha256": "b" * 64,
-            }},
+            "sources": {
+                "scripts/replay_r300_cs_track.c": {
+                    "sha256": "b" * 64,
+                }
+            },
             "compiler": "cc",
             "compile_argv": ["cc", "-Werror"],
             "output": str(tool),
@@ -536,35 +565,39 @@ def replay_provenance_selftest() -> int:
         def check(expected: str, candidate: dict) -> bool:
             record_path.write_text(json.dumps(candidate))
             state, ok = validate_replay_provenance(
-                str(tool), str(record_path),
+                str(tool),
+                str(record_path),
                 ("c" * 40, "FIXTURESRCVERSION0000000"),
             )
             if ok or state != expected:
-                print(f"replay provenance selftest expected {expected}, "
-                      f"got {state}", file=sys.stderr)
+                print(
+                    f"replay provenance selftest expected {expected}, " f"got {state}",
+                    file=sys.stderr,
+                )
                 return False
             return True
 
         record_path.write_text(json.dumps(record))
         state, ok = validate_replay_provenance(
-            str(tool), str(record_path),
+            str(tool),
+            str(record_path),
             ("c" * 40, "FIXTURESRCVERSION0000000"),
         )
         if state != "verified" or not ok:
-            print(f"replay provenance selftest valid record: {state}",
-                  file=sys.stderr)
+            print(f"replay provenance selftest valid record: {state}", file=sys.stderr)
             return 1
         mutations = [
-            ("correspondence-gate-not-passed", {"correspondence_gate":
-                                                "skipped"}),
+            ("correspondence-gate-not-passed", {"correspondence_gate": "skipped"}),
             ("non-isolated-build", {"isolated_worktree": False}),
             ("builder-mismatch", {"builder": "operator-supplied"}),
             ("unpinned-kernel-commit", {"kernel_commit": "deadbeef"}),
             ("driver-authority-missing", {"deployed_driver_tree": None}),
             ("driver-authority-mismatch", {"deployed_driver_tree": "d" * 40}),
             ("module-srcversion-missing", {"running_module_srcversion": ""}),
-            ("driver-authority-unverified", {
-                "deployed_driver_authority_verified": False}),
+            (
+                "driver-authority-unverified",
+                {"deployed_driver_authority_verified": False},
+            ),
             ("digest-mismatch", {"output_sha256": "0" * 64}),
         ]
         for expected, mutation in mutations:
@@ -577,23 +610,31 @@ def replay_provenance_selftest() -> int:
         candidate["deployed_driver_tree"] = "d" * 40
         record_path.write_text(json.dumps(candidate))
         state, ok = validate_replay_provenance(
-            str(tool), str(record_path),
+            str(tool),
+            str(record_path),
             ("c" * 40, "FIXTURESRCVERSION0000000"),
         )
         if ok or state != "deployed-driver-tree-runtime-mismatch":
-            print("replay provenance selftest expected runtime driver-tree "
-                  f"refusal, got {state}", file=sys.stderr)
+            print(
+                "replay provenance selftest expected runtime driver-tree "
+                f"refusal, got {state}",
+                file=sys.stderr,
+            )
             return 1
         candidate = dict(record)
         candidate["running_module_srcversion"] = "OTHER"
         record_path.write_text(json.dumps(candidate))
         state, ok = validate_replay_provenance(
-            str(tool), str(record_path),
+            str(tool),
+            str(record_path),
             ("c" * 40, "FIXTURESRCVERSION0000000"),
         )
         if ok or state != "module-srcversion-runtime-mismatch":
-            print("replay provenance selftest expected runtime srcversion "
-                  f"refusal, got {state}", file=sys.stderr)
+            print(
+                "replay provenance selftest expected runtime srcversion "
+                f"refusal, got {state}",
+                file=sys.stderr,
+            )
             return 1
 
     with tempfile.TemporaryDirectory(prefix="r3v-runtime-authority-") as tmp:
@@ -603,38 +644,73 @@ def replay_provenance_selftest() -> int:
 
         def good_modinfo(command, **kwargs):
             field = command[2]
-            value = (driver_tree if field == MODULE_DRIVER_TREE_FIELD else
-                     "FIXTURESRCVERSION0000000")
+            value = (
+                driver_tree
+                if field == MODULE_DRIVER_TREE_FIELD
+                else "FIXTURESRCVERSION0000000"
+            )
             return subprocess.CompletedProcess(
-                command, 0, stdout=value + "\n", stderr="")
+                command, 0, stdout=value + "\n", stderr=""
+            )
 
         authority = read_runtime_authority(sysfs_path, good_modinfo)
         if authority != (driver_tree, "FIXTURESRCVERSION0000000"):
-            print("runtime authority selftest expected valid tuple, "
-                  f"got {authority}", file=sys.stderr)
+            print(
+                "runtime authority selftest expected valid tuple, " f"got {authority}",
+                file=sys.stderr,
+            )
+            return 1
+
+        def legacy_modinfo(command, **kwargs):
+            field = command[2]
+            if field == MODULE_DRIVER_TREE_FIELD:
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="missing"
+                )
+            value = (
+                driver_tree
+                if field == LEGACY_MODULE_DRIVER_TREE_FIELD
+                else "FIXTURESRCVERSION0000000"
+            )
+            return subprocess.CompletedProcess(
+                command, 0, stdout=value + "\n", stderr=""
+            )
+
+        authority = read_runtime_authority(sysfs_path, legacy_modinfo)
+        if authority != (driver_tree, "FIXTURESRCVERSION0000000"):
+            print(
+                "runtime authority selftest rejected the installed legacy "
+                f"driver-tree field: {authority}",
+                file=sys.stderr,
+            )
             return 1
 
         def missing_modinfo(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="missing")
 
         if read_runtime_authority(sysfs_path, missing_modinfo) is not None:
-            print("runtime authority selftest accepted modinfo failure",
-                  file=sys.stderr)
+            print(
+                "runtime authority selftest accepted modinfo failure", file=sys.stderr
+            )
             return 1
 
         def mismatched_modinfo(command, **kwargs):
             field = command[2]
-            value = (driver_tree if field == MODULE_DRIVER_TREE_FIELD else
-                     "OTHER")
+            value = driver_tree if field == MODULE_DRIVER_TREE_FIELD else "OTHER"
             return subprocess.CompletedProcess(
-                command, 0, stdout=value + "\n", stderr="")
+                command, 0, stdout=value + "\n", stderr=""
+            )
 
         if read_runtime_authority(sysfs_path, mismatched_modinfo) is not None:
-            print("runtime authority selftest accepted srcversion mismatch",
-                  file=sys.stderr)
+            print(
+                "runtime authority selftest accepted srcversion mismatch",
+                file=sys.stderr,
+            )
             return 1
-    print(f"replay provenance selftest: {len(mutations)} refusal legs and "
-          "one verified leg and runtime-authority legs OK")
+    print(
+        f"replay provenance selftest: {len(mutations)} refusal legs and "
+        "one verified leg and runtime-authority legs OK"
+    )
     return 0
 
 
@@ -664,8 +740,9 @@ class HostProbes:
         return ctypes.util.find_library("vulkan")
 
     def libc(self) -> str:
-        return "glibc" if "glibc" in (os.confstr("CS_GNU_LIBC_VERSION")
-                                      or "") else "other"
+        return (
+            "glibc" if "glibc" in (os.confstr("CS_GNU_LIBC_VERSION") or "") else "other"
+        )
 
     def env_tool(self, var: str) -> tuple[str, bool]:
         return env_tool_row(var)[1:]
@@ -705,10 +782,13 @@ class MissingKernelReplayProbes(GoodProbes):
         return super().env_tool(var)
 
 
-def evaluate(registered: set[str], options: dict[str, object],
-             qualification: bool,
-             probes: HostProbes | None = None,
-             require_tests: bool = False) -> int:
+def evaluate(
+    registered: set[str],
+    options: dict[str, object],
+    qualification: bool,
+    probes: HostProbes | None = None,
+    require_tests: bool = False,
+) -> int:
     """Report the inventory; in qualification mode, any absence is fatal.
     Every row prints before the verdict so a failing run names each missing
     item rather than the first.
@@ -747,8 +827,11 @@ def evaluate(registered: set[str], options: dict[str, object],
     if glibc != "glibc":
         failures.append("non-glibc host; drm-shim preload unavailable")
 
-    for var in ("R3V_CS_TRACK_REPLAY_TOOL", "R3V_CS_TRACK_CONTROLS",
-                "R3V_KERNEL_REPLAY_TOOL"):
+    for var in (
+        "R3V_CS_TRACK_REPLAY_TOOL",
+        "R3V_CS_TRACK_CONTROLS",
+        "R3V_KERNEL_REPLAY_TOOL",
+    ):
         state, ok = probes.env_tool(var)
         print(f"env {var}: {state}")
         if not ok:
@@ -772,8 +855,10 @@ def evaluate(registered: set[str], options: dict[str, object],
         for name in expected_tests
         if name not in registered_by_suite.get(required_test_suite(name), ())
     ]
-    print(f"required tests: {len(expected_tests) - len(missing)}"
-          f"/{len(expected_tests)} registered")
+    print(
+        f"required tests: {len(expected_tests) - len(missing)}"
+        f"/{len(expected_tests)} registered"
+    )
     for name, suite in missing:
         registered_suites = sorted(
             registered_suite
@@ -781,8 +866,10 @@ def evaluate(registered: set[str], options: dict[str, object],
             if name in names
         )
         if name in registered:
-            print(f"missing required test: {name} from suite {suite}; "
-                  f"registered under {','.join(registered_suites)}")
+            print(
+                f"missing required test: {name} from suite {suite}; "
+                f"registered under {','.join(registered_suites)}"
+            )
         else:
             print(f"missing required test: {name} from suite {suite}")
         failures.append(f"required test {name} not registered in suite {suite}")
@@ -791,12 +878,15 @@ def evaluate(registered: set[str], options: dict[str, object],
     if "build-tests disabled" in failures:
         registration_failures.append("build-tests disabled")
 
-    return verdict(qualification, require_tests, failures,
-                   registration_failures)
+    return verdict(qualification, require_tests, failures, registration_failures)
 
 
-def verdict(qualification: bool, require_tests: bool, failures: list[str],
-            registration_failures: list[str]) -> int:
+def verdict(
+    qualification: bool,
+    require_tests: bool,
+    failures: list[str],
+    registration_failures: list[str],
+) -> int:
     """The mode's verdict over the absences the report already named.
 
     Each mode reads one list and prints one line: the qualification gate
@@ -806,15 +896,20 @@ def verdict(qualification: bool, require_tests: bool, failures: list[str],
     reaches here asking for both."""
     if qualification:
         if failures:
-            print(f"verdict: QUALIFICATION FAILURE ({len(failures)} absences)",
-                  file=sys.stderr)
+            print(
+                f"verdict: QUALIFICATION FAILURE ({len(failures)} absences)",
+                file=sys.stderr,
+            )
             return 1
         print("verdict: qualification inventory complete")
         return 0
     if require_tests:
         if registration_failures:
-            print("verdict: REGISTRATION FAILURE "
-                  f"({len(registration_failures)} absences)", file=sys.stderr)
+            print(
+                "verdict: REGISTRATION FAILURE "
+                f"({len(registration_failures)} absences)",
+                file=sys.stderr,
+            )
             return 1
         print("verdict: every required test is registered")
         return 0
@@ -848,8 +943,7 @@ def synthetic_complete(options: dict[str, object] | None = None) -> list[dict]:
 
 
 def zero_native(entries: list[dict]) -> list[dict]:
-    return [e for e in entries
-            if not any(s in NATIVE_SUITES for s in suite_names(e))]
+    return [e for e in entries if not any(s in NATIVE_SUITES for s in suite_names(e))]
 
 
 QUALIFYING_OPTIONS = {"build-tests": True, "gallium-drivers": ["r300"]}
@@ -862,8 +956,9 @@ def run_fixture() -> int:
     # Good probes isolate the mutation: the fixture's refusal comes from the
     # removed native registrations alone, not from this host's environment.
     entries = zero_native(synthetic_complete(QUALIFYING_OPTIONS))
-    return evaluate(collect(entries), QUALIFYING_OPTIONS, qualification=True,
-                    probes=GoodProbes())
+    return evaluate(
+        collect(entries), QUALIFYING_OPTIONS, qualification=True, probes=GoodProbes()
+    )
 
 
 def run_selftest() -> int:
@@ -871,70 +966,101 @@ def run_selftest() -> int:
         return 1
     probes = GoodProbes()
     complete_entries = synthetic_complete(QUALIFYING_OPTIONS)
-    bad = evaluate(collect(zero_native(complete_entries)),
-                   QUALIFYING_OPTIONS, qualification=True, probes=probes)
+    bad = evaluate(
+        collect(zero_native(complete_entries)),
+        QUALIFYING_OPTIONS,
+        qualification=True,
+        probes=probes,
+    )
     if bad == 0:
         print("selftest: zero-native fixture passed the gate", file=sys.stderr)
         return 1
     missing_kernel_replay = evaluate(
-        collect(complete_entries), QUALIFYING_OPTIONS, qualification=True,
-        probes=MissingKernelReplayProbes())
+        collect(complete_entries),
+        QUALIFYING_OPTIONS,
+        qualification=True,
+        probes=MissingKernelReplayProbes(),
+    )
     if missing_kernel_replay == 0:
-        print("selftest: missing kernel replay passed the gate",
-              file=sys.stderr)
+        print("selftest: missing kernel replay passed the gate", file=sys.stderr)
         return 1
-    good = evaluate(collect(complete_entries), QUALIFYING_OPTIONS,
-                    qualification=True, probes=probes)
+    good = evaluate(
+        collect(complete_entries), QUALIFYING_OPTIONS, qualification=True, probes=probes
+    )
     if good != 0:
         print("selftest: complete set failed the gate", file=sys.stderr)
         return 1
     for missing_test in FLOAT2_TUPLE_REQUIRED_TESTS:
         missing_tuple_test = [
-            entry for entry in complete_entries
-            if entry["name"] != missing_test
+            entry for entry in complete_entries if entry["name"] != missing_test
         ]
         missing_tuple = evaluate(
-            collect(missing_tuple_test), QUALIFYING_OPTIONS,
-            qualification=True, probes=probes)
+            collect(missing_tuple_test),
+            QUALIFYING_OPTIONS,
+            qualification=True,
+            probes=probes,
+        )
         if missing_tuple == 0:
-            print("selftest: missing FLOAT_2 tuple test passed the gate: " +
-                  missing_test, file=sys.stderr)
+            print(
+                "selftest: missing FLOAT_2 tuple test passed the gate: " + missing_test,
+                file=sys.stderr,
+            )
             return 1
         home_suite = required_test_suite(missing_test)
         wrong_suite = "r3v" if home_suite == "r300" else "r300"
         misplaced_tuple_test = [
-            ({**entry, "suite": [f"mesa:{wrong_suite}"]}
-             if entry["name"] == missing_test else entry)
+            (
+                {**entry, "suite": [f"mesa:{wrong_suite}"]}
+                if entry["name"] == missing_test
+                else entry
+            )
             for entry in complete_entries
         ]
         misplaced_tuple = evaluate(
-            collect(misplaced_tuple_test), QUALIFYING_OPTIONS,
-            qualification=True, probes=probes)
+            collect(misplaced_tuple_test),
+            QUALIFYING_OPTIONS,
+            qualification=True,
+            probes=probes,
+        )
         if misplaced_tuple == 0:
-            print("selftest: misplaced FLOAT_2 tuple test passed the gate: " +
-                  missing_test, file=sys.stderr)
+            print(
+                "selftest: misplaced FLOAT_2 tuple test passed the gate: "
+                + missing_test,
+                file=sys.stderr,
+            )
             return 1
     for missing_test in R300_LIVENESS_REQUIRED_TESTS:
         missing_liveness_test = [
-            entry for entry in complete_entries
-            if entry["name"] != missing_test
+            entry for entry in complete_entries if entry["name"] != missing_test
         ]
         missing_liveness = evaluate(
-            collect(missing_liveness_test), QUALIFYING_OPTIONS,
-            qualification=True, probes=probes)
+            collect(missing_liveness_test),
+            QUALIFYING_OPTIONS,
+            qualification=True,
+            probes=probes,
+        )
         if missing_liveness == 0:
-            print("selftest: missing liveness census test passed the gate: " +
-                  missing_test, file=sys.stderr)
+            print(
+                "selftest: missing liveness census test passed the gate: "
+                + missing_test,
+                file=sys.stderr,
+            )
             return 1
-    native_only = evaluate(collect(synthetic_complete(NATIVE_ONLY_OPTIONS)),
-                           NATIVE_ONLY_OPTIONS, qualification=True,
-                           probes=probes)
+    native_only = evaluate(
+        collect(synthetic_complete(NATIVE_ONLY_OPTIONS)),
+        NATIVE_ONLY_OPTIONS,
+        qualification=True,
+        probes=probes,
+    )
     if native_only != 0:
         print("selftest: native-only set failed the gate", file=sys.stderr)
         return 1
-    missing_b3sum = evaluate(collect(complete_entries),
-                             QUALIFYING_OPTIONS, qualification=True,
-                             probes=MissingB3sumProbes())
+    missing_b3sum = evaluate(
+        collect(complete_entries),
+        QUALIFYING_OPTIONS,
+        qualification=True,
+        probes=MissingB3sumProbes(),
+    )
     if missing_b3sum == 0:
         print("selftest: missing b3sum passed the gate", file=sys.stderr)
         return 1
@@ -943,26 +1069,40 @@ def run_selftest() -> int:
     # the replay tooling nor a module identity still passes: those
     # absences are the qualification gate's to judge, not the package
     # boundary's.
-    require_bad = evaluate(collect(zero_native(complete_entries)),
-                           QUALIFYING_OPTIONS, qualification=False,
-                           probes=probes, require_tests=True)
+    require_bad = evaluate(
+        collect(zero_native(complete_entries)),
+        QUALIFYING_OPTIONS,
+        qualification=False,
+        probes=probes,
+        require_tests=True,
+    )
     if require_bad == 0:
-        print("selftest: zero-native fixture passed the require-tests gate",
-              file=sys.stderr)
+        print(
+            "selftest: zero-native fixture passed the require-tests gate",
+            file=sys.stderr,
+        )
         return 1
-    require_good = evaluate(collect(complete_entries), QUALIFYING_OPTIONS,
-                            qualification=False,
-                            probes=MissingKernelReplayProbes(),
-                            require_tests=True)
+    require_good = evaluate(
+        collect(complete_entries),
+        QUALIFYING_OPTIONS,
+        qualification=False,
+        probes=MissingKernelReplayProbes(),
+        require_tests=True,
+    )
     if require_good != 0:
-        print("selftest: the complete set failed the require-tests gate over "
-              "a host absence", file=sys.stderr)
+        print(
+            "selftest: the complete set failed the require-tests gate over "
+            "a host absence",
+            file=sys.stderr,
+        )
         return 1
-    print("selftest: gate refuses zero-native, each missing or misplaced "
-          "FLOAT_2 tuple test, missing kernel replay, missing Gallium "
-          "known-bad, and missing b3sum; admits dual-backend and native-only "
-          "sets; require-tests refuses zero-native and admits a complete set "
-          "under a host absence")
+    print(
+        "selftest: gate refuses zero-native, each missing or misplaced "
+        "FLOAT_2 tuple test, missing kernel replay, missing Gallium "
+        "known-bad, and missing b3sum; admits dual-backend and native-only "
+        "sets; require-tests refuses zero-native and admits a complete set "
+        "under a host absence"
+    )
     return 0
 
 
@@ -987,8 +1127,9 @@ def main() -> int:
         parser.error("a build directory, --fixture, or --selftest is required")
     entries = load_tests(args.builddir)
     options = load_options(args.builddir)
-    return evaluate(collect(entries), options, args.qualification,
-                    require_tests=args.require_tests)
+    return evaluate(
+        collect(entries), options, args.qualification, require_tests=args.require_tests
+    )
 
 
 if __name__ == "__main__":

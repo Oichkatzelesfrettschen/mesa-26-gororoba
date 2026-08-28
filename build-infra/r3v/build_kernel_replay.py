@@ -41,7 +41,8 @@ PROVENANCE_BUILDER = "build-infra/r3v/build_kernel_replay.py"
 REPLAY_ARTIFACT = "replay_r300_cs_track"
 MODULE_NAME = "radeon"
 MODULE_SYSFS_SRCVERSION = Path("/sys/module/radeon/srcversion")
-MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
+MODULE_DRIVER_TREE_FIELD = "mesa_driver_tree"
+LEGACY_MODULE_DRIVER_TREE_FIELD = "gororoba_driver_tree"
 OBJECT_ID_RE = re.compile(r"^[0-9a-f]{40}$")
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 MODULE_SRCVERSION_RE = re.compile(r"^[A-Za-z0-9]+$")
@@ -76,6 +77,7 @@ def run_git(kernel_root: Path, *args: str) -> subprocess.CompletedProcess:
         ["git", "-C", str(kernel_root), *args],
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -93,27 +95,51 @@ def read_identity_file(path: Path, label: str, pattern=IDENTITY_RE) -> str:
     return require_identity(value, label, pattern)
 
 
-def read_modinfo_field(field: str, pattern=IDENTITY_RE) -> str:
+def run_modinfo_field(field: str) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(
+        return subprocess.run(
             ["modinfo", "-F", field, MODULE_NAME],
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError as error:
         fail(f"cannot execute modinfo for {MODULE_NAME}: {error}")
+
+
+def read_modinfo_field(field: str, pattern=IDENTITY_RE) -> str:
+    result = run_modinfo_field(field)
     if result.returncode != 0:
-        fail(f"modinfo cannot read {field} for {MODULE_NAME}: "
-             f"{result.stderr.strip()}")
+        fail(
+            f"modinfo cannot read {field} for {MODULE_NAME}: "
+            f"{result.stderr.strip()}"
+        )
     return require_identity(result.stdout.strip(), f"modinfo {field}", pattern)
+
+
+def read_installed_driver_tree(run_field=run_modinfo_field) -> str:
+    for field in (MODULE_DRIVER_TREE_FIELD, LEGACY_MODULE_DRIVER_TREE_FIELD):
+        result = run_field(field)
+        if result.returncode == 0 and result.stdout.strip():
+            return require_identity(
+                result.stdout.strip(), f"modinfo {field}", OBJECT_ID_RE
+            )
+    fail(
+        "modinfo cannot read the installed driver tree from "
+        f"{MODULE_DRIVER_TREE_FIELD} or {LEGACY_MODULE_DRIVER_TREE_FIELD} "
+        f"for {MODULE_NAME}"
+    )
 
 
 def resolve_driver_tree(kernel_root: Path, resolved_commit: str) -> str:
     result = run_git(
-        kernel_root, "rev-parse", f"{resolved_commit}:{RADEON_DIR_RELPATH}")
+        kernel_root, "rev-parse", f"{resolved_commit}:{RADEON_DIR_RELPATH}"
+    )
     if result.returncode != 0:
-        fail(f"git cannot resolve the Radeon driver tree at {resolved_commit}: "
-             f"{result.stderr.strip()}")
+        fail(
+            f"git cannot resolve the Radeon driver tree at {resolved_commit}: "
+            f"{result.stderr.strip()}"
+        )
     return require_identity(
         result.stdout.strip(),
         f"{RADEON_DIR_RELPATH} tree",
@@ -132,26 +158,37 @@ def validate_authority_values(
     """Require one source and runtime identity chain for qualification."""
     require_identity(declared_driver_tree, "deployed driver tree", OBJECT_ID_RE)
     require_identity(source_driver_tree, "source driver tree", OBJECT_ID_RE)
-    require_identity(declared_srcversion, "running module srcversion",
-                     MODULE_SRCVERSION_RE)
-    require_identity(running_srcversion, "observed module srcversion",
-                     MODULE_SRCVERSION_RE)
+    require_identity(
+        declared_srcversion, "running module srcversion", MODULE_SRCVERSION_RE
+    )
+    require_identity(
+        running_srcversion, "observed module srcversion", MODULE_SRCVERSION_RE
+    )
     require_identity(installed_driver_tree, "installed driver tree", OBJECT_ID_RE)
-    require_identity(installed_srcversion, "installed module srcversion",
-                     MODULE_SRCVERSION_RE)
+    require_identity(
+        installed_srcversion, "installed module srcversion", MODULE_SRCVERSION_RE
+    )
 
     if declared_driver_tree != source_driver_tree:
-        fail("deployed driver tree does not match the pinned source tree: "
-             f"{declared_driver_tree} != {source_driver_tree}")
+        fail(
+            "deployed driver tree does not match the pinned source tree: "
+            f"{declared_driver_tree} != {source_driver_tree}"
+        )
     if installed_driver_tree != declared_driver_tree:
-        fail("installed driver tree does not match the declared deployment: "
-             f"{installed_driver_tree} != {declared_driver_tree}")
+        fail(
+            "installed driver tree does not match the declared deployment: "
+            f"{installed_driver_tree} != {declared_driver_tree}"
+        )
     if declared_srcversion != running_srcversion:
-        fail("running module srcversion does not match the declared "
-             f"deployment: {running_srcversion} != {declared_srcversion}")
+        fail(
+            "running module srcversion does not match the declared "
+            f"deployment: {running_srcversion} != {declared_srcversion}"
+        )
     if installed_srcversion != declared_srcversion:
-        fail("installed module srcversion does not match the declared "
-             f"deployment: {installed_srcversion} != {declared_srcversion}")
+        fail(
+            "installed module srcversion does not match the declared "
+            f"deployment: {installed_srcversion} != {declared_srcversion}"
+        )
 
 
 def verify_deployed_driver_authority(
@@ -161,15 +198,15 @@ def verify_deployed_driver_authority(
     declared_srcversion: str,
 ) -> str:
     require_identity(declared_driver_tree, "deployed driver tree", OBJECT_ID_RE)
-    require_identity(declared_srcversion, "running module srcversion",
-                     MODULE_SRCVERSION_RE)
+    require_identity(
+        declared_srcversion, "running module srcversion", MODULE_SRCVERSION_RE
+    )
     source_driver_tree = resolve_driver_tree(source_root, resolved_commit)
     running_srcversion = read_identity_file(
-        MODULE_SYSFS_SRCVERSION, "running module srcversion",
-        MODULE_SRCVERSION_RE)
-    installed_driver_tree = read_modinfo_field(MODULE_DRIVER_TREE_FIELD)
-    installed_srcversion = read_modinfo_field("srcversion",
-                                              MODULE_SRCVERSION_RE)
+        MODULE_SYSFS_SRCVERSION, "running module srcversion", MODULE_SRCVERSION_RE
+    )
+    installed_driver_tree = read_installed_driver_tree()
+    installed_srcversion = read_modinfo_field("srcversion", MODULE_SRCVERSION_RE)
     validate_authority_values(
         declared_driver_tree=declared_driver_tree,
         source_driver_tree=source_driver_tree,
@@ -188,8 +225,9 @@ def require_artifact_destinations_outside(
         fail("--output and --provenance resolve to the same path")
     for destination in (output, provenance_path):
         if destination.is_relative_to(source_root):
-            fail(f"artifact destination {destination} lies inside the "
-                 "source checkout")
+            fail(
+                f"artifact destination {destination} lies inside the " "source checkout"
+            )
 
 
 def worktree_is_registered(source_root: Path, worktree: Path) -> bool:
@@ -209,10 +247,19 @@ def cleanup_isolated_worktree(
     errors: list[str] = []
     if worktree_registered:
         remove = subprocess.run(
-            ["git", "-C", str(source_root), "worktree", "remove", "--force",
-             "--force", str(worktree)],
+            [
+                "git",
+                "-C",
+                str(source_root),
+                "worktree",
+                "remove",
+                "--force",
+                "--force",
+                str(worktree),
+            ],
             capture_output=True,
             text=True,
+            check=False,
         )
         if remove.returncode != 0:
             errors.append(f"git worktree remove failed: {remove.stderr.strip()}")
@@ -221,6 +268,7 @@ def cleanup_isolated_worktree(
         ["git", "-C", str(source_root), "worktree", "prune"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if prune.returncode != 0:
         errors.append(f"git worktree prune failed: {prune.stderr.strip()}")
@@ -233,13 +281,19 @@ def resolve_pinned_commit(kernel_root: Path, kernel_commit: str) -> str:
     """Resolve kernel_commit and require it to name the checkout HEAD."""
     toplevel = run_git(kernel_root, "rev-parse", "--is-inside-work-tree")
     if toplevel.returncode != 0 or toplevel.stdout.strip() != "true":
-        fail(f"{kernel_root} is not a git working tree "
-             f"(git rev-parse --is-inside-work-tree: {toplevel.stderr.strip()})")
+        fail(
+            f"{kernel_root} is not a git working tree "
+            f"(git rev-parse --is-inside-work-tree: {toplevel.stderr.strip()})"
+        )
 
-    verify = run_git(kernel_root, "rev-parse", "--verify", f"{kernel_commit}^{{commit}}")
+    verify = run_git(
+        kernel_root, "rev-parse", "--verify", f"{kernel_commit}^{{commit}}"
+    )
     if verify.returncode != 0:
-        fail(f"--kernel-commit {kernel_commit} does not resolve to a commit in "
-             f"{kernel_root}: {verify.stderr.strip()}")
+        fail(
+            f"--kernel-commit {kernel_commit} does not resolve to a commit in "
+            f"{kernel_root}: {verify.stderr.strip()}"
+        )
     resolved_commit = verify.stdout.strip()
 
     head = run_git(kernel_root, "rev-parse", "HEAD")
@@ -248,9 +302,11 @@ def resolve_pinned_commit(kernel_root: Path, kernel_commit: str) -> str:
     head_sha = head.stdout.strip()
 
     if resolved_commit != head_sha:
-        fail(f"--kernel-commit {kernel_commit} resolves to {resolved_commit}, "
-             f"which does not match HEAD {head_sha}; the kernel root must be "
-             f"checked out at the pinned commit")
+        fail(
+            f"--kernel-commit {kernel_commit} resolves to {resolved_commit}, "
+            f"which does not match HEAD {head_sha}; the kernel root must be "
+            f"checked out at the pinned commit"
+        )
 
     return head_sha
 
@@ -267,8 +323,10 @@ def require_clean_pinned_tree(kernel_root: Path, kernel_commit: str) -> str:
     if status.returncode != 0:
         fail(f"git status failed in {kernel_root}: {status.stderr.strip()}")
     if status.stdout.strip():
-        fail(f"{kernel_root} has a dirty working tree; a decision-grade build "
-             f"binds to a clean checkout at one commit:\n{status.stdout}")
+        fail(
+            f"{kernel_root} has a dirty working tree; a qualification build "
+            f"binds to a clean checkout at one commit:\n{status.stdout}"
+        )
     return resolved_commit
 
 
@@ -283,14 +341,17 @@ def run_correspondence_gate(kernel_root: Path, workdir: Path) -> None:
         cwd=str(kernel_root),
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
-        fail(f"kernel-grammar correspondence fidelity gate failed "
-             f"(exit {result.returncode}); the replay source's fidelity to "
-             f"the kernel's r300_packet0_check grammar is unproven, so the "
-             f"build refuses rather than ship an unverified replay")
+        fail(
+            f"kernel-grammar correspondence fidelity gate failed "
+            f"(exit {result.returncode}); the replay source's fidelity to "
+            f"the kernel's r300_packet0_check grammar is unproven, so the "
+            f"build refuses rather than ship an unverified replay"
+        )
 
 
 def generate_reg_safe_header(kernel_root: Path, workdir: Path, cc: str) -> Path:
@@ -306,6 +367,7 @@ def generate_reg_safe_header(kernel_root: Path, workdir: Path, cc: str) -> Path:
         [cc, "-O2", "-o", str(mkregtable_bin), str(mkregtable_src)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if build.returncode != 0:
         sys.stderr.write(build.stderr)
@@ -315,11 +377,14 @@ def generate_reg_safe_header(kernel_root: Path, workdir: Path, cc: str) -> Path:
         [str(mkregtable_bin), str(reg_srcs_r300)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if gen.returncode != 0:
         sys.stderr.write(gen.stderr)
-        fail(f"mkregtable failed to generate {REG_SAFE_HEADER_NAME} "
-             f"(exit {gen.returncode})")
+        fail(
+            f"mkregtable failed to generate {REG_SAFE_HEADER_NAME} "
+            f"(exit {gen.returncode})"
+        )
 
     reg_safe_header = workdir / REG_SAFE_HEADER_NAME
     reg_safe_header.write_text(gen.stdout)
@@ -327,9 +392,16 @@ def generate_reg_safe_header(kernel_root: Path, workdir: Path, cc: str) -> Path:
 
 
 def compiler_identity(cc: str) -> str:
-    result = subprocess.run([cc, "--version"], capture_output=True, text=True)
+    result = subprocess.run(
+        [cc, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.returncode != 0:
-        fail(f"{cc} --version failed (exit {result.returncode}): {result.stderr.strip()}")
+        fail(
+            f"{cc} --version failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
     first_line = result.stdout.splitlines()[0] if result.stdout else ""
     if not first_line:
         fail(f"{cc} --version produced no output")
@@ -343,13 +415,17 @@ def compile_replay(kernel_root: Path, workdir: Path, cc: str, output: Path) -> l
         fail(f"replay source missing: {replay_src}")
 
     argv = [
-        cc, *COMPILE_FLAGS,
-        "-I", str(workdir),
-        "-I", str(radeon_dir),
-        "-o", str(output),
+        cc,
+        *COMPILE_FLAGS,
+        "-I",
+        str(workdir),
+        "-I",
+        str(radeon_dir),
+        "-o",
+        str(output),
         str(replay_src),
     ]
-    result = subprocess.run(argv, capture_output=True, text=True)
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         fail(f"replay_r300_cs_track.c compile failed (exit {result.returncode})")
@@ -451,34 +527,60 @@ def build_provenance(
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build replay_r300_cs_track from a pinned kernel tree "
-                    "and record its build provenance."
+        "and record its build provenance."
     )
-    parser.add_argument("--kernel-root", required=True, type=Path,
-                        help="path to the linux-radeon-gororoba working tree")
-    parser.add_argument("--kernel-commit", required=True,
-                        help="full or abbreviated SHA the kernel root must "
-                             "be checked out at")
+    parser.add_argument(
+        "--kernel-root",
+        required=True,
+        type=Path,
+        help="path to the linux-radeon-gororoba working tree",
+    )
+    parser.add_argument(
+        "--kernel-commit",
+        required=True,
+        help="full or abbreviated SHA the kernel root must " "be checked out at",
+    )
     parser.add_argument("--cc", default="cc", help="C compiler (default: cc)")
-    parser.add_argument("--output", required=True, type=Path,
-                        help="path for the built replay_r300_cs_track ELF")
-    parser.add_argument("--provenance", required=True, type=Path,
-                        help="path for the JSON provenance record")
-    parser.add_argument("--skip-correspondence", action="store_true",
-                        help="skip the kernel-grammar correspondence "
-                             "fidelity gate (recorded in the provenance; "
-                             "the gate runs by default)")
-    parser.add_argument("--isolate-worktree", action="store_true",
-                        help="accepted for compatibility; every build uses "
-                             "a fresh detached git worktree at the pinned "
-                             "commit")
-    parser.add_argument("--deployed-driver-tree", required=True,
-                        help="driver-tree object of the deployed module "
-                             "source; it must match the pinned Radeon "
-                             "subtree and installed module metadata")
-    parser.add_argument("--running-module-srcversion", required=True,
-                        help="srcversion of the module on the target, "
-                             "which must match both the loaded sysfs "
-                             "identity and installed module metadata")
+    parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="path for the built replay_r300_cs_track ELF",
+    )
+    parser.add_argument(
+        "--provenance",
+        required=True,
+        type=Path,
+        help="path for the JSON provenance record",
+    )
+    parser.add_argument(
+        "--skip-correspondence",
+        action="store_true",
+        help="skip the kernel-grammar correspondence "
+        "fidelity gate (recorded in the provenance; "
+        "the gate runs by default)",
+    )
+    parser.add_argument(
+        "--isolate-worktree",
+        action="store_true",
+        help="accepted for compatibility; every build uses "
+        "a fresh detached git worktree at the pinned "
+        "commit",
+    )
+    parser.add_argument(
+        "--deployed-driver-tree",
+        required=True,
+        help="driver-tree object of the deployed module "
+        "source; it must match the pinned Radeon "
+        "subtree and installed module metadata",
+    )
+    parser.add_argument(
+        "--running-module-srcversion",
+        required=True,
+        help="srcversion of the module on the target, "
+        "which must match both the loaded sysfs "
+        "identity and installed module metadata",
+    )
     return parser.parse_args(argv)
 
 
@@ -488,14 +590,14 @@ def selftest_check(label: str, callback, expected: str | None = None) -> bool:
     except SystemExit as error:
         if error.code == 1:
             return True
-        print(f"selftest failure: {label}: unexpected exit {error.code}",
-              file=sys.stderr)
+        print(
+            f"selftest failure: {label}: unexpected exit {error.code}", file=sys.stderr
+        )
         return False
     if expected is None:
         print(f"selftest failure: {label}: expected refusal", file=sys.stderr)
     else:
-        print(f"selftest failure: {label}: expected {expected!r}",
-              file=sys.stderr)
+        print(f"selftest failure: {label}: expected {expected!r}", file=sys.stderr)
     return False
 
 
@@ -503,21 +605,46 @@ def selftest() -> int:
     driver_tree = "a" * 40
     srcversion = "A" * 24
     checks = [
-        ("authority good", lambda: validate_authority_values(
-            driver_tree, driver_tree, srcversion, srcversion,
-            driver_tree, srcversion), False),
-        ("authority source tree mismatch", lambda: validate_authority_values(
-            driver_tree, "b" * 40, srcversion, srcversion,
-            driver_tree, srcversion), True),
-        ("authority installed tree mismatch", lambda: validate_authority_values(
-            driver_tree, driver_tree, srcversion, srcversion,
-            "b" * 40, srcversion), True),
-        ("authority running srcversion mismatch", lambda: validate_authority_values(
-            driver_tree, driver_tree, srcversion, "B" * 24,
-            driver_tree, srcversion), True),
-        ("authority installed srcversion mismatch", lambda: validate_authority_values(
-            driver_tree, driver_tree, srcversion, srcversion,
-            driver_tree, "B" * 24), True),
+        (
+            "authority good",
+            lambda: validate_authority_values(
+                driver_tree,
+                driver_tree,
+                srcversion,
+                srcversion,
+                driver_tree,
+                srcversion,
+            ),
+            False,
+        ),
+        (
+            "authority source tree mismatch",
+            lambda: validate_authority_values(
+                driver_tree, "b" * 40, srcversion, srcversion, driver_tree, srcversion
+            ),
+            True,
+        ),
+        (
+            "authority installed tree mismatch",
+            lambda: validate_authority_values(
+                driver_tree, driver_tree, srcversion, srcversion, "b" * 40, srcversion
+            ),
+            True,
+        ),
+        (
+            "authority running srcversion mismatch",
+            lambda: validate_authority_values(
+                driver_tree, driver_tree, srcversion, "B" * 24, driver_tree, srcversion
+            ),
+            True,
+        ),
+        (
+            "authority installed srcversion mismatch",
+            lambda: validate_authority_values(
+                driver_tree, driver_tree, srcversion, srcversion, driver_tree, "B" * 24
+            ),
+            True,
+        ),
     ]
     passed = 0
     for label, callback, refusal in checks:
@@ -527,49 +654,90 @@ def selftest() -> int:
             try:
                 callback()
             except SystemExit as error:
-                print(f"selftest failure: {label}: unexpected exit {error.code}",
-                      file=sys.stderr)
+                print(
+                    f"selftest failure: {label}: unexpected exit {error.code}",
+                    file=sys.stderr,
+                )
                 return 1
             passed += 1
+
+    def legacy_driver_tree_field(field: str) -> subprocess.CompletedProcess:
+        if field == MODULE_DRIVER_TREE_FIELD:
+            return subprocess.CompletedProcess([], 1, stdout="", stderr="missing")
+        return subprocess.CompletedProcess([], 0, stdout=driver_tree + "\n", stderr="")
+
+    if read_installed_driver_tree(legacy_driver_tree_field) != driver_tree:
+        print(
+            "selftest failure: legacy installed driver-tree field rejected",
+            file=sys.stderr,
+        )
+        return 1
+    passed += 1
 
     with tempfile.TemporaryDirectory(prefix="r3v-replay-selftest-") as tmp:
         root = Path(tmp) / "kernel"
         outside = Path(tmp) / "artifacts"
         outside.mkdir()
         require_artifact_destinations_outside(
-            root, outside / REPLAY_ARTIFACT, outside / "provenance.json")
+            root, outside / REPLAY_ARTIFACT, outside / "provenance.json"
+        )
         if not selftest_check(
-                "artifact inside source checkout",
-                lambda: require_artifact_destinations_outside(
-                    root, root / REPLAY_ARTIFACT, outside / "provenance.json")):
+            "artifact inside source checkout",
+            lambda: require_artifact_destinations_outside(
+                root, root / REPLAY_ARTIFACT, outside / "provenance.json"
+            ),
+        ):
             return 1
         passed += 1
 
     with tempfile.TemporaryDirectory(prefix="r3v-replay-cleanup-") as tmp:
         root = Path(tmp) / "source"
         root.mkdir()
-        subprocess.run(["git", "-C", str(root), "init", "--quiet"],
-                       check=True)
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
         (root / "README").write_text("replay cleanup fixture\n")
-        subprocess.run(["git", "-C", str(root), "add", "README"],
-                       check=True)
-        subprocess.run([
-            "git", "-C", str(root), "-c", "user.name=Replay Selftest",
-            "-c", "user.email=replay-selftest@example.invalid", "commit",
-            "--quiet", "--no-gpg-sign", "-m", "fixture",
-        ], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "README"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "user.name=Replay Selftest",
+                "-c",
+                "user.email=replay-selftest@example.invalid",
+                "commit",
+                "--quiet",
+                "--no-gpg-sign",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
         isolation_tmp = tempfile.TemporaryDirectory(
-            prefix="r3v-replay-cleanup-worktree-")
+            prefix="r3v-replay-cleanup-worktree-"
+        )
         worktree = Path(isolation_tmp.name) / "tree"
-        subprocess.run([
-            "git", "-C", str(root), "worktree", "add", "--quiet",
-            "--detach", str(worktree), "HEAD",
-        ], check=True)
-        cleanup_error = cleanup_isolated_worktree(
-            root, worktree, isolation_tmp, True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                str(worktree),
+                "HEAD",
+            ],
+            check=True,
+        )
+        cleanup_error = cleanup_isolated_worktree(root, worktree, isolation_tmp, True)
         if cleanup_error or worktree_is_registered(root, worktree):
-            print("selftest failure: isolated worktree cleanup left a "
-                  "registered worktree", file=sys.stderr)
+            print(
+                "selftest failure: isolated worktree cleanup left a "
+                "registered worktree",
+                file=sys.stderr,
+            )
             return 1
         passed += 1
 
@@ -594,8 +762,7 @@ def main(argv=None) -> int:
     # The ELF and the provenance are two artifacts: one destination would
     # overwrite the digested ELF with JSON, and a destination inside the
     # kernel root would dirty the pinned tree the build just proved clean.
-    require_artifact_destinations_outside(
-        source_root, output, provenance_path)
+    require_artifact_destinations_outside(source_root, output, provenance_path)
 
     kernel_driver_tree = verify_deployed_driver_authority(
         source_root,
@@ -607,40 +774,51 @@ def main(argv=None) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     provenance_path.parent.mkdir(parents=True, exist_ok=True)
 
-    isolation_tmp = tempfile.TemporaryDirectory(
-        prefix="r300-cs-replay-worktree-")
+    isolation_tmp = tempfile.TemporaryDirectory(prefix="r300-cs-replay-worktree-")
     kernel_root = Path(isolation_tmp.name) / "tree"
     worktree_registered = False
     try:
         add = subprocess.run(
-            ["git", "-C", str(source_root), "worktree", "add", "--detach",
-             str(kernel_root), resolved_commit],
-            capture_output=True, text=True)
-        worktree_registered = (
-            add.returncode == 0 or
-            worktree_is_registered(source_root, kernel_root))
+            [
+                "git",
+                "-C",
+                str(source_root),
+                "worktree",
+                "add",
+                "--detach",
+                str(kernel_root),
+                resolved_commit,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        worktree_registered = add.returncode == 0 or worktree_is_registered(
+            source_root, kernel_root
+        )
         if add.returncode != 0:
             fail(f"git worktree add failed: {add.stderr.strip()}")
 
         for destination in (output, provenance_path):
             if destination.is_relative_to(kernel_root):
-                fail(f"artifact destination {destination} lies inside the "
-                     "detached source snapshot")
+                fail(
+                    f"artifact destination {destination} lies inside the "
+                    "detached source snapshot"
+                )
         require_clean_pinned_tree(kernel_root, resolved_commit)
 
         correspondence_gate = "skipped"
         if not args.skip_correspondence:
             with tempfile.TemporaryDirectory(
-                    prefix="r300-cs-grammar-gate-") as gate_tmp:
+                prefix="r300-cs-grammar-gate-"
+            ) as gate_tmp:
                 run_correspondence_gate(kernel_root, Path(gate_tmp))
             correspondence_gate = "pass"
 
-        with tempfile.TemporaryDirectory(
-                prefix="r300-cs-replay-build-") as build_tmp:
+        with tempfile.TemporaryDirectory(prefix="r300-cs-replay-build-") as build_tmp:
             build_workdir = Path(build_tmp)
             generate_reg_safe_header(kernel_root, build_workdir, args.cc)
-            compile_argv = compile_replay(kernel_root, build_workdir, args.cc,
-                                           output)
+            compile_argv = compile_replay(kernel_root, build_workdir, args.cc, output)
             output_sha256 = sha256_file(output)
             provenance = build_provenance(
                 kernel_root=kernel_root,
@@ -675,10 +853,11 @@ def main(argv=None) -> int:
             if sys.exc_info()[0] is None:
                 raise SystemExit(1)
 
-    provenance_path.write_text(
-        json.dumps(provenance, indent=2, sort_keys=True) + "\n")
+    provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
 
-    print(f"{output} sha256={output_sha256[:12]} correspondence_gate={correspondence_gate}")
+    print(
+        f"{output} sha256={output_sha256[:12]} correspondence_gate={correspondence_gate}"
+    )
     return 0
 
 

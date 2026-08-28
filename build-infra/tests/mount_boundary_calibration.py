@@ -147,11 +147,11 @@ def validate_namespace_isolation(
 
 
 def require_private_user_mount_namespace() -> None:
-    if os.environ.get("GOROROBA_MOUNT_BOUNDARY_CALIBRATION") != "1":
+    if os.environ.get("MESA_MOUNT_BOUNDARY_CALIBRATION") != "1":
         fail("exact calibration consent is missing")
     if os.getuid() != 0:
         fail("calibration user namespace does not map the caller to uid 0")
-    caller_mount_namespace = os.environ.get("GOROROBA_CALLER_MOUNT_NAMESPACE", "")
+    caller_mount_namespace = os.environ.get("MESA_CALLER_MOUNT_NAMESPACE", "")
     try:
         uid_fields = Path("/proc/self/uid_map").read_text(encoding="utf-8").split()
         process_mount_namespace = os.readlink("/proc/self/ns/mnt")

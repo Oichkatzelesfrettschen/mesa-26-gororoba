@@ -1,4 +1,4 @@
-# umr-gororoba: the gororoba fork of AMD's umr (User Mode Register debugger) for
+# umr-gororoba: the umr-gororoba fork of AMD's User Mode Register debugger for
 # RS480/RS482 GPU register, ring, and IP-block inspection.  The fork carries the
 # RS480/RS482 ip_discovery-absent skip (umr PR #84 / database .asic load without the
 # discovery sysfs node) so umr drives the radeon-KMD RS482 without the navi-era
@@ -8,7 +8,7 @@
 # repack of the in-tree build/: cmake --install bakes CMAKE_BINARY_DIR absolute and
 # writes install_manifest.txt back there, which fails + mutates the source under
 # makepkg's fakeroot).  Building into $srcdir keeps the manifest in a writable dir
-# and the source tree untouched.  Point GOROROBA_UMR_SRC at the fork checkout.
+# and the source tree untouched.  Point MESA_UMR_SRC at the fork checkout.
 #
 # CLI-only: UMR_NO_GUI=ON drops the umr --gui app (umrapp).  The GUI pulls
 # gbm/EGL/OpenGL (commands_bo.c includes <gbm.h>), a circular Mesa-devel build
@@ -18,10 +18,14 @@
 # (sudo umr -O bits -r ...), with LLVM shader disasm retained.  UMR_NO_GUI cascades
 # to UMR_NO_SERVER via umr's cmake_dependent_option, so the --server app drops too.
 pkgname=umr-gororoba
+if [[ -v GOROROBA_UMR_SRC ]]; then
+  echo "GOROROBA_UMR_SRC was renamed to MESA_UMR_SRC" >&2
+  exit 2
+fi
 pkgver=1.0.9
 pkgrel=1
 epoch=1
-pkgdesc='gororoba umr (AMD User Mode Register debugger) for RS480/RS482: register/ring/IP-block inspection over the radeon KMD, with the RS482 ip_discovery-absent skip'
+pkgdesc='umr-gororoba (AMD User Mode Register debugger) for RS480/RS482: register/ring/IP-block inspection over the radeon KMD, with the RS482 ip_discovery-absent skip'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/umr-gororoba'
 license=('MIT')
@@ -32,11 +36,11 @@ provides=('umr')
 conflicts=('umr')
 options=('!debug')
 
-_umrsrc="${GOROROBA_UMR_SRC:-/home/eirikr/workspaces/mesa/umr-gororoba}"
+_umrsrc="${MESA_UMR_SRC:-/home/eirikr/workspaces/mesa/umr-gororoba}"
 
 build() {
   if [ ! -f "${_umrsrc}/CMakeLists.txt" ]; then
-    echo "ERROR: umr-gororoba source not found at ${_umrsrc} (set GOROROBA_UMR_SRC)" >&2
+    echo "ERROR: umr-gororoba source not found at ${_umrsrc} (set MESA_UMR_SRC)" >&2
     return 1
   fi
   cmake -S "${_umrsrc}" -B "${srcdir}/build" \

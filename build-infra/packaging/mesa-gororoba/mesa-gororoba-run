@@ -1,7 +1,12 @@
 #!/bin/sh
 set -eu
 
-env_file=${GOROROBA_MESA_ENV:-/etc/opt/mesa-gororoba/mesa-gororoba-env.sh}
+if [ "${GOROROBA_MESA_ENV+x}" = x ]; then
+  echo "GOROROBA_MESA_ENV was renamed to MESA_ENV_FILE" >&2
+  exit 2
+fi
+
+env_file=${MESA_ENV_FILE:-/etc/opt/mesa-gororoba/mesa-gororoba-env.sh}
 
 if [ "$#" -eq 0 ]; then
   cat >&2 <<'EOF'

@@ -44,8 +44,12 @@
 #   mesa-gororoba-run vulkaninfo --summary
 
 pkgname=mesa-gororoba
+if [[ -v GOROROBA_DISTCC_JOBS ]]; then
+  echo "GOROROBA_DISTCC_JOBS was renamed to MESA_DISTCC_JOBS" >&2
+  exit 2
+fi
 pkgver=26.2.0
-pkgrel=18
+pkgrel=19
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
@@ -93,8 +97,8 @@ source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goror
         'radeon_icd.i686.json'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            '5607116bfd3dd77065035fea211be8fa0966b8b5f3e6386e4d2382dedcd8a6b3'
-            '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9'
+            'e6cba7981c52f007ea70aa23c7f1f848ad77205160b5ab6fabcb1cb960c348d5'
+            'a45c1892aa28f8bcc732aed982127c2b655b8652ff22122a86632db6207d6ebe'
             '20b9fcbdd020fc7ccfcca3dfc46165f2a40649a16303d9f89be6168e2b1595dc'
             '1d13d57d3acf8e7a7ef05dba363d3415a648a971c36447e5dcec259337668fd9'
             'e3c0eb4cbf29bfed92683ea07bcd91b21df7383aead8e1d30526e8d8cb90094a'
@@ -169,8 +173,8 @@ build() {
 
   # Fan out across the distcc workers: meson compile defaults ninja to
   # local-cores+2 (4 on the K8), which starves the remote slots.
-  # GOROROBA_DISTCC_JOBS is the six-job ceiling exported by distcc host envs.
-  meson compile -C build -j "${GOROROBA_DISTCC_JOBS:-$(nproc)}"
+  # MESA_DISTCC_JOBS is the six-job ceiling exported by distcc host envs.
+  meson compile -C build -j "${MESA_DISTCC_JOBS:-$(nproc)}"
 }
 
 package() {

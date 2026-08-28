@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
 def select_package(package_dir: Path) -> Path:
     candidates = [path for path in package_dir.glob(PACKAGE_GLOB) if path.is_file()]
     if not candidates:
-        raise DeployError("no package; run 'make pkg-mesa-gororoba' first")
+        raise DeployError("no package; run 'make package-mesa' first")
     package = max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
     if not PACKAGE_NAME_PATTERN.fullmatch(package.name):
         raise DeployError(
@@ -45,7 +45,7 @@ def select_package(package_dir: Path) -> Path:
 def deploy(package_dir: Path, target_host: str, accepted: str) -> None:
     if accepted != "1":
         raise DeployError(
-            "deployment remains locked; set MESA_GOROROBA_DEPLOY_ACCEPTED=1 "
+            "deployment remains locked; set MESA_DEPLOY_ACCEPTED=1 "
             "for this invocation"
         )
     if not TARGET_HOST_PATTERN.fullmatch(target_host):

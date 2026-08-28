@@ -117,7 +117,7 @@ profiles, `vostro1000-x86-64-v1-gcc-ccache-distcc.env` for the GCC profile,
 and `generic-x86-64-os.env` for ad hoc portable builds. The GCC profile uses
 `COMPILER_FAMILY=gnu`, `COMPILER_CHAIN=ccache`, and a generated gcc/g++
 toolchain overlay; its client and distcc volunteers use one matching GCC
-major, or `GOROROBA_GCC_VERSION` pins the major on every endpoint. Historical
+major, or `MESA_GCC_VERSION` pins the major on every endpoint. Historical
 btver1, sapphire, zen4, and distcc-pump envs live under
 `build-infra/env/Archive/` and are not active Make `HOSTENV` values. Active
 envs set lane-specific distcc/cache policy, host CFLAGS, `-fno-emulated-tls`,
@@ -156,7 +156,7 @@ Incremental `ninja -C <builddir> clean` removes compiled objects and keeps Meson
 
 Native files use PATH-resolved compiler names or generated local overlays, and checked-in files name compilers by those forms only. Rust is selected by active Meson/toolchain policy.
 
-Make writes version-coupled LLVM helper tools into `$BUILDDIR/gororoba-toolchain.meson` before `meson setup`. The generator prefers the x130e LLVM major when present, honors `MESA_LLVM_VERSION` or `GOROROBA_LLVM_VERSION` when set, and otherwise selects an installed coherent `clang`/`clang++`/`llvm-config` major on the host.
+Make writes version-coupled LLVM helper tools into `$BUILDDIR/mesa-toolchain.meson` before `meson setup`. The generator prefers the x130e LLVM major when present, honors `MESA_LLVM_VERSION` when set, and otherwise selects an installed coherent `clang`/`clang++`/`llvm-config` major on the host.
 
 C/C++ cache lanes:
 

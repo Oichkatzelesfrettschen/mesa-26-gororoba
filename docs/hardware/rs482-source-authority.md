@@ -186,7 +186,7 @@ evidence and live with their bundles in `steinmarder-r300`.
 The optional `provenance_contract` field preserves the original required-field
 contract for historical manifests. Its absence classifies a manifest as legacy
 evidence and leaves the source-to-payload claim open. The value
-`source-to-payload-v2` activates the decision-grade contract:
+`source-to-payload-v2` activates the qualification contract:
 
 - Xorg Server and the active DDX carry source, release, package, installed
   payload, binary, and Build ID identities.

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Bind an immutable external Mesa source view to one build identity."""
+"""Bind immutable Mesa source views and build controls to one build identity."""
 
 from __future__ import annotations
 
 import argparse
 import configparser
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -21,10 +23,14 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-SCHEMA_VERSION = 7
-IDENTITY_FILENAME = ".gororoba-source-identity.json"
-ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
-SOURCE_VIEW_DIRECTORY = ".gororoba-source-view"
+SCHEMA_VERSION = 8
+LEGACY_SCHEMA_VERSION = 7
+IDENTITY_FILENAME = ".mesa-source-identity.json"
+ROOT_IDENTITY_FILENAME = ".mesa-external-source-identity.json"
+SOURCE_VIEW_DIRECTORY = ".mesa-source-view"
+LEGACY_IDENTITY_FILENAME = ".gororoba-source-identity.json"
+LEGACY_ROOT_IDENTITY_FILENAME = ".gororoba-external-source-identity.json"
+LEGACY_SOURCE_VIEW_DIRECTORY = ".gororoba-source-view"
 SAFE_PATH_INPUT = re.compile(r"^[A-Za-z0-9_./:+@=~-]+$")
 SAFE_LEAF_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 DECIMAL_INTEGER = re.compile(r"^[0-9]+$")
@@ -36,7 +42,24 @@ PENDING_SOURCE_VIEW_DIGEST = "pending"
 PROVISIONAL_STATE = "provisional"
 FINAL_STATE = "final"
 MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+FDINFO_DIRECTORY = Path("/proc/self/fdinfo")
 SHARED_TEMPORARY_BOUNDARIES = (Path("/tmp"), Path("/var/tmp"))
+LEGACY_NAMESPACE_FRAGMENT = "GOROROBA_"
+RENAME_NOREPLACE = 1
+LIBC = ctypes.CDLL(None, use_errno=True)
+try:
+    LIBC_RENAMEAT2 = LIBC.renameat2
+except AttributeError:
+    LIBC_RENAMEAT2 = None
+else:
+    LIBC_RENAMEAT2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    LIBC_RENAMEAT2.restype = ctypes.c_int
 
 
 class ControlError(RuntimeError):
@@ -45,6 +68,59 @@ class ControlError(RuntimeError):
 
 def fail(message: str) -> NoReturn:
     raise ControlError(message)
+
+
+def rename_without_replacement(
+    source_name: str,
+    destination_name: str,
+    *,
+    source_directory_descriptor: int,
+    destination_directory_descriptor: int,
+) -> None:
+    if LIBC_RENAMEAT2 is None:
+        raise OSError(
+            errno.ENOSYS,
+            "renameat2(RENAME_NOREPLACE) is unavailable",
+            destination_name,
+        )
+    ctypes.set_errno(0)
+    result = LIBC_RENAMEAT2(
+        source_directory_descriptor,
+        os.fsencode(source_name),
+        destination_directory_descriptor,
+        os.fsencode(destination_name),
+        RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(
+            error_number,
+            os.strerror(error_number),
+            destination_name,
+        )
+
+
+def replacement_environment_name(name: str) -> str:
+    replacements = {
+        "GOROROBA_MESA_ENV": "MESA_ENV_FILE",
+        "GOROROBA_MESA_PREFIX": "MESA_INSTALL_PREFIX",
+        "MESA_GOROROBA_DEPLOY_ACCEPTED": "MESA_DEPLOY_ACCEPTED",
+    }
+    if name in replacements:
+        return replacements[name]
+    return name.replace(LEGACY_NAMESPACE_FRAGMENT, "MESA_", 1)
+
+
+def reject_legacy_environment() -> None:
+    legacy_names = sorted(
+        name for name in os.environ if LEGACY_NAMESPACE_FRAGMENT in name
+    )
+    if not legacy_names:
+        return
+    migrations = ", ".join(
+        f"{name}->{replacement_environment_name(name)}" for name in legacy_names
+    )
+    fail(f"legacy environment variable is no longer accepted: {migrations}")
 
 
 def control_root() -> Path:
@@ -61,6 +137,29 @@ def input_path(name: str) -> Path:
     if not SAFE_PATH_INPUT.fullmatch(str(resolved)):
         fail(f"{name} resolves to a path with unsupported characters")
     return resolved
+
+
+def input_lexical_path(name: str) -> Path:
+    raw = os.environ.get(name, "")
+    if not raw:
+        fail(f"{name} is empty")
+    if not SAFE_PATH_INPUT.fullmatch(raw):
+        fail(f"{name} contains unsupported path characters")
+    lexical_path = Path(os.path.abspath(Path(raw).expanduser()))
+    if not SAFE_PATH_INPUT.fullmatch(str(lexical_path)):
+        fail(f"{name} expands to a path with unsupported characters")
+    return lexical_path
+
+
+def selected_builddir_state() -> str:
+    lexical_builddir = input_lexical_path("MESA_BUILDDIR_LEXICAL_INPUT")
+    try:
+        lexical_builddir.lstat()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as error:
+        fail(f"cannot inspect selected build directory {lexical_builddir}: {error}")
+    return "present"
 
 
 def input_identifier(name: str) -> str:
@@ -225,6 +324,99 @@ def file_identity(path_status: os.stat_result) -> tuple[int, int, int, int, int]
     )
 
 
+def directory_object_identity(path: Path, label: str) -> tuple[int, int, int]:
+    try:
+        path_status = path.stat()
+    except OSError as error:
+        fail(f"cannot stat {label} {path}: {error}")
+    if not stat.S_ISDIR(path_status.st_mode):
+        fail(f"{label} is not a directory: {path}")
+    return (
+        path_status.st_dev,
+        path_status.st_ino,
+        stat.S_IFMT(path_status.st_mode),
+    )
+
+
+def directory_descriptor_identity(
+    descriptor: int,
+    label: str,
+) -> tuple[int, int, int]:
+    try:
+        descriptor_status = os.fstat(descriptor)
+    except OSError as error:
+        fail(f"cannot inspect {label} descriptor: {error}")
+    if not stat.S_ISDIR(descriptor_status.st_mode):
+        fail(f"{label} descriptor is not a directory")
+    return (
+        descriptor_status.st_dev,
+        descriptor_status.st_ino,
+        stat.S_IFMT(descriptor_status.st_mode),
+    )
+
+
+def named_object_identity(
+    parent_descriptor: int,
+    name: str,
+    label: str,
+) -> tuple[int, int, int]:
+    try:
+        path_status = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        fail(f"cannot inspect {label} {name}: {error}")
+    return (
+        path_status.st_dev,
+        path_status.st_ino,
+        stat.S_IFMT(path_status.st_mode),
+    )
+
+
+def open_directory_descriptor_at(
+    parent_descriptor: int,
+    name: str,
+    label: str,
+) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        return os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as error:
+        fail(f"cannot open {label} {name}: {error}")
+
+
+def descriptor_mount_id(descriptor: int, label: str) -> int:
+    descriptor_info = FDINFO_DIRECTORY / str(descriptor)
+    try:
+        lines = descriptor_info.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read mount identity for {label}: {error}")
+    mount_ids = []
+    for line in lines:
+        field, separator, value = line.partition(":")
+        if field != "mnt_id":
+            continue
+        mount_id_text = value.strip()
+        if not separator or not mount_id_text.isdecimal():
+            fail(f"invalid mount identity for {label}: {line!r}")
+        mount_ids.append(int(mount_id_text))
+    if len(mount_ids) != 1:
+        fail(f"mount identity is unavailable for {label}")
+    return mount_ids[0]
+
+
+def git_worktree_administration_identity(
+    root: Path,
+    label: str,
+) -> tuple[int, int, int]:
+    git_directory = Path(run_git(root, "rev-parse", "--absolute-git-dir")).resolve(
+        strict=True
+    )
+    return directory_object_identity(git_directory, f"{label} Git directory")
+
+
 def isolated_object_database_environment(
     root: Path,
     temporary_root: Path,
@@ -281,7 +473,7 @@ def isolated_checkout_environment(
 
 
 def run_git_archive(root: Path, commit: str, output: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="gororoba-git-archive.") as directory:
+    with tempfile.TemporaryDirectory(prefix="mesa-git-archive.") as directory:
         archive_environment = isolated_object_database_environment(
             root,
             Path(directory),
@@ -354,7 +546,7 @@ def tracked_worktree_matches_head(
             if not stat.S_ISREG(path_status.st_mode):
                 return False
             expected_executable = mode == b"100755"
-            if bool(path_status.st_mode & 0o111) != expected_executable:
+            if bool(path_status.st_mode & stat.S_IXUSR) != expected_executable:
                 return False
             regular_entries.append(
                 (relative_path_bytes, expected_object_id, path_status)
@@ -478,7 +670,7 @@ def require_clean_worktree(root: Path, label: str) -> None:
     if staged_result.returncode == 1:
         fail(f"{label} is dirty: {root}")
 
-    with tempfile.TemporaryDirectory(prefix="gororoba-git-index.") as directory:
+    with tempfile.TemporaryDirectory(prefix="mesa-git-index.") as directory:
         temporary_index = Path(directory) / "index"
         index_environment = {"GIT_INDEX_FILE": str(temporary_index)}
         run_git(
@@ -526,27 +718,79 @@ def require_clean_external_source(source_root: Path) -> None:
     require_clean_worktree(repository_root, "control worktree")
 
 
+def require_detached_worktree(root: Path, label: str) -> None:
+    result = run_git_process(root, "symbolic-ref", "--quiet", "HEAD")
+    if result.returncode == 1:
+        return
+    if result.returncode == 0:
+        fail(f"{label} is attached to a branch: {root}")
+    diagnostic = result.stderr.strip() or result.stdout.strip()
+    fail(f"failed to verify {label} detached state: {diagnostic}")
+
+
+def require_reproducible_source_worktrees(source_root: Path) -> None:
+    repository_root = control_root()
+    if source_root == repository_root:
+        fail("reproducible-run TOPSRC must be an external detached worktree")
+    control_path_identity = directory_object_identity(
+        repository_root,
+        "reproducible-run control worktree",
+    )
+    source_path_identity = directory_object_identity(
+        source_root,
+        "reproducible-run TOPSRC",
+    )
+    if control_path_identity == source_path_identity:
+        fail(
+            "reproducible-run control worktree and TOPSRC name the same "
+            "filesystem directory"
+        )
+    control_git_identity = git_worktree_administration_identity(
+        repository_root,
+        "reproducible-run control worktree",
+    )
+    source_git_identity = git_worktree_administration_identity(
+        source_root,
+        "reproducible-run TOPSRC",
+    )
+    if control_git_identity == source_git_identity:
+        fail(
+            "reproducible-run control worktree and TOPSRC share one Git "
+            "administrative directory"
+        )
+    for worktree_root, label in (
+        (repository_root, "reproducible-run control worktree"),
+        (source_root, "reproducible-run TOPSRC"),
+    ):
+        require_detached_worktree(worktree_root, label)
+        require_clean_worktree(worktree_root, label)
+
+
 def resolved_inputs() -> dict[str, Path | str]:
-    profile = input_identifier("GOROROBA_PROFILE_INPUT")
-    hostenv = input_identifier("GOROROBA_HOSTENV_INPUT")
+    profile = input_identifier("MESA_PROFILE_INPUT")
+    hostenv = input_identifier("MESA_HOSTENV_INPUT")
     mode = input_enum(
-        "GOROROBA_MODE_INPUT",
+        "MESA_MODE_INPUT",
         frozenset(("", "stable")),
     )
     compiler_chain = input_enum(
-        "GOROROBA_COMPILER_CHAIN_INPUT",
+        "MESA_COMPILER_CHAIN_INPUT",
         frozenset(("ccache", "direct", "distcc")),
     )
     compiler_family = input_enum(
-        "GOROROBA_COMPILER_FAMILY_INPUT",
+        "MESA_COMPILER_FAMILY_INPUT",
         frozenset(("gnu", "llvm")),
     )
-    source_root = input_path("GOROROBA_TOPSRC_INPUT")
+    reproducible_run = input_enum(
+        "MESA_REPRODUCIBLE_RUN_INPUT",
+        frozenset(("0", "1")),
+    )
+    source_root = input_path("MESA_TOPSRC_INPUT")
     source_commit, source_tree = source_identity(source_root)
-    build_root = input_path("GOROROBA_BUILD_ROOT_INPUT")
-    builddir = input_path("GOROROBA_BUILDDIR_INPUT")
-    prefix = input_path("GOROROBA_PREFIX_INPUT")
-    sysconfdir = input_path("GOROROBA_SYSCONFDIR_INPUT")
+    build_root = input_path("MESA_BUILD_ROOT_INPUT")
+    builddir = input_path("MESA_BUILDDIR_INPUT")
+    prefix = input_path("MESA_PREFIX_INPUT")
+    sysconfdir = input_path("MESA_SYSCONFDIR_INPUT")
     repository_root = control_root()
     control_commit, control_tree = source_identity(repository_root)
     return {
@@ -562,6 +806,7 @@ def resolved_inputs() -> dict[str, Path | str]:
         "mode": mode or "default",
         "compiler_chain": compiler_chain,
         "compiler_family": compiler_family,
+        "reproducible_run": reproducible_run,
         "control_root": repository_root,
         "control_commit": control_commit,
         "control_tree": control_tree,
@@ -899,10 +1144,10 @@ def require_captured_inputs(
     fields: tuple[str, ...],
 ) -> None:
     revision_variables = {
-        "source_commit": "GOROROBA_SOURCE_COMMIT_CAPTURED",
-        "source_tree": "GOROROBA_SOURCE_TREE_CAPTURED",
-        "control_commit": "GOROROBA_CONTROL_COMMIT_CAPTURED",
-        "control_tree": "GOROROBA_CONTROL_TREE_CAPTURED",
+        "source_commit": "MESA_SOURCE_COMMIT_CAPTURED",
+        "source_tree": "MESA_SOURCE_TREE_CAPTURED",
+        "control_commit": "MESA_CONTROL_COMMIT_CAPTURED",
+        "control_tree": "MESA_CONTROL_TREE_CAPTURED",
     }
     for field, variable_name in revision_variables.items():
         selected_revision = values[field]
@@ -917,20 +1162,20 @@ def require_captured_inputs(
             )
 
     anchor_variables = {
-        "source_root": "GOROROBA_SOURCE_ROOT_ANCHOR",
-        "control_root": "GOROROBA_CONTROL_ROOT_ANCHOR",
-        "build_root": "GOROROBA_BUILD_ROOT_ANCHOR",
-        "builddir": "GOROROBA_BUILDDIR_ANCHOR",
-        "prefix": "GOROROBA_PREFIX_ANCHOR",
-        "sysconfdir": "GOROROBA_SYSCONFDIR_ANCHOR",
+        "source_root": "MESA_SOURCE_ROOT_ANCHOR",
+        "control_root": "MESA_CONTROL_ROOT_ANCHOR",
+        "build_root": "MESA_BUILD_ROOT_ANCHOR",
+        "builddir": "MESA_BUILDDIR_ANCHOR",
+        "prefix": "MESA_PREFIX_ANCHOR",
+        "sysconfdir": "MESA_SYSCONFDIR_ANCHOR",
     }
     input_variables = {
-        "source_root": "GOROROBA_TOPSRC_INPUT",
-        "control_root": "GOROROBA_CONTROL_ROOT_INPUT",
-        "build_root": "GOROROBA_BUILD_ROOT_INPUT",
-        "builddir": "GOROROBA_BUILDDIR_INPUT",
-        "prefix": "GOROROBA_PREFIX_INPUT",
-        "sysconfdir": "GOROROBA_SYSCONFDIR_INPUT",
+        "source_root": "MESA_TOPSRC_INPUT",
+        "control_root": "MESA_CONTROL_ROOT_INPUT",
+        "build_root": "MESA_BUILD_ROOT_INPUT",
+        "builddir": "MESA_BUILDDIR_INPUT",
+        "prefix": "MESA_PREFIX_INPUT",
+        "sysconfdir": "MESA_SYSCONFDIR_INPUT",
     }
     for field in fields:
         selected_path = values[field]
@@ -1023,7 +1268,7 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
     assert isinstance(repository_root, Path)
     assert isinstance(build_root, Path)
 
-    profile = os.environ.get("GOROROBA_PROFILE_INPUT", "")
+    profile = os.environ.get("MESA_PROFILE_INPUT", "")
     allowed_opt_prefixes = {
         Path(f"/opt/local/mesa-{profile}"),
         Path("/opt/local/mesa-26-gororoba"),
@@ -1311,6 +1556,258 @@ def remove_directory_tree(path: Path, label: str) -> None:
         fail(f"{label} remains after removal: {path}")
 
 
+def named_file_identity(
+    parent_descriptor: int,
+    name: str,
+    label: str,
+) -> tuple[int, int, int, int, int]:
+    try:
+        path_status = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        fail(f"cannot inspect {label} {name}: {error}")
+    return file_identity(path_status)
+
+
+def directory_identity_manifest(
+    directory_descriptor: int,
+    label: str,
+) -> dict[tuple[str, ...], tuple[int, int, int, int, int]]:
+    expected_mount_id = descriptor_mount_id(directory_descriptor, label)
+    manifest: dict[tuple[str, ...], tuple[int, int, int, int, int]] = {}
+
+    def visit(
+        parent_descriptor: int,
+        relative_parent: tuple[str, ...],
+        parent_label: str,
+    ) -> None:
+        parent_identity = file_identity(os.fstat(parent_descriptor))
+        try:
+            with os.scandir(parent_descriptor) as entries:
+                entry_names = sorted(entry.name for entry in entries)
+        except OSError as error:
+            fail(f"cannot enumerate {parent_label}: {error}")
+
+        for entry_name in entry_names:
+            relative_path = (*relative_parent, entry_name)
+            entry_label = f"{parent_label} entry"
+            entry_identity = named_file_identity(
+                parent_descriptor,
+                entry_name,
+                entry_label,
+            )
+            manifest[relative_path] = entry_identity
+            if stat.S_IFMT(entry_identity[2]) != stat.S_IFDIR:
+                continue
+            child_descriptor = open_directory_descriptor_at(
+                parent_descriptor,
+                entry_name,
+                entry_label,
+            )
+            try:
+                if file_identity(os.fstat(child_descriptor)) != entry_identity:
+                    fail(
+                        f"{entry_label} changed before descriptor binding: "
+                        f"{entry_name}"
+                    )
+                if descriptor_mount_id(child_descriptor, entry_label) != (
+                    expected_mount_id
+                ):
+                    fail(f"{entry_label} crosses a mount boundary: {entry_name}")
+                visit(child_descriptor, relative_path, entry_label)
+                if (
+                    named_file_identity(
+                        parent_descriptor,
+                        entry_name,
+                        entry_label,
+                    )
+                    != entry_identity
+                ):
+                    fail(f"{entry_label} changed during manifest capture: {entry_name}")
+            finally:
+                os.close(child_descriptor)
+
+        if file_identity(os.fstat(parent_descriptor)) != parent_identity:
+            fail(f"{parent_label} changed during manifest capture")
+
+    visit(directory_descriptor, (), label)
+    return manifest
+
+
+def remove_directory_contents_by_descriptor(
+    directory_descriptor: int,
+    disposal_descriptor: int,
+    validated_manifest: dict[
+        tuple[str, ...],
+        tuple[int, int, int, int, int],
+    ],
+    label: str,
+) -> None:
+    expected_mount_id = descriptor_mount_id(directory_descriptor, label)
+    if descriptor_mount_id(disposal_descriptor, f"{label} disposal") != (
+        expected_mount_id
+    ):
+        fail(f"{label} disposal crosses a mount boundary")
+
+    children: dict[tuple[str, ...], list[str]] = {}
+    for relative_path in validated_manifest:
+        children.setdefault(relative_path[:-1], []).append(relative_path[-1])
+    for child_names in children.values():
+        child_names.sort()
+
+    disposal_sequence = 0
+
+    def enumerate_names(parent_descriptor: int, parent_label: str) -> list[str]:
+        try:
+            with os.scandir(parent_descriptor) as entries:
+                return sorted(entry.name for entry in entries)
+        except OSError as error:
+            fail(f"cannot enumerate {parent_label}: {error}")
+
+    def restore_moved_entry(
+        staged_name: str,
+        source_descriptor: int,
+        source_name: str,
+        entry_label: str,
+    ) -> None:
+        try:
+            os.stat(
+                source_name,
+                dir_fd=source_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            try:
+                rename_without_replacement(
+                    staged_name,
+                    source_name,
+                    source_directory_descriptor=disposal_descriptor,
+                    destination_directory_descriptor=source_descriptor,
+                )
+            except OSError as error:
+                fail(f"cannot restore changed {entry_label}: {error}")
+        except OSError as error:
+            fail(f"cannot inspect changed {entry_label}: {error}")
+        else:
+            fail(
+                f"{entry_label} was replaced while its moved object remains "
+                "preserved in the cleanup quarantine"
+            )
+
+    def remove_contents(
+        parent_descriptor: int,
+        relative_parent: tuple[str, ...],
+        parent_label: str,
+    ) -> None:
+        nonlocal disposal_sequence
+        expected_names = children.get(relative_parent, [])
+        observed_names = enumerate_names(parent_descriptor, parent_label)
+        if observed_names != expected_names:
+            added_names = sorted(set(observed_names) - set(expected_names))
+            missing_names = sorted(set(expected_names) - set(observed_names))
+            details = []
+            if added_names:
+                details.append("added " + ", ".join(added_names))
+            if missing_names:
+                details.append("missing " + ", ".join(missing_names))
+            fail(f"{parent_label} changed after validation: " + "; ".join(details))
+
+        for entry_name in expected_names:
+            relative_path = (*relative_parent, entry_name)
+            expected_identity = validated_manifest[relative_path]
+            entry_label = f"{parent_label} entry {entry_name}"
+            disposal_sequence += 1
+            staged_name = f"validated-object-{disposal_sequence:016x}"
+            try:
+                os.rename(
+                    entry_name,
+                    staged_name,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=disposal_descriptor,
+                )
+            except OSError as error:
+                fail(f"cannot move {entry_label} into private disposal: {error}")
+
+            moved_identity = named_file_identity(
+                disposal_descriptor,
+                staged_name,
+                entry_label,
+            )
+            if moved_identity != expected_identity:
+                restore_moved_entry(
+                    staged_name,
+                    parent_descriptor,
+                    entry_name,
+                    entry_label,
+                )
+                fail(f"{entry_label} changed before private disposal")
+
+            if stat.S_IFMT(expected_identity[2]) == stat.S_IFDIR:
+                child_descriptor = open_directory_descriptor_at(
+                    disposal_descriptor,
+                    staged_name,
+                    entry_label,
+                )
+                try:
+                    if file_identity(os.fstat(child_descriptor)) != expected_identity:
+                        restore_moved_entry(
+                            staged_name,
+                            parent_descriptor,
+                            entry_name,
+                            entry_label,
+                        )
+                        fail(f"{entry_label} changed before descriptor binding")
+                    if descriptor_mount_id(child_descriptor, entry_label) != (
+                        expected_mount_id
+                    ):
+                        restore_moved_entry(
+                            staged_name,
+                            parent_descriptor,
+                            entry_name,
+                            entry_label,
+                        )
+                        fail(f"{entry_label} crosses a mount boundary")
+                    remove_contents(child_descriptor, relative_path, entry_label)
+                    final_identity = named_file_identity(
+                        disposal_descriptor,
+                        staged_name,
+                        entry_label,
+                    )
+                    if (
+                        final_identity[0],
+                        final_identity[1],
+                        final_identity[2],
+                    ) != (
+                        expected_identity[0],
+                        expected_identity[1],
+                        expected_identity[2],
+                    ):
+                        fail(f"{entry_label} changed before final removal")
+                    try:
+                        os.rmdir(staged_name, dir_fd=disposal_descriptor)
+                    except OSError as error:
+                        fail(f"cannot remove {entry_label}: {error}")
+                finally:
+                    os.close(child_descriptor)
+            else:
+                try:
+                    os.unlink(staged_name, dir_fd=disposal_descriptor)
+                except OSError as error:
+                    fail(f"cannot remove {entry_label}: {error}")
+
+        remaining_names = enumerate_names(parent_descriptor, parent_label)
+        if remaining_names:
+            fail(
+                f"{parent_label} gained entries during cleanup: "
+                + ", ".join(remaining_names)
+            )
+
+    remove_contents(directory_descriptor, (), label)
+
+
 def remove_source_view(source_view: Path) -> None:
     remove_directory_tree(source_view, "source view")
 
@@ -1320,7 +1817,10 @@ def base_identity_payload(
 ) -> dict[str, str | int]:
     source_root = values["source_root"]
     assert isinstance(source_root, Path)
-    require_clean_external_source(source_root)
+    if values["reproducible_run"] == "1":
+        require_reproducible_source_worktrees(source_root)
+    else:
+        require_clean_external_source(source_root)
     return {
         "schema_version": SCHEMA_VERSION,
         "source_root": str(source_root),
@@ -1339,7 +1839,17 @@ def base_identity_payload(
         "mode": str(values["mode"]),
         "compiler_chain": str(values["compiler_chain"]),
         "compiler_family": str(values["compiler_family"]),
+        "reproducible_run": str(values["reproducible_run"]),
     }
+
+
+def legacy_identity_payload(
+    current_payload: dict[str, str | int],
+) -> dict[str, str | int]:
+    legacy_payload = dict(current_payload)
+    legacy_payload["schema_version"] = LEGACY_SCHEMA_VERSION
+    del legacy_payload["reproducible_run"]
+    return legacy_payload
 
 
 def identity_record(
@@ -1592,7 +2102,7 @@ def prepare_source_view(values: dict[str, Path | str]) -> None:
         fail(f"cannot create source view staging directory in {build_root}: {error}")
     try:
         archive_descriptor, archive_name = tempfile.mkstemp(
-            prefix=".gororoba-source-archive.",
+            prefix=".mesa-source-archive.",
             suffix=".tar",
             dir=build_root,
         )
@@ -1702,6 +2212,408 @@ def write_identity(values: dict[str, Path | str]) -> None:
     )
     write_json_atomic(identity_path(values), final_record)
     write_json_atomic(root_path, final_record)
+
+
+def validate_identity_v7_build_root_candidate(
+    values: dict[str, Path | str],
+    candidate_root: Path,
+) -> None:
+    build_root = values["build_root"]
+    builddir = values["builddir"]
+    assert isinstance(build_root, Path)
+    assert isinstance(builddir, Path)
+    try:
+        relative_builddir = builddir.relative_to(build_root)
+    except ValueError:
+        fail(f"schema-7 BUILDDIR is outside BUILD_ROOT: {builddir}")
+
+    current_base = base_identity_payload(values)
+    root_path = candidate_root / LEGACY_ROOT_IDENTITY_FILENAME
+    path = candidate_root / relative_builddir / LEGACY_IDENTITY_FILENAME
+    if not root_path.is_file() or not path.is_file():
+        fail("schema-7 cleanup requires final root and build identities")
+
+    root_record = read_identity(root_path)
+    recorded_control_commit = root_record.get("control_commit")
+    recorded_control_tree = root_record.get("control_tree")
+    if not isinstance(recorded_control_commit, str) or not isinstance(
+        recorded_control_tree, str
+    ):
+        fail(f"schema-7 identity lacks a control revision: {root_path}")
+    repository_root = values["control_root"]
+    assert isinstance(repository_root, Path)
+    resolved_control_commit = run_git(
+        repository_root,
+        "rev-parse",
+        "--verify",
+        f"{recorded_control_commit}^{{commit}}",
+    )
+    resolved_control_tree = run_git(
+        repository_root,
+        "rev-parse",
+        "--verify",
+        f"{recorded_control_commit}^{{tree}}",
+    )
+    if resolved_control_commit != recorded_control_commit:
+        fail(f"schema-7 control commit is not canonical: {root_path}")
+    if resolved_control_tree != recorded_control_tree:
+        fail(f"schema-7 control tree does not match its commit: {root_path}")
+
+    legacy_base = legacy_identity_payload(current_base)
+    legacy_base["source_view"] = str(build_root / LEGACY_SOURCE_VIEW_DIRECTORY)
+    legacy_base["control_commit"] = recorded_control_commit
+    legacy_base["control_tree"] = recorded_control_tree
+    _root_state, root_transaction, root_digest = require_identity_record(
+        root_record,
+        legacy_base,
+        root_path,
+        frozenset((FINAL_STATE,)),
+    )
+    _build_state, build_transaction, build_digest = require_identity_record(
+        read_identity(path),
+        legacy_base,
+        path,
+        frozenset((FINAL_STATE,)),
+    )
+    if root_transaction != build_transaction:
+        fail(f"external source identity transaction drift ({path})")
+    if root_digest != build_digest:
+        fail(f"external source identity digest drift ({path})")
+    candidate_source_view = candidate_root / LEGACY_SOURCE_VIEW_DIRECTORY
+    if candidate_source_view.is_symlink() or not candidate_source_view.is_dir():
+        fail(f"schema-7 source view is not a directory: {candidate_source_view}")
+    if source_view_content_digest(candidate_source_view) != root_digest:
+        fail(f"source view content drift: {candidate_source_view}")
+
+    expected_entries = {
+        root_path,
+        candidate_source_view,
+        candidate_root / relative_builddir,
+    }
+    actual_entries = set(candidate_root.iterdir())
+    unexpected_entries = sorted(actual_entries - expected_entries)
+    missing_entries = sorted(expected_entries - actual_entries)
+    if unexpected_entries or missing_entries:
+        details = []
+        if unexpected_entries:
+            details.append(
+                "unexpected " + ", ".join(str(entry) for entry in unexpected_entries)
+            )
+        if missing_entries:
+            details.append(
+                "missing " + ", ".join(str(entry) for entry in missing_entries)
+            )
+        fail(
+            "schema-7 build root is not an exact cleanup target: " + "; ".join(details)
+        )
+
+    build_boundary = selected_build_boundary(values)
+    reject_mount_target(candidate_root, "schema-7 BUILD_ROOT", build_boundary)
+    repository_build_root = repository_root / "build"
+    reject_git_worktree_target(
+        candidate_root,
+        "schema-7 BUILD_ROOT",
+        repository_root,
+        repository_build_root,
+        scan_descendants=True,
+    )
+
+
+def restore_quarantined_build_root(
+    namespace_descriptor: int,
+    quarantine_descriptor: int,
+    quarantine_name: str,
+    quarantined_name: str,
+    build_root_name: str,
+    expected_identity: tuple[int, int, int],
+) -> None:
+    try:
+        os.stat(
+            build_root_name,
+            dir_fd=namespace_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        fail(f"cannot inspect schema-7 restore destination: {error}")
+    else:
+        fail(
+            "schema-7 cleanup target changed while quarantined; preserved "
+            f"the candidate under {quarantine_name}"
+        )
+    if (
+        named_object_identity(
+            quarantine_descriptor,
+            quarantined_name,
+            "quarantined schema-7 BUILD_ROOT",
+        )
+        != expected_identity
+    ):
+        fail(
+            "schema-7 cleanup target changed while quarantined; preserved "
+            f"the candidate under {quarantine_name}"
+        )
+    try:
+        rename_without_replacement(
+            quarantined_name,
+            build_root_name,
+            source_directory_descriptor=quarantine_descriptor,
+            destination_directory_descriptor=namespace_descriptor,
+        )
+        os.rmdir(quarantine_name, dir_fd=namespace_descriptor)
+    except OSError as error:
+        fail("cannot restore schema-7 cleanup candidate from quarantine: " f"{error}")
+
+
+def remove_identity_v7_build_root(values: dict[str, Path | str]) -> None:
+    source_root = values["source_root"]
+    build_root = values["build_root"]
+    assert isinstance(source_root, Path)
+    assert isinstance(build_root, Path)
+    if values["reproducible_run"] != "0":
+        fail("schema-7 cleanup requires REPRODUCIBLE_RUN=0")
+    if source_root == values["control_root"]:
+        fail("schema-7 cleanup requires an external TOPSRC")
+
+    validated_identity = directory_object_identity(build_root, "schema-7 BUILD_ROOT")
+    validate_identity_v7_build_root_candidate(values, build_root)
+
+    build_namespace = build_root.parent
+    namespace_identity = directory_object_identity(
+        build_namespace,
+        "schema-7 build namespace",
+    )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        namespace_descriptor = os.open(build_namespace, directory_flags)
+    except OSError as error:
+        fail(f"cannot open schema-7 build namespace {build_namespace}: {error}")
+    if (
+        directory_descriptor_identity(
+            namespace_descriptor,
+            "schema-7 build namespace",
+        )
+        != namespace_identity
+    ):
+        os.close(namespace_descriptor)
+        fail("schema-7 build namespace changed before descriptor binding")
+
+    try:
+        quarantine_directory = Path(
+            tempfile.mkdtemp(
+                prefix=f".{build_root.name}.schema-7-cleanup.",
+                dir=build_root.parent,
+            )
+        )
+    except OSError as error:
+        os.close(namespace_descriptor)
+        fail(f"cannot create schema-7 cleanup quarantine: {error}")
+    quarantine_name = quarantine_directory.name
+    quarantine_identity = directory_object_identity(
+        quarantine_directory,
+        "schema-7 cleanup quarantine",
+    )
+    try:
+        quarantine_descriptor = open_directory_descriptor_at(
+            namespace_descriptor,
+            quarantine_name,
+            "schema-7 cleanup quarantine",
+        )
+    except ControlError:
+        os.close(namespace_descriptor)
+        raise
+    try:
+        if (
+            directory_descriptor_identity(
+                quarantine_descriptor,
+                "schema-7 cleanup quarantine",
+            )
+            != quarantine_identity
+        ):
+            fail("schema-7 cleanup quarantine changed before descriptor binding")
+
+        quarantined_name = "validated-build-root"
+        try:
+            os.rename(
+                build_root.name,
+                quarantined_name,
+                src_dir_fd=namespace_descriptor,
+                dst_dir_fd=quarantine_descriptor,
+            )
+        except OSError as error:
+            try:
+                os.rmdir(quarantine_name, dir_fd=namespace_descriptor)
+            except OSError:
+                pass
+            fail(f"cannot quarantine schema-7 build root {build_root}: {error}")
+
+        quarantined_identity = named_object_identity(
+            quarantine_descriptor,
+            quarantined_name,
+            "quarantined schema-7 BUILD_ROOT",
+        )
+        if quarantined_identity != validated_identity:
+            restore_quarantined_build_root(
+                namespace_descriptor,
+                quarantine_descriptor,
+                quarantine_name,
+                quarantined_name,
+                build_root.name,
+                quarantined_identity,
+            )
+            fail("schema-7 BUILD_ROOT changed between validation and quarantine")
+
+        validated_root_descriptor = open_directory_descriptor_at(
+            quarantine_descriptor,
+            quarantined_name,
+            "quarantined schema-7 BUILD_ROOT",
+        )
+        try:
+            opened_root_identity = directory_descriptor_identity(
+                validated_root_descriptor,
+                "quarantined schema-7 BUILD_ROOT",
+            )
+            if opened_root_identity != validated_identity:
+                restore_quarantined_build_root(
+                    namespace_descriptor,
+                    quarantine_descriptor,
+                    quarantine_name,
+                    quarantined_name,
+                    build_root.name,
+                    opened_root_identity,
+                )
+                fail("schema-7 BUILD_ROOT changed before cleanup descriptor binding")
+
+            quarantined_root = quarantine_directory / quarantined_name
+            try:
+                validated_manifest = directory_identity_manifest(
+                    validated_root_descriptor,
+                    "quarantined schema-7 BUILD_ROOT",
+                )
+                validate_identity_v7_build_root_candidate(values, quarantined_root)
+                revalidated_manifest = directory_identity_manifest(
+                    validated_root_descriptor,
+                    "quarantined schema-7 BUILD_ROOT",
+                )
+                if revalidated_manifest != validated_manifest:
+                    fail("schema-7 BUILD_ROOT changed during quarantine validation")
+            except ControlError:
+                if (
+                    named_object_identity(
+                        quarantine_descriptor,
+                        quarantined_name,
+                        "quarantined schema-7 BUILD_ROOT",
+                    )
+                    != opened_root_identity
+                ):
+                    fail(
+                        "schema-7 cleanup target changed during quarantine "
+                        f"validation; preserved {quarantine_directory}"
+                    )
+                restore_quarantined_build_root(
+                    namespace_descriptor,
+                    quarantine_descriptor,
+                    quarantine_name,
+                    quarantined_name,
+                    build_root.name,
+                    opened_root_identity,
+                )
+                raise
+
+            disposal_name = f".schema-7-validated-objects-{secrets.token_hex(16)}"
+            try:
+                os.mkdir(disposal_name, mode=0o700, dir_fd=quarantine_descriptor)
+            except OSError as error:
+                fail(f"cannot create private schema-7 disposal: {error}")
+            disposal_descriptor = open_directory_descriptor_at(
+                quarantine_descriptor,
+                disposal_name,
+                "private schema-7 disposal",
+            )
+            try:
+                remove_directory_contents_by_descriptor(
+                    validated_root_descriptor,
+                    disposal_descriptor,
+                    validated_manifest,
+                    "quarantined schema-7 BUILD_ROOT",
+                )
+                try:
+                    with os.scandir(disposal_descriptor) as disposal_entries:
+                        remaining_disposal_entries = sorted(
+                            entry.name for entry in disposal_entries
+                        )
+                except OSError as error:
+                    fail(f"cannot enumerate private schema-7 disposal: {error}")
+                if remaining_disposal_entries:
+                    fail(
+                        "private schema-7 disposal retains moved objects: "
+                        + ", ".join(remaining_disposal_entries)
+                    )
+            finally:
+                os.close(disposal_descriptor)
+
+            if (
+                named_object_identity(
+                    quarantine_descriptor,
+                    quarantined_name,
+                    "quarantined schema-7 BUILD_ROOT",
+                )
+                != opened_root_identity
+            ):
+                fail(
+                    "schema-7 cleanup target changed before final removal; "
+                    f"preserved {quarantine_directory}"
+                )
+            try:
+                os.rmdir(quarantined_name, dir_fd=quarantine_descriptor)
+            except OSError as error:
+                fail(
+                    "cannot remove quarantined schema-7 BUILD_ROOT "
+                    f"{quarantined_root}: {error}"
+                )
+            try:
+                os.rmdir(disposal_name, dir_fd=quarantine_descriptor)
+            except OSError as error:
+                fail(f"cannot remove private schema-7 disposal: {error}")
+        finally:
+            os.close(validated_root_descriptor)
+
+        try:
+            os.stat(
+                build_root.name,
+                dir_fd=namespace_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            fail(f"cannot verify schema-7 BUILD_ROOT removal: {error}")
+        else:
+            fail(f"schema-7 BUILD_ROOT was recreated during cleanup: {build_root}")
+
+        if named_object_identity(
+            namespace_descriptor,
+            quarantine_name,
+            "schema-7 cleanup quarantine",
+        ) != directory_descriptor_identity(
+            quarantine_descriptor,
+            "schema-7 cleanup quarantine",
+        ):
+            fail(
+                "schema-7 cleanup quarantine changed before removal; "
+                f"preserved {quarantine_directory}"
+            )
+        try:
+            os.rmdir(quarantine_name, dir_fd=namespace_descriptor)
+        except OSError as error:
+            fail(
+                f"cannot remove schema-7 cleanup quarantine "
+                f"{quarantine_directory}: {error}"
+            )
+    finally:
+        os.close(quarantine_descriptor)
+        os.close(namespace_descriptor)
 
 
 def verify_identity(values: dict[str, Path | str]) -> None:
@@ -1824,7 +2736,9 @@ def parse_arguments() -> argparse.Namespace:
         required=True,
     )
     subparsers.add_parser("resolve-make")
+    subparsers.add_parser("selected-builddir-state")
     subparsers.add_parser("check-source")
+    subparsers.add_parser("check-reproducible-source")
 
     layout_parser = subparsers.add_parser("check-layout")
     layout_parser.add_argument(
@@ -1844,6 +2758,7 @@ def parse_arguments() -> argparse.Namespace:
     subparsers.add_parser("prepare-identity")
     subparsers.add_parser("prepare-source-view")
     subparsers.add_parser("write-identity")
+    subparsers.add_parser("remove-identity-v7-build-root")
     subparsers.add_parser("verify-identity")
     subparsers.add_parser("verify-artifact-identity")
     subparsers.add_parser("verify-delete-identity")
@@ -1866,41 +2781,49 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
+    reject_legacy_environment()
     arguments = parse_arguments()
     if arguments.command == "validate-make-version":
-        validate_make_version(os.environ.get("GOROROBA_MAKE_VERSION_INPUT", ""))
+        validate_make_version(os.environ.get("MESA_MAKE_VERSION_INPUT", ""))
         print("yes")
         return 0
     if arguments.command == "validate-selectors":
         mode = input_enum(
-            "GOROROBA_MODE_INPUT",
+            "MESA_MODE_INPUT",
             frozenset(("", "stable")),
         )
         print(
-            input_identifier("GOROROBA_PROFILE_INPUT"),
-            input_identifier("GOROROBA_HOSTENV_INPUT"),
-            input_identifier("GOROROBA_INSTALL_NAMESPACE_INPUT"),
+            input_identifier("MESA_PROFILE_INPUT"),
+            input_identifier("MESA_HOSTENV_INPUT"),
+            input_identifier("MESA_INSTALL_NAMESPACE_INPUT"),
             mode or "default",
             input_enum(
-                "GOROROBA_COMPILER_CHAIN_INPUT",
+                "MESA_COMPILER_CHAIN_INPUT",
                 frozenset(("ccache", "direct", "distcc")),
             ),
             input_enum(
-                "GOROROBA_COMPILER_FAMILY_INPUT",
+                "MESA_COMPILER_FAMILY_INPUT",
                 frozenset(("gnu", "llvm")),
+            ),
+            input_enum(
+                "MESA_REPRODUCIBLE_RUN_INPUT",
+                frozenset(("0", "1")),
             ),
         )
         return 0
     if arguments.command == "validate-build-execution":
         print(
-            input_decimal("GOROROBA_JOBS_INPUT", minimum=1),
-            input_decimal("GOROROBA_DISTCC_JOBS_INPUT", minimum=1),
-            input_decimal("GOROROBA_LOCK_WAIT_INPUT", minimum=0),
-            input_path("GOROROBA_BUILD_LOCK_INPUT"),
+            input_decimal("MESA_JOBS_INPUT", minimum=1),
+            input_decimal("MESA_DISTCC_JOBS_INPUT", minimum=1),
+            input_decimal("MESA_LOCK_WAIT_INPUT", minimum=0),
+            input_path("MESA_BUILD_LOCK_INPUT"),
         )
         return 0
     if arguments.command == "create-test-directory":
         print(create_test_directory(arguments.label))
+        return 0
+    if arguments.command == "selected-builddir-state":
+        print(selected_builddir_state())
         return 0
     values = resolved_inputs()
 
@@ -1940,6 +2863,10 @@ def main() -> int:
         source_root = values["source_root"]
         assert isinstance(source_root, Path)
         require_clean_external_source(source_root)
+    elif arguments.command == "check-reproducible-source":
+        source_root = values["source_root"]
+        assert isinstance(source_root, Path)
+        require_reproducible_source_worktrees(source_root)
     elif arguments.command == "check-layout":
         validate_layout(arguments.operation, values)
     elif arguments.command == "prepare-identity":
@@ -1951,6 +2878,9 @@ def main() -> int:
     elif arguments.command == "write-identity":
         validate_layout("configure", values)
         write_identity(values)
+    elif arguments.command == "remove-identity-v7-build-root":
+        validate_layout("clean", values)
+        remove_identity_v7_build_root(values)
     elif arguments.command == "verify-identity":
         verify_identity(values)
     elif arguments.command == "verify-artifact-identity":

@@ -2,17 +2,19 @@
 # Verify that the debug launcher exposes its opt-scoped Vulkan layers once.
 set -eu
 
-HERE=$(cd "$(dirname "$0")" && pwd -P)
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 environment_file="$HERE/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
 fixture_prefix=/opt/mesa-vulkan-layer-environment-fixture
 
 (
-  GOROROBA_MESA_PREFIX=$fixture_prefix
+  MESA_INSTALL_PREFIX=$fixture_prefix
   VK_ADD_LAYER_PATH=/usr/local/share/vulkan/explicit_layer.d
   VK_ADD_IMPLICIT_LAYER_PATH=/usr/local/share/vulkan/implicit_layer.d
-  export GOROROBA_MESA_PREFIX VK_ADD_LAYER_PATH VK_ADD_IMPLICIT_LAYER_PATH
+  export MESA_INSTALL_PREFIX VK_ADD_LAYER_PATH VK_ADD_IMPLICIT_LAYER_PATH
 
+  # shellcheck disable=SC1090
   . "$environment_file"
+  # shellcheck disable=SC1090
   . "$environment_file"
 
   expected_explicit="$fixture_prefix/share/vulkan/explicit_layer.d:/usr/local/share/vulkan/explicit_layer.d"

@@ -62,10 +62,17 @@ The run proceeds only when all of the following hold.
   live submitter.
 - The executable comes from the release conformance profile, not the
   assertions-live debug profile. Build that profile through the checked-in
-  build entry point:
+  build entry point. Both source paths name distinct detached worktrees at the
+  same intended commit, and the build root is dedicated to this run:
 
   ```sh
-  make -C build-infra rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache
+  MESA_CONTROL_ROOT=/path/to/detached-control
+  MESA_SOURCE_ROOT=/path/to/detached-source
+  MESA_BUILD_ROOT=/path/to/dedicated-build-root
+  make -C "$MESA_CONTROL_ROOT/build-infra" \
+    rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
+    REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" \
+    BUILD_ROOT="$MESA_BUILD_ROOT"
   ```
 
   Set `R3V_BUILD_DIR` to the resulting
