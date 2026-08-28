@@ -1043,6 +1043,27 @@ r3v_native_attended_public_flat_color0_two_draw = executable(
   install : false,
 )
 
+# Attended rasterizer interpolation probe: two render passes over one
+# unequal-W carrier through the smooth and the NoPerspective fragment
+# interfaces, the second pass alone carrying the gated candidate control
+# word, judged by a census of the candidate target against the
+# registered interpolation models.
+r3v_native_attended_rs_tex_adj_probe = executable(
+  'r3v_native_attended_rs_tex_adj_probe',
+  files('tests/r3v_native_attended_rs_tex_adj_probe.c',
+        'tests/r3v_native_recovery_waiver.c',
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
   files('tests/r3v_native_attended_composed.c',
@@ -1450,7 +1471,7 @@ if with_tests
           '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -2474,6 +2495,33 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The probe runner's recording boundary on the shim fixture, one arm
+  # per candidate: the operator gate the runner requires, the two
+  # pipelines' route selection, the one-dword separation of the two
+  # emitted streams, the recorded digest, the per-pass state checks, and
+  # the census calibrated against its own predictions.
+  test(
+    'r3v-native-rs-tex-adj-probe-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'tex-adj'],
+    env : environment(
+      r3v_native_cell_vars + {'R3V_NATIVE_RS_TEX_ADJ_PROBE' : '1'}),
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-rs-w-select-probe-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'w-select'],
+    env : environment(
+      r3v_native_cell_vars + {'R3V_NATIVE_RS_W_SELECT_PROBE' : '1'}),
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding
@@ -2994,7 +3042,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3022,7 +3070,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',
           '../common/r300_tcl_bypass_triangle.c',
-            '../common/r300_flat_color0_plan.c',
+            '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c',
           '../common/r300_zb_depth_control_cell.c',
           '../common/r300_zb_depth_state.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
@@ -3054,7 +3102,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_carrier_delivery.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3086,7 +3134,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_r2vb_public_route.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3120,7 +3168,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3147,7 +3195,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_r2vb_reingest_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3174,7 +3222,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_float2_tuple_pass.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3204,7 +3252,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
             '../common/r300_fragment_binary.c',
             '../common/r300_pm4_builder.c',
             '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
       include_directories : [r3v_native_inc, include_directories('.')],
       dependencies : [idep_mesautil],
       gnu_symbol_visibility : 'hidden',

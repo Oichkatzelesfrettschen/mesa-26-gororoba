@@ -507,6 +507,21 @@ create_pipeline(struct r3v_native_device *device,
       device->flat_replication_pin != NULL
          ? R3V_INTERPOLATION_ROUTE_REPLICATE
          : r3v_interpolation_route_select(&interpolation, NULL);
+   /* CPU delivery holds while every R2VB delivery gate stays closed;
+    * the admission above refused any topology other than the triangle
+    * list, so that predicate is the admission's. */
+   const struct r3v_rs_probe_query probe = {
+      .tex_adj_gate = device->rs_tex_adj_probe_gate != NULL,
+      .w_select_gate = device->rs_w_select_probe_gate != NULL,
+      .cpu_delivery = device->r2vb_delivery_gate == NULL &&
+                      device->r2vb_gpu_delivery_gate == NULL &&
+                      device->r2vb_fetched_gate == NULL,
+      .triangle_list = true,
+      .link = &pipeline->shader_interface,
+      .rs_destination_available = varying && !sampled,
+      .fragment_consumes_destination = varying && !sampled,
+   };
+   pipeline->rs_probe_candidate = r3v_rs_probe_candidate_select(&probe, NULL);
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

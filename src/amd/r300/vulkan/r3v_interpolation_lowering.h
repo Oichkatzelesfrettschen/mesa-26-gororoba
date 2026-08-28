@@ -31,6 +31,9 @@
 #ifndef R3V_INTERPOLATION_LOWERING_H
 #define R3V_INTERPOLATION_LOWERING_H
 
+#include "amd/r300/common/r300_rs_tex_adj_probe.h"
+
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -68,6 +71,47 @@ struct r3v_interpolation_query {
  * which the execution-time classification of each triangle supplies.
  * A link with no Flat location selects replication (the identity
  * lowering) with a naming reason. */
+/* The rasterizer probe candidate a NoPerspective interface takes.
+ * Bit 22 of RS_INST (TEX_ADJ) and GB_SELECT.W_SELECT carry no retained
+ * silicon classification on RS482, so neither is a NoPerspective
+ * route; a candidate marks the pass whose stream differs from the
+ * control varying cell in that one word, and the census classifies
+ * the bit (r300_rs_tex_adj_probe.h).  The candidate opens on exactly
+ * one probe gate at the exact value 1, and a probe pipeline is a
+ * NoPerspective interface: one float vec4 varying at location 0, CPU
+ * delivery, a triangle list, and the pass-through fragment program
+ * reading the RS destination. */
+enum r3v_rs_probe_candidate {
+   R3V_RS_PROBE_NONE = 0,
+   R3V_RS_PROBE_TEX_ADJ,
+   R3V_RS_PROBE_W_SELECT_ONE,
+};
+/* The route enum travels into the cell as the common probe candidate
+ * through one uint8_t, so the two numberings coincide. */
+static_assert((int)R3V_RS_PROBE_NONE == (int)R300_RS_TEX_ADJ_PROBE_CONTROL,
+              "probe candidate numbering");
+static_assert((int)R3V_RS_PROBE_TEX_ADJ == (int)R300_RS_TEX_ADJ_PROBE_TEX_ADJ,
+              "probe candidate numbering");
+static_assert((int)R3V_RS_PROBE_W_SELECT_ONE ==
+                 (int)R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE,
+              "probe candidate numbering");
+
+struct r3v_rs_probe_query {
+   /* R3V_NATIVE_RS_TEX_ADJ_PROBE=1 and R3V_NATIVE_RS_W_SELECT_PROBE=1;
+    * both open refuses, since one cell carries one candidate. */
+   bool tex_adj_gate;
+   bool w_select_gate;
+   bool cpu_delivery;
+   bool triangle_list;
+   const struct r3v_shader_interface_link *link;
+   bool rs_destination_available;
+   bool fragment_consumes_destination;
+};
+
+enum r3v_rs_probe_candidate
+r3v_rs_probe_candidate_select(const struct r3v_rs_probe_query *query,
+                              const char **reason);
+
 enum r3v_interpolation_route
 r3v_interpolation_route_select(const struct r3v_interpolation_query *query,
                                const char **reason);

@@ -91,6 +91,15 @@ static bool cell_multi_pass_public_flat = false;
  * direct route.
  */
 static bool cell_multi_pass_public_flat_color0 = false;
+/* --multi-pass-rs-tex-adj-probe and --multi-pass-rs-w-select-probe
+ * select the two-pass probe cell: both passes varying, the second alone
+ * carrying the named rasterizer candidate control word, the stream a
+ * two-render-pass command buffer records under the smooth then the
+ * NoPerspective fragment interface with that candidate's gate open.
+ */
+static bool cell_multi_pass_rs_probe = false;
+static enum r300_rs_tex_adj_probe_candidate cell_multi_pass_rs_candidate =
+   R300_RS_TEX_ADJ_PROBE_CONTROL;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -117,7 +126,10 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
    }
    if (cell_multi_pass) {
       struct r300_triangle_multi_pass mp;
-      if (cell_multi_pass_public_flat_color0)
+      if (cell_multi_pass_rs_probe)
+         r3v_native_multi_pass_public_rs_tex_adj_probe_reference(
+            &mp, cell_multi_pass_rs_candidate);
+      else if (cell_multi_pass_public_flat_color0)
          r3v_native_multi_pass_public_flat_color0_reference(&mp);
       else if (cell_multi_pass_public_flat)
          r3v_native_multi_pass_public_flat_reference(&mp);
@@ -324,6 +336,17 @@ main(int argc, char **argv)
       cell_multi_pass_public = true;
       cell_multi_pass_public_flat_color0 = true;
       argi += 1;
+   } else if (argc >= argi + 1 &&
+              (strcmp(argv[argi], "--multi-pass-rs-tex-adj-probe") == 0 ||
+               strcmp(argv[argi], "--multi-pass-rs-w-select-probe") == 0)) {
+      cell_multi_pass = true;
+      cell_multi_pass_public = true;
+      cell_multi_pass_rs_probe = true;
+      cell_multi_pass_rs_candidate =
+         strcmp(argv[argi], "--multi-pass-rs-w-select-probe") == 0
+            ? R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE
+            : R300_RS_TEX_ADJ_PROBE_TEX_ADJ;
+      argi += 1;
    } else if (argc >= argi + 2 && (strcmp(argv[argi], "--msaa") == 0 ||
                                    strcmp(argv[argi], "--msaa-clear") == 0)) {
       cell_msaa = true;
@@ -420,6 +443,8 @@ main(int argc, char **argv)
               "--sampled-bgra|--sampled-arm <name>|--composed <offset>|"
               "--msaa <sample-count>|--multi-pass|--multi-pass-public|--multi-pass-public-flat|"
               "--multi-pass-public-flat-color0|"
+              "--multi-pass-rs-tex-adj-probe|"
+              "--multi-pass-rs-w-select-probe|"
               "--shape <w> <h> | --clip-space-shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "

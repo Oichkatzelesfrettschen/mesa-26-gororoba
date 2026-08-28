@@ -70,3 +70,45 @@ r3v_interpolation_clip_class_of_triangle(const uint32_t *records,
    }
    return R3V_INTERPOLATION_CLIP_ACCEPT;
 }
+
+enum r3v_rs_probe_candidate
+r3v_rs_probe_candidate_select(const struct r3v_rs_probe_query *query,
+                              const char **reason)
+{
+   const char *why = NULL;
+   enum r3v_rs_probe_candidate candidate = R3V_RS_PROBE_NONE;
+   if (query == NULL || query->link == NULL) {
+      why = "no linked interface";
+   } else if (!query->tex_adj_gate && !query->w_select_gate) {
+      why = "no probe gate open";
+   } else if (query->tex_adj_gate && query->w_select_gate) {
+      why = "both probe gates open";
+   } else if (query->link->noperspective_mask == 0) {
+      why = "no NoPerspective location";
+   } else if (!query->cpu_delivery) {
+      why = "delivery route is not CPU";
+   } else if (!query->triangle_list) {
+      why = "primitive is not a triangle list";
+   } else if (query->link->varying_mask != 1u ||
+              query->link->noperspective_mask != 1u) {
+      why = "NoPerspective location does not map completely to TEX0";
+   } else {
+      const struct r3v_shader_interface_varying *v =
+         &query->link->varyings[0];
+      if (!v->present || v->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
+          v->width != 4 || v->component_mask != 0xf ||
+          v->interpolation != R3V_SHADER_INTERFACE_NOPERSPECTIVE) {
+         why = "NoPerspective location is not a full float vec4";
+      } else if (!query->rs_destination_available) {
+         why = "RS destination unavailable";
+      } else if (!query->fragment_consumes_destination) {
+         why = "fragment program does not consume the RS destination";
+      } else {
+         candidate = query->tex_adj_gate ? R3V_RS_PROBE_TEX_ADJ
+                                         : R3V_RS_PROBE_W_SELECT_ONE;
+      }
+   }
+   if (reason != NULL)
+      *reason = why;
+   return candidate;
+}

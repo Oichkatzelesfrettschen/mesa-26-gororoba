@@ -85,6 +85,9 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
 {
    device->flat_replication_pin =
       exact_gate("R3V_NATIVE_FLAT_REPLICATION_PINNED");
+   device->rs_tex_adj_probe_gate = exact_gate("R3V_NATIVE_RS_TEX_ADJ_PROBE");
+   device->rs_w_select_probe_gate =
+      exact_gate("R3V_NATIVE_RS_W_SELECT_PROBE");
    device->r2vb_delivery_gate =
       exact_gate("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
    device->r2vb_gpu_delivery_gate =

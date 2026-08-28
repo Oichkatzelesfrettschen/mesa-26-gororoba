@@ -1,0 +1,1323 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Attended rasterizer interpolation probe on RS482 (Radeon Xpress 200M,
+ * CHIP_RS480, R300-class US/PFS fixed VLIW): two render passes draw one
+ * carrier whose three vertices hold unequal reciprocal clip W and one
+ * TEX0 varying, the first pass through the smooth fragment interface
+ * and the second through the NoPerspective interface an open probe gate
+ * turns into a candidate control word.  The two recorded passes differ
+ * in exactly one dword -- RS_INST_0's TEX_ADJ bit (AMD R3xx 3D
+ * Registers, RS_INST_[0-15]) or GB_SELECT's W_SELECT bit (AMD R3xx 3D
+ * Registers, GB_SELECT) -- so a census of the candidate target against
+ * the registered interpolation models names what that one bit does on
+ * this silicon.  The control target carries the premise: a
+ * perspective-correct classification there is what makes the
+ * candidate's classification a statement about the bit rather than
+ * about the cell.  The runner's verdict is the classification it
+ * prints; a class other than the documented reading is a finding, not a
+ * failure.  Every stage prints and flushes before it runs, and the
+ * operator supplies the one probe gate the run names.
+ */
+
+#include "r3v_native.h"
+#include "r3v_interpolation_lowering.h"
+#include "r3v_shader_interface.h"
+#include "r3v_native_arming.h"
+#include "r3v_native_reference_spirv.h"
+#include "r3v_native_watchdog_guard.h"
+
+#include "amd/r300/common/r300_first_draw_state.h"
+#include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/r300_rs_tex_adj_probe.h"
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
+#include "r3v_native_multi_pass_arms.h"
+
+#include "util/mesa-blake3.h"
+
+#include <limits.h>
+#include <math.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vulkan/vulkan.h>
+
+PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
+                                             const char *pName);
+
+/* Every printed line also lands in the evidence directory's run.txt, so
+ * the retained bundle carries the report the operator read. */
+static FILE *run_log = NULL;
+
+static void
+emit(const char *fmt, ...)
+{
+   va_list args;
+   va_start(args, fmt);
+   vprintf(fmt, args);
+   va_end(args);
+   fflush(stdout);
+   if (run_log != NULL) {
+      va_start(args, fmt);
+      vfprintf(run_log, fmt, args);
+      va_end(args);
+      fflush(run_log);
+   }
+}
+
+static void
+stage(const char *name)
+{
+   emit("[stage] %s\n", name);
+}
+
+static bool
+same_directory(const char *a, const char *b)
+{
+   if (strcmp(a, b) == 0)
+      return true;
+   char resolved_a[PATH_MAX];
+   char resolved_b[PATH_MAX];
+   return realpath(a, resolved_a) != NULL && realpath(b, resolved_b) != NULL &&
+          strcmp(resolved_a, resolved_b) == 0;
+}
+
+static bool
+gate_open(const char *name)
+{
+   const char *value = getenv(name);
+   return value != NULL && strcmp(value, "1") == 0;
+}
+
+static bool
+gate_present(const char *name)
+{
+   const char *value = getenv(name);
+   return value != NULL && value[0] != '\0';
+}
+
+/* The census over one image, printed in full: the counts are the
+ * finding whether or not the classification names a model. */
+static void
+report_census(const char *label,
+              const struct r300_rs_tex_adj_probe_census *c)
+{
+   emit("[census] %s judged=%u unjudged_interior=%u unchanged=%u "
+        "control_supplied=%d\n",
+        label, c->judged, c->unjudged_interior, c->unchanged,
+        (int)c->control_supplied);
+   for (unsigned m = 0; m < R300_RS_TEX_ADJ_PROBE_MODEL_COUNT; m++)
+      emit("[census] %s model=%s match=%u max_deviation=%u\n", label,
+           r300_rs_tex_adj_probe_model_name(m), c->match[m],
+           c->max_deviation[m]);
+   emit("[census] %s classification=%s\n", label,
+        r300_rs_tex_adj_probe_classification_name(
+           r300_rs_tex_adj_probe_classify(c)));
+}
+
+/* The register a PKT0 write at ib[index] targets, or UINT32_MAX when
+ * the index sits outside every register write.  The walk mirrors the
+ * packet grammar the stream check reads: a type-0 header names a base
+ * register and a count, and RADEON_ONE_REG_WR holds the base across
+ * the payload instead of advancing it by one register per dword. */
+static uint32_t
+register_at(const uint32_t *ib, uint32_t dwords, uint32_t index)
+{
+   uint32_t i = 0;
+   while (i < dwords) {
+      const uint32_t header = ib[i];
+      const uint32_t kind = header >> 30;
+      const uint32_t count = ((header >> 16) & 0x3FFFu) + 1u;
+      if (kind == 0) {
+         const uint32_t base = (header & 0x3FFFu) * 4u;
+         const bool one_reg = (header & RADEON_ONE_REG_WR) != 0;
+         if (index > i && index <= i + count)
+            return base + (one_reg ? 0u : 4u * (index - i - 1u));
+         i += 1u + count;
+      } else if (kind == 3) {
+         i += 1u + count;
+      } else {
+         i += 1u;
+      }
+   }
+   return UINT32_MAX;
+}
+
+/* The two draw packets' header indices in a two-pass stream, and the
+ * dword just past the first draw packet, so a state check runs over one
+ * pass's own span: a span opening inside a draw's payload would read
+ * payload dwords as packet headers. */
+static bool
+draw_indices(const uint32_t *ib, uint32_t dwords, uint32_t out[2],
+             uint32_t *first_draw_end)
+{
+   unsigned draws = 0;
+   uint32_t i = 0;
+   out[0] = out[1] = UINT32_MAX;
+   *first_draw_end = UINT32_MAX;
+   while (i < dwords) {
+      const uint32_t header = ib[i];
+      const uint32_t kind = header >> 30;
+      const uint32_t count = ((header >> 16) & 0x3FFFu) + 1u;
+      const uint32_t next = i + ((kind == 0 || kind == 3) ? 1u + count : 1u);
+      if (kind == 3 && r300_first_draw_is_draw_packet(header)) {
+         if (draws < 2)
+            out[draws] = i;
+         if (draws == 0)
+            *first_draw_end = next;
+         draws++;
+      }
+      i = next;
+   }
+   return draws == 2 && *first_draw_end != UINT32_MAX;
+}
+
+/* One pass's public objects: the image, its memory, its view, and its
+ * framebuffer over the shared render pass. */
+struct pass_target {
+   VkImage image;
+   VkDeviceMemory memory;
+   VkImageView view;
+   VkFramebuffer framebuffer;
+};
+
+int
+main(int argc, char **argv)
+{
+   bool record_only = false;
+   const char *waiver_path = NULL;
+   enum r300_rs_tex_adj_probe_candidate candidate =
+      R300_RS_TEX_ADJ_PROBE_TEX_ADJ;
+   enum r3v_rs_probe_candidate route_candidate = R3V_RS_PROBE_TEX_ADJ;
+   const char *candidate_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+   const char *other_gate = "R3V_NATIVE_RS_W_SELECT_PROBE";
+   const char *candidate_word_name = "RS_INST_TEX_ADJ";
+   bool usage_error = argc < 2;
+   for (int i = 2; i < argc && !usage_error; i++) {
+      if (strcmp(argv[i], "--record-only") == 0) {
+         record_only = true;
+      } else if (strcmp(argv[i], "--waiver") == 0 && i + 1 < argc) {
+         waiver_path = argv[++i];
+      } else if (strcmp(argv[i], "--candidate") == 0 && i + 1 < argc) {
+         const char *name = argv[++i];
+         if (strcmp(name, "tex-adj") == 0) {
+            candidate = R300_RS_TEX_ADJ_PROBE_TEX_ADJ;
+            route_candidate = R3V_RS_PROBE_TEX_ADJ;
+            candidate_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            other_gate = "R3V_NATIVE_RS_W_SELECT_PROBE";
+            candidate_word_name = "RS_INST_TEX_ADJ";
+         } else if (strcmp(name, "w-select") == 0) {
+            candidate = R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE;
+            route_candidate = R3V_RS_PROBE_W_SELECT_ONE;
+            candidate_gate = "R3V_NATIVE_RS_W_SELECT_PROBE";
+            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_word_name = "GB_SELECT_W_SELECT";
+         } else {
+            usage_error = true;
+         }
+      } else {
+         usage_error = true;
+      }
+   }
+   if (usage_error) {
+      fprintf(stderr,
+              "usage: %s <evidence-directory> [--record-only] "
+              "[--waiver <path>] [--candidate tex-adj|w-select]\n",
+              argv[0]);
+      return 2;
+   }
+   const char *evidence_dir = argv[1];
+
+   /* The operator arms the candidate: the runner reads the gate the
+    * selected candidate names and refuses every other gate state, so
+    * the recorded stream is the one the authorization names and the
+    * probe pipeline's candidate comes from the environment the
+    * authorization declares. */
+   if (!gate_open(candidate_gate)) {
+      fprintf(stderr,
+              "%s=1 arms the %s candidate; export it before the run\n",
+              candidate_gate, candidate_word_name);
+      return 2;
+   }
+   if (gate_present(other_gate)) {
+      fprintf(stderr, "%s is set; one cell carries one candidate\n",
+              other_gate);
+      return 2;
+   }
+   if (gate_present("R3V_NATIVE_FLAT_REPLICATION_PINNED")) {
+      fprintf(stderr, "R3V_NATIVE_FLAT_REPLICATION_PINNED pins the "
+              "replication route; the probe cell needs it unset\n");
+      return 2;
+   }
+   if (gate_present("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") ||
+       gate_present("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") ||
+       gate_present("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL")) {
+      fprintf(stderr, "the probe cell runs on the CPU route; every "
+              "R3V_NATIVE_R2VB_*_EXPERIMENTAL gate stays unset\n");
+      return 2;
+   }
+   const char *preload = getenv("LD_PRELOAD");
+   if (!record_only && preload != NULL && preload[0] != '\0') {
+      fprintf(stderr,
+              "LD_PRELOAD is set (%s); a hardware run admits no "
+              "interposer\n",
+              preload);
+      return 1;
+   }
+
+   if (!record_only) {
+      char path[PATH_MAX];
+      if (snprintf(path, sizeof(path), "%s/run.txt", evidence_dir) <
+          (int)sizeof(path))
+         run_log = fopen(path, "w");
+      if (run_log == NULL) {
+         fprintf(stderr, "the run log refused to open under %s\n",
+                 evidence_dir);
+         return 1;
+      }
+   }
+
+   /* The stream the public route records: two varying passes at the
+    * reference shape, the second alone carrying the candidate word,
+    * bound at merged indices 2 and 3. */
+   struct r300_triangle_multi_pass mp;
+   r3v_native_multi_pass_public_rs_tex_adj_probe_reference(&mp, candidate);
+   struct r300_triangle_multi_pass control_mp;
+   r3v_native_multi_pass_public_rs_tex_adj_probe_reference(
+      &control_mp, R300_RS_TEX_ADJ_PROBE_CONTROL);
+
+   struct r300_rs_tex_adj_probe_plan control_plan, candidate_plan;
+   r300_rs_tex_adj_probe_plan_control(&control_plan);
+   if (candidate == R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE)
+      r300_rs_tex_adj_probe_plan_w_select_one(&candidate_plan);
+   else
+      r300_rs_tex_adj_probe_plan_tex_adj(&candidate_plan);
+   if (r300_rs_tex_adj_probe_plan_validate(&control_plan) != 0 ||
+       r300_rs_tex_adj_probe_plan_validate(&candidate_plan) != 0) {
+      fprintf(stderr, "a probe plan refused validation\n");
+      return 1;
+   }
+
+   /* GB_SELECT's contract value: the stream check judges the candidate
+    * word against the base the first-draw contract establishes, so the
+    * base comes from the contract rather than from a literal. */
+   struct r300_first_draw_contract base_contract;
+   if (r300_tcl_bypass_triangle_reference_contract(&base_contract) != 0) {
+      fprintf(stderr, "the reference contract refused to resolve\n");
+      return 1;
+   }
+   uint32_t gb_select_base = 0;
+   bool gb_found = false;
+   for (uint32_t i = 0; i < base_contract.count; i++) {
+      if (base_contract.entries[i].reg == R300_GB_SELECT) {
+         gb_select_base = base_contract.entries[i].value;
+         gb_found = true;
+      }
+   }
+   if (!gb_found) {
+      fprintf(stderr, "the reference contract carries no GB_SELECT "
+              "clause\n");
+      return 1;
+   }
+
+   const uint32_t color_bytes =
+      r300_tcl_bypass_triangle_render_shape_color_bytes(&mp.pass[0]);
+
+   struct r300_tcl_bypass_triangle_ib armed, armed_control;
+   if (r300_tcl_bypass_triangle_clip_space_multi_pass_emit(&mp, &armed) != 0) {
+      fprintf(stderr, "the probe two-pass cell refused to emit\n");
+      return 1;
+   }
+   if (r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+          &control_mp, &armed_control) != 0) {
+      fprintf(stderr, "the control two-pass cell refused to emit\n");
+      return 1;
+   }
+   char digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(armed.ib, armed.ib_size_dwords, digest);
+   const uint32_t ib_dwords = armed.ib_size_dwords;
+
+   /* The candidate is one bit of one register: the two streams that
+    * differ only in pass 1's candidate field differ in exactly one
+    * dword, and the enclosing PKT0 header names the register that
+    * dword writes. */
+   uint32_t differing_index = UINT32_MAX;
+   uint32_t differing_count = 0;
+   if (armed_control.ib_size_dwords != ib_dwords) {
+      fprintf(stderr, "the candidate stream is %u dwords against the "
+              "control's %u\n",
+              ib_dwords, armed_control.ib_size_dwords);
+      return 1;
+   }
+   for (uint32_t i = 0; i < ib_dwords; i++) {
+      if (armed.ib[i] != armed_control.ib[i]) {
+         if (differing_count == 0)
+            differing_index = i;
+         differing_count++;
+      }
+   }
+   const uint32_t differing_reg =
+      differing_index == UINT32_MAX
+         ? UINT32_MAX
+         : register_at(armed.ib, ib_dwords, differing_index);
+
+   emit("[shape] rasterizer probe two-draw, control then %s, two varying "
+        "passes %ux%u pitch %u, binding (%u, %u), %u IB dwords, cell "
+        "blake3 %.8s\n",
+        candidate_word_name, mp.pass[0].width, mp.pass[0].height,
+        mp.pass[0].pitch_pixels, mp.second_vertex_index,
+        mp.second_color_index, ib_dwords, digest);
+   emit("[record] candidate-vs-control differing dwords=%u index=%u "
+        "register=0x%04x control=0x%08x candidate=0x%08x\n",
+        differing_count, differing_index, differing_reg,
+        differing_index == UINT32_MAX ? 0u : armed_control.ib[differing_index],
+        differing_index == UINT32_MAX ? 0u : armed.ib[differing_index]);
+   if (differing_count != 1 || differing_reg == UINT32_MAX) {
+      fprintf(stderr, "the candidate stream does not differ from the "
+              "control in exactly one register dword\n");
+      return 1;
+   }
+
+   /* The window records the driver's CPU projection of the clip
+    * carrier reproduces: the models, the predicted images, and the
+    * census all read these, and the carrier read-back after the
+    * submission is what ties them to the bytes the device fetched. */
+   float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   r300_rs_tex_adj_probe_vertices(&mp.pass[0], records);
+   float clip_stream[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   r300_rs_tex_adj_probe_clip_vertices(clip_stream);
+
+   emit("[models] registered outcomes: %s, %s, %s, %s (also reported as "
+        "%s), %s, %s\n",
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_CLASS_PERSPECTIVE),
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_CLASS_AFFINE),
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_CLASS_PROJECTIVE_Q),
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_CLASS_SHIFTED_CENTER),
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_CLASS_PERSPECTIVE_PERTURBED),
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_CLASS_UNCHANGED),
+        r300_rs_tex_adj_probe_classification_name(
+           R300_RS_TEX_ADJ_PROBE_UNCLASSIFIED));
+
+   /* The predicted images, retained ahead of the submission: one per
+    * separable model, each the model's UNORM8 dword over the analytic
+    * interior and the sentinel elsewhere. */
+   static const struct {
+      enum r300_rs_tex_adj_probe_model model;
+      const char *file;
+   } prediction[3] = {
+      { R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE, "expected_perspective.bin" },
+      { R300_RS_TEX_ADJ_PROBE_MODEL_AFFINE, "expected_affine.bin" },
+      { R300_RS_TEX_ADJ_PROBE_MODEL_PROJECTIVE_Q,
+        "expected_projective_q.bin" },
+   };
+   uint32_t *expected[3] = { NULL, NULL, NULL };
+   for (unsigned p = 0; p < 3; p++) {
+      expected[p] = calloc(1, color_bytes);
+      if (expected[p] == NULL ||
+          r300_rs_tex_adj_probe_expected(&mp.pass[0], records,
+                                         prediction[p].model, expected[p],
+                                         color_bytes) != 0) {
+         fprintf(stderr, "the %s prediction refused to generate\n",
+                 prediction[p].file);
+         return 1;
+      }
+      if (!record_only &&
+          r3v_native_evidence_write_file(evidence_dir, prediction[p].file,
+                                         expected[p], color_bytes) != 0) {
+         fprintf(stderr, "prediction retention failed\n");
+         return 1;
+      }
+   }
+
+   /* The predictions against each other: each model's own image is
+    * judged over the same pixels, and the pairwise match counts are the
+    * separation the census's verdict rests on.  A model that matches
+    * another model's image at any judged pixel would leave the census
+    * unclassified by construction, so the numbers print here, ahead of
+    * the ioctl, where a collapsed separation refuses the run. */
+   struct r300_rs_tex_adj_probe_census predicted[3];
+   for (unsigned p = 0; p < 3; p++) {
+      if (r300_rs_tex_adj_probe_census(&mp.pass[0], records, expected[p],
+                                       NULL, color_bytes,
+                                       &predicted[p]) != 0) {
+         fprintf(stderr, "the census refused the %s prediction\n",
+                 prediction[p].file);
+         return 1;
+      }
+      emit("[predict] %s judged=%u classification=%s match(perspective)=%u "
+           "match(affine)=%u match(projective-q)=%u "
+           "match(shifted-center)=%u\n",
+           r300_rs_tex_adj_probe_model_name(prediction[p].model),
+           predicted[p].judged,
+           r300_rs_tex_adj_probe_classification_name(
+              r300_rs_tex_adj_probe_classify(&predicted[p])),
+           predicted[p].match[R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE],
+           predicted[p].match[R300_RS_TEX_ADJ_PROBE_MODEL_AFFINE],
+           predicted[p].match[R300_RS_TEX_ADJ_PROBE_MODEL_PROJECTIVE_Q],
+           predicted[p].match[R300_RS_TEX_ADJ_PROBE_MODEL_SHIFTED_CENTER]);
+   }
+   emit("[predict] tolerance=%u separation=%u UNORM8 quanta per channel\n",
+        (unsigned)R300_RS_TEX_ADJ_PROBE_TOLERANCE,
+        (unsigned)R300_RS_TEX_ADJ_PROBE_SEPARATION);
+   emit("[predict] falsifier: a recorded stream whose digest differs from "
+        "the emitter's, or whose plan registers do not hold their words "
+        "ahead of their own pass's draw, refuses before any ioctl; a "
+        "control target the census does not classify perspective refuses "
+        "the premise, and the run is a finding about the control cell; a "
+        "candidate census judging zero pixels carries no claim about the "
+        "bit\n");
+
+   /* The known-good and known-bad calibration of the census against the
+    * predictions themselves: the perspective image classifies
+    * perspective on every judged pixel and the affine image classifies
+    * affine, so a predict/census pairing defect fails here rather than
+    * on the one attended submission. */
+   {
+      const enum r300_rs_tex_adj_probe_classification expect[2] = {
+         R300_RS_TEX_ADJ_PROBE_CLASS_PERSPECTIVE,
+         R300_RS_TEX_ADJ_PROBE_CLASS_AFFINE,
+      };
+      bool calibrated = true;
+      for (unsigned p = 0; p < 2; p++)
+         calibrated &=
+            predicted[p].judged != 0 &&
+            r300_rs_tex_adj_probe_classify(&predicted[p]) == expect[p] &&
+            predicted[p].match[prediction[p].model] == predicted[p].judged;
+      emit("[calibration] census over the predictions: %s\n",
+           calibrated ? "perspective and affine images classify as "
+                        "themselves on every judged pixel"
+                      : "a prediction does not classify as itself");
+      if (!calibrated) {
+         fprintf(stderr, "the census is not calibrated against its own "
+                 "predictions; refusing ahead of the ioctl\n");
+         return 1;
+      }
+   }
+
+   const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
+   if (declared != NULL && declared[0] != '\0' &&
+       !same_directory(declared, evidence_dir)) {
+      fprintf(stderr,
+              "R3V_NATIVE_MANIFEST_DIR names %s and the argument names %s\n",
+              declared, evidence_dir);
+      return 2;
+   }
+   setenv("R3V_NATIVE_MANIFEST_DIR", evidence_dir, 1);
+
+   struct r3v_native_watchdog_guard guard = {0};
+   if (!record_only) {
+      stage("watchdog");
+      if (r3v_native_watchdog_guard_open(&guard, waiver_path, evidence_dir,
+                                         digest) != 0)
+         return 2;
+   }
+
+   stage("instance");
+   PFN_vkVoidFunction (*gipa)(VkInstance, const char *) =
+      vk_icdGetInstanceProcAddr;
+   PFN_vkCreateInstance create_instance =
+      (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   VkInstance instance = VK_NULL_HANDLE;
+   VkResult result = create_instance(
+      &(VkInstanceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+      },
+      NULL, &instance);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkCreateInstance: %d\n", result);
+      return 1;
+   }
+
+#define LOAD_INSTANCE(name) PFN_##name name = (PFN_##name)gipa(instance, #name)
+   LOAD_INSTANCE(vkEnumeratePhysicalDevices);
+   LOAD_INSTANCE(vkGetPhysicalDeviceProperties);
+   LOAD_INSTANCE(vkCreateDevice);
+   LOAD_INSTANCE(vkGetDeviceProcAddr);
+   LOAD_INSTANCE(vkDestroyInstance);
+
+   stage("physical device");
+   uint32_t pdev_count = 1;
+   VkPhysicalDevice pdev = VK_NULL_HANDLE;
+   result = vkEnumeratePhysicalDevices(instance, &pdev_count, &pdev);
+   if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || pdev_count != 1 ||
+       pdev == VK_NULL_HANDLE) {
+      fprintf(stderr, "no native physical device: %d count %u\n", result,
+              pdev_count);
+      return 1;
+   }
+   VkPhysicalDeviceProperties props;
+   vkGetPhysicalDeviceProperties(pdev, &props);
+   emit("[identity] vendor 0x%04x device 0x%04x name %s\n", props.vendorID,
+        props.deviceID, props.deviceName);
+   if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
+       props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
+      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      return 1;
+   }
+
+   stage("device");
+   const float priority = 1.0f;
+   VkDevice device = VK_NULL_HANDLE;
+   result = vkCreateDevice(
+      pdev,
+      &(VkDeviceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+         .queueCreateInfoCount = 1,
+         .pQueueCreateInfos =
+            &(VkDeviceQueueCreateInfo){
+               .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+               .queueFamilyIndex = 0,
+               .queueCount = 1,
+               .pQueuePriorities = &priority,
+            },
+      },
+      NULL, &device);
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "vkCreateDevice: %d\n", result);
+      return 1;
+   }
+
+   r3v_native_watchdog_guard_install(&guard, device);
+
+   PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
+#define LOAD_DEVICE(name) PFN_##name name = (PFN_##name)gdpa(device, #name)
+   LOAD_DEVICE(vkAllocateMemory);
+   LOAD_DEVICE(vkFreeMemory);
+   LOAD_DEVICE(vkMapMemory);
+   LOAD_DEVICE(vkUnmapMemory);
+   LOAD_DEVICE(vkCreateBuffer);
+   LOAD_DEVICE(vkDestroyBuffer);
+   LOAD_DEVICE(vkBindBufferMemory);
+   LOAD_DEVICE(vkCreateImage);
+   LOAD_DEVICE(vkDestroyImage);
+   LOAD_DEVICE(vkGetImageMemoryRequirements);
+   LOAD_DEVICE(vkBindImageMemory);
+   LOAD_DEVICE(vkCreateImageView);
+   LOAD_DEVICE(vkDestroyImageView);
+   LOAD_DEVICE(vkCreateRenderPass);
+   LOAD_DEVICE(vkDestroyRenderPass);
+   LOAD_DEVICE(vkCreateFramebuffer);
+   LOAD_DEVICE(vkDestroyFramebuffer);
+   LOAD_DEVICE(vkCreateShaderModule);
+   LOAD_DEVICE(vkDestroyShaderModule);
+   LOAD_DEVICE(vkCreatePipelineLayout);
+   LOAD_DEVICE(vkDestroyPipelineLayout);
+   LOAD_DEVICE(vkCreateGraphicsPipelines);
+   LOAD_DEVICE(vkDestroyPipeline);
+   LOAD_DEVICE(vkCreateCommandPool);
+   LOAD_DEVICE(vkDestroyCommandPool);
+   LOAD_DEVICE(vkAllocateCommandBuffers);
+   LOAD_DEVICE(vkBeginCommandBuffer);
+   LOAD_DEVICE(vkEndCommandBuffer);
+   LOAD_DEVICE(vkCmdBeginRenderPass);
+   LOAD_DEVICE(vkCmdEndRenderPass);
+   LOAD_DEVICE(vkCmdBindPipeline);
+   LOAD_DEVICE(vkCmdBindVertexBuffers);
+   LOAD_DEVICE(vkCmdDraw);
+   LOAD_DEVICE(vkGetDeviceQueue);
+   LOAD_DEVICE(vkQueueSubmit);
+   LOAD_DEVICE(vkDestroyDevice);
+
+#define CHECK(call)                                        \
+   do {                                                    \
+      VkResult check_result = (call);                      \
+      if (check_result != VK_SUCCESS) {                    \
+         fprintf(stderr, "%s: %d\n", #call, check_result); \
+         return 1;                                         \
+      }                                                    \
+   } while (0)
+
+   /* Two color targets, each the 64x64 B8G8R8A8 surface whose memory
+    * requirement is the cell footprint with the canary row; both carry
+    * the sentinel before the submission, so every dword either target
+    * holds afterward names its writer. */
+   stage("targets");
+   const VkImageCreateInfo image_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = R3V_NATIVE_TARGET_FORMAT,
+      .extent = { R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   struct pass_target target[2] = { { VK_NULL_HANDLE } };
+   for (unsigned i = 0; i < 2; i++) {
+      CHECK(vkCreateImage(device, &image_info, NULL, &target[i].image));
+      VkMemoryRequirements reqs;
+      vkGetImageMemoryRequirements(device, target[i].image, &reqs);
+      if (reqs.size != R3V_NATIVE_TARGET_MEMORY_BYTES ||
+          reqs.size < color_bytes) {
+         fprintf(stderr, "target %u requirement %llu is not the cell "
+                 "footprint %u\n",
+                 i, (unsigned long long)reqs.size, color_bytes);
+         return 1;
+      }
+      CHECK(vkAllocateMemory(
+         device,
+         &(VkMemoryAllocateInfo){
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = reqs.size,
+            .memoryTypeIndex = 0,
+         },
+         NULL, &target[i].memory));
+      CHECK(vkBindImageMemory(device, target[i].image, target[i].memory, 0));
+      void *map = NULL;
+      CHECK(vkMapMemory(device, target[i].memory, 0, VK_WHOLE_SIZE, 0, &map));
+      uint32_t *pixels = map;
+      for (size_t p = 0; p < reqs.size / 4; p++)
+         pixels[p] = R300_TRIANGLE_COLOR_SENTINEL;
+      vkUnmapMemory(device, target[i].memory);
+   }
+
+   /* The application's vertex records: the probe carrier in clip space,
+    * three eight-dword records the two-attribute vertex module reads as
+    * a pass-through position at location 0 and the TEX0 payload at
+    * location 1.  Both passes draw the same three records, so the
+    * carrier the driver projects is the same for each and the passes
+    * differ in the one control word alone. */
+   stage("vertex stream");
+   for (unsigned v = 0; v < 3; v++) {
+      const float *pos = &clip_stream[v * 8];
+      const float w = 1.0f / r300_rs_tex_adj_probe_reciprocal_w[v];
+      if (!(pos[3] == w) || !(pos[0] >= -pos[3] && pos[0] <= pos[3]) ||
+          !(pos[1] >= -pos[3] && pos[1] <= pos[3]) ||
+          !(pos[2] >= 0.0f && pos[2] <= pos[3])) {
+         fprintf(stderr,
+                 "carrier vertex %u (%g, %g, %g, %g) leaves the clip "
+                 "volume\n",
+                 v, pos[0], pos[1], pos[2], pos[3]);
+         return 1;
+      }
+   }
+   VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
+   VkBuffer vertex_buffer = VK_NULL_HANDLE;
+   CHECK(vkAllocateMemory(device,
+                          &(VkMemoryAllocateInfo){
+                             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                             .allocationSize = 4096,
+                             .memoryTypeIndex = 0,
+                          },
+                          NULL, &vertex_memory));
+   CHECK(vkCreateBuffer(device,
+                        &(VkBufferCreateInfo){
+                           .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                           .size = sizeof(clip_stream),
+                           .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                           .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                        },
+                        NULL, &vertex_buffer));
+   CHECK(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0));
+   {
+      void *map = NULL;
+      CHECK(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map));
+      memcpy(map, clip_stream, sizeof(clip_stream));
+      vkUnmapMemory(device, vertex_memory);
+   }
+
+   stage("pipelines");
+   VkRenderPass pass = VK_NULL_HANDLE;
+   VkPipelineLayout layout = VK_NULL_HANDLE;
+   CHECK(vkCreateRenderPass(
+      device,
+      &(VkRenderPassCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+         .attachmentCount = 1,
+         .pAttachments =
+            &(VkAttachmentDescription){
+               .format = R3V_NATIVE_TARGET_FORMAT,
+               .samples = VK_SAMPLE_COUNT_1_BIT,
+               .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+               .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+               .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+               .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+               .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+            },
+         .subpassCount = 1,
+         .pSubpasses =
+            &(VkSubpassDescription){
+               .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+               .colorAttachmentCount = 1,
+               .pColorAttachments =
+                  &(VkAttachmentReference){
+                     .attachment = 0,
+                     .layout = VK_IMAGE_LAYOUT_GENERAL,
+                  },
+            },
+      },
+      NULL, &pass));
+   for (unsigned i = 0; i < 2; i++) {
+      CHECK(vkCreateImageView(
+         device,
+         &(VkImageViewCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = target[i].image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = R3V_NATIVE_TARGET_FORMAT,
+            .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .levelCount = 1,
+                                  .layerCount = 1 },
+         },
+         NULL, &target[i].view));
+      CHECK(vkCreateFramebuffer(
+         device,
+         &(VkFramebufferCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = pass,
+            .attachmentCount = 1,
+            .pAttachments = &target[i].view,
+            .width = R3V_NATIVE_TARGET_WIDTH,
+            .height = R3V_NATIVE_TARGET_HEIGHT,
+            .layers = 1,
+         },
+         NULL, &target[i].framebuffer));
+   }
+   CHECK(vkCreatePipelineLayout(
+      device,
+      &(VkPipelineLayoutCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+      },
+      NULL, &layout));
+
+   /* One vertex module over both pipelines: position at location 0
+    * passes through and the location-1 attribute becomes the location-0
+    * varying, so the record shape the carrier carries is the probe's
+    * eight dwords.  The fragment modules differ in the interpolation
+    * qualifier alone -- the smooth interface takes no candidate and the
+    * NoPerspective interface takes the gated one -- which is what makes
+    * the two recorded passes differ in one control word. */
+   VkShaderModule vs = VK_NULL_HANDLE;
+   CHECK(vkCreateShaderModule(
+      device,
+      &(VkShaderModuleCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+         .codeSize = sizeof(r3v_reference_vertex_two_attributes_spirv),
+         .pCode = r3v_reference_vertex_two_attributes_spirv,
+      },
+      NULL, &vs));
+   const uint32_t *fragment_words[2] = {
+      r3v_reference_fragment_varying_spirv,
+      r3v_reference_fragment_noperspective_spirv,
+   };
+   const size_t fragment_bytes[2] = {
+      sizeof(r3v_reference_fragment_varying_spirv),
+      sizeof(r3v_reference_fragment_noperspective_spirv),
+   };
+   VkPipeline pipeline[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+   for (unsigned i = 0; i < 2; i++) {
+      VkShaderModule fs = VK_NULL_HANDLE;
+      CHECK(vkCreateShaderModule(
+         device,
+         &(VkShaderModuleCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = fragment_bytes[i],
+            .pCode = fragment_words[i],
+         },
+         NULL, &fs));
+      const VkGraphicsPipelineCreateInfo pipeline_info = {
+         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+         .stageCount = 2,
+         .pStages =
+            (VkPipelineShaderStageCreateInfo[]){
+               { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                 .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                 .module = vs,
+                 .pName = "main" },
+               { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                 .module = fs,
+                 .pName = "main" },
+            },
+         .pVertexInputState =
+            &(VkPipelineVertexInputStateCreateInfo){
+               .sType =
+                  VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+               .vertexBindingDescriptionCount = 1,
+               .pVertexBindingDescriptions =
+                  &(VkVertexInputBindingDescription){
+                     .binding = 0,
+                     .stride = 32,
+                     .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+                  },
+               .vertexAttributeDescriptionCount = 2,
+               .pVertexAttributeDescriptions =
+                  (VkVertexInputAttributeDescription[]){
+                     { .location = 0,
+                       .binding = 0,
+                       .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                       .offset = 0 },
+                     { .location = 1,
+                       .binding = 0,
+                       .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                       .offset = 16 },
+                  },
+            },
+         .pInputAssemblyState =
+            &(VkPipelineInputAssemblyStateCreateInfo){
+               .sType =
+                  VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+               .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            },
+         .pViewportState =
+            &(VkPipelineViewportStateCreateInfo){
+               .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+               .viewportCount = 1,
+               .pViewports =
+                  &(VkViewport){
+                     .width = (float)R3V_NATIVE_TARGET_WIDTH,
+                     .height = (float)R3V_NATIVE_TARGET_HEIGHT,
+                     .maxDepth = 1.0f,
+                  },
+               .scissorCount = 1,
+               .pScissors =
+                  &(VkRect2D){
+                     .extent = { R3V_NATIVE_TARGET_WIDTH,
+                                 R3V_NATIVE_TARGET_HEIGHT },
+                  },
+            },
+         .pRasterizationState =
+            &(VkPipelineRasterizationStateCreateInfo){
+               .sType =
+                  VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+               .polygonMode = VK_POLYGON_MODE_FILL,
+               .cullMode = VK_CULL_MODE_NONE,
+               .lineWidth = 1.0f,
+            },
+         .pMultisampleState =
+            &(VkPipelineMultisampleStateCreateInfo){
+               .sType =
+                  VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+            },
+         .pColorBlendState =
+            &(VkPipelineColorBlendStateCreateInfo){
+               .sType =
+                  VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+               .attachmentCount = 1,
+               .pAttachments =
+                  &(VkPipelineColorBlendAttachmentState){
+                     .colorWriteMask =
+                        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+                  },
+            },
+         .layout = layout,
+         .renderPass = pass,
+      };
+      CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                      &pipeline_info, NULL, &pipeline[i]));
+      vkDestroyShaderModule(device, fs, NULL);
+   }
+   vkDestroyShaderModule(device, vs, NULL);
+
+   /* The route the two interfaces took, read off the pipelines and
+    * re-derived through the selector so the reason is printed beside
+    * the recorded field.  The control takes no candidate and the
+    * candidate takes the gated one; any other pair leaves the run
+    * without a control premise, so it refuses here. */
+   {
+      static const char *const candidate_name[3] = { "none", "tex-adj",
+                                                     "w-select-one" };
+      enum r3v_rs_probe_candidate recorded[2];
+      const char *reason[2] = { NULL, NULL };
+      for (unsigned i = 0; i < 2; i++) {
+         VK_FROM_HANDLE(r3v_native_pipeline, native_pipeline, pipeline[i]);
+         recorded[i] = native_pipeline->rs_probe_candidate;
+         const struct r3v_rs_probe_query query = {
+            .tex_adj_gate = gate_open("R3V_NATIVE_RS_TEX_ADJ_PROBE"),
+            .w_select_gate = gate_open("R3V_NATIVE_RS_W_SELECT_PROBE"),
+            .cpu_delivery = true,
+            .triangle_list = true,
+            .link = &native_pipeline->shader_interface,
+            .rs_destination_available = native_pipeline->varying,
+            .fragment_consumes_destination = native_pipeline->varying,
+         };
+         const enum r3v_rs_probe_candidate derived =
+            r3v_rs_probe_candidate_select(&query, &reason[i]);
+         if (derived != recorded[i]) {
+            fprintf(stderr, "pipeline %u records candidate %u while the "
+                    "selector derives %u\n",
+                    i, (unsigned)recorded[i], (unsigned)derived);
+            return 1;
+         }
+      }
+      emit("[route] control=%s (%s) candidate=%s (%s)\n",
+           candidate_name[recorded[0]],
+           reason[0] != NULL ? reason[0] : "candidate selected",
+           candidate_name[recorded[1]],
+           reason[1] != NULL ? reason[1] : "candidate selected");
+      {
+         VK_FROM_HANDLE(r3v_native_pipeline, native_control, pipeline[0]);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_candidate, pipeline[1]);
+         emit("[interface] control noperspective_mask=0x%x candidate "
+              "noperspective_mask=0x%x varying_mask=0x%x/0x%x\n",
+              native_control->shader_interface.noperspective_mask,
+              native_candidate->shader_interface.noperspective_mask,
+              native_control->shader_interface.varying_mask,
+              native_candidate->shader_interface.varying_mask);
+      }
+      if (recorded[0] != R3V_RS_PROBE_NONE ||
+          recorded[1] != route_candidate) {
+         fprintf(stderr, "the smooth interface must take no candidate and "
+                 "the NoPerspective interface the armed one\n");
+         if (!record_only)
+            r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+         return 2;
+      }
+   }
+
+   /* Two render passes with a draw each over the same three records:
+    * pass 0 through the control pipeline into its own target and pass 1
+    * through the candidate pipeline into its own. */
+   stage("record");
+   VkCommandPool pool = VK_NULL_HANDLE;
+   CHECK(vkCreateCommandPool(
+      device,
+      &(VkCommandPoolCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+         .queueFamilyIndex = 0,
+      },
+      NULL, &pool));
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   CHECK(vkAllocateCommandBuffers(
+      device,
+      &(VkCommandBufferAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+         .commandPool = pool,
+         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+         .commandBufferCount = 1,
+      },
+      &cmd));
+   CHECK(vkBeginCommandBuffer(
+      cmd, &(VkCommandBufferBeginInfo){
+              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           }));
+   const float sentinel = (float)0xa5 / 255.0f;
+   const VkClearValue clear = { .color = { .float32 = { sentinel, sentinel,
+                                                        sentinel,
+                                                        sentinel } } };
+   for (unsigned i = 0; i < 2; i++) {
+      vkCmdBeginRenderPass(
+         cmd,
+         &(VkRenderPassBeginInfo){
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = pass,
+            .framebuffer = target[i].framebuffer,
+            .renderArea = { .extent = { R3V_NATIVE_TARGET_WIDTH,
+                                        R3V_NATIVE_TARGET_HEIGHT } },
+            .clearValueCount = 1,
+            .pClearValues = &clear,
+         },
+         VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline[i]);
+      vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &(VkDeviceSize){ 0 });
+      vkCmdDraw(cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(cmd);
+   }
+   CHECK(vkEndCommandBuffer(cmd));
+
+   stage("recorded stream");
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native, cmd);
+   char recorded_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(native->ib, native->ib_size_dwords,
+                               recorded_digest);
+   emit("[record] kind=%d references=%u deferred_draws=%u ib_dwords=%u "
+        "recorded blake3 %.8s emitted blake3 %.8s\n",
+        (int)native->cell_kind, native->reference_count,
+        native->deferred_draw_count, native->ib_size_dwords, recorded_digest,
+        digest);
+   const bool stream_agrees =
+      native->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS &&
+      native->reference_count == 4 && native->ib_size_dwords == ib_dwords &&
+      strcmp(recorded_digest, digest) == 0;
+   if (native->deferred_draw_count != 2 ||
+       native->deferred_draws[0].rs_probe_candidate != R3V_RS_PROBE_NONE ||
+       native->deferred_draws[1].rs_probe_candidate != route_candidate) {
+      fprintf(stderr, "the two deferred draws do not carry the control "
+              "then the candidate\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 2;
+   }
+   if (!stream_agrees) {
+      uint32_t differing = 0;
+      const uint32_t common = ib_dwords < native->ib_size_dwords
+                                 ? ib_dwords
+                                 : native->ib_size_dwords;
+      for (uint32_t i = 0; i < common; i++) {
+         if (armed.ib[i] != native->ib[i]) {
+            if (differing < 8)
+               fprintf(stderr, "dword %u: recorded 0x%08x emitted 0x%08x\n",
+                       i, native->ib[i], armed.ib[i]);
+            differing++;
+         }
+      }
+      fprintf(stderr, "%u differing dwords over %u common\n", differing,
+              common);
+      fprintf(stderr, "the public recording is not the authorized stream; "
+              "refusing ahead of the ioctl\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 2;
+   }
+
+   /* Each plan's registers ahead of its own pass's draw, read from the
+    * recorded bytes: the control words stand ahead of the first draw,
+    * the candidate words ahead of the second, and neither plan holds
+    * across both draws.  The whole-stream candidate check therefore
+    * names the first draw, -1. */
+   uint32_t draw_index[2];
+   uint32_t first_draw_end = 0;
+   if (!draw_indices(native->ib, native->ib_size_dwords, draw_index,
+                     &first_draw_end)) {
+      fprintf(stderr, "the recorded stream does not carry two draw "
+              "packets\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 2;
+   }
+   const int control_draws = r300_rs_tex_adj_probe_plan_stream_check(
+      &control_plan, gb_select_base, native->ib, draw_index[1]);
+   const int candidate_whole = r300_rs_tex_adj_probe_plan_stream_check(
+      &candidate_plan, gb_select_base, native->ib, native->ib_size_dwords);
+   const int candidate_draws = r300_rs_tex_adj_probe_plan_stream_check(
+      &candidate_plan, gb_select_base, native->ib + first_draw_end,
+      native->ib_size_dwords - first_draw_end);
+   emit("[state] gb_select_base=0x%08x control-over-first-pass=%d "
+        "candidate-over-stream=%d candidate-over-second-pass=%d\n",
+        gb_select_base, control_draws, candidate_whole, candidate_draws);
+   if (control_draws != 1 || candidate_whole != -1 || candidate_draws != 1) {
+      fprintf(stderr, "the recorded stream does not establish the control "
+              "plan ahead of the first draw and the candidate plan ahead "
+              "of the second; refusing ahead of the ioctl\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 2;
+   }
+
+   if (record_only) {
+      emit("record: ACCEPTED\n");
+      for (unsigned p = 0; p < 3; p++)
+         free(expected[p]);
+      r300_tcl_bypass_triangle_release(&armed);
+      r300_tcl_bypass_triangle_release(&armed_control);
+      vkDestroyCommandPool(device, pool, NULL);
+      for (unsigned i = 0; i < 2; i++) {
+         vkDestroyPipeline(device, pipeline[i], NULL);
+         vkDestroyFramebuffer(device, target[i].framebuffer, NULL);
+         vkDestroyImageView(device, target[i].view, NULL);
+         vkDestroyImage(device, target[i].image, NULL);
+         vkFreeMemory(device, target[i].memory, NULL);
+      }
+      vkDestroyPipelineLayout(device, layout, NULL);
+      vkDestroyRenderPass(device, pass, NULL);
+      vkDestroyBuffer(device, vertex_buffer, NULL);
+      vkFreeMemory(device, vertex_memory, NULL);
+      vkDestroyDevice(device, NULL);
+      vkDestroyInstance(instance, NULL);
+      return 0;
+   }
+
+   /* The submitted stream and the reference list the winsys turns into
+    * the relocation entries, retained ahead of the ioctl. */
+   if (r3v_native_evidence_write_file(evidence_dir, "ib.bin", native->ib,
+                                      native->ib_size_dwords * 4u) != 0 ||
+       r3v_native_evidence_write_file(
+          evidence_dir, "references.bin", native->references,
+          native->reference_count *
+             (uint32_t)sizeof(native->references[0])) != 0) {
+      fprintf(stderr, "stream retention failed\n");
+      return 1;
+   }
+
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(device, 0, 0, &queue);
+
+   /* The hazard: the two load-op clears realize on the host, the two
+    * carriers fill, and one live DRM_RADEON_CS reaches the command
+    * processor here, with the bounded completion wait after it. */
+   stage("submit");
+   result = vkQueueSubmit(queue, 1,
+                          &(VkSubmitInfo){
+                             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                             .commandBufferCount = 1,
+                             .pCommandBuffers = &cmd,
+                          },
+                          VK_NULL_HANDLE);
+   emit("[submit] vkQueueSubmit returned %d\n", result);
+
+   if (r3v_native_watchdog_guard_close(&guard, result) != 0)
+      return 1;
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "submission refused or failed: %d\n", result);
+      return 1;
+   }
+
+   stage("readback");
+   void *control_map = NULL;
+   void *candidate_map = NULL;
+   CHECK(vkMapMemory(device, target[0].memory, 0, VK_WHOLE_SIZE, 0,
+                     &control_map));
+   CHECK(vkMapMemory(device, target[1].memory, 0, VK_WHOLE_SIZE, 0,
+                     &candidate_map));
+   if (r3v_native_evidence_write_file(evidence_dir, "control_target.bin",
+                                      control_map, color_bytes) != 0 ||
+       r3v_native_evidence_write_file(evidence_dir, "candidate_target.bin",
+                                      candidate_map, color_bytes) != 0) {
+      fprintf(stderr, "target retention failed\n");
+      return 1;
+   }
+
+   /* The carrier witness: each pass's carrier still holds the probe's
+    * TEX0 payload and three reciprocal-W lanes proportional to the
+    * probe's, so the models the census evaluates read the values the
+    * device fetched.  The carrier is host memory the device only
+    * reads, so the bytes are the host's own. */
+   bool carrier_witness = true;
+   {
+      VK_FROM_HANDLE(r3v_native_device, native_device, device);
+      static const char *const carrier_file[2] = { "control_carrier.bin",
+                                                   "candidate_carrier.bin" };
+      for (unsigned p = 0; p < 2; p++) {
+         struct r3v_native_memory *carrier = native->owned_carriers[p];
+         void *carrier_map = NULL;
+         if (carrier == NULL ||
+             radeon_drm_vk_bo_map(&native_device->drm, &carrier->bo,
+                                  &carrier_map) != 0) {
+            emit("[witness] pass %u carrier unreadable\n", p);
+            carrier_witness = false;
+            continue;
+         }
+         const float *carrier_records = carrier_map;
+         if (r3v_native_evidence_write_file(
+                evidence_dir, carrier_file[p], carrier_map,
+                R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS * 4u) != 0) {
+            fprintf(stderr, "carrier retention failed\n");
+            return 1;
+         }
+         bool payload_exact = true;
+         for (unsigned v = 0; v < 3; v++)
+            payload_exact &= memcmp(&carrier_records[v * 8 + 4],
+                                    &r300_rs_tex_adj_probe_tex0[v * 4],
+                                    4 * sizeof(float)) == 0;
+         /* The projection scales every reciprocal W by one factor, so
+          * the three ratios against the probe's lanes agree and the
+          * lanes stay pairwise distinct. */
+         const float ratio = carrier_records[3] /
+                             r300_rs_tex_adj_probe_reciprocal_w[0];
+         bool proportional = isfinite(ratio) && ratio != 0.0f;
+         bool distinct = true;
+         for (unsigned v = 0; v < 3; v++) {
+            const float expected_w =
+               ratio * r300_rs_tex_adj_probe_reciprocal_w[v];
+            proportional &= fabsf(carrier_records[v * 8 + 3] - expected_w) <=
+                            1e-5f * fabsf(expected_w);
+            for (unsigned b = v + 1; b < 3; b++)
+               distinct &= carrier_records[v * 8 + 3] !=
+                           carrier_records[b * 8 + 3];
+         }
+         emit("[witness] pass %u payload_exact=%d reciprocal_w=(%g, %g, %g) "
+              "ratio=%g proportional=%d distinct=%d\n",
+              p, (int)payload_exact, carrier_records[3],
+              carrier_records[11], carrier_records[19], ratio,
+              (int)proportional, (int)distinct);
+         carrier_witness &= payload_exact && proportional && distinct;
+         radeon_drm_vk_bo_unmap(&native_device->drm, &carrier->bo,
+                                carrier_map);
+      }
+   }
+
+   /* The control census carries the premise and the candidate census
+    * the result: the control reads its own image against the models
+    * alone, and the candidate reads its image with the control
+    * supplied, so an unchanged target is separable from a perspective
+    * one. */
+   struct r300_rs_tex_adj_probe_census control_census, candidate_census;
+   if (r300_rs_tex_adj_probe_census(&mp.pass[0], records, control_map, NULL,
+                                    color_bytes, &control_census) != 0 ||
+       r300_rs_tex_adj_probe_census(&mp.pass[1], records, candidate_map,
+                                    control_map, color_bytes,
+                                    &candidate_census) != 0) {
+      fprintf(stderr, "the census refused a target\n");
+      return 1;
+   }
+   report_census("control", &control_census);
+   report_census("candidate", &candidate_census);
+
+   const enum r300_rs_tex_adj_probe_classification control_class =
+      r300_rs_tex_adj_probe_classify(&control_census);
+   const enum r300_rs_tex_adj_probe_classification candidate_class =
+      r300_rs_tex_adj_probe_classify(&candidate_census);
+   const bool premise =
+      control_class == R300_RS_TEX_ADJ_PROBE_CLASS_PERSPECTIVE &&
+      control_census.judged != 0;
+   emit("[oracle] control premise %s: the smooth interface's target "
+        "classifies %s over %u judged pixels\n",
+        premise ? "holds" : "fails",
+        r300_rs_tex_adj_probe_classification_name(control_class),
+        control_census.judged);
+   emit("[oracle] candidate judged=%u unchanged=%u carrier_witness=%d\n",
+        candidate_census.judged, candidate_census.unchanged,
+        (int)carrier_witness);
+   emit("[classification] %s=%s\n", candidate_word_name,
+        r300_rs_tex_adj_probe_classification_name(candidate_class));
+
+   const bool judged = candidate_census.judged != 0;
+   for (unsigned p = 0; p < 3; p++)
+      free(expected[p]);
+   r300_tcl_bypass_triangle_release(&armed);
+   r300_tcl_bypass_triangle_release(&armed_control);
+
+   stage("teardown");
+   vkUnmapMemory(device, target[0].memory);
+   vkUnmapMemory(device, target[1].memory);
+   vkDestroyCommandPool(device, pool, NULL);
+   for (unsigned i = 0; i < 2; i++) {
+      vkDestroyPipeline(device, pipeline[i], NULL);
+      vkDestroyFramebuffer(device, target[i].framebuffer, NULL);
+      vkDestroyImageView(device, target[i].view, NULL);
+      vkDestroyImage(device, target[i].image, NULL);
+      vkFreeMemory(device, target[i].memory, NULL);
+   }
+   vkDestroyPipelineLayout(device, layout, NULL);
+   vkDestroyRenderPass(device, pass, NULL);
+   vkDestroyBuffer(device, vertex_buffer, NULL);
+   vkFreeMemory(device, vertex_memory, NULL);
+   vkDestroyDevice(device, NULL);
+   vkDestroyInstance(instance, NULL);
+
+   emit("[verdict] %s\n",
+        !premise ? "the control target does not classify perspective; the "
+                   "premise fails and the run is a finding about the "
+                   "control cell, not about the candidate word"
+        : !judged ? "the candidate census judged no pixel; the run carries "
+                    "no claim about the candidate word"
+        : !carrier_witness
+           ? "the carriers do not hold the probe payload at proportional "
+             "reciprocal W; the models were evaluated against records the "
+             "device did not fetch"
+           : "the control cell interpolates perspective-correct and the "
+             "candidate word's target carries the classification printed "
+             "above; the statement is what that one bit does on RS482");
+   if (run_log != NULL)
+      fclose(run_log);
+   /* The classification is the result, so the exit status names the
+    * premise and the judged footprint alone: the control cell
+    * interpolates perspective-correct and the candidate census judged
+    * pixels.  A carrier the witness refuses prints above and rides the
+    * verdict line, where its caveat belongs. */
+   return (premise && judged) ? 0 : 1;
+}
