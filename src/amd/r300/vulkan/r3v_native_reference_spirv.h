@@ -991,16 +991,18 @@ static const uint32_t r3v_reference_vertex_flat_saturated_spirv[] = {
    0x000100fd, 0x00010038,
 };
 
-/* The Flat vertex module whose tint carries the doubled position in
- * red and green and a distinct alpha per vertex,
- * fma(position, (2, 2, 0, 0), 0) for red and green and the broadcast
- * dot(position, (0.5333333, 0, 0, 0.55)) placed in the alpha lane by a
- * second fma with (0, 0, 0, 1): the
- * reference triangle's vertices map to (0, 0, 0, 0.15), (1, 0, 0,
- * 0.95), and (0, 1, 0, 0.55), whose UNORM8 alphas 38.25, 242.25, and
- * 140.25 round and truncate to the same byte, so a provoking value
- * predicts one target dword whichever way the color path converts,
- * and the alpha lane discriminates ALPHA0_SHADING_FLAT from Gouraud.
+/* The Flat vertex module whose tint is a per-vertex function of the
+ * position, tint = (2x, 2y, 0, 0.5333333x + 0.55): red and green
+ * carry the doubled position through fma(position, (2, 2, 0, 0), 0),
+ * and the alpha lane carries the broadcast dot(position,
+ * (0.5333333, 0, 0, 0.55)) placed by a second fma with (0, 0, 0, 1).
+ * The reference triangle's vertices (-0.75, -0.75), (0.75, -0.75), and
+ * (0, 0.75) map to tints (-1.5, -1.5, 0, 0.15), (1.5, -1.5, 0, 0.95),
+ * and (0, 1.5, 0, 0.55), which the UNORM8 target saturates to black,
+ * red, and green with alphas 38.25, 242.25, and 140.25; each alpha
+ * rounds and truncates to the same byte, so a provoking value predicts
+ * one target dword whichever way the color path converts, and the
+ * alpha lane discriminates ALPHA0_SHADING_FLAT from Gouraud.
  */
 static const uint32_t r3v_reference_vertex_flat_rgba_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x0000002b,
