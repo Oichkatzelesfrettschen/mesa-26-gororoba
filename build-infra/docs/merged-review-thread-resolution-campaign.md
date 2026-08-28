@@ -50,7 +50,7 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 - `review-thread-classifications/merged-thread-frontier-after-WhUFS/` owns the
   sixth batch's 50-row assessment, immutable pre-resolution frontier, ordered
   recovery journal, generated action frontier, and partial resolution ledger.
-  Fifteen exact fixed or superseded rows are closed and re-verified.  Its 33
+  Nineteen exact fixed or superseded rows are closed and re-verified.  Its 29
   actionable rows require merged repairs, while two hardware-evidence rows
   retain their explicit RS482 observation gates.
 - `merged-review-thread-action-frontier.tsv` and

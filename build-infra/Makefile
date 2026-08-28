@@ -197,6 +197,13 @@ override REVIEW_THREAD_TVPLC_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/m
 override REVIEW_THREAD_TVPLC_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/assessments.tsv
 override REVIEW_THREAD_TVPLC_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/pre-resolution-frontier.tsv
 override REVIEW_THREAD_TVPLC_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/resolution-observation.json
+override REVIEW_THREAD_WHUFS_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/action-frontier.tsv
+override REVIEW_THREAD_WHUFS_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/resolution-ledger.tsv
+override REVIEW_THREAD_WHUFS_EVIDENCE_REFRESH_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/evidence-refresh-ledger.tsv
+override REVIEW_THREAD_WHUFS_CAPTURE := $(CURDIR)/docs/review-thread-frontiers/merged-thread-frontier-after-WhUFS
+override REVIEW_THREAD_WHUFS_CLASSIFICATION := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/assessments.tsv
+override REVIEW_THREAD_WHUFS_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/pre-resolution-frontier.tsv
+override REVIEW_THREAD_WHUFS_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/resolution-observation.json
 override REVIEW_THREAD_ARCHIVE_FRONTIER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/action-frontier.tsv
 override REVIEW_THREAD_ARCHIVE_LEDGER := $(CURDIR)/docs/review-thread-frontiers/merged-pr1-pr90/resolution-ledger.tsv
 override REVIEW_THREAD_ARCHIVE_COMMIT := d6661faf431e4998f5e7d1879b1d6d6eb3c7bf7c
@@ -761,6 +768,27 @@ review-thread-frontier-check:
 		--frontier $(REVIEW_THREAD_TVPLC_FRONTIER) \
 		--ledger $(REVIEW_THREAD_TVPLC_LEDGER) \
 		--evidence-refresh-ledger $(REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER) \
+		--batch-size 50 \
+		--repo-root $(CURDIR)/.. \
+		--main-ref origin/main \
+		--candidate-ref HEAD \
+		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
+	python3 $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_WHUFS_CAPTURE)
+	python3 $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
+		--capture-frontier $(REVIEW_THREAD_WHUFS_CAPTURE)/frontier.tsv \
+		--assessments $(REVIEW_THREAD_WHUFS_CLASSIFICATION) \
+		--output $(REVIEW_THREAD_WHUFS_FRONTIER) \
+		--batch-id merged-review-thread-closure-batch-0006 \
+		--batch-size 50
+	python3 $(REVIEW_THREAD_RESOLUTION_TOOL) check \
+		--frontier $(REVIEW_THREAD_WHUFS_PRE_RESOLUTION_FRONTIER) \
+		--journal $(REVIEW_THREAD_WHUFS_RESOLUTION_JOURNAL) \
+		--ledger $(REVIEW_THREAD_WHUFS_LEDGER) \
+		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
+	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+		--frontier $(REVIEW_THREAD_WHUFS_FRONTIER) \
+		--ledger $(REVIEW_THREAD_WHUFS_LEDGER) \
+		--evidence-refresh-ledger $(REVIEW_THREAD_WHUFS_EVIDENCE_REFRESH_LEDGER) \
 		--batch-size 50 \
 		--repo-root $(CURDIR)/.. \
 		--main-ref origin/main \
