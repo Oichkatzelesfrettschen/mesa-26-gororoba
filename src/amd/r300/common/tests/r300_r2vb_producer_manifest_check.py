@@ -175,6 +175,15 @@ def mutate_register(path: Path, register: int, value: int) -> None:
     write_words(path, words)
 
 
+def append_register_override(path: Path, register: int, value: int) -> None:
+    """Append a single-register packet that overrides the effective state."""
+    if register % 4 != 0 or not 0 <= register <= 0x1FFF << 2:
+        raise CheckFailure(f"register 0x{register:04x} cannot be packet encoded")
+    words = read_words(path)
+    words.extend([(register >> 2), value])
+    write_words(path, words)
+
+
 def remove_sequential_register(path: Path, register: int) -> None:
     """Remove one dword from a sequential packet and keep its header valid."""
     words = read_words(path)
@@ -505,6 +514,21 @@ def main() -> int:
         clone(good, mutant)
         mutate_register(mutant / "ib.bin", R300_VAP_VTX_SIZE, 4)
         expect_reject(mutant, have_b3sum, "undersized-vtx")
+
+        mutant = root / "trailing-register-override"
+        clone(good, mutant)
+        append_register_override(mutant / "ib.bin", R300_VAP_VTX_SIZE, 4)
+        changed = dict(read_json(mutant / "manifest.json"))
+        changed["ib_dwords"] = len(read_words(mutant / "ib.bin"))
+        if have_b3sum:
+            changed["ib_blake3"] = subprocess.run(
+                ["b3sum", "--no-names", str(mutant / "ib.bin")],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "trailing-register-override")
 
         mutant = root / "stale-psc"
         clone(good, mutant)
