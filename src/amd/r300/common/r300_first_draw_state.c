@@ -267,19 +267,19 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
 }
 
 int
-r300_first_draw_contract_set_us_out_fmt_0(
-   struct r300_first_draw_contract *contract, uint32_t value)
+r300_first_draw_contract_set_entry(struct r300_first_draw_contract *contract,
+                                   uint32_t reg, uint32_t value)
 {
    if (contract == NULL)
       return -EINVAL;
 
-   /* One clause carries the format, so a second occurrence would leave
-    * the emitted target format decided by table order rather than by the
-    * cell; the scan runs to the end and refuses that shape.
+   /* One clause carries the register, so a second occurrence would leave
+    * the emitted value decided by table order rather than by the cell;
+    * the scan runs to the end and refuses that shape.
     */
    bool found = false;
    for (uint32_t i = 0; i < contract->count; i++) {
-      if (contract->entries[i].reg != R300_US_OUT_FMT_0)
+      if (contract->entries[i].reg != reg)
          continue;
       if (found)
          return -EINVAL;
@@ -287,6 +287,14 @@ r300_first_draw_contract_set_us_out_fmt_0(
       found = true;
    }
    return found ? 0 : -EINVAL;
+}
+
+int
+r300_first_draw_contract_set_us_out_fmt_0(
+   struct r300_first_draw_contract *contract, uint32_t value)
+{
+   return r300_first_draw_contract_set_entry(contract, R300_US_OUT_FMT_0,
+                                             value);
 }
 
 int
@@ -304,8 +312,8 @@ r300_first_draw_state_emit(const struct r300_first_draw_contract *contract,
    return (int)n;
 }
 
-static bool
-is_draw_packet(uint32_t header)
+bool
+r300_first_draw_is_draw_packet(uint32_t header)
 {
    if ((header >> 30) != 3)
       return false;
@@ -379,7 +387,7 @@ r300_first_draw_state_check(const struct r300_first_draw_contract *contract,
          }
          i += 1 + count;
       } else if (kind == 3) {
-         if (is_draw_packet(header))
+         if (r300_first_draw_is_draw_packet(header))
             draw_seen = true;
          i += 1 + count;
       } else {
