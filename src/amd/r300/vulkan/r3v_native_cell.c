@@ -1265,7 +1265,8 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        * other admitted job execute on the CPU interpreter route. */
       const bool r2vb_route =
          route_decision.route == R3V_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
-         draw->vertex_job_identity && !draw->indexed &&
+         draw->vertex_job_identity && draw->post_vs.flat_mask == 0 &&
+         !draw->indexed &&
          draw->cull_mode == VK_CULL_MODE_NONE &&
          !draw->sample_mask_zero &&
          draw->instance_count == 1 && draw->vertex_count == 3 &&
@@ -1314,6 +1315,16 @@ execute_one_deferred_draw(struct r3v_native_device *device,
          };
          gathered = r300_cpu_vertex_job_execute_draw(
             &draw->vertex_job, sources, &cpu_draw, staged, staged_dwords);
+         /* The records now hold every vertex's own outputs; the
+          * post-vertex lowering replicates each Flat varying from the
+          * provoking vertex across its triangle before the clipper
+          * reads the list, so a clipped edge interpolates equal
+          * values and the rasterizer's interpolation of equal
+          * endpoints is the flat value. */
+         if (gathered == 0) {
+            gathered = r3v_post_vs_lower_triangles(
+               &draw->post_vs, staged, source_triangle_count, record_dwords);
+         }
       }
       if (result == VK_SUCCESS && gathered != 0) {
          const char *operation = r2vb_route ? "R2VB delivery" : "CPU gather";

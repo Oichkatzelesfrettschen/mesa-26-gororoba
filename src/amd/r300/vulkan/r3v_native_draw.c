@@ -584,6 +584,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .sample_mask_zero = pipeline->sample_mask_zero,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
+      .post_vs = pipeline->post_vs,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_offset = cmd_buffer->pass_target->memory_offset +
                             cmd_buffer->pass_target_layer_offset,
