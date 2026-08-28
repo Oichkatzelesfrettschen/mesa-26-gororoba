@@ -1311,7 +1311,7 @@ struct r3v_native_pipeline {
    /* The route the linked interface's Flat or NoPerspective location
     * takes at record time; the execution-time clipping class refines
     * the Flat route per triangle and refuses the NoPerspective route's
-    * partial class. */
+    * partial class.  UNSUPPORTED refuses every draw at record time. */
    enum r3v_interpolation_route interpolation_route;
    /* The rasterizer probe candidate a NoPerspective interface takes
     * under an open probe gate; NONE records the control varying cell. */

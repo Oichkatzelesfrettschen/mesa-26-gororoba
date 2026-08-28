@@ -77,6 +77,16 @@ expect_replicate(const struct r3v_interpolation_query *q,
 }
 
 static void
+expect_unsupported(const struct r3v_interpolation_query *q,
+                   const char *fragment)
+{
+   const char *reason = NULL;
+   CHECK(r3v_interpolation_route_select(q, &reason) ==
+         R3V_INTERPOLATION_ROUTE_UNSUPPORTED);
+   CHECK(reason != NULL && strstr(reason, fragment) != NULL);
+}
+
+static void
 test_each_predicate_flipped_replicates(void)
 {
    struct r3v_shader_interface_link link;
@@ -217,7 +227,8 @@ select_probe(struct r3v_rs_probe_query query, const char **reason)
  * gate, the mutation that keeps the candidate state without the
  * interface -- yields the control. */
 /* The direct GB W_SELECT route opens on the NoPerspective conjunction
- * and falls back to replication on each flipped predicate. */
+ * and refuses, UNSUPPORTED, on each flipped predicate: no NoPerspective
+ * varying reaches replication's perspective interpolation. */
 static void
 test_noperspective_conjunction_opens_w_select(void)
 {
@@ -231,34 +242,45 @@ test_noperspective_conjunction_opens_w_select(void)
 
    struct r3v_interpolation_query f = direct_query(&link);
    f.cpu_delivery = false;
-   expect_replicate(&f, "not CPU");
+   expect_unsupported(&f, "not CPU");
    f = direct_query(&link);
    f.triangle_list = false;
-   expect_replicate(&f, "triangle list");
+   expect_unsupported(&f, "triangle list");
    f = direct_query(&link);
    f.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
-   expect_replicate(&f, "ACCEPT");
+   expect_unsupported(&f, "ACCEPT");
    f = direct_query(&link);
    f.rs_destination_available = false;
-   expect_replicate(&f, "RS destination");
+   expect_unsupported(&f, "RS destination");
    f = direct_query(&link);
    f.fragment_consumes_destination = false;
-   expect_replicate(&f, "consume");
+   expect_unsupported(&f, "consume");
 
    /* A Smooth location beside the NoPerspective one: W_SELECT is one
-    * word for the draw, so the interface replicates. */
+    * word for the draw, so the interface refuses. */
    struct r3v_shader_interface_link beside;
    noperspective_vec4_link(&beside);
    beside.varying_mask = 3u;
    beside.varyings[1] = beside.varyings[0];
    beside.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
    f = direct_query(&beside);
-   expect_replicate(&f, "map completely");
+   expect_unsupported(&f, "map completely");
    struct r3v_shader_interface_link narrow;
    noperspective_vec4_link(&narrow);
    narrow.varyings[0].width = 3;
    f = direct_query(&narrow);
-   expect_replicate(&f, "full float vec4");
+   expect_unsupported(&f, "full float vec4");
+   /* A Flat location beside the NoPerspective one refuses: the Flat
+    * route would replicate the NoPerspective location with
+    * perspective. */
+   struct r3v_shader_interface_link mixed;
+   noperspective_vec4_link(&mixed);
+   mixed.varying_mask = 3u;
+   mixed.flat_mask = 2u;
+   mixed.varyings[1] = mixed.varyings[0];
+   mixed.varyings[1].interpolation = R3V_SHADER_INTERFACE_FLAT;
+   f = direct_query(&mixed);
+   expect_unsupported(&f, "mixed");
    /* A Smooth-only interface stays on replication. */
    struct r3v_shader_interface_link smooth;
    noperspective_vec4_link(&smooth);

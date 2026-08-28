@@ -17,7 +17,9 @@
  * screen-space-parameterized combination the Vulkan specification
  * defines under Clipping Shader Outputs, which the clip-space linear
  * clipper produces only when the edge's endpoint W are equal, so the
- * partial class refuses at execution (r3v_native_cell.c). */
+ * partial class refuses at execution (r3v_native_cell.c).  Every other
+ * refused predicate is UNSUPPORTED: replication interpolates the
+ * varying with perspective, a wrong value rather than a fallback. */
 static enum r3v_interpolation_route
 r3v_interpolation_route_select_noperspective(
    const struct r3v_interpolation_query *query, const char **reason)
@@ -50,7 +52,7 @@ r3v_interpolation_route_select_noperspective(
    if (reason != NULL)
       *reason = why != NULL ? why
                             : "direct GB W_SELECT NoPerspective through TEX0";
-   return why != NULL ? R3V_INTERPOLATION_ROUTE_REPLICATE
+   return why != NULL ? R3V_INTERPOLATION_ROUTE_UNSUPPORTED
                       : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
 }
 
@@ -61,9 +63,15 @@ r3v_interpolation_route_select(const struct r3v_interpolation_query *query,
    const char *why = NULL;
    if (query == NULL || query->link == NULL) {
       why = "no linked interface";
-   } else if (query->link->flat_mask == 0 &&
-              query->link->noperspective_mask != 0) {
-      return r3v_interpolation_route_select_noperspective(query, reason);
+   } else if (query->link->noperspective_mask != 0) {
+      if (query->link->flat_mask == 0)
+         return r3v_interpolation_route_select_noperspective(query, reason);
+      /* One draw carries one W_SELECT word and one provoking
+       * selection; the Flat route replicates the NoPerspective
+       * location with perspective, so the mix refuses. */
+      if (reason != NULL)
+         *reason = "Flat and NoPerspective locations mixed in one interface";
+      return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;
    } else if (query->link->flat_mask == 0) {
       why = "no Flat location";
    } else if (!query->cpu_delivery) {

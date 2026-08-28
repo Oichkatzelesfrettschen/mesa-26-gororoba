@@ -297,6 +297,15 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
+   /* A NoPerspective interface outside the direct GB W_SELECT
+    * conjunction has no route: replication would interpolate the
+    * varying with perspective, so the draw refuses ahead of the
+    * carrier (r3v_interpolation_lowering.h). */
+   if (pipeline->interpolation_route ==
+       R3V_INTERPOLATION_ROUTE_UNSUPPORTED) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
    /* The draw fills the pass CmdBeginRenderPass opened, which is the
     * last record in the list.
     */

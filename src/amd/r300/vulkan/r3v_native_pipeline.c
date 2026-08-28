@@ -496,8 +496,8 @@ create_pipeline(struct r3v_native_device *device,
     * a Flat interface executes on the CPU route regardless (the R2VB
     * host model's admission in r3v_native_cell.c requires
     * flat_mask == 0), and the NoPerspective route's partial-clip
-    * refusal lives on the CPU route alone, so an open gate withholds
-    * that route. */
+    * refusal lives on the CPU route alone, so an open gate leaves a
+    * NoPerspective interface UNSUPPORTED and its draws refuse. */
    const bool cpu_delivery = device->r2vb_delivery_gate == NULL &&
                              device->r2vb_gpu_delivery_gate == NULL &&
                              device->r2vb_fetched_gate == NULL;
@@ -510,13 +510,15 @@ create_pipeline(struct r3v_native_device *device,
       .fragment_consumes_destination = varying && !sampled,
       .provoking_first_representable = true,
    };
-   /* The Flat replication pin scopes to Flat interfaces: a NoPerspective
-    * interface keeps its route under the pin. */
+   /* The Flat replication pin demotes the direct GA route alone: a
+    * NoPerspective interface keeps its route, and an UNSUPPORTED mix
+    * stays refused, under the pin. */
    pipeline->interpolation_route =
-      device->flat_replication_pin != NULL &&
-            admitted.shader_interface.flat_mask != 0
-         ? R3V_INTERPOLATION_ROUTE_REPLICATE
-         : r3v_interpolation_route_select(&interpolation, NULL);
+      r3v_interpolation_route_select(&interpolation, NULL);
+   if (device->flat_replication_pin != NULL &&
+       pipeline->interpolation_route ==
+          R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0)
+      pipeline->interpolation_route = R3V_INTERPOLATION_ROUTE_REPLICATE;
    /* The admission above refused any topology other than the triangle
     * list, so that predicate is the admission's. */
    const struct r3v_rs_probe_query probe = {

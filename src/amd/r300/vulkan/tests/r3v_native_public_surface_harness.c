@@ -4154,8 +4154,11 @@ main(void)
          vkDestroyPipeline(device, smooth_pipeline, NULL);
          vkDestroyPipeline(device, noperspective_pipeline, NULL);
 
-         /* An open R2VB delivery gate withholds the route: the
-          * partial-clip refusal lives on the CPU route alone. */
+         /* An open R2VB delivery gate leaves the NoPerspective
+          * interface without a route: the partial-clip refusal lives
+          * on the CPU route alone, and replication would interpolate
+          * the varying with perspective, so the pipeline is created
+          * UNSUPPORTED and its draw refuses at record time. */
          setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
          r3v_native_device_refresh_delivery_gates(native_device);
          VkPipeline r2vb_pipeline = VK_NULL_HANDLE;
@@ -4163,7 +4166,22 @@ main(void)
                               &r2vb_pipeline) == VK_SUCCESS);
          VK_FROM_HANDLE(r3v_native_pipeline, native_r2vb, r2vb_pipeline);
          assert(native_r2vb->interpolation_route ==
-                R3V_INTERPOLATION_ROUTE_REPLICATE);
+                R3V_INTERPOLATION_ROUTE_UNSUPPORTED);
+         VkCommandBuffer unsupported_cmd = fresh_cmd();
+         vkCmdBeginRenderPass(unsupported_cmd, &begin_pass,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(unsupported_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           r2vb_pipeline);
+         vkCmdBindVertexBuffers(unsupported_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(unsupported_cmd, 3, 1, 0, 0);
+         vkCmdEndRenderPass(unsupported_cmd);
+         assert(vkEndCommandBuffer(unsupported_cmd) ==
+                R3V_NATIVE_REFUSAL_RESULT);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_unsupported_cmd,
+                        unsupported_cmd);
+         assert(!native_unsupported_cmd->draw_recorded &&
+                native_unsupported_cmd->owned_carriers[0] == NULL);
          vkDestroyPipeline(device, r2vb_pipeline, NULL);
          unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
          r3v_native_device_refresh_delivery_gates(native_device);
