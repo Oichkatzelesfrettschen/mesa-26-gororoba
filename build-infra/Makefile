@@ -192,6 +192,7 @@ override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classi
 override REVIEW_THREAD_RESOLUTION_TOOL := $(CURDIR)/scripts/review_thread_resolution.py
 override REVIEW_THREAD_CORPUS_REVISION := 4b965810d471ad11a2c94369a9f75dd127651c3f
 override REVIEW_THREAD_DISPOSITION_REVISION := 660f73b28743b3f032697ae7bdbc980efd3f3020
+override REVIEW_THREAD_EVIDENCE_REVISION := 85dafe824576d2d4484ea6ab9141f165d8defee4
 override REVIEW_THREAD_CORPUS := $(CURDIR)/docs/review-thread-corpus/unresolved-review-thread-corpus-4b965810d471
 override REVIEW_THREAD_CORPUS_ANALYSIS := $(CURDIR)/docs/review-thread-corpus-analysis/unresolved-review-thread-corpus-4b965810d471
 override REVIEW_THREAD_CORPUS_TOOL := $(CURDIR)/scripts/review_thread_corpus.py
@@ -831,6 +832,7 @@ review-thread-corpus-check:
 			--history-dir $(REVIEW_THREAD_CORPUS_ANALYSIS) \
 			--repo-root $(CURDIR)/.. \
 			--revision $(REVIEW_THREAD_DISPOSITION_REVISION) \
+			--evidence-revision $(REVIEW_THREAD_EVIDENCE_REVISION) \
 			--output-dir $(REVIEW_THREAD_CLUSTERS)
 
 review-thread-corpus-unit-test:

@@ -92,6 +92,7 @@ def parse_args() -> argparse.Namespace:
         command_parser.add_argument("--history-dir", type=Path, required=True)
         command_parser.add_argument("--repo-root", type=Path, required=True)
         command_parser.add_argument("--revision", required=True)
+        command_parser.add_argument("--evidence-revision", required=True)
         command_parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -337,9 +338,9 @@ def build_rows(
 def build_summary(
     cluster_rows: list[dict[str, str]], member_rows: list[dict[str, str]]
 ) -> dict[str, Any]:
-    route_clusters = Counter(row["review_route"] for row in cluster_rows)
-    route_groups = Counter()
-    route_threads = Counter()
+    route_clusters: Counter[str] = Counter(row["review_route"] for row in cluster_rows)
+    route_groups: Counter[str] = Counter()
+    route_threads: Counter[str] = Counter()
     route_by_cluster = {row["cluster_id"]: row["review_route"] for row in cluster_rows}
     for row in member_rows:
         route = route_by_cluster[row["cluster_id"]]
@@ -463,7 +464,7 @@ def check_status(
     path: Path,
     member_rows: list[dict[str, str]],
     repository_root: Path,
-    disposition_revision: str,
+    evidence_revision: str,
 ) -> None:
     rows = read_tsv(path, STATUS_FIELDS)
     expected_ids = [row["work_group_id"] for row in member_rows]
@@ -510,11 +511,11 @@ def check_status(
                     f"review-status.tsv:{row_number}: resolved code status lacks merged proof"
                 )
             if not review_thread_group_history.commit_is_reachable(
-                repository_root, row["evidence_commit"], disposition_revision
+                repository_root, row["evidence_commit"], evidence_revision
             ):
                 raise ClusterError(
                     f"review-status.tsv:{row_number}: evidence commit is not reachable "
-                    "from the disposition revision"
+                    "from the evidence revision"
                 )
             if closure == "ready-to-resolve" and (
                 not row["verification_command"] or verification != "pass"
@@ -534,6 +535,7 @@ def check_output(
     history_dir: Path,
     repository_root: Path,
     disposition_revision: str,
+    evidence_revision: str,
     cluster_rows: list[dict[str, str]],
     member_rows: list[dict[str, str]],
 ) -> None:
@@ -590,7 +592,7 @@ def check_output(
         output_dir / "review-status.tsv",
         member_rows,
         repository_root,
-        disposition_revision,
+        evidence_revision,
     )
 
 
@@ -607,6 +609,9 @@ def main() -> int:
             raise ClusterError("--repo-root is not the Git worktree root")
         disposition_revision = review_thread_group_history.resolve_commit(
             repository_root, arguments.revision
+        )
+        evidence_revision = review_thread_group_history.resolve_commit(
+            repository_root, arguments.evidence_revision
         )
         review_thread_corpus.check_capture(arguments.corpus_dir)
         histories = review_thread_group_history.read_tsv(
@@ -633,6 +638,7 @@ def main() -> int:
             arguments.history_dir,
             repository_root,
             disposition_revision,
+            evidence_revision,
             cluster_rows,
             member_rows,
         )
