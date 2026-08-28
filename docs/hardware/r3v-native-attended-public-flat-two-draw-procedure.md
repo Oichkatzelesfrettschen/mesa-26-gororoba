@@ -131,3 +131,37 @@ dmesg delta is zero; the boot id is unchanged; and the watchdog reads
 The shared procedure's record plus `first_target.bin` and
 `second_target.bin`, each the shape's full footprint including the
 canary row.
+
+## Result
+
+The cell holds its silicon receipt from one attended submission on
+RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
+`ae2e0183f69`, under an arming report matching all five declarations
+against cell blake3 `8a0c4f37` and an `[interface]` line reading
+blake3 `096d66a9` with `varying_mask=0x1 flat_mask=0x1
+post_vs.flat_mask=0x1 provoking=0`.  Every predicted value held: the
+`[record]` line agreed (472 dwords, four references, two deferred
+draws); the first target under `0xffff0000` and the second under
+`0xff00ff00` each read `coverage_exact=1 canary=1 interior=1152
+analytic=1152 exterior=2944 mismatch=0`; all four
+`under-non-provoking` lines read `interior=0`; the second centroid
+read `0xff00ff00`; `vkQueueSubmit` returned 0; the dmesg delta was
+empty; the boot was unchanged; and the SB600 counter, armed across
+`DRM_IOCTL_RADEON_CS` through fence completion for 113 us on the
+production module, read `inactive` afterward.
+
+So every judged interior pixel of each target equals that pass's
+first-vertex value, no pixel equals either non-provoking input, no
+pixel carries the other pass's provoking value, and the exterior and
+canary stay at the sentinel.  The receipt proves end-to-end Vulkan
+`Flat` through CPU provoking-value replication; it proves nothing
+about hardware flat shading, whose register path the route leaves at
+the contract's Gouraud value.  Bundle: steinmarder-r300
+`src/re/r300/results/r3v-native-public-flat-two-draw-first-delivery-rs482`.
+
+A direct `GA_COLOR_CONTROL` / RS lowering that keeps three distinct
+vertex values cannot reproduce this route's command bytes: it reroutes
+the varying from `TEX0` into a color lane and changes RS and GA state.
+Its oracle is therefore render-target equality with this receipt's
+targets, under its own frozen emitter digest, parser replay, state
+mutations, and silicon receipt.
