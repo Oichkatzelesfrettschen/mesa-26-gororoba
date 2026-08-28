@@ -61,6 +61,9 @@ R300_R2VB_REFERENCE_RS_INST_0 = 1 << 3
 R300_US_CONFIG = 0x4600
 R300_US_CODE_ADDR_0 = 0x4610
 R300_US_ALU_RGB_INST_0 = 0x48C0
+R300_R2VB_PRODUCER_FS_BLOCK = (
+    Path(__file__).resolve().parents[1] / "r300_r2vb_producer_fs_block.h"
+)
 
 
 def fail(message: str) -> None:
@@ -82,12 +85,33 @@ def read_words(path: Path) -> list[int]:
         raise CheckFailure(f"{path.name} is unreadable: {error}") from error
     if not data or len(data) % 4:
         raise CheckFailure(f"ib.bin has {len(data)} non-dword bytes")
-    return [int.from_bytes(data[offset:offset + 4], "little")
-            for offset in range(0, len(data), 4)]
+    return [
+        int.from_bytes(data[offset : offset + 4], "little")
+        for offset in range(0, len(data), 4)
+    ]
 
 
 def write_words(path: Path, words: list[int]) -> None:
     path.write_bytes(b"".join(word.to_bytes(4, "little") for word in words))
+
+
+def read_reference_us_block() -> list[int]:
+    """Read the generated producer fragment block as the trusted payload."""
+    try:
+        source = R300_R2VB_PRODUCER_FS_BLOCK.read_text()
+    except OSError as error:
+        raise CheckFailure(f"cannot read producer fragment block: {error}") from error
+    match = re.search(
+        r"static const uint32_t r300_r2vb_producer_fs_block\[\] = \{(.*?)\};",
+        source,
+        re.DOTALL,
+    )
+    if match is None:
+        raise CheckFailure("producer fragment block declaration is absent")
+    words = [int(token, 16) for token in re.findall(r"0x[0-9a-fA-F]+", match.group(1))]
+    if not words:
+        raise CheckFailure("producer fragment block is empty")
+    return words
 
 
 def decode_stream(words: list[int]) -> tuple[dict[int, int], list[tuple[int, int]]]:
@@ -107,8 +131,9 @@ def decode_stream(words: list[int]) -> tuple[dict[int, int], list[tuple[int, int
             register = (header & 0x1FFF) << 2
             one_register = (header >> 15) & 1
             for payload_index in range(payload_count):
-                current_register = (register if one_register else
-                                    register + payload_index * 4)
+                current_register = (
+                    register if one_register else register + payload_index * 4
+                )
                 registers[current_register] = words[index + 1 + payload_index]
         elif packet_type == 3:
             opcode = (header >> 8) & 0xFF
@@ -136,8 +161,11 @@ def mutate_register(path: Path, register: int, value: int) -> None:
             packet_register = (header & 0x1FFF) << 2
             one_register = (header >> 15) & 1
             for payload_index in range(payload_count):
-                current_register = (packet_register if one_register else
-                                    packet_register + payload_index * 4)
+                current_register = (
+                    packet_register
+                    if one_register
+                    else packet_register + payload_index * 4
+                )
                 if current_register == register:
                     words[index + 1 + payload_index] = value
                     found = True
@@ -165,15 +193,16 @@ def remove_sequential_register(path: Path, register: int) -> None:
             if offset >= 0 and offset % 4 == 0:
                 payload_index = offset // 4
                 if payload_index < payload_count:
-                    payload = words[index + 1:end]
+                    payload = words[index + 1 : end]
                     del payload[payload_index]
                     if not payload:
                         del words[index:end]
                     else:
-                        words[index] = (header & ~(0x3FFF << 16)) | \
-                                       ((len(payload) - 1) << 16)
-                        words[index + 1:index + 1 + len(payload)] = payload
-                        del words[index + 1 + len(payload):end]
+                        words[index] = (header & ~(0x3FFF << 16)) | (
+                            (len(payload) - 1) << 16
+                        )
+                        words[index + 1 : index + 1 + len(payload)] = payload
+                        del words[index + 1 + len(payload) : end]
                     write_words(path, words)
                     return
         index = end
@@ -221,8 +250,10 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if manifest.get("emitter") != "r300_r2vb_producer_pass":
         raise CheckFailure(f"unexpected emitter: {manifest.get('emitter')!r}")
     if manifest.get("ib_dwords") != len(words):
-        raise CheckFailure(f"ib_dwords {manifest.get('ib_dwords')} != "
-                           f"ib.bin dword count {len(words)}")
+        raise CheckFailure(
+            f"ib_dwords {manifest.get('ib_dwords')} != "
+            f"ib.bin dword count {len(words)}"
+        )
     if manifest.get("vertex_count") != R300_R2VB_REFERENCE_COUNT:
         raise CheckFailure("vertex_count does not describe the reference pass")
     if manifest.get("carrier_pitch_pixels") != R300_R2VB_REFERENCE_PITCH:
@@ -232,14 +263,14 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if manifest.get("carrier_cpp_bytes") != R300_R2VB_REFERENCE_CPP:
         raise CheckFailure("carrier cpp does not describe C4_32_FP")
 
-    carrier_size = (R300_R2VB_REFERENCE_PITCH * R300_R2VB_REFERENCE_HEIGHT *
-                    R300_R2VB_REFERENCE_CPP)
+    carrier_size = (
+        R300_R2VB_REFERENCE_PITCH * R300_R2VB_REFERENCE_HEIGHT * R300_R2VB_REFERENCE_CPP
+    )
     if manifest.get("carrier_size_bytes") != carrier_size:
         raise CheckFailure("carrier size does not derive from pitch * height * cpp")
 
     expected = manifest.get("expected_carrier_dwords")
-    if (not isinstance(expected, list) or
-            len(expected) != R300_R2VB_REFERENCE_COUNT * 4):
+    if not isinstance(expected, list) or len(expected) != R300_R2VB_REFERENCE_COUNT * 4:
         raise CheckFailure("expected carrier content does not cover the written slots")
     try:
         expected_words = [int(word, 16) for word in expected]
@@ -255,12 +286,18 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if body_index is None:
         raise CheckFailure("no immediate draw carries the records")
     for vertex in range(R300_R2VB_REFERENCE_COUNT):
-        slot = words[body_index + vertex * R300_R2VB_REFERENCE_VTX_DWORDS + 4:
-                     body_index + vertex * R300_R2VB_REFERENCE_VTX_DWORDS + 8]
+        slot = words[
+            body_index
+            + vertex * R300_R2VB_REFERENCE_VTX_DWORDS
+            + 4 : body_index
+            + vertex * R300_R2VB_REFERENCE_VTX_DWORDS
+            + 8
+        ]
         record = [slot[2], slot[1], slot[0], slot[3]]
-        if record != expected_words[vertex * 4:vertex * 4 + 4]:
-            raise CheckFailure(f"expected carrier slot {vertex} differs from the "
-                               "embedded record")
+        if record != expected_words[vertex * 4 : vertex * 4 + 4]:
+            raise CheckFailure(
+                f"expected carrier slot {vertex} differs from the " "embedded record"
+            )
 
     poison = manifest.get("carrier_poison_dword")
     if not isinstance(poison, str):
@@ -269,30 +306,43 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         poison_word = int(poison, 16)
     except ValueError as error:
         raise CheckFailure(f"carrier poison pattern is not hex: {error}") from error
+    if not 0 <= poison_word <= 0xFFFFFFFF:
+        raise CheckFailure("carrier poison pattern is outside one dword")
     # Anti-vacuity: a poison value the pass also writes would let an
     # unwritten slot read as delivered content.
     if poison_word in expected_words:
         raise CheckFailure("carrier poison pattern collides with expected content")
 
     slots = bo_table.get("slots")
-    if (not isinstance(slots, list) or len(slots) != 1 or
-            not isinstance(slots[0], dict) or slots[0].get("slot") != 0 or
-            slots[0].get("role") != "carrier" or
-            slots[0].get("domain") != "GTT"):
+    if (
+        not isinstance(slots, list)
+        or len(slots) != 1
+        or not isinstance(slots[0], dict)
+        or slots[0].get("slot") != 0
+        or slots[0].get("role") != "carrier"
+        or slots[0].get("domain") != "GTT"
+    ):
         raise CheckFailure(f"carrier BO entry malformed: {slots}")
-    minimum_size = (R300_R2VB_REFERENCE_PITCH *
-                    R300_R2VB_REFERENCE_HEIGHT * R300_R2VB_REFERENCE_CPP)
+    minimum_size = (
+        R300_R2VB_REFERENCE_PITCH * R300_R2VB_REFERENCE_HEIGHT * R300_R2VB_REFERENCE_CPP
+    )
     if not isinstance(slots[0].get("size"), int) or slots[0]["size"] < minimum_size:
         raise CheckFailure(f"carrier BO is below {minimum_size} bytes")
     # The color backend writes the carrier and the consuming draw fetches
     # it, so the relocation carries GTT in both domains.
-    if (slots[0].get("read_domains") != RADEON_GEM_DOMAIN_GTT or
-            slots[0].get("write_domain") != RADEON_GEM_DOMAIN_GTT):
+    if (
+        slots[0].get("read_domains") != RADEON_GEM_DOMAIN_GTT
+        or slots[0].get("write_domain") != RADEON_GEM_DOMAIN_GTT
+    ):
         raise CheckFailure(f"carrier BO domains are not read-write GTT: {slots[0]}")
 
     sites = manifest.get("reloc_sites")
-    if (not isinstance(sites, list) or len(sites) != 1 or
-            not isinstance(sites[0], dict) or sites[0].get("slot") != 0):
+    if (
+        not isinstance(sites, list)
+        or len(sites) != 1
+        or not isinstance(sites[0], dict)
+        or sites[0].get("slot") != 0
+    ):
         raise CheckFailure(f"reloc_sites malformed: {sites}")
     site_index = sites[0].get("ib_index", -1)
     if not isinstance(site_index, int) or not 0 < site_index < len(words):
@@ -323,13 +373,25 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if registers.get(R300_VAP_OUTPUT_VTX_FMT_1) != R300_R2VB_REFERENCE_OUTPUT_1:
         raise CheckFailure("VAP_OUTPUT_VTX_FMT_1 is not one four-component varying")
     # The US program the slot pixels shade through travels in the stream:
-    # the US code registers carry the compiled block, and the RS routing
-    # delivers the TEX0 varying to US input register 0.
-    for us_register in (R300_US_CONFIG, R300_US_CODE_ADDR_0,
-                        R300_US_ALU_RGB_INST_0):
+    # the US code registers carry the complete generated block, and the RS
+    # routing delivers the TEX0 varying to US input register 0.  Checking
+    # only one register from the block would accept a payload mutation after
+    # its outer IB digest was refreshed.
+    reference_us_block = read_reference_us_block()
+    if not any(
+        words[index : index + len(reference_us_block)] == reference_us_block
+        for index in range(len(words) - len(reference_us_block) + 1)
+    ):
+        raise CheckFailure(
+            "complete producer US/FG block is absent or differs from the "
+            "generated fragment block"
+        )
+    for us_register in (R300_US_CONFIG, R300_US_CODE_ADDR_0, R300_US_ALU_RGB_INST_0):
         if us_register not in registers:
-            raise CheckFailure(f"US program register 0x{us_register:04x} absent; "
-                               "the pass would shade through the resident program")
+            raise CheckFailure(
+                f"US program register 0x{us_register:04x} absent; "
+                "the pass would shade through the resident program"
+            )
     if registers.get(R300_RS_COUNT) != R300_R2VB_REFERENCE_RS_COUNT:
         raise CheckFailure("RS_COUNT does not declare four interpolated components")
     if registers.get(R300_RS_INST_COUNT) != 0:
@@ -341,8 +403,10 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if registers.get(R300_VAP_VF_MAX_VTX_INDX) != R300_R2VB_REFERENCE_COUNT - 1:
         raise CheckFailure("VAP_VF_MAX_VTX_INDX does not match the reference count")
     if registers.get(R300_VAP_VF_MIN_VTX_INDX) != 0:
-        raise CheckFailure("VAP_VF_MIN_VTX_INDX is not the zero lower bound; an "
-                           "inherited minimum would fold low indices onto it")
+        raise CheckFailure(
+            "VAP_VF_MIN_VTX_INDX is not the zero lower bound; an "
+            "inherited minimum would fold low indices onto it"
+        )
     if len(draws) != 1:
         raise CheckFailure(f"expected one immediate draw, got {len(draws)}")
     draw_index, raw_draw_count = draws[0]
@@ -355,13 +419,17 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         raise CheckFailure(f"unexpected embedded VF control 0x{vf_cntl:08x}")
 
     declared_digest = manifest.get("ib_blake3")
-    if (not isinstance(declared_digest, str) or
-            re.fullmatch(r"[0-9a-fA-F]{64}", declared_digest) is None):
+    if (
+        not isinstance(declared_digest, str)
+        or re.fullmatch(r"[0-9a-fA-F]{64}", declared_digest) is None
+    ):
         raise CheckFailure("ib_blake3 is not a 64-hex digest")
     if have_b3sum:
         recomputed = subprocess.run(
             ["b3sum", "--no-names", str(outdir / "ib.bin")],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         if recomputed != declared_digest:
             raise CheckFailure("ib_blake3 does not match b3sum")
@@ -391,8 +459,9 @@ def main() -> int:
         root = Path(tmp)
         good = root / "good"
         good.mkdir()
-        run = subprocess.run([tool, str(good)], capture_output=True, text=True,
-                             check=False)
+        run = subprocess.run(
+            [tool, str(good)], capture_output=True, text=True, check=False
+        )
         if run.returncode != 0:
             fail(f"manifest tool exited {run.returncode}: {run.stderr}")
         try:
@@ -439,8 +508,9 @@ def main() -> int:
 
         mutant = root / "stale-psc"
         clone(good, mutant)
-        mutate_register(mutant / "ib.bin", R300_VAP_PROG_STREAM_CNTL_0,
-                        R300_R2VB_REFERENCE_PSC ^ 1)
+        mutate_register(
+            mutant / "ib.bin", R300_VAP_PROG_STREAM_CNTL_0, R300_R2VB_REFERENCE_PSC ^ 1
+        )
         expect_reject(mutant, have_b3sum, "stale-psc")
 
         mutant = root / "stale-output-format"
@@ -448,16 +518,31 @@ def main() -> int:
         mutate_register(mutant / "ib.bin", R300_VAP_OUTPUT_VTX_FMT_1, 0)
         expect_reject(mutant, have_b3sum, "stale-output-format")
 
+        mutant = root / "corrupted-us-program"
+        clone(good, mutant)
+        mutate_register(mutant / "ib.bin", R300_US_ALU_RGB_INST_0, 0)
+        changed = dict(read_json(mutant / "manifest.json"))
+        if have_b3sum:
+            changed["ib_blake3"] = subprocess.run(
+                ["b3sum", "--no-names", str(mutant / "ib.bin")],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "corrupted-us-program")
+
         mutant = root / "omitted-psc-tail"
         clone(good, mutant)
-        remove_sequential_register(
-            mutant / "ib.bin", R300_VAP_PROG_STREAM_CNTL_0 + 4)
+        remove_sequential_register(mutant / "ib.bin", R300_VAP_PROG_STREAM_CNTL_0 + 4)
         changed = dict(read_json(mutant / "manifest.json"))
         changed["ib_dwords"] = len(read_words(mutant / "ib.bin"))
         if have_b3sum:
             changed["ib_blake3"] = subprocess.run(
                 ["b3sum", "--no-names", str(mutant / "ib.bin")],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout.strip()
         (mutant / "manifest.json").write_text(json.dumps(changed))
         expect_reject(mutant, have_b3sum, "omitted-psc-tail")
@@ -470,7 +555,9 @@ def main() -> int:
         if have_b3sum:
             changed["ib_blake3"] = subprocess.run(
                 ["b3sum", "--no-names", str(mutant / "ib.bin")],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout.strip()
         (mutant / "manifest.json").write_text(json.dumps(changed))
         expect_reject(mutant, have_b3sum, "omitted-us-program")
@@ -481,6 +568,17 @@ def main() -> int:
         changed["carrier_poison_dword"] = changed["expected_carrier_dwords"][0]
         (mutant / "manifest.json").write_text(json.dumps(changed))
         expect_reject(mutant, have_b3sum, "collided-poison")
+
+        for label, poison in (
+            ("poison-too-wide", "0x100000000"),
+            ("poison-negative", "-0x1"),
+        ):
+            mutant = root / label
+            clone(good, mutant)
+            changed = dict(manifest)
+            changed["carrier_poison_dword"] = poison
+            (mutant / "manifest.json").write_text(json.dumps(changed))
+            expect_reject(mutant, have_b3sum, label)
 
         mutant = root / "non-hex-digest"
         clone(good, mutant)
@@ -498,8 +596,10 @@ def main() -> int:
             (mutant / "manifest.json").write_text(json.dumps(changed))
             expect_reject(mutant, have_b3sum, "stale-digest")
         else:
-            print("b3sum absent; stale digest recomputation mutant not run",
-                  file=sys.stderr)
+            print(
+                "b3sum absent; stale digest recomputation mutant not run",
+                file=sys.stderr,
+            )
 
     print("producer manifest artifacts are consistent and reject calibrated mutants")
     return 0
