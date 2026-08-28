@@ -191,6 +191,7 @@ override REVIEW_THREAD_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-c
 override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/resolution-observation.json
 override REVIEW_THREAD_RESOLUTION_TOOL := $(CURDIR)/scripts/review_thread_resolution.py
 override REVIEW_THREAD_CORPUS_REVISION := 4b965810d471ad11a2c94369a9f75dd127651c3f
+override REVIEW_THREAD_DISPOSITION_REVISION := 660f73b28743b3f032697ae7bdbc980efd3f3020
 override REVIEW_THREAD_CORPUS := $(CURDIR)/docs/review-thread-corpus/unresolved-review-thread-corpus-4b965810d471
 override REVIEW_THREAD_CORPUS_ANALYSIS := $(CURDIR)/docs/review-thread-corpus-analysis/unresolved-review-thread-corpus-4b965810d471
 override REVIEW_THREAD_CORPUS_TOOL := $(CURDIR)/scripts/review_thread_corpus.py
@@ -822,12 +823,14 @@ review-thread-corpus-check:
 		python3 $(REVIEW_THREAD_GROUP_HISTORY_TOOL) check \
 			--corpus-dir $(REVIEW_THREAD_CORPUS) \
 			--repo-root $(CURDIR)/.. \
-			--revision $(REVIEW_THREAD_CORPUS_REVISION) \
+			--revision $(REVIEW_THREAD_DISPOSITION_REVISION) \
 			--output-dir $(REVIEW_THREAD_CORPUS_ANALYSIS)
 	PYTHONDONTWRITEBYTECODE=1 \
 		python3 $(REVIEW_THREAD_CLUSTERS_TOOL) check \
 			--corpus-dir $(REVIEW_THREAD_CORPUS) \
 			--history-dir $(REVIEW_THREAD_CORPUS_ANALYSIS) \
+			--repo-root $(CURDIR)/.. \
+			--revision $(REVIEW_THREAD_DISPOSITION_REVISION) \
 			--output-dir $(REVIEW_THREAD_CLUSTERS)
 
 review-thread-corpus-unit-test:

@@ -61,6 +61,7 @@ STATUS_FIELDS = (
     "status",
     "evidence_commit",
     "evidence_locator",
+    "discovery_command",
     "verification_command",
     "verification_result",
     "closure_state",
@@ -75,7 +76,7 @@ STATUS_VALUES = {
     "evidence-required",
 }
 VERIFICATION_RESULTS = {"", "not-run", "pass", "blocked"}
-CLOSURE_STATES = {"open", "ready-to-resolve", "resolved"}
+CLOSURE_STATES = {"open", "ready-to-resolve"}
 
 
 class ClusterError(ValueError):
@@ -89,6 +90,8 @@ def parse_args() -> argparse.Namespace:
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--corpus-dir", type=Path, required=True)
         command_parser.add_argument("--history-dir", type=Path, required=True)
+        command_parser.add_argument("--repo-root", type=Path, required=True)
+        command_parser.add_argument("--revision", required=True)
         command_parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -244,16 +247,15 @@ def build_rows(
         states = sorted(
             {histories_by_id[group_id]["history_state"] for group_id in group_ids}
         )
-        candidates = sorted(
-            {
-                candidate
-                for group_id in group_ids
-                for candidate in histories_by_id[group_id][
-                    "path_change_candidates"
-                ].split(";")
-                if candidate
-            }
-        )
+        candidate_sequence = histories_by_id[group_ids[0]]["path_change_candidates"]
+        if any(
+            histories_by_id[group_id]["path_change_candidates"] != candidate_sequence
+            for group_id in group_ids[1:]
+        ):
+            raise ClusterError(f"{cluster_id}: clustered history sequences differ")
+        candidates = [
+            candidate for candidate in candidate_sequence.split(";") if candidate
+        ]
         next_action = {
             "one-change-commit": "compare-the-review-claim-with-the-single-later-commit",
             "unchanged-source": "compare-each-review-claim-with-current-source",
@@ -301,12 +303,15 @@ def build_rows(
                     "source_anchor": group["source_anchor"],
                     "thread_count": group["thread_count"],
                     "pull_request_numbers": json_list(
-                        sorted(
-                            {
-                                str(record["pull_request"]["number"])
-                                for record in group_records
-                            }
-                        )
+                        [
+                            str(pull_request_number)
+                            for pull_request_number in sorted(
+                                {
+                                    record["pull_request"]["number"]
+                                    for record in group_records
+                                }
+                            )
+                        ]
                     ),
                     "thread_ids": json_list(
                         [record["thread_id"] for record in group_records]
@@ -388,6 +393,7 @@ def status_scaffold(member_rows: list[dict[str, str]]) -> list[dict[str, str]]:
             "status": "unassessed",
             "evidence_commit": "",
             "evidence_locator": "",
+            "discovery_command": "",
             "verification_command": "",
             "verification_result": "",
             "closure_state": "open",
@@ -402,6 +408,12 @@ def sha256_path(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_directory_membership(directory: Path, expected_names: set[str]) -> None:
+    actual_names = {path.name for path in directory.iterdir()}
+    if actual_names != expected_names:
+        raise ClusterError(f"{directory}: retained entry membership differs")
+
+
 def json_bytes(payload: Any) -> bytes:
     return (
         json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
@@ -412,6 +424,7 @@ def write_output(
     output_dir: Path,
     corpus_dir: Path,
     history_dir: Path,
+    disposition_revision: str,
     cluster_rows: list[dict[str, str]],
     member_rows: list[dict[str, str]],
 ) -> None:
@@ -436,6 +449,7 @@ def write_output(
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "corpus_manifest_sha256": sha256_path(corpus_dir / "manifest.json"),
         "history_manifest_sha256": sha256_path(history_dir / "manifest.json"),
+        "disposition_revision": disposition_revision,
         "files": {
             "review-cluster-members.tsv": sha256_path(members_path),
             "review-clusters.tsv": sha256_path(clusters_path),
@@ -445,7 +459,12 @@ def write_output(
     (generated_dir / "manifest.json").write_bytes(json_bytes(manifest))
 
 
-def check_status(path: Path, member_rows: list[dict[str, str]]) -> None:
+def check_status(
+    path: Path,
+    member_rows: list[dict[str, str]],
+    repository_root: Path,
+    disposition_revision: str,
+) -> None:
     rows = read_tsv(path, STATUS_FIELDS)
     expected_ids = [row["work_group_id"] for row in member_rows]
     actual_ids = [row["work_group_id"] for row in rows]
@@ -477,9 +496,10 @@ def check_status(path: Path, member_rows: list[dict[str, str]]) -> None:
                     f"review-status.tsv:{row_number}: unassessed row carries a conclusion"
                 )
             continue
-        if not row["reason"] or not row["falsifier"]:
+        if not row["reason"] or not row["falsifier"] or not row["discovery_command"]:
             raise ClusterError(
-                f"review-status.tsv:{row_number}: assessed row lacks reason or falsifier"
+                f"review-status.tsv:{row_number}: assessed row lacks reason, falsifier, "
+                "or discovery command"
             )
         if status in ("fixed-on-main", "superseded-on-main"):
             if (
@@ -489,7 +509,14 @@ def check_status(path: Path, member_rows: list[dict[str, str]]) -> None:
                 raise ClusterError(
                     f"review-status.tsv:{row_number}: resolved code status lacks merged proof"
                 )
-            if closure in ("ready-to-resolve", "resolved") and (
+            if not review_thread_group_history.commit_is_reachable(
+                repository_root, row["evidence_commit"], disposition_revision
+            ):
+                raise ClusterError(
+                    f"review-status.tsv:{row_number}: evidence commit is not reachable "
+                    "from the disposition revision"
+                )
+            if closure == "ready-to-resolve" and (
                 not row["verification_command"] or verification != "pass"
             ):
                 raise ClusterError(
@@ -505,9 +532,17 @@ def check_output(
     output_dir: Path,
     corpus_dir: Path,
     history_dir: Path,
+    repository_root: Path,
+    disposition_revision: str,
     cluster_rows: list[dict[str, str]],
     member_rows: list[dict[str, str]],
 ) -> None:
+    review_thread_group_history.check_analysis(
+        history_dir,
+        corpus_dir,
+        repository_root,
+        disposition_revision,
+    )
     generated_dir = output_dir / "generated"
     manifest = review_thread_corpus.read_json(generated_dir / "manifest.json")
     if not isinstance(manifest, dict) or manifest.get("schema") != CLUSTER_SCHEMA:
@@ -523,6 +558,8 @@ def check_output(
         history_dir / "manifest.json"
     ):
         raise ClusterError("cluster manifest names a different history analysis")
+    if manifest.get("disposition_revision") != disposition_revision:
+        raise ClusterError("cluster manifest names a different disposition revision")
     expected_files = {
         "review-cluster-members.tsv": generated_dir / "review-cluster-members.tsv",
         "review-clusters.tsv": generated_dir / "review-clusters.tsv",
@@ -533,6 +570,8 @@ def check_output(
         expected_files
     ):
         raise ClusterError("cluster manifest file membership differs")
+    check_directory_membership(generated_dir, {"manifest.json", *expected_files})
+    check_directory_membership(output_dir, {"generated", "review-status.tsv"})
     for name, path in expected_files.items():
         if declared_files[name] != sha256_path(path):
             raise ClusterError(f"cluster hash differs for {name}")
@@ -547,12 +586,28 @@ def check_output(
         cluster_rows, member_rows
     ):
         raise ClusterError("retained cluster summary differs from source replay")
-    check_status(output_dir / "review-status.tsv", member_rows)
+    check_status(
+        output_dir / "review-status.tsv",
+        member_rows,
+        repository_root,
+        disposition_revision,
+    )
 
 
 def main() -> int:
     arguments = parse_args()
     try:
+        repository_root = arguments.repo_root.resolve()
+        discovered_root = Path(
+            review_thread_group_history.run_git(
+                repository_root, "rev-parse", "--show-toplevel"
+            ).stdout.strip()
+        ).resolve()
+        if discovered_root != repository_root:
+            raise ClusterError("--repo-root is not the Git worktree root")
+        disposition_revision = review_thread_group_history.resolve_commit(
+            repository_root, arguments.revision
+        )
         review_thread_corpus.check_capture(arguments.corpus_dir)
         histories = review_thread_group_history.read_tsv(
             arguments.history_dir / "work-group-history.tsv"
@@ -568,6 +623,7 @@ def main() -> int:
                 arguments.output_dir,
                 arguments.corpus_dir,
                 arguments.history_dir,
+                disposition_revision,
                 cluster_rows,
                 member_rows,
             )
@@ -575,6 +631,8 @@ def main() -> int:
             arguments.output_dir,
             arguments.corpus_dir,
             arguments.history_dir,
+            repository_root,
+            disposition_revision,
             cluster_rows,
             member_rows,
         )
