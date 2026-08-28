@@ -659,13 +659,30 @@ above is rung zero; the ladder after it runs in this order:
    for pixel.  The sentinel is what separates the failure modes: a
    sample interior reading it names a texture fetch ahead of the render
    half's publication, so the coherency edge, rather than the coverage,
-   carries a deviation there.  Open: the silicon receipt, which takes
-   one attended session on RS482.  Behind it, a recording contract
+   carries a deviation there.  The cell holds the silicon
+   receipt: one attended submission on RS482 under the authorization the
+   arming report matched on all five declarations, `vkQueueSubmit`
+   returning 0, both coverage verdicts reading `judged=1
+   coverage_exact=1 canary=1` with 1152 interior pixels against 1152
+   analytic and no mismatch, the sample centroid reading the render
+   half's draw dword `0xdf20609f`, and an empty dmesg delta over an
+   unchanged boot.  The two retained targets are byte-identical across
+   the full footprint, so the sample half reproduced the render half
+   pixel for pixel rather than at the centroid alone, and the corner and
+   canary row both hold the `0xa5a5a5a5` seed.  The falsifier that names
+   the coherency edge -- a sample interior reading the seed, which would
+   place the texture fetch ahead of the render half's publication -- did
+   not fire, so the render half's `RB3D_DSTCACHE_CTLSTAT` flush-dirty
+   plus free-3D-tags publishes the color writes before the sample half's
+   `TX_INVALTAGS` on this silicon.  The submission ran inside a
+   hardware-armed SB600 counter over `DRM_IOCTL_RADEON_CS` through fence
+   completion, a 134 us guarded interval against the 1.7 s operational
+   grace.  Open behind it, a recording contract
    admitting a second render pass and a second deferred draw per command
    buffer, which the one-pass bound refuses today
    (`r3v_CmdBeginRenderPass`) because `deferred_draw` carries one clear,
-   one carrier, and one vertex execution; it waits on the receipt, since
-   a conformance case reaching the path moves no row until the cell
+   one carrier, and one vertex execution; the receipt opens it, since
+   a conformance case reaching the path moves a row now that the cell
    holds silicon evidence.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as

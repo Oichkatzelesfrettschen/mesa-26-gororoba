@@ -117,3 +117,42 @@ draw dword, and the dmesg delta is zero.
 The shared procedure's record plus `render_target.bin` and
 `sample_target.bin`, each the shape's full footprint including the
 canary row.
+
+## Result
+
+The cell holds its silicon receipt from one attended submission on
+RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
+report matching all five declarations against cell blake3 `247949a2`.
+Every predicted value held:
+
+```text
+[oracle] render judged=1 coverage_exact=1 canary=1 interior=1152 analytic=1152 exterior=2944 ambiguous=0 mismatch=0
+[oracle] sample judged=1 coverage_exact=1 canary=1 interior=1152 analytic=1152 exterior=2944 ambiguous=0 mismatch=0
+[oracle] sample centroid (32,24)=0xdf20609f predicted 0xdf20609f corner (0,0)=0xa5a5a5a5
+```
+
+`vkQueueSubmit` returned 0, the dmesg delta was empty, and the boot id
+was unchanged.  The two retained targets are byte-identical across the
+full 16640-byte footprint, so the sample half reproduced the render half
+pixel for pixel rather than at the centroid alone.
+
+The first falsifier is the one that carries the mechanism: a sample
+interior reading `0xa5a5a5a5` would have placed the texture fetch ahead
+of the render half's publication.  The sample interior carries the
+render half's color, so the render half's `RB3D_DSTCACHE_CTLSTAT`
+flush-dirty plus free-3D-tags publishes the color writes before the
+sample half's `TX_INVALTAGS` and the fetch that follows it, inside one
+indirect buffer on this silicon.
+
+The submission ran inside a hardware-armed SB600 counter over
+`DRM_IOCTL_RADEON_CS` through fence completion: `armed verified 65535
+65534 65368`, `disarmed verified 65362`, a 134 us guarded interval
+against the 1.7 s operational grace, and the counter back to `inactive`.
+No recovery waiver was in scope.
+
+The record-only calibration the shared procedure requires runs as
+`r3v_native_attended_composed <dir> --record-only`, the directory ahead
+of the flag; `r3v_native_attended_composed.c` gates
+`r3v_native_watchdog_guard_open` on `!record_only`, so that pass
+calibrates the recording rather than the guard, and the guard takes its
+calibration from a qualified control submission.
