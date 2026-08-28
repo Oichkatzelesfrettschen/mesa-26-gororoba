@@ -124,20 +124,21 @@ target's own pass's first-vertex RGBA and no other value.
 
 The kernel's pinned TCL-bypass width check
 (`r300_tcl_bypass_vtx_check`, `drivers/gpu/drm/radeon/
-r300_tcl_bypass_vtx_check.h`) proves a vertex width for
-`VAP_OUTPUT_VTX_FMT_0` equal to `POS_PRESENT` alone; the direct stream's
-`COLOR_0_PRESENT` lands outside that scope, so the check returns
-`DECLINE` (`fmt0_beyond_position`) on both draws and
-`r300_cs_tcl_bypass_vtx_output_check` returns 0, leaving ordinary CS
-tracking (`r100_cs_track_check`) as the kernel's whole judgment of the
-fetch.  The replay tests `r300-flat-color0-kernel-replay` and
-`r300-flat-color0-cs-track-replay` pin that scope: the CS-track replay
-accepts both streams, and its control "VAP_VTX_SIZE below the output
-width" holds on the replication stream and no longer rejects on the
-direct one.  The emitter pins `VAP_VTX_SIZE` to the eight-dword record in
-userspace, and the kernel tracker still bounds the fetch to the vertex
-buffer object; extending the pinned check to the color vectors is a
-kernel-lane change, not a driver one.
+r300_tcl_bypass_vtx_check.h`) admits `VAP_OUTPUT_VTX_FMT_0` equal to
+`POS_PRESENT` or `POS_PRESENT | COLOR_0_PRESENT`, requiring four dwords
+for position, four more for color 0, and the decoded texture-coordinate
+widths, so the direct stream's eight-dword record returns `PASS` on both
+draws and a `VAP_VTX_SIZE` of seven with color 0 present rejects.  The
+first pinned check admitted position alone, declined the direct stream
+on both draws (`fmt0_beyond_position`), and left ordinary CS tracking
+(`r100_cs_track_check`) as the kernel's whole judgment of the fetch;
+the retained first delivery ran under that kernel, and the color-0 leg
+of the widened check is anchored by that delivery's target bytes.  The
+replay tests `r300-flat-color0-kernel-replay` and
+`r300-flat-color0-cs-track-replay` pin the widened scope: both streams
+`PASS` the width check, the CS-track replay accepts both, and its
+control "VAP_VTX_SIZE below the output width" holds on the replication
+stream and no longer rejects on the direct one.
 
 ## Falsifiers
 
