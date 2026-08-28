@@ -446,12 +446,30 @@ above is rung zero; the ladder after it runs in this order:
    interior pixels against 1152 analytic with a clean canary and no
    mismatch.  The retained first sampled take reproduces its recorded
    deviation, which calibrates the replay against a known-bad input.
-   Open inside the rung: the render family's own layer ceiling answers
-   to the creation gate rather than to a run; the
-   volume type and its view (18 cases) need a TX volume route, the
-   cube-compatible creation flag and cube view (9 cases) need a cube
-   route, and the array view types (18 cases) index a layer from the
-   shader coordinate, which no TX program reaches;
+   The volume, cube, and array view rows separate by what their cases
+   execute.  Every one of them is an `object_management` case
+   (`vktApiObjectManagementTests.cpp`), which creates its object, binds
+   memory, and destroys it, and samples through none of it, so admission
+   alone moves the row and no fetch runs behind it.  `r3v_CreateImage`
+   admits `VK_IMAGE_TYPE_3D` over the layer stride its depth slices
+   already stack at, reporting that stride as `depthPitch`, and
+   `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` over a square 2D image with
+   whole cubes of layers; `r3v_CreateImageView` admits the 3D, cube,
+   cube-array, and array view types over the layers the image holds.
+   The capability stays honest at the executing boundary rather than at
+   creation: the TX program addresses one slice through the
+   `TX_OFFSET_0` stride a view resolved at creation and the color
+   backend places one slice's base in `RB3D_COLOROFFSET0`, so the draw's
+   sampled binding and the render pass both take the one-slice view
+   types alone (`r3v_native_view_type_executes`), which
+   `r3v-native-submit-order-sampled-array-view-refused` and the
+   attachment arm of `r3v-native-public-surface` pin.  Predicted
+   movement: the `image_3d`, `image_view_3d`, `image_view_cube`,
+   `image_view_1d_arr`, and `image_view_2d_arr` sub-populations reach
+   Pass, unmeasured until a conformance run.  Open inside the rung: the
+   render family's own layer ceiling answers to the creation gate rather
+   than to a run, and the `framebuffer` sub-population keeps its refusal,
+   needing an attachment route no cell executes;
 6. the native 2x and 4x MSAA path before any sample-count limit rises.
    The rung decomposes into three mechanisms, and the register and
    kernel contracts are read.  The multisample color surface lives in

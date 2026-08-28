@@ -63,18 +63,43 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    /* VK_IMAGE_TYPE_1D is the height-one member of the same linear
     * layout: one row the TX block addresses with its height mask at
     * zero and the render cell scissors to a single scanline, so the two
-    * types share every register class.  VK_IMAGE_TYPE_3D takes a depth
-    * axis the TX program has no route for and refuses here.
+    * types share every register class.  VK_IMAGE_TYPE_3D stacks depth
+    * slices at the same stride the array layout places its layers at,
+    * so creation, the memory requirement, and the bind all describe it
+    * exactly; a view then names one slice, and the executing routes
+    * take the one-slice view types alone
+    * (r3v_native_view_type_executes), since no TX program indexes a
+    * slice from the shader coordinate.
     */
    const bool one_dimensional = pCreateInfo->imageType == VK_IMAGE_TYPE_1D;
-   if ((pCreateInfo->flags & ~(VkImageCreateFlags)VK_IMAGE_CREATE_ALIAS_BIT) ||
-       (pCreateInfo->imageType != VK_IMAGE_TYPE_2D && !one_dimensional) ||
+   const bool volumetric = pCreateInfo->imageType == VK_IMAGE_TYPE_3D;
+   /* VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT names a square 2D image with
+    * six layers per cube (VUID-VkImageCreateInfo-flags-00949 and
+    * -00954); the layout is the array layout, and the flag only widens
+    * which view types the image's own geometry supports.
+    */
+   const bool cube_compatible =
+      (pCreateInfo->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0;
+   const uint32_t slice_count =
+      volumetric ? pCreateInfo->extent.depth : pCreateInfo->arrayLayers;
+   if ((pCreateInfo->flags &
+        ~(VkImageCreateFlags)(VK_IMAGE_CREATE_ALIAS_BIT |
+                              VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)) ||
+       (pCreateInfo->imageType != VK_IMAGE_TYPE_2D && !one_dimensional &&
+        !volumetric) ||
        texel_bytes == 0 ||
        pCreateInfo->extent.width < 1 || pCreateInfo->extent.height < 1 ||
        (one_dimensional && pCreateInfo->extent.height != 1) ||
-       pCreateInfo->extent.depth != 1 || pCreateInfo->mipLevels != 1 ||
+       (volumetric && pCreateInfo->arrayLayers != 1) ||
+       (!volumetric && pCreateInfo->extent.depth != 1) ||
+       pCreateInfo->extent.depth < 1 ||
+       (cube_compatible &&
+        (pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
+         pCreateInfo->extent.width != pCreateInfo->extent.height ||
+         pCreateInfo->arrayLayers % 6 != 0)) ||
+       pCreateInfo->mipLevels != 1 ||
        pCreateInfo->arrayLayers < 1 ||
-       pCreateInfo->arrayLayers > R3V_NATIVE_MAX_ARRAY_LAYERS ||
+       slice_count > R3V_NATIVE_MAX_ARRAY_LAYERS ||
        pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT ||
        (pCreateInfo->tiling != VK_IMAGE_TILING_LINEAR &&
         pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL) ||
@@ -114,7 +139,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
          sampled ? MIN2(R3V_NATIVE_RENDER_MAX_EXTENT,
                         R3V_NATIVE_TRANSFER_DIMENSION_MAX)
                  : R3V_NATIVE_RENDER_MAX_EXTENT;
-      if (pCreateInfo->flags != 0 ||
+      if (pCreateInfo->flags != 0 || volumetric ||
           (pCreateInfo->usage &
            ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                 VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -123,7 +148,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
           pCreateInfo->extent.width > extent_max ||
           pCreateInfo->extent.height > extent_max)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-      if (pCreateInfo->arrayLayers > R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS)
+      if (slice_count > R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       transfer_family = false;
       row_pitch_bytes =
@@ -160,7 +185,7 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    const uint32_t layer_pitch_bytes = r3v_native_image_layer_pitch_bytes(
       row_pitch_bytes, pCreateInfo->extent.height, !transfer_family);
    const uint64_t footprint_bytes =
-      (uint64_t)layer_pitch_bytes * pCreateInfo->arrayLayers;
+      (uint64_t)layer_pitch_bytes * slice_count;
    if (footprint_bytes > UINT32_MAX)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
@@ -178,6 +203,10 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->row_pitch_bytes = row_pitch_bytes;
    image->array_layers = pCreateInfo->arrayLayers;
    image->one_dimensional = one_dimensional;
+   image->image_type = pCreateInfo->imageType;
+   image->depth = pCreateInfo->extent.depth;
+   image->cube_compatible = cube_compatible;
+   image->slice_count = slice_count;
    image->layer_pitch_bytes = layer_pitch_bytes;
    image->footprint_bytes = footprint_bytes;
    image->usage = pCreateInfo->usage;
@@ -361,10 +390,11 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
     */
    assert(!image->optimal_tiling);
 
-   /* Layers stack at the image's own stride, so the queried layer's
-    * span starts there; arrayPitch names that stride for a layered
-    * image and stays zero for a single-layer one, matching the
-    * VkSubresourceLayout contract.
+   /* Layers and depth slices stack at the one stride, so the queried
+    * layer's span starts there.  arrayPitch names that stride for a
+    * layered image and depthPitch names it for a volume image, each
+    * staying zero where the VkSubresourceLayout contract leaves it
+    * undefined.
     */
    assert(pSubresource->mipLevel == 0 &&
           pSubresource->arrayLayer < image->array_layers);
@@ -374,6 +404,9 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
       .size = (VkDeviceSize)image->row_pitch_bytes * image->height,
       .rowPitch = image->row_pitch_bytes,
       .arrayPitch = image->array_layers > 1 ? image->layer_pitch_bytes : 0,
+      .depthPitch = image->image_type == VK_IMAGE_TYPE_3D
+                       ? image->layer_pitch_bytes
+                       : 0,
    };
 }
 
@@ -407,14 +440,74 @@ r3v_CreateImageView(VkDevice _device,
     * image carries neither usage, so no view admits it.
     */
    const VkImageSubresourceRange *range = &pCreateInfo->subresourceRange;
-   const VkImageViewType view_type =
-      image != NULL && image->one_dimensional ? VK_IMAGE_VIEW_TYPE_1D
-                                              : VK_IMAGE_VIEW_TYPE_2D;
+   /* The view types the image's own geometry supports.  A one-slice
+    * type resolves its slice at creation and the executing routes bind
+    * it; the multi-slice types name a coordinate axis no cell indexes,
+    * so they create and destroy while the draw and attachment paths
+    * refuse them (r3v_native_view_type_executes).
+    */
+   const VkImageViewType view_type = pCreateInfo->viewType;
+   bool view_type_ok = false;
+   uint32_t required_layers = 1;
+   if (image != NULL) {
+      switch (view_type) {
+      case VK_IMAGE_VIEW_TYPE_1D:
+      case VK_IMAGE_VIEW_TYPE_1D_ARRAY:
+         view_type_ok = image->one_dimensional;
+         break;
+      case VK_IMAGE_VIEW_TYPE_2D:
+      case VK_IMAGE_VIEW_TYPE_2D_ARRAY:
+         view_type_ok = image->image_type == VK_IMAGE_TYPE_2D;
+         break;
+      case VK_IMAGE_VIEW_TYPE_CUBE:
+         /* Exactly one cube's six faces
+          * (VUID-VkImageViewCreateInfo-viewType-02960).
+          */
+         view_type_ok = image->cube_compatible;
+         required_layers = 6;
+         break;
+      case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY:
+         /* A whole number of cubes
+          * (VUID-VkImageViewCreateInfo-viewType-02961).
+          */
+         view_type_ok = image->cube_compatible;
+         required_layers = 0;
+         break;
+      case VK_IMAGE_VIEW_TYPE_3D:
+         view_type_ok = image->image_type == VK_IMAGE_TYPE_3D;
+         break;
+      default:
+         break;
+      }
+   }
+   /* A 3D view names the whole volume, so its subresource range carries
+    * the image's one array layer (VUID-VkImageViewCreateInfo-image-01584).
+    */
+   const uint32_t resolved_layers =
+      range->layerCount == VK_REMAINING_ARRAY_LAYERS
+         ? image != NULL ? image->array_layers - range->baseArrayLayer : 0
+         : range->layerCount;
+   bool layer_count_ok;
+   switch (view_type) {
+   case VK_IMAGE_VIEW_TYPE_CUBE:
+      layer_count_ok = resolved_layers == required_layers;
+      break;
+   case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY:
+      layer_count_ok = resolved_layers >= 6 && resolved_layers % 6 == 0;
+      break;
+   case VK_IMAGE_VIEW_TYPE_1D_ARRAY:
+   case VK_IMAGE_VIEW_TYPE_2D_ARRAY:
+      layer_count_ok = resolved_layers >= 1;
+      break;
+   default:
+      layer_count_ok = resolved_layers == 1;
+      break;
+   }
    if (image == NULL ||
        (image->transfer_family &&
         (image->usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0) ||
+       !view_type_ok || !layer_count_ok ||
        pCreateInfo->flags != 0 ||
-       pCreateInfo->viewType != view_type ||
        pCreateInfo->format != image->format ||
        !swizzle_is_identity(pCreateInfo->components.r,
                             VK_COMPONENT_SWIZZLE_R) ||
@@ -429,9 +522,8 @@ r3v_CreateImageView(VkDevice _device,
        (range->levelCount != 1 &&
         range->levelCount != VK_REMAINING_MIP_LEVELS) ||
        range->baseArrayLayer >= image->array_layers ||
-       (range->layerCount != 1 &&
-        (range->layerCount != VK_REMAINING_ARRAY_LAYERS ||
-         range->baseArrayLayer + 1 != image->array_layers)))
+       resolved_layers < 1 ||
+       range->baseArrayLayer + resolved_layers > image->array_layers)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
    struct r3v_native_image_view *view =
@@ -443,6 +535,7 @@ r3v_CreateImageView(VkDevice _device,
    view->image = image;
    view->base_array_layer = range->baseArrayLayer;
    view->layer_offset_bytes = image->layer_pitch_bytes * range->baseArrayLayer;
+   view->view_type = view_type;
    *pView = r3v_native_image_view_to_handle(view);
    return VK_SUCCESS;
 }

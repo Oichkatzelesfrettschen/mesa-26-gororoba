@@ -65,8 +65,12 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     */
    VK_FROM_HANDLE(r3v_native_image_view, view, framebuffer->attachments[0]);
    const VkRect2D *area = &pRenderPassBegin->renderArea;
+   /* The color backend places one slice's base in RB3D_COLOROFFSET0, so
+    * the attachment takes a view whose slice the creation resolved.
+    */
    if (view == NULL || view->image == NULL ||
        view->image->memory == NULL ||
+       !r3v_native_view_type_executes(view->view_type) ||
        pass->attachments[0].format != view->image->format ||
        framebuffer->width != view->image->width ||
        framebuffer->height != view->image->height ||
@@ -471,7 +475,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       const struct r3v_native_image *texture =
          set->bindings[0].image_view->image;
       const VkSamplerCreateInfo *si = &set->bindings[0].sampler->info;
+      /* The TX program addresses one slice through the TX_OFFSET_0
+       * stride the view resolved at creation, and no route indexes a
+       * slice from the shader coordinate, so the draw binds the
+       * one-slice view types.
+       */
       if (texture->memory == NULL ||
+          !r3v_native_view_type_executes(
+             set->bindings[0].image_view->view_type) ||
           si->magFilter != VK_FILTER_NEAREST ||
           si->minFilter != VK_FILTER_NEAREST ||
           si->mipmapMode != VK_SAMPLER_MIPMAP_MODE_NEAREST ||

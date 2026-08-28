@@ -135,6 +135,13 @@ enum arm {
     * layer's stride, so the stream differs from the layer-zero arm by
     * exactly the addressed layer. */
    ARM_SAMPLED_LAYER_ARMED,
+   /* The same pipeline over a VK_IMAGE_VIEW_TYPE_2D_ARRAY view of the
+    * same texture: the view creates, since an object_management case
+    * that names an array view never samples through it, and the draw
+    * refuses, since the TX program addresses one slice through the
+    * TX_OFFSET_0 stride the view resolved at creation and no route
+    * indexes a slice from the shader coordinate. */
+   ARM_SAMPLED_ARRAY_VIEW_REFUSED,
    /* The two-attribute module (location 0 position, location 1 color
     * passed to the varying) on the CPU route: over two bindings (F32_4
     * positions at stride 16, F32_3 colors at stride 12) and over one
@@ -253,6 +260,7 @@ static const struct {
    { "varying-missing", ARM_VARYING_MISSING },
    { "sampled-armed", ARM_SAMPLED_ARMED },
    { "sampled-layer-armed", ARM_SAMPLED_LAYER_ARMED },
+   { "sampled-array-view-refused", ARM_SAMPLED_ARRAY_VIEW_REFUSED },
    { "multi-attribute-armed", ARM_MULTI_ATTRIBUTE_ARMED },
    { "multi-attribute-interleaved-armed",
      ARM_MULTI_ATTRIBUTE_INTERLEAVED_ARMED },
@@ -605,8 +613,9 @@ run_arm(enum arm arm, const char *name)
    r300_tcl_bypass_triangle_release(&two_triangles);
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
-   const bool sampled_arm =
-      arm == ARM_SAMPLED_ARMED || arm == ARM_SAMPLED_LAYER_ARMED;
+   const bool sampled_arm = arm == ARM_SAMPLED_ARMED ||
+                            arm == ARM_SAMPLED_LAYER_ARMED ||
+                            arm == ARM_SAMPLED_ARRAY_VIEW_REFUSED;
    /* The layered arm's texture holds three 16x16 layers over the
     * sampling family's 64-byte row pitch, so the selected last layer
     * starts 2048 bytes in. */
@@ -1122,7 +1131,9 @@ run_arm(enum arm arm, const char *name)
                 &(VkImageViewCreateInfo){
                    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                    .image = tex_image,
-                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                   .viewType = arm == ARM_SAMPLED_ARRAY_VIEW_REFUSED
+                                  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                  : VK_IMAGE_VIEW_TYPE_2D,
                    .format = VK_FORMAT_R8G8B8A8_UNORM,
                    .subresourceRange = { .aspectMask =
                                             VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1535,7 +1546,8 @@ run_arm(enum arm arm, const char *name)
        arm == ARM_INDEXED_ALIAS_TARGET_REFUSED ||
        arm == ARM_INSTANCED_ZERO_REFUSED ||
        arm == ARM_NON_TRIANGLE_COUNT_REFUSED ||
-       arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED) {
+       arm == ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED ||
+       arm == ARM_SAMPLED_ARRAY_VIEW_REFUSED) {
       /* A zero instance count and an instance record past the offset
        * buffer's bound with the feature off each poison the draw at
        * recording.  The feature off, the record-time bound proof poisons the

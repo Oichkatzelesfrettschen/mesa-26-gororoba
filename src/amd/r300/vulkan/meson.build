@@ -2383,6 +2383,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                         'gpu-fetched-aliased-source', 'varying-armed',
                         'varying-fragment-mismatch', 'varying-missing',
                         'sampled-armed', 'sampled-layer-armed',
+                        'sampled-array-view-refused',
                         'multi-attribute-armed',
                         'multi-attribute-interleaved-armed',
                         'multi-attribute-overlap-refused',

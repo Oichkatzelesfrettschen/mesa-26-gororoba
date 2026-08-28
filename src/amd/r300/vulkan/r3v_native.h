@@ -1112,6 +1112,24 @@ struct r3v_native_image {
     * whose views take VK_IMAGE_VIEW_TYPE_1D.
     */
    bool one_dimensional;
+   /* The creation type and the volume axis it carries.  A 3D image
+    * stacks depth slices at the layer stride, which is the array
+    * layout's own geometry under a different name, so creation and
+    * binding admit it while the executing routes -- the TX program and
+    * the color backend, each addressing one slice through a stride the
+    * view resolves at creation -- take the one-slice view types alone.
+    */
+   VkImageType image_type;
+   uint32_t depth;
+   /* VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT: a square 2D image with six
+    * layers per cube, whose views may name the cube types.
+    */
+   bool cube_compatible;
+   /* Slices in the bound footprint: the array layers, or a 3D image's
+    * depth.  Vulkan holds arrayLayers at one for a 3D image, so the two
+    * never multiply.
+    */
+   uint32_t slice_count;
    /* The bound footprint: every layer's stride, the value
     * r3v_GetImageMemoryRequirements reports and r3v_BindImageMemory
     * proves against the allocation.
@@ -1143,7 +1161,24 @@ struct r3v_native_image_view {
     */
    uint32_t base_array_layer;
    uint32_t layer_offset_bytes;
+   /* The declared view type.  Creation admits every type the image's own
+    * geometry supports; the executing routes admit the one-slice types,
+    * VK_IMAGE_VIEW_TYPE_1D and VK_IMAGE_VIEW_TYPE_2D, since a TX program
+    * addresses one slice through layer_offset_bytes and no route indexes
+    * a slice from the shader coordinate.
+    */
+   VkImageViewType view_type;
 };
+
+/* The view types an executing route binds: one slice at a resolved
+ * stride, which the sampling cell's TX_OFFSET_0 and the render cell's
+ * RB3D_COLOROFFSET0 payload both carry.
+ */
+static inline bool
+r3v_native_view_type_executes(VkImageViewType type)
+{
+   return type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_2D;
+}
 
 /* A sampler is pure recorded state: no native route samples, so the
  * descriptor surface refuses every write that names one, and the object
