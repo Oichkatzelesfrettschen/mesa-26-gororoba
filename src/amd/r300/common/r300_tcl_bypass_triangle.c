@@ -2261,6 +2261,31 @@ r300_tcl_bypass_triangle_multi_pass_reference_count(
           (mp->second_color_index >= 2 ? 1u : 0u);
 }
 
+/* One pass of the two-pass stream.  A constant-color pass takes the
+ * render-shape emitter, which carries the pass's own fragment constant
+ * and target geometry; a varying pass takes the cell family, the one
+ * emitter of the position-plus-TEX0 record shape, at the pass's extent
+ * over the reference target.  The deferred-draw route selects between
+ * the same two emitters per pass, so a two-render-pass command buffer
+ * whose pipelines carry a varying records the stream this reproduces.
+ */
+static int
+multi_pass_emit_one(const struct r300_triangle_render_shape *pass,
+                    bool clip_space, struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (pass->varying) {
+      return clip_space
+                ? r300_tcl_bypass_triangle_clip_space_family_emit(
+                     pass->width, pass->height, true, 1u, out)
+                : r300_tcl_bypass_triangle_family_emit(
+                     pass->width, pass->height, true, 1u, out);
+   }
+   return clip_space
+             ? r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+                  pass, 1u, out)
+             : r300_tcl_bypass_triangle_render_shape_emit(pass, out);
+}
+
 static int
 multi_pass_emit(const struct r300_triangle_multi_pass *mp, bool clip_space,
                 struct r300_tcl_bypass_triangle_ib *out)
@@ -2270,18 +2295,10 @@ multi_pass_emit(const struct r300_triangle_multi_pass *mp, bool clip_space,
       return -EINVAL;
 
    struct r300_tcl_bypass_triangle_ib first, second;
-   int rc = clip_space
-               ? r300_tcl_bypass_triangle_clip_space_render_shape_emit(
-                    &mp->pass[0], 1u, &first)
-               : r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[0],
-                                                             &first);
+   int rc = multi_pass_emit_one(&mp->pass[0], clip_space, &first);
    if (rc != 0)
       return rc;
-   rc = clip_space
-           ? r300_tcl_bypass_triangle_clip_space_render_shape_emit(
-                &mp->pass[1], 1u, &second)
-           : r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[1],
-                                                         &second);
+   rc = multi_pass_emit_one(&mp->pass[1], clip_space, &second);
    if (rc != 0) {
       r300_tcl_bypass_triangle_release(&first);
       return rc;

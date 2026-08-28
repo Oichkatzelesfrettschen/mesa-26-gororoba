@@ -1575,6 +1575,148 @@ main(void)
          vkUnmapMemory(device, second_memory);
       }
 
+      /* The Flat two-draw form armed on the shim: one pipeline over the
+       * saturated Flat pair, each pass drawing the reference triangle
+       * in its own vertex order from one six-record buffer (B, C, A,
+       * then C, A, B), so the provoking vertex differs between the
+       * passes while the stream bytes are the varying two-pass
+       * emitter's, r3v_native_multi_pass_public_flat_reference.  After
+       * the submission each pass's own carrier holds its provoking
+       * vertex's doubled position in every record, and neither
+       * carrier holds the other pass's.  This is the gather the
+       * attended runner's record-only calibration stops ahead of.
+       */
+      {
+         struct pipeline_shape flat_two_draw_shape = {
+            .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .stride = 16,
+            .blend_enable = VK_FALSE,
+            .vertex_words = r3v_reference_vertex_flat_saturated_spirv,
+            .vertex_bytes = sizeof(r3v_reference_vertex_flat_saturated_spirv),
+            .fragment_words = r3v_reference_fragment_flat_spirv,
+            .fragment_bytes = sizeof(r3v_reference_fragment_flat_spirv),
+         };
+         VkPipeline flat_two_draw = VK_NULL_HANDLE;
+         assert(make_pipeline(&flat_two_draw_shape, pass, layout,
+                              &flat_two_draw) == VK_SUCCESS);
+         static const uint32_t order[2][3] = { { 1, 2, 0 }, { 2, 0, 1 } };
+         float *stream = NULL;
+         float stream_backup[24];
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&stream) == VK_SUCCESS);
+         memcpy(stream_backup, stream, sizeof(stream_backup));
+         for (unsigned p = 0; p < 2; p++)
+            for (unsigned v = 0; v < 3; v++)
+               memcpy(&stream[(p * 3 + v) * 4], &ndc_triangle[order[p][v] * 4],
+                      16);
+         vkUnmapMemory(device, vertex_memory);
+
+         VkCommandBuffer flat_cmd = fresh_cmd();
+         vkCmdBeginRenderPass(flat_cmd, &first_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(flat_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           flat_two_draw);
+         vkCmdBindVertexBuffers(flat_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(flat_cmd, 3, 1, 0, 0);
+         vkCmdEndRenderPass(flat_cmd);
+         vkCmdBeginRenderPass(flat_cmd, &second_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(flat_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           flat_two_draw);
+         vkCmdBindVertexBuffers(flat_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(flat_cmd, 3, 1, 3, 0);
+         vkCmdEndRenderPass(flat_cmd);
+         assert(vkEndCommandBuffer(flat_cmd) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_flat, flat_cmd);
+         assert(native_flat->cell_kind ==
+                R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS);
+         assert(native_flat->deferred_draw_count == 2 &&
+                native_flat->deferred_draws[0].post_vs.flat_mask == 1u &&
+                native_flat->deferred_draws[1].post_vs.flat_mask == 1u &&
+                native_flat->deferred_draws[1].first_vertex == 3);
+
+         struct r300_triangle_multi_pass flat_mp;
+         r3v_native_multi_pass_public_flat_reference(&flat_mp);
+         struct r300_tcl_bypass_triangle_ib flat_cell;
+         assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+                   &flat_mp, &flat_cell) == 0);
+         assert(flat_cell.ib_size_dwords == native_flat->ib_size_dwords);
+         assert(memcmp(flat_cell.ib, native_flat->ib,
+                       flat_cell.ib_size_dwords * sizeof(uint32_t)) == 0);
+         char flat_digest[BLAKE3_OUT_LEN * 2 + 1];
+         r300_triangle_ib_digest_hex(flat_cell.ib, flat_cell.ib_size_dwords,
+                                     flat_digest);
+         r300_tcl_bypass_triangle_release(&flat_cell);
+
+         char flat_manifest_template[] = "/tmp/r3v-public-flat-two-draw-XXXXXX";
+         const char *flat_manifest_dir = mkdtemp(flat_manifest_template);
+         assert(flat_manifest_dir != NULL);
+         struct utsname flat_host;
+         assert(uname(&flat_host) == 0);
+         setenv("R3V_NATIVE_MANIFEST_DIR", flat_manifest_dir, 1);
+         setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+         setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", flat_digest, 1);
+         setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", flat_host.release, 1);
+         setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+                R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+         r3v_native_device_from_handle(device)->manifest_dir =
+            flat_manifest_dir;
+         r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
+         r3v_native_device_from_handle(device)->arming_provider =
+            &r3v_native_shim_arming_provider;
+         const VkResult flat_result = vkQueueSubmit(
+            queue, 1,
+            &(VkSubmitInfo){
+               .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+               .commandBufferCount = 1,
+               .pCommandBuffers = &flat_cmd,
+            },
+            VK_NULL_HANDLE);
+         assert(flat_result == VK_SUCCESS);
+         unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+         unsetenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
+         unsetenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
+         unsetenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+         unsetenv("R3V_NATIVE_MANIFEST_DIR");
+         r3v_native_device_from_handle(device)->arming_provider = NULL;
+         r3v_native_device_from_handle(device)->manifest_dir = NULL;
+         r3v_native_device_from_handle(device)->submit_hazard_accepted = false;
+
+         /* The saturated module writes fma(position, 2, 0), so each
+          * pass's carrier replicates its provoking vertex's doubled
+          * position: B doubled in the first, C doubled in the second.
+          */
+         VK_FROM_HANDLE(r3v_native_device, native_device, device);
+         for (unsigned p = 0; p < 2; p++) {
+            const float *own = &ndc_triangle[order[p][0] * 4];
+            const float own_tint[4] = { own[0] * 2.0f, own[1] * 2.0f,
+                                        own[2] * 2.0f, own[3] * 2.0f };
+            const float *other = &ndc_triangle[order[1 - p][0] * 4];
+            const float other_tint[4] = { other[0] * 2.0f, other[1] * 2.0f,
+                                          other[2] * 2.0f, other[3] * 2.0f };
+            void *carrier_map = NULL;
+            assert(radeon_drm_vk_bo_map(
+                      &native_device->drm,
+                      &native_flat->owned_carriers[p]->bo, &carrier_map) == 0);
+            const float *records = carrier_map;
+            assert(carrier_nondegenerate_triangle_count(records, 8) == 1);
+            assert(carrier_varying_mismatch_count(records, own_tint) == 0);
+            assert(carrier_varying_mismatch_count(records, other_tint) == 3);
+            radeon_drm_vk_bo_unmap(&native_device->drm,
+                                   &native_flat->owned_carriers[p]->bo,
+                                   carrier_map);
+         }
+         vkDestroyPipeline(device, flat_two_draw, NULL);
+
+         /* Restore every record the six-record stream overwrote. */
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            (void **)&stream) == VK_SUCCESS);
+         memcpy(stream, stream_backup, sizeof(stream_backup));
+         vkUnmapMemory(device, vertex_memory);
+      }
+
       vkDestroyFramebuffer(device, second_framebuffer, NULL);
       vkDestroyImageView(device, second_view, NULL);
       vkDestroyImage(device, second_image, NULL);

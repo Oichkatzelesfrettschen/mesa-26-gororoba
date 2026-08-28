@@ -79,6 +79,11 @@ static bool cell_multi_pass = false;
  * two-render-pass command buffer records.
  */
 static bool cell_multi_pass_public = false;
+/* --multi-pass-public-flat selects the two-pass cell both passes
+ * varying: the stream a two-render-pass command buffer records under
+ * the Flat module pair, whose provoking values ride the vertex stream.
+ */
+static bool cell_multi_pass_public_flat = false;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -105,7 +110,9 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
    }
    if (cell_multi_pass) {
       struct r300_triangle_multi_pass mp;
-      if (cell_multi_pass_public)
+      if (cell_multi_pass_public_flat)
+         r3v_native_multi_pass_public_flat_reference(&mp);
+      else if (cell_multi_pass_public)
          r3v_native_multi_pass_public_reference(&mp);
       else
          r3v_native_multi_pass_reference(&mp);
@@ -296,6 +303,12 @@ main(int argc, char **argv)
       cell_multi_pass = true;
       cell_multi_pass_public = true;
       argi += 1;
+   } else if (argc >= argi + 1 &&
+              strcmp(argv[argi], "--multi-pass-public-flat") == 0) {
+      cell_multi_pass = true;
+      cell_multi_pass_public = true;
+      cell_multi_pass_public_flat = true;
+      argi += 1;
    } else if (argc >= argi + 2 && (strcmp(argv[argi], "--msaa") == 0 ||
                                    strcmp(argv[argi], "--msaa-clear") == 0)) {
       cell_msaa = true;
@@ -390,7 +403,7 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s [--varying|--compute-identity|--sampled|"
               "--sampled-bgra|--sampled-arm <name>|--composed <offset>|"
-              "--msaa <sample-count>|--multi-pass|--multi-pass-public|"
+              "--msaa <sample-count>|--multi-pass|--multi-pass-public|--multi-pass-public-flat|"
               "--shape <w> <h> | --clip-space-shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "
