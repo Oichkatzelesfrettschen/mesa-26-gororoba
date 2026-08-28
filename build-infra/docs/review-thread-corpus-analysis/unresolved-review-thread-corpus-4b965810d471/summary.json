@@ -1,0 +1,23 @@
+{
+  "history_state_counts": {
+    "changed-since-review": 475,
+    "changed-without-merged-anchor": 8,
+    "current-path-missing": 19,
+    "partial-history": 2,
+    "review-source-unavailable": 2,
+    "unchanged-since-review": 144
+  },
+  "single_change_candidate_groups": 77,
+  "thread_count": 911,
+  "validation_gate_counts": {
+    "configure-build-and-artifact-check": 14,
+    "documentation-symbol-and-link-check": 131,
+    "python-test-black-and-ruff": 130,
+    "repository-native-focused-check": 10,
+    "schema-generator-and-mutation-check": 37,
+    "shellcheck-and-script-test": 7,
+    "warning-clean-build-and-focused-test": 13,
+    "warning-clean-driver-build-and-focused-test": 308
+  },
+  "work_group_count": 650
+}

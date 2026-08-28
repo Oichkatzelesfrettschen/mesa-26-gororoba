@@ -1,0 +1,24 @@
+
+query($threadId:ID!, $cursor:String!) {
+  node(id:$threadId) {
+    ... on PullRequestReviewThread {
+      id
+      comments(first:100, after:$cursor) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          databaseId
+          author { login }
+          body
+          createdAt
+          updatedAt
+          url
+          diffHunk
+          commit { oid }
+          originalCommit { oid }
+        }
+      }
+    }
+  }
+}

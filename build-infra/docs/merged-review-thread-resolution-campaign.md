@@ -9,6 +9,24 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
 
 ## Canonical artifacts
 
+- `review-thread-corpus/unresolved-review-thread-corpus-4b965810d471/` is the
+  complete unresolved-thread snapshot at merged `main`
+  `4b965810d471ad11a2c94369a9f75dd127651c3f`.  Its two independent 20-page
+  GraphQL passes agree on all 911 exact thread IDs and preserve every comment.
+  Deterministic gzip stores the exact JSON evidence in 6.6 MiB instead of 40
+  MiB; decompressed replay remains authoritative.
+- `review-thread-corpus-analysis/unresolved-review-thread-corpus-4b965810d471/`
+  groups the 911 threads into 650 shared source owners, compares reviewed blobs
+  directly with the pinned `main`, uses each pull request's actual merge commit
+  as the ancestry anchor, and assigns the focused validation gate for each
+  group.
+- `../scripts/review_thread_corpus.py` captures and replays the complete
+  unresolved set.  Its checker rejects omitted or duplicate IDs, incomplete
+  pagination, changed queries or pull-request states, default-branch drift,
+  file-hash changes, and derived views that no longer contain the exact set.
+- `../scripts/review_thread_group_history.py` derives the source-history view.
+  A later commit is only a candidate for inspection; it does not prove that a
+  reviewer claim is fixed.
 - `merged-review-thread-batch-registry.tsv` owns batch identity, state, commit
   anchors, exact endpoint thread IDs, and paths to retained artifacts.
 - `review-thread-frontiers/merged-pr1-pr90/` preserves the first classified
@@ -70,6 +88,50 @@ The historical `last-100-pr-review-comment-audit.md` records a different
 archive operation.  It resolved 143 GitHub threads while only 11 findings were
 addressed in that working tree.  Its status remains historical evidence and
 does not satisfy this campaign's closure gate.
+
+## Complete unresolved-thread work surface
+
+The complete corpus replaces repeated 50-row discovery as the active work
+surface.  The six retained 50-row frontiers remain immutable records of work
+already classified or closed; their chronology is not rewritten into the new
+corpus.
+
+At `4b965810d471ad11a2c94369a9f75dd127651c3f`, the complete scan contains 911
+unresolved threads: 899 on merged pull requests, 12 on closed-unmerged pull
+requests, and none on open pull requests.  Fifty-two thread anchors are
+outdated and 859 remain current.  Outdated status does not satisfy a review
+claim.
+
+The grouping preserves two separate identities:
+
+- A work group joins threads on the same path and source anchor so the shared
+  implementation and test surface is read once.
+- A claim group retains each distinct reviewer concern inside that work group,
+  so similar locations never erase different required fixes.
+
+The source-history view routes the 650 work groups as follows:
+
+| Current-main comparison | Work groups | Threads | Required interpretation |
+|---|---:|---:|---|
+| Reviewed blob differs from current blob | 475 | 714 | Inspect the later commits against every claim; change alone proves nothing |
+| Reviewed blob equals current blob | 144 | 157 | Compare the current mechanism directly with the claim |
+| Current path is absent | 19 | 24 | Locate its replacement or prove that the mechanism was removed or superseded |
+| Changed without a reachable merge anchor | 8 | 9 | Compare blobs without making an ancestry claim |
+| Some review history is unavailable | 2 | 5 | Recover the missing source before disposition |
+| Review source is unavailable | 2 | 2 | Fetch the source or inspect the retained diff |
+
+Seventy-seven changed groups have exactly one candidate path-changing commit.
+They provide the shortest first inspection lane.  The 144 unchanged groups
+form the next direct-claim lane.  The other changed groups are joined by their
+ordered candidate sequence and validation gate so one source-history reading
+can answer several related claims.  Oldest-thread time remains the ordering
+key inside each lane.
+
+Each group ends in exactly one explicit state: fixed on current `main`,
+superseded by a named current mechanism, requiring a repair, or awaiting named
+evidence.  GitHub resolution occurs only for the first two states after the
+supporting code and gate result are merged, followed by an exact-ID
+`isResolved=true` re-query.
 
 ## Oldest-thread denominator
 
@@ -570,12 +632,33 @@ is present on synchronized `main` and the exact node is re-queried.
 Run the offline contract with:
 
 ```sh
+make -C build-infra review-thread-corpus-check
+make -C build-infra review-thread-corpus-unit-test
 make -C build-infra review-thread-frontier-check
 make -C build-infra review-thread-frontier-live-check
 make -C build-infra review-thread-frontier-unit-test
 ```
 
-Capture a subsequent denominator into a new mechanism-named directory with:
+Capture a new complete unresolved set after synchronizing `origin/main` with:
+
+```sh
+repository_root=$(git rev-parse --show-toplevel)
+corpus_revision=$(git -C "$repository_root" rev-parse origin/main)
+corpus_name="unresolved-review-thread-corpus-$(printf '%s' "$corpus_revision" | cut -c1-12)"
+python3 "$repository_root/build-infra/scripts/review_thread_corpus.py" capture \
+  --corpus-id "$corpus_name" \
+  --output-dir "$repository_root/build-infra/docs/review-thread-corpus/$corpus_name"
+python3 "$repository_root/build-infra/scripts/review_thread_group_history.py" build \
+  --corpus-dir "$repository_root/build-infra/docs/review-thread-corpus/$corpus_name" \
+  --repo-root "$repository_root" \
+  --revision "$corpus_revision" \
+  --output-dir "$repository_root/build-infra/docs/review-thread-corpus-analysis/$corpus_name"
+```
+
+The output directories must be absent or empty.  Both checkers replay the
+retained inputs after generation.
+
+The historical 50-row workflow remains reproducible with:
 
 ```sh
 python3 build-infra/scripts/review_thread_batch_capture.py capture \

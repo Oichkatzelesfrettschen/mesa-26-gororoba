@@ -15,6 +15,8 @@ from pathlib import Path
 RETAINED_EVIDENCE_PREFIXES = (
     "build-infra/docs/review-thread-frontiers/",
     "build-infra/docs/review-thread-classifications/",
+    "build-infra/docs/review-thread-corpus/",
+    "build-infra/docs/review-thread-corpus-analysis/",
 )
 RETAINED_EVIDENCE_FILES = {
     "build-infra/docs/last-100-pr-review-comment-audit.md",
@@ -443,6 +445,8 @@ def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
             ".",
             ":(exclude)build-infra/docs/review-thread-frontiers/**",
             ":(exclude)build-infra/docs/review-thread-classifications/**",
+            ":(exclude)build-infra/docs/review-thread-corpus/**",
+            ":(exclude)build-infra/docs/review-thread-corpus-analysis/**",
             ":(exclude)build-infra/docs/last-100-pr-review-comment-audit.md",
         ],
         check=False,
