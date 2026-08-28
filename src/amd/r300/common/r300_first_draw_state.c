@@ -229,6 +229,35 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
       case R300_VAP_VF_MIN_VTX_INDX:
          entry.value = params->min_vtx_index;
          break;
+      /* A multisampled draw owns the AA class: the subsample set, its
+       * positions, and the resolve mode are geometry the caller
+       * declares, so the entries carry the declared words and their
+       * disposition stops reading as a disable.
+       */
+      case R300_GB_AA_CONFIG:
+         if (!params->multisample)
+            break;
+         entry.value = params->gb_aa_config;
+         entry.disposition = R300_FDS_GEOMETRY_PARAMETER;
+         break;
+      case R300_GB_MSPOS0:
+         if (!params->multisample)
+            break;
+         entry.value = params->gb_mspos[0];
+         entry.disposition = R300_FDS_GEOMETRY_PARAMETER;
+         break;
+      case R300_GB_MSPOS1:
+         if (!params->multisample)
+            break;
+         entry.value = params->gb_mspos[1];
+         entry.disposition = R300_FDS_GEOMETRY_PARAMETER;
+         break;
+      case R300_RB3D_AARESOLVE_CTL:
+         if (!params->multisample)
+            break;
+         entry.value = params->rb3d_aaresolve_ctl;
+         entry.disposition = R300_FDS_GEOMETRY_PARAMETER;
+         break;
       default:
          break;
       }

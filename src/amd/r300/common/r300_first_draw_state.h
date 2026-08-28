@@ -71,6 +71,18 @@ struct r300_first_draw_params {
     * a texturing caller owns its own TX state on top of the contract.
     */
    bool texture_enabled;
+   /* The subsample state this draw executes under.  GB_AA_CONFIG,
+    * GB_MSPOS0, GB_MSPOS1, and RB3D_AARESOLVE_CTL are contract entries
+    * written at their single-sample values, so a caller that programmed
+    * them ahead of the contract has them written back before its draw
+    * runs.  Declaring them here makes the contract emit the values the
+    * draw executes under, and the contract stays the one authority over
+    * which registers a first draw owns.
+    */
+   bool multisample;
+   uint32_t gb_aa_config;
+   uint32_t gb_mspos[2];
+   uint32_t rb3d_aaresolve_ctl;
 };
 
 /* The resolved contract: every entry the parameters select, in the order

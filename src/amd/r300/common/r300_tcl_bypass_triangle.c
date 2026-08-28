@@ -1482,10 +1482,13 @@ r300_tcl_bypass_triangle_render_shape_fs(
       "r300-tcl-bypass-triangle-compiled");
 }
 
-int
-r300_tcl_bypass_triangle_render_shape_emit(
-   const struct r300_triangle_render_shape *shape,
-   struct r300_tcl_bypass_triangle_ib *out)
+/* The render-shape emission with an optional subsample declaration; a
+ * NULL declaration is the single-sample contract.
+ */
+static int
+render_shape_emit_aa(const struct r300_triangle_render_shape *shape,
+                     const struct r300_triangle_multisample_state *aa,
+                     struct r300_tcl_bypass_triangle_ib *out)
 {
    memset(out, 0, sizeof(*out));
    struct r300_fragment_binary fs;
@@ -1501,6 +1504,29 @@ r300_tcl_bypass_triangle_render_shape_emit(
       .max_vtx_index = 3 * shape->triangle_count - 1,
       .texture_enabled = false,
    };
+   /* The contract writes GB_AA_CONFIG, both GB_MSPOS words, and
+    * RB3D_AARESOLVE_CTL, so the subsample set travels through it rather
+    * than ahead of it: a set programmed before the contract is written
+    * back to the single-sample values before this draw runs.
+    */
+   if (aa != NULL) {
+      const uint32_t config =
+         r300_tcl_bypass_triangle_gb_aa_config(aa->sample_count);
+      if (config == 0) {
+         r300_fragment_binary_finish(&fs);
+         return -EINVAL;
+      }
+      draw_params.multisample = true;
+      draw_params.gb_aa_config = config;
+      draw_params.gb_mspos[0] =
+         r300_tcl_bypass_triangle_gb_mspos(0, aa->sample_count);
+      draw_params.gb_mspos[1] =
+         r300_tcl_bypass_triangle_gb_mspos(1, aa->sample_count);
+      draw_params.rb3d_aaresolve_ctl =
+         aa->resolve ? (R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
+                        R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE)
+                     : R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL;
+   }
    struct r300_first_draw_contract contract;
    rc = r300_first_draw_contract_resolve(&draw_params, &contract);
    if (rc == 0) {
@@ -1535,6 +1561,14 @@ r300_tcl_bypass_triangle_render_shape_emit(
    rc = r300_tcl_bypass_triangle_emit(&params, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_tcl_bypass_triangle_render_shape_emit(
+   const struct r300_triangle_render_shape *shape,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return render_shape_emit_aa(shape, NULL, out);
 }
 
 /* The US_OUT_FMT_0 word a shape's lane order names: the C*_SEL fields
@@ -1777,42 +1811,45 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
    memcpy(resolve_shape.color_bits, msaa->resolve_color_bits,
           sizeof(resolve_shape.color_bits));
 
+   /* Each half declares its own subsample state, so the values reach the
+    * stream through that half's first-draw contract.  The contract
+    * writes GB_AA_CONFIG, both GB_MSPOS words, and RB3D_AARESOLVE_CTL,
+    * so a set programmed ahead of it is written back to the
+    * single-sample values before the draw the set was meant for.
+    */
+   const struct r300_triangle_multisample_state render_aa = {
+      .sample_count = msaa->sample_count,
+      .resolve = false,
+   };
+   const struct r300_triangle_multisample_state resolve_aa = {
+      .sample_count = msaa->sample_count,
+      .resolve = true,
+   };
    struct r300_tcl_bypass_triangle_ib render_half, resolve_half;
-   int rc = r300_tcl_bypass_triangle_render_shape_emit(&msaa->render,
-                                                       &render_half);
+   int rc = render_shape_emit_aa(&msaa->render, &render_aa, &render_half);
    if (rc != 0)
       return rc;
-   rc = r300_tcl_bypass_triangle_render_shape_emit(&resolve_shape,
-                                                   &resolve_half);
+   rc = render_shape_emit_aa(&resolve_shape, &resolve_aa, &resolve_half);
    if (rc != 0) {
       r300_tcl_bypass_triangle_release(&render_half);
       return rc;
    }
 
-   uint32_t prologue[8], interlude[8], epilogue[8];
-   struct r300_pm4_builder pb, ib_mid, eb;
-   r300_pm4_builder_init(&pb, prologue, ARRAY_SIZE(prologue));
-   r300_pm4_reg(&pb, R300_GB_AA_CONFIG,
-                r300_tcl_bypass_triangle_gb_aa_config(msaa->sample_count));
-   const uint32_t mspos[2] = {
-      r300_tcl_bypass_triangle_gb_mspos(0, msaa->sample_count),
-      r300_tcl_bypass_triangle_gb_mspos(1, msaa->sample_count),
-   };
-   r300_pm4_packet0(&pb, R300_GB_MSPOS0, mspos, 2);
-
-   /* One PACKET0 run over the adjacent OFFSET, PITCH, and CTL registers
-    * followed by the destination's relocation, which is the order
-    * r300_emit_aa_state writes them in.
+   /* The destination's base and pitch are the caller's alone -- no
+    * contract entry names them -- so they stand between the halves,
+    * ahead of the resolve half's contract that arms the mode over them,
+    * with the destination's relocation behind the offset write the way
+    * r300_emit_aa_state orders it.
     */
+   uint32_t interlude[8], epilogue[8];
+   struct r300_pm4_builder ib_mid, eb;
    r300_pm4_builder_init(&ib_mid, interlude, ARRAY_SIZE(interlude));
-   const uint32_t aa[3] = {
+   const uint32_t aa[2] = {
       msaa->destination.target_offset,
       msaa->destination.pitch_pixels &
          (uint32_t)R300_RB3D_AARESOLVE_PITCH_MASK,
-      R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
-         R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE,
    };
-   r300_pm4_packet0(&ib_mid, R300_RB3D_AARESOLVE_OFFSET, aa, 3);
+   r300_pm4_packet0(&ib_mid, R300_RB3D_AARESOLVE_OFFSET, aa, 2);
    const uint32_t reloc_at = r300_pm4_reloc_nop(
       &ib_mid,
       R300_TRIANGLE_RELOC_PAYLOAD(R300_TRIANGLE_SLOT_COMPOSED_COLOR));
@@ -1825,16 +1862,15 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
                 R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
    r300_pm4_reg(&eb, R300_GB_AA_CONFIG, R300_GB_AA_CONFIG_AA_DISABLE);
 
-   if (pb.error != 0 || ib_mid.error != 0 || eb.error != 0 ||
+   if (ib_mid.error != 0 || eb.error != 0 ||
        reloc_at == R300_PM4_NO_INDEX) {
       r300_tcl_bypass_triangle_release(&render_half);
       r300_tcl_bypass_triangle_release(&resolve_half);
       return -EINVAL;
    }
 
-   const uint32_t dwords = pb.count + render_half.ib_size_dwords +
-                           ib_mid.count + resolve_half.ib_size_dwords +
-                           eb.count;
+   const uint32_t dwords = render_half.ib_size_dwords + ib_mid.count +
+                           resolve_half.ib_size_dwords + eb.count;
    uint32_t *ib = calloc(dwords, sizeof(uint32_t));
    if (ib == NULL) {
       r300_tcl_bypass_triangle_release(&render_half);
@@ -1842,8 +1878,7 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
       return -ENOMEM;
    }
    uint32_t at = 0;
-   memcpy(ib + at, prologue, pb.count * sizeof(uint32_t));
-   const uint32_t render_base = (at += pb.count);
+   const uint32_t render_base = at;
    memcpy(ib + at, render_half.ib,
           render_half.ib_size_dwords * sizeof(uint32_t));
    const uint32_t mid_base = (at += render_half.ib_size_dwords);

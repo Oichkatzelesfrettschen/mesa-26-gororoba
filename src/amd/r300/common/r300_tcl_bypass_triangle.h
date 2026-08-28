@@ -543,6 +543,20 @@ extern const uint32_t
  * this constant, and a destination holding neither over judged pixels
  * is the mixture the third counter reports.
  */
+/* The subsample state a half of the multisample cell executes under.
+ * The first-draw contract carries GB_AA_CONFIG, both GB_MSPOS words, and
+ * RB3D_AARESOLVE_CTL, so this declaration reaches the stream through the
+ * contract rather than ahead of it.
+ */
+struct r300_triangle_multisample_state {
+   /* 2 or 4: the subsample sets GB_MSPOS0 and GB_MSPOS1 carry. */
+   uint32_t sample_count;
+   /* This half runs under AARESOLVE_MODE_RESOLVE, so the color backend
+    * sends its downsampled output to RB3D_AARESOLVE_OFFSET.
+    */
+   bool resolve;
+};
+
 struct r300_triangle_msaa_resolve {
    /* The multisample color surface.  Its pitch is the single-sample
     * pitch; the sample count multiplies the allocation's layer size and

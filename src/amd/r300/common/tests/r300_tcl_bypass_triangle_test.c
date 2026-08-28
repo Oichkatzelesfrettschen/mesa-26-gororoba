@@ -2396,21 +2396,71 @@ test_msaa_resolve_cell(void)
    assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, &ib) == 0);
    assert(r300_tcl_bypass_triangle_validate_reloc_sites(&ib) == 0);
 
-   /* GB_AA_CONFIG opens the stream and the MSPOS pair follows it. */
-   assert(ib.ib[0] == CP_PACKET0(R300_GB_AA_CONFIG, 0));
-   assert(ib.ib[1] == r300_tcl_bypass_triangle_gb_aa_config(4));
-   assert(ib.ib[2] == CP_PACKET0(R300_GB_MSPOS0, 1));
-   assert(ib.ib[3] == r300_tcl_bypass_triangle_gb_mspos(0, 4));
-   assert(ib.ib[4] == r300_tcl_bypass_triangle_gb_mspos(1, 4));
+   /* The subsample set travels through each half's first-draw contract,
+    * which writes GB_AA_CONFIG, both GB_MSPOS words, and
+    * RB3D_AARESOLVE_CTL at their single-sample values.  A set programmed
+    * ahead of the contract is written back before the draw the set was
+    * meant for, so the pinned invariant is the sequence of values each
+    * register carries across the stream, not the position of a prologue.
+    */
+   uint32_t aa_config_values[8], mspos0_values[8], resolve_ctl_values[8];
+   uint32_t aa_config_count = 0, mspos0_count = 0, resolve_ctl_count = 0;
+   for (uint32_t i = 0; i < ib.ib_size_dwords;) {
+      const uint32_t header = ib.ib[i];
+      if ((header >> 30) != 0) {
+         /* PACKET3 carries a count in the same field; the cell emits no
+          * other packet type, so the walk steps over both shapes.
+          */
+         i += 2 + ((header >> 16) & 0x3fff);
+         continue;
+      }
+      const uint32_t count = ((header >> 16) & 0x3fff) + 1;
+      const uint32_t reg = (header & 0x1fff) * 4;
+      for (uint32_t k = 0; k < count && i + 1 + k < ib.ib_size_dwords; k++) {
+         const uint32_t at = reg + 4 * k;
+         const uint32_t value = ib.ib[i + 1 + k];
+         if (at == R300_GB_AA_CONFIG && aa_config_count < 8)
+            aa_config_values[aa_config_count++] = value;
+         else if (at == R300_GB_MSPOS0 && mspos0_count < 8)
+            mspos0_values[mspos0_count++] = value;
+         else if (at == R300_RB3D_AARESOLVE_CTL && resolve_ctl_count < 8)
+            resolve_ctl_values[resolve_ctl_count++] = value;
+      }
+      i += 1 + count;
+   }
 
-   /* The resolve run: one PACKET0 over the three adjacent registers,
-    * the destination's offset and masked pitch, resolve mode with the
-    * averaged alpha, and the relocation site behind them.
+   /* Each half's contract arms the subsample set for its own draw, and
+    * the epilogue closes it: three writes, the last one the disable.
+    */
+   assert(aa_config_count == 3);
+   assert(aa_config_values[0] == r300_tcl_bypass_triangle_gb_aa_config(4));
+   assert(aa_config_values[1] == r300_tcl_bypass_triangle_gb_aa_config(4));
+   assert(aa_config_values[2] == R300_GB_AA_CONFIG_AA_DISABLE);
+   assert(mspos0_count == 2);
+   assert(mspos0_values[0] == r300_tcl_bypass_triangle_gb_mspos(0, 4));
+   assert(mspos0_values[1] == r300_tcl_bypass_triangle_gb_mspos(0, 4));
+
+   /* Resolve mode is live for the second half alone: the render half
+    * draws into the multisample surface under NORMAL, the resolve half's
+    * own contract arms RESOLVE, and the epilogue closes it.
+    */
+   assert(resolve_ctl_count == 3);
+   assert(resolve_ctl_values[0] ==
+          R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
+   assert(resolve_ctl_values[1] ==
+          (R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
+           R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE));
+   assert(resolve_ctl_values[2] ==
+          R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
+
+   /* The destination's base and pitch are the caller's alone -- no
+    * contract entry names them -- so one PACKET0 run carries both with
+    * the relocation behind it, ahead of the contract that arms the mode.
     */
    uint32_t run = 0;
-   bool found_run = false, found_close = false, aa_closed = false;
-   for (uint32_t i = 0; i + 4 < ib.ib_size_dwords; i++) {
-      if (ib.ib[i] == CP_PACKET0(R300_RB3D_AARESOLVE_OFFSET, 2)) {
+   bool found_run = false;
+   for (uint32_t i = 0; i + 3 < ib.ib_size_dwords; i++) {
+      if (ib.ib[i] == CP_PACKET0(R300_RB3D_AARESOLVE_OFFSET, 1)) {
          assert(!found_run);
          found_run = true;
          run = i;
@@ -2421,22 +2471,7 @@ test_msaa_resolve_cell(void)
    assert(ib.ib[run + 2] ==
           (msaa.destination.pitch_pixels &
            (uint32_t)R300_RB3D_AARESOLVE_PITCH_MASK));
-   assert(ib.ib[run + 3] ==
-          (R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
-           R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE));
-   /* The destination's relocation sits immediately behind the run. */
-   assert(ib.ib[run + 4] == CP_PACKET3(R300_PM4_PACKET3_NOP, 0));
-
-   /* Both state closes land after the resolve half. */
-   for (uint32_t i = run + 5; i + 1 < ib.ib_size_dwords; i++) {
-      if (ib.ib[i] == CP_PACKET0(R300_RB3D_AARESOLVE_CTL, 0) &&
-          ib.ib[i + 1] == R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL)
-         found_close = true;
-      if (ib.ib[i] == CP_PACKET0(R300_GB_AA_CONFIG, 0) &&
-          ib.ib[i + 1] == R300_GB_AA_CONFIG_AA_DISABLE)
-         aa_closed = true;
-   }
-   assert(found_close && aa_closed);
+   assert(ib.ib[run + 3] == CP_PACKET3(R300_PM4_PACKET3_NOP, 0));
 
    /* Four buffer objects reach the cell: the render half's vertices and
     * the multisample surface, the resolve half's cover vertices, and the

@@ -22,7 +22,7 @@ cell changes.
   (native build), taking the evidence directory as its first argument.
 - Arming digest source: `r3v_native_arming_runner --msaa 4 <dir>` emits
   the resolve cell, binds its relocation payloads to the merged indices,
-  and reports `477 IB dwords, blake3 e78da1dc...`.  The attended runner
+  and reports `471 IB dwords, blake3 be78db1c...`.  The attended runner
   prints the same digest on its `[shape]` line before it creates the
   instance.
 - Cell kind: `R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE`.  The arming
@@ -164,6 +164,36 @@ the device wrote inside the extent.
   producer's domain, so the zero counters carry no claim.
 - A nonzero dmesg delta or a lockup ends the boot under the shared
   procedure's rollback rules.
+
+## First attempt: the subsample set never reached either draw
+
+The first attended submission on RS482 (boot
+`e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, cell blake3 `e78da1dc`, 477 IB
+dwords) returned `vkQueueSubmit` 0 with an empty dmesg delta, a 104 us
+guarded interval, and the destination holding `0xa5a5a5a5` in all 4096
+footprint pixels: the `seed` pass read `interior_exact=1` over 1104
+judged pixels and the census found neither predicted dword anywhere.
+Falsification criterion 2 fired.
+
+The retained `ib.bin` names the mechanism.  `GB_AA_CONFIG`,
+`GB_MSPOS0`, `GB_MSPOS1`, and `RB3D_AARESOLVE_CTL` are all first-draw
+contract entries (`r300_first_draw_state.c`), written at their
+single-sample values as `EXPLICIT_DISABLE` and `REQUIRED_INVARIANT`.
+The cell programmed them in a prologue and an interlude, ahead of each
+half's contract, so every one was written back before the draw it was
+meant for: `GB_AA_CONFIG` armed at dword 0 and disabled at dword 15,
+`GB_MSPOS0` reset to the center sample at dword 157, and
+`RB3D_AARESOLVE_CTL` armed at dword 236 and returned to NORMAL at dword
+256, before the cover draw.  The silicon executed what the stream said:
+two ordinary single-sample draws into the multisample surface and no
+resolve, so the destination correctly kept its seed.
+
+The subsample set now travels through each half's own contract, which
+`r300_first_draw_params` carries as a declaration, and the interlude
+holds only the destination's base and pitch -- the two words no contract
+entry names.  The emitted stream arms `GB_AA_CONFIG` and the subsample
+positions inside both contracts, `AARESOLVE_CTL` NORMAL for the render
+half and RESOLVE for the resolve half, and closes both at the epilogue.
 
 ## Retained record
 
