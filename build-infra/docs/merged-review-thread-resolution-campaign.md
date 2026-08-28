@@ -505,32 +505,47 @@ merged current-main assessment at
 `ba9456059bb308b499b8940148d78b806adf67fc`.  The generated
 `action-frontier.tsv` keeps the retained chronological order and binds every
 row to its exact GraphQL ID, current source evidence, required observation,
-falsifier, and merged evidence commit when one exists.
+falsifier, and merged evidence commit when one exists.  The append-only
+`evidence-refresh-ledger.tsv` records later checks whenever a closed row's
+declared source owner changes.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| closed as fixed | 10 | Retain exact merge and post-resolution evidence |
+| closed as fixed | 12 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
-| actionable | 33 | Implement, test, merge, synchronize, then resolve |
+| actionable | 31 | Implement, test, merge, synchronize, then resolve |
 | pending RS482 evidence | 2 | Execute the declared hardware oracle |
 
 The closed rows cover DRM-shim exec locators and residue
 calibration, source-header policy, r300 compiler initialization, the qualified
 native triangle path, deletion of the Gallium-backed Vulkan lane, GPU-producer
 WINDOW routing, route ownership, and producer-specific arming.  Static source
-and Git history establish those code-state dispositions.  PR 1942 binds all
-fifteen current targets to one merged assessment authority.  Each exact thread
-is resolved, immediately re-queried, and recorded with two additional live
-verification queries in the partial recovery journal.
+and Git history establish those code-state dispositions.  PR 1942 binds fifteen
+targets to one merged assessment authority.  PR 1957 binds ignored-subproject
+rejection and immutable source-view qualification to merged build and test
+evidence.  All seventeen exact threads are resolved, immediately re-queried,
+and recorded with two additional live verification queries in the partial
+recovery journal.
 
-The actionable rows retain concrete repair gates for clean source identity,
-DRM-shim selected-device and provenance handling, native clipping and carrier
+Five closed-row owners changed after PR 1942.  Their refresh rows bind the
+current merge commit `292c0318de096554d204725077710d177a3196f2`: fallible
+queue preparation still precedes every deferred target write, every bounded
+draw carrier still uses the command-pool allocator, the retired hybrid-compute
+input remains absent from live code and documentation, both GPU-producer routes
+retain WINDOW coordinates, and the generated producer header remains
+SPDX-only under the verified-holder policy.  The qualified source commit
+`4420389af742cd6354dceac2584fd4fd8ad74ec8` and merge commit `292c0318de09`
+share Git tree `b04b76b74023f9299a5abcf80fef58941bf2ede9`; its 498-test run reports
+434 passes, 40 expected failures, 24 skips, and no unexpected failures.
+
+The actionable rows retain concrete repair gates for DRM-shim selected-device
+and provenance handling, native clipping and carrier
 ownership, evidence pins, Terakan state and lifetime checks, runner process and
 input semantics, dispatch analysis, exact producer payload identity, and
 producer replay interpretation.  The intensity-blend and C1C packet rows stay
 pending until their exact RS482 oracles produce retained evidence.
 
-Live GraphQL state reports 15 resolved and 35 unresolved exact IDs.  Each
+Live GraphQL state reports 17 resolved and 33 unresolved exact IDs.  Each
 remaining ID resolves only after its repair or hardware-evidence transition
 is present on synchronized `main` and the exact node is re-queried.
 
