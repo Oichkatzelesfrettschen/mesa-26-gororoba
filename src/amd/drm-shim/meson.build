@@ -226,6 +226,24 @@ if with_tests and cc.get_define(
     timeout: 30,
     suite: ['amd', 'drm-shim'],
   )
+  test(
+    'radeon-noop-drm-shim-preload-changed-device',
+    radeon_noop_drm_shim_preload_test,
+    args: ['changed-device'],
+    env: preload_modern_environment,
+    depends: [libradeon_noop_drm_shim],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
+  test(
+    'radeon-noop-drm-shim-preload-malformed-token',
+    radeon_noop_drm_shim_preload_test,
+    args: ['malformed-token'],
+    env: preload_modern_environment,
+    depends: [libradeon_noop_drm_shim],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
 
   foreach selector_test : [
     ['empty', ''],

@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -154,7 +155,7 @@ query_driver(int fd, char *name, size_t name_size)
 }
 
 static bool
-query_device_id(int fd)
+query_device_id_matches(int fd, uint32_t expected_device_id)
 {
    uint32_t device_id = UINT32_MAX;
    struct drm_radeon_info info = {
@@ -162,7 +163,13 @@ query_device_id(int fd)
       .value = (uintptr_t)&device_id,
    };
    return ioctl(fd, DRM_IOCTL_RADEON_INFO, &info) == 0 &&
-          device_id == EXPECTED_DEVICE_ID;
+          device_id == expected_device_id;
+}
+
+static bool
+query_device_id(int fd)
+{
+   return query_device_id_matches(fd, EXPECTED_DEVICE_ID);
 }
 
 static void
@@ -613,6 +620,126 @@ check_cross_driver_exec(const char *self, const char *amdgpu_dso)
 }
 
 static int
+run_changed_device_child(int argc, char **argv)
+{
+   if (argc != 3)
+      return 2;
+
+   int inherited_fd = atoi(argv[2]);
+   struct stat status;
+   int ret = fstat(inherited_fd, &status);
+   CHECK(ret == 0 && S_ISREG(status.st_mode),
+         "changed-device inherited fstat returned %d mode 0%o errno %d",
+         ret, status.st_mode, errno);
+
+   char driver_name[32];
+   errno = 0;
+   CHECK(!query_driver(inherited_fd, driver_name, sizeof(driver_name)) &&
+            errno == ENOTTY,
+         "changed-device inherited fd was claimed with errno %d", errno);
+
+   int fresh_fd = open(render_path, O_RDWR | O_CLOEXEC);
+   CHECK(fresh_fd >= 0 &&
+            query_device_id_matches(fresh_fd, UINT32_C(0x7140)),
+         "changed-device fresh render fd did not select 0x7140, errno %d",
+         errno);
+   if (fresh_fd >= 0)
+      close(fresh_fd);
+   return failures ? 1 : 0;
+}
+
+static int
+run_changed_device_exec(const char *self)
+{
+   int inherited_fd = open(render_path, O_RDWR);
+   CHECK(inherited_fd >= 0,
+         "changed-device render open failed with errno %d", errno);
+   if (inherited_fd < 0)
+      return 1;
+
+   pid_t child = fork();
+   CHECK(child >= 0, "changed-device fork failed with errno %d", errno);
+   if (child == 0) {
+      char fd_text[32];
+      snprintf(fd_text, sizeof(fd_text), "%d", inherited_fd);
+      if (setenv("RADEON_GPU_ID", "0x7140", 1) < 0)
+         _exit(126);
+      execl(self, self, "changed-device-child", fd_text, NULL);
+      _exit(127);
+   }
+   if (child > 0) {
+      int status;
+      pid_t waited;
+      do {
+         waited = waitpid(child, &status, 0);
+      } while (waited < 0 && errno == EINTR);
+      CHECK(waited == child && WIFEXITED(status) &&
+               WEXITSTATUS(status) == 0,
+            "changed-device child status is 0x%x",
+            waited == child ? status : -1);
+   }
+
+   close(inherited_fd);
+   return failures ? 1 : 0;
+}
+
+extern char **environ;
+
+static int
+run_malformed_token_exec(const char *self)
+{
+   int malformed_fd =
+      syscall(SYS_memfd_create, "malformed-drm-shim-state-token", 0);
+   CHECK(malformed_fd >= 0,
+         "malformed-token memfd create failed with errno %d", errno);
+   if (malformed_fd < 0)
+      return 1;
+
+   long page_size = sysconf(_SC_PAGESIZE);
+   int truncate_result =
+      page_size > 0 ? ftruncate(malformed_fd, page_size) : -1;
+   CHECK(page_size > 0 && truncate_result == 0,
+         "malformed-token sizing failed with errno %d", errno);
+   CHECK((fcntl(malformed_fd, F_GETFD) & FD_CLOEXEC) == 0,
+         "malformed-token fd unexpectedly has FD_CLOEXEC");
+   if (page_size <= 0 || truncate_result < 0) {
+      close(malformed_fd);
+      return 1;
+   }
+
+   pid_t child = fork();
+   CHECK(child >= 0, "malformed-token fork failed with errno %d", errno);
+   if (child == 0) {
+      char locator[128];
+      int length =
+         snprintf(locator, sizeof(locator),
+                  "v1i:%d:00000000000000000000000000000000:radeon",
+                  malformed_fd);
+      if (length < 0 || length >= (int)sizeof(locator) ||
+          setenv("MESA_DRM_SHIM_EXEC_LOCATOR", locator, 1) < 0)
+         _exit(126);
+      char *const child_argv[] = {(char *)self,
+                                  "malformed-token-trigger", NULL};
+      syscall(SYS_execve, self, child_argv, environ);
+      _exit(127);
+   }
+   if (child > 0) {
+      int status;
+      pid_t waited;
+      do {
+         waited = waitpid(child, &status, 0);
+      } while (waited < 0 && errno == EINTR);
+      CHECK(waited == child && WIFSIGNALED(status) &&
+               WTERMSIG(status) == SIGABRT,
+            "malformed-token child status is 0x%x",
+            waited == child ? status : -1);
+   }
+
+   close(malformed_fd);
+   return failures ? 1 : 0;
+}
+
+static int
 run_unloaded(int argc, char **argv)
 {
    if (argc != 3)
@@ -666,6 +793,18 @@ main(int argc, char **argv)
    }
    if (strcmp(argv[1], "wrong-driver-child") == 0)
       return run_wrong_driver_child(argc, argv);
+   if (strcmp(argv[1], "changed-device-child") == 0)
+      return run_changed_device_child(argc, argv);
+   if (strcmp(argv[1], "changed-device") == 0)
+      return run_changed_device_exec(argv[0]);
+   if (strcmp(argv[1], "malformed-token") == 0)
+      return run_malformed_token_exec(argv[0]);
+   if (strcmp(argv[1], "malformed-token-trigger") == 0) {
+      int fd = open(render_path, O_RDWR);
+      if (fd >= 0)
+         close(fd);
+      return 1;
+   }
 
    use_legacy_stat =
       strstr(argv[1], "legacy") != NULL;
