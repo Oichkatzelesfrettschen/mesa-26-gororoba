@@ -777,6 +777,18 @@ if with_tests and prog_nm_r3v.found()
     args : [files('tests/r3v_qualification_inventory.py'), '--selftest'],
     suite : ['r3v'],
   )
+  # --require-tests refuses a required test the build root does not
+  # register while admitting host absences (replay tools, deployment
+  # identity), so a meson.build arm renamed away from the inventory's
+  # required list refuses in the tree rather than first in the package
+  # recipe's check().
+  test(
+    'r3v-qualification-inventory-require-tests',
+    prog_python,
+    args : [files('tests/r3v_qualification_inventory.py'),
+            meson.project_build_root(), '--require-tests'],
+    suite : ['r3v'],
+  )
   test(
     'r3v-qualification-inventory-known-bad-zero-native',
     prog_python,
