@@ -511,9 +511,9 @@ declared source owner changes.
 
 | State | Threads | Required transition |
 | --- | ---: | --- |
-| closed as fixed | 12 | Retain exact merge and post-resolution evidence |
+| closed as fixed | 14 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
-| actionable | 31 | Implement, test, merge, synchronize, then resolve |
+| actionable | 29 | Implement, test, merge, synchronize, then resolve |
 | pending RS482 evidence | 2 | Execute the declared hardware oracle |
 
 The closed rows cover DRM-shim exec locators and residue
@@ -523,9 +523,15 @@ WINDOW routing, route ownership, and producer-specific arming.  Static source
 and Git history establish those code-state dispositions.  PR 1942 binds fifteen
 targets to one merged assessment authority.  PR 1957 binds ignored-subproject
 rejection and immutable source-view qualification to merged build and test
-evidence.  All seventeen exact threads are resolved, immediately re-queried,
-and recorded with two additional live verification queries in the partial
-recovery journal.
+evidence.  PR 1963 source commit
+`0b426c293ff1703e8fd887d18c69df959451f2c7`, merged as
+`e7c80fe34c480cd632acb6b0ea8e3477a92dad43`, distinguishes a valid token for
+another selected Radeon device from malformed token input and gives both
+load-bearing locator comments executable fixed-string source traces.  The
+changed-device and malformed-token tests passed 40 repeated executions in
+addition to the affected 14-test DRM-shim set.  All nineteen exact threads are
+resolved, immediately re-queried, and recorded with two additional live
+verification queries in the partial recovery journal.
 
 Five closed-row owners changed after PR 1942.  Their refresh rows bind the
 current merge commit `292c0318de096554d204725077710d177a3196f2`: fallible
@@ -538,14 +544,24 @@ SPDX-only under the verified-holder policy.  The qualified source commit
 share Git tree `b04b76b74023f9299a5abcf80fef58941bf2ede9`; its 498-test run reports
 434 passes, 40 expected failures, 24 skips, and no unexpected failures.
 
-The actionable rows retain concrete repair gates for DRM-shim selected-device
-and provenance handling, native clipping and carrier
-ownership, evidence pins, Terakan state and lifetime checks, runner process and
-input semantics, dispatch analysis, exact producer payload identity, and
-producer replay interpretation.  The intensity-blend and C1C packet rows stay
-pending until their exact RS482 oracles produce retained evidence.
+Four closed-row owners changed again before this ledger update.  Refresh rows
+at current main `9e7339cbd3e966ceaf2075f1894010b5897f5fc8` confirm that PR 1963
+retains inherited locator reconstruction and the write-only readable witness,
+with identical DRM-shim file blobs from its merge through current main.  PR
+1964 extends the public-surface harness and native-cell recorder for a
+two-pass binding while retaining pre-write refusal, deferred execution, and
+the WINDOW GPU-producer route.  Its r3v and r300 suites report 334 passes, 39
+expected failures, and 24 skips; silicon execution remained unrun in that
+source commit.
 
-Live GraphQL state reports 17 resolved and 33 unresolved exact IDs.  Each
+The actionable rows retain concrete repair gates for native clipping and
+carrier ownership, evidence pins, Terakan state and lifetime checks, runner
+process and input semantics, dispatch analysis, exact producer payload
+identity, and producer replay interpretation.  The intensity-blend and C1C
+packet rows stay pending until their exact RS482 oracles produce retained
+evidence.
+
+Live GraphQL state reports 19 resolved and 31 unresolved exact IDs.  Each
 remaining ID resolves only after its repair or hardware-evidence transition
 is present on synchronized `main` and the exact node is re-queried.
 

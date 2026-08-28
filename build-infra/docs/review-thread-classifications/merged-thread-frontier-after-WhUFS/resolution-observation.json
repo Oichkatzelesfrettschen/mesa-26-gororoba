@@ -57,6 +57,24 @@
     },
     {
       "disposition": "fixed",
+      "evidence_commit": "e7c80fe34c480cd632acb6b0ea8e3477a92dad43",
+      "evidence_pr": 1963,
+      "merged_at": "2026-08-28T02:57:37Z",
+      "resolved_at": "2026-08-28T03:05:30Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XRpjF",
+      "verified_at": "2026-08-28T03:05:31Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "e7c80fe34c480cd632acb6b0ea8e3477a92dad43",
+      "evidence_pr": 1963,
+      "merged_at": "2026-08-28T02:57:37Z",
+      "resolved_at": "2026-08-28T03:05:32Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XRpjI",
+      "verified_at": "2026-08-28T03:05:32Z"
+    },
+    {
+      "disposition": "fixed",
       "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
       "evidence_pr": 1942,
       "merged_at": "2026-08-27T20:46:29Z",
