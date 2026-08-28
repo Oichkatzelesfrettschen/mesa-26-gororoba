@@ -448,8 +448,11 @@ above is rung zero; the ladder after it runs in this order:
    deviation, which calibrates the replay against a known-bad input.
    The volume, cube, and array view rows separate by what their cases
    execute.  Every one of them is an `object_management` case
-   (`vktApiObjectManagementTests.cpp`), which creates its object, binds
-   memory, and destroys it, and samples through none of it, so admission
+   (`vktApiObjectManagementTests.cpp`).  Its `Image` entry carries an
+   empty `Resources` and a `create` that calls `createImage` alone, so
+   an image case creates and destroys without binding memory; its
+   `ImageView` entry binds memory to the dependency image and creates a
+   view over it.  Neither draws, submits, nor samples, so admission
    alone moves the row and no fetch runs behind it.  `r3v_CreateImage`
    admits `VK_IMAGE_TYPE_3D` over the layer stride its depth slices
    already stack at, reporting that stride as `depthPitch`, and
