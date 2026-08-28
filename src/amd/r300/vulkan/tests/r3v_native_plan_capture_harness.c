@@ -15,6 +15,8 @@
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/tests/r300_retained_route_digests.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -85,6 +87,7 @@ read_file(const char *path, size_t *size)
    char *buf = malloc((size_t)n + 1);
    assert(buf != NULL && fread(buf, 1, (size_t)n, f) == (size_t)n);
    fclose(f);
+   buf[n] = '\0';
    *size = (size_t)n;
    return buf;
 }
@@ -410,9 +413,7 @@ destroy_triangle_resources(VkDevice device, struct triangle_resources *r)
 }
 
 /* Records one draw of vertex_count vertices into an already-allocated,
- * already-begun cmd, leaving it ended and ready to submit; factored out
- * of submit_triangle_draw so the two-executable-buffers-refuse arm can
- * record two real executable IBs without submitting them individually.
+ * already-begun cmd, leaving it ready for vkEndCommandBuffer.
  */
 static void
 record_triangle_draw(VkCommandBuffer cmd, struct triangle_resources *r,
@@ -453,15 +454,14 @@ record_triangle_draw(VkCommandBuffer cmd, struct triangle_resources *r,
    vkCmdEndRenderPass(cmd);
 }
 
-/* Records and submits one draw of vertex_count vertices against r.  The
- * result helper exposes submit failure before any queue-idle wait; the
- * success wrapper waits for completion.  The command buffer allocates from
- * r's pool and is not freed, matching the harness's single-shot arms.
+/* Records one complete command buffer against r.  The command buffer
+ * allocates from r's pool and remains live until the pool is destroyed,
+ * matching the harness's single-shot arms and letting refusal arms inspect
+ * or submit the exact recorded object.
  */
-static VkResult
-submit_triangle_draw_result(VkDevice device, VkQueue queue,
-                            struct triangle_resources *r,
-                            uint32_t vertex_count)
+static VkCommandBuffer
+record_triangle_draw_command(VkDevice device, struct triangle_resources *r,
+                             uint32_t vertex_count)
 {
    VkCommandBuffer cmd;
    assert(vkAllocateCommandBuffers(
@@ -479,6 +479,16 @@ submit_triangle_draw_result(VkDevice device, VkQueue queue,
                                     }) == VK_SUCCESS);
    record_triangle_draw(cmd, r, vertex_count);
    assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+   return cmd;
+}
+
+static VkResult
+submit_triangle_draw_result(VkDevice device, VkQueue queue,
+                            struct triangle_resources *r,
+                            uint32_t vertex_count)
+{
+   VkCommandBuffer cmd =
+      record_triangle_draw_command(device, r, vertex_count);
    return vkQueueSubmit(queue, 1,
                         &(VkSubmitInfo){
                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -505,6 +515,10 @@ main(int argc, char **argv)
    assert(mkdtemp(dir) != NULL);
    char transcript[4096];
    snprintf(transcript, sizeof(transcript), "%s/transcript.plan", dir);
+   char diagnostic[4096];
+   snprintf(diagnostic, sizeof(diagnostic), "%s/diagnostic.log", dir);
+   if (strcmp(arm, "relocation-count-diagnostic") == 0)
+      setenv("MESA_LOG_FILE", diagnostic, 1);
    setenv("R3V_NATIVE_PLAN_CAPTURE_FILE", transcript, 1);
    unsetenv("R3V_NATIVE_MANIFEST_DIR");
    unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
@@ -669,6 +683,75 @@ main(int argc, char **argv)
    vkGetDeviceQueue(device, 0, 0, &queue);
 
    struct triangle_resources res = create_triangle_resources(device);
+   if (strcmp(arm, "relocation-count-diagnostic") == 0) {
+      /* A 64-reference command plus the completion BO crosses the plan
+       * schema ceiling by one.  Capture refuses before dereferencing the
+       * synthetic reference roles or reaching the ioctl, so the harness can
+       * exercise the diagnostic over distinct live BO handles without
+       * inventing a hardware command-stream shape.
+       */
+      native_device->vk.physical->instance->enable_debug_logging = true;
+
+      VkCommandBuffer cmd = record_triangle_draw_command(device, &res, 3);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cmd, cmd);
+      free(native_cmd->references);
+      native_cmd->references =
+         calloc(R3V_NATIVE_PLAN_RELOC_MAX, sizeof(*native_cmd->references));
+      assert(native_cmd->references != NULL);
+      native_cmd->reference_count = R3V_NATIVE_PLAN_RELOC_MAX;
+
+      VkDeviceMemory memories[R3V_NATIVE_PLAN_RELOC_MAX];
+      for (uint32_t i = 0; i < R3V_NATIVE_PLAN_RELOC_MAX; i++) {
+         assert(vkAllocateMemory(device,
+                                 &(VkMemoryAllocateInfo){
+                                    .sType =
+                                       VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                    .allocationSize =
+                                       R3V_NATIVE_MEMORY_ALIGNMENT,
+                                    .memoryTypeIndex = 0,
+                                 },
+                                 NULL, &memories[i]) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_memory, memory, memories[i]);
+         native_cmd->references[i] = (struct r3v_native_bo_reference){
+            .handle = memory->bo.handle,
+            .read_domains = RADEON_GEM_DOMAIN_GTT,
+            .memory = memory,
+         };
+      }
+
+      assert(vkQueueSubmit(queue, 1,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1,
+                              .pCommandBuffers = &cmd,
+                           },
+                           VK_NULL_HANDLE) == VK_ERROR_DEVICE_LOST);
+      size_t diagnostic_size;
+      char *diagnostic_text = read_file(diagnostic, &diagnostic_size);
+      char expected_diagnostic[128];
+      snprintf(expected_diagnostic, sizeof(expected_diagnostic),
+               "submission carries %u relocations, outside the plan schema",
+               R3V_NATIVE_PLAN_RELOC_MAX + 1);
+      assert(strstr(diagnostic_text, expected_diagnostic) != NULL);
+      free(diagnostic_text);
+
+      destroy_triangle_resources(device, &res);
+      for (uint32_t i = 0; i < R3V_NATIVE_PLAN_RELOC_MAX; i++)
+         vkFreeMemory(device, memories[i], NULL);
+      vkDestroyDevice(device, NULL);
+      destroy_instance(instance, NULL);
+      assert(access(transcript, F_OK) != 0);
+      char empty_marker[sizeof(transcript) + sizeof(".no_nonempty_ib")];
+      snprintf(empty_marker, sizeof(empty_marker), "%s.no_nonempty_ib",
+               transcript);
+      assert(unlink(empty_marker) == 0);
+      assert(unlink(diagnostic) == 0);
+      assert(rmdir(dir) == 0);
+      printf("relocation-count-diagnostic: schema refusal reports %u "
+             "relocations\n",
+             R3V_NATIVE_PLAN_RELOC_MAX + 1);
+      return 0;
+   }
    if (strcmp(arm, "write-failure-status") == 0) {
       /* Device creation proves the capture parent exists.  Removing the
        * still-empty parent afterward makes the post-completion transcript

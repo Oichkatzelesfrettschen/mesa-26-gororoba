@@ -2959,6 +2959,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                          'manifest-dir-refused', 'second-device-ordinal',
                          'derived-path-exists-refused',
                          'missing-directory-refused',
+                         'relocation-count-diagnostic',
                          'write-failure-status']
     test(
       'r3v-native-plan-capture-@0@'.format(capture_arm),
