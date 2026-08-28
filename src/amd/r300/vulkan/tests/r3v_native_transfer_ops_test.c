@@ -810,9 +810,10 @@ check_optimal_subresource_layout_oracle(const struct fixture *f)
                   layout.size == expect_size,
                "under NDEBUG, vkGetImageSubresourceLayout on the "
                "OPTIMAL image falls through to the transfer family's "
-               "linear span (offset %llu rowPitch %u size %llu, "
+               "linear span (offset %llu rowPitch %llu size %llu, "
                "expected offset 0 rowPitch %u size %llu)",
-               (unsigned long long)layout.offset, layout.rowPitch,
+               (unsigned long long)layout.offset,
+               (unsigned long long)layout.rowPitch,
                (unsigned long long)layout.size, expect_row_pitch,
                (unsigned long long)expect_size);
       }
