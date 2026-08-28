@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * Native R3V transfer-op fixture: dword-pattern fills, inline updates,
- * and unit-scale blits through host mappings at submission, with the
- * overlap, scale, flip, alignment, and unsupported-layout refusals
+ * and nearest scaling and unit-scale blits through host mappings at
+ * submission, with the overlap, scale, flip, alignment, and unsupported-layout refusals
  * that keep the recorded surface fail-closed under the drm-shim
  * transport.
  */
