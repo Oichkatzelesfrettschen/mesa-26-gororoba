@@ -554,9 +554,9 @@ if with_tests
     timeout : 300,
   )
   # A dEQP-VK binary reaches the target as a bundle whose provenance
-  # (source commit and cleanliness, CMake pins, compiler, digest, dynamic
-  # inventory, ELF ISA-needed note, above-K8 screen with its allow
-  # pattern, data and mustpass tree digests)
+  # (source commit and cleanliness, CMake source/build pins, ELF and
+  # dynamic symbol versions, XED ISA-set census, complete GNU property
+  # note, checked-in corpus pin, data and mustpass tree digests)
   # verifies itself before a run; the selftest calibrates the refusals.
   test(
     'r3v-deqp-provision-selftest',
