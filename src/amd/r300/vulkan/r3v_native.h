@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
+#include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
@@ -509,6 +510,13 @@ struct r3v_native_deferred_draw {
     * selects, applied to the CPU route's records after the job and
     * before clipping (r3v_post_vs_lowering.h). */
    struct r3v_post_vs_lowering post_vs;
+   /* Set when the pipeline selected the direct GA Flat route: the
+    * recorded cell carries the varying through color 0 under the
+    * canonical plan, and execution keeps each source triangle's
+    * distinct values when its clipping class is ACCEPT, replicating
+    * the provoking value ahead of the clipper otherwise
+    * (r3v_interpolation_lowering.h). */
+   bool direct_flat;
    /* Set when the GPU producer route is admitted for this submission:
     * the queue composed the producer pass ahead of the consumer IB, the
     * carrier is poisoned instead of host-filled, and the words below
@@ -879,6 +887,13 @@ struct r3v_native_device {
     * mid-process.  r3v_native_device_refresh_delivery_gates re-runs the
     * same read for harnesses that vary the route on one device.
     */
+   /* R3V_NATIVE_FLAT_REPLICATION_PINNED=1 pins every Flat interface
+    * to host provoking-value replication, the route the first Flat
+    * receipt qualified, so a runner that retains that receipt records
+    * the same stream after the direct GA route became the selector's
+    * default; unset, empty, or any other value leaves the selector's
+    * conjunction in force. */
+   const char *flat_replication_pin;
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
@@ -1278,6 +1293,9 @@ struct r3v_native_pipeline {
     */
    struct r3v_shader_interface_link shader_interface;
    struct r3v_post_vs_lowering post_vs;
+   /* The route the linked interface's Flat locations take at record
+    * time; the execution-time clipping class refines it per triangle. */
+   enum r3v_interpolation_route interpolation_route;
    /* Set when the vertex job stores the location-0 varying and the
     * fragment module is the pass-through: the draw records the varying
     * cell over eight-dword records.
@@ -1620,7 +1638,8 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
-   bool varying, uint32_t triangle_count, const uint32_t color_bits[4],
+   bool varying, bool flat_color0, uint32_t triangle_count,
+   const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled);
 
 /* Executes the command buffer's deferred draw at submission: gathers the

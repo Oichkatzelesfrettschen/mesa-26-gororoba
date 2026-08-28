@@ -50,6 +50,7 @@ STAGES = (
     ("r3v_reference_vertex_flat_spirv", HERE / "r3v_reference_vertex_flat.vert"),
     ("r3v_reference_fragment_flat_spirv", HERE / "r3v_reference_fragment_flat.frag"),
     ("r3v_reference_vertex_flat_saturated_spirv", HERE / "r3v_reference_vertex_flat_saturated.vert"),
+    ("r3v_reference_vertex_flat_rgba_spirv", HERE / "r3v_reference_vertex_flat_rgba.vert"),
     ("r3v_reference_vertex_mixed_spirv", HERE / "r3v_reference_vertex_mixed.vert"),
     ("r3v_reference_fragment_mixed_spirv", HERE / "r3v_reference_fragment_mixed.frag"),
     ("r3v_reference_fragment_noperspective_spirv", HERE / "r3v_reference_fragment_noperspective.frag"),
