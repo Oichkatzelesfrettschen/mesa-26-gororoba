@@ -58,6 +58,21 @@ changes.
   the `[witness]` step reads each pass's carrier back and requires the TEX0 payload verbatim and
   the reciprocal W lanes pairwise distinct in the 1 : 1/4 : 1/2 ratio.
 
+## Production route receipt
+
+`--production` (with `--candidate w-select`) runs the same two-pass cell with every probe gate
+unset: the Smooth pipeline replicates and the NoPerspective pipeline selects
+`R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT` on its own (`r3v_interpolation_route_select`), the
+runner re-derives both routes through the selector and refuses any other pair, and the recorded
+stream is the gated `W_SELECT` candidate's byte for byte (cell blake3 `32d547e9`, the same arming
+digest from `--multi-pass-rs-w-select-probe`). The runner refuses a present probe gate ahead of
+object creation, since a gate would hand the interface a candidate instead of the route under
+test. The census, predictions, witness, and verdict are the probe's; an `affine` classification
+of the NoPerspective target under the perspective control premise is the receipt of the public
+Vulkan NoPerspective route on RS482, retained apart from the word-classification bundles. The
+recording boundary is calibrated on the drm-shim under
+`r3v-native-noperspective-production-route-record`.
+
 ## Registered models
 
 Each model is a function of the record triple at a pixel center, evaluated in binary64 and

@@ -2524,6 +2524,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The production NoPerspective route's recording boundary: no probe
+  # gate, the NoPerspective pipeline on the direct GB W_SELECT route,
+  # and the recorded stream the gated W_SELECT candidate's byte for byte.
+  test(
+    'r3v-native-noperspective-production-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'w-select', '--production'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding
