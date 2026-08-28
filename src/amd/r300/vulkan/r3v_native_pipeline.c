@@ -510,13 +510,15 @@ create_pipeline(struct r3v_native_device *device,
       .fragment_consumes_destination = varying && !sampled,
       .provoking_first_representable = true,
    };
-   /* The Flat replication pin scopes to Flat interfaces: a NoPerspective
-    * interface keeps its route under the pin. */
+   /* The Flat replication pin demotes the direct GA route alone: a
+    * NoPerspective interface keeps its route, and an UNSUPPORTED mix
+    * stays refused, under the pin. */
    pipeline->interpolation_route =
-      device->flat_replication_pin != NULL &&
-            admitted.shader_interface.flat_mask != 0
-         ? R3V_INTERPOLATION_ROUTE_REPLICATE
-         : r3v_interpolation_route_select(&interpolation, NULL);
+      r3v_interpolation_route_select(&interpolation, NULL);
+   if (device->flat_replication_pin != NULL &&
+       pipeline->interpolation_route ==
+          R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0)
+      pipeline->interpolation_route = R3V_INTERPOLATION_ROUTE_REPLICATE;
    /* The admission above refused any topology other than the triangle
     * list, so that predicate is the admission's. */
    const struct r3v_rs_probe_query probe = {
