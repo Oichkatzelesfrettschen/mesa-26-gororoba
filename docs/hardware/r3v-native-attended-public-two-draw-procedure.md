@@ -57,9 +57,16 @@ adds only what the public route changes.
   draw, so the exterior and canary predictions are the sentinel on
   either realization, and the runner seeds both allocations with it as
   well.
-- Vertex payload: the reference four-dword position records in one
-  vertex buffer both passes bind; the buffer's memory is no reference
-  of the submission because each pass gathers into its own carrier.
+- Vertex payload: the reference triangle in NDC, `(-0.75, -0.75)`,
+  `(0.75, -0.75)`, `(0, 0.75)` with `z = 0` and `w = 1`, in one vertex
+  buffer both passes bind.  With the delivery gates closed the public
+  route resolves a clip-space carrier and admits the clip volume alone,
+  applying the viewport transform `(x + 1) * extent / 2` itself, which
+  lands this payload on the reference window positions 8, 56, and 32
+  exactly.  The runner runs that transform ahead of any device work
+  and refuses a payload that misses the reference.  The buffer's memory
+  is no reference of the submission because each pass gathers into its
+  own carrier.
 
 ## Declarations
 
@@ -140,6 +147,29 @@ deferred draws pending over extents inside the render family, or
 neither -- and the harness now armed-submits the public two-draw on the
 shim, where the two load-op clears realize on the host and the noop
 stream completes.
+
+### Second attempt: refused at the CPU gather
+
+The second attempt, mesa main `dc380fd9cdd` with the predicate frozen,
+refused identically: `vkQueueSubmit` -4 ahead of the ioctl, token
+absent, dmesg delta empty.  The submit object was retained this time,
+so the refusal lay past the arming verdict.  A software breakpoint
+could not name it: the driver's ELF identity check compares the
+executable's mapped text against the file through `/proc/self/mem`,
+and gdb's `int3` bytes fail it with `ESTALE`, so the probe ran under
+`strace` (every syscall succeeded; two `GEM_MMAP`s, unmap, refusal)
+and then under gdb hardware breakpoints, which plant no bytes.  The
+site is `execute_one_deferred_draw` in `r3v_native_cell.c`: "vertex 0
+outside the admitted clip volume or w != 1".  The runner had copied
+the GPU-producer runner's window-space payload, whose route declares a
+window-space carrier; with the delivery gates closed the public route
+resolves a clip-space carrier, admits the clip volume alone, and
+transforms to the window itself.  The record-only calibration stops
+ahead of the gather, and the harness's armed shim submission uses its
+own NDC payload, so neither covered the runner's payload.  The runner
+now writes the NDC reference and applies the route's transform itself
+ahead of the device, refusing a payload that misses the reference
+window positions.
 
 ## Retained record
 
