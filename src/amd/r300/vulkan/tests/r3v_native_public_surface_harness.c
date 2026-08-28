@@ -292,6 +292,47 @@ carrier_nondegenerate_triangle_count(const float *records,
    return count;
 }
 
+/* Counts the eight-dword records of every non-degenerate carrier
+ * triangle whose varying differs from the four expected values: zero
+ * under a Flat lowering, at least one when the varying interpolates
+ * three distinct vertex values. */
+static uint32_t
+carrier_varying_mismatch_count(const float *records, const float expected[4])
+{
+   uint32_t mismatches = 0;
+   for (uint32_t triangle = 0;
+        triangle < R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT;
+        triangle++) {
+      if (carrier_triangle_area(records, 8, triangle) == 0.0)
+         continue;
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         const float *varying = &records[(triangle * 3 + vertex) * 8 + 4];
+         mismatches += memcmp(varying, expected, 16) != 0;
+      }
+   }
+   return mismatches;
+}
+
+/* A module with every OpDecorate Flat removed: the interface reads
+ * Smooth, so the pipeline it builds carries no lowering.  Returns the
+ * word count written to out. */
+static size_t
+strip_flat_decorations(const uint32_t *words, size_t count, uint32_t *out)
+{
+   memcpy(out, words, count * 4);
+   size_t at = 5;
+   while (at < count) {
+      const uint32_t len = out[at] >> 16;
+      if ((out[at] & 0xffffu) == 71 && len == 3 && out[at + 2] == 14) {
+         memmove(&out[at], &out[at + len], (count - at - len) * 4);
+         count -= len;
+         continue;
+      }
+      at += len;
+   }
+   return count;
+}
+
 static void
 assert_float_near(float actual, float expected)
 {
@@ -1262,6 +1303,98 @@ main(void)
              0xff0000ffu);
       vkUnmapMemory(device, color_memory);
       vkUnmapMemory(device, second_memory);
+
+      /* Two-pass state isolation: the first pass draws under the Flat
+       * pipeline and the second under the Smooth varying pipeline over
+       * one vertex buffer whose tint is the position, so the first
+       * carrier replicates vertex 0's position into every record while
+       * the second keeps each vertex's own, and the lowering of one
+       * pass leaves the other's records untouched. */
+      {
+         struct pipeline_shape flat_pass_shape = {
+            .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .stride = 16,
+            .blend_enable = VK_FALSE,
+            .vertex_words = r3v_reference_vertex_flat_spirv,
+            .vertex_bytes = sizeof(r3v_reference_vertex_flat_spirv),
+            .fragment_words = r3v_reference_fragment_flat_spirv,
+            .fragment_bytes = sizeof(r3v_reference_fragment_flat_spirv),
+         };
+         struct pipeline_shape smooth_pass_shape = flat_pass_shape;
+         smooth_pass_shape.vertex_words = r3v_reference_vertex_varying_spirv;
+         smooth_pass_shape.vertex_bytes =
+            sizeof(r3v_reference_vertex_varying_spirv);
+         smooth_pass_shape.fragment_words =
+            r3v_reference_fragment_varying_spirv;
+         smooth_pass_shape.fragment_bytes =
+            sizeof(r3v_reference_fragment_varying_spirv);
+         VkPipeline flat_pass = VK_NULL_HANDLE, smooth_pass = VK_NULL_HANDLE;
+         assert(make_pipeline(&flat_pass_shape, pass, layout, &flat_pass) ==
+                VK_SUCCESS);
+         assert(make_pipeline(&smooth_pass_shape, pass, layout,
+                              &smooth_pass) == VK_SUCCESS);
+         VkCommandBuffer isolation_cmd = fresh_cmd();
+         vkCmdBeginRenderPass(isolation_cmd, &first_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(isolation_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           flat_pass);
+         vkCmdBindVertexBuffers(isolation_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(isolation_cmd, 3, 1, 0, 0);
+         vkCmdEndRenderPass(isolation_cmd);
+         vkCmdBeginRenderPass(isolation_cmd, &second_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(isolation_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           smooth_pass);
+         vkCmdBindVertexBuffers(isolation_cmd, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(isolation_cmd, 3, 1, 0, 0);
+         vkCmdEndRenderPass(isolation_cmd);
+         assert(vkEndCommandBuffer(isolation_cmd) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_isolation,
+                        isolation_cmd);
+         VK_FROM_HANDLE(r3v_native_device, native_device, device);
+         assert(native_isolation->deferred_draw_count == 2);
+         assert(native_isolation->deferred_draws[0].post_vs.flat_mask == 1 &&
+                native_isolation->deferred_draws[1].post_vs.flat_mask == 0);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_isolation) == VK_SUCCESS);
+         void *pass_map = NULL;
+         assert(radeon_drm_vk_bo_map(
+                   &native_device->drm,
+                   &native_isolation->owned_carriers[0]->bo, &pass_map) == 0);
+         const float *flat_pass_records = pass_map;
+         assert(carrier_nondegenerate_triangle_count(flat_pass_records, 8) ==
+                1);
+         assert(carrier_varying_mismatch_count(flat_pass_records,
+                                               &ndc_triangle[0]) == 0);
+         radeon_drm_vk_bo_unmap(&native_device->drm,
+                                &native_isolation->owned_carriers[0]->bo,
+                                pass_map);
+         assert(radeon_drm_vk_bo_map(
+                   &native_device->drm,
+                   &native_isolation->owned_carriers[1]->bo, &pass_map) == 0);
+         const float *smooth_pass_records = pass_map;
+         assert(carrier_nondegenerate_triangle_count(smooth_pass_records,
+                                                     8) == 1);
+         /* The smooth reference vertex module writes
+          * fma(position, (0.5, 0.5, 0, 0), (0.5, 0.5, 0.25, 1)), so each
+          * record keeps its own vertex's tint. */
+         for (uint32_t vertex = 0; vertex < 3; vertex++) {
+            const float own_tint[4] = {
+               ndc_triangle[vertex * 4 + 0] * 0.5f + 0.5f,
+               ndc_triangle[vertex * 4 + 1] * 0.5f + 0.5f, 0.25f, 1.0f,
+            };
+            for (uint32_t c = 0; c < 4; c++)
+               assert_float_near(smooth_pass_records[vertex * 8 + 4 + c],
+                                 own_tint[c]);
+         }
+         radeon_drm_vk_bo_unmap(&native_device->drm,
+                                &native_isolation->owned_carriers[1]->bo,
+                                pass_map);
+         vkDestroyPipeline(device, flat_pass, NULL);
+         vkDestroyPipeline(device, smooth_pass, NULL);
+      }
 
       /* A third pass has no deferred record to fill and refuses. */
       VkCommandBuffer three_pass_cmd = fresh_cmd();
@@ -3494,6 +3627,75 @@ main(void)
                 R3V_NATIVE_REFUSAL_RESULT &&
              unconsumed_pipeline == VK_NULL_HANDLE);
 
+      /* Flat over the partially clipped triangle: the vertex buffer
+       * still holds varying_crossing, whose tint is the vertex position
+       * itself, so every non-degenerate record of the clipped fan
+       * carries the provoking (first) vertex's position as its varying,
+       * the generated clip vertices included. */
+      static const float provoking_tint[4] = { -2.0f, 0.0f, 0.5f, 1.0f };
+      assert(make_pipeline(&flat_shape, pass, layout, &flat_pipeline) ==
+             VK_SUCCESS);
+      VkCommandBuffer flat_cmd = record_triangle_draw(
+         &begin_pass, flat_pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_flat_cmd, flat_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_flat_cmd) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm, &native_flat_cmd->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *flat_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(flat_records, 8) == 2);
+      assert(carrier_varying_mismatch_count(flat_records, provoking_tint) ==
+             0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_flat_cmd->owned_carriers[0]->bo,
+         carrier_map);
+      vkDestroyPipeline(device, flat_pipeline, NULL);
+
+      /* Metadata-drop mutation: the same modules with every Flat
+       * decoration stripped build a Smooth pipeline, and the same draw
+       * interpolates the three positions, so the flat oracle counts
+       * mismatching records. */
+      uint32_t stripped_vs[sizeof(r3v_reference_vertex_flat_spirv) / 4];
+      uint32_t stripped_fs[sizeof(r3v_reference_fragment_flat_spirv) / 4];
+      const size_t stripped_vs_words = strip_flat_decorations(
+         r3v_reference_vertex_flat_spirv,
+         sizeof(r3v_reference_vertex_flat_spirv) / 4, stripped_vs);
+      const size_t stripped_fs_words = strip_flat_decorations(
+         r3v_reference_fragment_flat_spirv,
+         sizeof(r3v_reference_fragment_flat_spirv) / 4, stripped_fs);
+      assert(stripped_vs_words < sizeof(r3v_reference_vertex_flat_spirv) / 4);
+      assert(stripped_fs_words <
+             sizeof(r3v_reference_fragment_flat_spirv) / 4);
+      struct pipeline_shape dropped_shape = flat_shape;
+      dropped_shape.vertex_words = stripped_vs;
+      dropped_shape.vertex_bytes = stripped_vs_words * 4;
+      dropped_shape.fragment_words = stripped_fs;
+      dropped_shape.fragment_bytes = stripped_fs_words * 4;
+      VkPipeline dropped_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&dropped_shape, pass, layout, &dropped_pipeline) ==
+             VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_pipeline, native_dropped, dropped_pipeline);
+      assert(native_dropped->shader_interface.flat_mask == 0 &&
+             native_dropped->post_vs.flat_mask == 0);
+      VkCommandBuffer dropped_cmd = record_triangle_draw(
+         &begin_pass, dropped_pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_dropped_cmd, dropped_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_dropped_cmd) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_dropped_cmd->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *dropped_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(dropped_records, 8) == 2);
+      assert(carrier_varying_mismatch_count(dropped_records,
+                                            provoking_tint) != 0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_dropped_cmd->owned_carriers[0]->bo,
+         carrier_map);
+      vkDestroyPipeline(device, dropped_pipeline, NULL);
+
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
       memcpy(map, ndc_triangle, sizeof(ndc_triangle));
@@ -3599,6 +3801,39 @@ main(void)
       radeon_drm_vk_bo_unmap(
          &native_device->drm, &native_indexed->owned_carriers[0]->bo,
          carrier_map);
+
+      /* The Flat pipeline over the same (2, 0, 1) list: the provoking
+       * vertex is the list's first entry, vertex 2, whose tint is its
+       * own position, so all three records carry it. */
+      struct pipeline_shape indexed_flat_shape = contract_shape;
+      indexed_flat_shape.vertex_words = r3v_reference_vertex_flat_spirv;
+      indexed_flat_shape.vertex_bytes =
+         sizeof(r3v_reference_vertex_flat_spirv);
+      indexed_flat_shape.fragment_words = r3v_reference_fragment_flat_spirv;
+      indexed_flat_shape.fragment_bytes =
+         sizeof(r3v_reference_fragment_flat_spirv);
+      VkPipeline indexed_flat_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&indexed_flat_shape, pass, layout,
+                           &indexed_flat_pipeline) == VK_SUCCESS);
+      VkCommandBuffer indexed_flat_cmd = record_indexed_triangle_draw(
+         &begin_pass, indexed_flat_pipeline, vertex_buffer, index_buffer);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_indexed_flat,
+                     indexed_flat_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_indexed_flat) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_indexed_flat->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *indexed_flat_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(indexed_flat_records, 8) ==
+             1);
+      assert(carrier_varying_mismatch_count(indexed_flat_records,
+                                            &ndc_triangle[2 * 4]) == 0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_indexed_flat->owned_carriers[0]->bo,
+         carrier_map);
+      vkDestroyPipeline(device, indexed_flat_pipeline, NULL);
       vkDestroyBuffer(device, index_buffer, NULL);
       vkFreeMemory(device, index_memory, NULL);
    }

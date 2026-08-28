@@ -482,6 +482,8 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
    pipeline->shader_interface = admitted.shader_interface;
+   r3v_post_vs_lowering_from_interface(&pipeline->shader_interface,
+                                       &pipeline->post_vs);
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

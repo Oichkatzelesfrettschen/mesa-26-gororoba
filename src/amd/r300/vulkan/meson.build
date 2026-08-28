@@ -77,6 +77,24 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # Post-vertex lowering: a Flat varying replicates the provoking
+  # vertex's value across its triangle, Smooth passes untouched, the
+  # per-location mask selects inside a multi-varying record, indexed
+  # permutations follow the dereferenced list order, and the wrong
+  # provoking vertex and a dropped qualifier each move the oracle.
+  test(
+    'r3v-post-vs-lowering',
+    executable(
+      'r3v_post_vs_lowering_test',
+      files('tests/r3v_post_vs_lowering_test.c', 'r3v_post_vs_lowering.c',
+            'r3v_shader_interface.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Delivery route policy: the R2VB gate opens on the exact value alone,
   # the format set is closed, and every refused input lands on the CPU
   # route with a naming reason.
@@ -158,6 +176,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_post_vs_lowering.c',
   'r3v_shader_interface.c',
   'r3v_vertex_spirv.c',
 )

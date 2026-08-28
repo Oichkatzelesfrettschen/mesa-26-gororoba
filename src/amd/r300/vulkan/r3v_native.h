@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
+#include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
@@ -504,6 +505,10 @@ struct r3v_native_deferred_draw {
     */
    struct r300_vertex_job vertex_job;
    bool vertex_job_identity;
+   /* The post-vertex lowering the pipeline's linked interface
+    * selects, applied to the CPU route's records after the job and
+    * before clipping (r3v_post_vs_lowering.h). */
+   struct r3v_post_vs_lowering post_vs;
    /* Set when the GPU producer route is admitted for this submission:
     * the queue composed the producer pass ahead of the consumer IB, the
     * carrier is poisoned instead of host-filled, and the words below
@@ -1272,6 +1277,7 @@ struct r3v_native_pipeline {
     * The draw's post-vertex lowering reads its qualifiers here.
     */
    struct r3v_shader_interface_link shader_interface;
+   struct r3v_post_vs_lowering post_vs;
    /* Set when the vertex job stores the location-0 varying and the
     * fragment module is the pass-through: the draw records the varying
     * cell over eight-dword records.
