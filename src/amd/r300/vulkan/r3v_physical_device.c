@@ -719,7 +719,9 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
     * subset, advertised exactly so a capability-aware application reaches
     * the qualified route: the two 32-bpp lane orders the render-shape
     * cell places into its target and the F32-family vertex formats the
-    * CPU vertex executor gathers.
+    * CPU vertex executor gathers. BLIT bits remain absent because
+    * r3v_CmdBlitImage executes only a same-format, unflipped subset,
+    * which cannot satisfy Vulkan's full format-feature domain.
     */
    switch (vk_format) {
    case VK_FORMAT_R8G8B8A8_UNORM:
@@ -732,9 +734,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
          VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
          VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->optimalTilingFeatures = properties->linearTilingFeatures;
       properties->bufferFeatures =
          VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
@@ -755,9 +755,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
          VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
          VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->optimalTilingFeatures = properties->linearTilingFeatures;
       /* tests/r3v_conformance_nonpass_ledger.tsv row
        * mandatory_format_feature_absent names the RS480 die's absent
@@ -773,7 +771,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    case VK_FORMAT_R32_UINT:
       /* The transfer family's texel table: the copies move these
        * texels by size through host mappings and never interpret them,
-       * so the grant is the transfer and nearest-blit bits on the linear layout,
+       * so the grant is the two transfer bits on the linear layout,
        * and identically on VK_IMAGE_TILING_OPTIMAL since
        * r3v_CreateImage executes both tilings as the one linear span
        * (r3v_native_transfer_footprint_bytes) for this family.
@@ -783,14 +781,10 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        */
       properties->linearTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->optimalTilingFeatures =
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
-         VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->bufferFeatures = VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
       break;
    case VK_FORMAT_R32_SFLOAT:

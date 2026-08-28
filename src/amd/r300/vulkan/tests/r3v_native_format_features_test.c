@@ -184,15 +184,15 @@ main(int argc, char **argv)
          physical_device, legacy_query, properties2_query,
          VK_FORMAT_R32_SFLOAT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
          "R32_SFLOAT vertex fetch");
-      /* The transfer family's texel table grants the copy and nearest-blit
-       * bits on both the linear and the optimal layout through both
+      /* The transfer family's texel table grants the two copy bits on both
+       * the linear and the optimal layout through both
        * queries: r3v_CreateImage executes VK_IMAGE_TILING_OPTIMAL over
        * the transfer family as the identical linear span
        * (r3v_native_transfer_footprint_bytes), so the format-property
        * grant matches what vkCreateImage actually admits. The required
        * optimal-tiling features these formats lack (sampled, color
-       * attachment, storage) are a recorded conformance deviation and
-       * stay ungranted until their routes execute.  The
+       * attachment, blit, storage) are a recorded conformance deviation
+       * and stay ungranted until their routes execute.  The
        * two UNORM8 formats the render-shape cell places into a target
        * leave this list: each names one US_OUT_FMT_0 lane order, so
        * both carry the color-attachment bit on both layouts.
@@ -203,9 +203,7 @@ main(int argc, char **argv)
       };
       const VkFormatFeatureFlags transfer_bits =
          VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-         VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
-         VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-         VK_FORMAT_FEATURE_BLIT_DST_BIT;
+         VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
       for (unsigned i = 0;
            i < sizeof(transfer_formats) / sizeof(transfer_formats[0]); i++) {
          VkFormatProperties legacy;
@@ -221,8 +219,8 @@ main(int argc, char **argv)
                      legacy.linearTilingFeatures &&
                   properties2.formatProperties.optimalTilingFeatures ==
                      legacy.optimalTilingFeatures,
-               "transfer-family texel format %u grants exactly the copy and "
-               "nearest-blit bits on the linear and optimal layout, nothing "
+               "transfer-family texel format %u grants exactly the two copy "
+               "bits on the linear and optimal layout, nothing "
                "more (linear 0x%08x optimal 0x%08x buffer 0x%08x)",
                transfer_formats[i], legacy.linearTilingFeatures,
                legacy.optimalTilingFeatures, legacy.bufferFeatures);
@@ -262,7 +260,7 @@ main(int argc, char **argv)
                             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
                             "R32_UINT texel buffer");
       /* The two render-family lane orders carry the color-attachment
-       * grant plus the transfer and nearest-blit grants, identically on
+       * grant plus the transfer grants, identically on
        * both layouts: r3v_CreateImage executes VK_IMAGE_TILING_OPTIMAL
        * as the one linear span for both usages, so the two tiling
        * grants are equal.
@@ -277,9 +275,13 @@ main(int argc, char **argv)
          VkFormatProperties legacy;
          legacy_query(physical_device, render_formats[i], &legacy);
          CHECK((legacy.linearTilingFeatures & render_bits) == render_bits &&
-                  legacy.optimalTilingFeatures == legacy.linearTilingFeatures,
+                  legacy.optimalTilingFeatures == legacy.linearTilingFeatures &&
+                  (legacy.linearTilingFeatures &
+                   (VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+                    VK_FORMAT_FEATURE_BLIT_DST_BIT)) == 0,
                "render-family format %u grants color attachment and the "
-               "transfer bits identically on both layouts (linear "
+               "transfer bits without blit bits identically on both layouts "
+               "(linear "
                "0x%08x optimal 0x%08x)",
                (unsigned)render_formats[i], legacy.linearTilingFeatures,
                legacy.optimalTilingFeatures);
