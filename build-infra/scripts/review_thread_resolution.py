@@ -28,9 +28,13 @@ from review_thread_frontier import (
     validate_frontier,
 )
 
-SCHEMA = "mesa-review-thread-resolution-v1"
+LEGACY_SCHEMA = "mesa-review-thread-resolution-v1"
 RECOVERY_SCHEMA = "mesa-review-thread-resolution-v2"
-EXPECTED_BATCH_SIZE = 50
+SCHEMA = "mesa-review-thread-resolution-v3"
+ORDERED_SCHEMAS = frozenset((LEGACY_SCHEMA, SCHEMA))
+CLOSABLE_COMPLETION_STATES = frozenset(
+    ("fixed-on-main", "superseded-on-main", "invalid-on-main")
+)
 REPOSITORY_OWNER = "Oichkatzelesfrettschen"
 REPOSITORY_NAME = "mesa-26-gororoba"
 RECOVERY_ENTRY_FIELDS = frozenset(
@@ -59,6 +63,8 @@ def parse_args() -> argparse.Namespace:
     resolve.add_argument("--frontier", type=Path, required=True)
     resolve.add_argument("--journal", type=Path, required=True)
     resolve.add_argument("--ledger", type=Path, required=True)
+    resolve.add_argument("--repo-root", type=Path, required=True)
+    resolve.add_argument("--main-ref", default="origin/main")
     resolve.add_argument("--evidence-pr", type=int, required=True)
     resolve.add_argument("--merged-at", required=True)
     record = subparsers.add_parser("record")
@@ -168,7 +174,7 @@ def load_journal(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise FrontierError(f"cannot read resolution journal: {error}") from error
     if not isinstance(payload, dict) or payload.get("schema") not in (
-        SCHEMA,
+        *ORDERED_SCHEMAS,
         RECOVERY_SCHEMA,
     ):
         raise FrontierError("resolution journal has an invalid schema")
@@ -177,7 +183,9 @@ def load_journal(path: Path) -> dict[str, Any]:
 
 def validate_resolution_frontier(rows: list[dict[str, str]]) -> None:
     """Reject malformed or non-campaign frontiers before GraphQL construction."""
-    validate_frontier(rows, EXPECTED_BATCH_SIZE)
+    if not rows:
+        raise FrontierError("resolution frontier is empty")
+    validate_frontier(rows, len(rows))
 
 
 def parse_journal_timestamp(value: Any, context: str) -> datetime:
@@ -190,7 +198,7 @@ def write_ledger(
     path: Path, rows: list[dict[str, str]], journal: dict[str, Any]
 ) -> None:
     entries = {entry["thread_id"]: entry for entry in journal["entries"]}
-    if journal["schema"] == SCHEMA:
+    if journal["schema"] in ORDERED_SCHEMAS:
         ledger_rows = rows
     else:
         rows_by_thread = {row["thread_id"]: row for row in rows}
@@ -237,7 +245,7 @@ def validate_journal(
     rows: list[dict[str, str]], journal: dict[str, Any], path: Path
 ) -> None:
     schema = journal.get("schema")
-    if schema not in (SCHEMA, RECOVERY_SCHEMA):
+    if schema not in (*ORDERED_SCHEMAS, RECOVERY_SCHEMA):
         raise FrontierError("resolution journal has an invalid schema")
     if journal.get("frontier_sha256") != frontier_hash(path):
         raise FrontierError("journal frontier hash differs")
@@ -254,7 +262,7 @@ def validate_journal(
     expected = [row["thread_id"] for row in rows]
     if len(set(ids)) != len(ids):
         raise FrontierError("journal entries have duplicate thread IDs")
-    if schema == SCHEMA:
+    if schema in ORDERED_SCHEMAS:
         if ids != expected[: len(ids)]:
             raise FrontierError("journal entries are not an ordered frontier prefix")
     else:
@@ -306,10 +314,56 @@ def validate_journal(
                 raise FrontierError(
                     f"recovery entry {entry_number} predates journal start"
                 )
+    if schema == SCHEMA:
+        evidence_commit = journal.get("evidence_commit")
+        if not isinstance(evidence_commit, str) or not COMMIT_PATTERN.fullmatch(
+            evidence_commit
+        ):
+            raise FrontierError("resolution journal has invalid evidence commit")
+        if {row["merged_evidence_commit"] for row in rows} != {evidence_commit}:
+            raise FrontierError(
+                "resolution journal evidence commit differs from frontier"
+            )
+        evidence_pr = journal.get("evidence_pr")
+        if (
+            not isinstance(evidence_pr, int)
+            or isinstance(evidence_pr, bool)
+            or evidence_pr <= 0
+        ):
+            raise FrontierError("resolution journal has invalid evidence PR")
+        merged_at = parse_journal_timestamp(
+            journal.get("merged_at"), "resolution journal merge"
+        )
+        started_at = parse_journal_timestamp(
+            journal.get("started_at"), "resolution journal start"
+        )
+        if started_at < merged_at:
+            raise FrontierError("resolution journal starts before its evidence merge")
+        for entry_number, entry in enumerate(entries, start=1):
+            if set(entry) != {"thread_id", "resolved_at"}:
+                raise FrontierError(
+                    f"resolution entry {entry_number} has invalid fields"
+                )
+            resolved_at = parse_journal_timestamp(
+                entry["resolved_at"], f"resolution entry {entry_number}"
+            )
+            if resolved_at < started_at:
+                raise FrontierError(
+                    f"resolution entry {entry_number} predates journal start"
+                )
     if journal.get("complete") and (
         ids != expected or not journal.get("post_verified_at")
     ):
         raise FrontierError("complete journal lacks full postflight evidence")
+    if schema == SCHEMA and journal.get("complete"):
+        post_verified_at = parse_journal_timestamp(
+            journal["post_verified_at"], "resolution journal postflight"
+        )
+        if entries and post_verified_at < max(
+            parse_journal_timestamp(entry["resolved_at"], "resolution entry")
+            for entry in entries
+        ):
+            raise FrontierError("resolution postflight predates an entry")
     if schema == RECOVERY_SCHEMA:
         if journal.get("complete"):
             post_verified_at = parse_journal_timestamp(
@@ -346,10 +400,10 @@ def verify_commit_on_main(
         check=False,
     )
     if ancestry.returncode == 1:
-        raise FrontierError("record evidence commit is not an ancestor of main")
+        raise FrontierError("evidence commit is not an ancestor of main")
     if ancestry.returncode != 0:
         diagnostic = ancestry.stderr.strip() or ancestry.stdout.strip()
-        raise FrontierError(f"record ancestry check failed: {diagnostic}")
+        raise FrontierError(f"evidence ancestry check failed: {diagnostic}")
 
 
 def verify_record_targets(
@@ -365,7 +419,7 @@ def verify_record_targets(
         main_identity = evidence_target_identity(repository_root, main_ref, target)
         if evidence_identity != main_identity:
             raise FrontierError(
-                f"record evidence target differs on main: {target.declaration}"
+                f"evidence target differs on main: {target.declaration}"
             )
 
 
@@ -382,38 +436,83 @@ def verify_record_pull_request(
     payload = graphql(query, {"number": str(evidence_pr)})
     pull_request = payload.get("data", {}).get("repository", {}).get("pullRequest")
     if not isinstance(pull_request, dict) or pull_request.get("merged") is not True:
-        raise FrontierError("record evidence PR is not merged")
+        raise FrontierError("evidence PR is not merged")
     merge_commit = pull_request.get("mergeCommit")
     if not isinstance(merge_commit, dict) or merge_commit.get("oid") != evidence_commit:
-        raise FrontierError("record evidence PR merge commit differs")
+        raise FrontierError("evidence PR merge commit differs")
     if pull_request.get("mergedAt") != merged_at_text:
-        raise FrontierError("record evidence PR merge time differs")
+        raise FrontierError("evidence PR merge time differs")
 
 
-def verify_record_authority(row: dict[str, str], arguments: argparse.Namespace) -> None:
-    if not COMMIT_PATTERN.fullmatch(arguments.evidence_commit):
-        raise FrontierError("record evidence commit is not 40-hex")
-    if arguments.evidence_pr <= 0:
-        raise FrontierError("record evidence PR must be positive")
-    merged_at = parse_timestamp(arguments.merged_at, "record merged_at")
-    repository_root = arguments.repo_root.resolve()
+def verify_merged_authority(
+    rows: list[dict[str, str]],
+    repository_root_argument: Path,
+    main_ref: str,
+    evidence_commit: str,
+    evidence_pr: int,
+    merged_at_text: str,
+) -> None:
+    if not COMMIT_PATTERN.fullmatch(evidence_commit):
+        raise FrontierError("evidence commit is not 40-hex")
+    if evidence_pr <= 0:
+        raise FrontierError("evidence PR must be positive")
+    merged_at = parse_timestamp(merged_at_text, "evidence merged_at")
+    repository_root = repository_root_argument.resolve()
     discovered_root = Path(
         run_git(repository_root, "rev-parse", "--show-toplevel")
     ).resolve()
     if discovered_root != repository_root:
-        raise FrontierError("record repository root is not the Git worktree root")
+        raise FrontierError("repository root is not the Git worktree root")
 
-    verify_commit_on_main(
-        repository_root, arguments.evidence_commit, arguments.main_ref
-    )
-    verify_record_targets(
-        row, repository_root, arguments.evidence_commit, arguments.main_ref
-    )
-    verify_record_pull_request(
-        arguments.evidence_commit, arguments.evidence_pr, arguments.merged_at
-    )
+    verify_commit_on_main(repository_root, evidence_commit, main_ref)
+    for row in rows:
+        verify_record_targets(row, repository_root, evidence_commit, main_ref)
+    verify_record_pull_request(evidence_commit, evidence_pr, merged_at_text)
     if merged_at > datetime.now(UTC):
-        raise FrontierError("record evidence PR merge time is in the future")
+        raise FrontierError("evidence PR merge time is in the future")
+
+
+def verify_record_authority(row: dict[str, str], arguments: argparse.Namespace) -> None:
+    verify_merged_authority(
+        [row],
+        arguments.repo_root,
+        arguments.main_ref,
+        arguments.evidence_commit,
+        arguments.evidence_pr,
+        arguments.merged_at,
+    )
+
+
+def verify_resolution_authority(
+    rows: list[dict[str, str]], arguments: argparse.Namespace
+) -> str:
+    for row_number, row in enumerate(rows, start=2):
+        if row["completion_state"] not in CLOSABLE_COMPLETION_STATES:
+            raise FrontierError(
+                f"resolution row {row_number} is not fixed, superseded, or invalid "
+                "on main"
+            )
+        if row["disposition"] not in CLOSED_DISPOSITIONS:
+            raise FrontierError(
+                f"resolution row {row_number} lacks a closed disposition"
+            )
+        if row["resolution_state"] != "unresolved":
+            raise FrontierError(
+                f"resolution row {row_number} is not awaiting resolution"
+            )
+    evidence_commits = {row["merged_evidence_commit"] for row in rows}
+    if len(evidence_commits) != 1:
+        raise FrontierError("resolution frontier spans multiple evidence commits")
+    evidence_commit = next(iter(evidence_commits))
+    verify_merged_authority(
+        rows,
+        arguments.repo_root,
+        arguments.main_ref,
+        evidence_commit,
+        arguments.evidence_pr,
+        arguments.merged_at,
+    )
+    return evidence_commit
 
 
 def record(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
@@ -486,12 +585,14 @@ def record(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
 
 
 def resolve(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
+    evidence_commit = verify_resolution_authority(rows, arguments)
     if arguments.journal.exists():
         journal = load_journal(arguments.journal)
     else:
         journal = {
             "schema": SCHEMA,
             "frontier_sha256": frontier_hash(arguments.frontier),
+            "evidence_commit": evidence_commit,
             "evidence_pr": arguments.evidence_pr,
             "merged_at": arguments.merged_at,
             "started_at": now(),
@@ -501,9 +602,10 @@ def resolve(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
         }
     validate_journal(rows, journal, arguments.frontier)
     if journal.get("schema") != SCHEMA:
-        raise FrontierError("resolve requires a v1 ordered-prefix journal")
+        raise FrontierError("resolve requires a v3 merged-authority journal")
     if (
-        journal["evidence_pr"] != arguments.evidence_pr
+        journal["evidence_commit"] != evidence_commit
+        or journal["evidence_pr"] != arguments.evidence_pr
         or journal["merged_at"] != arguments.merged_at
     ):
         raise FrontierError("resolution authority differs from journal")
@@ -533,7 +635,7 @@ def resolve(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
 def check(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
     journal = load_journal(arguments.journal)
     validate_journal(rows, journal, arguments.frontier)
-    if journal.get("schema") == SCHEMA and not journal.get("complete"):
+    if journal.get("schema") in ORDERED_SCHEMAS and not journal.get("complete"):
         raise FrontierError("resolution journal is incomplete")
     expected_path = arguments.ledger.with_suffix(arguments.ledger.suffix + ".expected")
     write_ledger(expected_path, rows, journal)
@@ -542,7 +644,7 @@ def check(rows: list[dict[str, str]], arguments: argparse.Namespace) -> None:
     if arguments.ledger.read_bytes() != expected:
         raise FrontierError("resolution ledger differs from journal")
     if arguments.live:
-        if journal.get("schema") == SCHEMA:
+        if journal.get("schema") in ORDERED_SCHEMAS:
             live_rows = rows
         else:
             recorded_ids = {entry["thread_id"] for entry in journal["entries"]}
