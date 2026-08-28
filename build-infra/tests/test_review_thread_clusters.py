@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest  # type: ignore[import-not-found]
+import pytest
 
 BUILD_INFRA_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = BUILD_INFRA_ROOT / "scripts"
@@ -125,7 +125,7 @@ def test_shared_history_preserves_candidate_chronology() -> None:
     )
 
 
-def create_git_history(repository_root: Path) -> tuple[str, str]:
+def create_git_history(repository_root: Path) -> tuple[str, str, str]:
     repository_root.mkdir()
 
     def run_git(*arguments: str) -> str:
@@ -144,23 +144,30 @@ def create_git_history(repository_root: Path) -> tuple[str, str]:
     run_git("add", "tracked.txt")
     run_git("commit", "--quiet", "-m", "fixture: add disposition base")
     disposition_revision = run_git("rev-parse", "HEAD")
+    (repository_root / "tracked.txt").write_text("merged evidence\n", encoding="utf-8")
+    run_git("commit", "--quiet", "-am", "fixture: add merged evidence")
+    evidence_revision = run_git("rev-parse", "HEAD")
     run_git("checkout", "--quiet", "-b", "unmerged-evidence")
     (repository_root / "tracked.txt").write_text("unmerged\n", encoding="utf-8")
     run_git("commit", "--quiet", "-am", "fixture: add unmerged evidence")
     unmerged_evidence = run_git("rev-parse", "HEAD")
-    return disposition_revision, unmerged_evidence
+    return disposition_revision, evidence_revision, unmerged_evidence
 
 
 def test_closable_status_requires_a_passing_check(tmp_path: Path) -> None:
     _cluster_rows, member_rows = review_thread_clusters.build_rows(*fixture_inputs())
     status_rows = review_thread_clusters.status_scaffold(member_rows)
     repository_root = tmp_path / "repository"
-    disposition_revision, _unmerged_evidence = create_git_history(repository_root)
+    (
+        _disposition_revision,
+        evidence_revision,
+        _unmerged_evidence,
+    ) = create_git_history(repository_root)
     status_rows[0].update(
         {
             "status": "fixed-on-main",
             "closure_state": "ready-to-resolve",
-            "evidence_commit": disposition_revision,
+            "evidence_commit": evidence_revision,
             "evidence_locator": "src/shared_a.py:fixture",
             "discovery_command": "rg --fixed-strings fixture src/shared_a.py",
             "reason": "The current implementation satisfies the review claim.",
@@ -173,15 +180,51 @@ def test_closable_status_requires_a_passing_check(tmp_path: Path) -> None:
     )
     with pytest.raises(review_thread_clusters.ClusterError, match="passing check"):
         review_thread_clusters.check_status(
-            status_path, member_rows, repository_root, disposition_revision
+            status_path, member_rows, repository_root, evidence_revision
         )
+
+
+def test_fixed_status_accepts_post_disposition_main_evidence(tmp_path: Path) -> None:
+    _cluster_rows, member_rows = review_thread_clusters.build_rows(*fixture_inputs())
+    status_rows = review_thread_clusters.status_scaffold(member_rows)
+    repository_root = tmp_path / "repository"
+    (
+        _disposition_revision,
+        evidence_revision,
+        _unmerged_evidence,
+    ) = create_git_history(repository_root)
+    status_rows[0].update(
+        {
+            "status": "fixed-on-main",
+            "closure_state": "ready-to-resolve",
+            "evidence_commit": evidence_revision,
+            "evidence_locator": "src/shared_a.py:fixture",
+            "discovery_command": "rg --fixed-strings fixture src/shared_a.py",
+            "verification_command": "python3 fixture_check.py",
+            "verification_result": "pass",
+            "reason": "The merged evidence satisfies the review claim.",
+            "falsifier": "The reviewed failure remains reproducible.",
+        }
+    )
+    status_path = tmp_path / "review-status.tsv"
+    review_thread_clusters.write_tsv(
+        status_path, review_thread_clusters.STATUS_FIELDS, status_rows
+    )
+
+    review_thread_clusters.check_status(
+        status_path, member_rows, repository_root, evidence_revision
+    )
 
 
 def test_fixed_status_rejects_unmerged_evidence(tmp_path: Path) -> None:
     _cluster_rows, member_rows = review_thread_clusters.build_rows(*fixture_inputs())
     status_rows = review_thread_clusters.status_scaffold(member_rows)
     repository_root = tmp_path / "repository"
-    disposition_revision, unmerged_evidence = create_git_history(repository_root)
+    (
+        _disposition_revision,
+        evidence_revision,
+        unmerged_evidence,
+    ) = create_git_history(repository_root)
     status_rows[0].update(
         {
             "status": "fixed-on-main",
@@ -190,7 +233,7 @@ def test_fixed_status_rejects_unmerged_evidence(tmp_path: Path) -> None:
             "discovery_command": "rg --fixed-strings fixture src/shared_a.py",
             "verification_result": "not-run",
             "reason": "The candidate branch carries the requested mechanism.",
-            "falsifier": "The evidence commit reaches the disposition revision.",
+            "falsifier": "The evidence commit reaches the evidence revision.",
         }
     )
     status_path = tmp_path / "review-status.tsv"
@@ -199,7 +242,7 @@ def test_fixed_status_rejects_unmerged_evidence(tmp_path: Path) -> None:
     )
     with pytest.raises(review_thread_clusters.ClusterError, match="not reachable"):
         review_thread_clusters.check_status(
-            status_path, member_rows, repository_root, disposition_revision
+            status_path, member_rows, repository_root, evidence_revision
         )
 
 
