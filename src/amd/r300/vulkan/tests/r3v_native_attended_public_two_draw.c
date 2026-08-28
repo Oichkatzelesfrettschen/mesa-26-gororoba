@@ -344,12 +344,44 @@ main(int argc, char **argv)
       vkUnmapMemory(device, target[i].memory);
    }
 
-   /* The application's vertex records: the reference triangle's
-    * pretransformed positions as F32_4, one buffer both passes bind.
-    * Each pass's deferred draw gathers them into its own carrier, so
-    * the buffer's memory is no reference of the submission.
+   /* The application's vertex records: the reference triangle in NDC
+    * as F32_4, one buffer both passes bind.  With the delivery gates
+    * closed the public route resolves a clip-space carrier, so each
+    * pass's deferred draw admits the clip volume alone (w == 1, x and
+    * y in [-1, 1]) and applies the Vulkan viewport transform itself,
+    * (x + 1) * width / 2; over the 64x64 target this payload lands on
+    * the reference window positions 8, 56, and 32 with no rounding.
+    * The same transform runs here ahead of any device work and refuses
+    * a payload that misses the reference, so the record-only pass
+    * calibrates the payload domain the route reads at submission.
     */
    stage("vertex stream");
+   static const float ndc_triangle[R300_TRIANGLE_VERTEX_DWORDS] = {
+      -0.75f, -0.75f, 0.0f, 1.0f,
+       0.75f, -0.75f, 0.0f, 1.0f,
+       0.00f,  0.75f, 0.0f, 1.0f,
+   };
+   {
+      float reference[R300_TRIANGLE_VERTEX_DWORDS];
+      r300_tcl_bypass_triangle_render_shape_vertices(&mp.pass[0], reference);
+      for (unsigned v = 0; v < 3; v++) {
+         const float *pos = &ndc_triangle[v * 4];
+         const float window[4] = {
+            (pos[0] + 1.0f) * ((float)mp.pass[0].width / 2.0f),
+            (pos[1] + 1.0f) * ((float)mp.pass[0].height / 2.0f),
+            pos[2], pos[3],
+         };
+         if (!(pos[3] == 1.0f) || !(pos[0] >= -1.0f && pos[0] <= 1.0f) ||
+             !(pos[1] >= -1.0f && pos[1] <= 1.0f) ||
+             memcmp(window, &reference[v * 4], sizeof(window)) != 0) {
+            fprintf(stderr,
+                    "vertex %u: NDC (%g, %g, %g, %g) is outside the clip "
+                    "volume or misses the reference window position\n",
+                    v, pos[0], pos[1], pos[2], pos[3]);
+            return 1;
+         }
+      }
+   }
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
    VkBuffer vertex_buffer = VK_NULL_HANDLE;
    CHECK(vkAllocateMemory(device,
@@ -362,18 +394,16 @@ main(int argc, char **argv)
    CHECK(vkCreateBuffer(device,
                         &(VkBufferCreateInfo){
                            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                           .size = sizeof(float) * R300_TRIANGLE_VERTEX_DWORDS,
+                           .size = sizeof(ndc_triangle),
                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                         },
                         NULL, &vertex_buffer));
    CHECK(vkBindBufferMemory(device, vertex_buffer, vertex_memory, 0));
    {
-      float vertices[R300_TRIANGLE_VERTEX_DWORDS];
-      r300_tcl_bypass_triangle_render_shape_vertices(&mp.pass[0], vertices);
       void *map = NULL;
       CHECK(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map));
-      memcpy(map, vertices, sizeof(vertices));
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
       vkUnmapMemory(device, vertex_memory);
    }
 
