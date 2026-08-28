@@ -542,23 +542,29 @@ submission slice whatever its namespace.
 
 The dEQP-VK binary reaches the target as a bundle
 `tests/r3v_deqp_provision.py bundle` writes: the binary, its data
-directory, the pinned mustpass corpus, and `provenance.json` (source
-commit and cleanliness, CMake pins, compiler and binutils, digest,
-dynamic inventory, embedded release name held equal to the source
-commit, the GNU x86 ISA-needed property, the functions a finite
-above-K8 mnemonic screen flags with the allow pattern that admits each,
-tree digests, build-host glibc); `verify` recomputes every digest on
-the target and re-derives the four refusals.  The RS482 host's loader
-refuses a binary whose ISA-needed note exceeds the baseline, and that
-note is the admission test the tool keeps: a build host whose crt and
-libgcc objects carry x86-64-v3 stamps every link with it even at
-`-march=x86-64`, so the K8 build compiles with `-march=x86-64
--mtune=k8` and links with `gcc -B<dir>` over the target's own baseline
-`Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`, `libgcc.a`,
-and `libgcc_eh.a`, which the bundle records under `startfiles`.
-`--strip-isa-property` exists for a host whose CPU satisfies every
-level the note carried; `verify` on any other CPU refuses the stripped
-bundle by `/proc/cpuinfo`.
+directory, the mustpass corpus selected by `--corpus-pin`, and
+`provenance.json`.  The producer requires the supplied cache to be the
+build directory's canonical `CMakeCache.txt`, binds its CMake home and
+build directories to the source checkout and selected executable, and
+binds the corpus pin to the tracked blob at the provisioner repository's
+HEAD.  Admission accepts ELF64 x86-64 exclusively, records required
+dynamic symbol versions, classifies every decoded instruction through
+XED against the K8 ISA-set boundary, checks the mustpass case count and
+corpus digest, and keeps the output outside every copied input.  The
+producer revalidates the copied mustpass bytes against the same pin
+before publication.  `verify`
+recomputes the transported ELF and loader identities, requires the
+binary interpreter to resolve to the verifier host's interpreter, and
+uses that trusted loader's `--list` mode with `LD_*` overrides removed to
+confirm that the target providers export every required symbol version.
+The sealed binary digest preserves the producer's XED census.  The RS482
+host's loader refuses a binary whose ISA-needed note exceeds the
+baseline.  The K8 build therefore compiles
+with `-march=x86-64 -mtune=k8` and links with `gcc -B<dir>` over the target's
+baseline `Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`,
+`libgcc.a`, and `libgcc_eh.a`, which the bundle records under
+`startfiles`.  The bundle keeps the complete GNU property note because
+section removal would also erase CET and other non-ISA properties.
 
 `tests/r3v_cs_ioctl_trace.py` is the independent witness that a slice
 run issued no command submission.  `trace -- <argv>` runs the command
