@@ -546,12 +546,22 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       };
       sampled = &sampled_texture;
    }
+   /* The rasterizer control word: the gated probe candidate, or
+    * W_SELECT_ONE when the direct NoPerspective route was selected
+    * (the pipeline yields the route to an open probe gate). */
+   const uint8_t rs_control_word =
+      pipeline->rs_probe_candidate != R3V_RS_PROBE_NONE
+         ? (uint8_t)pipeline->rs_probe_candidate
+         : pipeline->interpolation_route ==
+                 R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT
+              ? (uint8_t)R3V_RS_PROBE_W_SELECT_ONE
+              : (uint8_t)R3V_RS_PROBE_NONE;
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
       cmd_buffer->pass_target_layer_offset, pipeline->varying,
       pipeline->interpolation_route ==
          R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
-      (uint8_t)pipeline->rs_probe_candidate,
+      rs_control_word,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled);
    if (result != VK_SUCCESS) {
@@ -590,7 +600,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .post_vs = pipeline->post_vs,
       .direct_flat = pipeline->interpolation_route ==
                      R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
-      .rs_probe_candidate = (uint8_t)pipeline->rs_probe_candidate,
+      .direct_noperspective = pipeline->interpolation_route ==
+                              R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT,
+      .rs_probe_candidate = rs_control_word,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_offset = cmd_buffer->pass_target->memory_offset +
                             cmd_buffer->pass_target_layer_offset,

@@ -1379,6 +1379,27 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                   &draw->post_vs, staged, source_triangle_count,
                   record_dwords);
             }
+            /* The direct GB W_SELECT route interpolates every
+             * varying linearly in window space; a vertex the clipper
+             * generates carries the clip-space linear value, which
+             * differs in general from the value the Vulkan
+             * specification assigns a clipped NoPerspective output
+             * (Clipping Shader Outputs), so the partial class refuses
+             * ahead of carrier publication. */
+            if (gathered == 0 && draw->direct_noperspective) {
+               for (uint32_t t = 0; t < source_triangle_count; t++) {
+                  if (r3v_interpolation_clip_class_of_triangle(
+                         &staged[(size_t)t * 3u * record_dwords],
+                         record_dwords) != R3V_INTERPOLATION_CLIP_ACCEPT) {
+                     result = vk_errorf(
+                        device, VK_ERROR_INITIALIZATION_FAILED,
+                        "r3v-native: the direct GB W_SELECT NoPerspective "
+                        "route admits the clipping class ACCEPT alone; "
+                        "source triangle %u is partially clipped", t);
+                     break;
+                  }
+               }
+            }
          }
       }
       if (result == VK_SUCCESS && gathered != 0) {

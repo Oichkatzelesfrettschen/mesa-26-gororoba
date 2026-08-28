@@ -216,6 +216,58 @@ select_probe(struct r3v_rs_probe_query query, const char **reason)
  * flipped predicate -- including the Smooth interface under an open
  * gate, the mutation that keeps the candidate state without the
  * interface -- yields the control. */
+/* The direct GB W_SELECT route opens on the NoPerspective conjunction
+ * and falls back to replication on each flipped predicate. */
+static void
+test_noperspective_conjunction_opens_w_select(void)
+{
+   struct r3v_shader_interface_link link;
+   noperspective_vec4_link(&link);
+   const struct r3v_interpolation_query q = direct_query(&link);
+   const char *reason = NULL;
+   CHECK(r3v_interpolation_route_select(&q, &reason) ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+   CHECK(reason != NULL && strstr(reason, "W_SELECT") != NULL);
+
+   struct r3v_interpolation_query f = direct_query(&link);
+   f.cpu_delivery = false;
+   expect_replicate(&f, "not CPU");
+   f = direct_query(&link);
+   f.triangle_list = false;
+   expect_replicate(&f, "triangle list");
+   f = direct_query(&link);
+   f.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
+   expect_replicate(&f, "ACCEPT");
+   f = direct_query(&link);
+   f.rs_destination_available = false;
+   expect_replicate(&f, "RS destination");
+   f = direct_query(&link);
+   f.fragment_consumes_destination = false;
+   expect_replicate(&f, "consume");
+
+   /* A Smooth location beside the NoPerspective one: W_SELECT is one
+    * word for the draw, so the interface replicates. */
+   struct r3v_shader_interface_link beside;
+   noperspective_vec4_link(&beside);
+   beside.varying_mask = 3u;
+   beside.varyings[1] = beside.varyings[0];
+   beside.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+   f = direct_query(&beside);
+   expect_replicate(&f, "map completely");
+   struct r3v_shader_interface_link narrow;
+   noperspective_vec4_link(&narrow);
+   narrow.varyings[0].width = 3;
+   f = direct_query(&narrow);
+   expect_replicate(&f, "full float vec4");
+   /* A Smooth-only interface stays on replication. */
+   struct r3v_shader_interface_link smooth;
+   noperspective_vec4_link(&smooth);
+   smooth.noperspective_mask = 0;
+   smooth.varyings[0].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+   f = direct_query(&smooth);
+   expect_replicate(&f, "no Flat");
+}
+
 static void
 test_probe_candidate_conjunction(void)
 {
@@ -285,6 +337,7 @@ main(void)
    test_each_predicate_flipped_replicates();
    test_clip_class();
    test_probe_candidate_conjunction();
+   test_noperspective_conjunction_opens_w_select();
    if (failures != 0) {
       fprintf(stderr, "%d failure(s)\n", failures);
       return EXIT_FAILURE;
