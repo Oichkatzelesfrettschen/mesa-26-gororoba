@@ -36,6 +36,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -44,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -1108,6 +1110,76 @@ main(int argc, char **argv)
       return 2;
    }
 
+   /* The recorded stream and the reference list the winsys turns into
+    * the relocation entries, retained ahead of the ioctl under names
+    * the queue's own retention leaves alone: r3v_native_queue_submit
+    * publishes ib.bin, relocs.bin, and manifest.json through
+    * r3v_native_evidence_require_fresh, which refuses the submission
+    * ahead of the ioctl when any of the three already exists.  The
+    * attended run retains into the evidence directory the queue writes
+    * to; the record-only pass retains into a fresh scratch directory
+    * (publication is no-clobber link(), so a shared directory admits
+    * one retention) and removes it after the check, so the same
+    * freshness proof runs on the shim fixture. */
+   char retain_dir[PATH_MAX];
+   if (record_only) {
+      snprintf(retain_dir, sizeof(retain_dir), "%s/record-XXXXXX",
+               evidence_dir);
+      if (mkdtemp(retain_dir) == NULL) {
+         fprintf(stderr, "record scratch directory failed: %s\n",
+                 strerror(errno));
+         return 1;
+      }
+   } else {
+      snprintf(retain_dir, sizeof(retain_dir), "%s", evidence_dir);
+   }
+   static const char *const runner_retention_names[] = {
+      "recorded_ib.bin", "references.bin",
+   };
+   if (r3v_native_evidence_write_file(retain_dir, runner_retention_names[0],
+                                      native->ib,
+                                      native->ib_size_dwords * 4u) != 0 ||
+       r3v_native_evidence_write_file(
+          retain_dir, runner_retention_names[1], native->references,
+          native->reference_count *
+             (uint32_t)sizeof(native->references[0])) != 0) {
+      fprintf(stderr, "stream retention failed\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 1;
+   }
+   static const char *const queue_retention_names[] = {
+      "ib.bin", "relocs.bin", "manifest.json",
+   };
+   for (unsigned n = 0; n < ARRAY_SIZE(queue_retention_names); n++) {
+      char path[PATH_MAX];
+      snprintf(path, sizeof(path), "%s/%s", retain_dir,
+               queue_retention_names[n]);
+      if (access(path, F_OK) == 0) {
+         fprintf(stderr,
+                 "%s already exists in the retention directory; the queue "
+                 "publishes it and refuses ahead of the ioctl\n",
+                 queue_retention_names[n]);
+         if (!record_only)
+            r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+         return 2;
+      }
+   }
+   emit("[retain] %s %s under %s; %s %s %s fresh\n",
+        runner_retention_names[0], runner_retention_names[1],
+        record_only ? "record scratch" : "the evidence directory",
+        queue_retention_names[0], queue_retention_names[1],
+        queue_retention_names[2]);
+   if (record_only) {
+      for (unsigned n = 0; n < ARRAY_SIZE(runner_retention_names); n++) {
+         char path[PATH_MAX];
+         snprintf(path, sizeof(path), "%s/%s", retain_dir,
+                  runner_retention_names[n]);
+         unlink(path);
+      }
+      rmdir(retain_dir);
+   }
+
    if (record_only) {
       emit("record: ACCEPTED\n");
       for (unsigned p = 0; p < 3; p++)
@@ -1129,18 +1201,6 @@ main(int argc, char **argv)
       vkDestroyDevice(device, NULL);
       vkDestroyInstance(instance, NULL);
       return 0;
-   }
-
-   /* The submitted stream and the reference list the winsys turns into
-    * the relocation entries, retained ahead of the ioctl. */
-   if (r3v_native_evidence_write_file(evidence_dir, "ib.bin", native->ib,
-                                      native->ib_size_dwords * 4u) != 0 ||
-       r3v_native_evidence_write_file(
-          evidence_dir, "references.bin", native->references,
-          native->reference_count *
-             (uint32_t)sizeof(native->references[0])) != 0) {
-      fprintf(stderr, "stream retention failed\n");
-      return 1;
    }
 
    VkQueue queue = VK_NULL_HANDLE;
