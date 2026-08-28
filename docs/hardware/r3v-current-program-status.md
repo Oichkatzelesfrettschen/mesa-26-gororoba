@@ -434,14 +434,18 @@ above is rung zero; the ladder after it runs in this order:
    fragment color arrives through the TX unit drives no
    `R300_PFS_PARAM_0` constant, so the verdict now admits on geometry
    alone and carries a `judged` flag that separates a refusal from a
-   total mismatch.  Replaying the narrowed verdict over the retained
-   `color_target.bin` of each arm supplies the region result the
-   receipts lacked: `sampled`, `bgra`, `layer`, `row1`, and, under the
-   two-texel model their `[shape]` lines name, `split-rows` and `wide`
-   are each coverage-exact over the full 64x64 footprint, 1152 interior
-   pixels against 1152 analytic with a clean canary and no mismatch.
-   The retained first sampled take reproduces its recorded deviation,
-   which calibrates the replay against a known-bad input.
+   total mismatch.  The refusal was already read out of the retained bytes
+   for the `layer`, `row1`, and `wide` arms (steinmarder-r300 #543),
+   which recovered their region result offline while the producer kept
+   refusing; the admission split is what stops the refusal at its
+   source.  Replaying the narrowed verdict over every retained
+   `color_target.bin` reproduces that result for those three arms and
+   extends it to the ones it did not reach: `sampled`, `bgra`, and,
+   under the two-texel model their `[shape]` lines name, `split-rows`
+   are each coverage-exact over the full 64x64 footprint too, 1152
+   interior pixels against 1152 analytic with a clean canary and no
+   mismatch.  The retained first sampled take reproduces its recorded
+   deviation, which calibrates the replay against a known-bad input.
    Open inside the rung: the render family's own layer ceiling answers
    to the creation gate rather than to a run; the
    volume type and its view (18 cases) need a TX volume route, the
