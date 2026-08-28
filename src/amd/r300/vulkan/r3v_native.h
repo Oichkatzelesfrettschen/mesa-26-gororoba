@@ -538,10 +538,11 @@ struct r3v_native_deferred_draw {
  * contract poisons the buffer, so EndCommandBuffer returns the error and
  * the queue refuses it.  owned_carrier is the CPU_VERTEX node's gather
  * destination, allocated at draw recording and released with the buffer,
- * and owned_slot is the fetched producer's slot-position array, allocated
- * at the first fetched admission and released with the buffer;
- * deferred_draw carries the vertex and clear work the queue executes at
- * submission.
+ * owned_slot is the fetched producer's slot-position array, allocated
+ * at the first fetched admission and released with the buffer, and
+ * owned_multisample is the resolve cell's device-local sample-expanded
+ * surface; deferred_draw carries the vertex and clear work the queue
+ * executes at submission.
  */
 struct r3v_native_cmd_buffer {
    struct vk_command_buffer vk;
@@ -599,6 +600,13 @@ struct r3v_native_cmd_buffer {
     * array reads.
     */
    struct r3v_native_memory *owned_slot;
+   /* The multisample resolve cell's sample-expanded color surface,
+    * allocated at that recording and released with the buffer.  It
+    * takes RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU
+    * access, so a successful create is the placement the cell claims,
+    * and the host reads the resolve destination instead.
+    */
+   struct r3v_native_memory *owned_multisample;
    struct r3v_native_deferred_draw deferred_draw;
    /* Recorded transfer copies, executed in recorded order at submission
     * through host mappings of the bound memory.  Each copy carries the
@@ -1405,6 +1413,30 @@ VkResult r3v_native_record_composed_render_sample(
    VkDeviceMemory renderColorMemory, VkDeviceMemory sampleVertexMemory,
    VkDeviceMemory sampleColorMemory,
    const struct r300_triangle_composed_render_sample *composed);
+
+/* The multisample resolve cell's five slots reach four buffer objects,
+ * since both halves render into the one multisample surface.
+ */
+#define R3V_NATIVE_MSAA_REFERENCE_COUNT 4u
+
+/* Records the multisample resolve cell.  The caller owns the two vertex
+ * arrays -- the render half's three four-dword position records and the
+ * cover triangle r300_tcl_bypass_triangle_cover_vertices writes -- and
+ * the resolve destination, which stays host-visible so the oracle reads
+ * it.  The multisample surface is the recording's own: it takes
+ * RADEON_GEM_DOMAIN_VRAM alone under RADEON_GEM_NO_CPU_ACCESS, sized
+ * layer_size * sample_count with the stride unchanged
+ * (r300_texture_desc.c), so the sample expansion the parser's
+ * pitch * cpp * maxy footprint carries no term for is bounded by the
+ * allocation the driver made.  The reference array is built merged in
+ * one pass and the payloads bound to its own positions, so the queue's
+ * merge over the same list is idempotent.
+ */
+struct r300_triangle_msaa_resolve;
+VkResult r3v_native_record_msaa_resolve(
+   VkCommandBuffer commandBuffer, VkDeviceMemory renderVertexMemory,
+   VkDeviceMemory coverVertexMemory, VkDeviceMemory destinationMemory,
+   const struct r300_triangle_msaa_resolve *msaa);
 
 /* One application-shaped vertex source for carrier delivery: host
  * records in the little-endian component encoding the VAP fetches,

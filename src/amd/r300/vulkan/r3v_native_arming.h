@@ -114,6 +114,16 @@ enum r3v_native_cell_kind {
     * write and a read use site.
     */
    R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE,
+   /* The multisample resolve triangle: one stream renders into a
+    * sample-expanded surface with GB_AA_CONFIG's subsample set live,
+    * then covers the extent again under
+    * RB3D_AARESOLVE_CTL.AARESOLVE_MODE_RESOLVE so the downsampled
+    * samples reach RB3D_AARESOLVE_OFFSET.  Five relocations -- two
+    * vertex reads, the multisample surface written by both halves, and
+    * the resolve destination -- over four buffer objects, the
+    * multisample surface device-local and never host-mapped.
+    */
+   R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

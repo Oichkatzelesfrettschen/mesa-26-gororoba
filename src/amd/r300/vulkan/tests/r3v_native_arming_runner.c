@@ -13,6 +13,7 @@
 #include "amd/r300/common/r300_fragment_binary.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native_render_shape_args.h"
+#include "r3v_native_msaa_arms.h"
 #include "r3v_native_sampled_arms.h"
 
 #include "util/mesa-blake3.h"
@@ -58,6 +59,12 @@ static const struct r3v_sampled_arm *cell_sampled_arm = NULL;
  */
 static bool cell_composed = false;
 static uint32_t cell_composed_sample_offset;
+/* --msaa selects the multisample resolve cell at a declared sample
+ * count: the reference shape rendered into the sample-expanded surface,
+ * then the extent covered again under AARESOLVE_MODE_RESOLVE.
+ */
+static bool cell_msaa = false;
+static uint32_t cell_msaa_sample_count;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -78,6 +85,24 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
        */
       const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
          cell, r300_tcl_bypass_triangle_composed_slot_index, R300_TRIANGLE_SLOT_COUNT);
+      if (bound != 0)
+         r300_tcl_bypass_triangle_release(cell);
+      return bound;
+   }
+   if (cell_msaa) {
+      struct r300_triangle_msaa_resolve msaa;
+      r3v_native_msaa_reference(&msaa, cell_msaa_sample_count);
+      const int emitted =
+         r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, cell);
+      if (emitted != 0)
+         return emitted;
+      /* The recorder binds its payloads to the merged relocation
+       * indices, so the digest that authorizes a submission is the
+       * bound cell's.
+       */
+      const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+         cell, r300_tcl_bypass_triangle_msaa_slot_index,
+         R300_TRIANGLE_SLOT_COUNT);
       if (bound != 0)
          r300_tcl_bypass_triangle_release(cell);
       return bound;
@@ -233,6 +258,10 @@ main(int argc, char **argv)
       cell_composed_sample_offset =
          (uint32_t)strtoul(argv[argi + 1], NULL, 0);
       argi += 2;
+   } else if (argc >= argi + 2 && strcmp(argv[argi], "--msaa") == 0) {
+      cell_msaa = true;
+      cell_msaa_sample_count = (uint32_t)strtoul(argv[argi + 1], NULL, 0);
+      argi += 2;
    } else if (argc >= argi + 2 &&
               strcmp(argv[argi], "--sampled-arm") == 0) {
       cell_sampled = true;
@@ -318,6 +347,7 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s [--varying|--compute-identity|--sampled|"
               "--sampled-bgra|--sampled-arm <name>|--composed <offset>|"
+              "--msaa <sample-count>|"
               "--shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "
@@ -351,7 +381,9 @@ main(int argc, char **argv)
    char module[128];
    struct r3v_native_arming_facts facts;
    r3v_native_arming_collect(&facts, vendor_id, device_id,
-                             cell_composed
+                             cell_msaa
+                                ? R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE
+                             : cell_composed
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE
                              : cell_compute_identity
                                 ? R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER
