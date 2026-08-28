@@ -14,6 +14,7 @@
 struct r300_fragment_binary;
 struct r300_first_draw_contract;
 struct r300_flat_color0_plan;
+struct r300_rs_tex_adj_probe_plan;
 
 /* BO slots the cell references; the transport binds slot order to the
  * relocation-list order at submission.
@@ -98,6 +99,10 @@ struct r300_tcl_bypass_triangle_params {
     * RS_INST_0 delivers color 0 into the US input TEX0 filled.
     */
    const struct r300_flat_color0_plan *flat_color0;
+   /* Rasterizer probe plan (requires varying, no flat_color0, no
+    * sampling): the RS block takes the plan's words and GB_SELECT the
+    * plan's W_SELECT; NULL emits the control words. */
+   const struct r300_rs_tex_adj_probe_plan *rs_tex_adj;
    /* When set, the cell samples texture unit 0: the varying vertex path
     * carries the TEX0 coordinate, the TX block programs one enabled
     * unit -- nearest filters, clamp-to-edge wraps, W8Z8Y8X8 texels over
@@ -358,6 +363,25 @@ int r300_tcl_bypass_triangle_flat_color0_plan_emit(
    uint32_t triangle_count, const struct r300_flat_color0_plan *plan,
    struct r300_tcl_bypass_triangle_ib *out);
 
+/* The rasterizer probe cell: the varying TEX0 stream under a probe
+ * plan (r300_rs_tex_adj_probe.h).  The family form validates the plan;
+ * the plan form realizes any plan for calibration. */
+int r300_tcl_bypass_triangle_rs_tex_adj_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_rs_tex_adj_probe_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+int r300_tcl_bypass_triangle_rs_tex_adj_plan_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_rs_tex_adj_probe_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The reference triangle's window-space vertices at an extent, x, y
+ * per vertex: the NDC reference payload through the viewport
+ * transform. */
+void r300_tcl_bypass_triangle_window_vertices(uint32_t width,
+                                              uint32_t height,
+                                              float out[6]);
+
 
 /* The cell's render geometry.  The manifest publishes these and the contract
  * resolution derives scissor, clip, and pitch from them, so one change moves
@@ -567,6 +591,13 @@ struct r300_triangle_render_shape {
     * selection rather than host replication.
     */
    bool flat_color0;
+   /* When nonzero with varying, the pass carries the TEX0 varying
+    * under a rasterizer probe candidate (enum
+    * r300_rs_tex_adj_probe_candidate): R300_RS_TEX_ADJ_PROBE_TEX_ADJ
+    * sets RS_INST_0.TEX_ADJ, R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE sets
+    * GB_SELECT.W_SELECT; zero is the control, the legacy varying bytes.
+    */
+   uint8_t rs_tex_adj_candidate;
 };
 
 /* The composed render-then-sample cell: one stream renders the first

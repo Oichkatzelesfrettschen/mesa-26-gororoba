@@ -3,6 +3,7 @@
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_first_draw_state.h"
 #include "r300_flat_color0_plan.h"
+#include "r300_rs_tex_adj_probe.h"
 #include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
 #include "r300_r2vb_producer_fs_block.h"
@@ -293,19 +294,27 @@ emit_triangle_stream_into(
        * the position-only forms of these registers ahead of the cell,
        * so the varying cell establishes its own values here.
        */
+      const struct r300_rs_tex_adj_probe_plan *probe = params->rs_tex_adj;
+      struct r300_rs_tex_adj_probe_plan control;
+      if (probe == NULL) {
+         /* The control plan reproduces the varying cell's constants
+          * exactly, so a probe candidate differs from these bytes in
+          * its one control bit alone. */
+         r300_rs_tex_adj_probe_plan_control(&control);
+         probe = &control;
+      }
       r300_pm4_reg(&b, R300_VAP_VSM_VTX_ASSM,
                    R300_INPUT_CNTL_POS | R300_INPUT_CNTL_TC0);
       r300_pm4_reg(&b, R300_RS_COUNT,
-                   R300_IT_COUNT(4) | R300_IC_COUNT(0) | R300_HIRES_EN);
+                   r300_rs_tex_adj_probe_plan_rs_count(probe));
       r300_pm4_reg(&b, R300_RS_INST_COUNT, 0);
       r300_pm4_reg(&b, R300_RS_IP_0,
-                   R300_RS_TEX_PTR(0) | R300_RS_SEL_S(R300_RS_SEL_C0) |
-                      R300_RS_SEL_T(R300_RS_SEL_C1) |
-                      R300_RS_SEL_R(R300_RS_SEL_C2) |
-                      R300_RS_SEL_Q(R300_RS_SEL_C3));
+                   r300_rs_tex_adj_probe_plan_rs_ip_0(probe));
       r300_pm4_reg(&b, R300_RS_INST_0,
-                   R300_RS_INST_TEX_ID(0) | R300_RS_INST_TEX_CN_WRITE |
-                      R300_RS_INST_TEX_ADDR(0));
+                   r300_rs_tex_adj_probe_plan_rs_inst(probe, 0));
+      if (r300_rs_tex_adj_probe_plan_writes_rs_inst_1(probe))
+         r300_pm4_reg(&b, R300_RS_INST_1,
+                      r300_rs_tex_adj_probe_plan_rs_inst(probe, 1));
    }
 
    /* The sampled cell's TX unit 0: nearest filters and clamp-to-edge
@@ -696,9 +705,12 @@ static int
 family_emit_triangle_stream(
    uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
    const struct r300_flat_color0_plan *flat_color0,
+   const struct r300_rs_tex_adj_probe_plan *rs_tex_adj,
    struct r300_tcl_bypass_triangle_ib *out)
 {
-   if (flat_color0 != NULL)
+   if (flat_color0 != NULL && rs_tex_adj != NULL)
+      return -EINVAL;
+   if (flat_color0 != NULL || rs_tex_adj != NULL)
       varying = true;
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
@@ -733,6 +745,8 @@ family_emit_triangle_stream(
    rc = r300_tcl_bypass_triangle_set_target_format(&contract);
    if (rc == 0 && flat_color0 != NULL)
       rc = r300_flat_color0_plan_apply_contract(flat_color0, &contract);
+   if (rc == 0 && rs_tex_adj != NULL)
+      rc = r300_rs_tex_adj_probe_plan_apply_contract(rs_tex_adj, &contract);
    if (rc != 0) {
       r300_fragment_binary_finish(&fs);
       return rc;
@@ -746,6 +760,7 @@ family_emit_triangle_stream(
       .first_draw_contract = &contract,
       .varying = varying,
       .flat_color0 = flat_color0,
+      .rs_tex_adj = rs_tex_adj,
       .triangle_count = triangle_count,
    };
    rc = emit_triangle_stream(&params, triangle_count, out);
@@ -761,7 +776,7 @@ family_emit(uint32_t width, uint32_t height, bool varying,
        triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
       return -EINVAL;
    return family_emit_triangle_stream(width, height, varying, triangle_count,
-                                      NULL, out);
+                                      NULL, NULL, out);
 }
 
 static int
@@ -791,7 +806,8 @@ r300_tcl_bypass_triangle_clip_space_family_emit(
    if (rc != 0)
       return rc;
    return family_emit_triangle_stream(width, height, varying,
-                                      output_triangle_count, NULL, out);
+                                      output_triangle_count, NULL, NULL,
+                                      out);
 }
 
 int
@@ -813,7 +829,46 @@ r300_tcl_bypass_triangle_flat_color0_plan_emit(
       return -EINVAL;
    }
    return family_emit_triangle_stream(width, height, true,
-                                      output_triangle_count, plan, out);
+                                      output_triangle_count, plan, NULL,
+                                      out);
+}
+
+int
+r300_tcl_bypass_triangle_rs_tex_adj_plan_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_rs_tex_adj_probe_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (plan == NULL || out == NULL)
+      return -EINVAL;
+   uint32_t output_triangle_count = triangle_count;
+   if (clip_space) {
+      const int rc =
+         clip_output_triangle_count(triangle_count, &output_triangle_count);
+      if (rc != 0)
+         return rc;
+   } else if (triangle_count < 1u ||
+              triangle_count > R300_TRIANGLE_MAX_TRIANGLES) {
+      return -EINVAL;
+   }
+   return family_emit_triangle_stream(width, height, true,
+                                      output_triangle_count, NULL, plan,
+                                      out);
+}
+
+int
+r300_tcl_bypass_triangle_rs_tex_adj_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count, const struct r300_rs_tex_adj_probe_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (out != NULL)
+      memset(out, 0, sizeof(*out));
+   const int rc = r300_rs_tex_adj_probe_plan_validate(plan);
+   if (rc != 0)
+      return rc;
+   return r300_tcl_bypass_triangle_rs_tex_adj_plan_emit(
+      width, height, clip_space, triangle_count, plan, out);
 }
 
 int
@@ -1012,6 +1067,14 @@ triangle_geometry_at(uint32_t width, uint32_t height)
       g.v[i * 2 + 1] = (ndc[i * 2 + 1] + 1.0f) * ((float)height / 2.0f);
    }
    return g;
+}
+
+void
+r300_tcl_bypass_triangle_window_vertices(uint32_t width, uint32_t height,
+                                         float out[6])
+{
+   const struct triangle_geometry g = triangle_geometry_at(width, height);
+   memcpy(out, g.v, sizeof(g.v));
 }
 
 /* The minimum of the three signed edge distances: positive inside with
@@ -2338,6 +2401,15 @@ multi_pass_emit_one(const struct r300_triangle_render_shape *pass,
       struct r300_flat_color0_plan plan;
       r300_flat_color0_plan_direct_first(&plan);
       return r300_tcl_bypass_triangle_flat_color0_family_emit(
+         pass->width, pass->height, clip_space, 1u, &plan, out);
+   }
+   if (pass->varying && pass->rs_tex_adj_candidate != 0) {
+      struct r300_rs_tex_adj_probe_plan plan;
+      if (pass->rs_tex_adj_candidate == R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE)
+         r300_rs_tex_adj_probe_plan_w_select_one(&plan);
+      else
+         r300_rs_tex_adj_probe_plan_tex_adj(&plan);
+      return r300_tcl_bypass_triangle_rs_tex_adj_family_emit(
          pass->width, pass->height, clip_space, 1u, &plan, out);
    }
    if (pass->varying) {

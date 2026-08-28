@@ -517,6 +517,10 @@ struct r3v_native_deferred_draw {
     * the provoking value ahead of the clipper otherwise
     * (r3v_interpolation_lowering.h). */
    bool direct_flat;
+   /* The rasterizer probe candidate the pipeline's NoPerspective
+    * interface selected (enum r3v_rs_probe_candidate); zero records
+    * the control varying cell. */
+   uint8_t rs_probe_candidate;
    /* Set when the GPU producer route is admitted for this submission:
     * the queue composed the producer pass ahead of the consumer IB, the
     * carrier is poisoned instead of host-filled, and the words below
@@ -894,6 +898,11 @@ struct r3v_native_device {
     * default; unset, empty, or any other value leaves the selector's
     * conjunction in force. */
    const char *flat_replication_pin;
+   /* R3V_NATIVE_RS_TEX_ADJ_PROBE and R3V_NATIVE_RS_W_SELECT_PROBE at
+    * the exact value 1: a NoPerspective interface then records the
+    * named rasterizer probe candidate (r3v_rs_probe_candidate_select). */
+   const char *rs_tex_adj_probe_gate;
+   const char *rs_w_select_probe_gate;
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
@@ -1296,6 +1305,9 @@ struct r3v_native_pipeline {
    /* The route the linked interface's Flat locations take at record
     * time; the execution-time clipping class refines it per triangle. */
    enum r3v_interpolation_route interpolation_route;
+   /* The rasterizer probe candidate a NoPerspective interface takes
+    * under an open probe gate; NONE records the control varying cell. */
+   enum r3v_rs_probe_candidate rs_probe_candidate;
    /* Set when the vertex job stores the location-0 varying and the
     * fragment module is the pass-through: the draw records the varying
     * cell over eight-dword records.
@@ -1638,8 +1650,8 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
-   bool varying, bool flat_color0, uint32_t triangle_count,
-   const uint32_t color_bits[4],
+   bool varying, bool flat_color0, uint8_t rs_probe_candidate,
+   uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled);
 
 /* Executes the command buffer's deferred draw at submission: gathers the

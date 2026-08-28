@@ -17,6 +17,7 @@
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_flat_color0_plan.h"
+#include "amd/r300/common/r300_rs_tex_adj_probe.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
@@ -329,10 +330,25 @@ fill_color(struct r3v_native_device *device,
 static int
 emit_triangle_cell_for_position_space(
    const struct r300_triangle_render_shape *shape, bool varying,
-   bool flat_color0, uint32_t source_triangle_count,
+   bool flat_color0, uint8_t rs_probe_candidate,
+   uint32_t source_triangle_count,
    const struct r3v_native_sampled_texture *sampled, bool clip_space,
    struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (sampled == NULL && varying && !flat_color0 &&
+       rs_probe_candidate != R3V_RS_PROBE_NONE) {
+      /* The rasterizer probe candidate: the control varying cell's
+       * bytes with the candidate's one word, so the pass records the
+       * stream the census classifies. */
+      struct r300_rs_tex_adj_probe_plan plan;
+      if (rs_probe_candidate == R3V_RS_PROBE_W_SELECT_ONE)
+         r300_rs_tex_adj_probe_plan_w_select_one(&plan);
+      else
+         r300_rs_tex_adj_probe_plan_tex_adj(&plan);
+      return r300_tcl_bypass_triangle_rs_tex_adj_family_emit(
+         shape->width, shape->height, clip_space, source_triangle_count,
+         &plan, cell);
+   }
    if (sampled == NULL && varying && flat_color0) {
       /* The direct GA Flat route: the canonical plan alone, carried
        * by each draw's own contract prefix. */
@@ -384,6 +400,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *color_memory,
                                const struct r300_triangle_render_shape *shape,
                                bool clip_space, bool varying, bool flat_color0,
+                               uint8_t rs_probe_candidate,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
                                   *sampled)
@@ -439,8 +456,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    int emit_result = 0;
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
-         shape, varying, flat_color0, triangle_count, sampled, false,
-         &window_cell);
+         shape, varying, flat_color0, rs_probe_candidate, triangle_count,
+         sampled, false, &window_cell);
       if (emit_result != 0)
          return vk_error(device,
                          r3v_native_cell_vk_result_from_errno(emit_result));
@@ -448,8 +465,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
 
    struct r300_tcl_bypass_triangle_ib cell = {0};
    emit_result = emit_triangle_cell_for_position_space(
-      shape, varying, flat_color0, triangle_count, sampled, clip_space,
-      &cell);
+      shape, varying, flat_color0, rs_probe_candidate, triangle_count,
+      sampled, clip_space, &cell);
    if (emit_result != 0)
       r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
@@ -563,7 +580,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
-                                         false, 1, NULL);
+                                         false, 0, 1, NULL);
 }
 
 VkResult
@@ -572,8 +589,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
-   bool varying, bool flat_color0, uint32_t triangle_count,
-   const uint32_t color_bits[4],
+   bool varying, bool flat_color0, uint8_t rs_probe_candidate,
+   uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -624,7 +641,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, true, varying,
-                                         flat_color0, triangle_count, sampled);
+                                         flat_color0, rs_probe_candidate,
+                                         triangle_count, sampled);
 }
 
 /* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume

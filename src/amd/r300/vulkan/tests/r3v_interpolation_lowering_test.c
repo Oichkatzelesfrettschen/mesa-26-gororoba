@@ -175,12 +175,116 @@ test_clip_class(void)
          R3V_INTERPOLATION_CLIP_PARTIAL);
 }
 
+static void
+noperspective_vec4_link(struct r3v_shader_interface_link *link)
+{
+   memset(link, 0, sizeof(*link));
+   link->varying_mask = 1u;
+   link->noperspective_mask = 1u;
+   link->varyings[0] = (struct r3v_shader_interface_varying){
+      .present = true,
+      .scalar = R3V_SHADER_INTERFACE_SCALAR_FLOAT32,
+      .width = 4,
+      .component_mask = 0xf,
+      .interpolation = R3V_SHADER_INTERFACE_NOPERSPECTIVE,
+   };
+}
+
+static struct r3v_rs_probe_query
+probe_query(const struct r3v_shader_interface_link *link, bool tex_adj,
+            bool w_select)
+{
+   return (struct r3v_rs_probe_query){
+      .tex_adj_gate = tex_adj,
+      .w_select_gate = w_select,
+      .cpu_delivery = true,
+      .triangle_list = true,
+      .link = link,
+      .rs_destination_available = true,
+      .fragment_consumes_destination = true,
+   };
+}
+
+static enum r3v_rs_probe_candidate
+select_probe(struct r3v_rs_probe_query query, const char **reason)
+{
+   return r3v_rs_probe_candidate_select(&query, reason);
+}
+
+/* The probe candidate opens on exactly one gate over a NoPerspective
+ * full-vec4 interface on the CPU triangle-list route, and every
+ * flipped predicate -- including the Smooth interface under an open
+ * gate, the mutation that keeps the candidate state without the
+ * interface -- yields the control. */
+static void
+test_probe_candidate_conjunction(void)
+{
+   struct r3v_shader_interface_link link;
+   noperspective_vec4_link(&link);
+   const char *reason = "unset";
+   CHECK(select_probe(probe_query(&link, true, false),
+                                       &reason) == R3V_RS_PROBE_TEX_ADJ);
+   CHECK(reason == NULL);
+   CHECK(select_probe(probe_query(&link, false, true),
+                                       &reason) == R3V_RS_PROBE_W_SELECT_ONE);
+   CHECK(reason == NULL);
+   CHECK(select_probe(probe_query(&link, false, false),
+                                       &reason) == R3V_RS_PROBE_NONE);
+   CHECK(reason != NULL && strstr(reason, "no probe gate") != NULL);
+   CHECK(select_probe(probe_query(&link, true, true),
+                                       &reason) == R3V_RS_PROBE_NONE);
+   CHECK(reason != NULL && strstr(reason, "both") != NULL);
+
+   struct r3v_rs_probe_query q = probe_query(&link, true, false);
+   q.cpu_delivery = false;
+   CHECK(r3v_rs_probe_candidate_select(&q, NULL) == R3V_RS_PROBE_NONE);
+   q = probe_query(&link, true, false);
+   q.triangle_list = false;
+   CHECK(r3v_rs_probe_candidate_select(&q, NULL) == R3V_RS_PROBE_NONE);
+   q = probe_query(&link, true, false);
+   q.rs_destination_available = false;
+   CHECK(r3v_rs_probe_candidate_select(&q, NULL) == R3V_RS_PROBE_NONE);
+   q = probe_query(&link, true, false);
+   q.fragment_consumes_destination = false;
+   CHECK(r3v_rs_probe_candidate_select(&q, NULL) == R3V_RS_PROBE_NONE);
+   CHECK(r3v_rs_probe_candidate_select(NULL, NULL) == R3V_RS_PROBE_NONE);
+
+   /* The Smooth interface under the open gate: the control. */
+   struct r3v_shader_interface_link smooth;
+   noperspective_vec4_link(&smooth);
+   smooth.noperspective_mask = 0;
+   smooth.varyings[0].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+   CHECK(select_probe(probe_query(&smooth, true, false),
+                                       &reason) == R3V_RS_PROBE_NONE);
+   CHECK(reason != NULL && strstr(reason, "no NoPerspective") != NULL);
+   /* A Flat interface is not a probe interface either. */
+   struct r3v_shader_interface_link flat;
+   flat_vec4_link(&flat);
+   CHECK(select_probe(probe_query(&flat, true, false),
+                                       NULL) == R3V_RS_PROBE_NONE);
+   /* Two locations, or a vec3, leave the one-TEX0 cell. */
+   struct r3v_shader_interface_link two;
+   noperspective_vec4_link(&two);
+   two.varying_mask = 3u;
+   two.noperspective_mask = 3u;
+   two.varyings[1] = two.varyings[0];
+   CHECK(select_probe(probe_query(&two, true, false),
+                                       NULL) == R3V_RS_PROBE_NONE);
+   struct r3v_shader_interface_link vec3;
+   noperspective_vec4_link(&vec3);
+   vec3.varyings[0].width = 3;
+   vec3.varyings[0].component_mask = 0x7;
+   CHECK(select_probe(probe_query(&vec3, true, false),
+                                       NULL) == R3V_RS_PROBE_NONE);
+}
+
 int
 main(void)
 {
    test_conjunction_opens_direct();
    test_each_predicate_flipped_replicates();
    test_clip_class();
+   test_probe_candidate_conjunction();
    if (failures != 0) {
       fprintf(stderr, "%d failure(s)\n", failures);
       return EXIT_FAILURE;

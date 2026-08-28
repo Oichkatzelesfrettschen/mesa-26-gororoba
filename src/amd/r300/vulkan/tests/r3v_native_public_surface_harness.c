@@ -3991,6 +3991,57 @@ main(void)
                 R3V_NATIVE_REFUSAL_RESULT &&
              unconsumed_pipeline == VK_NULL_HANDLE);
 
+      /* The rasterizer probe candidate rides the NoPerspective
+       * interface and the gate together: the smooth interface takes
+       * none under an open gate, the NoPerspective interface takes the
+       * gated candidate, the same interface takes none once the gate
+       * closes -- state cannot be retained across the interface change
+       * -- and two open gates take none, since one cell carries one
+       * candidate (r3v_interpolation_lowering.h). */
+      {
+         struct pipeline_shape probe_shape = varying_shape;
+         probe_shape.fragment_words =
+            r3v_reference_fragment_noperspective_spirv;
+         probe_shape.fragment_bytes =
+            sizeof(r3v_reference_fragment_noperspective_spirv);
+         static const struct {
+            const char *tex_adj;
+            const char *w_select;
+            bool noperspective;
+            enum r3v_rs_probe_candidate expected;
+         } arm[4] = {
+            { "1", NULL, false, R3V_RS_PROBE_NONE },
+            { "1", NULL, true, R3V_RS_PROBE_TEX_ADJ },
+            { NULL, NULL, true, R3V_RS_PROBE_NONE },
+            { "1", "1", true, R3V_RS_PROBE_NONE },
+         };
+         for (unsigned a = 0; a < 4; a++) {
+            if (arm[a].tex_adj != NULL)
+               setenv("R3V_NATIVE_RS_TEX_ADJ_PROBE", arm[a].tex_adj, 1);
+            else
+               unsetenv("R3V_NATIVE_RS_TEX_ADJ_PROBE");
+            if (arm[a].w_select != NULL)
+               setenv("R3V_NATIVE_RS_W_SELECT_PROBE", arm[a].w_select, 1);
+            else
+               unsetenv("R3V_NATIVE_RS_W_SELECT_PROBE");
+            r3v_native_device_refresh_delivery_gates(native_device);
+            VkPipeline probe_pipeline = VK_NULL_HANDLE;
+            assert(make_pipeline(arm[a].noperspective ? &probe_shape
+                                                      : &varying_shape,
+                                 pass, layout, &probe_pipeline) ==
+                   VK_SUCCESS);
+            VK_FROM_HANDLE(r3v_native_pipeline, native_probe,
+                           probe_pipeline);
+            assert(native_probe->shader_interface.noperspective_mask ==
+                   (arm[a].noperspective ? 1u : 0u));
+            assert(native_probe->rs_probe_candidate == arm[a].expected);
+            vkDestroyPipeline(device, probe_pipeline, NULL);
+         }
+         unsetenv("R3V_NATIVE_RS_TEX_ADJ_PROBE");
+         unsetenv("R3V_NATIVE_RS_W_SELECT_PROBE");
+         r3v_native_device_refresh_delivery_gates(native_device);
+      }
+
       /* Flat over the partially clipped triangle: the vertex buffer
        * still holds varying_crossing, whose tint is the vertex position
        * itself, so every non-degenerate record of the clipped fan

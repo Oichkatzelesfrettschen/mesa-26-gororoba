@@ -7,6 +7,7 @@
  */
 
 #include "r300_first_draw_state.h"
+#include "r300_rs_tex_adj_probe.h"
 #include "r300_fragment_binary.h"
 #include "r300_tcl_bypass_triangle.h"
 
@@ -136,6 +137,12 @@ main(int argc, char **argv)
     * mutations of one shape, not two different shapes.
     */
    bool flat_replicate = false;
+   /* --rs-tex-adj and --rs-w-select write the rasterizer probe two-pass
+    * stream: pass 0 the control varying cell, pass 1 the same bytes
+    * under the named candidate (r300_rs_tex_adj_probe.h), so the
+    * kernel and CS-track replays judge both the control and the
+    * candidate stream. */
+   uint8_t rs_probe = 0;
    /* --triangles N writes the cell family member of N triangles: the
     * host expansion of an N-instance draw, differing from the single
     * triangle in the vertex-index bound and the draw count alone. */
@@ -148,6 +155,10 @@ main(int argc, char **argv)
          flat_color0 = true;
       } else if (strcmp(argv[a], "--flat-replicate") == 0) {
          flat_replicate = true;
+      } else if (strcmp(argv[a], "--rs-tex-adj") == 0) {
+         rs_probe = R300_RS_TEX_ADJ_PROBE_TEX_ADJ;
+      } else if (strcmp(argv[a], "--rs-w-select") == 0) {
+         rs_probe = R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE;
       } else if (strcmp(argv[a], "--varying") == 0) {
          varying = true;
       } else if (strcmp(argv[a], "--triangles") == 0 && a + 1 < argc) {
@@ -167,7 +178,8 @@ main(int argc, char **argv)
    if (usage_error) {
       fprintf(stderr,
               "usage: %s <output-directory> [--varying] [--triangles N] "
-              "[--multi-pass] [--flat-color0] [--flat-replicate]\n",
+              "[--multi-pass] [--flat-color0] [--flat-replicate] "
+              "[--rs-tex-adj] [--rs-w-select]\n",
               argv[0]);
       return 2;
    }
@@ -185,6 +197,23 @@ main(int argc, char **argv)
       mp.second_color_index = 3;
       return write_multi_pass_cell(dir, &mp, false,
                                    "two-pass-render-shapes-bound");
+   }
+
+   if (rs_probe != 0) {
+      struct r300_triangle_multi_pass mp;
+      memset(&mp, 0, sizeof(mp));
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
+      mp.pass[0].varying = true;
+      mp.pass[1].varying = true;
+      mp.pass[1].rs_tex_adj_candidate = rs_probe;
+      mp.second_vertex_index = 2;
+      mp.second_color_index = 3;
+      return write_multi_pass_cell(
+         dir, &mp, true,
+         rs_probe == R300_RS_TEX_ADJ_PROBE_TEX_ADJ
+            ? "two-pass-rs-tex-adj-probe"
+            : "two-pass-rs-w-select-probe");
    }
 
    if (flat_color0 || flat_replicate) {

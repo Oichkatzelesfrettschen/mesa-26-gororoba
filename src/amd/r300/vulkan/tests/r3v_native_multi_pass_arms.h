@@ -13,6 +13,7 @@
 #ifndef R3V_NATIVE_MULTI_PASS_ARMS_H
 #define R3V_NATIVE_MULTI_PASS_ARMS_H
 
+#include "amd/r300/common/r300_rs_tex_adj_probe.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "r3v_native_reference_spirv.h"
 
@@ -99,6 +100,24 @@ r3v_native_multi_pass_public_flat_color0_reference(
    r3v_native_multi_pass_public_flat_reference(out);
    out->pass[0].flat_color0 = true;
    out->pass[1].flat_color0 = true;
+}
+
+/* The rasterizer probe two-draw form: both passes carry the TEX0
+ * varying the probe module pair declares, and the second pass alone
+ * takes the candidate control word, so the two halves of the stream
+ * differ in exactly one dword -- RS_INST_0's TEX_ADJ bit or
+ * GB_SELECT's W_SELECT bit (r300_rs_tex_adj_probe.h).  Pass 0 is the
+ * control the census reads as the perspective premise and pass 1 is
+ * the candidate the census classifies.  The binding stays (2, 3): each
+ * pass's deferred draw owns its own carrier and target.
+ */
+static inline void
+r3v_native_multi_pass_public_rs_tex_adj_probe_reference(
+   struct r300_triangle_multi_pass *out,
+   enum r300_rs_tex_adj_probe_candidate candidate)
+{
+   r3v_native_multi_pass_public_flat_reference(out);
+   out->pass[1].rs_tex_adj_candidate = (uint8_t)candidate;
 }
 
 #endif /* R3V_NATIVE_MULTI_PASS_ARMS_H */
