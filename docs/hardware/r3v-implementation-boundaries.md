@@ -63,8 +63,16 @@ binary32 dynamic range; at that boundary, smaller weights round upward to
 carrier value zero. That positive-preserving rounding is host-model evidence,
 not an RS482 interpolation-accuracy claim.
 
-The admitted shader grammar exposes neither `Flat` nor `NoPerspective`, and
-the device exposes no user clip or cull distances. Pipeline admission also
+The admitted shader grammar exposes `Flat` (host provoking-value replication,
+or the direct GA color 0 route for one full vec4 at location 0) and
+`NoPerspective`, admitted on any float vec4 varying but implemented on the
+direct GB W_SELECT route alone (one full vec4 at location 0, CPU delivery, a
+triangle list, clipping class ACCEPT; the `GB_SELECT.W_SELECT = 1` word the
+RS482 census classified affine). A partially clipped triangle refuses on that
+route, and every other NoPerspective interface -- a Smooth location beside it,
+an open R2VB delivery gate, a narrower varying -- receives perspective
+interpolation pending the `(a * w, w)` reciprocal carrier. The device exposes
+no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
 six planes cover the full exposed clip volume. Finite non-unit W and partial
 plane crossings must execute without device loss; a fully clipped triangle

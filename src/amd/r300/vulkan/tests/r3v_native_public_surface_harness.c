@@ -34,6 +34,7 @@
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_flat_color0_plan.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
+#include "amd/r300/common/r300_reg.h"
 
 #include "vk_semaphore.h"
 
@@ -4035,10 +4036,136 @@ main(void)
             assert(native_probe->shader_interface.noperspective_mask ==
                    (arm[a].noperspective ? 1u : 0u));
             assert(native_probe->rs_probe_candidate == arm[a].expected);
+            /* The direct NoPerspective route yields to an open probe
+             * gate and holds only when no gate names a candidate. */
+            assert(native_probe->interpolation_route ==
+                   (arm[a].noperspective &&
+                          arm[a].expected == R3V_RS_PROBE_NONE
+                       ? R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT
+                       : R3V_INTERPOLATION_ROUTE_REPLICATE));
             vkDestroyPipeline(device, probe_pipeline, NULL);
          }
          unsetenv("R3V_NATIVE_RS_TEX_ADJ_PROBE");
          unsetenv("R3V_NATIVE_RS_W_SELECT_PROBE");
+         r3v_native_device_refresh_delivery_gates(native_device);
+      }
+
+      /* The direct GB W_SELECT route: with every probe gate closed the
+       * NoPerspective interface selects the route on its own, records
+       * the stream the gated W_SELECT candidate records byte for byte
+       * -- the word the RS482 census classified affine -- differing
+       * from the Smooth interface's stream in the one GB_SELECT dword,
+       * executes over the ACCEPT triangle, and refuses the partially
+       * clipped one ahead of carrier publication. */
+      {
+         struct pipeline_shape noperspective_shape = varying_shape;
+         noperspective_shape.fragment_words =
+            r3v_reference_fragment_noperspective_spirv;
+         noperspective_shape.fragment_bytes =
+            sizeof(r3v_reference_fragment_noperspective_spirv);
+         VkPipeline noperspective_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&noperspective_shape, pass, layout,
+                              &noperspective_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_noperspective,
+                        noperspective_pipeline);
+         assert(native_noperspective->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+         assert(native_noperspective->rs_probe_candidate ==
+                R3V_RS_PROBE_NONE);
+         VkPipeline smooth_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&varying_shape, pass, layout,
+                              &smooth_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_smooth, smooth_pipeline);
+         assert(native_smooth->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_REPLICATE);
+
+         /* The gated candidate yields the route to the probe and
+          * records the same bytes. */
+         setenv("R3V_NATIVE_RS_W_SELECT_PROBE", "1", 1);
+         r3v_native_device_refresh_delivery_gates(native_device);
+         VkPipeline gated_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&noperspective_shape, pass, layout,
+                              &gated_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_gated, gated_pipeline);
+         assert(native_gated->rs_probe_candidate ==
+                R3V_RS_PROBE_W_SELECT_ONE);
+         assert(native_gated->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_REPLICATE);
+         VkCommandBuffer gated_cmd = record_triangle_draw(
+            &begin_pass, gated_pipeline, vertex_buffer, 3, 1, 0);
+         unsetenv("R3V_NATIVE_RS_W_SELECT_PROBE");
+         r3v_native_device_refresh_delivery_gates(native_device);
+
+         VkCommandBuffer noperspective_cmd = record_triangle_draw(
+            &begin_pass, noperspective_pipeline, vertex_buffer, 3, 1, 0);
+         VkCommandBuffer smooth_cmd = record_triangle_draw(
+            &begin_pass, smooth_pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_gated_cmd, gated_cmd);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_noperspective_cmd,
+                        noperspective_cmd);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_smooth_cmd,
+                        smooth_cmd);
+         assert(native_noperspective_cmd->deferred_draws[0]
+                   .direct_noperspective);
+         assert(native_noperspective_cmd->deferred_draws[0]
+                   .rs_probe_candidate == (uint8_t)R3V_RS_PROBE_W_SELECT_ONE);
+         assert(native_noperspective_cmd->ib_size_dwords ==
+                native_gated_cmd->ib_size_dwords);
+         assert(memcmp(native_noperspective_cmd->ib, native_gated_cmd->ib,
+                       native_gated_cmd->ib_size_dwords * 4u) == 0);
+         assert(native_noperspective_cmd->ib_size_dwords ==
+                native_smooth_cmd->ib_size_dwords);
+         unsigned differing = 0;
+         uint32_t differing_index = 0;
+         for (uint32_t i = 0; i < native_smooth_cmd->ib_size_dwords; i++) {
+            if (native_noperspective_cmd->ib[i] != native_smooth_cmd->ib[i]) {
+               differing++;
+               differing_index = i;
+            }
+         }
+         assert(differing == 1);
+         assert((native_smooth_cmd->ib[differing_index] &
+                 R300_GB_W_SELECT_1) == 0u &&
+                native_noperspective_cmd->ib[differing_index] ==
+                   (native_smooth_cmd->ib[differing_index] |
+                    R300_GB_W_SELECT_1));
+
+         /* The vertex buffer holds varying_crossing, the partially
+          * clipped triangle: the route refuses at execution. */
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_noperspective_cmd) ==
+                VK_ERROR_INITIALIZATION_FAILED);
+         /* The ACCEPT triangle executes. */
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+         vkUnmapMemory(device, vertex_memory);
+         VkCommandBuffer accept_cmd = record_triangle_draw(
+            &begin_pass, noperspective_pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_accept_cmd,
+                        accept_cmd);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_accept_cmd) == VK_SUCCESS);
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, varying_crossing, sizeof(varying_crossing));
+         vkUnmapMemory(device, vertex_memory);
+         vkDestroyPipeline(device, gated_pipeline, NULL);
+         vkDestroyPipeline(device, smooth_pipeline, NULL);
+         vkDestroyPipeline(device, noperspective_pipeline, NULL);
+
+         /* An open R2VB delivery gate withholds the route: the
+          * partial-clip refusal lives on the CPU route alone. */
+         setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
+         r3v_native_device_refresh_delivery_gates(native_device);
+         VkPipeline r2vb_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&noperspective_shape, pass, layout,
+                              &r2vb_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_r2vb, r2vb_pipeline);
+         assert(native_r2vb->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_REPLICATE);
+         vkDestroyPipeline(device, r2vb_pipeline, NULL);
+         unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
          r3v_native_device_refresh_delivery_gates(native_device);
       }
 

@@ -105,6 +105,11 @@ expected images (`expected_perspective.bin`, `expected_affine.bin`, `expected_pr
 4. `vkQueueSubmit` returns 0, the dmesg delta is empty, and the watchdog counter returns to
    `inactive` after the guarded interval.
 
+RS482 classified `RS_INST_TEX_ADJ` as `perspective-perturbed` (881 of 882 judged pixels
+unchanged against the control, one within a quantum) and `GB_SELECT_W_SELECT` as `affine` (882 of
+882 within one quantum, zero perspective matches); the direct NoPerspective route in
+`r3v_interpolation_lowering.h` carries the W_SELECT word.
+
 Only an `affine` classification promotes the word into a direct NoPerspective contract; any other
 result sends R3V's NoPerspective lowering to the (a w, w) carrier with a reciprocal-multiply in the
 fragment program.

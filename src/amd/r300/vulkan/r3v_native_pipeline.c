@@ -492,10 +492,17 @@ create_pipeline(struct r3v_native_device *device,
     * varying without texture sampling, and RS480's GA_COLOR_CONTROL
     * carries PROVOKING_VERTEX_FIRST.  The clipping class is judged per
     * triangle at execution. */
+   /* CPU delivery holds while every R2VB delivery gate stays closed;
+    * a Flat interface executes on the CPU route regardless (the R2VB
+    * host model's admission in r3v_native_cell.c requires
+    * flat_mask == 0), and the NoPerspective route's partial-clip
+    * refusal lives on the CPU route alone, so an open gate withholds
+    * that route. */
+   const bool cpu_delivery = device->r2vb_delivery_gate == NULL &&
+                             device->r2vb_gpu_delivery_gate == NULL &&
+                             device->r2vb_fetched_gate == NULL;
    const struct r3v_interpolation_query interpolation = {
-      /* Every Flat interface executes on the CPU route: the R2VB host
-       * model's admission in r3v_native_cell.c requires flat_mask == 0. */
-      .cpu_delivery = true,
+      .cpu_delivery = cpu_delivery || admitted.shader_interface.flat_mask != 0,
       .triangle_list = true,
       .clip_class = R3V_INTERPOLATION_CLIP_ACCEPT,
       .link = &pipeline->shader_interface,
@@ -503,25 +510,32 @@ create_pipeline(struct r3v_native_device *device,
       .fragment_consumes_destination = varying && !sampled,
       .provoking_first_representable = true,
    };
+   /* The Flat replication pin scopes to Flat interfaces: a NoPerspective
+    * interface keeps its route under the pin. */
    pipeline->interpolation_route =
-      device->flat_replication_pin != NULL
+      device->flat_replication_pin != NULL &&
+            admitted.shader_interface.flat_mask != 0
          ? R3V_INTERPOLATION_ROUTE_REPLICATE
          : r3v_interpolation_route_select(&interpolation, NULL);
-   /* CPU delivery holds while every R2VB delivery gate stays closed;
-    * the admission above refused any topology other than the triangle
+   /* The admission above refused any topology other than the triangle
     * list, so that predicate is the admission's. */
    const struct r3v_rs_probe_query probe = {
       .tex_adj_gate = device->rs_tex_adj_probe_gate != NULL,
       .w_select_gate = device->rs_w_select_probe_gate != NULL,
-      .cpu_delivery = device->r2vb_delivery_gate == NULL &&
-                      device->r2vb_gpu_delivery_gate == NULL &&
-                      device->r2vb_fetched_gate == NULL,
+      .cpu_delivery = cpu_delivery,
       .triangle_list = true,
       .link = &pipeline->shader_interface,
       .rs_destination_available = varying && !sampled,
       .fragment_consumes_destination = varying && !sampled,
    };
    pipeline->rs_probe_candidate = r3v_rs_probe_candidate_select(&probe, NULL);
+   /* A gated probe candidate owns the rasterizer control word: its
+    * NoPerspective pass records the candidate word alone, so the
+    * production W_SELECT route yields to it. */
+   if (pipeline->rs_probe_candidate != R3V_RS_PROBE_NONE &&
+       pipeline->interpolation_route ==
+          R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT)
+      pipeline->interpolation_route = R3V_INTERPOLATION_ROUTE_REPLICATE;
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

@@ -517,9 +517,15 @@ struct r3v_native_deferred_draw {
     * the provoking value ahead of the clipper otherwise
     * (r3v_interpolation_lowering.h). */
    bool direct_flat;
-   /* The rasterizer probe candidate the pipeline's NoPerspective
-    * interface selected (enum r3v_rs_probe_candidate); zero records
-    * the control varying cell. */
+   /* Set when the pipeline selected the direct GB W_SELECT route: the
+    * recorded cell carries the NoPerspective varying through TEX0
+    * under GB_SELECT.W_SELECT = 1, and execution admits the clipping
+    * class ACCEPT alone (r3v_interpolation_lowering.h). */
+   bool direct_noperspective;
+   /* The rasterizer control word the recorded cell carries (enum
+    * r3v_rs_probe_candidate): a gated probe candidate, W_SELECT_ONE on
+    * the direct NoPerspective route, or zero for the control varying
+    * cell. */
    uint8_t rs_probe_candidate;
    /* Set when the GPU producer route is admitted for this submission:
     * the queue composed the producer pass ahead of the consumer IB, the
@@ -1302,8 +1308,10 @@ struct r3v_native_pipeline {
     */
    struct r3v_shader_interface_link shader_interface;
    struct r3v_post_vs_lowering post_vs;
-   /* The route the linked interface's Flat locations take at record
-    * time; the execution-time clipping class refines it per triangle. */
+   /* The route the linked interface's Flat or NoPerspective location
+    * takes at record time; the execution-time clipping class refines
+    * the Flat route per triangle and refuses the NoPerspective route's
+    * partial class. */
    enum r3v_interpolation_route interpolation_route;
    /* The rasterizer probe candidate a NoPerspective interface takes
     * under an open probe gate; NONE records the control varying cell. */
