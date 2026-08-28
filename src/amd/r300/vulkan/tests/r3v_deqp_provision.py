@@ -31,7 +31,8 @@ import re
 import shutil
 import stat
 import struct
-import subprocess
+# External analysis tools execute as argv sequences with the shell disabled.
+import subprocess  # nosec B404
 import sys
 import tempfile
 from pathlib import Path
@@ -77,8 +78,16 @@ def sha256_file(p):
 
 
 def run(argv, cwd=None, env=None):
+    command_environment = os.environ.copy() if env is None else env.copy()
+    command_environment["LC_ALL"] = "C"
     try:
-        p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+        p = subprocess.run(  # nosec B603
+            argv,
+            cwd=cwd,
+            env=command_environment,
+            capture_output=True,
+            text=True,
+        )
     except FileNotFoundError:
         raise ToolUnavailable(argv[0])
     if p.returncode != 0:
@@ -113,6 +122,18 @@ def corpus_identity(mustpass_dir, pin_path):
         "mustpass_files": files,
         "pin_sha256": sha256_file(pin_path),
     }
+
+
+def validate_copied_corpus(mustpass_dir, pin_path, expected_identity):
+    try:
+        copied_identity = corpus_identity(mustpass_dir, pin_path)
+    except ProvisionRefusal as error:
+        raise ProvisionRefusal(f"copied mustpass corpus: {error}")
+    if copied_identity != expected_identity:
+        raise ProvisionRefusal(
+            "copied mustpass corpus or its pin changed during bundle creation"
+        )
+    return copied_identity
 
 
 def validate_output_boundary(out, roots):
@@ -236,7 +257,7 @@ def elf_identity(binary):
 def symbol_version_requirements(binary):
     """Map each DT_NEEDED provider to the symbol versions the ELF requests."""
     output = run(["readelf", "-W", "--version-info", str(binary)])
-    requirements = {}
+    requirements: dict[str, set[str]] = {}
     provider = None
     in_needs = False
     for line in output.splitlines():
@@ -311,8 +332,8 @@ def xed_instruction_identity(binary):
             f"intel-xed decoded {len(decoded)} instructions after objdump "
             f"decoded {len(instructions)}"
         )
-    per_function = {}
-    isa_set_counts = {}
+    per_function: dict[str, set[str]] = {}
+    isa_set_counts: dict[str, int] = {}
     for source, decoded_instruction in zip(instructions, decoded):
         function, address, raw, _objdump_assembler = source
         isa_set, decoded_raw, xed_assembler = decoded_instruction
@@ -421,6 +442,8 @@ def release_refusal(binary, src):
     if m is None:
         return f"binary release name {name!r} has no CTS shape"
     dm = re.match(r"(.*?)(?:-([0-9]+)-g([0-9a-f]+))?$", src["describe"])
+    if dm is None:
+        return f"source describe {src['describe']!r} has no CTS shape"
     tag, count, sha = m.group(1), m.group(2), m.group(3)
     if m.group(4):
         return f"binary release {name} was built from a dirty tree"
@@ -484,12 +507,28 @@ def binutils_identity():
 
 
 def dynamic_provider_paths(binary):
-    output = run(["ldd", str(binary)])
-    if "=> not found" in output:
-        missing = [
-            line.strip() for line in output.splitlines() if "=> not found" in line
-        ]
-        raise ProvisionRefusal(f"target dynamic providers are missing: {missing}")
+    def interpreter_path(executable):
+        output = run(["readelf", "-W", "--program-headers", str(executable)])
+        match = re.search(r"Requesting program interpreter: ([^\]]+)", output)
+        if match is None:
+            raise ProvisionRefusal(f"{executable} has no dynamic interpreter")
+        return Path(match.group(1))
+
+    binary_interpreter = interpreter_path(binary)
+    host_interpreter = interpreter_path("/proc/self/exe")
+    if not binary_interpreter.is_file():
+        raise ProvisionRefusal(
+            f"target dynamic interpreter {binary_interpreter} is unavailable"
+        )
+    if binary_interpreter.resolve() != host_interpreter.resolve():
+        raise ProvisionRefusal(
+            f"binary interpreter {binary_interpreter} differs from the host "
+            f"interpreter {host_interpreter}"
+        )
+    loader_environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("LD_")
+    }
+    output = run([str(host_interpreter), "--list", str(binary)], env=loader_environment)
     providers = {}
     for line in output.splitlines():
         match = re.match(r"^\s*(\S+)\s+=>\s+(\S+)", line)
@@ -606,6 +645,7 @@ def bundle(args):
             raise ProvisionRefusal("binary changed between the scan and the copy")
         shutil.copytree(data, stage / "vulkan")
         shutil.copytree(mustpass, stage / "mustpass")
+        validate_copied_corpus(stage / "mustpass", args.corpus_pin, corpus_pin)
         data_digest, data_count = tree_digest(stage / "vulkan")
         mp_digest, mp_count = tree_digest(stage / "mustpass")
         prov = {
@@ -732,8 +772,8 @@ def write_selftest_provenance(bundle_root, provenance):
 
 
 def selftest():
-    with tempfile.TemporaryDirectory() as d:
-        d = Path(d)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        d = Path(temporary_directory)
         src = d / "src"
         src.mkdir()
         global_config = d / "gitconfig"
@@ -853,10 +893,14 @@ def selftest():
             "case_count\t1\n"
             f"corpus_sha256\t{hashlib.sha256(b'dEQP-VK.api.x\n').hexdigest()}\n"
         )
+        copied_mp = d / "copied-mp"
+        shutil.copytree(mp, copied_mp)
+        (copied_mp / "api.txt").write_text("dEQP-VK.api.changed\n")
+        expected_corpus_identity = corpus_identity(mp, pin)
 
         def do_bundle(
             out,
-            allow=".*",
+            allow: str | None = ".*",
             bin_=None,
             strip=False,
             cache_=None,
@@ -888,6 +932,10 @@ def selftest():
                 return
             raise SystemExit(f"selftest: {needle!r} not refused")
 
+        expect(
+            lambda: validate_copied_corpus(copied_mp, pin, expected_corpus_identity),
+            "copied mustpass corpus",
+        )
         out = d / "out"
         do_bundle(out)
         verify(argparse.Namespace(bundle=str(out)))
@@ -1138,7 +1186,8 @@ def selftest():
         expect(lambda: do_bundle(d / "out3", pin_=tagged_pin), "lacks DEQP_TARGET")
     print(
         "selftest: bundle, verify, non-empty target, tampered corpus, "
-        "tampered provenance, executable mode, deterministic elevated ISA "
+        "copied-corpus admission, tampered provenance, executable mode, "
+        "deterministic elevated ISA "
         "note, rejected GNU-property stripping, stale and tagged release "
         "names, XED-classified SSE4, dirty source, cache source/build "
         "binding, output containment, corpus pin, ELF64 machine, target "
@@ -1181,7 +1230,7 @@ def main():
     sub.add_parser("selftest")
     args = p.parse_args()
     try:
-        {"bundle": bundle, "verify": verify, "selftest": lambda a: selftest()}[
+        {"bundle": bundle, "verify": verify, "selftest": lambda _args: selftest()}[
             args.cmd
         ](args)
     except ProvisionRefusal as e:

@@ -548,11 +548,15 @@ directories to the source checkout and selected executable, admits
 ELF64 x86-64 exclusively, records required dynamic symbol versions,
 classifies every decoded instruction through XED against the K8 ISA-set
 boundary, checks the mustpass case count and corpus digest, and keeps the
-output outside every copied input.  `verify` recomputes the transported
-ELF and loader identities and confirms that the target providers export
-every required symbol version.  The sealed binary digest preserves the
-producer's XED census.  The RS482 host's loader refuses a binary whose
-ISA-needed note exceeds the baseline.  The K8 build therefore compiles
+output outside every copied input.  The producer revalidates the copied
+mustpass bytes against the same pin before publication.  `verify`
+recomputes the transported ELF and loader identities, requires the
+binary interpreter to resolve to the verifier host's interpreter, and
+uses that trusted loader's `--list` mode with `LD_*` overrides removed to
+confirm that the target providers export every required symbol version.
+The sealed binary digest preserves the producer's XED census.  The RS482
+host's loader refuses a binary whose ISA-needed note exceeds the
+baseline.  The K8 build therefore compiles
 with `-march=x86-64 -mtune=k8` and links with `gcc -B<dir>` over the target's
 baseline `Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`,
 `libgcc.a`, and `libgcc_eh.a`, which the bundle records under
