@@ -66,4 +66,24 @@ r3v_native_multi_pass_public_reference(struct r300_triangle_multi_pass *out)
    out->second_color_index = 3;
 }
 
+/* The public Flat two-draw form: both passes carry the TEX0 varying
+ * the Flat module pair declares, so each pass emits through the cell
+ * family's varying record shape rather than a fragment constant.  The
+ * binding stays (2, 3).  The provoking values ride the vertex stream,
+ * not the stream bytes, so one emitted stream covers every vertex
+ * order the runner draws.
+ */
+static inline void
+r3v_native_multi_pass_public_flat_reference(
+   struct r300_triangle_multi_pass *out)
+{
+   memset(out, 0, sizeof(*out));
+   r300_tcl_bypass_triangle_render_shape_reference(&out->pass[0]);
+   r300_tcl_bypass_triangle_render_shape_reference(&out->pass[1]);
+   out->pass[0].varying = true;
+   out->pass[1].varying = true;
+   out->second_vertex_index = 2;
+   out->second_color_index = 3;
+}
+
 #endif /* R3V_NATIVE_MULTI_PASS_ARMS_H */

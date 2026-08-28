@@ -523,6 +523,14 @@ struct r300_triangle_render_shape {
     * bytes.
     */
    uint32_t target_offset;
+   /* When set, the pass carries the TEX0 varying record shape -- eight
+    * dwords per vertex, RS_IP_0 / RS_INST_0 routing, the pass-through
+    * fragment binary -- and emits through the cell family at the
+    * reference target rather than the constant-color render-shape
+    * emitter; color_bits is then unused.  The two-pass emitter reads
+    * it per pass.
+    */
+   bool varying;
 };
 
 /* The composed render-then-sample cell: one stream renders the first

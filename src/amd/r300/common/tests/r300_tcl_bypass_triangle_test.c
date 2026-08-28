@@ -2065,8 +2065,45 @@ test_multi_pass_cell(void)
             : mp.second_color_index;
       assert(clip_two.ib[site->ib_index] == RELOC_PAYLOAD(expected_index));
    }
+   const uint32_t clip_one_dwords = clip_one.ib_size_dwords;
    r300_tcl_bypass_triangle_release(&clip_two);
    r300_tcl_bypass_triangle_release(&clip_one);
+
+   /* A varying pass emits through the cell family: with both passes
+    * marked varying the bound stream is two clip-space varying family
+    * cells, the second rebound at every relocation site, and its
+    * length differs from the constant-color form's.
+    */
+   struct r300_triangle_multi_pass varying_mp = mp;
+   varying_mp.pass[0].varying = true;
+   varying_mp.pass[1].varying = true;
+   struct r300_tcl_bypass_triangle_ib varying_one, varying_two;
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             varying_mp.pass[0].width, varying_mp.pass[0].height, true, 1u,
+             &varying_one) == 0);
+   assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+             &varying_mp, &varying_two) == 0);
+   assert(varying_two.ib_size_dwords == 2 * varying_one.ib_size_dwords);
+   assert(varying_two.reloc_site_count == 2u * varying_one.reloc_site_count);
+   assert(memcmp(varying_two.ib, varying_one.ib,
+                 varying_one.ib_size_dwords * sizeof(uint32_t)) == 0);
+   uint32_t varying_differing = 0;
+   for (uint32_t i = 0; i < varying_one.ib_size_dwords; i++)
+      varying_differing +=
+         varying_two.ib[varying_one.ib_size_dwords + i] != varying_one.ib[i];
+   assert(varying_differing == varying_one.reloc_site_count);
+   for (uint32_t i = varying_one.reloc_site_count;
+        i < varying_two.reloc_site_count; i++) {
+      const struct r300_tcl_bypass_triangle_reloc_site *site =
+         &varying_two.reloc_sites[i];
+      assert(varying_two.ib[site->ib_index] ==
+             RELOC_PAYLOAD(site->slot == R300_TRIANGLE_SLOT_VERTEX
+                              ? varying_mp.second_vertex_index
+                              : varying_mp.second_color_index));
+   }
+   assert(varying_one.ib_size_dwords != clip_one_dwords);
+   r300_tcl_bypass_triangle_release(&varying_two);
+   r300_tcl_bypass_triangle_release(&varying_one);
 
    /* Each pass flushes its destination cache and re-establishes the
     * contract's color target: two writes of each across the stream,

@@ -973,6 +973,26 @@ r3v_native_attended_public_two_draw = executable(
   install : false,
 )
 
+# The attended public Flat two-draw cell: the same two-render-pass
+# recording under the Flat module pair, each pass in its own vertex
+# order, driven to a live DRM_RADEON_CS after the runner proves the
+# recorded stream's digest is the varying two-pass emitter's.
+r3v_native_attended_public_flat_two_draw = executable(
+  'r3v_native_attended_public_flat_two_draw',
+  files('tests/r3v_native_attended_public_flat_two_draw.c',
+        'tests/r3v_native_recovery_waiver.c',
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
   files('tests/r3v_native_attended_composed.c',
@@ -2375,6 +2395,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   test(
     'r3v-native-public-two-draw-record',
     r3v_native_attended_public_two_draw,
+    args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  # The Flat two-draw runner's recording boundary on the fixture: the
+  # Flat pipeline's interface record, both deferred draws' lowering over
+  # their own vertex order, and the recorded stream's digest against
+  # the varying two-pass emitter's.
+  test(
+    'r3v-native-public-flat-two-draw-record',
+    r3v_native_attended_public_flat_two_draw,
     args : [meson.current_build_dir(), '--record-only'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
