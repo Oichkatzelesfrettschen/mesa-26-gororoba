@@ -346,12 +346,19 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
     */
    if (ib->reloc_site_count != R300_TRIANGLE_RENDER_SLOT_COUNT &&
        ib->reloc_site_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT &&
-       ib->reloc_site_count != R300_TRIANGLE_COMPOSED_SLOT_COUNT)
+       ib->reloc_site_count != R300_TRIANGLE_COMPOSED_SLOT_COUNT &&
+       ib->reloc_site_count != R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT)
       return -EINVAL;
 
-   /* The uniqueness set below is one uint32_t of slot bits. */
+   /* The uniqueness set below is one uint32_t of slot bits.  The cleared
+    * multisample cell's clear half reuses the color and cover-vertex
+    * slots, so its seven sites are proven by the full sequence match
+    * below rather than by uniqueness.
+    */
    static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
                  "slot uniqueness is proven in a 32-bit mask");
+   const bool unique_slots =
+      ib->reloc_site_count != R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT;
 
    uint32_t seen = 0;
    for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
@@ -359,7 +366,7 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
          &ib->reloc_sites[i];
       if (site->slot >= R300_TRIANGLE_SLOT_COUNT)
          return -EINVAL;
-      if ((seen & (1u << site->slot)) != 0)
+      if (unique_slots && (seen & (1u << site->slot)) != 0)
          return -EEXIST;
       seen |= 1u << site->slot;
 
@@ -414,8 +421,24 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_TEXTURE,
       R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
    };
+   /* The cleared multisample cell leads with its clear half -- the
+    * multisample surface on the color slot and the cover geometry on the
+    * composed vertex slot -- and the multisample cell's five sites
+    * follow.
+    */
+   static const uint32_t msaa_clear_slots[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_VERTEX,
+      R300_TRIANGLE_SLOT_COMPOSED_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
+   };
    const uint32_t *candidates[2] = { NULL, NULL };
-   if (ib->reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT) {
+   if (ib->reloc_site_count == R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT) {
+      candidates[0] = msaa_clear_slots;
+   } else if (ib->reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT) {
       candidates[0] = composed_slots;
       candidates[1] = msaa_slots;
    } else if (ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT) {
@@ -1256,17 +1279,25 @@ r300_tcl_bypass_triangle_subsample_positions(
  */
 #define R300_TRIANGLE_SAMPLE_MARGIN 0.0625f
 
-void
-r300_tcl_bypass_triangle_sample_set_oracle(
-   const struct r300_triangle_render_shape *shape, uint32_t sample_count,
-   const uint32_t *interior_dwords, uint32_t interior_dword_count,
-   const uint32_t *pixels, uint32_t size_bytes,
-   struct r300_triangle_sample_set_verdict *verdict)
+/* One walk serves both sample-set verdicts: a pixel whose every
+ * subsample clears the edges inward is the interior denominator, one
+ * whose every subsample clears them outward is the exterior denominator,
+ * and the edge band between them is unjudged under either.
+ */
+static void
+sample_set_classify(const struct r300_triangle_render_shape *shape,
+                    uint32_t sample_count, bool exterior,
+                    const uint32_t *admitted_dwords,
+                    uint32_t admitted_dword_count, const uint32_t *pixels,
+                    uint32_t size_bytes,
+                    struct r300_triangle_sample_set_verdict *verdict)
 {
    *verdict = (struct r300_triangle_sample_set_verdict){ 0 };
    uint8_t positions[R300_TRIANGLE_MAX_SUBSAMPLES][2];
    const uint32_t samples =
       r300_tcl_bypass_triangle_subsample_positions(sample_count, positions);
+   const uint32_t *interior_dwords = admitted_dwords;
+   const uint32_t interior_dword_count = admitted_dword_count;
    if (shape == NULL || pixels == NULL || interior_dwords == NULL ||
        interior_dword_count == 0 || samples == 0 ||
        r300_tcl_bypass_triangle_render_shape_validate_geometry(shape) != 0)
@@ -1294,9 +1325,9 @@ r300_tcl_bypass_triangle_sample_set_oracle(
             else if (margin <= -R300_TRIANGLE_SAMPLE_MARGIN)
                outside++;
          }
-         if (outside == samples)
+         if (exterior ? inside == samples : outside == samples)
             continue;
-         if (inside != samples) {
+         if ((exterior ? outside : inside) != samples) {
             verdict->unjudged_pixels++;
             continue;
          }
@@ -1313,6 +1344,28 @@ r300_tcl_bypass_triangle_sample_set_oracle(
    verdict->interior_exact = verdict->analytic_pixels != 0 &&
                              verdict->interior_pixels ==
                                 verdict->analytic_pixels;
+}
+
+void
+r300_tcl_bypass_triangle_sample_set_oracle(
+   const struct r300_triangle_render_shape *shape, uint32_t sample_count,
+   const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_sample_set_verdict *verdict)
+{
+   sample_set_classify(shape, sample_count, false, interior_dwords,
+                       interior_dword_count, pixels, size_bytes, verdict);
+}
+
+void
+r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+   const struct r300_triangle_render_shape *shape, uint32_t sample_count,
+   const uint32_t *exterior_dwords, uint32_t exterior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_sample_set_verdict *verdict)
+{
+   sample_set_classify(shape, sample_count, true, exterior_dwords,
+                       exterior_dword_count, pixels, size_bytes, verdict);
 }
 
 void
@@ -1825,12 +1878,32 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
       .sample_count = msaa->sample_count,
       .resolve = true,
    };
+   struct r300_tcl_bypass_triangle_ib clear_half = { 0 };
    struct r300_tcl_bypass_triangle_ib render_half, resolve_half;
-   int rc = render_shape_emit_aa(&msaa->render, &render_aa, &render_half);
-   if (rc != 0)
+   int rc;
+   /* The clear half is the cover draw under the render half's subsample
+    * state with the clear color as its fragment constant: every sample
+    * of every pixel in the extent takes the clear color before the
+    * triangle lands, so the surface inherits nothing from the allocation.
+    */
+   if (msaa->clear) {
+      struct r300_triangle_render_shape clear_shape = msaa->render;
+      memcpy(clear_shape.color_bits, msaa->clear_color_bits,
+             sizeof(clear_shape.color_bits));
+      if (r300_tcl_bypass_triangle_render_shape_validate(&clear_shape) != 0)
+         return -EINVAL;
+      rc = render_shape_emit_aa(&clear_shape, &render_aa, &clear_half);
+      if (rc != 0)
+         return rc;
+   }
+   rc = render_shape_emit_aa(&msaa->render, &render_aa, &render_half);
+   if (rc != 0) {
+      r300_tcl_bypass_triangle_release(&clear_half);
       return rc;
+   }
    rc = render_shape_emit_aa(&resolve_shape, &resolve_aa, &resolve_half);
    if (rc != 0) {
+      r300_tcl_bypass_triangle_release(&clear_half);
       r300_tcl_bypass_triangle_release(&render_half);
       return rc;
    }
@@ -1864,21 +1937,28 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
 
    if (ib_mid.error != 0 || eb.error != 0 ||
        reloc_at == R300_PM4_NO_INDEX) {
+      r300_tcl_bypass_triangle_release(&clear_half);
       r300_tcl_bypass_triangle_release(&render_half);
       r300_tcl_bypass_triangle_release(&resolve_half);
       return -EINVAL;
    }
 
-   const uint32_t dwords = render_half.ib_size_dwords + ib_mid.count +
+   const uint32_t dwords = clear_half.ib_size_dwords +
+                           render_half.ib_size_dwords + ib_mid.count +
                            resolve_half.ib_size_dwords + eb.count;
    uint32_t *ib = calloc(dwords, sizeof(uint32_t));
    if (ib == NULL) {
+      r300_tcl_bypass_triangle_release(&clear_half);
       r300_tcl_bypass_triangle_release(&render_half);
       r300_tcl_bypass_triangle_release(&resolve_half);
       return -ENOMEM;
    }
    uint32_t at = 0;
-   const uint32_t render_base = at;
+   const uint32_t clear_base = at;
+   if (clear_half.ib_size_dwords != 0)
+      memcpy(ib + at, clear_half.ib,
+             clear_half.ib_size_dwords * sizeof(uint32_t));
+   const uint32_t render_base = (at += clear_half.ib_size_dwords);
    memcpy(ib + at, render_half.ib,
           render_half.ib_size_dwords * sizeof(uint32_t));
    const uint32_t mid_base = (at += render_half.ib_size_dwords);
@@ -1895,6 +1975,19 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
     * render into the one multisample surface.
     */
    uint32_t site = 0;
+   /* The clear half's color site stays on the color slot, the one
+    * multisample surface, and its vertex site takes the composed vertex
+    * slot: the cover geometry the resolve half binds there.
+    */
+   for (uint32_t i = 0; i < clear_half.reloc_site_count; i++) {
+      struct r300_tcl_bypass_triangle_reloc_site r =
+         clear_half.reloc_sites[i];
+      r.ib_index += clear_base;
+      if (r.slot == R300_TRIANGLE_SLOT_VERTEX)
+         r.slot = R300_TRIANGLE_SLOT_COMPOSED_VERTEX;
+      ib[r.ib_index] = R300_TRIANGLE_RELOC_PAYLOAD(r.slot);
+      out->reloc_sites[site++] = r;
+   }
    for (uint32_t i = 0; i < render_half.reloc_site_count; i++) {
       out->reloc_sites[site] = render_half.reloc_sites[i];
       out->reloc_sites[site++].ib_index += render_base;
@@ -1917,6 +2010,7 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
    out->ib_size_dwords = dwords;
    out->owns_ib = true;
 
+   r300_tcl_bypass_triangle_release(&clear_half);
    r300_tcl_bypass_triangle_release(&render_half);
    r300_tcl_bypass_triangle_release(&resolve_half);
    if (r300_tcl_bypass_triangle_validate_reloc_sites(out) != 0) {

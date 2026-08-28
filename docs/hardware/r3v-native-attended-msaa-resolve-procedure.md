@@ -269,6 +269,60 @@ Bundle: steinmarder-r300
 `src/re/r300/results/r3v-native-msaa-resolve-downsample-semantics-rs482`,
 which retains all three arms.
 
+## Cleared multisample surface
+
+The exterior stops being a scope cut when the multisample surface holds
+a known color before the triangle lands.  R300 carries no fast clear
+(r300g clears through a draw as well), so the clear is a third half
+ahead of the render half: the cover triangle drawn under the same
+subsample set with `r3v_native_msaa_clear_color` (opaque blue,
+`0xff0000ff` in `B8G8R8A8`) as its fragment constant, which writes
+every sample of every pixel in the extent.  The resolve then averages
+samples that all hold the clear color wherever the triangle left none,
+so `r300_tcl_bypass_triangle_sample_set_exterior_oracle` judges every
+pixel whose subsamples all clear the edges outward: 2896 pixels at four
+samples and 2920 at two, which with the interior and unjudged counts
+partitions the 4096-pixel extent.
+
+- Runner: `r3v_native_attended_msaa_resolve <dir> --samples 2|4
+  --clear`; arming digest from `r3v_native_arming_runner --msaa-clear
+  2|4 <dir>`.
+- Cell: the clear half's two relocation sites reuse the color slot and
+  the cover-vertex slot, so the same four references install and the
+  site validator matches the seven-site sequence in full
+  (`test_msaa_clear_cell`).  The plain cell's stream is the cleared
+  cell's tail, dword for dword.
+- Value sequences: four `GB_AA_CONFIG` writes ending in the disable,
+  three `GB_MSPOS0` writes at the set, `RB3D_AARESOLVE_CTL` running
+  NORMAL, NORMAL, RESOLVE, NORMAL.
+
+Predictions, one attempt per sample count:
+
+- The interior verdict is the uncleared arm's: `downsample
+  interior_exact=1` over 1104 (4x) or 1128 (2x) pixels, `fragment` and
+  `seed` at 0.
+- `[oracle] exterior exterior_exact=1` over 2896 (4x) or 2920 (2x)
+  pixels.
+- The census reads `fragment 0`: with every sample holding either the
+  clear color or the draw color, the resolve half's constant has no
+  sample to come from, which is the uncleared arms' 668 and 920
+  fragment-constant pixels explained rather than described.
+- `vkQueueSubmit` 0, an empty dmesg delta, an unchanged boot id, and the
+  counter back to inactive.
+
+Falsifiers:
+
+- `fragment` pixels in the census: the resolve writes the fragment
+  constant where the clear half's samples were not read, and the
+  uncleared arms' fragment-constant pixels were resolve writes, not
+  inherited contents.
+- `exterior_exact=0` with the draw color in the exterior: a wrong-side
+  write, which the retained destination locates.
+- `exterior_exact=0` with another dword: the clear half's coverage or
+  the subsample expansion of the cover draw is the finding.
+- A changed interior verdict: the clear half disturbed the render
+  half's state, which the per-half contract placement should exclude.
+
 ## Retained record
 
 The shared procedure's record plus `resolve_destination.bin`, the
