@@ -20,6 +20,11 @@
  *     and provoking FIRST is representable
  *   otherwise use provoking-value replication
  *
+ * A NoPerspective location has one route, direct GB W_SELECT; the
+ * refused conjunction is UNSUPPORTED, and the draw refuses at record
+ * time (r3v_native_draw.c), so a NoPerspective varying is either
+ * interpolated affine on silicon or refused ahead of submission.
+ *
  * The clipping class is a per-triangle execution-time fact: hardware
  * provoking selection acts on each emitted fan triangle and cannot
  * recover the source primitive's provoking value once clipping changes
@@ -53,6 +58,14 @@ enum r3v_interpolation_route {
     * admits an interface whose one varying is NoPerspective and refuses
     * a Smooth location beside it. */
    R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT,
+   /* A NoPerspective interface outside the W_SELECT conjunction: a
+    * Flat or Smooth location beside it, a narrower or non-float
+    * varying, a delivery route other than CPU, or a primitive other
+    * than the triangle list.  The (a * w, w) reciprocal carrier that
+    * would serve those shapes is not built, and replication would hand
+    * the varying perspective interpolation, so the draw refuses at
+    * record time with R3V_NATIVE_REFUSAL_RESULT. */
+   R3V_INTERPOLATION_ROUTE_UNSUPPORTED,
 };
 
 enum r3v_interpolation_clip_class {

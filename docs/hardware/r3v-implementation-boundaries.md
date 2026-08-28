@@ -69,9 +69,12 @@ or the direct GA color 0 route for one full vec4 at location 0) and
 direct GB W_SELECT route alone (one full vec4 at location 0, CPU delivery, a
 triangle list, clipping class ACCEPT; the `GB_SELECT.W_SELECT = 1` word the
 RS482 census classified affine). A partially clipped triangle refuses on that
-route, and every other NoPerspective interface -- a Smooth location beside it,
-an open R2VB delivery gate, a narrower varying -- receives perspective
-interpolation pending the `(a * w, w)` reciprocal carrier. The device exposes
+route, and every other NoPerspective interface -- a Smooth or Flat location
+beside it, an open R2VB delivery gate, a narrower or non-float varying -- is
+created with the `UNSUPPORTED` route and refuses every draw at record time,
+because replication would interpolate the varying with perspective; the
+`(a * w, w)` reciprocal carrier that would serve those shapes is not built.
+The device exposes
 no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
 six planes cover the full exposed clip volume. Finite non-unit W and partial
