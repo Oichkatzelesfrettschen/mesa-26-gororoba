@@ -128,6 +128,24 @@
       "verified_at": "2026-08-28T05:24:42Z"
     },
     {
+      "disposition": "fixed",
+      "evidence_commit": "2c9aea7e2b14ff97cc9598c4c674d27c82b97aba",
+      "evidence_pr": 1975,
+      "merged_at": "2026-08-28T05:45:12Z",
+      "resolved_at": "2026-08-28T05:47:47Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XtZQF",
+      "verified_at": "2026-08-28T05:47:48Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "2c9aea7e2b14ff97cc9598c4c674d27c82b97aba",
+      "evidence_pr": 1975,
+      "merged_at": "2026-08-28T05:45:12Z",
+      "resolved_at": "2026-08-28T05:47:48Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XtZQI",
+      "verified_at": "2026-08-28T05:47:49Z"
+    },
+    {
       "disposition": "superseded",
       "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
       "evidence_pr": 1942,
