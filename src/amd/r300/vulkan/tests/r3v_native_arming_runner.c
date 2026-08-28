@@ -72,6 +72,12 @@ static uint32_t cell_msaa_sample_count;
  * fragment constant, emitted in the bound form the recorder installs.
  */
 static bool cell_multi_pass = false;
+/* --multi-pass-public selects the same two-pass cell under the public
+ * surface's constants: the reference fragment module's green in the
+ * first pass and the blue module's in the second, the stream a
+ * two-render-pass command buffer records.
+ */
+static bool cell_multi_pass_public = false;
 
 static int
 cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
@@ -98,7 +104,10 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
    }
    if (cell_multi_pass) {
       struct r300_triangle_multi_pass mp;
-      r3v_native_multi_pass_reference(&mp);
+      if (cell_multi_pass_public)
+         r3v_native_multi_pass_public_reference(&mp);
+      else
+         r3v_native_multi_pass_reference(&mp);
       return r300_tcl_bypass_triangle_multi_pass_emit(&mp, cell);
    }
    if (cell_msaa) {
@@ -274,6 +283,11 @@ main(int argc, char **argv)
    } else if (argc >= argi + 1 && strcmp(argv[argi], "--multi-pass") == 0) {
       cell_multi_pass = true;
       argi += 1;
+   } else if (argc >= argi + 1 &&
+              strcmp(argv[argi], "--multi-pass-public") == 0) {
+      cell_multi_pass = true;
+      cell_multi_pass_public = true;
+      argi += 1;
    } else if (argc >= argi + 2 && (strcmp(argv[argi], "--msaa") == 0 ||
                                    strcmp(argv[argi], "--msaa-clear") == 0)) {
       cell_msaa = true;
@@ -365,7 +379,7 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s [--varying|--compute-identity|--sampled|"
               "--sampled-bgra|--sampled-arm <name>|--composed <offset>|"
-              "--msaa <sample-count>|"
+              "--msaa <sample-count>|--multi-pass|--multi-pass-public|"
               "--shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "
@@ -401,6 +415,8 @@ main(int argc, char **argv)
    r3v_native_arming_collect(&facts, vendor_id, device_id,
                              cell_msaa
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE
+                             : cell_multi_pass
+                                ? R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS
                              : cell_composed
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_COMPOSED_RENDER_SAMPLE
                              : cell_compute_identity

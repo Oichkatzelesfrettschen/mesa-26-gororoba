@@ -876,6 +876,26 @@ r3v_native_attended_multi_pass = executable(
   install : false,
 )
 
+# Attended public two-draw cell: two render passes with a draw each
+# through the public surface, one pipeline over each admitted fragment
+# module, driven to a live DRM_RADEON_CS after the runner proves the
+# recorded stream's digest is the emitter's.
+r3v_native_attended_public_two_draw = executable(
+  'r3v_native_attended_public_two_draw',
+  files('tests/r3v_native_attended_public_two_draw.c',
+        'tests/r3v_native_recovery_waiver.c',
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 r3v_native_attended_composed = executable(
   'r3v_native_attended_composed',
   files('tests/r3v_native_attended_composed.c',
@@ -2265,6 +2285,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   test(
     'r3v-native-multi-pass-record',
     r3v_native_attended_multi_pass,
+    args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  # The public two-draw runner's recording boundary on the fixture: the
+  # recorded stream's digest equals the emitter's and the kind is the
+  # frozen multi-pass kind, so a public-route drift fails here rather
+  # than on the one attended submission.
+  test(
+    'r3v-native-public-two-draw-record',
+    r3v_native_attended_public_two_draw,
     args : [meson.current_build_dir(), '--record-only'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
