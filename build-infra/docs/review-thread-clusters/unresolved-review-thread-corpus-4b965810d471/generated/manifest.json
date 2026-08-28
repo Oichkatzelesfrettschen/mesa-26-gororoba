@@ -1,0 +1,12 @@
+{
+  "corpus_manifest_sha256": "75a8b5b68925f90b0e9c002adfeac1bc2bfa89761fb9ba336113493c62a1f10e",
+  "disposition_revision": "660f73b28743b3f032697ae7bdbc980efd3f3020",
+  "files": {
+    "review-cluster-members.tsv": "13d6481e90ef6098fced1ae2d3612c03b536f5dd7d78fe1c4a18d0b3c4deb090",
+    "review-clusters.tsv": "867a07fb9ea470cdbea29a6cd3e5d42ac378dcc53aac6b2deb40fd5d2469b2b4",
+    "summary.json": "68963b146c8dc8a6e0370c141d064c6ced298d883b3dfe8ded71bfd652c1486d"
+  },
+  "generated_at": "2026-08-28T16:02:04Z",
+  "history_manifest_sha256": "9f17caef67fe0d7f4b5f3f5167c91cc634924806be45f19c95b3790b0e41e553",
+  "schema": "mesa-review-thread-clusters-v1"
+}

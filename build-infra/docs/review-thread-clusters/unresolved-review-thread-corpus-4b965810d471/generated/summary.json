@@ -1,0 +1,29 @@
+{
+  "cluster_count": 381,
+  "review_group_count": 650,
+  "route_cluster_counts": {
+    "closed-without-merge": 4,
+    "missing-current-path": 10,
+    "one-change-commit": 34,
+    "recover-review-source": 3,
+    "shared-change-history": 244,
+    "unchanged-source": 86
+  },
+  "route_review_group_counts": {
+    "closed-without-merge": 8,
+    "missing-current-path": 19,
+    "one-change-commit": 77,
+    "recover-review-source": 4,
+    "shared-change-history": 398,
+    "unchanged-source": 144
+  },
+  "route_thread_counts": {
+    "closed-without-merge": 9,
+    "missing-current-path": 24,
+    "one-change-commit": 81,
+    "recover-review-source": 7,
+    "shared-change-history": 633,
+    "unchanged-source": 157
+  },
+  "thread_count": 911
+}
