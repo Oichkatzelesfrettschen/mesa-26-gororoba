@@ -30,6 +30,24 @@
     },
     {
       "disposition": "fixed",
+      "evidence_commit": "292c0318de096554d204725077710d177a3196f2",
+      "evidence_pr": 1957,
+      "merged_at": "2026-08-28T02:12:34Z",
+      "resolved_at": "2026-08-28T02:23:01Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XJkcU",
+      "verified_at": "2026-08-28T02:23:01Z"
+    },
+    {
+      "disposition": "fixed",
+      "evidence_commit": "292c0318de096554d204725077710d177a3196f2",
+      "evidence_pr": 1957,
+      "merged_at": "2026-08-28T02:12:34Z",
+      "resolved_at": "2026-08-28T02:23:02Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XJkcb",
+      "verified_at": "2026-08-28T02:23:02Z"
+    },
+    {
+      "disposition": "fixed",
       "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
       "evidence_pr": 1942,
       "merged_at": "2026-08-27T20:46:29Z",
