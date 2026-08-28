@@ -71,8 +71,8 @@ hazard:
 
 Counts read Pass/NotSupported/Fail. Every Fail is classified against
 `r3v_conformance_nonpass_ledger.tsv` (20 rows); an unclassified row
-refuses decision grade. The machine-readable frontier over the 19
-slices -- counts, hazard, evidence status, blocking non-pass classes
+marks the result invalid for qualification. The machine-readable frontier
+over the 19 slices -- counts, hazard, evidence status, blocking non-pass classes
 joined to their ledger rows, and the next admitting mechanism -- is
 `steinmarder-r300/src/re/r300/corpora/rs482_r3v_conformance_frontier_v1/frontier.jsonl`,
 regenerated from this partition, the ledger, and the retained bundles;
@@ -87,7 +87,7 @@ target run.
 Under closed submission gates no case in slices 6-10 reaches an IB: the
 per-case status of every silicon shard equals its drm-shim host-model
 counterpart (416,370 of 416,370 for slices 7-10), so those runs are
-decision-grade statements about the closed-gate surface, and a slice's
+qualification claims about the closed-gate surface, and a slice's
 first real submission waits on a planning pass that lands transcripts,
 `r3v_native_plan_tool compose`, per-case plans, and the human gate.
 
@@ -98,7 +98,7 @@ first real submission waits on a planning pass that lands transcripts,
 | Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482` |
 | Finding | `src/re/r300/findings/active/2026-08-26-r3v-smoke-triangle-plan-replay-silicon-pass.md` |
 | Case | `dEQP-VK.api.smoke.triangle`, plan replay of one 231-dword triangle IB |
-| Verdict | `Pass`, `decision_grade` true, `evidence_class` silicon, receipt seal `c68d24e2957a...` |
+| Verdict | `Pass`; qualification valid; `evidence_class` silicon; receipt seal `c68d24e2957a...` |
 | Source | Mesa `133f7703713910fed6b3f3c545dd1bf08a60395c`, clean tree; DSO sha256 `fc37a699222e13...6aa3`, BLAKE3 `9a155d81b9b9...ff94` |
 | Submission | digest `389cc2a228a1...51fb1`, retained IB and one `chain.log` entry, session `complete/admitted` |
 | Runtime | kernel `7.1.8-1-cachyos`, radeon srcversion `727CE89E79FB2D14663C381`, `radeon-rs482-policy 0.8.11-1`, boot `d217f017-...`, dmesg delta 0 |
@@ -126,7 +126,7 @@ earlier receipts are `r3v-command-slice-first-target-run-rs482`
 |---|---|
 | Bundle | `steinmarder-r300/src/re/r300/results/r3v-robustness-slice-host-planning-pass-workstation` |
 | Finding | `src/re/r300/findings/active/2026-08-25-r3v-robustness-slice-host-planning-pass.md` |
-| Verdict | `classified_nonpass`, `decision_grade` false, `evidence_class` host-planning |
+| Verdict | `classified_nonpass`; qualification invalid; `evidence_class` host-planning |
 | Source | Mesa `fb709b391ec5`, clean tree, build-tree DSO `8e5492954a6c...` |
 | Outcomes | `no_nonempty_ib` 1,212 of 1,212 (138 cases create a second device), 0 transcripts |
 | CS witness | 0 `DRM_IOCTL_RADEON_CS` at the syscall boundary in 1,212 per-case straces |
@@ -141,7 +141,7 @@ mechanism is the compute recognizer shape below.
 | Bundle | `steinmarder-r300/src/re/r300/results/r3v-smoke-triangle-host-planning-pass-workstation` |
 | Finding | `src/re/r300/findings/active/2026-08-25-r3v-smoke-triangle-host-planning-receipt-and-kernel-deployment-reconciliation.md` |
 | Case | `dEQP-VK.api.smoke.triangle`, `binding: shard_subset` of `command.0000` (851 cases), subset of 1 |
-| Verdict | `classified_nonpass` (`image_outside_executed_envelope`), `decision_grade` false, `evidence_class` host-planning, seal `6e3ed951359d` |
+| Verdict | `classified_nonpass` (`image_outside_executed_envelope`); qualification invalid; `evidence_class` host-planning; seal `6e3ed951359d` |
 | Source | Mesa `fe55d59c955e`, clean tree (tree `699807657a94`, the tree of main commit `1f91536e639`; the rebase merge renamed the commit and kept its content), build-tree DSO `de0fcee09883...` |
 | Outcome | `no_nonempty_ib`; refusal at `vkCreateImage` (`r3v_native_image.c`, usage classification); 0 CS ioctls |
 
@@ -185,12 +185,12 @@ The DSO mode names which binary answered and how a run bound to it:
   `icd.dso_sha256` and refuses a run whose digest differs from the
   expected one (`wrong_icd`);
 - host-model: the same DSO under the Radeon drm-shim preload, evidence
-  class `host-model`, never decision grade;
+  class `host-model`, and is never valid for qualification;
 - host-planning: a planning pass on a submission-hazard slice under the
   radeon drm-shim with every gate closed, one process apiece, and a
   per-process strace witnessing zero kernel-entering CS ioctls; the
-  runner admits it as evidence class `host-planning`, never decision
-  grade, and seals each case's outcome (`transcript` with digests, or
+  runner admits it as evidence class `host-planning`, never as qualification
+  evidence, and seals each case's outcome (`transcript` with digests, or
   `no_nonempty_ib`); the slice's silicon requirement stands;
 - plan-bound: a submission-hazard silicon run replays a composed plan
   that binds at the first submission to the DSO BLAKE3, the built source
@@ -221,7 +221,7 @@ P0 (blocks the next target run):
 
 - the first dEQP transcript is delivered: `dEQP-VK.api.smoke.triangle`,
   the one-case bridge from dEQP semantics to the exact-plan hardware gate,
-  passes at decision grade on RS482 through the plan replay (see the
+  produces a valid qualification pass on RS482 through the plan replay (see the
   latest target receipt above); this row is closed and the next target
   run is the expansion ladder rung 1.  It reached a nonempty IB after the
   five render-family elements landed.  Those elements decompose into three
@@ -275,7 +275,7 @@ P0 (blocks the next target run):
   `ib.bin` byte-identical to the emitter.  The smoke.triangle transcript
   (231 IB dwords, three relocations: vertex read, color write, completion
   write) then composed to a sealed plan and replayed on RS482 to a
-  decision-grade `Pass`: the plan binds this box's source, DSO, kernel,
+  qualification-valid `Pass`: the plan binds this box's source, DSO, kernel,
   and module identity at the first submission, the queue opens the CS
   ioctl without `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED`, dEQP writes reference
   and result images and its image comparison passes, the session reaches
@@ -339,8 +339,8 @@ above is rung zero; the ladder after it runs in this order:
 1. secondary command buffer execution -- closed: `r3v_CmdExecuteCommands`
    replays a secondary's recorded host-executed ops (deferred copies,
    event ops, query ops) into the primary in recorded order, and the
-   moved `pipeline_barrier` subgroups pass on RS482 silicon at decision
-   grade (8/8 Pass, dmesg delta 0, gates closed, seal `13b4b86a37c2b2`,
+   moved `pipeline_barrier` subgroups meet the RS482 silicon qualification
+   requirements (8/8 Pass, dmesg delta 0, gates closed, seal `13b4b86a37c2b2`,
    bundle steinmarder-r300
    `r3v-native-secondary-replay-pipeline-barrier-first-silicon-pass-rs482`);
    the replay also closed an update-buffer aliasing double free by
@@ -349,7 +349,7 @@ above is rung zero; the ladder after it runs in this order:
    unequal-extent rectangles onto a nearest resample executor whose
    sample point (d + 0.5) * src/dst matches the spec's nearest filter
    (VK_FILTER_NEAREST, distinct images; flips keep refusing), and the
-   twelve moved subgroups pass on RS482 silicon at decision grade
+   twelve moved subgroups produce valid qualification passes on RS482 silicon
    (12/12 Pass, dmesg delta 0, gates closed, seal `765a0687a232c2`,
    bundle steinmarder-r300
    `r3v-native-scaling-blit-pipeline-barrier-silicon-pass-rs482`);

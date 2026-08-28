@@ -126,8 +126,8 @@ run_debug() {
         FAKE_DEVICE_SELECT_LIBRARY="$device_select_library" \
         FAKE_DEVICE_SELECT_MANIFEST="$device_select_manifest" \
         FAKE_PREFIX="$prefix" \
-        GOROROBA_DEBUG_BUILDDIR="$builddir" \
-        GOROROBA_DEBUG_SRCROOT="$WORKDIR/source" \
+        MESA_DEBUG_BUILDDIR="$builddir" \
+        MESA_DEBUG_SRCROOT="$WORKDIR/source" \
         pkgdir="$pkgdir" \
         srcdir="$PWD" \
         bash -c '. ./PKGBUILD; package'

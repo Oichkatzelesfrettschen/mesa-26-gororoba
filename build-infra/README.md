@@ -1,6 +1,6 @@
 # mesa-26-gororoba/build-infra
 
-Canonical build infrastructure for the gororoba Mesa fork.
+Canonical build infrastructure for the mesa-26-gororoba Mesa fork.
 
 The entry point requires GNU Make 4.2 or newer because source-root resolution
 uses `.SHELLSTATUS` to preserve Python validation failures during Makefile
@@ -121,7 +121,7 @@ compares worktree bytes through a fresh temporary index.  Staged-only changes,
 unignored untracked files, ordinary tracked changes, and tracked changes
 hidden by `assume-unchanged` all fail the comparison.
 
-External setup creates `$BUILD_ROOT/.gororoba-source-view` from the captured
+External setup creates `$BUILD_ROOT/.mesa-source-view` from the captured
 source commit with argv-only `git archive` and in-process tar extraction.
 Meson receives that derived path and may populate required wrap dependencies
 there, including zink's Vulkan-Profiles source, while the selected Git
@@ -136,11 +136,15 @@ After setup, the final identity records the derived path and a deterministic
 SHA-256 digest over every relative path, file type, permission mode, regular
 file size and bytes, and symbolic-link target.  Build, test, install, artifact
 reporting, and finalized cleanup recompute that digest and reject source-view
-drift.  A provisional transaction admits interrupted-setup cleanup by its
-exact source tuple and fixed derived path because Meson may have stopped
-between wrap extraction and final digest publication.  Ignored build outputs
-in the original worktree remain regenerable, while ignored original
-`subprojects/` sources remain rejected.
+drift.  Make exports `PYTHONDONTWRITEBYTECODE=1` as an enforced build-tool
+setting so Python generators import source helpers without adding bytecode
+caches to the derived view.  Make also binds Mesa's `MESA_GIT_SHA1_OVERRIDE`
+input to the validated source commit, preserving generated build identity when
+the derived view has no `.git` directory.  A provisional transaction admits
+interrupted-setup cleanup by its exact source tuple and fixed derived path
+because Meson may have stopped between wrap extraction and final digest
+publication.  Ignored build outputs in the original worktree remain
+regenerable, while ignored original `subprojects/` sources remain rejected.
 
 Path selection rejects whitespace and shell metacharacters, resolves symlinks
 before containment checks, and keeps the external build root, build directory,
@@ -169,9 +173,14 @@ control-source prefix is either a named Mesa profile prefix under `/opt` or a
 direct child of its build root.  System top-level directories never qualify as
 install prefixes or build roots.
 
+Reproducible profile targets configure `BUILD_ROOT/prefix`; they never select a
+shared `/opt` prefix.  `rebuild-all-tiers` treats its selected `BUILD_ROOT` as a
+parent and derives one profile-named build root for each tier, so each root has
+one build directory, prefix, policy tuple, and source-identity transaction.
+
 Successful external configuration writes
-`$BUILD_ROOT/.gororoba-external-source-identity.json` and
-`$BUILDDIR/.gororoba-source-identity.json`.  Before Meson runs, the build-root
+`$BUILD_ROOT/.mesa-external-source-identity.json` and
+`$BUILDDIR/.mesa-source-identity.json`.  Before Meson runs, the build-root
 record enters a provisional transaction that reserves the entire root for one
 selected source root, commit, tree, control root, control commit, control tree,
 derived source-view path, build directory, prefix, and sysconfdir.  Archive
@@ -200,6 +209,9 @@ External `clean` verifies the recorded source identity before removing an
 existing build directory.  An absent build directory remains a successful
 no-op only when the build-root identity matches the requested source and path
 tuple; a final root also requires the recorded source-view digest.
+Release rebuild targets use `clean-registered-build`: an absent build directory
+requires no cleanup, while every existing directory or symlink delegates to
+strict `clean` and its identity, containment, and mount checks.
 `distclean` verifies the same root, derived view, and prefix identity before
 it removes the build directory or archives the prefix, including after
 `clean` has already removed the per-build record and when a prior archival
@@ -251,12 +263,61 @@ dirty external-control rejection, anchor, namespace, and identity-record
 invariants directly.  Its temporary repositories keep the control checkout
 immutable, so concurrent calibration runs do not invalidate one another.
 
+Qualification, conformance-baseline, and merge-gating invocations set
+`REPRODUCIBLE_RUN=1`.  The selector rejects the control worktree as `TOPSRC` and
+requires distinct clean detached control and source worktrees.  Cleanliness
+includes physical tracked bytes, staged and untracked paths, and ignored
+populated `subprojects/`.  Configure archives the selected source commit into
+the external source view, and the build identity binds `REPRODUCIBLE_RUN=1` so
+later build, test, install, and artifact commands cannot relabel an ordinary
+build as reproducible.  Treat both detached worktrees and `BUILD_ROOT` as
+single-owner resources throughout the run.  For example:
+
+```sh
+MESA_CONTROL_ROOT=/path/to/detached-control
+MESA_SOURCE_ROOT=/path/to/detached-source
+MESA_BUILD_ROOT=/path/to/dedicated-build-root
+make -C "$MESA_CONTROL_ROOT/build-infra" configure \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+make -C "$MESA_CONTROL_ROOT/build-infra" build \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+make -C "$MESA_CONTROL_ROOT/build-infra" test \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+```
+
+Build-control environment names use the `MESA_*` namespace. Legacy names that
+contain `GOROROBA_` fail with their replacement instead of being ignored. The
+two non-mechanical runner renames are `GOROROBA_MESA_PREFIX` to
+`MESA_INSTALL_PREFIX` and `GOROROBA_MESA_ENV` to `MESA_ENV_FILE`; deployment
+consent moved from `MESA_GOROROBA_DEPLOY_ACCEPTED` to `MESA_DEPLOY_ACCEPTED`.
+`make naming-policy-test` permits these spellings only in compatibility checks
+and retained review evidence.
+
+Schema-7 external source identities cannot be relabeled as schema 8. Their
+recorded control commit describes the older build, so replacing it with the
+new control commit would make the record false. Remove an obsolete schema-7
+build root only with the same external `TOPSRC`, `BUILD_ROOT`, `BUILDDIR`,
+profile, host environment, compiler selectors, and prefix that created it:
+
+```sh
+make -C build-infra remove-identity-v7-build-root REPRODUCIBLE_RUN=0 \
+  TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+```
+
+This destructive cleanup verifies both final schema-7 records, the historical
+control commit and tree through Git, transaction equality, the source-view
+digest, and the current source-view bytes. It removes the build root only when
+that directory contains exactly the root identity, source view, and selected
+build directory. An installed prefix, any additional entry, a mount boundary,
+or a nested Git repository makes the command refuse the removal. Create a new
+schema-8 build through the ordinary configure path after cleanup.
+
 ## Build-system policy
 
 - Meson native files carry Mesa options.
 - Make is the only build orchestration layer above Meson.
 - Host-specific LLVM command names are generated into
-  `$BUILDDIR/gororoba-toolchain.meson` during `make configure`.
+  `$BUILDDIR/mesa-toolchain.meson` during `make configure`.
 - `make configure` and `make install` re-assert every `[project options]`
   entry from the profile as `-D` flags (via
   `scripts/meson_profile_dflags.py`).  Native-file values are defaults only;
@@ -332,21 +393,45 @@ cd build-infra/packaging/mesa-gororoba-debug && makepkg --noconfirm && yes | sud
 r300 RELEASE build (vostro, conformance-baseline -- use only for CTS/Piglit/deqp runs
 where assertions-live behavior would contaminate pass/fail):
 ```bash
-make rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache
-make install-4_r300_full_release_x86_64v1-clang22-distcc-cache
-make artifact-check PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache PREFIX=/opt/local/mesa-26-gororoba
+MESA_CONTROL_ROOT=/path/to/detached-control
+MESA_SOURCE_ROOT=/path/to/detached-source
+MESA_BUILD_ROOT=/path/to/dedicated-build-root
+make -C "$MESA_CONTROL_ROOT/build-infra" \
+  rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+make -C "$MESA_CONTROL_ROOT/build-infra" \
+  install-4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+make -C "$MESA_CONTROL_ROOT/build-infra" artifact-check \
+  PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  PREFIX="$MESA_BUILD_ROOT/prefix" REPRODUCIBLE_RUN=1 \
+  TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
 ```
 
 r600/terakan RELEASE build (x130e, Rusticl enabled):
 ```bash
-make rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache
-make install-3_terakan_full_release_x86_64v1-clang22-distcc-cache
+MESA_CONTROL_ROOT=/path/to/detached-control
+MESA_SOURCE_ROOT=/path/to/detached-source
+MESA_BUILD_ROOT=/path/to/dedicated-build-root
+make -C "$MESA_CONTROL_ROOT/build-infra" \
+  rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+make -C "$MESA_CONTROL_ROOT/build-infra" \
+  install-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
 ```
 
 r600/terakan RELEASE build (x130e, no Rusticl -- use when bindgen breaks):
 ```bash
-make rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache
-make install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache
+MESA_CONTROL_ROOT=/path/to/detached-control
+MESA_SOURCE_ROOT=/path/to/detached-source
+MESA_BUILD_ROOT=/path/to/dedicated-build-root
+make -C "$MESA_CONTROL_ROOT/build-infra" \
+  rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
+make -C "$MESA_CONTROL_ROOT/build-infra" \
+  install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+  REPRODUCIBLE_RUN=1 TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT"
 ```
 
 Show available profiles + hostenvs:

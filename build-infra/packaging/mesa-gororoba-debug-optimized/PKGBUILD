@@ -40,13 +40,20 @@
 # GBM, lib/dri, libxatracker, the Vulkan ICD + layers, the glvnd EGL vendor json)
 # are symlinked into that /opt tree by package().  provides/conflicts/replaces
 # therefore mirror the release package and also supersede it, so exactly one
-# gororoba Mesa owns the /usr paths at a time.  Revert with
+# mesa-gororoba owns the /usr paths at a time.  Revert with
 # `pacman -U mesa-gororoba` (release) or `pacman -S mesa` (stock).
 # mesa-gororoba-debug-optimized-run still pins the loader to the /opt tree for a scoped
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
+for _legacy_name in GOROROBA_DEBUG_BUILDDIR GOROROBA_DEBUG_SRCROOT; do
+  if [[ -v $_legacy_name ]]; then
+    echo "${_legacy_name} was renamed by replacing GOROROBA_ with MESA_" >&2
+    exit 2
+  fi
+done
+unset _legacy_name
 pkgver=26.2.0
-pkgrel=21
+pkgrel=22
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
@@ -98,20 +105,20 @@ install="${pkgname}.install"
 # prebuilt build-infra builddir (see _builddir), not from a git checkout.
 source=('mesa-gororoba-debug-optimized-env.sh'
         'mesa-gororoba-debug-optimized-run')
-sha256sums=('3b9164da7656c5d7b122bc2924f51e91d0fb3cd2ad4efb1e4f2da28b767a10c9'
-            '7c279f5d678dc077525c3af11db649bdc252e7031166ed8f805fb4a2e0dc0fcf')
+sha256sums=('94a0330044da95d10074fc6afbc2947fe7fcd59ae1643e4226e7729a46a1091d'
+            '244f0c7e2171b5b784b37a08e893c1dbcffdccc1394e0e8f2756d07d7ac330e7')
 
 _prefix=/opt/mesa-gororoba-debug-optimized
 # The canonical build-infra builddir to repack, and the source root for the
 # license file and the promotion gate.  The recipe sits three levels below the
 # source root it belongs to, so the default resolves from the recipe's own
 # location and the tree carries no packager's home directory.  Override from
-# the make/env (GOROROBA_DEBUG_BUILDDIR / GOROROBA_DEBUG_SRCROOT) when
+# the make/env (MESA_DEBUG_BUILDDIR / MESA_DEBUG_SRCROOT) when
 # packaging from a copied recipe or against another checkout.
 _profile=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 _recipe_srcroot="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-_srcroot="${GOROROBA_DEBUG_SRCROOT:-${_recipe_srcroot}}"
-_builddir="${GOROROBA_DEBUG_BUILDDIR:-${_srcroot}/build/mesa-${_profile}}"
+_srcroot="${MESA_DEBUG_SRCROOT:-${_recipe_srcroot}}"
+_builddir="${MESA_DEBUG_BUILDDIR:-${_srcroot}/build/mesa-${_profile}}"
 
 # Link every entry of ${_prefix}/<rel> into ${pkgdir}/usr/<rel> as a symlink
 # back to the absolute /opt path, so the stock GL/EGL/GLX/GBM/Vulkan/VA loaders
@@ -163,7 +170,7 @@ check() {
 
   if [ ! -f "${audit}" ] || [ ! -f "${inventory}" ]; then
     echo "ERROR: promotion gate programs not found under ${vulkan_dir}" >&2
-    echo "       set GOROROBA_DEBUG_SRCROOT to the Mesa source root" >&2
+    echo "       set MESA_DEBUG_SRCROOT to the Mesa source root" >&2
     return 1
   fi
   if [ ! -f "${_builddir}/build.ninja" ]; then

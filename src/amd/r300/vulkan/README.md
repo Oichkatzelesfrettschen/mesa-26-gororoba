@@ -345,7 +345,7 @@ digests of every raw artifact, and the finite verdict; `verify-receipt`
 recomputes the seal and the artifact digests.  The evidence class is
 derived from the run (a preloaded drm-shim is host-model; only an
 unpreloaded run of libvulkan_r3v.so on a host whose render node resolves
-to an RS4xx device is silicon), a run is decision-grade only with a
+to an RS4xx device is silicon), a run is valid for qualification only with a
 clean tree at the declared SHA, NotSupported never counts as a pass, a
 process the deadline kills is never a pass, and every non-pass
 classifies against `tests/r3v_conformance_nonpass_ledger.tsv`,
@@ -374,7 +374,7 @@ authorization, experimental-route, plan, or evidence-directory value
 is admitted on a submission-hazard slice alone and refuses elsewhere
 as `gate_contamination`, with `check-ledgers` holding the pattern to
 every compute verb gate the ledger names; a run takes a fresh output
-directory and a caselist inside the shard ceiling; decision grade
+directory and a caselist inside the shard ceiling; qualification validity
 requires the declared source SHA, DSO, dEQP, caselist, and partition
 digests, the runtime event digest on silicon, the queue-claim report,
 and a caselist bound to a partition shard; the kernel log delta comes
@@ -414,7 +414,7 @@ and the report binary's digest; the report refuses when the advertised
 bit, the ledger's claim, and the gate state disagree.  Only the
 conformant mode makes a receipt `compute_claim_eligible`, a statement
 about the compute queue alone, so a gate-assisted run reads as its
-mode, and decision grade requires the report.
+mode, and qualification validity requires the report.
 
 A submission-bearing slice runs under a plan (`R3V_NATIVE_PLAN_FILE`
 and `R3V_NATIVE_PLAN_NONCE`): the planning pass under the drm-shim
@@ -434,7 +434,7 @@ are the runner's declarations verified against that receipt.
 
 A planning pass captures transcripts on the host model and proves
 nothing about conformance.  The runner admits it as the host-planning
-disposition, evidence class `host-planning` with `decision_grade` false,
+disposition, evidence class `host-planning` with `qualification_valid` false,
 on exact conditions alone: the slice hazard is `submission`, the radeon
 drm-shim `libradeon_noop_drm_shim.so` is in the preload path so it
 interposes ioctl (the same basename the driver's capture admission

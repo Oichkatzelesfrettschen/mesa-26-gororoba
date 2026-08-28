@@ -19,6 +19,13 @@
 # stages it:
 #   make rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache
 pkgname=mesa-gororoba-debug-asan
+for _legacy_name in GOROROBA_DEBUG_ASAN_BUILDDIR GOROROBA_DEBUG_ASAN_SRCROOT; do
+  if [[ -v $_legacy_name ]]; then
+    echo "${_legacy_name} was renamed by replacing GOROROBA_ with MESA_" >&2
+    exit 2
+  fi
+done
+unset _legacy_name
 pkgver=26.2.0
 pkgrel=1
 epoch=2
@@ -47,8 +54,8 @@ source=('mesa-gororoba-debug-asan-run')
 sha256sums=('SKIP')
 
 _prefix=/opt/mesa-gororoba-debug-asan
-_builddir="${GOROROBA_DEBUG_ASAN_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache}"
-_srcroot="${GOROROBA_DEBUG_ASAN_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
+_builddir="${MESA_DEBUG_ASAN_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache}"
+_srcroot="${MESA_DEBUG_ASAN_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
 
 package() {
   if [ ! -f "${_builddir}/build.ninja" ]; then
@@ -123,8 +130,8 @@ PYGATE
 
   # Sanity: confirm the instrumented driver objects actually staged (the wrapper
   # is useless without them), but do NOT do any /usr activation.
-  if [ ! -e "${pkgdir}${_prefix}/lib/libvulkan_r3v.so" ] && \
-     [ ! -e "${pkgdir}${_prefix}/lib/libgallium"*.so ] 2>/dev/null; then
+  if [[ ! -e "${pkgdir}${_prefix}/lib/libvulkan_r3v.so" ]] && \
+     ! compgen -G "${pkgdir}${_prefix}/lib/libgallium*.so" >/dev/null; then
     echo "ERROR: no staged driver .so under ${_prefix}/lib; the prime builddir did not install." >&2
     return 1
   fi

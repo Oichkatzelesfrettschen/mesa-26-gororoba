@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shlex
+import stat
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,9 +43,28 @@ def test_input_identifier_rejects_non_leaf_values(
     identifier: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOROROBA_TEST_IDENTIFIER", identifier)
+    monkeypatch.setenv("MESA_TEST_IDENTIFIER", identifier)
     with pytest.raises(source_root_control.ControlError):
-        source_root_control.input_identifier("GOROROBA_TEST_IDENTIFIER")
+        source_root_control.input_identifier("MESA_TEST_IDENTIFIER")
+
+
+@pytest.mark.parametrize(
+    ("legacy_name", "replacement_name"),
+    (
+        ("GOROROBA_TOPSRC_INPUT", "MESA_TOPSRC_INPUT"),
+        ("GOROROBA_MESA_PREFIX", "MESA_INSTALL_PREFIX"),
+        ("GOROROBA_MESA_ENV", "MESA_ENV_FILE"),
+        ("MESA_GOROROBA_DEPLOY_ACCEPTED", "MESA_DEPLOY_ACCEPTED"),
+    ),
+)
+def test_reject_legacy_environment_names_replacement(
+    legacy_name: str,
+    replacement_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(legacy_name, "fixture")
+    with pytest.raises(source_root_control.ControlError, match=replacement_name):
+        source_root_control.reject_legacy_environment()
 
 
 @pytest.mark.parametrize(
@@ -59,10 +79,24 @@ def test_input_identifier_accepts_mechanism_leaf_values(
     identifier: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOROROBA_TEST_IDENTIFIER", identifier)
-    assert (
-        source_root_control.input_identifier("GOROROBA_TEST_IDENTIFIER") == identifier
-    )
+    monkeypatch.setenv("MESA_TEST_IDENTIFIER", identifier)
+    assert source_root_control.input_identifier("MESA_TEST_IDENTIFIER") == identifier
+
+
+def test_selected_builddir_state_distinguishes_absence_from_directory_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_builddir = tmp_path / "selected-builddir"
+    monkeypatch.setenv("MESA_BUILDDIR_LEXICAL_INPUT", str(selected_builddir))
+    assert source_root_control.selected_builddir_state() == "absent"
+
+    selected_builddir.symlink_to(tmp_path / "missing-build-target")
+    assert source_root_control.selected_builddir_state() == "present"
+    selected_builddir.unlink()
+
+    selected_builddir.mkdir()
+    assert source_root_control.selected_builddir_state() == "present"
 
 
 @pytest.mark.parametrize("value", ("", "stable"))
@@ -70,10 +104,10 @@ def test_input_enum_accepts_declared_values(
     value: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOROROBA_TEST_ENUM", value)
+    monkeypatch.setenv("MESA_TEST_ENUM", value)
     assert (
         source_root_control.input_enum(
-            "GOROROBA_TEST_ENUM",
+            "MESA_TEST_ENUM",
             frozenset(("", "stable")),
         )
         == value
@@ -85,10 +119,10 @@ def test_input_enum_rejects_undeclared_values(
     value: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOROROBA_TEST_ENUM", value)
+    monkeypatch.setenv("MESA_TEST_ENUM", value)
     with pytest.raises(source_root_control.ControlError):
         source_root_control.input_enum(
-            "GOROROBA_TEST_ENUM",
+            "MESA_TEST_ENUM",
             frozenset(("", "stable")),
         )
 
@@ -108,10 +142,10 @@ def test_input_decimal_accepts_bounded_integers(
     expected: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOROROBA_TEST_DECIMAL", value)
+    monkeypatch.setenv("MESA_TEST_DECIMAL", value)
     assert (
         source_root_control.input_decimal(
-            "GOROROBA_TEST_DECIMAL",
+            "MESA_TEST_DECIMAL",
             minimum=minimum,
         )
         == expected
@@ -134,10 +168,10 @@ def test_input_decimal_rejects_non_decimal_or_below_minimum(
     minimum: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOROROBA_TEST_DECIMAL", value)
+    monkeypatch.setenv("MESA_TEST_DECIMAL", value)
     with pytest.raises(source_root_control.ControlError):
         source_root_control.input_decimal(
-            "GOROROBA_TEST_DECIMAL",
+            "MESA_TEST_DECIMAL",
             minimum=minimum,
         )
 
@@ -174,6 +208,7 @@ def layout_values(tmp_path: Path) -> dict[str, Path | str]:
         "mode": "default",
         "compiler_chain": "direct",
         "compiler_family": "llvm",
+        "reproducible_run": "0",
     }
 
 
@@ -205,10 +240,10 @@ def set_captured_revisions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     revision_names = {
-        "source_commit": "GOROROBA_SOURCE_COMMIT_CAPTURED",
-        "source_tree": "GOROROBA_SOURCE_TREE_CAPTURED",
-        "control_commit": "GOROROBA_CONTROL_COMMIT_CAPTURED",
-        "control_tree": "GOROROBA_CONTROL_TREE_CAPTURED",
+        "source_commit": "MESA_SOURCE_COMMIT_CAPTURED",
+        "source_tree": "MESA_SOURCE_TREE_CAPTURED",
+        "control_commit": "MESA_CONTROL_COMMIT_CAPTURED",
+        "control_tree": "MESA_CONTROL_TREE_CAPTURED",
     }
     for field, variable_name in revision_names.items():
         revision = values[field]
@@ -249,6 +284,17 @@ def committed_repository(repository: Path, object_format: str = "sha1") -> Path:
     return source_file
 
 
+def add_detached_worktree(repository: Path, worktree: Path) -> None:
+    source_root_control.run_git(
+        repository,
+        "worktree",
+        "add",
+        "--detach",
+        str(worktree),
+        "HEAD",
+    )
+
+
 def source_view_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -276,6 +322,22 @@ def source_view_values(
     return values
 
 
+def initialize_control_identity(values: dict[str, Path | str]) -> None:
+    control_root = values["control_root"]
+    assert isinstance(control_root, Path)
+    committed_repository(control_root)
+    values["control_commit"] = source_root_control.run_git(
+        control_root,
+        "rev-parse",
+        "HEAD",
+    )
+    values["control_tree"] = source_root_control.run_git(
+        control_root,
+        "rev-parse",
+        "HEAD^{tree}",
+    )
+
+
 def write_provisional_identity(values: dict[str, Path | str]) -> None:
     base_payload = source_root_control.base_identity_payload(values)
     source_root_control.write_json_atomic(
@@ -287,6 +349,54 @@ def write_provisional_identity(values: dict[str, Path | str]) -> None:
             source_root_control.PENDING_SOURCE_VIEW_DIGEST,
         ),
     )
+
+
+def write_final_identity(
+    values: dict[str, Path | str],
+    *,
+    schema_version: int,
+) -> dict[str, str | int]:
+    build_root = values["build_root"]
+    builddir = values["builddir"]
+    assert isinstance(build_root, Path)
+    assert isinstance(builddir, Path)
+    if schema_version == source_root_control.LEGACY_SCHEMA_VERSION:
+        source_view = build_root / source_root_control.LEGACY_SOURCE_VIEW_DIRECTORY
+        root_identity = build_root / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+        build_identity = builddir / source_root_control.LEGACY_IDENTITY_FILENAME
+    else:
+        assert schema_version == source_root_control.SCHEMA_VERSION
+        source_view = source_root_control.source_view_path(values)
+        root_identity = source_root_control.root_identity_path(values)
+        build_identity = source_root_control.identity_path(values)
+    source_view.mkdir(parents=True, exist_ok=True)
+    (source_view / "meson.build").write_text(
+        "project('identity-fixture')\n",
+        encoding="utf-8",
+    )
+    source_view_digest = source_root_control.source_view_content_digest(source_view)
+    current_payload = source_root_control.base_identity_payload(values)
+    if schema_version == source_root_control.LEGACY_SCHEMA_VERSION:
+        current_payload["source_view"] = str(source_view)
+        payload = source_root_control.legacy_identity_payload(current_payload)
+    else:
+        payload = current_payload
+    record = source_root_control.identity_record(
+        payload,
+        source_root_control.FINAL_STATE,
+        "a" * 32,
+        source_view_digest,
+    )
+    builddir.mkdir(parents=True, exist_ok=True)
+    source_root_control.write_json_atomic(
+        root_identity,
+        record,
+    )
+    source_root_control.write_json_atomic(
+        build_identity,
+        record,
+    )
+    return record
 
 
 @pytest.mark.parametrize(
@@ -756,20 +866,20 @@ def test_require_captured_inputs_rejects_replacement(
     values = layout_values(tmp_path)
     set_captured_revisions(values, monkeypatch)
     environment_names = {
-        "source_root": "GOROROBA_TOPSRC_INPUT",
-        "control_root": "GOROROBA_CONTROL_ROOT_INPUT",
-        "build_root": "GOROROBA_BUILD_ROOT_INPUT",
-        "builddir": "GOROROBA_BUILDDIR_INPUT",
-        "prefix": "GOROROBA_PREFIX_INPUT",
-        "sysconfdir": "GOROROBA_SYSCONFDIR_INPUT",
+        "source_root": "MESA_TOPSRC_INPUT",
+        "control_root": "MESA_CONTROL_ROOT_INPUT",
+        "build_root": "MESA_BUILD_ROOT_INPUT",
+        "builddir": "MESA_BUILDDIR_INPUT",
+        "prefix": "MESA_PREFIX_INPUT",
+        "sysconfdir": "MESA_SYSCONFDIR_INPUT",
     }
     anchor_names = {
-        "source_root": "GOROROBA_SOURCE_ROOT_ANCHOR",
-        "control_root": "GOROROBA_CONTROL_ROOT_ANCHOR",
-        "build_root": "GOROROBA_BUILD_ROOT_ANCHOR",
-        "builddir": "GOROROBA_BUILDDIR_ANCHOR",
-        "prefix": "GOROROBA_PREFIX_ANCHOR",
-        "sysconfdir": "GOROROBA_SYSCONFDIR_ANCHOR",
+        "source_root": "MESA_SOURCE_ROOT_ANCHOR",
+        "control_root": "MESA_CONTROL_ROOT_ANCHOR",
+        "build_root": "MESA_BUILD_ROOT_ANCHOR",
+        "builddir": "MESA_BUILDDIR_ANCHOR",
+        "prefix": "MESA_PREFIX_ANCHOR",
+        "sysconfdir": "MESA_SYSCONFDIR_ANCHOR",
     }
     for field, input_name in environment_names.items():
         path = values[field]
@@ -803,9 +913,9 @@ def test_require_captured_inputs_rejects_retargeted_selector(
     values = layout_values(tmp_path)
     values["builddir"] = selected_path
     set_captured_revisions(values, monkeypatch)
-    monkeypatch.setenv("GOROROBA_BUILDDIR_INPUT", str(captured_path))
+    monkeypatch.setenv("MESA_BUILDDIR_INPUT", str(captured_path))
     monkeypatch.setenv(
-        "GOROROBA_BUILDDIR_ANCHOR",
+        "MESA_BUILDDIR_ANCHOR",
         source_root_control.path_anchor(selected_path),
     )
     with pytest.raises(source_root_control.ControlError):
@@ -815,10 +925,10 @@ def test_require_captured_inputs_rejects_retargeted_selector(
 @pytest.mark.parametrize(
     ("field", "variable_name"),
     (
-        ("source_commit", "GOROROBA_SOURCE_COMMIT_CAPTURED"),
-        ("source_tree", "GOROROBA_SOURCE_TREE_CAPTURED"),
-        ("control_commit", "GOROROBA_CONTROL_COMMIT_CAPTURED"),
-        ("control_tree", "GOROROBA_CONTROL_TREE_CAPTURED"),
+        ("source_commit", "MESA_SOURCE_COMMIT_CAPTURED"),
+        ("source_tree", "MESA_SOURCE_TREE_CAPTURED"),
+        ("control_commit", "MESA_CONTROL_COMMIT_CAPTURED"),
+        ("control_tree", "MESA_CONTROL_TREE_CAPTURED"),
     ),
 )
 def test_require_captured_inputs_rejects_each_revision_change(
@@ -873,6 +983,30 @@ def test_require_clean_worktree_detects_staged_only_change(
             repository,
             "test worktree",
         )
+
+
+def test_require_clean_worktree_rejects_removed_owner_execute_bit(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    source_file = committed_repository(repository)
+    source_file.chmod(0o755)
+    commit_repository(repository, "test: make source executable")
+    source_root_control.require_clean_worktree(repository, "test worktree")
+
+    source_file.chmod(0o455)
+    with pytest.raises(source_root_control.ControlError, match="is dirty"):
+        source_root_control.require_clean_worktree(repository, "test worktree")
+
+
+def test_require_clean_worktree_ignores_non_owner_execute_bits(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    source_file = committed_repository(repository)
+    source_file.chmod(0o655)
+
+    source_root_control.require_clean_worktree(repository, "test worktree")
 
 
 def test_require_clean_worktree_bypasses_repository_clean_filter(
@@ -1110,6 +1244,53 @@ def test_run_git_archive_ignores_repository_info_attributes(
     assert isolated_archive_path.read_bytes() == baseline_archive
 
 
+def test_prepare_source_view_excludes_peer_write_after_clean_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    source_root = values["source_root"]
+    source_commit = values["source_commit"]
+    assert isinstance(source_root, Path)
+    assert isinstance(source_commit, str)
+    source_root_control.require_clean_worktree(source_root, "test worktree")
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_provisional_identity(values)
+
+    tracked_source = source_root / "tracked-source"
+    original_run_git_archive = source_root_control.run_git_archive
+
+    def mutate_source_then_archive(
+        repository_root: Path,
+        selected_commit: str,
+        archive_path: Path,
+    ) -> None:
+        tracked_source.write_text("peer mutation\n", encoding="utf-8")
+        original_run_git_archive(
+            repository_root,
+            selected_commit,
+            archive_path,
+        )
+
+    monkeypatch.setattr(
+        source_root_control,
+        "run_git_archive",
+        mutate_source_then_archive,
+    )
+
+    source_root_control.prepare_source_view(values)
+
+    source_view = source_root_control.source_view_path(values)
+    assert tracked_source.read_text(encoding="utf-8") == "peer mutation\n"
+    assert (source_view / "tracked-source").read_text(encoding="utf-8") == (
+        "archive input\n"
+    )
+
+
 def test_prepare_source_view_archives_exact_source_and_replaces_owned_view(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1242,6 +1423,33 @@ def test_final_identity_consumers_reject_source_view_drift(
             )
 
 
+@pytest.mark.parametrize("allow_provisional", (False, True))
+def test_cleanup_rejects_absent_build_without_root_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    allow_provisional: bool,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    builddir = values["builddir"]
+    assert isinstance(builddir, Path)
+    assert not builddir.exists()
+    assert not source_root_control.root_identity_path(values).exists()
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="external build root lacks source identity",
+    ):
+        source_root_control.verify_delete_identity(
+            values,
+            allow_provisional=allow_provisional,
+        )
+
+
 def test_provisional_cleanup_accepts_mesons_source_view_population(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1308,7 +1516,7 @@ def test_run_git_disables_repository_fsmonitor(
     marker = tmp_path / "fsmonitor-executed"
     hook = tmp_path / "fsmonitor-hook"
     hook.write_text(
-        "#!/bin/sh\n: > \"$GOROROBA_FSMONITOR_MARKER\"\nprintf '\\n'\n",
+        "#!/bin/sh\n: > \"$MESA_FSMONITOR_MARKER\"\nprintf '\\n'\n",
         encoding="utf-8",
     )
     hook.chmod(0o755)
@@ -1319,7 +1527,7 @@ def test_run_git_disables_repository_fsmonitor(
         "core.fsmonitor",
         str(hook),
     )
-    monkeypatch.setenv("GOROROBA_FSMONITOR_MARKER", str(marker))
+    monkeypatch.setenv("MESA_FSMONITOR_MARKER", str(marker))
     source_root_control.require_clean_worktree(repository, "test worktree")
     assert not marker.exists()
 
@@ -1366,6 +1574,127 @@ def test_external_source_rejects_dirty_control_worktree(
         source_root_control.require_clean_external_source(source_root)
 
 
+def test_reproducible_source_worktrees_reject_control_as_topsrc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    monkeypatch.setattr(
+        source_root_control,
+        "control_root",
+        lambda: control_root,
+    )
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="TOPSRC must be an external detached worktree",
+    ):
+        source_root_control.require_reproducible_source_worktrees(control_root)
+
+
+def test_reproducible_source_worktrees_reject_filesystem_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    detached_worktree = tmp_path / "detached-worktree"
+    add_detached_worktree(repository, detached_worktree)
+    worktree_alias = tmp_path / "worktree-alias"
+    worktree_alias.symlink_to(detached_worktree, target_is_directory=True)
+    monkeypatch.setattr(
+        source_root_control,
+        "control_root",
+        lambda: worktree_alias,
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="same filesystem directory",
+    ):
+        source_root_control.require_reproducible_source_worktrees(detached_worktree)
+
+
+def test_reproducible_source_worktrees_reject_shared_git_administration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    source_root = tmp_path / "source"
+    control_root.mkdir()
+    source_root.mkdir()
+    monkeypatch.setattr(source_root_control, "control_root", lambda: control_root)
+    monkeypatch.setattr(
+        source_root_control,
+        "git_worktree_administration_identity",
+        lambda _root, _label: (1, 2, stat.S_IFDIR),
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="share one Git administrative directory",
+    ):
+        source_root_control.require_reproducible_source_worktrees(source_root)
+
+
+@pytest.mark.parametrize("attached_role", ("control", "source"))
+def test_reproducible_source_worktrees_reject_attached_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attached_role: str,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    detached_control = tmp_path / "detached-control"
+    detached_source = tmp_path / "detached-source"
+    add_detached_worktree(repository, detached_control)
+    add_detached_worktree(repository, detached_source)
+    control_root = repository if attached_role == "control" else detached_control
+    source_root = repository if attached_role == "source" else detached_source
+    monkeypatch.setattr(
+        source_root_control,
+        "control_root",
+        lambda: control_root,
+    )
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="attached to a branch",
+    ):
+        source_root_control.require_reproducible_source_worktrees(source_root)
+
+
+def test_reproducible_source_worktrees_accept_clean_detached_trees_and_reject_ignored_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    committed_repository(repository)
+    subprojects = repository / "subprojects"
+    subprojects.mkdir()
+    (subprojects / ".gitignore").write_text("/*/\n", encoding="utf-8")
+    (repository / ".gitignore").write_text("/build/\n", encoding="utf-8")
+    commit_repository(repository, "test: classify ignored source inputs")
+    control_root = tmp_path / "detached-control"
+    source_root = tmp_path / "detached-source"
+    add_detached_worktree(repository, control_root)
+    add_detached_worktree(repository, source_root)
+    monkeypatch.setattr(
+        source_root_control,
+        "control_root",
+        lambda: control_root,
+    )
+    ignored_build_output = source_root / "build" / "artifact"
+    ignored_build_output.parent.mkdir()
+    ignored_build_output.write_text("regenerable\n", encoding="utf-8")
+
+    source_root_control.require_reproducible_source_worktrees(source_root)
+
+    ignored_source = source_root / "subprojects" / "Vulkan-Profiles" / "meson.build"
+    ignored_source.parent.mkdir()
+    ignored_source.write_text("project('ignored-input')\n", encoding="utf-8")
+    with pytest.raises(source_root_control.ControlError, match="is dirty"):
+        source_root_control.require_reproducible_source_worktrees(source_root)
+
+
 def test_require_identity_fields_reports_value_drift(
     tmp_path: Path,
 ) -> None:
@@ -1378,6 +1707,28 @@ def test_require_identity_fields_reports_value_drift(
         "source_commit": "2" * 40,
     }
     with pytest.raises(source_root_control.ControlError):
+        source_root_control.require_identity_fields(
+            recorded,
+            expected,
+            tmp_path / "identity.json",
+        )
+
+
+def test_require_identity_fields_rejects_reproducible_run_relabel(
+    tmp_path: Path,
+) -> None:
+    expected = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "reproducible_run": "1",
+    }
+    recorded = {
+        "schema_version": source_root_control.SCHEMA_VERSION,
+        "reproducible_run": "0",
+    }
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="identity drift: reproducible_run",
+    ):
         source_root_control.require_identity_fields(
             recorded,
             expected,
@@ -1406,6 +1757,7 @@ def test_base_identity_payload_records_build_controls(
             "mode",
             "compiler_chain",
             "compiler_family",
+            "reproducible_run",
         )
     } == {
         "profile": "test-profile",
@@ -1413,7 +1765,667 @@ def test_base_identity_payload_records_build_controls(
         "mode": "default",
         "compiler_chain": "direct",
         "compiler_family": "llvm",
+        "reproducible_run": "0",
     }
+
+
+def test_base_identity_payload_rechecks_reproducible_source_worktrees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    values["reproducible_run"] = "1"
+    source_root = values["source_root"]
+    assert isinstance(source_root, Path)
+    checked: list[Path] = []
+    monkeypatch.setattr(
+        source_root_control,
+        "require_reproducible_source_worktrees",
+        checked.append,
+    )
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: pytest.fail("ordinary source gate selected"),
+    )
+
+    payload = source_root_control.base_identity_payload(values)
+
+    assert checked == [source_root]
+    assert payload["reproducible_run"] == "1"
+
+
+def test_remove_identity_v7_build_root_removes_exact_verified_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    assert build_root.is_dir()
+
+    source_root_control.remove_identity_v7_build_root(values)
+
+    assert not build_root.exists()
+
+
+def test_remove_identity_v7_build_root_preserves_swapped_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    preserved_validated_root = tmp_path / "preserved-validated-root"
+    replacement_root = tmp_path / "replacement-root"
+    replacement_root.mkdir()
+    (replacement_root / "user-data").write_text("preserve\n", encoding="utf-8")
+    real_rename = os.rename
+    swapped = False
+
+    def swap_before_quarantine(
+        source: str | Path,
+        target: str | Path,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if (
+            source == build_root.name
+            and src_dir_fd is not None
+            and dst_dir_fd is not None
+            and not swapped
+        ):
+            swapped = True
+            real_rename(build_root, preserved_validated_root)
+            real_rename(replacement_root, build_root)
+        real_rename(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(source_root_control.os, "rename", swap_before_quarantine)
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="changed between validation and quarantine",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert (build_root / "user-data").read_text(encoding="utf-8") == "preserve\n"
+    assert (
+        preserved_validated_root / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+    ).is_file()
+
+
+def test_remove_identity_v7_build_root_revalidates_quarantine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    real_validate = source_root_control.validate_identity_v7_build_root_candidate
+    validation_count = 0
+
+    def mutate_before_revalidation(
+        candidate_values: dict[str, Path | str],
+        candidate_root: Path,
+    ) -> None:
+        nonlocal validation_count
+        validation_count += 1
+        if validation_count == 2:
+            (candidate_root / "late-output").write_text(
+                "preserve\n",
+                encoding="utf-8",
+            )
+        real_validate(candidate_values, candidate_root)
+
+    monkeypatch.setattr(
+        source_root_control,
+        "validate_identity_v7_build_root_candidate",
+        mutate_before_revalidation,
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="not an exact cleanup target: unexpected",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert validation_count == 2
+    assert (build_root / "late-output").read_text(encoding="utf-8") == "preserve\n"
+
+
+def test_remove_identity_v7_build_root_preserves_late_swapped_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    replacement_root = tmp_path / "late-replacement-root"
+    replacement_root.mkdir()
+    (replacement_root / "user-data").write_text("preserve\n", encoding="utf-8")
+    preserved_validated_root = tmp_path / "late-preserved-validated-root"
+    real_scandir = os.scandir
+    real_rename = os.rename
+    swapped = False
+
+    def swap_immediately_before_descriptor_deletion(
+        path: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
+    ):
+        nonlocal swapped
+        if isinstance(path, int) and not swapped:
+            quarantine_directories = tuple(
+                build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+            )
+            assert len(quarantine_directories) == 1
+            quarantined_root = quarantine_directories[0] / "validated-build-root"
+            swapped = True
+            real_rename(quarantined_root, preserved_validated_root)
+            real_rename(replacement_root, quarantined_root)
+        return real_scandir(path)
+
+    monkeypatch.setattr(
+        source_root_control.os,
+        "scandir",
+        swap_immediately_before_descriptor_deletion,
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="changed during quarantine validation",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert swapped
+    quarantine_directories = tuple(
+        build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+    )
+    assert len(quarantine_directories) == 1
+    replacement_data = quarantine_directories[0] / "validated-build-root" / "user-data"
+    assert replacement_data.read_text(encoding="utf-8") == "preserve\n"
+
+
+def test_remove_identity_v7_build_root_preserves_late_file_insertion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    real_rename = os.rename
+    inserted = False
+
+    def insert_before_first_private_move(
+        source: str | Path,
+        target: str | Path,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal inserted
+        if (
+            isinstance(target, str)
+            and target.startswith("validated-object-")
+            and not inserted
+        ):
+            quarantine_directories = tuple(
+                build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+            )
+            assert len(quarantine_directories) == 1
+            quarantined_root = quarantine_directories[0] / "validated-build-root"
+            (quarantined_root / "late-user-data").write_text(
+                "preserve\n",
+                encoding="utf-8",
+            )
+            inserted = True
+        real_rename(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(
+        source_root_control.os, "rename", insert_before_first_private_move
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="gained entries during cleanup",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert inserted
+    quarantine_directories = tuple(
+        build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+    )
+    assert len(quarantine_directories) == 1
+    late_data = quarantine_directories[0] / "validated-build-root" / "late-user-data"
+    assert late_data.read_text(encoding="utf-8") == "preserve\n"
+
+
+def test_remove_identity_v7_build_root_preserves_final_file_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    real_unlink = os.unlink
+    replaced = False
+
+    def replace_vacated_file_before_unlink(
+        path: str | bytes | Path,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal replaced
+        if (
+            isinstance(path, str)
+            and path.startswith("validated-object-")
+            and dir_fd is not None
+            and not replaced
+        ):
+            quarantine_directories = tuple(
+                build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+            )
+            assert len(quarantine_directories) == 1
+            quarantined_root = quarantine_directories[0] / "validated-build-root"
+            replacement = (
+                quarantined_root / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+            )
+            replacement.write_text("replacement-user-data\n", encoding="utf-8")
+            replaced = True
+        real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        source_root_control.os,
+        "unlink",
+        replace_vacated_file_before_unlink,
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="gained entries during cleanup",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert replaced
+    quarantine_directories = tuple(
+        build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+    )
+    assert len(quarantine_directories) == 1
+    replacement = (
+        quarantine_directories[0]
+        / "validated-build-root"
+        / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+    )
+    assert replacement.read_text(encoding="utf-8") == "replacement-user-data\n"
+
+
+def test_remove_identity_v7_build_root_preserves_final_directory_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    real_rmdir = os.rmdir
+    replaced = False
+
+    def replace_vacated_directory_before_rmdir(
+        path: str | bytes | Path,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal replaced
+        if (
+            isinstance(path, str)
+            and path.startswith("validated-object-")
+            and dir_fd is not None
+            and not replaced
+        ):
+            quarantine_directories = tuple(
+                build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+            )
+            assert len(quarantine_directories) == 1
+            quarantined_root = quarantine_directories[0] / "validated-build-root"
+            replacement = (
+                quarantined_root / source_root_control.LEGACY_SOURCE_VIEW_DIRECTORY
+            )
+            replacement.mkdir()
+            (replacement / "user-data").write_text(
+                "replacement-directory\n",
+                encoding="utf-8",
+            )
+            replaced = True
+        real_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        source_root_control.os,
+        "rmdir",
+        replace_vacated_directory_before_rmdir,
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="gained entries during cleanup",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert replaced
+    quarantine_directories = tuple(
+        build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+    )
+    assert len(quarantine_directories) == 1
+    replacement_data = (
+        quarantine_directories[0]
+        / "validated-build-root"
+        / source_root_control.LEGACY_SOURCE_VIEW_DIRECTORY
+        / "user-data"
+    )
+    assert replacement_data.read_text(encoding="utf-8") == "replacement-directory\n"
+
+
+def test_remove_identity_v7_build_root_preserves_destination_recreated_before_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    preserved_original = tmp_path / "preserved-original-identity"
+    replacement_entry = tmp_path / "replacement-identity"
+    replacement_entry.write_text("replacement-before-move\n", encoding="utf-8")
+    real_rename = os.rename
+    real_rename_without_replacement = source_root_control.rename_without_replacement
+    swapped = False
+    recreated = False
+
+    def swap_before_private_move(
+        source: str | Path,
+        target: str | Path,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if (
+            source == source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+            and isinstance(target, str)
+            and target.startswith("validated-object-")
+            and not swapped
+        ):
+            quarantine_directories = tuple(
+                build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+            )
+            assert len(quarantine_directories) == 1
+            quarantined_root = quarantine_directories[0] / "validated-build-root"
+            original_entry = (
+                quarantined_root / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+            )
+            real_rename(original_entry, preserved_original)
+            real_rename(replacement_entry, original_entry)
+            swapped = True
+        real_rename(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    def recreate_destination_before_restore(
+        source_name: str,
+        destination_name: str,
+        *,
+        source_directory_descriptor: int,
+        destination_directory_descriptor: int,
+    ) -> None:
+        nonlocal recreated
+        if (
+            destination_name == source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+            and not recreated
+        ):
+            destination_descriptor = os.open(
+                destination_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=destination_directory_descriptor,
+            )
+            try:
+                os.write(destination_descriptor, b"late-user-data\n")
+            finally:
+                os.close(destination_descriptor)
+            recreated = True
+        real_rename_without_replacement(
+            source_name,
+            destination_name,
+            source_directory_descriptor=source_directory_descriptor,
+            destination_directory_descriptor=destination_directory_descriptor,
+        )
+
+    monkeypatch.setattr(source_root_control.os, "rename", swap_before_private_move)
+    monkeypatch.setattr(
+        source_root_control,
+        "rename_without_replacement",
+        recreate_destination_before_restore,
+    )
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="cannot restore changed",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert swapped
+    assert recreated
+    quarantine_directories = tuple(
+        build_root.parent.glob(f".{build_root.name}.schema-7-cleanup.*")
+    )
+    assert len(quarantine_directories) == 1
+    quarantined_root = quarantine_directories[0] / "validated-build-root"
+    recreated_destination = (
+        quarantined_root / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+    )
+    assert recreated_destination.read_text(encoding="utf-8") == "late-user-data\n"
+    staged_replacements = tuple(
+        quarantine_directories[0].glob(
+            ".schema-7-validated-objects-*/validated-object-*"
+        )
+    )
+    assert len(staged_replacements) == 1
+    assert staged_replacements[0].read_text(encoding="utf-8") == (
+        "replacement-before-move\n"
+    )
+    assert preserved_original.is_file()
+
+
+def test_remove_identity_v7_build_root_rejects_reproducible_mode(
+    tmp_path: Path,
+) -> None:
+    values = layout_values(tmp_path)
+    values["reproducible_run"] = "1"
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="requires REPRODUCIBLE_RUN=0",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+
+def test_remove_identity_v7_build_root_rejects_source_view_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    source_view = build_root / source_root_control.LEGACY_SOURCE_VIEW_DIRECTORY
+    (source_view / "meson.build").write_text(
+        "project('drifted-identity-fixture')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(source_root_control.ControlError, match="content drift"):
+        source_root_control.remove_identity_v7_build_root(values)
+
+
+def test_remove_identity_v7_build_root_rejects_unexpected_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    (build_root / "retained-output").write_text("preserve\n", encoding="utf-8")
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="not an exact cleanup target: unexpected",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert build_root.is_dir()
+
+
+def test_remove_identity_v7_build_root_rejects_schema_8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = source_view_values(tmp_path, monkeypatch)
+    initialize_control_identity(values)
+    monkeypatch.setattr(
+        source_root_control,
+        "require_clean_external_source",
+        lambda _source_root: None,
+    )
+    write_final_identity(
+        values,
+        schema_version=source_root_control.LEGACY_SCHEMA_VERSION,
+    )
+    build_root = values["build_root"]
+    builddir = values["builddir"]
+    assert isinstance(build_root, Path)
+    assert isinstance(builddir, Path)
+    root_identity = build_root / source_root_control.LEGACY_ROOT_IDENTITY_FILENAME
+    build_identity = builddir / source_root_control.LEGACY_IDENTITY_FILENAME
+    for identity_file in (root_identity, build_identity):
+        forged_record = source_root_control.read_identity(identity_file)
+        forged_record["schema_version"] = source_root_control.SCHEMA_VERSION
+        source_root_control.write_json_atomic(identity_file, forged_record)
+
+    with pytest.raises(
+        source_root_control.ControlError,
+        match="identity drift: schema_version",
+    ):
+        source_root_control.remove_identity_v7_build_root(values)
+
+    assert build_root.is_dir()
 
 
 def test_require_identity_record_accepts_exact_final_record(

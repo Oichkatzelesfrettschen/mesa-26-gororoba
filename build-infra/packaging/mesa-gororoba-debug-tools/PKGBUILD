@@ -1,6 +1,6 @@
 # mesa-gororoba-debug-tools: the full RS482/r300 GPU debug stack in one
 # install.  A depends-only meta-package -- it ships no driver of its own; it pulls
-# the PRIME sanitizer driver (mesa-gororoba-debug-asan), the gororoba umr fork,
+# the PRIME sanitizer driver (mesa-gororoba-debug-asan), the umr-gororoba fork,
 # and the radeon-KMD instrumentation tool set, and installs the stack
 # documentation.  Installing this gives you everything needed for sanitizer-backed
 # GPU RCA on RS482 alongside the system driver (debug-optimized or release).  See
@@ -17,7 +17,7 @@ pkgdesc='Meta-package: the RS482/r300 GPU debug stack -- prime ASan+UBSan -O0 dr
 arch=('any')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
-# The stack, pinned in lockstep.  The gororoba prime driver carries the current
+# The stack, pinned in lockstep.  The mesa-gororoba driver carries the current
 # pkgver so a stack bump tracks it; the tools are by-name (their own versions).
 # bpftrace/perf target the radeon KMD, not amdgpu.
 depends=(

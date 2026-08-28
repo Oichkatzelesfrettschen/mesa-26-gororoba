@@ -462,7 +462,7 @@ main(int argc, char **argv)
     * that host's pipeline instead, so the executing CPU must identify as
     * the qualified part or the rows mark as smoke output.  Both binaries
     * run this check: the generic one is built unconditionally and its
-    * unmarked rows would otherwise read as decision-grade to a recorder.  Family 0Fh alone is too wide: the K8 desktop,
+    * unmarked rows would otherwise read as qualification results to a recorder.  Family 0Fh alone is too wide: the K8 desktop,
     * mobile, and server models differ in cache and timing, so the check
     * reads the model too.  Model 0x68 is the Turion 64 X2 TL-66 the
     * measurement frame names; the observed stepping rides in the stream
@@ -543,12 +543,12 @@ main(int argc, char **argv)
 
    calibrate_known_bad();
 
-   /* Decision-grade rows come from a Meson buildtype=release build:
+   /* Qualification rows come from a Meson buildtype=release build:
     * the build system defines R300_CPU_VERTEX_BENCH_MESON_RELEASE
     * there, because compiler macros alone cannot separate release from
     * debugoptimized with b_ndebug.  Any other build marks the row
     * stream itself, so a recorder consuming stdout carries the
-    * non-decision-grade status with the rows.
+    * non-qualification status with the rows.
     */
 #if !defined(R300_CPU_VERTEX_BENCH_MESON_RELEASE) || \
    !defined(NDEBUG) || !defined(__OPTIMIZE__)
@@ -573,7 +573,7 @@ main(int argc, char **argv)
        * uncommitted changes prints this same identity while its sources
        * differ from it.  The stream cannot observe the tree it was
        * compiled from, so it names that limit and the check that closes
-       * it: a decision-grade run records an empty status alongside these
+       * it: a qualification run records an empty status alongside these
        * rows, in an isolated worktree at the declared commit.
        */
       printf("# source binding: commit identity alone; the clean tree is "

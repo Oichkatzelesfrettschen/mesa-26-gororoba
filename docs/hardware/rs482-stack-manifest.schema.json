@@ -305,7 +305,7 @@
     "provenance_contract": {
       "type": "string",
       "const": "source-to-payload-v2",
-      "description": "Enables the decision-grade source, release, installed-payload, and kernel-equivalence contract. Its absence identifies a legacy manifest."
+      "description": "Enables the qualification source, release, installed-payload, and kernel-equivalence contract. Its absence identifies a legacy manifest."
     },
     "boot_id": {
       "$ref": "#/$defs/non_empty_string",
