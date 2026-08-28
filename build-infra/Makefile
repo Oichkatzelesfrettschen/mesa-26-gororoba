@@ -190,6 +190,11 @@ override REVIEW_THREAD_CLASSIFICATION_TOOL := $(CURDIR)/scripts/review_thread_cl
 override REVIEW_THREAD_PRE_RESOLUTION_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/pre-resolution-frontier.tsv
 override REVIEW_THREAD_RESOLUTION_JOURNAL := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-QY6A8/resolution-observation.json
 override REVIEW_THREAD_RESOLUTION_TOOL := $(CURDIR)/scripts/review_thread_resolution.py
+override REVIEW_THREAD_CORPUS_REVISION := 4b965810d471ad11a2c94369a9f75dd127651c3f
+override REVIEW_THREAD_CORPUS := $(CURDIR)/docs/review-thread-corpus/unresolved-review-thread-corpus-4b965810d471
+override REVIEW_THREAD_CORPUS_ANALYSIS := $(CURDIR)/docs/review-thread-corpus-analysis/unresolved-review-thread-corpus-4b965810d471
+override REVIEW_THREAD_CORPUS_TOOL := $(CURDIR)/scripts/review_thread_corpus.py
+override REVIEW_THREAD_GROUP_HISTORY_TOOL := $(CURDIR)/scripts/review_thread_group_history.py
 override REVIEW_THREAD_TVPLC_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/action-frontier.tsv
 override REVIEW_THREAD_TVPLC_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/resolution-ledger.tsv
 override REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/evidence-refresh-ledger.tsv
@@ -456,7 +461,8 @@ endef
 .PHONY: list source-root-check source-root-control-unit-test remove-identity-v7-build-root \
         naming-policy-test \
         review-thread-frontier-check review-thread-frontier-live-check \
-        review-thread-frontier-unit-test headless-hardware-gl-runner-test \
+        review-thread-frontier-unit-test review-thread-corpus-check \
+        review-thread-corpus-unit-test headless-hardware-gl-runner-test \
         source-root-selection-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean-registered-build clean clean-all distclean install \
@@ -806,6 +812,23 @@ review-thread-frontier-unit-test:
 			$(CURDIR)/tests/test_review_thread_classification.py \
 			$(CURDIR)/tests/test_review_thread_resolution.py
 
+review-thread-corpus-check:
+	PYTHONDONTWRITEBYTECODE=1 \
+		python3 $(REVIEW_THREAD_CORPUS_TOOL) check \
+			--input-dir $(REVIEW_THREAD_CORPUS)
+	PYTHONDONTWRITEBYTECODE=1 \
+		python3 $(REVIEW_THREAD_GROUP_HISTORY_TOOL) check \
+			--corpus-dir $(REVIEW_THREAD_CORPUS) \
+			--repo-root $(CURDIR)/.. \
+			--revision $(REVIEW_THREAD_CORPUS_REVISION) \
+			--output-dir $(REVIEW_THREAD_CORPUS_ANALYSIS)
+
+review-thread-corpus-unit-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
+		python3 -m pytest -q \
+			$(CURDIR)/tests/test_review_thread_corpus.py \
+			$(CURDIR)/tests/test_review_thread_group_history.py
+
 headless-hardware-gl-runner-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 		python3 -m pytest -q \
@@ -827,6 +850,8 @@ help:
 	@echo "  review-thread-frontier-check validate finite closure rows and merged evidence"
 	@echo "  review-thread-frontier-live-check bind exact GraphQL IDs, URLs, and states"
 	@echo "  review-thread-frontier-unit-test calibrate review closure rejection paths"
+	@echo "  review-thread-corpus-check replay the complete unresolved-thread corpus and source histories"
+	@echo "  review-thread-corpus-unit-test calibrate corpus and history rejection paths"
 	@echo "  headless-hardware-gl-runner-test calibrate transient Xorg unit teardown"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
@@ -1167,6 +1192,7 @@ distcc-gcc-major-probe-test:
 audit: source-root-check source-root-control-unit-test naming-policy-test \
        headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
+       review-thread-corpus-check review-thread-corpus-unit-test \
        loader-environment-function-scope-test \
        source-root-selection-test \
        distcc-probe-directory-test \

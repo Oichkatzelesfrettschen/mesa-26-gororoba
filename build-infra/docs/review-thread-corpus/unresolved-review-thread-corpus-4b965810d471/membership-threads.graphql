@@ -1,0 +1,13 @@
+
+query($owner:String!, $repo:String!, $number:Int!, $cursor:String!) {
+  repository(owner:$owner, name:$repo) {
+    defaultBranchRef { name target { ... on Commit { oid } } }
+    pullRequest(number:$number) {
+      state
+      reviewThreads(first:100, after:$cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isResolved isOutdated path }
+      }
+    }
+  }
+}
