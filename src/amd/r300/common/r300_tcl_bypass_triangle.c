@@ -1745,10 +1745,17 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
    struct r300_tcl_bypass_triangle_ib *out)
 {
    memset(out, 0, sizeof(*out));
+   /* The render half's color_bits reach R300_PFS_PARAM_0, so that shape
+    * takes the full predicate.  The resolve destination reaches the cell
+    * through RB3D_AARESOLVE_OFFSET and RB3D_AARESOLVE_PITCH alone and
+    * inherits its format from color buffer 0, so its geometry is the
+    * whole predicate and its color_bits carry the oracle's expectation
+    * rather than an emitted constant.
+    */
    if (msaa == NULL ||
        r300_tcl_bypass_triangle_render_shape_validate(&msaa->render) != 0 ||
-       r300_tcl_bypass_triangle_render_shape_validate(&msaa->destination) !=
-          0 ||
+       r300_tcl_bypass_triangle_render_shape_validate_geometry(
+          &msaa->destination) != 0 ||
        r300_tcl_bypass_triangle_gb_aa_config(msaa->sample_count) == 0)
       return -EINVAL;
    /* RB3D_AARESOLVE_PITCH holds a raw pixel pitch in bits 1 through 13,

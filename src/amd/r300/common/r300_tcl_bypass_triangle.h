@@ -552,7 +552,9 @@ struct r300_triangle_msaa_resolve {
    /* The resolve destination.  RB3D_AARESOLVE_PITCH carries a raw pixel
     * pitch in bits 1 through 13, the same field position
     * RB3D_COLORPITCH0 gives its stride, and RB3D_AARESOLVE_OFFSET
-    * carries a 32-byte-aligned base in bits 31:5.
+    * carries a 32-byte-aligned base in bits 31:5.  The shape's geometry
+    * is what the cell emits; its color_bits carry the oracle's
+    * expectation, so the destination admits on geometry alone.
     */
    struct r300_triangle_render_shape destination;
    /* 2 or 4: the subsample sets GB_MSPOS0 and GB_MSPOS1 carry. */
