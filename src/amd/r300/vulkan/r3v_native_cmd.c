@@ -7,6 +7,8 @@
 
 #include "r3v_native.h"
 
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
+
 #include "r3v_entrypoints.h"
 
 #include "vk_alloc.h"
@@ -49,12 +51,14 @@ void
 r3v_native_cmd_buffer_release_recording(
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   if (cmd_buffer->owned_carrier != NULL) {
+   for (uint32_t i = 0; i < R3V_NATIVE_DEFERRED_DRAW_MAX; i++) {
+      if (cmd_buffer->owned_carriers[i] == NULL)
+         continue;
       struct r3v_native_device *device = container_of(
          cmd_buffer->vk.base.device, struct r3v_native_device, vk);
-      radeon_drm_vk_bo_free(&device->drm, &cmd_buffer->owned_carrier->bo);
-      vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carrier);
-      cmd_buffer->owned_carrier = NULL;
+      radeon_drm_vk_bo_free(&device->drm, &cmd_buffer->owned_carriers[i]->bo);
+      vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carriers[i]);
+      cmd_buffer->owned_carriers[i] = NULL;
    }
    if (cmd_buffer->owned_slot != NULL) {
       struct r3v_native_device *device = container_of(
@@ -95,7 +99,9 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->bound_index_offset = 0;
    cmd_buffer->bound_index_bytes = 0;
    cmd_buffer->draw_recorded = false;
-   cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){0};
+   memset(cmd_buffer->deferred_draws, 0,
+          sizeof(cmd_buffer->deferred_draws));
+   cmd_buffer->deferred_draw_count = 0;
    cmd_buffer->deferred_copy_count = 0;
    cmd_buffer->bound_compute_pipeline = NULL;
    cmd_buffer->bound_compute_set = NULL;
@@ -103,6 +109,79 @@ r3v_native_cmd_buffer_release_recording(
            cmd_buffer->deferred_dispatch.gpu_expected);
    cmd_buffer->deferred_dispatch =
       (struct r3v_native_deferred_dispatch){0};
+}
+
+VkResult
+r3v_native_cmd_buffer_append_ib(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r300_tcl_bypass_triangle_ib *cell,
+   const struct r3v_native_bo_reference *references,
+   uint32_t reference_count)
+{
+   if (cmd_buffer->ib == NULL || cmd_buffer->ib_size_dwords == 0)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   /* The merged array holds the installed entries plus at most one new
+    * entry per appended reference, so one allocation covers the union
+    * before any of it is committed.
+    */
+   const uint32_t merged_capacity =
+      cmd_buffer->reference_count + reference_count;
+   struct r3v_native_bo_reference *merged =
+      calloc(merged_capacity, sizeof(*merged));
+   if (merged == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   memcpy(merged, cmd_buffer->references,
+          (size_t)cmd_buffer->reference_count * sizeof(*merged));
+   uint32_t merged_count = cmd_buffer->reference_count;
+
+   /* The winsys rule, applied here so the queue's own merge over the
+    * result is idempotent: first-add order, one entry per handle,
+    * domains ORed.  slot_index[slot] is the position the appended
+    * cell's payload for that slot must name.
+    */
+   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT] = { 0 };
+   for (uint32_t slot = 0; slot < reference_count; slot++) {
+      uint32_t found = merged_count;
+      for (uint32_t i = 0; i < merged_count; i++) {
+         if (merged[i].handle == references[slot].handle) {
+            found = i;
+            break;
+         }
+      }
+      if (found == merged_count)
+         merged[merged_count++] = references[slot];
+      merged[found].read_domains |= references[slot].read_domains;
+      merged[found].write_domain |= references[slot].write_domain;
+      slot_index[slot] = found;
+   }
+
+   const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+      cell, slot_index, reference_count);
+   if (bound != 0) {
+      free(merged);
+      return vk_error(device, r3v_native_cell_vk_result_from_errno(bound));
+   }
+
+   const uint32_t base = cmd_buffer->ib_size_dwords;
+   const uint32_t total = base + cell->ib_size_dwords;
+   uint32_t *ib = realloc(cmd_buffer->ib, (size_t)total * sizeof(uint32_t));
+   if (ib == NULL) {
+      free(merged);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   memcpy(ib + base, cell->ib,
+          (size_t)cell->ib_size_dwords * sizeof(uint32_t));
+
+   /* Every fallible step has completed: commit the concatenation. */
+   free(cmd_buffer->references);
+   cmd_buffer->ib = ib;
+   cmd_buffer->ib_size_dwords = total;
+   cmd_buffer->references = merged;
+   cmd_buffer->reference_count = merged_count;
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS;
+   return VK_SUCCESS;
 }
 
 void

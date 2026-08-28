@@ -447,6 +447,14 @@ struct r3v_native_pass_clear_rect {
    uint32_t dword;
 };
 
+/* Render passes one command buffer records.  The bound is two: the
+ * recorded cells concatenate into one indirect buffer whose digest no
+ * offline emitter reproduces, so a multi-pass buffer executes only
+ * while the submit hazard gate is closed, and widening the bound widens
+ * that unarmed surface alone.
+ */
+#define R3V_NATIVE_DEFERRED_DRAW_MAX 2u
+
 struct r3v_native_deferred_draw {
    bool pending;
    /* The attribute slots the vertex job reads, one bit per slot; zero
@@ -593,7 +601,7 @@ struct r3v_native_cmd_buffer {
    VkDeviceSize bound_index_offset;
    uint32_t bound_index_bytes;
    bool draw_recorded;
-   struct r3v_native_memory *owned_carrier;
+   struct r3v_native_memory *owned_carriers[R3V_NATIVE_DEFERRED_DRAW_MAX];
    /* The fetched producer's slot-position BO, allocated at the first
     * fetched admission and released with the buffer; it holds the
     * (v + 0.5, 0.5, 0, 1) record per vertex the fetched body's first
@@ -607,7 +615,14 @@ struct r3v_native_cmd_buffer {
     * and the host reads the resolve destination instead.
     */
    struct r3v_native_memory *owned_multisample;
-   struct r3v_native_deferred_draw deferred_draw;
+   /* The recorded render passes, in record order.  Each carries one
+    * load-op clear, its own carrier, and one vertex execution, so a
+    * second pass takes a second of each; the queue executes them in
+    * this order and concatenates their cells into one indirect buffer.
+    */
+   struct r3v_native_deferred_draw
+      deferred_draws[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   uint32_t deferred_draw_count;
    /* Recorded transfer copies, executed in recorded order at submission
     * through host mappings of the bound memory.  Each copy carries the
     * group its record position places it in, so a command buffer holding
@@ -1313,6 +1328,25 @@ void r3v_native_cmd_buffer_release_recording(
  * installed stream carries the geometry contract the arming gate applies
  * to it.
  */
+/* Concatenates a recorded cell onto the command buffer's installed
+ * stream and merges its buffer references into the installed array by
+ * handle, rewriting the appended cell's relocation payloads to the
+ * merged indices; the already-installed payloads keep theirs, since a
+ * merge over the existing list is idempotent.  The buffer's kind
+ * becomes R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS, whose geometry
+ * predicate reports unfrozen, so the concatenation executes only while
+ * the submit hazard gate is closed.  Takes ownership of cell->ib on
+ * success; returns a VkResult and leaves the installed stream untouched
+ * on failure.
+ */
+struct r300_tcl_bypass_triangle_ib;
+VkResult r3v_native_cmd_buffer_append_ib(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r300_tcl_bypass_triangle_ib *cell,
+   const struct r3v_native_bo_reference *references,
+   uint32_t reference_count);
+
 void r3v_native_cmd_buffer_install_ib(
    struct r3v_native_cmd_buffer *cmd_buffer, enum r3v_native_cell_kind kind,
    uint32_t *ib, uint32_t ib_size_dwords,
@@ -1525,7 +1559,7 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
  * order and color_bits the constant-color program's RGBA, so the
  * emitted cell renders the color the module wrote into the target the
  * pass bound.  The carrier holds 3 * triangle_count records.  The
- * vertex gather and the sentinel clear ride cmd_buffer->deferred_draw
+ * vertex gather and the sentinel clear ride cmd_buffer->deferred_draws[0]
  * and execute at queue submission.
  */
 /* The sampled cell's texture binding: the bound image's memory and
@@ -1565,7 +1599,7 @@ VkResult r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_cmd_buffer *cmd_buffer,
    enum r3v_native_copy_group group);
 
-VkResult r3v_native_cmd_buffer_execute_deferred_draw(
+VkResult r3v_native_cmd_buffer_execute_deferred_draws(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
 

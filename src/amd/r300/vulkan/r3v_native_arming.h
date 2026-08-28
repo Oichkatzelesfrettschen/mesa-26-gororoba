@@ -124,6 +124,14 @@ enum r3v_native_cell_kind {
     * multisample surface device-local and never host-mapped.
     */
    R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE,
+   /* Several recorded render passes concatenated into one indirect
+    * buffer, each with its own first-draw contract, cell, and merged
+    * relocation entries.  The concatenation is the recording's own, so
+    * no offline emitter reproduces its digest and the geometry
+    * predicate reports the kind unfrozen: the stream executes on the
+    * closed-gate path and an armed submission refuses before any ioctl.
+    */
+   R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

@@ -610,7 +610,7 @@ r3v_CmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX,
        !r3v_native_descriptor_bindings_equal(pipeline->set0_bindings,
                                              set->layout->bindings) ||
        cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
-       cmd_buffer->deferred_draw.pending ||
+       cmd_buffer->deferred_draw_count != 0 ||
        cmd_buffer->deferred_copy_count != 0 ||
        cmd_buffer->deferred_dispatch.pending) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);

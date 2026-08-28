@@ -235,7 +235,7 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
 static enum r3v_native_copy_group
 r3v_native_copy_group_at_record(const struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   return cmd_buffer->deferred_draw.pending
+   return cmd_buffer->deferred_draw_count != 0
              ? R3V_NATIVE_COPY_GROUP_AFTER_DRAW
              : R3V_NATIVE_COPY_GROUP_BEFORE_DRAW;
 }
@@ -494,7 +494,13 @@ r3v_CmdClearAttachments(
    const VkClearRect *pRects)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
-   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   /* An open pass_target means CmdBeginRenderPass filled the last
+    * record, which is the pass this clear lands in.
+    */
+   struct r3v_native_deferred_draw *draw =
+      cmd_buffer->deferred_draw_count != 0
+         ? &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+         : &cmd_buffer->deferred_draws[0];
 
    if (cmd_buffer->pass_target == NULL || cmd_buffer->draw_recorded ||
        draw->stream_mask != 0) {
@@ -953,7 +959,7 @@ r3v_CmdExecuteCommands(
           secondary->vk.level != VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
           secondary->vk.record_result != VK_SUCCESS ||
           secondary->ib_size_dwords != 0 ||
-          secondary->deferred_draw.pending || secondary->draw_recorded ||
+          secondary->deferred_draw_count != 0 || secondary->draw_recorded ||
           secondary->deferred_dispatch.pending ||
           secondary->active_query_pool != NULL ||
           secondary->viewport_set || secondary->scissor_set) {
