@@ -195,6 +195,57 @@ entry names.  The emitted stream arms `GB_AA_CONFIG` and the subsample
 positions inside both contracts, `AARESOLVE_CTL` NORMAL for the render
 half and RESOLVE for the resolve half, and closes both at the epilogue.
 
+## Result
+
+The cell holds its silicon receipt from the second attended arm on
+RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
+report matching all five declarations against cell blake3 `be78db1c`.
+The hypothesis held:
+
+```text
+[oracle] downsample judged=1 interior_exact=1 interior=1104 analytic=1104 unjudged=96
+[oracle] fragment   judged=1 interior_exact=0 interior=0    analytic=1104 unjudged=96
+[oracle] seed       judged=1 interior_exact=0 interior=0    analytic=1104 unjudged=96
+[oracle] either     judged=1 interior_exact=1 interior=1104 analytic=1104 unjudged=96
+[census] footprint 4096 pixels holds downsample 1104 fragment 668 seed 0
+[oracle] destination centroid (32,24)=0xdf20609f corner (0,0)=0xffff00ff
+```
+
+`vkQueueSubmit` returned 0, the dmesg delta was empty, the boot was
+unchanged, and the SB600 counter was armed across `DRM_IOCTL_RADEON_CS`
+through fence completion for 155 us against the 1.7 s operational grace,
+then disarmed.
+
+Every judged pixel carries the render half's draw dword, so
+`RB3D_AARESOLVE_CTL.AARESOLVE_MODE_RESOLVE` redirects the color backend
+to `RB3D_AARESOLVE_OFFSET` and emits the downsampled samples while the
+resolve half's fragment supplies coverage alone.  The `fragment` and
+`seed` passes both read `interior_exact=0`, so neither a fragment write
+nor an absent write explains the destination.  The reading
+`r300_simple_msaa_resolve` implies -- a fragment color written into the
+surface being resolved would destroy the samples the resolve reads -- is
+the reading the silicon takes.
+
+The destination byte order settles with it: the judged pixels read their
+predicted dword at their linear positions, so a linear resolve
+destination receives linearly ordered bytes at the 64x64 pitch-64
+`B8G8R8A8` shape the arm ran, and the tiled-swizzle reading is refuted
+there.  A wider or differently pitched destination is untested, as is
+the two-sample arm at the 1128-pixel denominator.
+
+The exterior stays open under the arm's named scope cut.  The
+multisample surface takes no clear, so the resolve carries whatever it
+held outside the analytic triangle into the destination: 668 unjudged
+pixels hold the resolve half's fragment constant, the corner among them,
+and 2324 hold neither predicted dword.  A destination receiving the
+fragment constant where the surface held no rendered samples is a
+mixture the judged footprint says nothing about; a command-stream clear
+of the multisample surface is what would close it.
+
+Bundle: steinmarder-r300
+`src/re/r300/results/r3v-native-msaa-resolve-downsample-semantics-rs482`,
+which retains both arms.
+
 ## Retained record
 
 The shared procedure's record plus `resolve_destination.bin`, the

@@ -594,13 +594,47 @@ above is rung zero; the ladder after it runs in this order:
    count no longer selects a single expected slot sequence and the
    validator admits either, with a five-site sequence matching neither
    still refused.  What remains is the recorder and the attended
-   runner: the multisample surface takes a device-local allocation the
-   host never maps, which no existing cell exercises, and the three
-   predicted destination dwords -- the render half's color for the
-   downsampled samples, the resolve constant for a fragment write, and
-   judged pixels holding neither for the mixture -- are read by three
+   runner, and both land.  `r3v_native_record_msaa_resolve` allocates the
+   multisample surface itself in `RADEON_GEM_DOMAIN_VRAM` with no
+   fallback domain under `RADEON_GEM_NO_CPU_ACCESS`, which the host
+   never maps, so a successful create is the placement rather than a
+   claim about it, and the recorder's five slots reach four buffer
+   objects with the surface's merged entry carrying a VRAM write alone.
+   `r3v_native_attended_msaa_resolve` reads the destination through four
    passes of `r300_tcl_bypass_triangle_sample_set_oracle` over one
-   denominator;
+   denominator -- the downsampled samples, the resolve half's fragment
+   constant, the pre-submission seed, and the union -- with a footprint
+   census that separates a permuted destination order from an absent
+   write without a tiling model.
+   The rung holds its silicon receipt in two arms on RS482
+   (`docs/hardware/r3v-native-attended-msaa-resolve-procedure.md`;
+   bundle steinmarder-r300
+   `r3v-native-msaa-resolve-downsample-semantics-rs482`).  The first arm
+   refuted the cell: `GB_AA_CONFIG`, both `GB_MSPOS` words, and
+   `RB3D_AARESOLVE_CTL` are first-draw contract entries, so a subsample
+   set programmed ahead of the contract is written back before the draw
+   it was meant for, and the retained stream carried two single-sample
+   draws and no resolve while the destination correctly held its
+   `0xa5a5a5a5` seed in all 4096 footprint pixels.  The subsample set now
+   travels through each half's own contract, which
+   `r300_first_draw_params` carries as a declaration.  The second arm
+   delivers: `downsample judged=1 interior_exact=1` over 1104 judged
+   pixels against 1104 analytic with the `fragment` and `seed` passes
+   both zero, `vkQueueSubmit` 0, an empty dmesg delta over an unchanged
+   boot, and a 155 us guarded interval against the 1.7 s grace.  So
+   `AARESOLVE_MODE_RESOLVE` redirects the color backend to
+   `RB3D_AARESOLVE_OFFSET` and emits the downsampled samples while the
+   fragment supplies coverage alone -- the reading
+   `r300_simple_msaa_resolve` implies, now measured -- and a linear
+   resolve destination receives linearly ordered bytes at the 64x64
+   pitch-64 `B8G8R8A8` shape, which refutes the tiled-swizzle reading
+   there.  Open behind it: the multisample surface takes no clear, so 668
+   unjudged exterior pixels carry the resolve half's fragment constant
+   and a command-stream clear of that surface is what would judge them;
+   the two-sample arm at the 1128-pixel denominator is unrun; and while
+   `r100_cs_track_check` sizes the color buffer with no sample term the
+   path stays an internal attended cell rather than an advertised Vulkan
+   capability;
 7. composed render and sampling surfaces before any core image or
    framebuffer limit rises.  The rung depends on the usage union in
    rung 5 rather than on rung 6, so it runs when its own mechanisms
