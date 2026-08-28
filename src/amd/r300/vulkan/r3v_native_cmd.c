@@ -119,7 +119,14 @@ r3v_native_cmd_buffer_append_ib(
    const struct r3v_native_bo_reference *references,
    uint32_t reference_count)
 {
-   if (cmd_buffer->ib == NULL || cmd_buffer->ib_size_dwords == 0)
+   /* slot_index below holds one entry per relocation slot the triangle
+    * cells declare, and the appended cell's payloads are bound through
+    * it, so a reference list longer than that has no slot to name and
+    * refuses before the array is written.
+    */
+   if (cmd_buffer->ib == NULL || cmd_buffer->ib_size_dwords == 0 ||
+       reference_count == 0 ||
+       reference_count > R300_TRIANGLE_SLOT_COUNT)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
    /* The merged array holds the installed entries plus at most one new
