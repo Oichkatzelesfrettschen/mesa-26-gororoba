@@ -1,0 +1,3 @@
+contract_file	header_sha256
+policy/rs4xx-gart-memory-path.tsv	96c51dc9e4b2cdce15b2cafbc57d4d38daab09728b34d259edc51277079084f6
+policy/rs4xx-vram-gtt-capacity-contract.tsv	2c8f497b84c74142d346210f5adeb7dfac10dec18ebb956ed8482ac634caf5e3
