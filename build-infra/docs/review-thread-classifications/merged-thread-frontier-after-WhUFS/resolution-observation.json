@@ -119,6 +119,15 @@
       "verified_at": "2026-08-27T21:00:35Z"
     },
     {
+      "disposition": "fixed",
+      "evidence_commit": "af766adab77452239b29918eb26f033c0f00b313",
+      "evidence_pr": 1973,
+      "merged_at": "2026-08-28T05:21:42Z",
+      "resolved_at": "2026-08-28T05:24:42Z",
+      "thread_id": "PRRT_kwDOR3YK5M6XkBzu",
+      "verified_at": "2026-08-28T05:24:42Z"
+    },
+    {
       "disposition": "superseded",
       "evidence_commit": "ba9456059bb308b499b8940148d78b806adf67fc",
       "evidence_pr": 1942,
