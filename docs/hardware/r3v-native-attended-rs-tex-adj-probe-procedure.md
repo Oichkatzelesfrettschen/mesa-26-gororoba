@@ -135,3 +135,8 @@ readbacks, the three expected images, and `run.txt` carrying every printed line:
 `[route]`, `[record]`, `[state]`, `[predict]`, `[models]`, `[witness]`, both `[census]` lines with
 every count, and `[classification] <register>=<name>`. The classification line is a statement
 about the bit, not a feature claim.
+
+The runner retains the recorded stream as `recorded_ib.bin` and the reference list as
+`references.bin` ahead of the ioctl, in record-only mode as well; `ib.bin`, `relocs.bin`, and
+`manifest.json` belong to the queue's own retention at submission, which refuses ahead of the ioctl
+when any of the three already exists, so the runner proves them fresh after its own retention.
