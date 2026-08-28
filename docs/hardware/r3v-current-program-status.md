@@ -413,7 +413,9 @@ above is rung zero; the ladder after it runs in this order:
    `r3v-layered-1d-image-conformance-movement-host-model`, seals
    `ef21bc535a06` and `48a5de9734a0`).  Eighteen array-view cases moved
    their refusal from `vkCreateImage` to `vkCreateImageView`, which the
-   ledger row `layered_view_type_route_absent` now carries.  The layer count the render
+   ledger row `layered_view_type_route_absent` carried until creation
+   admitted the array view types and the population measured Pass
+   (rung 5 below), retiring the row.  The layer count the render
    family admits answers to the cell's `RB3D_COLOROFFSET0` ceiling,
    which the creation admission and the format query both name, while
    the sampling family reaches the reported device limit because
@@ -466,10 +468,17 @@ above is rung zero; the ladder after it runs in this order:
    sampled binding and the render pass both take the one-slice view
    types alone (`r3v_native_view_type_executes`), which
    `r3v-native-submit-order-sampled-array-view-refused` and the
-   attachment arm of `r3v-native-public-surface` pin.  Predicted
-   movement: the `image_3d`, `image_view_3d`, `image_view_cube`,
-   `image_view_1d_arr`, and `image_view_2d_arr` sub-populations reach
-   Pass, unmeasured until a conformance run.  Open inside the rung: the
+   attachment arm of `r3v-native-public-surface` pin.  Measured
+   movement on RS482 (steinmarder-r300
+   `r3v-object-management-view-rows-measured-rs482`): `image_3d`,
+   `image_view_3d`, `image_view_1d_arr`, and `image_view_2d_arr` each
+   read 6 passed, 0 failed, 4 not supported at mesa `f743d0f9bec`;
+   `image_view_cube` read 6 failed at `vk.createImage` there, since the
+   CTS builds that image with `SAMPLED | COLOR_ATTACHMENT` usage and the
+   attachment family refused every create flag, and reads 6 passed, 0
+   failed, 4 not supported at `fcf09c5b472` with the cube flag admitted
+   in that family.  The four not-supported cases per population are the
+   CTS's own queue-family and privateData gates.  Open inside the rung: the
    render family's own layer ceiling answers to the creation gate rather
    than to a run, and the `framebuffer` sub-population keeps its refusal,
    needing an attachment route no cell executes;
