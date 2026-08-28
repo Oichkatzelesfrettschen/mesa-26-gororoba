@@ -288,15 +288,21 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
 
 /* For VK_KHR_multiview view-loop expansion: write the per-iteration view
  * index to the dedicated driver push-constant slot and mark its modified
- * bit so the KCACHE buffer is re-uploaded before the next draw.  The
- * graphics/compute shader reads this slot via the load_view_index NIR
- * lowering in terakan_nir_lower_abi.c, which materializes gl_ViewIndex
- * for the application. */
+ * bit when the value changes so the KCACHE buffer is re-uploaded before
+ * the next draw.  The graphics/compute shader reads this slot via the
+ * load_view_index NIR lowering in terakan_nir_lower_abi.c, which
+ * materializes gl_ViewIndex for the application. */
 static inline void
 terakan_set_view_index_push_constant(struct terakan_gfx_command_writer * const command_writer,
                                      uint32_t const view_index)
 {
-   command_writer->push_constants_state.driver_constants.view_index = view_index;
+   uint32_t * const view_index_constant =
+      &command_writer->push_constants_state.driver_constants.view_index;
+   if (*view_index_constant == view_index) {
+      return;
+   }
+
+   *view_index_constant = view_index;
    command_writer->push_constants_state.driver_constants_modified |=
       BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_VIEW_INDEX);
 }
