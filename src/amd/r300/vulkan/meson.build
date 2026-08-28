@@ -1678,6 +1678,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     ['different-command-buffer', 'different-buffer'],
     ['submit-shape', 'submit-shape'],
     ['trace-refusal', 'trace-refusal'],
+    ['query-refusal', 'query-refusal'],
+    ['event-refusal', 'event-refusal'],
     ['teardown', 'teardown'],
   ]
     test(
@@ -2956,7 +2958,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   foreach capture_arm : ['capture', 'slot-roles', 'gate-open-refused',
                          'manifest-dir-refused', 'second-device-ordinal',
                          'derived-path-exists-refused',
-                         'missing-directory-refused']
+                         'missing-directory-refused',
+                         'write-failure-status']
     test(
       'r3v-native-plan-capture-@0@'.format(capture_arm),
       r3v_native_plan_capture_harness,
