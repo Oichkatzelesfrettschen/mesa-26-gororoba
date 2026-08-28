@@ -14,6 +14,7 @@
 #define R3V_NATIVE_MULTI_PASS_ARMS_H
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "r3v_native_reference_spirv.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -33,6 +34,34 @@ r3v_native_multi_pass_reference(struct r300_triangle_multi_pass *out)
    for (unsigned i = 0; i < 4; i++)
       memcpy(&out->pass[1].color_bits[i],
              &r3v_native_multi_pass_second_color[i], sizeof(float));
+   out->second_vertex_index = 2;
+   out->second_color_index = 3;
+}
+
+/* The public two-draw form: the constants are the two admitted fragment
+ * modules' -- the reference module's green in the first pass, the blue
+ * module's in the second -- so the stream this reference emits is the
+ * one a command buffer recording two render passes through the public
+ * surface, one pipeline over each module, installs and appends.  The
+ * binding is the same (2, 3): each pass's deferred draw owns its own
+ * carrier, so the four references are carrier, target, carrier, target
+ * in record order under the winsys first-add rule.
+ */
+static const uint32_t r3v_native_multi_pass_public_first_bits[4] =
+   R3V_REFERENCE_FRAGMENT_COLOR_BITS;
+static const uint32_t r3v_native_multi_pass_public_second_bits[4] =
+   R3V_REFERENCE_FRAGMENT_BLUE_COLOR_BITS;
+
+static inline void
+r3v_native_multi_pass_public_reference(struct r300_triangle_multi_pass *out)
+{
+   memset(out, 0, sizeof(*out));
+   r300_tcl_bypass_triangle_render_shape_reference(&out->pass[0]);
+   r300_tcl_bypass_triangle_render_shape_reference(&out->pass[1]);
+   for (unsigned i = 0; i < 4; i++) {
+      out->pass[0].color_bits[i] = r3v_native_multi_pass_public_first_bits[i];
+      out->pass[1].color_bits[i] = r3v_native_multi_pass_public_second_bits[i];
+   }
    out->second_vertex_index = 2;
    out->second_color_index = 3;
 }

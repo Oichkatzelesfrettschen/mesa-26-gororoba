@@ -24,6 +24,7 @@
 #include "r3v_native.h"
 #include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
+#include "r3v_native_multi_pass_arms.h"
 
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
@@ -1205,15 +1206,31 @@ main(void)
       const uint32_t one_cell_dwords = native_two_draw->ib_size_dwords;
       assert(one_cell_dwords != 0);
 
+      /* The second pass binds a pipeline over the blue fragment module,
+       * so the two passes carry distinct constants and the stream is
+       * the public two-draw arm's.
+       */
+      VkPipeline blue_pipeline = VK_NULL_HANDLE;
+      const struct pipeline_shape blue_shape = {
+         .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+         .stride = 16,
+         .blend_enable = VK_FALSE,
+         .fragment_words = r3v_reference_fragment_blue_spirv,
+         .fragment_bytes = sizeof(r3v_reference_fragment_blue_spirv),
+      };
+      assert(make_pipeline(&blue_shape, pass, layout, &blue_pipeline) ==
+                VK_SUCCESS &&
+             blue_pipeline != VK_NULL_HANDLE);
       vkCmdBeginRenderPass(two_draw_cmd, &second_begin,
                            VK_SUBPASS_CONTENTS_INLINE);
       vkCmdBindPipeline(two_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pipeline);
+                        blue_pipeline);
       vkCmdBindVertexBuffers(two_draw_cmd, 0, 1, &vertex_buffer,
                              &(VkDeviceSize){ 0 });
       vkCmdDraw(two_draw_cmd, 3, 1, 0, 0);
       vkCmdEndRenderPass(two_draw_cmd);
       assert(vkEndCommandBuffer(two_draw_cmd) == VK_SUCCESS);
+      vkDestroyPipeline(device, blue_pipeline, NULL);
 
       assert(native_two_draw->deferred_draw_count == 2);
       assert(native_two_draw->deferred_draws[0].stream_mask != 0 &&
@@ -1234,24 +1251,17 @@ main(void)
       }
 
       /* The offline two-pass emitter reproduces the recorded stream:
-       * both passes are the reference shape with the pipeline's
-       * fragment constant -- the reference fragment program writes
-       * opaque green -- the second bound to its own carrier (index 2)
-       * and target (index 3), so the digest the arming gate would
-       * compare is computable with no recording.
+       * both passes are the reference shape, the first with the
+       * reference fragment module's green and the second with the blue
+       * module's constant, the second bound to its own carrier (index
+       * 2) and target (index 3), so the digest the arming gate compares
+       * against a public two-draw submission is computable with no
+       * recording, and r3v_native_multi_pass_public_reference is that
+       * computation.
        */
       {
          struct r300_triangle_multi_pass mp;
-         memset(&mp, 0, sizeof(mp));
-         r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
-         r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
-         const float pipeline_constant[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
-         for (unsigned pass = 0; pass < 2; pass++)
-            for (unsigned c = 0; c < 4; c++)
-               memcpy(&mp.pass[pass].color_bits[c], &pipeline_constant[c],
-                      sizeof(float));
-         mp.second_vertex_index = 2;
-         mp.second_color_index = 3;
+         r3v_native_multi_pass_public_reference(&mp);
          struct r300_tcl_bypass_triangle_ib offline;
          assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &offline) == 0);
          assert(offline.ib_size_dwords == native_two_draw->ib_size_dwords);
