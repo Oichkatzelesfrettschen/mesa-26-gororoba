@@ -267,7 +267,7 @@ hypothesis; the clear that judges the exterior is what tests it.
 
 Bundle: steinmarder-r300
 `src/re/r300/results/r3v-native-msaa-resolve-downsample-semantics-rs482`,
-which retains all three arms.
+which retains all five arms.
 
 ## Cleared multisample surface
 
@@ -322,6 +322,29 @@ Falsifiers:
   the subsample expansion of the cover draw is the finding.
 - A changed interior verdict: the clear half disturbed the render
   half's state, which the per-half contract placement should exclude.
+
+Result: both cleared arms ran on mesa main `f743d0f9bec`, cells
+`a0b1c429` (4x) and `9413361a` (2x), one submission each, and every
+prediction held:
+
+```text
+4x: [oracle] exterior judged=1 exterior_exact=1 exterior=2896 analytic=2896 unjudged=96
+    [census] footprint 4096 pixels holds downsample 1104 fragment 0 seed 0 clear 2920
+2x: [oracle] exterior judged=1 exterior_exact=1 exterior=2920 analytic=2920 unjudged=48
+    [census] footprint 4096 pixels holds downsample 1128 fragment 0 seed 0 clear 2920
+```
+
+The interior verdicts are the uncleared arms' (1104 and 1128 exact),
+`vkQueueSubmit` returned 0 with an empty dmesg delta and an unchanged
+boot at both counts, and the guarded intervals were 189 us and 159 us.
+`fragment 0` at both counts settles the uncleared arms' exterior: their
+668 fragment-constant pixels (4x) and 1079 draw-color pixels (2x) were
+inherited allocation contents the resolve read through, and the resolve
+half's constant reaches no destination pixel.  The census partitions
+the extent at 4x into 2896 exterior, 24 band pixels resolving to pure
+clear, 72 band blends, and 1104 interior; at 2x into 2920, 0, 48, and
+1128.  The exterior is judged at both sample counts the hardware
+exposes, on this one shape.
 
 ## Retained record
 

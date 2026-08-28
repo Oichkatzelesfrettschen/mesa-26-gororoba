@@ -652,10 +652,13 @@ above is rung zero; the ladder after it runs in this order:
    there.  The two-sample arm (cell blake3 `84038889`, six dwords from
    the 4x cell, mesa main `f5643f6898e`) reproduced the verdict over its
    1128-pixel denominator with a 129 us guarded interval, so both sample
-   counts the hardware exposes are measured on this shape.  Open behind
-   it: the multisample surface takes no clear, so the unjudged exterior
-   (668 fragment-constant pixels at 4x, 1079 draw-color pixels at 2x)
-   waits on a command-stream clear of that surface to be judged; and while
+   counts the hardware exposes are measured on this shape.  The cleared
+   arms (a cover draw under the subsample set leading the stream, cells
+   `a0b1c429` at 4x and `9413361a` at 2x, mesa main `f743d0f9bec`) judge
+   the exterior too: 2896 and 2920 fully exterior pixels read the clear
+   color exactly, the fragment constant reaches zero pixels, and the
+   uncleared arms' exterior contents are settled as inherited allocation
+   bytes the resolve read through.  Open behind it: while
    `r100_cs_track_check` sizes the color buffer with no sample term the
    path stays an internal attended cell rather than an advertised Vulkan
    capability;
