@@ -1601,8 +1601,10 @@ main(void)
                               &flat_two_draw) == VK_SUCCESS);
          static const uint32_t order[2][3] = { { 1, 2, 0 }, { 2, 0, 1 } };
          float *stream = NULL;
+         float stream_backup[24];
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                             (void **)&stream) == VK_SUCCESS);
+         memcpy(stream_backup, stream, sizeof(stream_backup));
          for (unsigned p = 0; p < 2; p++)
             for (unsigned v = 0; v < 3; v++)
                memcpy(&stream[(p * 3 + v) * 4], &ndc_triangle[order[p][v] * 4],
@@ -1708,10 +1710,10 @@ main(void)
          }
          vkDestroyPipeline(device, flat_two_draw, NULL);
 
-         /* Restore the three-record payload the following fixtures read. */
+         /* Restore every record the six-record stream overwrote. */
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                             (void **)&stream) == VK_SUCCESS);
-         memcpy(stream, ndc_triangle, sizeof(ndc_triangle));
+         memcpy(stream, stream_backup, sizeof(stream_backup));
          vkUnmapMemory(device, vertex_memory);
       }
 
