@@ -1,0 +1,372 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Drives the multisample resolve recorder through the native ICD on the
+ * radeon noop drm-shim and proves the record-time contract: the cell's
+ * five slots reach four buffer objects, the multisample surface is the
+ * recording's own device-local allocation carrying a write alone, each
+ * payload names its buffer's merged index, and the winsys merging that
+ * array again returns the same positions, so the indices the arming
+ * digest covers are the indices the kernel reads.
+ */
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/utsname.h>
+
+#include <radeon_drm.h>
+#include <vulkan/vulkan.h>
+
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
+#include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
+#include "r3v_native.h"
+#include "tests/r3v_native_msaa_arms.h"
+#include "tests/r3v_native_shim_arming.h"
+
+#include "util/mesa-blake3.h"
+
+PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
+                                             const char *pName);
+
+static unsigned failures;
+
+#define CHECK(condition, ...)                   \
+   do {                                         \
+      if (!(condition)) {                       \
+         fprintf(stderr, "FAIL: " __VA_ARGS__); \
+         fprintf(stderr, "\n");                 \
+         failures++;                            \
+      }                                         \
+   } while (0)
+
+typedef PFN_vkVoidFunction (*icd_gipa_fn)(VkInstance, const char *);
+
+#define LOAD_INSTANCE(name) \
+   PFN_##name name = (PFN_##name)gipa(instance, #name)
+#define LOAD_DEVICE(name) \
+   PFN_##name name = (PFN_##name)gdpa(device, #name)
+
+#define RELOC_PAYLOAD(index) ((index) * 4u)
+
+#define MSAA_SAMPLE_COUNT 4u
+
+int
+main(int argc, char **argv)
+{
+   /* The unbound mode arms with the digest of the cell as emitted, the
+    * form whose payloads name their slot numbers.  The recorder installs
+    * the bound form, so the gate compares two different streams and
+    * refuses.
+    */
+   const bool unbound = argc == 2 && strcmp(argv[1], "unbound") == 0;
+   struct r300_triangle_msaa_resolve armed_shape;
+   r3v_native_msaa_reference(&armed_shape, MSAA_SAMPLE_COUNT);
+   struct r300_tcl_bypass_triangle_ib armed_cell;
+   CHECK(r300_tcl_bypass_triangle_msaa_resolve_emit(&armed_shape,
+                                                    &armed_cell) == 0,
+         "the offline cell emits");
+   if (!unbound) {
+      CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
+               &armed_cell, r300_tcl_bypass_triangle_msaa_slot_index,
+               R300_TRIANGLE_SLOT_COUNT) == 0,
+            "the offline cell binds");
+   }
+   char armed_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(armed_cell.ib, armed_cell.ib_size_dwords,
+                               armed_digest);
+   r300_tcl_bypass_triangle_release(&armed_cell);
+
+   struct utsname host;
+   CHECK(uname(&host) == 0, "uname");
+   char manifest_template[] = "/tmp/r3v-msaa-XXXXXX";
+   const char *manifest_dir = getenv("R3V_NATIVE_MANIFEST_DIR");
+   if (manifest_dir == NULL || manifest_dir[0] == '\0') {
+      manifest_dir = mkdtemp(manifest_template);
+      CHECK(manifest_dir != NULL, "mkdtemp");
+      if (manifest_dir == NULL)
+         return 1;
+      setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
+   }
+   setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+   setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", armed_digest, 1);
+   setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release, 1);
+   setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+          R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+
+   icd_gipa_fn gipa = vk_icdGetInstanceProcAddr;
+
+   VkInstance instance = VK_NULL_HANDLE;
+   PFN_vkCreateInstance create_instance =
+      (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   VkResult result = create_instance(
+      &(VkInstanceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+      },
+      NULL, &instance);
+   CHECK(result == VK_SUCCESS, "vkCreateInstance: %d", result);
+   if (result != VK_SUCCESS)
+      return 1;
+
+   LOAD_INSTANCE(vkEnumeratePhysicalDevices);
+   LOAD_INSTANCE(vkCreateDevice);
+   LOAD_INSTANCE(vkGetDeviceProcAddr);
+   LOAD_INSTANCE(vkDestroyInstance);
+   PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
+
+   uint32_t pdev_count = 1;
+   VkPhysicalDevice pdev = VK_NULL_HANDLE;
+   result = vkEnumeratePhysicalDevices(instance, &pdev_count, &pdev);
+   CHECK((result == VK_SUCCESS || result == VK_INCOMPLETE) && pdev_count == 1,
+         "one shim physical device enumerates: %d count %u", result,
+         pdev_count);
+   if (pdev == VK_NULL_HANDLE)
+      return 1;
+
+   const float queue_priority = 1.0f;
+   VkDevice device = VK_NULL_HANDLE;
+   result = vkCreateDevice(
+      pdev,
+      &(VkDeviceCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+         .queueCreateInfoCount = 1,
+         .pQueueCreateInfos =
+            &(VkDeviceQueueCreateInfo){
+               .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+               .queueFamilyIndex = 0,
+               .queueCount = 1,
+               .pQueuePriorities = &queue_priority,
+            },
+      },
+      NULL, &device);
+   CHECK(result == VK_SUCCESS, "vkCreateDevice: %d", result);
+   if (result != VK_SUCCESS)
+      return 1;
+
+   r3v_native_device_from_handle(device)->arming_provider =
+      &r3v_native_shim_arming_provider;
+
+   LOAD_DEVICE(vkAllocateMemory);
+   LOAD_DEVICE(vkFreeMemory);
+   LOAD_DEVICE(vkCreateCommandPool);
+   LOAD_DEVICE(vkDestroyCommandPool);
+   LOAD_DEVICE(vkAllocateCommandBuffers);
+   LOAD_DEVICE(vkBeginCommandBuffer);
+   LOAD_DEVICE(vkDestroyDevice);
+
+   /* Three caller allocations: the render half's vertices, the cover
+    * triangle, and the resolve destination.  The multisample surface is
+    * the recorder's own, so it takes no memory type from here.
+    */
+   VkDeviceMemory memory[3] = { VK_NULL_HANDLE };
+   for (unsigned i = 0; i < 3; i++) {
+      result = vkAllocateMemory(device,
+                                &(VkMemoryAllocateInfo){
+                                   .sType =
+                                      VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                   .allocationSize = 65536,
+                                   .memoryTypeIndex = 0,
+                                },
+                                NULL, &memory[i]);
+      CHECK(result == VK_SUCCESS, "vkAllocateMemory %u: %d", i, result);
+      if (result != VK_SUCCESS)
+         return 1;
+   }
+
+   VkCommandPool pool = VK_NULL_HANDLE;
+   result = vkCreateCommandPool(
+      device,
+      &(VkCommandPoolCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+         .queueFamilyIndex = 0,
+      },
+      NULL, &pool);
+   CHECK(result == VK_SUCCESS, "vkCreateCommandPool: %d", result);
+   if (result != VK_SUCCESS)
+      return 1;
+
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   result = vkAllocateCommandBuffers(
+      device,
+      &(VkCommandBufferAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+         .commandPool = pool,
+         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+         .commandBufferCount = 1,
+      },
+      &cmd);
+   CHECK(result == VK_SUCCESS, "vkAllocateCommandBuffers: %d", result);
+   if (result != VK_SUCCESS)
+      return 1;
+   result = vkBeginCommandBuffer(
+      cmd, &(VkCommandBufferBeginInfo){
+              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           });
+   CHECK(result == VK_SUCCESS, "vkBeginCommandBuffer: %d", result);
+
+   struct r300_triangle_msaa_resolve msaa;
+   r3v_native_msaa_reference(&msaa, MSAA_SAMPLE_COUNT);
+
+   /* A repeated handle merges entries whose roles carry different
+    * domains, so the recorder refuses before emitting.
+    */
+   result = r3v_native_record_msaa_resolve(cmd, memory[0], memory[0],
+                                           memory[2], &msaa);
+   CHECK(result != VK_SUCCESS, "a repeated role handle refuses");
+
+   /* A sample count with no subsample set refuses at the emitter, so no
+    * device-local surface is allocated for a cell that cannot emit.
+    */
+   struct r300_triangle_msaa_resolve unsupported = msaa;
+   unsupported.sample_count = 3;
+   result = r3v_native_record_msaa_resolve(cmd, memory[0], memory[1],
+                                           memory[2], &unsupported);
+   CHECK(result != VK_SUCCESS, "a sample count with no subsample set refuses");
+
+   result = r3v_native_record_msaa_resolve(cmd, memory[0], memory[1],
+                                           memory[2], &msaa);
+   CHECK(result == VK_SUCCESS, "resolve recording: %d", result);
+   if (result != VK_SUCCESS)
+      return 1;
+
+   struct r3v_native_cmd_buffer *native_cmd =
+      r3v_native_cmd_buffer_from_handle(cmd);
+   CHECK(native_cmd->cell_kind ==
+            R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE,
+         "the resolve cell kind installs");
+   CHECK(native_cmd->reference_count == R3V_NATIVE_MSAA_REFERENCE_COUNT,
+         "four references install, got %u", native_cmd->reference_count);
+
+   /* The multisample surface is the recording's own allocation, sized
+    * for the sample expansion the kernel's pitch * cpp * maxy footprint
+    * carries no term for, and it appears in no caller memory.
+    */
+   CHECK(native_cmd->owned_multisample != NULL,
+         "the recording owns the multisample surface");
+   if (native_cmd->owned_multisample != NULL) {
+      const uint64_t layer_bytes = (uint64_t)msaa.render.pitch_pixels *
+                                   msaa.render.height * sizeof(uint32_t);
+      CHECK(native_cmd->owned_multisample->bo.size >=
+               layer_bytes * MSAA_SAMPLE_COUNT,
+            "the surface carries the sample expansion, got %llu",
+            (unsigned long long)native_cmd->owned_multisample->bo.size);
+      CHECK(native_cmd->owned_multisample->map == NULL,
+            "the surface is never host-mapped");
+      for (unsigned i = 0; i < 3; i++) {
+         CHECK(native_cmd->owned_multisample->bo.handle !=
+                  r3v_native_memory_from_handle(memory[i])->bo.handle,
+               "the surface is distinct from caller memory %u", i);
+      }
+   }
+
+   /* Both halves render into the multisample surface, so its entry
+    * carries a write alone; the resolve destination takes the other
+    * write and the two vertex arrays are read.
+    */
+   const struct r3v_native_bo_reference *surface_reference = NULL;
+   for (uint32_t i = 0; i < native_cmd->reference_count; i++) {
+      if (native_cmd->owned_multisample != NULL &&
+          native_cmd->references[i].handle ==
+             native_cmd->owned_multisample->bo.handle)
+         surface_reference = &native_cmd->references[i];
+   }
+   CHECK(surface_reference != NULL, "the surface has a reference");
+   if (surface_reference != NULL) {
+      CHECK(surface_reference->read_domains == 0,
+            "the surface takes no read domain, got 0x%x",
+            surface_reference->read_domains);
+      CHECK(surface_reference->write_domain == RADEON_GEM_DOMAIN_VRAM,
+            "the surface writes to VRAM, got 0x%x",
+            surface_reference->write_domain);
+   }
+
+   /* Merging the installed array again by the winsys rule returns each
+    * entry's own position, so the queue's merge is idempotent.
+    */
+   struct radeon_drm_vk_reloc_list relocs;
+   radeon_drm_vk_reloc_list_init(&relocs);
+   for (uint32_t i = 0; i < native_cmd->reference_count; i++) {
+      uint32_t index = UINT32_MAX;
+      CHECK(radeon_drm_vk_reloc_list_add(
+               &relocs, native_cmd->references[i].handle,
+               native_cmd->references[i].read_domains,
+               native_cmd->references[i].write_domain, 0, &index) == 0,
+            "reloc add %u", i);
+      CHECK(index == i, "reference %u keeps its index, got %u", i, index);
+   }
+   CHECK(relocs.count == native_cmd->reference_count,
+         "the merge adds no entry, got %u", relocs.count);
+
+   const uint32_t *expected_index = r300_tcl_bypass_triangle_msaa_slot_index;
+   struct r300_tcl_bypass_triangle_ib reference_cell;
+   CHECK(r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, &reference_cell) ==
+            0,
+         "the reference cell emits");
+   CHECK(reference_cell.ib_size_dwords == native_cmd->ib_size_dwords,
+         "the installed stream keeps the emitted length");
+   for (uint32_t i = 0; i < reference_cell.reloc_site_count; i++) {
+      const uint32_t site = reference_cell.reloc_sites[i].ib_index;
+      const uint32_t slot = reference_cell.reloc_sites[i].slot;
+      CHECK(native_cmd->ib[site] == RELOC_PAYLOAD(expected_index[slot]),
+            "slot %u payload names index %u, got %u", slot,
+            expected_index[slot], native_cmd->ib[site] / 4u);
+   }
+   uint32_t differing = 0;
+   for (uint32_t i = 0; i < reference_cell.ib_size_dwords; i++) {
+      if (reference_cell.ib[i] != native_cmd->ib[i])
+         differing++;
+   }
+   CHECK(differing == 3, "three payloads move, got %u", differing);
+
+   CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
+            &reference_cell, r300_tcl_bypass_triangle_msaa_slot_index,
+            R300_TRIANGLE_SLOT_COUNT) == 0,
+         "the reference cell binds");
+   CHECK(memcmp(reference_cell.ib, native_cmd->ib,
+                (size_t)native_cmd->ib_size_dwords * sizeof(uint32_t)) == 0,
+         "the bound reference stream equals the installed stream");
+   r300_tcl_bypass_triangle_release(&reference_cell);
+   radeon_drm_vk_reloc_list_finish(&relocs);
+
+   /* The resolve kind reaches the gate: the geometry predicate reads the
+    * merged binding this recorder installs, and the gate was armed ahead
+    * of device creation with the offline cell's bound digest -- the
+    * order the attended procedure runs in.
+    */
+   LOAD_DEVICE(vkEndCommandBuffer);
+   LOAD_DEVICE(vkGetDeviceQueue);
+   LOAD_DEVICE(vkQueueSubmit);
+   result = vkEndCommandBuffer(cmd);
+   CHECK(result == VK_SUCCESS, "vkEndCommandBuffer: %d", result);
+   VkQueue queue = VK_NULL_HANDLE;
+   vkGetDeviceQueue(device, 0, 0, &queue);
+   result = vkQueueSubmit(queue, 1,
+                          &(VkSubmitInfo){
+                             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                             .commandBufferCount = 1,
+                             .pCommandBuffers = &cmd,
+                          },
+                          VK_NULL_HANDLE);
+   if (unbound) {
+      CHECK(result != VK_SUCCESS,
+            "the unbound digest refuses the recorded cell, got %d", result);
+   } else {
+      CHECK(result == VK_SUCCESS, "resolve vkQueueSubmit: %d", result);
+   }
+
+   vkDestroyCommandPool(device, pool, NULL);
+   for (unsigned i = 0; i < 3; i++)
+      vkFreeMemory(device, memory[i], NULL);
+   vkDestroyDevice(device, NULL);
+   vkDestroyInstance(instance, NULL);
+
+   if (failures != 0) {
+      fprintf(stderr, "r3v_native_msaa_cell_harness: %u failure(s)\n",
+              failures);
+      return 1;
+   }
+   printf("r3v_native_msaa_cell_harness: all checks passed\n");
+   return 0;
+}

@@ -876,6 +876,27 @@ r3v_native_attended_composed = executable(
   install : false,
 )
 
+# Attended multisample resolve cell: records the resolve cell through
+# r3v_native_record_msaa_resolve and drives it to a live DRM_RADEON_CS
+# on RS482 silicon, where four passes of the subsample-set oracle over
+# one denominator classify what AARESOLVE_MODE_RESOLVE sends to the
+# resolve destination.
+r3v_native_attended_msaa_resolve = executable(
+  'r3v_native_attended_msaa_resolve',
+  files('tests/r3v_native_attended_msaa_resolve.c',
+        'tests/r3v_native_recovery_waiver.c',
+        'tests/r3v_native_watchdog_client.c',
+        'tests/r3v_native_watchdog_guard.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Recovery-waiver calibration: the waiver admits one attended run, so
 # every binding it carries -- boot, attempt, cell, runner image, age --
 # is exercised against a document that differs by that field alone.
@@ -1516,6 +1537,31 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       'r3v-native-composed-cell-reloc-@0@'.format(composed_mode),
       r3v_native_composed_cell_harness,
       args : [composed_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  # Multisample resolve recorder on the same shim fixture: five slots
+  # reach four buffer objects, the multisample surface is the
+  # recording's own device-local allocation carrying a write alone, and
+  # the payloads name the merged indices.
+  r3v_native_msaa_cell_harness = executable(
+    'r3v_native_msaa_cell_harness',
+    files('tests/r3v_native_msaa_cell_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach msaa_mode : ['bound', 'unbound']
+    test(
+      'r3v-native-msaa-cell-reloc-@0@'.format(msaa_mode),
+      r3v_native_msaa_cell_harness,
+      args : [msaa_mode],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
@@ -2174,6 +2220,22 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The multisample resolve runner's recording boundary on the fixture:
+  # the device-local surface allocation, both vertex layouts, and the
+  # merged binding, at each subsample set, so an argument or seeding
+  # defect fails here rather than on the one attended submission.
+  foreach msaa_samples : ['2', '4']
+    test(
+      'r3v-native-msaa-resolve-record-@0@x'.format(msaa_samples),
+      r3v_native_attended_msaa_resolve,
+      args : [meson.current_build_dir(), '--samples', msaa_samples,
+              '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # The compute identity carrier runner's recording boundary on the
   # fixture: the compute surface under its gate, the descriptor set, the
   # reference kernel, and one dispatch record.

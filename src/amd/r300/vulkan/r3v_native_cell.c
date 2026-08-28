@@ -2853,3 +2853,170 @@ r3v_native_record_composed_render_sample(
    r300_tcl_bypass_triangle_release(&cell);
    return VK_SUCCESS;
 }
+
+/* Records the multisample resolve cell: the render half draws the
+ * reference triangle into a sample-expanded surface with the subsample
+ * set live, then the resolve half covers the extent under
+ * RB3D_AARESOLVE_CTL.AARESOLVE_MODE_RESOLVE so the downsampled samples
+ * reach RB3D_AARESOLVE_OFFSET.  Both halves render into the one
+ * multisample surface, so its two slots merge into one write entry, and
+ * the reference array is built merged with the payloads bound to its own
+ * positions.
+ *
+ * The multisample surface is the recording's own allocation in
+ * RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU access, so
+ * the create itself is the placement -- the memory-type policy's type 1
+ * gives VRAM | GTT, under which a host-unmapped allocation proves
+ * nothing about residency.  Its size carries the sample expansion
+ * (r300_texture_desc.c multiplies the layer size and leaves the stride
+ * alone), which the kernel checks no term of: r100_cs_track_check sizes
+ * the color buffer as pitch * cpp * maxy.  The resolve destination is
+ * bounded there -- aa.pitch * cb[0].cpp * maxy + aa.offset against the
+ * buffer size -- so an undersized destination refuses at the validator.
+ */
+VkResult
+r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
+                               VkDeviceMemory renderVertexMemory,
+                               VkDeviceMemory coverVertexMemory,
+                               VkDeviceMemory destinationMemory,
+                               const struct r300_triangle_msaa_resolve *msaa)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, render_vertex, renderVertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, cover_vertex, coverVertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, destination, destinationMemory);
+
+   if (cmd_buffer == NULL || render_vertex == NULL || cover_vertex == NULL ||
+       destination == NULL || msaa == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   struct r3v_native_memory *const role[3] = { render_vertex, cover_vertex,
+                                               destination };
+   for (unsigned a = 0; a < 3; a++) {
+      for (unsigned b = a + 1; b < 3; b++) {
+         if (role[a]->bo.handle == role[b]->bo.handle)
+            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                             "r3v-native: resolve cell roles require "
+                             "distinct GEM objects");
+      }
+   }
+
+   struct r300_tcl_bypass_triangle_ib cell;
+   int emit_result = r300_tcl_bypass_triangle_msaa_resolve_emit(msaa, &cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+
+   /* The emission admitted the shape, so the footprint arithmetic below
+    * runs over bounded extents.
+    */
+   const uint64_t layer_bytes = (uint64_t)msaa->render.pitch_pixels *
+                                msaa->render.height * sizeof(uint32_t);
+   const uint64_t surface_bytes = (uint64_t)msaa->render.target_offset +
+                                  layer_bytes * msaa->sample_count;
+
+   struct r3v_native_memory *surface = cmd_buffer->owned_multisample;
+   if (surface != NULL && surface->bo.size < surface_bytes) {
+      radeon_drm_vk_bo_free(&device->drm, &surface->bo);
+      vk_free(&cmd_buffer->vk.pool->alloc, surface);
+      cmd_buffer->owned_multisample = NULL;
+      surface = NULL;
+   }
+   const bool surface_is_new = surface == NULL;
+   if (surface == NULL) {
+      surface = vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*surface), 8,
+                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (surface == NULL) {
+         r300_tcl_bypass_triangle_release(&cell);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      if (radeon_drm_vk_bo_create(&device->drm, surface_bytes,
+                                  R3V_NATIVE_MEMORY_ALIGNMENT,
+                                  RADEON_GEM_DOMAIN_VRAM,
+                                  RADEON_GEM_NO_CPU_ACCESS, false,
+                                  &surface->bo) != 0) {
+         vk_free(&cmd_buffer->vk.pool->alloc, surface);
+         r300_tcl_bypass_triangle_release(&cell);
+         return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "r3v-native: multisample surface requires a "
+                          "device-local VRAM allocation");
+      }
+   }
+
+   struct r3v_tcl_bypass_msaa_slot {
+      struct r3v_native_memory *memory;
+      uint32_t read_domains;
+      uint32_t write_domain;
+   };
+   /* Both halves write the multisample surface: the render half through
+    * the color backend, the resolve half through the same bound target
+    * while AARESOLVE_MODE redirects the downsampled output.  The
+    * destination carries its own write; the two vertex arrays are read.
+    */
+   const struct r3v_tcl_bypass_msaa_slot slots[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = { render_vertex, RADEON_GEM_DOMAIN_GTT,
+                                      0 },
+      [R300_TRIANGLE_SLOT_COLOR] = { surface, 0, RADEON_GEM_DOMAIN_VRAM },
+      [R300_TRIANGLE_SLOT_TEXTURE] = { surface, 0, RADEON_GEM_DOMAIN_VRAM },
+      [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = { cover_vertex,
+                                               RADEON_GEM_DOMAIN_GTT, 0 },
+      [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = { destination, 0,
+                                              RADEON_GEM_DOMAIN_GTT },
+   };
+
+   struct r3v_native_bo_reference *references =
+      calloc(R3V_NATIVE_MSAA_REFERENCE_COUNT, sizeof(*references));
+   if (references == NULL) {
+      if (surface_is_new) {
+         radeon_drm_vk_bo_free(&device->drm, &surface->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, surface);
+      }
+      r300_tcl_bypass_triangle_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t reference_count = 0;
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+      uint32_t found = reference_count;
+      for (uint32_t i = 0; i < reference_count; i++) {
+         if (references[i].handle == slots[slot].memory->bo.handle) {
+            found = i;
+            break;
+         }
+      }
+      if (found == reference_count) {
+         references[reference_count++] = (struct r3v_native_bo_reference){
+            .handle = slots[slot].memory->bo.handle,
+            .memory = slots[slot].memory,
+         };
+      }
+      references[found].read_domains |= slots[slot].read_domains;
+      references[found].write_domain |= slots[slot].write_domain;
+      slot_index[slot] = found;
+   }
+
+   emit_result = r300_tcl_bypass_triangle_bind_reloc_indices(
+      &cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
+   if (emit_result != 0) {
+      free(references);
+      if (surface_is_new) {
+         radeon_drm_vk_bo_free(&device->drm, &surface->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, surface);
+      }
+      r300_tcl_bypass_triangle_release(&cell);
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+   }
+
+   r3v_native_cmd_buffer_install_ib(
+      cmd_buffer, R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE, cell.ib,
+      cell.ib_size_dwords, references, reference_count);
+   cmd_buffer->owned_multisample = surface;
+   cell.ib = NULL;
+   r300_tcl_bypass_triangle_release(&cell);
+   return VK_SUCCESS;
+}

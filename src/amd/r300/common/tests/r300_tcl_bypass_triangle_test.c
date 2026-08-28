@@ -2500,6 +2500,23 @@ test_msaa_resolve_cell(void)
    bad.destination.target_offset = 4;
    assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&bad, &ib) == -EINVAL);
    assert(r300_tcl_bypass_triangle_msaa_resolve_emit(NULL, &ib) == -EINVAL);
+
+   /* The two shapes admit on different predicates.  The render half's
+    * color_bits reach R300_PFS_PARAM_0, so an off-lattice constant
+    * there names a value other than the one the emitter declares and
+    * refuses.  The destination's reach the AA register run, which
+    * carries offset and pitch alone, so the same off-lattice word there
+    * admits and the cell emits.
+    */
+   bad = msaa;
+   for (unsigned i = 0; i < 4; i++)
+      bad.render.color_bits[i] = 0x3e008081u;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&bad, &ib) == -EINVAL);
+   bad = msaa;
+   for (unsigned i = 0; i < 4; i++)
+      bad.destination.color_bits[i] = 0x3e008081u;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&bad, &ib) == 0);
+   r300_tcl_bypass_triangle_release(&ib);
 }
 
 /* Calibrates the sample-set verdict against the pixel-center one.  The
