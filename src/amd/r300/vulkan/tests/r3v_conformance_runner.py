@@ -14,8 +14,8 @@ run wrote.  The seal is the SHA-256 of the canonical receipt with the
 seal itself removed; `verify-receipt` recomputes it and re-digests the
 artifacts.
 
-The evidence class derives from the run: a preloaded drm-shim makes it
-host-model, and only an unpreloaded run whose ICD is libvulkan_r3v.so
+The evidence class derives from the run: a drm-shim observed in a child
+process's memory map makes it host-model, and only an unpreloaded run whose ICD is libvulkan_r3v.so
 on a host whose render node resolves to an RS4xx PCI device is silicon;
 a run without source identity, with a dirty tree, or with a SHA other
 than the declared one is never valid for qualification.
@@ -65,7 +65,9 @@ failed condition refuses the run by name
 `planning_cs_witnessed`, `planning_unwitnessed`), and the sealed receipt
 records each case's outcome: `transcript` with the digest of every
 transcript the device wrote, `no_nonempty_ib` when the device reported
-that no executable submission ran, or `unresolved`.  The slice's
+that no executable submission ran through a fresh per-device marker, or
+`unresolved`.  A shard containing an unresolved outcome remains
+`planning_capture_incomplete`.  The slice's
 required evidence stays silicon whatever the disposition records.
 
 Usage:
@@ -133,7 +135,7 @@ DRIVER_ENV_PREFIXES = (
 # The environment a run inherits: the process needs these to start, and
 # the driver reads other names.  Everything else enters only through an
 # explicit --env declaration and lands whole in the sealed receipt.
-INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TMPDIR")
+INHERITED_ENV = ("PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TMPDIR")
 INHERITED_ENV_PREFIXES = ("LC_",)
 # Declared values that open a submission, an experimental route, or an
 # attended-evidence destination; only a submission-hazard slice admits
@@ -179,23 +181,32 @@ SHARD_ARTIFACT_NAMES = ("dmesg_delta.txt", "caselist.txt", "runtime_event.json")
 # them before its own process starts.
 ENV_CASE_TOKEN = re.compile(r"\{(case|index|nonce)\}")
 CASE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+MAX_CASE_DIRECTORY_BYTES = 120
 PLAN_NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
+REQUIRED_QPA_SESSION_FIELDS = ("releaseName", "logFormatVersion")
 
 # The host-planning disposition: the planning pass as its own evidence
-# class.  The shim basename is the one r3v_native_plan_capture_host_model_present
-# resolves the ioctl symbol to; the gate names are the ones
-# r3v_native_device.c reads at device creation; the message is the one
-# the device logs at destroy when it captured no executable submission.
+# class.  The shim basename is the one
+# r3v_native_plan_capture_host_model_present resolves the ioctl symbol to
+# (rg --fixed-strings r3v_native_plan_capture_host_model_present
+# src/amd/r300/vulkan/); the gate names are the ones r3v_native_device.c
+# reads at device creation (rg --fixed-strings R3V_NATIVE_PLAN_CAPTURE_FILE
+# src/amd/r300/vulkan/); the message is the one the device logs at destroy
+# when it captured no executable submission.
 PLANNING_EVIDENCE = "host-planning"
 RADEON_DRM_SHIM_BASENAME = "libradeon_noop_drm_shim.so"
 CAPTURE_FILE_NAME = "R3V_NATIVE_PLAN_CAPTURE_FILE"
 SUBMIT_HAZARD_GATE = "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"
 ATTENDED_EVIDENCE_DIR = "R3V_NATIVE_MANIFEST_DIR"
 PLAN_REPLAY_NAMES = ("R3V_NATIVE_PLAN_FILE", "R3V_NATIVE_PLAN_NONCE")
-NO_TRANSCRIPT_MESSAGE = "no executable submission ran; no plan transcript " "written"
 EMPTY_CAPTURE_SUFFIX = ".no_nonempty_ib"
 CASE_STRACE_NAME = "ioctl.strace"
 PLANNING_OUTCOMES = ("transcript", "no_nonempty_ib", "unresolved")
+PLAN_CAPTURE_TERMINAL_ERRORS = (
+    "r3v-native: plan capture refused:",
+    "r3v-native: plan transcript write at destroy failed:",
+    "no plan transcript written; marker:",
+)
 PLANNING_QUALIFICATION_REASON = (
     "host-planning disposition captures transcripts on the host model and "
     "proves nothing about conformance; the slice's silicon requirement stands"
@@ -219,12 +230,18 @@ class RunnerRefusal(Exception):
     pass
 
 
-def partition_identity(manifest_path, caselist_path):
+def partition_identity(manifest_path, caselist_path, ad_hoc_hazard):
     """Bind the caselist to a slice of a verified partition manifest and
     refuse a slice whose hazard is unknown.  With no manifest the run is
     ad hoc: it names no slice and no corpus."""
     if manifest_path is None:
-        return {"kind": "ad-hoc"}, None
+        if ad_hoc_hazard is None:
+            raise RunnerRefusal("an ad-hoc run requires --ad-hoc-hazard")
+        return {
+            "kind": "ad-hoc",
+            "hazard": ad_hoc_hazard,
+            "required_evidence": "host-model",
+        }, None
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import r3v_conformance_partition as part
 
@@ -384,6 +401,75 @@ def deqp_identity(binary):
     return ident
 
 
+def preload_identity(env, working_directory):
+    """Prove that a declared drm-shim entered a process through the dynamic
+    loader.  A declaration is metadata; the child process's memory map is the
+    observation that makes host-model classification available."""
+    declared = [
+        entry
+        for entry in re.split(r"[:\s]+", env.get("LD_PRELOAD", ""))
+        if entry and ("drm_shim" in entry or "drm-shim" in entry)
+    ]
+    if not declared:
+        return {"declared": False, "shim_loaded": False, "mapped": []}
+    probe = (
+        "from pathlib import Path; "
+        "print('\\n'.join(sorted({line.rsplit(None, 1)[-1] "
+        "for line in Path('/proc/self/maps').read_text().splitlines() "
+        "if '/' in line})))"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {
+            "declared": True,
+            "shim_loaded": False,
+            "mapped": [],
+            "error": str(error),
+        }
+    mapped = sorted(
+        line.strip() for line in completed.stdout.splitlines() if line.startswith("/")
+    )
+    declared_basenames = {Path(entry).name for entry in declared}
+    bare_declarations = {entry for entry in declared if "/" not in entry}
+    resolved_declarations = {
+        str(
+            (
+                Path(entry)
+                if Path(entry).is_absolute()
+                else Path(working_directory) / entry
+            ).resolve()
+        )
+        for entry in declared
+        if "/" in entry
+    }
+    matched = [
+        path
+        for path in mapped
+        if path in resolved_declarations or Path(path).name in bare_declarations
+    ]
+    loaded = completed.returncode == 0 and bool(matched)
+    result = {
+        "declared": True,
+        "shim_loaded": loaded,
+        "declared_basenames": sorted(declared_basenames),
+        "mapped": matched,
+    }
+    if completed.returncode != 0 or not loaded:
+        result["error"] = (
+            completed.stderr or "declared shim absent from process maps"
+        ).strip()
+    return result
+
+
 def render_nodes():
     nodes = []
     for node in sorted(Path("/sys/class/drm").glob("renderD*")):
@@ -432,7 +518,7 @@ def host_identity():
     return ident
 
 
-def build_environment(declared, hazard):
+def build_environment(declared, hazard, isolated_home):
     """The allowlisted process environment plus the declared values.  A
     declared submission gate is admitted on a submission-hazard slice
     alone; on every other slice it is contamination, refused by name."""
@@ -441,6 +527,8 @@ def build_environment(declared, hazard):
         for k, v in os.environ.items()
         if k in INHERITED_ENV or k.startswith(INHERITED_ENV_PREFIXES)
     }
+    isolated_home.mkdir()
+    env["HOME"] = str(isolated_home)
     for kv in declared or []:
         k, sep, v = kv.partition("=")
         if not sep or not k:
@@ -471,11 +559,10 @@ def environment_identity(env, declared):
     }
 
 
-def evidence_class(env, host, icd):
+def evidence_class(env, host, icd, preload):
     """host-model under a drm-shim preload; silicon only when the ICD is
     the r3v DSO and a render node resolves to an RS4xx PCI device."""
-    preload = env.get("LD_PRELOAD", "")
-    if "drm_shim" in preload or "drm-shim" in preload:
+    if preload["shim_loaded"]:
         return "host-model", None
     rs4xx_slots = {
         g["slot"]
@@ -526,43 +613,98 @@ def planning_tracer(declared):
     declared binary when it exists and executes, else the one
     r3v_cs_ioctl_trace proves can attach."""
     if declared:
-        if Path(declared).is_file() and os.access(declared, os.X_OK):
-            return declared, None
+        resolved = Path(declared).resolve()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return str(resolved), None
         return None, f"{declared} is not an executable file"
     return cs_trace.strace_available()
 
 
-def planning_outcome(case_dir, capture_path, stderr_text):
+def artifact_fingerprint(path):
+    stat_result = path.stat()
+    return {
+        "device": stat_result.st_dev,
+        "inode": stat_result.st_ino,
+        "size": stat_result.st_size,
+        "mtime_ns": stat_result.st_mtime_ns,
+        "sha256": sha256_file(path),
+    }
+
+
+def planning_family(capture_path):
+    if not capture_path:
+        return {}
+    base = Path(capture_path)
+    return {
+        str(path): artifact_fingerprint(path)
+        for path in [base]
+        + sorted(path for path in base.parent.glob(base.name + ".*") if path.is_file())
+        if path.is_file()
+    }
+
+
+def planning_member_ordinal(base, path, marker):
+    suffix = path.name[len(base.name) :]
+    if marker:
+        suffix = suffix[: -len(EMPTY_CAPTURE_SUFFIX)]
+    if not suffix:
+        return 0
+    if re.fullmatch(r"\.\d+", suffix):
+        return int(suffix[1:])
+    return None
+
+
+def planning_outcome(case_dir, capture_path, before, stderr_text):
     """One case's planning outcome from its own process: the transcripts
     the device wrote at the declared path and its `.N` ordinals, each
     digested; `no_nonempty_ib` when the device left its
     `.no_nonempty_ib` marker (r3v_native_plan_capture_mark_empty, written
-    at destroy when zero entries were captured; vk_logw reaches stderr
-    only under debug logging, so the marker is the observation and the
-    message a fallback); `unresolved` otherwise, which covers a device
-    the driver refused and a process that died.  The per-process strace
-    gives the kernel-entering ioctl counts."""
+    at destroy when zero entries were captured); `unresolved` otherwise,
+    which covers stale artifacts, missing or conflicting device ordinals,
+    a device the driver refused, and a process that died.  The per-process
+    strace gives the kernel-entering ioctl counts."""
     strace = case_dir / CASE_STRACE_NAME
     witnessed = strace.is_file()
     counts, unparsed = cs_trace.parse_strace(strace) if witnessed else ({}, 0)
+    terminal_errors = [
+        message for message in PLAN_CAPTURE_TERMINAL_ERRORS if message in stderr_text
+    ]
     transcripts = {}
     markers = []
+    device_outcomes = {}
     if capture_path:
         base = Path(capture_path)
-        members = [base] + sorted(
-            q
-            for q in base.parent.glob(base.name + ".*")
-            if re.fullmatch(r"\d+", q.name[len(base.name) + 1 :])
-        )
-        transcripts = {str(q): sha256_file(q) for q in members if q.is_file()}
-        markers = sorted(
-            str(q)
-            for q in base.parent.glob(base.name + "*" + EMPTY_CAPTURE_SUFFIX)
-            if q.is_file()
-        )
-    if transcripts:
+        after = planning_family(capture_path)
+        fresh = {name: state for name, state in after.items() if name not in before}
+        for name, state in sorted(fresh.items()):
+            path = Path(name)
+            marker = path.name.endswith(EMPTY_CAPTURE_SUFFIX)
+            ordinal = planning_member_ordinal(base, path, marker)
+            if ordinal is None:
+                continue
+            kind = "no_nonempty_ib" if marker else "transcript"
+            if ordinal in device_outcomes:
+                device_outcomes[ordinal] = "conflict"
+            else:
+                device_outcomes[ordinal] = kind
+            if marker:
+                markers.append(name)
+            else:
+                transcripts[name] = state["sha256"]
+    ordinals_complete = bool(device_outcomes) and set(device_outcomes) == set(
+        range(max(device_outcomes) + 1)
+    )
+    outcomes_consistent = (
+        ordinals_complete and "conflict" not in device_outcomes.values()
+    )
+    if not terminal_errors and outcomes_consistent and transcripts:
         outcome = "transcript"
-    elif markers or NO_TRANSCRIPT_MESSAGE in stderr_text:
+    elif (
+        not terminal_errors
+        and outcomes_consistent
+        and markers
+        and all(value == "no_nonempty_ib" for value in device_outcomes.values())
+    ):
         outcome = "no_nonempty_ib"
     else:
         outcome = "unresolved"
@@ -570,6 +712,10 @@ def planning_outcome(case_dir, capture_path, stderr_text):
         "outcome": outcome,
         "transcripts": transcripts,
         "empty_markers": markers,
+        "device_outcomes": {
+            str(key): value for key, value in sorted(device_outcomes.items())
+        },
+        "terminal_errors": terminal_errors,
         "witnessed": witnessed,
         "cs_ioctls": counts.get(cs_trace.CS_REQUEST, 0),
         "total_ioctls": sum(counts.values()),
@@ -647,6 +793,7 @@ def parse_qpa(text):
     session = {}
     in_flight = None
     result_text = None
+    completed_result = None
     partial_begin = False
     for line in text.splitlines():
         if line.startswith("#sessionInfo "):
@@ -658,11 +805,17 @@ def parse_qpa(text):
             if not name:
                 partial_begin = True
                 continue
+            if name in results:
+                raise RunnerRefusal(f"QPA log reports {name} more than once")
             in_flight = name
             results[in_flight] = {"status": "truncated", "detail": ""}
+            completed_result = None
         elif line.startswith("#endTestCaseResult"):
+            if in_flight and completed_result is not None:
+                results[in_flight] = completed_result
             in_flight = None
             result_text = None
+            completed_result = None
         elif line.startswith("#terminateTestCaseResult"):
             parts = line.split(" ", 1)
             status = parts[1].strip() if len(parts) > 1 else "Crash"
@@ -670,13 +823,14 @@ def parse_qpa(text):
                 results[in_flight] = {"status": status, "detail": "terminated"}
             in_flight = None
             result_text = None
+            completed_result = None
         elif in_flight:
             if result_text is None:
                 m = re.search(r'<Result StatusCode="(\w+)">(.*)', line)
                 if m:
                     status, rest = m.group(1), m.group(2)
                     if "</Result>" in rest:
-                        results[in_flight] = {
+                        completed_result = {
                             "status": status,
                             "detail": rest.split("</Result>")[0],
                         }
@@ -685,7 +839,7 @@ def parse_qpa(text):
             else:
                 if "</Result>" in line:
                     result_text[1] += "\n" + line.split("</Result>")[0]
-                    results[in_flight] = {
+                    completed_result = {
                         "status": result_text[0],
                         "detail": result_text[1],
                     }
@@ -696,9 +850,19 @@ def parse_qpa(text):
         "results": results,
         "in_flight": in_flight,
         "partial_begin": partial_begin,
-        "session_closed": "#endSession" in text,
+        "session_closed": "#endSession" in text
+        and in_flight is None
+        and not partial_begin,
         "session": session,
     }
+
+
+def missing_qpa_session_fields(parsed):
+    return [
+        field
+        for field in REQUIRED_QPA_SESSION_FIELDS
+        if not parsed["session"].get(field)
+    ]
 
 
 def load_nonpass_ledger(path):
@@ -768,25 +932,25 @@ def verdict_for(run):
     case deadline after the session closed is a shutdown hang with the
     runner deadline's shape, and the receipt keeps the exit code that
     named which deadline fired."""
+    if run.get("dmesg", {}).get("continuity") == "broken":
+        return "kernel_log_continuity_broken"
+    if run["hazard_lines"]:
+        return "dmesg_hazard"
     refusal = run.get("refusal")
     if refusal is not None:
         if refusal not in REFUSAL_VALUES:
             raise ValueError(f"unknown refusal {refusal!r}")
         return refusal
-    if run.get("dmesg", {}).get("continuity") == "broken":
-        return "kernel_log_continuity_broken"
-    if run["hazard_lines"]:
-        return "dmesg_hazard"
     code = run.get("exit_code")
     if code == "case_timeout" and run.get("session_closed"):
         code = "timeout"
     if code == "case_timeout":
         return "case_deadline"
-    if code == "timeout":
+    if code in ("timeout", "shutdown_timeout"):
         return "runner_deadline"
     observed = any(k not in RUNNER_STATUSES for k in run["counts"])
-    if run.get("framework_abort") and not observed:
-        return "framework_precondition"
+    if run.get("framework_abort"):
+        return "framework_abort" if observed else "framework_precondition"
     if not run["session_closed"]:
         return "truncated_run"
     if isinstance(code, int) and code != 0 and not run["blocking"]:
@@ -815,22 +979,107 @@ def seal(receipt):
     return hashlib.sha256(canonical(receipt).encode()).hexdigest()
 
 
+class QpaMarkerReader:
+    """Incrementally counts the QPA markers that govern runner deadlines.
+
+    The reader retains only the longest possible split marker and validates
+    those trailing bytes before each read.  File replacement, truncation, or
+    an in-place rewrite resets the counters instead of joining two different
+    QPA streams.
+    """
+
+    MARKERS = (
+        b"#beginTestCaseResult",
+        b"#endTestCaseResult",
+        b"#terminateTestCaseResult",
+        b"#endSession",
+    )
+    OVERLAP_BYTES = max(map(len, MARKERS))
+
+    def __init__(self, log):
+        self.log = Path(log)
+        self.identity = None
+        self.offset = 0
+        self.trailing_bytes = b""
+        self.counts = {marker: 0 for marker in self.MARKERS}
+
+    def reset(self, identity):
+        self.identity = identity
+        self.offset = 0
+        self.trailing_bytes = b""
+        self.counts = {marker: 0 for marker in self.MARKERS}
+
+    def state(self):
+        try:
+            with self.log.open("rb") as qpa_file:
+                stat_result = os.fstat(qpa_file.fileno())
+                identity = (stat_result.st_dev, stat_result.st_ino)
+                if identity != self.identity:
+                    self.reset(identity)
+                elif self.trailing_bytes:
+                    trailing_offset = self.offset - len(self.trailing_bytes)
+                    qpa_file.seek(trailing_offset)
+                    if qpa_file.read(len(self.trailing_bytes)) != self.trailing_bytes:
+                        self.reset(identity)
+                qpa_file.seek(self.offset)
+                new_bytes = qpa_file.read()
+        except OSError:
+            return self.marker_state()
+
+        if new_bytes:
+            previous_overlap = len(self.trailing_bytes)
+            searchable = self.trailing_bytes + new_bytes
+            searchable_offset = self.offset - previous_overlap
+            for marker in self.MARKERS:
+                marker_offset = searchable.find(marker)
+                while marker_offset >= 0:
+                    line_start = (marker_offset == 0 and searchable_offset == 0) or (
+                        marker_offset > 0
+                        and searchable[marker_offset - 1 : marker_offset]
+                        in (b"\n", b"\r")
+                    )
+                    if line_start and marker_offset + len(marker) > previous_overlap:
+                        self.counts[marker] += 1
+                    marker_offset = searchable.find(marker, marker_offset + 1)
+            self.offset += len(new_bytes)
+            self.trailing_bytes = searchable[-self.OVERLAP_BYTES :]
+        return self.marker_state()
+
+    def marker_state(self):
+        begun = self.counts[b"#beginTestCaseResult"]
+        closed = (
+            self.counts[b"#endTestCaseResult"]
+            + self.counts[b"#terminateTestCaseResult"]
+        )
+        return begun, closed, self.counts[b"#endSession"] > 0
+
+
 def supervise(
-    argv, cwd, env, log, stdout_path, stderr_path, total_timeout, case_timeout
+    argv,
+    cwd,
+    env,
+    log,
+    stdout_path,
+    stderr_path,
+    total_timeout,
+    case_timeout,
+    shutdown_timeout,
 ):
     """Runs dEQP under two deadlines: the whole shard, and the case in
-    flight, judged by growth of the log (dEQP flushes it after every
-    write) or of stdout within case_timeout seconds.  stdout and stderr
-    go to files, so a chatty process never blocks on a pipe the
-    supervisor reads later.  A deadline kills the process group; the
-    exit code names which deadline."""
+    flight, starting only when the QPA begin marker appears.  The QPA end
+    marker closes that deadline, and #endSession starts the bounded process
+    shutdown.  stdout and stderr go to files, so a chatty process never blocks
+    on a pipe or extends a case deadline.  A deadline kills the process group;
+    the exit code names which deadline."""
     with open(stdout_path, "wb") as out_f, open(stderr_path, "wb") as err_f:
+        marker_reader = QpaMarkerReader(log)
         p = subprocess.Popen(
             argv, cwd=cwd, env=env, stdout=out_f, stderr=err_f, start_new_session=True
         )
         started = time.monotonic()
-        last_progress = started
-        last_size = -1
+        case_started = None
+        shutdown_started = None
+        previous_begun = 0
         exit_code = None
         while True:
             rc = p.poll()
@@ -838,19 +1087,23 @@ def supervise(
                 exit_code = rc
                 break
             now = time.monotonic()
-            size = 0
-            for path in (log, stdout_path):
-                try:
-                    size += path.stat().st_size
-                except OSError:
-                    pass
-            if size != last_size:
-                last_size = size
-                last_progress = now
+            begun, closed, session_closed = marker_reader.state()
+            if begun > previous_begun:
+                case_started = now
+                previous_begun = begun
+            if closed >= begun:
+                case_started = None
+            if session_closed and shutdown_started is None:
+                shutdown_started = now
             if now - started > total_timeout:
                 exit_code = "timeout"
-            elif now - last_progress > case_timeout:
+            elif case_started is not None and now - case_started > case_timeout:
                 exit_code = "case_timeout"
+            elif (
+                shutdown_started is not None
+                and now - shutdown_started > shutdown_timeout
+            ):
+                exit_code = "shutdown_timeout"
             if exit_code is not None:
                 try:
                     os.killpg(p.pid, signal.SIGKILL)
@@ -866,7 +1119,7 @@ def supervise(
     )
 
 
-def runtime_event_identity(path, out):
+def runtime_event_identity(path, out, host_boot_id):
     """The joined runtime event (the target-side capture of boot id,
     package and module identity, memory map, clocks, thermals, display
     state, watchdog and netconsole continuity) retained beside the
@@ -881,6 +1134,12 @@ def runtime_event_identity(path, out):
         body = json.loads(text)
     except ValueError:
         raise RunnerRefusal(f"runtime event {path} is not JSON")
+    if not isinstance(body, dict):
+        raise RunnerRefusal(f"runtime event {path} is not a JSON object")
+    if not host_boot_id or body.get("boot_id") != host_boot_id:
+        raise RunnerRefusal(
+            f"runtime event {path} boot_id does not match the current boot"
+        )
     (out / "runtime_event.json").write_bytes(text)
     return {
         "available": True,
@@ -918,16 +1177,19 @@ def queue_claim_identity(report_binary, env, expected_sha256=None):
             fields[k] = v
     mode = fields.get("queue_claim_mode")
     gate = fields.get("queue_claim_gate") == "1"
+    verb_table_blake3 = fields.get("verb_table_blake3")
     if (
         rc != 0
         or mode not in QUEUE_CLAIM_MODES
         or fields.get("claim_consistent") != "1"
         or (mode == "experimental_compute_subset" and not gate)
+        or not re.fullmatch(r"[0-9a-f]{64}", verb_table_blake3 or "")
     ):
         raise RunnerRefusal(
             "queue-claim report refused: "
             f"exit {rc}, mode {mode!r}, gate {gate}, "
-            f"consistent {fields.get('claim_consistent')!r}"
+            f"consistent {fields.get('claim_consistent')!r}, "
+            f"verb ledger {verb_table_blake3!r}"
             f"{': ' + out[:200] if rc is None else ''}"
         )
     digest = sha256_file(path)
@@ -944,27 +1206,45 @@ def queue_claim_identity(report_binary, env, expected_sha256=None):
         "compute_bit": fields.get("compute_bit") == "1",
         "gate_declared": gate,
         "queue_flags": fields.get("queue_flags"),
-        "verb_table_blake3": fields.get("verb_table_blake3"),
+        "verb_table_blake3": verb_table_blake3,
         "compute_claim_eligible": mode == "conformant",
     }
 
 
-def read_caselist(path):
+def parse_caselist(text, source):
     cases = []
     seen = set()
-    for line in Path(path).read_text().splitlines():
+    for line in text.splitlines():
         c = line.strip()
         if not c.startswith("dEQP-VK."):
             continue
         if c in seen:
             raise RunnerRefusal(
-                f"{path} lists {c} twice; a duplicate case " "collapses in the results"
+                f"{source} lists {c} twice; a duplicate case "
+                "collapses in the results"
             )
         seen.add(c)
         cases.append(c)
     if not cases:
-        raise RunnerRefusal(f"{path} lists no dEQP-VK cases")
+        raise RunnerRefusal(f"{source} lists no dEQP-VK cases")
     return cases
+
+
+def read_caselist(path):
+    return parse_caselist(Path(path).read_text(), path)
+
+
+def snapshot_caselist(path, destination):
+    """Read the caselist bytes once, derive cases and digest from that snapshot,
+    and retain those exact bytes as the dEQP input and receipt artifact."""
+    try:
+        content = Path(path).read_bytes()
+        text = content.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RunnerRefusal(f"caselist {path} is unreadable UTF-8: {error}")
+    cases = parse_caselist(text, path)
+    destination.write_bytes(content)
+    return cases, hashlib.sha256(content).hexdigest()
 
 
 def sanitize_case_names(cases):
@@ -977,6 +1257,9 @@ def sanitize_case_names(cases):
     owner = {}
     for case in cases:
         name = CASE_NAME_UNSAFE.sub("_", case)
+        if len(name.encode()) > MAX_CASE_DIRECTORY_BYTES:
+            suffix = hashlib.sha256(case.encode()).hexdigest()[:16]
+            name = name[: MAX_CASE_DIRECTORY_BYTES - len(suffix) - 1] + "-" + suffix
         if name in owner:
             raise RunnerRefusal(
                 f"{case} and {owner[name]} both sanitize to "
@@ -1058,7 +1341,7 @@ def case_argv(args, caselist_file, log):
 
 
 def run_cases(
-    args, out, cases, env, sanitized, nonces, hazard_probe, tracer=None, planning=False
+    args, out, cases, env, sanitized, nonces, kernel_probe, tracer=None, planning=False
 ):
     """Runs each case of the shard in its own dEQP process, in caselist
     order, under the shard deadline with --case-timeout as each
@@ -1073,8 +1356,8 @@ def run_cases(
     the cases behind it not_run and names the shard's exit `timeout`.
 
     The shard's session is the sequence of case processes: it closes
-    when every case ran to a reaped process, so one case's crash
-    classifies as that case's status and leaves the shard readable.
+    when every case emits its own #endSession and reaches a reaped
+    process.  A missing per-case terminator leaves the shard truncated.
 
     The kernel log is read after every case, and a hazard line stops the
     sequence there: a lockup or a CS validation error makes every later
@@ -1091,6 +1374,7 @@ def run_cases(
     session = {}
     framework_abort = None
     unknown_format = False
+    missing_session_identity = False
     started = time.monotonic()
     shard_exit = 0
     argv = None
@@ -1134,6 +1418,9 @@ def run_cases(
                 + ["-o", str(case_dir / CASE_STRACE_NAME), "--"]
                 + argv
             )
+        planning_before = (
+            planning_family(resolved.get(CAPTURE_FILE_NAME)) if planning else {}
+        )
         exit_code, _, stderr_text = supervise(
             launch,
             Path(args.deqp_binary).resolve().parent,
@@ -1143,6 +1430,7 @@ def run_cases(
             case_dir / "stderr.txt",
             remaining,
             args.case_timeout,
+            args.shutdown_timeout,
         )
         for k, state in paths.items():
             state["present_after"] = Path(resolved[k]).exists()
@@ -1160,6 +1448,8 @@ def run_cases(
             session = parsed["session"]
         if parsed["session"].get("logFormatVersion") not in (None, QPA_LOG_FORMAT):
             unknown_format = True
+        if missing_qpa_session_fields(parsed):
+            missing_session_identity = True
         m = re.search(r"FATAL ERROR: [^\n]*", stderr_text)
         if framework_abort is None and m:
             framework_abort = m.group(0)
@@ -1184,6 +1474,7 @@ def run_cases(
             "directory": sanitized[case],
             "exit_code": exit_code,
             "session_closed": parsed["session_closed"],
+            "session": parsed["session"],
         }
         if resolved:
             record["environment"] = resolved
@@ -1191,19 +1482,29 @@ def run_cases(
             record["paths"] = paths
         if planning:
             record["planning"] = planning_outcome(
-                case_dir, resolved.get(CAPTURE_FILE_NAME), stderr_text
+                case_dir,
+                resolved.get(CAPTURE_FILE_NAME),
+                planning_before,
+                stderr_text,
             )
         records[case] = record
         # A kernel hazard ends the sequence where it appeared: the cases
         # behind it would run on a wedged or reset GPU, so their results
         # would describe the hazard rather than themselves.
-        hazard = hazard_probe()
-        if hazard:
+        kernel_state = kernel_probe()
+        if kernel_state["continuity"] == "broken":
+            stop = {
+                "after_case": case,
+                "index": index,
+                "reason": "kernel log continuity broke after this case",
+            }
+            break
+        if kernel_state["hazard_lines"]:
             stop = {
                 "after_case": case,
                 "index": index,
                 "reason": "kernel hazard after this case",
-                "hazard_lines": hazard,
+                "hazard_lines": kernel_state["hazard_lines"],
             }
             break
         # The shard's own deadline firing inside a case ends the shard;
@@ -1216,14 +1517,26 @@ def run_cases(
                 "reason": "shard deadline expired during this case",
             }
             break
+        if exit_code == "shutdown_timeout":
+            shard_exit = "shutdown_timeout"
+            stop = {
+                "after_case": case,
+                "index": index,
+                "reason": "case process exceeded its shutdown deadline",
+            }
+            break
+        if isinstance(exit_code, int) and exit_code != 0 and shard_exit == 0:
+            shard_exit = exit_code
     return {
         "results": results,
         "cases": records,
         "session": session,
         "unexpected": unexpected,
-        "session_closed": len(records) == len(cases),
+        "session_closed": len(records) == len(cases)
+        and all(record["session_closed"] for record in records.values()),
         "framework_abort": framework_abort,
         "unknown_format": unknown_format,
+        "missing_session_identity": missing_session_identity,
         "exit_code": shard_exit,
         "argv": argv,
         "index_width": width,
@@ -1238,7 +1551,8 @@ def execute(args):
             f"{out} is not empty; a run takes a fresh " "output directory"
         )
     out.mkdir(parents=True, exist_ok=True)
-    cases = read_caselist(args.caselist)
+    caselist_file = out / "caselist.txt"
+    cases, caselist_sha256 = snapshot_caselist(args.caselist, caselist_file)
     if len(cases) > args.max_cases:
         raise RunnerRefusal(
             f"{len(cases)} cases exceed the shard ceiling "
@@ -1262,19 +1576,27 @@ def execute(args):
     nonces = (
         load_plan_nonces(args.plan_nonce_file, cases) if args.plan_nonce_file else {}
     )
-    partition, part_refusal = partition_identity(args.partition_manifest, args.caselist)
-    env, contaminating = build_environment(args.env, partition.get("hazard"))
-    runtime_event = runtime_event_identity(args.runtime_event, out)
+    partition, part_refusal = partition_identity(
+        args.partition_manifest, caselist_file, args.ad_hoc_hazard
+    )
+    env, contaminating = build_environment(
+        args.env, partition.get("hazard"), out / "isolated-home"
+    )
     host = host_identity()
+    runtime_event = runtime_event_identity(args.runtime_event, out, host["boot_id"])
     icd = icd_identity(args.icd)
     # The report probes the ICD the run pins, so the pin enters the
     # environment ahead of it.
     env["VK_DRIVER_FILES"] = icd["manifest"]
     env.pop("VK_ICD_FILENAMES", None)
+    cursor = journal_cursor(args.journal_command)
+    dmesg_before = None if cursor else read_dmesg(args.dmesg_command)
+    preload = preload_identity(env, Path(args.deqp_binary).resolve().parent)
     queue_claim = queue_claim_identity(
         args.queue_report, env, args.expect_report_sha256
     )
-    evidence, node = evidence_class(env, host, icd)
+    evidence, node = evidence_class(env, host, icd, preload)
+    deqp = deqp_identity(args.deqp_binary)
     # A declared capture file on a submission-hazard slice under the
     # drm-shim host model is a planning candidate: it records the
     # ordered submissions a later silicon replay binds to and states
@@ -1317,8 +1639,9 @@ def execute(args):
         "source": source_identity(args.source_root),
         "build": build_identity(args.build_root),
         "icd": icd,
-        "deqp": deqp_identity(args.deqp_binary),
+        "deqp": deqp,
         "host": host,
+        "preload": preload,
         "environment": environment_identity(env, args.env),
         "evidence_class": evidence,
         "render_node": node,
@@ -1327,7 +1650,7 @@ def execute(args):
         # partition manifest publishes per shard and sha256sum prints, so
         # one declared value binds the receipt, the manifest, and the
         # file.
-        "caselist_sha256": sha256_file(args.caselist),
+        "caselist_sha256": caselist_sha256,
         "partition": partition,
         "runtime_event": runtime_event,
         "queue_claim": queue_claim,
@@ -1340,8 +1663,13 @@ def execute(args):
             "partition_sha256": args.expect_partition_sha256,
             "runtime_event_sha256": args.expect_runtime_event_sha256,
             "queue_claim_mode": args.expect_queue_claim_mode,
+            "queue_report_sha256": args.expect_report_sha256,
         },
-        "timeouts": {"total_seconds": args.timeout, "case_seconds": args.case_timeout},
+        "timeouts": {
+            "total_seconds": args.timeout,
+            "case_seconds": args.case_timeout,
+            "shutdown_seconds": args.shutdown_timeout,
+        },
         "max_cases": args.max_cases,
         "process_per_case": bool(args.process_per_case),
         "planning": planning,
@@ -1351,6 +1679,11 @@ def execute(args):
         receipt["templated_env"] = templated
         receipt["plan_nonce_file"] = args.plan_nonce_file
     refusal = part_refusal
+    if preload["declared"] and not preload["shim_loaded"]:
+        refusal = refusal or "preload_unverified"
+    pinned_cts = partition.get("cts_describe")
+    if pinned_cts and deqp.get("cts_worktree_describe") != pinned_cts:
+        refusal = refusal or "wrong_cts_revision"
     if refusal is None and contaminating:
         refusal = "gate_contamination"
         receipt["contaminating_gates"] = contaminating
@@ -1386,24 +1719,22 @@ def execute(args):
         "session_closed": False,
         "session": {},
     }
-    cursor = journal_cursor(args.journal_command)
-    dmesg_before = None if cursor else read_dmesg(args.dmesg_command)
 
-    def hazard_probe():
-        """The hazard lines the kernel has logged since the shard's own
-        baseline, through whichever log source the run bound to."""
+    def kernel_probe():
+        """The continuity and hazard lines since the shard's own baseline."""
         if cursor:
             delta = journal_after(args.journal_command, cursor)
+            continuity = "continuous" if delta is not None else "unavailable"
         else:
-            delta, _ = dmesg_delta(dmesg_before, read_dmesg(args.dmesg_command))
-        return hazard_lines(delta)
+            delta, continuity = dmesg_delta(
+                dmesg_before, read_dmesg(args.dmesg_command)
+            )
+        return {"continuity": continuity, "hazard_lines": hazard_lines(delta)}
 
     log = out / "run.qpa"
     stderr_text = ""
     artifact_names = list(ARTIFACT_NAMES)
     if refusal is None:
-        caselist_file = out / "caselist.txt"
-        caselist_file.write_text("\n".join(cases) + "\n")
         env["VK_DRIVER_FILES"] = receipt["icd"]["manifest"]
         env.pop("VK_ICD_FILENAMES", None)
         receipt["environment"] = environment_identity(env, args.env)
@@ -1416,7 +1747,7 @@ def execute(args):
             env,
             sanitized,
             nonces,
-            hazard_probe,
+            kernel_probe,
             tracer=tracer,
             planning=planning_candidate and refusal is None,
         )
@@ -1444,6 +1775,8 @@ def execute(args):
         }
         if shard["unknown_format"]:
             refusal = refusal or "unknown_log_format"
+        if shard["missing_session_identity"]:
+            refusal = refusal or "missing_session_identity"
         receipt["unknown_log_format"] = shard["unknown_format"]
         artifact_names = list(SHARD_ARTIFACT_NAMES)
         case_names = list(CASE_ARTIFACT_NAMES)
@@ -1480,13 +1813,29 @@ def execute(args):
                 c: r["transcripts"] for c, r in per.items() if r["transcripts"]
             }
             zero = bool(per) and not unwitnessed and unparsed == 0 and cs_total == 0
-            conditions["kernel_entering_cs_zero"] = zero
+            complete_cases = set(per) == set(cases)
+            complete_outcomes = complete_cases and all(
+                shard["cases"][case]["session_closed"]
+                and outcome["outcome"] != "unresolved"
+                and not outcome["terminal_errors"]
+                for case, outcome in per.items()
+            )
+            conditions["every_shard_case_witnessed"] = complete_cases
+            conditions["planning_outcomes_complete"] = complete_outcomes
+            conditions["kernel_entering_cs_zero"] = zero and complete_cases
+            planning["refused_conditions"] = [
+                name
+                for name, condition_holds in conditions.items()
+                if not condition_holds
+            ]
             if zero:
-                planning["disposition"] = PLANNING_EVIDENCE
-                evidence = PLANNING_EVIDENCE
-                receipt["evidence_class"] = evidence
+                if complete_cases and complete_outcomes:
+                    planning["disposition"] = PLANNING_EVIDENCE
+                    evidence = PLANNING_EVIDENCE
+                    receipt["evidence_class"] = evidence
+                else:
+                    refusal = "planning_capture_incomplete"
             else:
-                planning["refused_conditions"].append("kernel_entering_cs_zero")
                 refusal = (
                     "planning_cs_witnessed" if cs_total else "planning_unwitnessed"
                 )
@@ -1502,6 +1851,7 @@ def execute(args):
             out / "stderr.txt",
             args.timeout,
             args.case_timeout,
+            args.shutdown_timeout,
         )
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
         if log.is_file():
@@ -1526,6 +1876,8 @@ def execute(args):
         receipt["unknown_log_format"] = parsed["session"].get(
             "logFormatVersion"
         ) not in (None, QPA_LOG_FORMAT)
+        if missing_qpa_session_fields(parsed):
+            refusal = refusal or "missing_session_identity"
     else:
         receipt["unknown_log_format"] = False
     if cursor:
@@ -1592,12 +1944,14 @@ def receipt_mapping(receipt, field):
 
 IDENTITY_REFUSAL_LABELS = {
     "wrong_queue_claim": "queue claim",
+    "wrong_queue_report": "queue-claim report binary",
     "wrong_source": "source",
     "wrong_icd": "ICD shared object",
     "wrong_deqp": "dEQP binary",
     "wrong_caselist": "caselist",
     "wrong_partition": "partition manifest",
     "wrong_runtime_event": "runtime event",
+    "wrong_runtime_boot": "runtime-event boot",
 }
 REFUSAL_VALUES = frozenset(
     {
@@ -1611,6 +1965,10 @@ REFUSAL_VALUES = frozenset(
         "unknown_log_format",
         "planning_cs_witnessed",
         "planning_unwitnessed",
+        "planning_capture_incomplete",
+        "preload_unverified",
+        "wrong_cts_revision",
+        "missing_session_identity",
         *IDENTITY_REFUSAL_LABELS,
     }
 )
@@ -1624,11 +1982,17 @@ def identity_mismatch_refusals(receipt):
     partition = receipt_mapping(receipt, "partition")
     runtime_event = receipt_mapping(receipt, "runtime_event")
     queue_claim = receipt_mapping(receipt, "queue_claim")
+    host = receipt_mapping(receipt, "host")
     comparisons = (
         (
             "wrong_queue_claim",
             expected.get("queue_claim_mode"),
             queue_claim.get("mode"),
+        ),
+        (
+            "wrong_queue_report",
+            expected.get("queue_report_sha256"),
+            queue_claim.get("report_sha256"),
         ),
         (
             "wrong_source",
@@ -1651,6 +2015,11 @@ def identity_mismatch_refusals(receipt):
             "wrong_runtime_event",
             expected.get("runtime_event_sha256"),
             runtime_event.get("sha256"),
+        ),
+        (
+            "wrong_runtime_boot",
+            host.get("boot_id") if runtime_event.get("available") else None,
+            runtime_event.get("boot_id") if runtime_event.get("available") else None,
         ),
     )
     return [
@@ -1700,8 +2069,25 @@ def receipt_planning_state(receipt):
             or unparsed_lines < 0
         ):
             raise RunnerRefusal("planning cs_witness has invalid counts")
+        case_records = receipt_mapping(receipt, "cases")
+        results = receipt_mapping(receipt, "results")
+        planning_records = {
+            case: record.get("planning")
+            for case, record in case_records.items()
+            if isinstance(record, dict) and isinstance(record.get("planning"), dict)
+        }
+        complete_cases = set(planning_records) == set(results)
+        complete_outcomes = complete_cases and all(
+            case_records[case].get("session_closed") is True
+            and record.get("outcome") in ("transcript", "no_nonempty_ib")
+            and not record.get("terminal_errors", [])
+            for case, record in planning_records.items()
+        )
+        expected_conditions["every_shard_case_witnessed"] = complete_cases
+        expected_conditions["planning_outcomes_complete"] = complete_outcomes
         expected_conditions["kernel_entering_cs_zero"] = (
-            bool(receipt.get("cases"))
+            bool(case_records)
+            and complete_cases
             and not unwitnessed_cases
             and unparsed_lines == 0
             and cs_ioctls == 0
@@ -1725,9 +2111,17 @@ def expected_receipt_refusal(receipt):
     planning = receipt_mapping(receipt, "planning")
     planning_candidate, planning_state, cs_witness = receipt_planning_state(receipt)
     hazard = partition.get("hazard")
+    preload = receipt_mapping(receipt, "preload")
+    deqp = receipt_mapping(receipt, "deqp")
 
     if hazard == "unknown":
         return "blocked_slice"
+    if preload.get("declared") and not preload.get("shim_loaded"):
+        return "preload_unverified"
+    if partition.get("cts_describe") and deqp.get(
+        "cts_worktree_describe"
+    ) != partition.get("cts_describe"):
+        return "wrong_cts_revision"
 
     contaminating_gates = sorted(
         name
@@ -1754,7 +2148,13 @@ def expected_receipt_refusal(receipt):
     preflight_refused = [
         name
         for name, condition_holds in planning_state.items()
-        if name != "kernel_entering_cs_zero" and not condition_holds
+        if name
+        not in (
+            "every_shard_case_witnessed",
+            "planning_outcomes_complete",
+            "kernel_entering_cs_zero",
+        )
+        and not condition_holds
     ]
     if planning_candidate and preflight_refused:
         return "planning_disposition_refused"
@@ -1781,7 +2181,28 @@ def expected_receipt_refusal(receipt):
         )
     if unknown_log_format:
         return "unknown_log_format"
+    session = receipt_mapping(receipt, "session")
+    case_records = receipt.get("cases", {})
+    if not isinstance(case_records, dict):
+        raise RunnerRefusal("receipt has invalid cases")
+    case_sessions = (
+        []
+        if receipt.get("receipt_version") == LEGACY_RECEIPT_VERSION
+        else [
+            record.get("session", {})
+            for record in case_records.values()
+            if isinstance(record, dict)
+        ]
+    )
+    if any(not session.get(field) for field in REQUIRED_QPA_SESSION_FIELDS) or any(
+        not case_session.get(field)
+        for case_session in case_sessions
+        for field in REQUIRED_QPA_SESSION_FIELDS
+    ):
+        return "missing_session_identity"
 
+    if planning_candidate and not planning_state.get("every_shard_case_witnessed"):
+        return "planning_capture_incomplete"
     if planning_candidate and planning_state.get("kernel_entering_cs_zero") is False:
         assert cs_witness is not None
         return (
@@ -1789,6 +2210,8 @@ def expected_receipt_refusal(receipt):
             if cs_witness["cs_ioctls"]
             else "planning_unwitnessed"
         )
+    if planning_candidate and not planning_state.get("planning_outcomes_complete"):
+        return "planning_capture_incomplete"
     return None
 
 
@@ -1834,6 +2257,8 @@ def expected_qualification_state(receipt):
             undeclared.append("runtime-event SHA-256")
         if not queue_claim.get("available"):
             undeclared.append("queue-claim report")
+        elif not expected.get("queue_report_sha256"):
+            undeclared.append("queue-claim report SHA-256")
         if undeclared:
             qualification_valid = False
             qualification_reason = "undeclared " + ", ".join(undeclared)
@@ -1854,6 +2279,22 @@ def expected_qualification_state(receipt):
 
 
 def verify_receipt_semantics(receipt):
+    host = receipt_mapping(receipt, "host")
+    icd = receipt_mapping(receipt, "icd")
+    preload = receipt_mapping(receipt, "preload")
+    derived_evidence, derived_node = evidence_class(
+        receipt_mapping(receipt, "environment"), host, icd, preload
+    )
+    planning = receipt_mapping(receipt, "planning")
+    expected_evidence = (
+        PLANNING_EVIDENCE
+        if planning.get("disposition") == PLANNING_EVIDENCE
+        else derived_evidence
+    )
+    if receipt.get("evidence_class") != expected_evidence:
+        raise RunnerRefusal("evidence class does not match the recorded identities")
+    if expected_evidence == "silicon" and receipt.get("render_node") != derived_node:
+        raise RunnerRefusal("render node does not match the recorded silicon identity")
     qualification_valid, qualification_reason = expected_qualification_state(receipt)
     if (
         receipt.get("qualification_valid") != qualification_valid
@@ -1879,7 +2320,6 @@ def verify_receipt_semantics(receipt):
             f"expected {expected_refusal!r}"
         )
 
-    planning = receipt_mapping(receipt, "planning")
     if planning.get("qualification_valid") is not False:
         raise RunnerRefusal("planning qualification_valid must remain false")
 
@@ -1925,6 +2365,8 @@ def verify_receipt_semantics(receipt):
         raise RunnerRefusal("blocking result count does not reconcile")
     if receipt.get("result_count") != len(results):
         raise RunnerRefusal("result count does not reconcile")
+    if receipt.get("case_count") != len(results):
+        raise RunnerRefusal("case count does not reconcile with results")
 
     try:
         expected_verdict = verdict_for(receipt)
@@ -1941,32 +2383,22 @@ def verify_receipt(path):
     receipt_version = receipt.get("receipt_version")
     if receipt_version not in (LEGACY_RECEIPT_VERSION, RECEIPT_VERSION):
         raise RunnerRefusal("receipt version unknown")
-    if receipt_version == LEGACY_RECEIPT_VERSION:
-        validity_field = LEGACY_QUALIFICATION_VALIDITY_FIELD
-        reason_field = LEGACY_QUALIFICATION_REASON_FIELD
-    else:
-        validity_field = "qualification_valid"
-        reason_field = "qualification_reason"
-    if not isinstance(receipt.get(validity_field), bool):
-        raise RunnerRefusal(
-            f"receipt version {receipt_version} lacks boolean {validity_field}"
-        )
-    reason = receipt.get(reason_field)
-    if reason is not None and not isinstance(reason, str):
-        raise RunnerRefusal(
-            f"receipt version {receipt_version} has invalid {reason_field}"
-        )
-    semantic_receipt = dict(receipt)
-    if receipt_version == LEGACY_RECEIPT_VERSION:
-        semantic_receipt["qualification_valid"] = receipt[validity_field]
-        semantic_receipt["qualification_reason"] = reason
-        legacy_planning = receipt_mapping(receipt, "planning")
-        semantic_planning = dict(legacy_planning)
-        semantic_planning["qualification_valid"] = legacy_planning.get(
-            LEGACY_QUALIFICATION_VALIDITY_FIELD
-        )
-        semantic_receipt["planning"] = semantic_planning
-    verify_receipt_semantics(semantic_receipt)
+    # Version 3 predates semantic recomputation.  Its verifier sealed the
+    # receipt body, re-digested every artifact, and reconciled result counts;
+    # applying version-4 refusal precedence or qualification rules changes the
+    # meaning of an archived receipt after publication.
+    if receipt_version == RECEIPT_VERSION:
+        if not isinstance(receipt.get("qualification_valid"), bool):
+            raise RunnerRefusal(
+                f"receipt version {receipt_version} lacks boolean "
+                "qualification_valid"
+            )
+        reason = receipt.get("qualification_reason")
+        if reason is not None and not isinstance(reason, str):
+            raise RunnerRefusal(
+                f"receipt version {receipt_version} has invalid " "qualification_reason"
+            )
+        verify_receipt_semantics(receipt)
     recorded = receipt.get("seal_sha256")
     if recorded != seal(receipt):
         raise RunnerRefusal("seal does not match the receipt body")
@@ -2100,7 +2532,11 @@ log = [a.split("=",1)[1] for a in sys.argv if a.startswith("--deqp-log-filename=
 cl = [a.split("=",1)[1] for a in sys.argv if a.startswith("--deqp-caselist-file=")][0]
 cases = [l.strip() for l in open(cl) if l.strip()]
 f = open(log, "w")
-f.write('#sessionInfo releaseName fake-1\n#sessionInfo logFormatVersion "0.3.4"\n#beginSession\n'); f.flush()
+if not os.environ.get("FAKE_OMIT_RELEASE") and os.environ.get("FAKE_OMIT_RELEASE_CASE") not in cases:
+    f.write('#sessionInfo releaseName fake-1\n')
+if not os.environ.get("FAKE_OMIT_LOG_FORMAT") and os.environ.get("FAKE_OMIT_LOG_FORMAT_CASE") not in cases:
+    f.write('#sessionInfo logFormatVersion "0.3.4"\n')
+f.write('#beginSession\n'); f.flush()
 def case(name, status, detail="x"):
     f.write(f"#beginTestCaseResult {name}\n<TestCaseResult CasePath=\"{name}\" Version=\"0.3.4\" CaseType=\"SelfValidate\">\n <Text>note</Text>\n <Result StatusCode=\"{status}\">{detail}</Result>\n</TestCaseResult>\n\n#endTestCaseResult\n"); f.flush()
 if mode == "mixed":
@@ -2109,6 +2545,11 @@ if mode == "mixed":
 elif mode == "truncated":
     case(cases[0], "Pass")
     f.write(f"#beginTestCaseResult {cases[1]}\n"); f.flush()
+    sys.exit(0)
+elif mode == "incomplete_pass":
+    name = cases[0]
+    f.write(f"#beginTestCaseResult {name}\n<Result StatusCode=\"Pass\">x</Result>\n")
+    f.write("#endSession\n"); f.flush()
     sys.exit(0)
 elif mode == "timeout":
     case(cases[0], "Pass")
@@ -2133,6 +2574,11 @@ elif mode == "multiline":
     for c in cases[2:]: case(c, "Pass")
 elif mode == "all_pass":
     for c in cases: case(c, "Pass")
+elif mode == "startup_delay":
+    time.sleep(1.2)
+    for c in cases: case(c, "Pass")
+elif mode == "dirty_exit":
+    for c in cases: case(c, "Pass")
 elif mode == "late_abort":
     for c in cases: case(c, "Pass")
     sys.stderr.write("FATAL ERROR: late abort at foo.cpp:1\n")
@@ -2142,6 +2588,16 @@ elif mode == "framework":
 elif mode == "per_case":
     cap = os.environ.get("FAKE_CAPTURE_FILE", "")
     if cap: open(cap, "w").write("transcript\n")
+    plan = os.environ.get("R3V_NATIVE_PLAN_CAPTURE_FILE", "")
+    if plan and os.environ.get("FAKE_PLAN_ORDINAL_GAP"):
+        open(plan, "w").write("device zero\n")
+        open(plan + ".2", "w").write("device two\n")
+    if plan and os.environ.get("FAKE_PLAN_CONFLICT"):
+        open(plan, "w").write("transcript\n")
+        open(plan + ".no_nonempty_ib", "w").write("no_nonempty_ib\n")
+    if plan and os.environ.get("FAKE_PLAN_WRITE_FAILURE"):
+        open(plan + ".no_nonempty_ib", "w").write("no_nonempty_ib\n")
+        sys.stderr.write("MESA: warning: r3v-native: plan transcript write at destroy failed: Input/output error\n")
     if os.environ.get("FAKE_NO_IB_MSG"): sys.stderr.write("MESA: warning: r3v-native: no executable submission ran; no plan transcript written\n")
     if os.environ.get("FAKE_NO_IB_MARKER"): open(os.environ["R3V_NATIVE_PLAN_CAPTURE_FILE"] + ".no_nonempty_ib", "w").write("no_nonempty_ib\n")
     echo = os.environ.get("FAKE_ECHO_NAME", "")
@@ -2149,6 +2605,8 @@ elif mode == "per_case":
     for c in cases:
         if c == os.environ.get("FAKE_HAZARD_CASE", ""):
             open(os.environ["FAKE_DMESG_FILE"], "a").write("[2.0] radeon 0000:01:05.0: GPU lockup\n")
+        if c == os.environ.get("FAKE_BREAK_CONTINUITY_CASE", ""):
+            open(os.environ["FAKE_DMESG_FILE"], "w").write("[0.5] replacement\n")
         if c == os.environ.get("FAKE_CRASH_CASE", ""):
             f.write(f"#beginTestCaseResult {c}\n"); f.flush()
             os.kill(os.getpid(), signal.SIGSEGV)
@@ -2160,7 +2618,11 @@ elif mode == "replay":
     f.close()
     import shutil; shutil.copyfile(os.environ["FAKE_DEQP_REPLAY"], log)
     sys.exit(0)
+if mode == "per_case" and cases[0] == os.environ.get("FAKE_NO_END_SESSION_CASE", ""):
+    f.close(); sys.exit(0)
 f.write("#endSession\n"); f.close()
+if mode == "dirty_exit" or (mode == "per_case" and cases[0] == os.environ.get("FAKE_NONZERO_CASE", "")):
+    sys.exit(7)
 """
 
 FAKE_QUEUE_REPORT = """#!/bin/sh
@@ -2174,7 +2636,10 @@ if [ "$mode" = gateless ]; then mode=experimental_compute_subset; fi
 if [ "$mode" = inconsistent ]; then mode=conformant; consistent=0; fi
 printf 'queue_family_count\t1\nqueue_flags\t0\t0x%x\tcount\t1\ttimestamp_bits\t0\n' $((bit ? 3 : 1))
 printf 'compute_bit\t%s\nqueue_claim_mode\t%s\nqueue_claim_gate\t%s\n' "$bit" "$mode" "$gate"
-printf 'verb_table_blake3\t%s\nclaim_consistent\t%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef "$consistent"
+if [ "${FAKE_QUEUE_OMIT_LEDGER:-0}" != 1 ]; then
+  printf 'verb_table_blake3\t%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+fi
+printf 'claim_consistent\t%s\n' "$consistent"
 """
 
 # A stand-in tracer: it writes the census the real strace would (one
@@ -2211,9 +2676,65 @@ def selftest(fixture_qpa):
         fixture_qpa = str(Path(fixture_qpa).resolve())
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
-        fake = d / "deqp-vk"
+        cts_repo = d / "cts"
+        cts_repo.mkdir()
+        fake = cts_repo / "deqp-vk"
         fake.write_text(FAKE_DEQP)
         fake.chmod(0o755)
+        subprocess.run(["git", "init", "-q", str(cts_repo)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(cts_repo),
+                "-c",
+                "user.name=R3V runner selftest",
+                "-c",
+                "user.email=r3v-runner-selftest.invalid",
+                "add",
+                "deqp-vk",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(cts_repo),
+                "-c",
+                "user.name=R3V runner selftest",
+                "-c",
+                "user.email=r3v-runner-selftest.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(cts_repo), "tag", "fixture"], check=True)
+        shim_source = d / "drm_shim.c"
+        shim_source.write_text("int r3v_runner_selftest_drm_shim;\n")
+        shim = d / RADEON_DRM_SHIM_BASENAME
+        subprocess.run(
+            shlex.split(os.environ.get("CC", "cc"))
+            + [
+                "-shared",
+                "-fPIC",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-o",
+                str(shim),
+                str(shim_source),
+            ],
+            check=True,
+        )
+        alternate_shim = d / "libalternate_drm_shim.so"
+        alternate_shim.write_bytes(shim.read_bytes())
+        relative_shim = cts_repo / RADEON_DRM_SHIM_BASENAME
+        relative_shim.write_bytes(shim.read_bytes())
+        host_boot_id = read_optional("/proc/sys/kernel/random/boot_id")
+        assert host_boot_id
         lib = d / "libvulkan_fake.so"
         lib.write_bytes(b"fake dso")
         manifest = d / "fake_icd.json"
@@ -2265,6 +2786,13 @@ def selftest(fixture_qpa):
             plan_nonce_file=None,
             force_evidence=None,
             strace_binary=str(fake_strace),
+            expect_report=None,
+            ad_hoc_hazard="none",
+            shutdown_timeout=1.0,
+            source_root=None,
+            expect_source=None,
+            expect_deqp=None,
+            expect_partition=None,
         ):
             os.environ["FAKE_DEQP_MODE"] = mode
             os.environ["FAKE_DMESG_FILE"] = str(dmesg_file)
@@ -2276,13 +2804,13 @@ def selftest(fixture_qpa):
                 icd=str(manifest),
                 caselist=str(cases),
                 out=str(outdir),
-                source_root=None,
+                source_root=source_root,
                 build_root=None,
-                expect_source_sha=None,
+                expect_source_sha=expect_source,
                 expect_dso_sha256=dso,
-                expect_deqp_sha256=None,
+                expect_deqp_sha256=expect_deqp,
                 expect_caselist_sha256=expect_caselist,
-                expect_partition_sha256=None,
+                expect_partition_sha256=expect_partition,
                 expect_runtime_event_sha256=expect_runtime_event,
                 runtime_event=runtime_event,
                 timeout=timeout,
@@ -2292,15 +2820,17 @@ def selftest(fixture_qpa):
                 nonpass_ledger=str(ledger),
                 queue_report=queue_report,
                 expect_queue_claim_mode=expect_queue_claim,
-                expect_report_sha256=None,
+                expect_report_sha256=expect_report,
                 dmesg_command=str(dmesg_cmd),
-                env=(env if env is not None else ["LD_PRELOAD=drm_shim"])
+                env=(env if env is not None else [f"LD_PRELOAD={shim}"])
                 + [f"FAKE_DEQP_MODE={mode}", f"FAKE_DEQP_REPLAY={fixture_qpa or ''}"],
                 deqp_arg=None,
                 partition_manifest=manifest_json,
+                ad_hoc_hazard=ad_hoc_hazard,
                 process_per_case=process_per_case,
                 plan_nonce_file=plan_nonce_file,
                 strace_binary=strace_binary,
+                shutdown_timeout=shutdown_timeout,
             )
             if dmesg_after is not None:
                 orig = dmesg_file.read_text()
@@ -2311,7 +2841,7 @@ def selftest(fixture_qpa):
                     dmesg_after if replace_dmesg else orig + dmesg_after,
                 )
             elif force_evidence:
-                r = _run_with_evidence(args, force_evidence)
+                r = _run_with_evidence(args, force_evidence, outdir / "receipt.json")
             else:
                 r = execute(args)
             if r["verdict"] != expect:
@@ -2319,7 +2849,8 @@ def selftest(fixture_qpa):
                     f"selftest {mode}: verdict {r['verdict']}, expected "
                     f"{expect}: {r['counts']} {r['classes']}"
                 )
-            verify_receipt(outdir / "receipt.json")
+            if not force_evidence:
+                verify_receipt(outdir / "receipt.json")
             return r
 
         r = run("all_pass", "pass")
@@ -2331,6 +2862,65 @@ def selftest(fixture_qpa):
         )
         assert r["session"]["releaseName"] == "fake-1"
         current_receipt_path = d / "out-1-all_pass-pass" / "receipt.json"
+        # A shim declaration earns host-model identity only when the
+        # dynamic loader maps that exact object into the probe process.
+        missing_shim = d / "missing_drm_shim.so"
+        r = run(
+            "all_pass",
+            "preload_unverified",
+            env=[f"LD_PRELOAD={missing_shim}"],
+        )
+        assert not r["preload"]["shim_loaded"] and "argv" not in r
+        assert r["evidence_class"] == "host-unknown"
+        # The preload probe and dEQP share the binary directory as their
+        # working directory, so the loader resolves a relative declaration
+        # to the same mapped object in both processes.
+        r = run("all_pass", "pass", env=[f"LD_PRELOAD=./{relative_shim.name}"])
+        assert r["preload"]["shim_loaded"]
+        assert r["preload"]["mapped"] == [str(relative_shim.resolve())]
+        # An ad-hoc caselist declares its hardware hazard before the
+        # runner constructs an execution receipt.
+        try:
+            run("all_pass", "pass", ad_hoc_hazard=None)
+        except RunnerRefusal as error:
+            assert "requires --ad-hoc-hazard" in str(error)
+        else:
+            raise SystemExit("selftest: an ad-hoc run omitted its hazard")
+        # The deadline reader counts markers across read boundaries without
+        # recounting unchanged bytes.  An in-place replacement resets the
+        # stream instead of combining marker counts from two QPA logs.
+        marker_log = d / "marker-reader.qpa"
+        marker_reader = QpaMarkerReader(marker_log)
+        assert marker_reader.state() == (0, 0, False)
+        marker_log.write_bytes(b"#beginTestCase")
+        assert marker_reader.state() == (0, 0, False)
+        with marker_log.open("ab") as marker_file:
+            marker_file.write(b"Result dEQP-VK.fake.a\n#endTestCaseResult\n")
+        assert marker_reader.state() == (1, 1, False)
+        assert marker_reader.state() == (1, 1, False)
+        with marker_log.open("ab") as marker_file:
+            marker_file.write(b"result detail contains #beginTestCaseResult\n")
+        assert marker_reader.state() == (1, 1, False)
+        with marker_log.open("ab") as marker_file:
+            marker_file.write(b"#endSession\n")
+        assert marker_reader.state() == (1, 1, True)
+        marker_log.write_bytes(b"#beginTestCaseResult dEQP-VK.fake.b\n")
+        assert marker_reader.state() == (1, 0, False)
+        # A second result record for one case is ambiguous even when both
+        # records claim the same status.
+        duplicate_qpa = (
+            "#sessionInfo releaseName fake-1\n"
+            '#sessionInfo logFormatVersion "0.3.4"\n'
+            "#beginTestCaseResult dEQP-VK.fake.a\n"
+            "#endTestCaseResult\n"
+            "#beginTestCaseResult dEQP-VK.fake.a\n"
+        )
+        try:
+            parse_qpa(duplicate_qpa)
+        except RunnerRefusal as error:
+            assert "more than once" in str(error)
+        else:
+            raise SystemExit("selftest: duplicate QPA results were admitted")
         legacy_receipt = json.loads(current_receipt_path.read_text())
         legacy_receipt["receipt_version"] = LEGACY_RECEIPT_VERSION
         legacy_receipt[LEGACY_QUALIFICATION_VALIDITY_FIELD] = legacy_receipt.pop(
@@ -2349,89 +2939,68 @@ def selftest(fixture_qpa):
         legacy_receipt_path.write_text(json.dumps(legacy_receipt))
         verify_receipt(legacy_receipt_path)
 
-        for receipt_label, valid_receipt_path in (
-            ("v4", current_receipt_path),
-            ("v3", legacy_receipt_path),
-        ):
-            arbitrary_refusal_receipt = json.loads(valid_receipt_path.read_text())
-            arbitrary_refusal_receipt["refusal"] = "banana"
-            arbitrary_refusal_receipt["verdict"] = "banana"
-            arbitrary_refusal_receipt["seal_sha256"] = seal(arbitrary_refusal_receipt)
-            arbitrary_refusal_path = current_receipt_path.with_name(
-                f"receipt-{receipt_label}-arbitrary-refusal.json"
-            )
-            arbitrary_refusal_path.write_text(json.dumps(arbitrary_refusal_receipt))
-            try:
-                verify_receipt(arbitrary_refusal_path)
-            except RunnerRefusal as error:
-                assert "unknown refusal" in str(error)
-            else:
-                raise SystemExit(
-                    f"selftest: arbitrary {receipt_label} refusal verified"
-                )
-
-            masked_identity_receipt = json.loads(valid_receipt_path.read_text())
-            masked_identity_receipt["expected"]["source_sha"] = "f" * 40
-            masked_identity_receipt["refusal"] = "gate_contamination"
-            masked_identity_receipt["verdict"] = "gate_contamination"
-            masked_identity_receipt["seal_sha256"] = seal(masked_identity_receipt)
-            masked_identity_path = current_receipt_path.with_name(
-                f"receipt-{receipt_label}-masked-identity.json"
-            )
-            masked_identity_path.write_text(json.dumps(masked_identity_receipt))
-            try:
-                verify_receipt(masked_identity_path)
-            except RunnerRefusal as error:
-                assert "refusal does not match" in str(error)
-            else:
-                raise SystemExit(
-                    f"selftest: {receipt_label} identity mismatch was masked"
-                )
-
-            prioritized_refusal_receipt = json.loads(valid_receipt_path.read_text())
-            contaminating_gate = "R3V_NATIVE_COMPUTE_TEST_GPU_EXPERIMENTAL"
-            prioritized_refusal_receipt["environment"][contaminating_gate] = "1"
-            prioritized_refusal_receipt["contaminating_gates"] = [contaminating_gate]
-            prioritized_refusal_receipt["expected"]["source_sha"] = "f" * 40
-            prioritized_refusal_receipt["refusal"] = "gate_contamination"
-            prioritized_refusal_receipt["verdict"] = "gate_contamination"
-            prioritized_refusal_receipt["seal_sha256"] = seal(
-                prioritized_refusal_receipt
-            )
-            prioritized_refusal_path = current_receipt_path.with_name(
-                f"receipt-{receipt_label}-prioritized-refusal.json"
-            )
-            prioritized_refusal_path.write_text(json.dumps(prioritized_refusal_receipt))
-            verify_receipt(prioritized_refusal_path)
-
-        legacy_contradictory_receipt = json.loads(legacy_receipt_path.read_text())
-        legacy_contradictory_receipt[LEGACY_QUALIFICATION_VALIDITY_FIELD] = True
-        legacy_contradictory_receipt[LEGACY_QUALIFICATION_REASON_FIELD] = None
-        legacy_contradictory_receipt["seal_sha256"] = seal(legacy_contradictory_receipt)
-        legacy_contradictory_path = current_receipt_path.with_name(
-            "receipt-v3-contradictory.json"
+        arbitrary_refusal_receipt = json.loads(current_receipt_path.read_text())
+        arbitrary_refusal_receipt["refusal"] = "banana"
+        arbitrary_refusal_receipt["verdict"] = "banana"
+        arbitrary_refusal_receipt["seal_sha256"] = seal(arbitrary_refusal_receipt)
+        arbitrary_refusal_path = current_receipt_path.with_name(
+            "receipt-v4-arbitrary-refusal.json"
         )
-        legacy_contradictory_path.write_text(json.dumps(legacy_contradictory_receipt))
+        arbitrary_refusal_path.write_text(json.dumps(arbitrary_refusal_receipt))
         try:
-            verify_receipt(legacy_contradictory_path)
+            verify_receipt(arbitrary_refusal_path)
         except RunnerRefusal as error:
-            assert "qualification fields do not match" in str(error)
+            assert "unknown refusal" in str(error)
         else:
-            raise SystemExit("selftest: contradictory version-3 fields verified")
+            raise SystemExit("selftest: arbitrary version-4 refusal verified")
 
-        legacy_false_verdict_receipt = json.loads(legacy_receipt_path.read_text())
-        legacy_false_verdict_receipt["verdict"] = "banana"
-        legacy_false_verdict_receipt["seal_sha256"] = seal(legacy_false_verdict_receipt)
-        legacy_false_verdict_path = current_receipt_path.with_name(
-            "receipt-v3-false-verdict.json"
+        masked_identity_receipt = json.loads(current_receipt_path.read_text())
+        masked_identity_receipt["expected"]["source_sha"] = "f" * 40
+        masked_identity_receipt["refusal"] = "gate_contamination"
+        masked_identity_receipt["verdict"] = "gate_contamination"
+        masked_identity_receipt["seal_sha256"] = seal(masked_identity_receipt)
+        masked_identity_path = current_receipt_path.with_name(
+            "receipt-v4-masked-identity.json"
         )
-        legacy_false_verdict_path.write_text(json.dumps(legacy_false_verdict_receipt))
+        masked_identity_path.write_text(json.dumps(masked_identity_receipt))
         try:
-            verify_receipt(legacy_false_verdict_path)
+            verify_receipt(masked_identity_path)
         except RunnerRefusal as error:
-            assert "verdict does not match" in str(error)
+            assert "refusal does not match" in str(error)
         else:
-            raise SystemExit("selftest: a false version-3 verdict verified")
+            raise SystemExit("selftest: version-4 identity mismatch was masked")
+
+        contaminating_gate = "R3V_NATIVE_COMPUTE_TEST_GPU_EXPERIMENTAL"
+        prioritized_refusal_receipt = json.loads(current_receipt_path.read_text())
+        prioritized_refusal_receipt["environment"][contaminating_gate] = "1"
+        prioritized_refusal_receipt["contaminating_gates"] = [contaminating_gate]
+        prioritized_refusal_receipt["expected"]["source_sha"] = "f" * 40
+        prioritized_refusal_receipt["refusal"] = "gate_contamination"
+        prioritized_refusal_receipt["verdict"] = "gate_contamination"
+        prioritized_refusal_receipt["seal_sha256"] = seal(prioritized_refusal_receipt)
+        prioritized_refusal_path = current_receipt_path.with_name(
+            "receipt-v4-prioritized-refusal.json"
+        )
+        prioritized_refusal_path.write_text(json.dumps(prioritized_refusal_receipt))
+        verify_receipt(prioritized_refusal_path)
+
+        # Version 3 validates only the historical seal, artifact digests, and
+        # result denominator.  Its producer could retain a positive legacy
+        # qualification flag beside an identity refusal, and its verifier never
+        # recomputed either
+        # the refusal or verdict.
+        legacy_historical_receipt = json.loads(legacy_receipt_path.read_text())
+        legacy_historical_receipt[LEGACY_QUALIFICATION_VALIDITY_FIELD] = True
+        legacy_historical_receipt[LEGACY_QUALIFICATION_REASON_FIELD] = None
+        legacy_historical_receipt["expected"]["source_sha"] = "f" * 40
+        legacy_historical_receipt["refusal"] = "wrong_icd"
+        legacy_historical_receipt["verdict"] = "wrong_icd"
+        legacy_historical_receipt["seal_sha256"] = seal(legacy_historical_receipt)
+        legacy_historical_path = current_receipt_path.with_name(
+            "receipt-v3-historical-semantics.json"
+        )
+        legacy_historical_path.write_text(json.dumps(legacy_historical_receipt))
+        verify_receipt(legacy_historical_path)
 
         incomplete_receipt = json.loads(current_receipt_path.read_text())
         del incomplete_receipt["qualification_valid"]
@@ -2505,8 +3074,9 @@ def selftest(fixture_qpa):
         r = run("all_pass", "pass")
         del os.environ["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"]
         assert "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED" not in r["environment"]
-        assert r["environment"]["LD_PRELOAD"] == "drm_shim"
+        assert r["environment"]["LD_PRELOAD"] == str(shim)
         assert set(r["environment"]) <= set(INHERITED_ENV) | {
+            "HOME",
             "LD_PRELOAD",
             "FAKE_DEQP_MODE",
             "FAKE_DEQP_REPLAY",
@@ -2559,7 +3129,7 @@ def selftest(fixture_qpa):
             "counts"
         ]
         r = run("hang_after_session", "runner_deadline", timeout=30.0, case_timeout=1.5)
-        assert r["session_closed"]
+        assert r["exit_code"] == "shutdown_timeout" and r["session_closed"]
         r = run(
             "timeout",
             "dmesg_hazard",
@@ -2575,11 +3145,12 @@ def selftest(fixture_qpa):
             case_timeout=1.5,
             dmesg_after="[2.0] radeon 0000:01:05.0: GPU lockup\n",
         )
-        assert r["exit_code"] == "case_timeout" and r["session_closed"]
+        assert r["exit_code"] == "shutdown_timeout" and r["session_closed"]
         r = run(
             "hang_after_session",
             "dmesg_hazard",
             timeout=2.0,
+            shutdown_timeout=30.0,
             dmesg_after="[2.0] radeon 0000:01:05.0: GPU lockup\n",
         )
         assert r["exit_code"] == "timeout"
@@ -2596,7 +3167,7 @@ def selftest(fixture_qpa):
             "pass",
             queue_report=str(report),
             env=[
-                "LD_PRELOAD=drm_shim",
+                f"LD_PRELOAD={shim}",
                 "FAKE_QUEUE_MODE=experimental_compute_subset",
             ],
         )
@@ -2611,7 +3182,7 @@ def selftest(fixture_qpa):
             "all_pass",
             "pass",
             queue_report=str(report),
-            env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=conformant"],
+            env=[f"LD_PRELOAD={shim}", "FAKE_QUEUE_MODE=conformant"],
         )
         assert r["compute_claim_eligible"]
         # The gated mode without the gate is inconsistent.
@@ -2620,7 +3191,7 @@ def selftest(fixture_qpa):
                 "all_pass",
                 "pass",
                 queue_report=str(report),
-                env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=gateless"],
+                env=[f"LD_PRELOAD={shim}", "FAKE_QUEUE_MODE=gateless"],
             )
         except RunnerRefusal as e:
             assert "gate False" in str(e)
@@ -2630,7 +3201,10 @@ def selftest(fixture_qpa):
             "all_pass",
             "wrong_queue_claim",
             queue_report=str(report),
-            env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=default_graphics_only"],
+            env=[
+                f"LD_PRELOAD={shim}",
+                "FAKE_QUEUE_MODE=default_graphics_only",
+            ],
             expect_queue_claim="conformant",
         )
         assert "argv" not in r and not r["queue_claim"]["compute_bit"]
@@ -2639,15 +3213,32 @@ def selftest(fixture_qpa):
                 "all_pass",
                 "pass",
                 queue_report=str(report),
-                env=["LD_PRELOAD=drm_shim", "FAKE_QUEUE_MODE=inconsistent"],
+                env=[f"LD_PRELOAD={shim}", "FAKE_QUEUE_MODE=inconsistent"],
             )
         except RunnerRefusal as e:
             assert "queue-claim report refused" in str(e)
         else:
             raise SystemExit("selftest: an inconsistent queue report was " "admitted")
+        try:
+            run(
+                "all_pass",
+                "pass",
+                queue_report=str(report),
+                env=[
+                    f"LD_PRELOAD={shim}",
+                    "FAKE_QUEUE_MODE=conformant",
+                    "FAKE_QUEUE_OMIT_LEDGER=1",
+                ],
+            )
+        except RunnerRefusal as error:
+            assert "verb ledger None" in str(error)
+        else:
+            raise SystemExit("selftest: a queue report omitted its verb ledger")
         # A runtime event joins by digest; a wrong digest refuses.
         event = d / "event.json"
-        event.write_text('{"run_id": "rs482-001", "boot_id": "b"}\n')
+        event.write_text(
+            json.dumps({"run_id": "rs482-001", "boot_id": host_boot_id}) + "\n"
+        )
         digest = hashlib.sha256(event.read_bytes()).hexdigest()
         r = run(
             "all_pass", "pass", runtime_event=str(event), expect_runtime_event=digest
@@ -2663,6 +3254,22 @@ def selftest(fixture_qpa):
             expect_runtime_event="0" * 64,
         )
         assert "argv" not in r
+        for event_name, event_body, message in (
+            ("scalar", "7\n", "not a JSON object"),
+            (
+                "wrong-boot",
+                json.dumps({"run_id": "rs482-002", "boot_id": "0" * 36}) + "\n",
+                "does not match the current boot",
+            ),
+        ):
+            invalid_event = d / f"event-{event_name}.json"
+            invalid_event.write_text(event_body)
+            try:
+                run("all_pass", "pass", runtime_event=str(invalid_event))
+            except RunnerRefusal as error:
+                assert message in str(error)
+            else:
+                raise SystemExit(f"selftest: {event_name} runtime event was admitted")
         mixed_output = d / "out-version-4-disposition"
         r = run("mixed", "unclassified_nonpass", outdir=mixed_output)
         assert r["counts"] == {
@@ -2694,10 +3301,32 @@ def selftest(fixture_qpa):
         r = run("truncated", "truncated_run")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "truncated"
         assert r["results"]["dEQP-VK.fake.c"]["status"] == "not_run"
+        r = run("incomplete_pass", "truncated_run")
+        assert r["results"]["dEQP-VK.fake.a"]["status"] == "truncated"
+        assert not r["session_closed"]
         r = run("timeout", "runner_deadline")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "timeout"
         r = run("hang_after_session", "runner_deadline")
         assert r["session_closed"] and r["counts"] == {"Pass": 5}
+        # Startup time precedes the first case marker and consumes only
+        # the shard deadline, while a completed nonzero process exit
+        # remains a dirty run even when every case reports Pass.
+        r = run("startup_delay", "pass", case_timeout=0.3)
+        assert r["exit_code"] == 0 and r["counts"] == {"Pass": 5}
+        r = run("dirty_exit", "dirty_exit")
+        assert r["exit_code"] == 7 and r["session_closed"]
+        # Both QPA identity fields bind the results to the emitting CTS
+        # framework.  Either missing field refuses the completed run.
+        for flag, field in (
+            ("FAKE_OMIT_RELEASE=1", "releaseName"),
+            ("FAKE_OMIT_LOG_FORMAT=1", "logFormatVersion"),
+        ):
+            r = run(
+                "all_pass",
+                "missing_session_identity",
+                env=[f"LD_PRELOAD={shim}", flag],
+            )
+            assert field not in r["session"]
         r = run("crash", "truncated_run")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "crash"
         assert "SIGSEGV" in r["results"]["dEQP-VK.fake.b"]["detail"]
@@ -2708,7 +3337,7 @@ def selftest(fixture_qpa):
         r = run("multiline", "classified_nonpass")
         assert r["results"]["dEQP-VK.fake.b"]["status"] == "Fail"
         assert r["results"]["dEQP-VK.fake.b"]["detail"] == "line one\nline two"
-        r = run("late_abort", "pass")
+        r = run("late_abort", "framework_abort")
         assert r["framework_abort"] and "late abort" in r["framework_abort"]
         r = run("framework", "framework_precondition")
         assert r["counts"] == {"not_run": 5}, r["counts"]
@@ -2770,6 +3399,56 @@ def selftest(fixture_qpa):
             == pm["executable_case_count"]
             == pm["slices"][0]["case_count"]
         )
+        # The partition's CTS tag binds the executable revision, not
+        # merely its byte digest.
+        wrong_pin = d / "wrong-pin.tsv"
+        wrong_pin.write_text(
+            f"cts_describe\twrong-fixture\ncase_count\t"
+            f"{len(cases_all)}\ncorpus_sha256\t"
+            f"{part.sha256_lines(cases_all)}\n"
+        )
+        wrong_cts_dir = d / "partition-wrong-cts"
+        part.generate(table, corpus, wrong_cts_dir, "exhaustive", pin_path=wrong_pin)
+        r = run(
+            "all_pass",
+            "wrong_cts_revision",
+            cases=wrong_cts_dir / "fake.txt",
+            manifest_json=str(wrong_cts_dir / "partition_manifest.json"),
+        )
+        assert "argv" not in r
+        # A queue-report digest remains mandatory for qualification even
+        # when every other source, binary, caselist, and partition
+        # identity matches.  Declaring the report digest closes the last
+        # identity gap for this host-model fixture.
+        source_rc, fixture_source_sha = run_capture(
+            ["git", "rev-parse", "HEAD"], cwd=cts_repo
+        )
+        assert source_rc == 0
+        qualification_arguments = {
+            "cases": pdir / "fake.txt",
+            "manifest_json": mj,
+            "queue_report": str(report),
+            "env": [f"LD_PRELOAD={shim}", "FAKE_QUEUE_MODE=conformant"],
+            "source_root": str(cts_repo),
+            "expect_source": fixture_source_sha,
+            "dso": sha256_file(lib),
+            "expect_deqp": sha256_file(fake),
+            "expect_caselist": sha256_file(pdir / "fake.txt"),
+            "expect_partition": pm["manifest_sha256"],
+            "expect_queue_claim": "conformant",
+        }
+        r = run("all_pass", "pass", **qualification_arguments)
+        assert (
+            r["qualification_valid"] is False
+            and r["qualification_reason"] == "undeclared queue-claim report SHA-256"
+        )
+        r = run(
+            "all_pass",
+            "pass",
+            expect_report=sha256_file(report),
+            **qualification_arguments,
+        )
+        assert r["qualification_valid"] is True and r["qualification_reason"] is None
         # A silicon-required slice under the drm-shim host model refuses
         # before dEQP starts.
         table.write_text(
@@ -2799,7 +3478,7 @@ def selftest(fixture_qpa):
                 "gate_contamination",
                 cases=pdir / "fake.txt",
                 manifest_json=mj,
-                env=["LD_PRELOAD=drm_shim", gate],
+                env=[f"LD_PRELOAD={shim}", gate],
             )
             assert "argv" not in r and r["contaminating_gates"] == [gate.split("=")[0]]
         # A display-hazard slice refuses a submission gate as well.
@@ -2815,7 +3494,10 @@ def selftest(fixture_qpa):
             "gate_contamination",
             cases=ddir / "fake.txt",
             manifest_json=str(ddir / "partition_manifest.json"),
-            env=["LD_PRELOAD=drm_shim", "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1"],
+            env=[
+                f"LD_PRELOAD={shim}",
+                "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1",
+            ],
         )
         assert "argv" not in r
         # A shard of a split slice binds by its own digest and records
@@ -2854,7 +3536,10 @@ def selftest(fixture_qpa):
             "pass",
             cases=pdir / "fake.txt",
             manifest_json=mj,
-            env=["LD_PRELOAD=drm_shim", "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1"],
+            env=[
+                f"LD_PRELOAD={shim}",
+                "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1",
+            ],
         )
         assert r["environment"]["R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL"] == "1"
         assert r["qualification_reason"] == "source identity unavailable"
@@ -2902,7 +3587,7 @@ def selftest(fixture_qpa):
         # One process apiece: the shard receipt stays one receipt, each
         # case's status comes from its own process's log, and the
         # per-case artifacts digest under that case's directory.
-        base_env = ["LD_PRELOAD=drm_shim"]
+        base_env = [f"LD_PRELOAD={shim}"]
         r = run("per_case", "pass", process_per_case=True, env=base_env)
         assert r["process_per_case"] and r["counts"] == {"Pass": 5}
         assert r["session_closed"] and r["exit_code"] == 0
@@ -2911,24 +3596,68 @@ def selftest(fixture_qpa):
         assert "cases/dEQP-VK.fake.c/run.qpa" in r["artifacts"]
         assert "run.qpa" not in r["artifacts"]
         assert len(r["artifacts"]) == 5 * len(CASE_ARTIFACT_NAMES) + 1
-        # A case whose process dies keeps its own status, and the shard
-        # stays readable: the crash classifies as that case's result
-        # rather than truncating the shard.
+        # Long case names retain a unique digest suffix while every
+        # directory component stays within the runner's byte ceiling.
+        long_cases = d / "long-cases.txt"
+        long_prefix = "dEQP-VK.fake." + "x" * 240
+        long_cases.write_text(long_prefix + "a\n" + long_prefix + "b\n")
         r = run(
             "per_case",
-            "classified_nonpass",
+            "pass",
+            cases=long_cases,
+            process_per_case=True,
+            env=base_env,
+        )
+        long_directories = list(r["case_directories"].values())
+        assert len(set(long_directories)) == 2
+        assert all(
+            len(directory.encode()) <= MAX_CASE_DIRECTORY_BYTES
+            for directory in long_directories
+        )
+        # A clean QPA session with a completed nonzero exit stays dirty;
+        # an omitted per-case session terminator stays truncated.
+        r = run(
+            "per_case",
+            "dirty_exit",
+            process_per_case=True,
+            env=base_env + ["FAKE_NONZERO_CASE=dEQP-VK.fake.c"],
+        )
+        assert r["exit_code"] == 7 and r["session_closed"]
+        r = run(
+            "per_case",
+            "truncated_run",
+            process_per_case=True,
+            env=base_env + ["FAKE_NO_END_SESSION_CASE=dEQP-VK.fake.c"],
+        )
+        assert not r["cases"]["dEQP-VK.fake.c"]["session_closed"]
+        # Every per-case process carries its own CTS session identity;
+        # an identity missing from a later process cannot hide behind
+        # the first process's complete session block.
+        r = run(
+            "per_case",
+            "missing_session_identity",
+            process_per_case=True,
+            env=base_env + ["FAKE_OMIT_RELEASE_CASE=dEQP-VK.fake.c"],
+        )
+        assert "releaseName" not in r["cases"]["dEQP-VK.fake.c"]["session"]
+        # A case whose process dies keeps its own crash status while the
+        # missing session terminator leaves the shard truncated.
+        r = run(
+            "per_case",
+            "truncated_run",
             process_per_case=True,
             env=base_env + ["FAKE_CRASH_CASE=dEQP-VK.fake.c"],
         )
         assert r["results"]["dEQP-VK.fake.c"]["status"] == "crash"
         assert "SIGSEGV" in r["results"]["dEQP-VK.fake.c"]["detail"]
         assert r["counts"] == {"Pass": 4, "crash": 1}, r["counts"]
-        assert r["session_closed"] and r["exit_code"] == 0
+        assert not r["session_closed"] and r["exit_code"] == -11
         assert r["cases"]["dEQP-VK.fake.c"]["exit_code"] == -11
-        # The case deadline kills that case's process alone.
+        # The case deadline kills that case's process alone, and its
+        # missing session terminator leaves the shard truncated.
         r = run(
             "per_case",
-            "classified_nonpass",
+            "truncated_run",
             process_per_case=True,
             timeout=60.0,
             case_timeout=1.5,
@@ -3082,6 +3811,23 @@ def selftest(fixture_qpa):
         )
         assert len(r["cases"]) == 2 and not r["session_closed"]
         dmesg_file.write_text("[1.0] boot\n")
+        # Kernel-log continuity loss stops the same per-case sequence;
+        # later case results would lack the kernel hazard boundary that
+        # makes their verdict interpretable.
+        r = run(
+            "per_case",
+            "kernel_log_continuity_broken",
+            process_per_case=True,
+            env=base_env
+            + [
+                "FAKE_BREAK_CONTINUITY_CASE=dEQP-VK.fake.b",
+                f"FAKE_DMESG_FILE={dmesg_file}",
+            ],
+        )
+        assert r["counts"] == {"Pass": 2, "not_run": 3}
+        assert r["stop"]["reason"] == "kernel log continuity broke after this case"
+        assert len(r["cases"]) == 2
+        dmesg_file.write_text("[1.0] boot\n")
         # The host-planning disposition: a capture file declared on a
         # submission-hazard slice under the radeon drm-shim, gates closed,
         # one process apiece, and a per-process witness of zero
@@ -3103,6 +3849,7 @@ def selftest(fixture_qpa):
             )
 
         plan_env, root = plan_env_for_arm()
+        relative_tracer = os.path.relpath(fake_strace)
         r = run(
             "per_case",
             "pass",
@@ -3110,12 +3857,14 @@ def selftest(fixture_qpa):
             manifest_json=str(sdir / "partition_manifest.json"),
             process_per_case=True,
             env=plan_env + [f"FAKE_CAPTURE_FILE={root}/p_{{case}}.t"],
+            strace_binary=relative_tracer,
         )
         pl = r["planning"]
         assert (
             r["evidence_class"] == PLANNING_EVIDENCE
             and pl["disposition"] == PLANNING_EVIDENCE
             and pl["candidate"]
+            and pl["tracer"]["binary"] == str(fake_strace.resolve())
         )
         assert (
             r["qualification_valid"] is False
@@ -3136,28 +3885,116 @@ def selftest(fixture_qpa):
         assert f"{root}/p_dEQP-VK.fake.a.t" in pl["transcripts"]["dEQP-VK.fake.a"]
         assert "cases/dEQP-VK.fake.a/ioctl.strace" in r["artifacts"]
         assert r["cases"]["dEQP-VK.fake.a"]["planning"]["outcome"] == "transcript"
-        # A device that captured no executable submission writes no
-        # transcript and leaves its marker; the receipt records
-        # no_nonempty_ib as the outcome rather than an absence, from the
-        # marker, and from the log line alone as the fallback.
-        for signal_env in (["FAKE_NO_IB_MARKER=1"], ["FAKE_NO_IB_MSG=1"]):
+        # A transcript or marker that predates the case cannot answer
+        # for the current process.  The fingerprint remains unchanged,
+        # so every outcome stays unresolved.
+        for stale_suffix in ("", EMPTY_CAPTURE_SUFFIX):
             plan_env, root = plan_env_for_arm()
+            for case_name in read_caselist(sdir / "fake.txt"):
+                (root / f"p_{case_name}.t{stale_suffix}").write_text("stale\n")
             r = run(
                 "per_case",
-                "pass",
+                "planning_capture_incomplete",
                 cases=sdir / "fake.txt",
                 manifest_json=str(sdir / "partition_manifest.json"),
                 process_per_case=True,
-                env=plan_env + signal_env,
+                env=plan_env,
             )
-            assert r["evidence_class"] == PLANNING_EVIDENCE
-            assert r["planning"]["outcomes"] == {
-                "transcript": 0,
-                "no_nonempty_ib": 5,
-                "unresolved": 0,
-            }
+            assert r["planning"]["outcomes"]["unresolved"] == 5
+            assert all(
+                not record["planning"]["transcripts"]
+                and not record["planning"]["empty_markers"]
+                for record in r["cases"].values()
+            )
+        # A gap in device ordinals and two outcomes for the same device
+        # both leave the per-case capture unresolved.
+        for planning_flag, expected_devices in (
+            (
+                "FAKE_PLAN_ORDINAL_GAP=1",
+                {"0": "transcript", "2": "transcript"},
+            ),
+            ("FAKE_PLAN_CONFLICT=1", {"0": "conflict"}),
+        ):
+            plan_env, _ = plan_env_for_arm()
+            r = run(
+                "per_case",
+                "planning_capture_incomplete",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True,
+                env=plan_env + [planning_flag],
+            )
+            planning_record = r["cases"]["dEQP-VK.fake.a"]["planning"]
+            assert planning_record["outcome"] == "unresolved"
+            assert planning_record["device_outcomes"] == expected_devices
+        # A terminal capture diagnostic invalidates an otherwise complete
+        # ordinal family, and a case session that never closes cannot carry a
+        # complete planning outcome.
+        for planning_flag in (
+            "FAKE_PLAN_WRITE_FAILURE=1",
+            "FAKE_NO_END_SESSION_CASE=dEQP-VK.fake.a",
+        ):
+            plan_env, _ = plan_env_for_arm()
+            r = run(
+                "per_case",
+                "planning_capture_incomplete",
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True,
+                env=plan_env + [planning_flag],
+            )
+            assert not r["planning"]["conditions"]["planning_outcomes_complete"]
+        assert r["cases"]["dEQP-VK.fake.a"]["session_closed"] is False
+        # Kernel continuity and hazard observations outrank the ordinary
+        # incomplete-planning refusal while the partial shard remains
+        # in the host-model evidence class.
+        for kernel_flag, expected_verdict in (
+            (
+                "FAKE_BREAK_CONTINUITY_CASE=dEQP-VK.fake.b",
+                "kernel_log_continuity_broken",
+            ),
+            ("FAKE_HAZARD_CASE=dEQP-VK.fake.b", "dmesg_hazard"),
+        ):
+            dmesg_file.write_text("[1.0] boot\n")
+            plan_env, root = plan_env_for_arm()
+            r = run(
+                "per_case",
+                expected_verdict,
+                cases=sdir / "fake.txt",
+                manifest_json=str(sdir / "partition_manifest.json"),
+                process_per_case=True,
+                env=plan_env
+                + [
+                    f"FAKE_CAPTURE_FILE={root}/p_{{case}}.t",
+                    kernel_flag,
+                    f"FAKE_DMESG_FILE={dmesg_file}",
+                ],
+            )
+            assert len(r["cases"]) == 2
+            assert r["planning"]["disposition"] is None
+            assert r["evidence_class"] == "host-model"
+            assert not r["planning"]["conditions"]["every_shard_case_witnessed"]
+        dmesg_file.write_text("[1.0] boot\n")
+        # A device that captured no executable submission writes no
+        # transcript and leaves its marker; the receipt records
+        # no_nonempty_ib as a fresh per-device outcome.
+        plan_env, root = plan_env_for_arm()
+        r = run(
+            "per_case",
+            "pass",
+            cases=sdir / "fake.txt",
+            manifest_json=str(sdir / "partition_manifest.json"),
+            process_per_case=True,
+            env=plan_env + ["FAKE_NO_IB_MARKER=1"],
+        )
+        assert r["evidence_class"] == PLANNING_EVIDENCE
+        assert r["planning"]["outcomes"] == {
+            "transcript": 0,
+            "no_nonempty_ib": 5,
+            "unresolved": 0,
+        }
         assert (
-            r["cases"]["dEQP-VK.fake.a"]["planning"]["empty_markers"] == []
+            r["cases"]["dEQP-VK.fake.a"]["planning"]["empty_markers"]
             and (root / "p_dEQP-VK.fake.a.t").exists() is False
         )
         assert (
@@ -3166,11 +4003,24 @@ def selftest(fixture_qpa):
             ]
             is False
         )
-        # Neither a transcript nor the message is unresolved.
+        # A log message carries no device ordinal and cannot replace the
+        # fresh marker witness.
+        plan_env, root = plan_env_for_arm()
+        r = run(
+            "per_case",
+            "planning_capture_incomplete",
+            cases=sdir / "fake.txt",
+            manifest_json=str(sdir / "partition_manifest.json"),
+            process_per_case=True,
+            env=plan_env + ["FAKE_NO_IB_MSG=1"],
+        )
+        assert r["planning"]["outcomes"]["unresolved"] == 5
+        # A process that reports neither outcome also leaves the planning
+        # capture incomplete.
         plan_env, _ = plan_env_for_arm()
         r = run(
             "per_case",
-            "pass",
+            "planning_capture_incomplete",
             cases=sdir / "fake.txt",
             manifest_json=str(sdir / "partition_manifest.json"),
             process_per_case=True,
@@ -3179,14 +4029,15 @@ def selftest(fixture_qpa):
         assert r["planning"]["outcomes"]["unresolved"] == 5
         # Known-bad witness: one kernel-entering CS ioctl refuses the
         # disposition and the evidence class stays host-model.
-        plan_env, _ = plan_env_for_arm()
+        plan_env, root = plan_env_for_arm()
         r = run(
             "per_case",
             "planning_cs_witnessed",
             cases=sdir / "fake.txt",
             manifest_json=str(sdir / "partition_manifest.json"),
             process_per_case=True,
-            env=plan_env + ["FAKE_STRACE_CS=1"],
+            env=plan_env
+            + [f"FAKE_CAPTURE_FILE={root}/p_{{case}}.t", "FAKE_STRACE_CS=1"],
         )
         assert (
             r["evidence_class"] == "host-model" and r["planning"]["disposition"] is None
@@ -3216,14 +4067,18 @@ def selftest(fixture_qpa):
             )
             assert "argv" not in r and r["evidence_class"] == "host-model"
         # A zero-valued gate is closed.
-        plan_env, _ = plan_env_for_arm()
+        plan_env, root = plan_env_for_arm()
         r = run(
             "per_case",
             "pass",
             cases=sdir / "fake.txt",
             manifest_json=str(sdir / "partition_manifest.json"),
             process_per_case=True,
-            env=plan_env + ["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=0"],
+            env=plan_env
+            + [
+                f"FAKE_CAPTURE_FILE={root}/p_{{case}}.t",
+                "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=0",
+            ],
         )
         assert r["evidence_class"] == PLANNING_EVIDENCE
         # A preload other than the radeon drm-shim is host-model without
@@ -3235,7 +4090,7 @@ def selftest(fixture_qpa):
             manifest_json=str(sdir / "partition_manifest.json"),
             process_per_case=True,
             env=[
-                "LD_PRELOAD=drm_shim",
+                f"LD_PRELOAD={alternate_shim}",
                 f"R3V_NATIVE_PLAN_CAPTURE_FILE={caps}/q_{{case}}.t",
             ],
         )
@@ -3338,19 +4193,21 @@ def selftest(fixture_qpa):
     )
 
 
-def _run_with_evidence(args, forced):
+def _run_with_evidence(args, forced, receipt_path):
     """The evidence class a run would carry on other hardware; the
     selftest host answers no RS4xx render node, so the silicon branch
     is reachable only by naming the class the classifier would give."""
     global evidence_class
     orig = evidence_class
 
-    def forced_class(env, host, icd):
+    def forced_class(env, host, icd, preload):
         return forced, None
 
     evidence_class = forced_class
     try:
-        return execute(args)
+        receipt = execute(args)
+        verify_receipt(receipt_path)
+        return receipt
     finally:
         evidence_class = orig
 
@@ -3403,9 +4260,11 @@ def main():
     r.add_argument("--env", action="append")
     r.add_argument("--deqp-arg", action="append")
     r.add_argument("--partition-manifest")
+    r.add_argument("--ad-hoc-hazard", choices=("none", "submission", "display"))
     r.add_argument("--process-per-case", action="store_true")
     r.add_argument("--plan-nonce-file")
     r.add_argument("--strace-binary")
+    r.add_argument("--shutdown-timeout", type=float, default=5.0)
     s = sub.add_parser("selftest")
     s.add_argument("--fixture-qpa")
     c = sub.add_parser("check-ledgers")
