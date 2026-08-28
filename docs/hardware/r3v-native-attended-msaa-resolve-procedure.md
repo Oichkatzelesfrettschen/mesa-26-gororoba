@@ -230,8 +230,7 @@ The destination byte order settles with it: the judged pixels read their
 predicted dword at their linear positions, so a linear resolve
 destination receives linearly ordered bytes at the 64x64 pitch-64
 `B8G8R8A8` shape the arm ran, and the tiled-swizzle reading is refuted
-there.  A wider or differently pitched destination is untested, as is
-the two-sample arm at the 1128-pixel denominator.
+there.  A wider or differently pitched destination is untested.
 
 The exterior stays open under the arm's named scope cut.  The
 multisample surface takes no clear, so the resolve carries whatever it
@@ -242,9 +241,33 @@ fragment constant where the surface held no rendered samples is a
 mixture the judged footprint says nothing about; a command-stream clear
 of the multisample surface is what would close it.
 
+The two-sample arm ran third, on mesa main `f5643f6898e`, as
+`r3v_native_attended_msaa_resolve "$dir" --samples 2` under the same
+procedure with one variable changed: the emitted cell (471 dwords,
+blake3 `84038889`) differs from the 4x cell in exactly six dwords,
+`GB_AA_CONFIG`, `GB_MSPOS0`, and `GB_MSPOS1` once per half, and the
+multisample surface followed the sample count to 32768 bytes.  Every
+prediction held over the 1128-pixel denominator:
+
+```text
+[oracle] downsample judged=1 interior_exact=1 interior=1128 analytic=1128 unjudged=48
+[oracle] fragment judged=1 interior_exact=0 interior=0 analytic=1128 unjudged=48
+[oracle] seed judged=1 interior_exact=0 interior=0 analytic=1128 unjudged=48
+[census] footprint 4096 pixels holds downsample 2207 fragment 920 seed 0
+```
+
+`vkQueueSubmit` returned 0, the dmesg delta was empty, the boot id was
+unchanged, and the counter bracketed a 129 us guarded interval.  So the
+resolve reading and the linear destination order hold at both sample
+counts the hardware exposes, on this one shape.  The census is the
+arm's one unpredicted observation: 1079 exterior pixels resolved to
+the draw color where the 4x arm's held the fragment constant, which
+the uncleared surface inheriting VRAM contents explains as a
+hypothesis; the clear that judges the exterior is what tests it.
+
 Bundle: steinmarder-r300
 `src/re/r300/results/r3v-native-msaa-resolve-downsample-semantics-rs482`,
-which retains both arms.
+which retains all three arms.
 
 ## Retained record
 
