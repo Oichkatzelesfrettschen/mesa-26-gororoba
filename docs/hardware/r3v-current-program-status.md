@@ -649,10 +649,13 @@ above is rung zero; the ladder after it runs in this order:
    `r300_simple_msaa_resolve` implies, now measured -- and a linear
    resolve destination receives linearly ordered bytes at the 64x64
    pitch-64 `B8G8R8A8` shape, which refutes the tiled-swizzle reading
-   there.  Open behind it: the multisample surface takes no clear, so 668
-   unjudged exterior pixels carry the resolve half's fragment constant
-   and a command-stream clear of that surface is what would judge them;
-   the two-sample arm at the 1128-pixel denominator is unrun; and while
+   there.  The two-sample arm (cell blake3 `84038889`, six dwords from
+   the 4x cell, mesa main `f5643f6898e`) reproduced the verdict over its
+   1128-pixel denominator with a 129 us guarded interval, so both sample
+   counts the hardware exposes are measured on this shape.  Open behind
+   it: the multisample surface takes no clear, so the unjudged exterior
+   (668 fragment-constant pixels at 4x, 1079 draw-color pixels at 2x)
+   waits on a command-stream clear of that surface to be judged; and while
    `r100_cs_track_check` sizes the color buffer with no sample term the
    path stays an internal attended cell rather than an advertised Vulkan
    capability;
