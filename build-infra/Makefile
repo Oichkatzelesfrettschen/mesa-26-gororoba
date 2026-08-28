@@ -195,6 +195,8 @@ override REVIEW_THREAD_CORPUS := $(CURDIR)/docs/review-thread-corpus/unresolved-
 override REVIEW_THREAD_CORPUS_ANALYSIS := $(CURDIR)/docs/review-thread-corpus-analysis/unresolved-review-thread-corpus-4b965810d471
 override REVIEW_THREAD_CORPUS_TOOL := $(CURDIR)/scripts/review_thread_corpus.py
 override REVIEW_THREAD_GROUP_HISTORY_TOOL := $(CURDIR)/scripts/review_thread_group_history.py
+override REVIEW_THREAD_CLUSTERS := $(CURDIR)/docs/review-thread-clusters/unresolved-review-thread-corpus-4b965810d471
+override REVIEW_THREAD_CLUSTERS_TOOL := $(CURDIR)/scripts/review_thread_clusters.py
 override REVIEW_THREAD_TVPLC_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/action-frontier.tsv
 override REVIEW_THREAD_TVPLC_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/resolution-ledger.tsv
 override REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/evidence-refresh-ledger.tsv
@@ -822,12 +824,18 @@ review-thread-corpus-check:
 			--repo-root $(CURDIR)/.. \
 			--revision $(REVIEW_THREAD_CORPUS_REVISION) \
 			--output-dir $(REVIEW_THREAD_CORPUS_ANALYSIS)
+	PYTHONDONTWRITEBYTECODE=1 \
+		python3 $(REVIEW_THREAD_CLUSTERS_TOOL) check \
+			--corpus-dir $(REVIEW_THREAD_CORPUS) \
+			--history-dir $(REVIEW_THREAD_CORPUS_ANALYSIS) \
+			--output-dir $(REVIEW_THREAD_CLUSTERS)
 
 review-thread-corpus-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
 		python3 -m pytest -q \
 			$(CURDIR)/tests/test_review_thread_corpus.py \
-			$(CURDIR)/tests/test_review_thread_group_history.py
+			$(CURDIR)/tests/test_review_thread_group_history.py \
+			$(CURDIR)/tests/test_review_thread_clusters.py
 
 headless-hardware-gl-runner-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
