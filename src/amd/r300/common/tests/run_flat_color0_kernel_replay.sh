@@ -8,13 +8,12 @@
 # rides the TCL-bypass color 0 vector under
 # r300_flat_color0_plan_direct_first, and VAP_OUTPUT_VTX_FMT_0 declares
 # COLOR_0_PRESENT.  The kernel TCL-bypass vertex check
-# (r300_tcl_bypass_vtx_check.h) reads only VAP_OUTPUT_VTX_FMT_0's
-# position and texture-coordinate bits when it derives the expected
-# vertex width, so a COLOR_0_PRESENT record widens the true PSC layout
-# past what the check computes and every draw in the stream DECLINEs.
+# (r300_tcl_bypass_vtx_check.h) admits position plus COLOR_0 as an
+# eight-dword tuple, the record the emitter pins VAP_VTX_SIZE to, so
+# every draw in the stream PASSes.
 # --flat-replicate emits the same two-pass shape with varying=true alone,
 # which routes the varying through the ordinary TEX0 record the check
-# already covers, so both draws PASS.
+# covers, so both draws PASS.
 #
 # R3V_KERNEL_REPLAY_TOOL names the same replay binary
 # run_offline_ib_replay.sh drives, built from the Linux radeon source
@@ -49,32 +48,31 @@ trap 'rm -rf "${workdir}"' EXIT
 
 mkdir -p "${workdir}/direct" "${workdir}/replicate"
 
-# The direct cell: the kernel check's vertex-width derivation misreads
-# every COLOR_0_PRESENT record, so both draws in the stream DECLINE.
+# The direct cell: the kernel check admits POS_PRESENT|COLOR_0_PRESENT
+# with a required width of eight dwords, the record the emitter pins
+# VAP_VTX_SIZE to, so both draws in the stream PASS.
 "${manifest_tool}" "${workdir}/direct" --flat-color0 >/dev/null
 
 direct=$("${R3V_KERNEL_REPLAY_TOOL}" "${workdir}/direct/ib.bin")
 echo "${direct}"
 case "${direct}" in
-    *"draws=2 pass=0 reject=0 decline=2"*) ;;
+    *"draws=2 pass=2 reject=0 decline=0"*) ;;
     *)
-        echo "direct flat-color0 cell did not replay decline=2 pass=0" \
-             "reject=0" >&2
+        echo "direct flat-color0 cell did not replay pass=2 reject=0" \
+             "decline=0" >&2
         exit 1
         ;;
 esac
 
-# The per-draw reason token: the kernel check's decline names the
-# register field it read past, fmt0_beyond_position -- print it so a
-# future check on the exact wording has a captured baseline.
+# The per-draw reason token: a PASS carries no decline reason, and a
+# check that still declines names the field it read past
+# (fmt0_beyond_modeled), so the token is printed and refused.
 reasons=$("${R3V_KERNEL_REPLAY_TOOL}" --reasons "${workdir}/direct/ib.bin")
-reason_line=$(printf '%s\n' "${reasons}" | grep -m1 '^reason ')
-echo "direct flat-color0 draw reason: ${reason_line}"
-case "${reason_line}" in
-    *"fmt0_beyond_position"*) ;;
-    *)
-        echo "direct flat-color0 decline reason token did not carry" \
-             "fmt0_beyond_position" >&2
+echo "direct flat-color0 draw reasons:"
+printf '%s\n' "${reasons}" | grep '^reason ' || true
+case "${reasons}" in
+    *"fmt0_beyond"*)
+        echo "direct flat-color0 cell still declines on the FMT0 scope" >&2
         exit 1
         ;;
 esac
@@ -93,5 +91,5 @@ case "${replicate}" in
         ;;
 esac
 
-echo "run_flat_color0_kernel_replay: direct cell DECLINE x2" \
-     "(fmt0_beyond_position), replication cell PASS x2"
+echo "run_flat_color0_kernel_replay: direct cell PASS x2," \
+     "replication cell PASS x2"
