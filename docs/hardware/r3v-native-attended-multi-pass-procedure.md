@@ -88,6 +88,27 @@ lines (each target under the other pass's constant) report
 - A nonzero dmesg delta or a lockup ends the boot under the shared
   procedure's rollback rules.
 
+## Result
+
+The cell holds its silicon receipt from one attended submission on
+RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
+`64fa102e611`, under an arming report matching all five declarations
+against cell blake3 `6ff86047`.  Every predicted value held: both
+targets `coverage_exact=1 canary=1 interior=1152 analytic=1152
+exterior=2944 mismatch=0` under their own constants and
+`coverage_exact=0 mismatch=1152` under the other pass's, the second
+centroid `0xff00ff00`, `vkQueueSubmit` 0, an empty dmesg delta, an
+unchanged boot, and a 99 us guarded interval.  So the concatenation
+carries no state across the pass boundary and the command processor
+executes the appended cell after the installed one inside one
+indirect buffer.  The same stream replayed clean through
+`replay_r300_cs_track` over four relocations on the host before the
+run.  Bundle: steinmarder-r300
+`src/re/r300/results/r3v-native-two-pass-concatenation-first-delivery-rs482`.
+The shared bindings hold on the drm-shim and are unrun on silicon, and
+this arm ran the recorder route; the public-API two-draw command buffer
+on hardware is the next step.
+
 ## Retained record
 
 The shared procedure's record plus `first_target.bin` and

@@ -786,7 +786,15 @@ above is rung zero; the ladder after it runs in this order:
    parser over a four-entry relocation list.  The attended runner
    `r3v_native_attended_multi_pass` and its procedure
    (`docs/hardware/r3v-native-attended-multi-pass-procedure.md`) carry
-   the one two-draw submission; silicon unrun.  Open behind that: the
+   the one two-draw submission, delivered on RS482 at mesa `64fa102e611`
+   (steinmarder-r300
+   `r3v-native-two-pass-concatenation-first-delivery-rs482`): both
+   targets exact under their own constants over 1152 pixels and zero
+   under the other's, dmesg delta empty, a 99 us guarded interval, so
+   the concatenation carries no state across the boundary and the
+   command processor reaches the second cell.  The shared bindings are
+   drm-shim-held and silicon-unrun, and the public-API two-draw command
+   buffer on hardware is the next step.  Open behind that: the
    GPU producer route, which composes one consumer stream over one
    carrier and judges one read-back, so a second pass beside it refuses
    by name.
