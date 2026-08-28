@@ -105,7 +105,7 @@ install="${pkgname}.install"
 # prebuilt build-infra builddir (see _builddir), not from a git checkout.
 source=('mesa-gororoba-debug-optimized-env.sh'
         'mesa-gororoba-debug-optimized-run')
-sha256sums=('94a0330044da95d10074fc6afbc2947fe7fcd59ae1643e4226e7729a46a1091d'
+sha256sums=('b02e0e14b6dc165d6549f00741fe4a9332ef3bebbb7ffc479ec81e7eb223f67a'
             '244f0c7e2171b5b784b37a08e893c1dbcffdccc1394e0e8f2756d07d7ac330e7')
 
 _prefix=/opt/mesa-gororoba-debug-optimized
