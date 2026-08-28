@@ -67,6 +67,7 @@ R300_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
 
 R3V_FLOAT2_TUPLE_REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-delivery-route",
+    "r3v-shader-interface",
     "r3v-native-float2-tuple-cell",
     "r3v-native-float2-tuple-arming-runner",
     "r3v-native-float2-tuple-cell-closed",

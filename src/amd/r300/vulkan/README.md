@@ -244,7 +244,11 @@ src/amd/r300/
   vulkan/                  the r3v ICD: Vulkan objects over the Radeon DRM
                            transport (r3v_native_*.c), the direct SPIR-V
                            admitters (r3v_vertex_spirv.c, r3v_compute_spirv.c),
-                           and the delivery route policy (r3v_delivery_route.c)
+                           the shader-interface record (r3v_shader_interface.c:
+                           per-location kind/width/mask/interpolation and the
+                           Position/ClipDistance/CullDistance built-ins, linked
+                           across the two stages at pipeline creation), and the
+                           delivery route policy (r3v_delivery_route.c)
 
 src/gallium/drivers/r300/
   r300_public.h            r300 extraction interface

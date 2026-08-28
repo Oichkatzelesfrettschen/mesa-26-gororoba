@@ -3455,6 +3455,45 @@ main(void)
          carrier_map);
       vkDestroyPipeline(device, varying_pipeline, NULL);
 
+      /* The shader-interface record rides pipeline creation: a Flat
+       * vertex/fragment pair admits with the qualifier recorded on the
+       * pipeline, a Flat vertex output against a NoPerspective fragment
+       * input refuses as a cross-stage conflict, and a Flat vertex
+       * output without a fragment consumer refuses by the link. */
+      struct pipeline_shape flat_shape = varying_shape;
+      flat_shape.vertex_words = r3v_reference_vertex_flat_spirv;
+      flat_shape.vertex_bytes = sizeof(r3v_reference_vertex_flat_spirv);
+      flat_shape.fragment_words = r3v_reference_fragment_flat_spirv;
+      flat_shape.fragment_bytes = sizeof(r3v_reference_fragment_flat_spirv);
+      VkPipeline flat_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&flat_shape, pass, layout, &flat_pipeline) ==
+             VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_pipeline, native_flat, flat_pipeline);
+      assert(native_flat->varying);
+      assert(native_flat->shader_interface.varying_mask == 1u &&
+             native_flat->shader_interface.flat_mask == 1u &&
+             native_flat->shader_interface.noperspective_mask == 0u);
+      assert(native_flat->shader_interface.varyings[0].interpolation ==
+             R3V_SHADER_INTERFACE_FLAT);
+      vkDestroyPipeline(device, flat_pipeline, NULL);
+      struct pipeline_shape conflict_shape = flat_shape;
+      conflict_shape.fragment_words =
+         r3v_reference_fragment_noperspective_spirv;
+      conflict_shape.fragment_bytes =
+         sizeof(r3v_reference_fragment_noperspective_spirv);
+      VkPipeline conflict_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&conflict_shape, pass, layout,
+                           &conflict_pipeline) == R3V_NATIVE_REFUSAL_RESULT &&
+             conflict_pipeline == VK_NULL_HANDLE);
+      struct pipeline_shape unconsumed_shape = flat_shape;
+      unconsumed_shape.fragment_words = r3v_reference_fragment_spirv;
+      unconsumed_shape.fragment_bytes = sizeof(r3v_reference_fragment_spirv);
+      VkPipeline unconsumed_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&unconsumed_shape, pass, layout,
+                           &unconsumed_pipeline) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             unconsumed_pipeline == VK_NULL_HANDLE);
+
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
       memcpy(map, ndc_triangle, sizeof(ndc_triangle));

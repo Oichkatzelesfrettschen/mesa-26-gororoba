@@ -81,6 +81,8 @@ enum {
    DECOR_RELAXED_PRECISION = 0,
    DECOR_BLOCK = 2,
    DECOR_BUILTIN = 11,
+   DECOR_NOPERSPECTIVE = 13,
+   DECOR_FLAT = 14,
    DECOR_LOCATION = 30,
    DECOR_BINDING = 33,
    DECOR_DESCRIPTOR_SET = 34,
@@ -495,6 +497,12 @@ admit_module(const uint32_t *words, size_t word_count,
          case DECOR_BLOCK:
          case DECOR_RELAXED_PRECISION:
             break;
+         /* Interpolation qualifiers are the shader-interface record's
+          * facts (r3v_shader_interface.c); the job lowering carries the
+          * varying's value either way. */
+         case DECOR_FLAT:
+         case DECOR_NOPERSPECTIVE:
+            break;
          default:
             return refuse(r, "decoration outside the admitted grammar");
          }
@@ -507,6 +515,9 @@ admit_module(const uint32_t *words, size_t word_count,
          struct id_info *entry = info(r, w[1]);
          if (entry == NULL)
             return refuse(r, "decoration names an id outside the bound");
+         if ((w[3] == DECOR_FLAT || w[3] == DECOR_NOPERSPECTIVE) &&
+             len == 4)
+            break;
          if (w[3] != DECOR_BUILTIN || len != 5)
             return refuse(r,
                           "member decoration outside the builtin block");

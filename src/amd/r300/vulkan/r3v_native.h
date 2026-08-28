@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
+#include "r3v_shader_interface.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_completion.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
@@ -1264,6 +1265,13 @@ struct r3v_native_pipeline {
     */
    struct r300_vertex_job vertex_job;
    bool gpu_vertex_job_identity;
+   /* The linked stage boundary the two modules declare: per-location
+    * kind, width, mask, and Smooth/Flat/NoPerspective interpolation
+    * plus the ClipDistance/CullDistance counts, read from the modules'
+    * decorations by r3v_shader_interface.c ahead of the job lowering.
+    * The draw's post-vertex lowering reads its qualifiers here.
+    */
+   struct r3v_shader_interface_link shader_interface;
    /* Set when the vertex job stores the location-0 varying and the
     * fragment module is the pass-through: the draw records the varying
     * cell over eight-dword records.
