@@ -62,12 +62,62 @@ def test_retained_resolution_journal_is_complete() -> None:
     assert len(journal["entries"]) == 50
 
 
-def test_resolution_rejects_non_fifty_frontier() -> None:
+def test_resolution_accepts_variable_frontier() -> None:
     rows, _ = retained_state()
+    review_thread_resolution.validate_resolution_frontier(rows[:-1])
+
+
+def test_resolution_rejects_empty_frontier() -> None:
+    with pytest.raises(review_thread_resolution.FrontierError, match="empty"):
+        review_thread_resolution.validate_resolution_frontier([])
+
+
+def test_resolution_rejects_actionable_row_before_authority_lookup() -> None:
+    rows, _ = retained_state()
+    mutated = copy.deepcopy(rows[:1])
+    mutated[0].update(
+        {
+            "completion_state": "actionable",
+            "disposition": "requires-change",
+            "merged_evidence_commit": "",
+        }
+    )
     with pytest.raises(
-        review_thread_resolution.FrontierError, match="expected exactly 50"
+        review_thread_resolution.FrontierError,
+        match="not fixed, superseded, or invalid",
     ):
-        review_thread_resolution.validate_resolution_frontier(rows[:-1])
+        review_thread_resolution.verify_resolution_authority(mutated, Namespace())
+
+
+def test_resolution_rejects_multiple_evidence_commits() -> None:
+    rows, _ = retained_state()
+    mutated = copy.deepcopy(rows[:2])
+    mutated[1]["merged_evidence_commit"] = "f" * 40
+    with pytest.raises(
+        review_thread_resolution.FrontierError,
+        match="multiple evidence commits",
+    ):
+        review_thread_resolution.verify_resolution_authority(mutated, Namespace())
+
+
+def test_resolution_journal_rejects_evidence_commit_drift() -> None:
+    rows, _ = retained_state()
+    journal = {
+        "schema": review_thread_resolution.SCHEMA,
+        "frontier_sha256": review_thread_resolution.frontier_hash(FRONTIER_PATH),
+        "evidence_commit": "f" * 40,
+        "evidence_pr": 1913,
+        "merged_at": "2026-08-27T09:04:16Z",
+        "started_at": "2026-08-27T09:05:00Z",
+        "entries": [],
+        "complete": False,
+        "post_verified_at": None,
+    }
+    with pytest.raises(
+        review_thread_resolution.FrontierError,
+        match="evidence commit differs from frontier",
+    ):
+        review_thread_resolution.validate_journal(rows, journal, FRONTIER_PATH)
 
 
 def test_resolution_rejects_malformed_thread_id() -> None:
@@ -224,6 +274,88 @@ def record_arguments(tmp_path: Path, rows: list[dict[str, str]]) -> Namespace:
     )
 
 
+def resolution_arguments(tmp_path: Path) -> Namespace:
+    return Namespace(
+        repo_root=tmp_path,
+        main_ref="origin/main",
+        evidence_pr=1913,
+        merged_at="2026-08-27T09:04:16Z",
+    )
+
+
+def test_resolution_authority_accepts_exact_merged_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows, _ = retained_state()
+    evidence_commit = rows[0]["merged_evidence_commit"]
+    arguments = resolution_arguments(tmp_path)
+    monkeypatch.setattr(
+        review_thread_resolution,
+        "run_git",
+        lambda *_args: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        review_thread_resolution.subprocess,
+        "run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        review_thread_resolution,
+        "evidence_target_identity",
+        lambda *_args: "same-owner-content",
+    )
+    monkeypatch.setattr(
+        review_thread_resolution,
+        "graphql",
+        lambda _query, _variables: {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "merged": True,
+                        "mergedAt": arguments.merged_at,
+                        "mergeCommit": {"oid": evidence_commit},
+                    }
+                }
+            }
+        },
+    )
+    assert (
+        review_thread_resolution.verify_resolution_authority(rows, arguments)
+        == evidence_commit
+    )
+
+
+def test_resolution_authority_rejects_unmerged_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows, _ = retained_state()
+    arguments = resolution_arguments(tmp_path)
+    monkeypatch.setattr(
+        review_thread_resolution,
+        "run_git",
+        lambda *_args: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        review_thread_resolution.subprocess,
+        "run",
+        lambda *_args, **_kwargs: CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        review_thread_resolution,
+        "evidence_target_identity",
+        lambda *_args: "same-owner-content",
+    )
+    monkeypatch.setattr(
+        review_thread_resolution,
+        "graphql",
+        lambda _query, _variables: {
+            "data": {"repository": {"pullRequest": {"merged": False}}}
+        },
+    )
+    with pytest.raises(review_thread_resolution.FrontierError, match="not merged"):
+        review_thread_resolution.verify_resolution_authority(rows, arguments)
+
+
 def test_record_authority_accepts_exact_merged_pr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -299,7 +431,7 @@ def test_record_authority_rejects_ancestry_query_failure(
     )
     with pytest.raises(
         review_thread_resolution.FrontierError,
-        match="ancestry check failed: bad revision",
+        match="evidence ancestry check failed: bad revision",
     ):
         review_thread_resolution.verify_commit_on_main(
             tmp_path, "a" * 40, "missing-main"
