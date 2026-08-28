@@ -485,7 +485,6 @@ run_arm(enum arm arm, const char *name)
       VK_NULL_HANDLE);
    const enum r3v_native_queue_status status =
       r3v_native_queue_submission_status(device);
-   native_device->drm.ops = saved_ops;
 
    bool output_is_seed = true, output_is_input = true;
    for (uint32_t i = 0; i < words; i++) {
@@ -542,7 +541,7 @@ run_arm(enum arm arm, const char *name)
          assert(!native_device->gpu_compute_quarantined);
       } else {
          assert(submitted == VK_ERROR_DEVICE_LOST);
-         assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMITTED);
+         assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
          assert(output_is_seed);
          assert(native_device->gpu_compute_quarantined);
       }
@@ -554,6 +553,52 @@ run_arm(enum arm arm, const char *name)
       assert(strcmp(r3v_native_observed_route_name(
                        R3V_NATIVE_OBSERVED_ROUTE_COMPUTE_IDENTITY_CARRIER),
                     "compute-identity-carrier") == 0);
+      if (arm == ARM_PRESEEDED_AGREEMENT) {
+         /* A following host-only dispatch owns a fresh observation: the
+          * prior carrier route, producer flag, and transport interval do
+          * not describe a submission that reaches no CS ioctl.
+          */
+         VkCommandBuffer host_only = VK_NULL_HANDLE;
+         assert(vkAllocateCommandBuffers(
+                   device,
+                   &(VkCommandBufferAllocateInfo){
+                      .sType =
+                         VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                      .commandPool = cmd_pool,
+                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                      .commandBufferCount = 1,
+                   },
+                   &host_only) == VK_SUCCESS);
+         assert(vkBeginCommandBuffer(
+                   host_only,
+                   &(VkCommandBufferBeginInfo){
+                      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                   }) == VK_SUCCESS);
+         vkCmdBindPipeline(host_only, VK_PIPELINE_BIND_POINT_COMPUTE,
+                           pipeline);
+         vkCmdBindDescriptorSets(host_only, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 layout, 0, 1, &set, 0, NULL);
+         vkCmdDispatch(host_only, groups, 1, 1);
+         assert(vkEndCommandBuffer(host_only) == VK_SUCCESS);
+         unsetenv(verb_gate);
+         r3v_native_device_refresh_delivery_gates(native_device);
+         const unsigned carrier_cs_ioctls = cs_ioctls;
+         assert(vkQueueSubmit(
+                   queue, 1,
+                   &(VkSubmitInfo){
+                      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                      .commandBufferCount = 1,
+                      .pCommandBuffers = &host_only,
+                   },
+                   VK_NULL_HANDLE) == VK_SUCCESS);
+         assert(cs_ioctls == carrier_cs_ioctls);
+         assert(r3v_native_queue_submission_status(device) ==
+                R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION);
+         assert(r3v_native_queue_observed_route(device) ==
+                R3V_NATIVE_OBSERVED_ROUTE_CPU);
+         assert(!r3v_native_queue_observed_gpu_producer(device));
+         assert(r3v_native_queue_transport_wall_ns(device) == 0);
+      }
       {
          void *slot_map = NULL;
          assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -625,6 +670,7 @@ run_arm(enum arm arm, const char *name)
       assert(!file_present(manifest_dir, "ib.bin"));
       break;
    }
+   native_device->drm.ops = saved_ops;
    free(input_words);
    return 0;
 }

@@ -453,13 +453,15 @@ record_triangle_draw(VkCommandBuffer cmd, struct triangle_resources *r,
    vkCmdEndRenderPass(cmd);
 }
 
-/* Records and submits one draw of vertex_count vertices against r,
- * waiting for it to complete; the command buffer allocates from r's
- * pool and is not freed, matching the harness's single-shot arms.
+/* Records and submits one draw of vertex_count vertices against r.  The
+ * result helper exposes submit failure before any queue-idle wait; the
+ * success wrapper waits for completion.  The command buffer allocates from
+ * r's pool and is not freed, matching the harness's single-shot arms.
  */
-static void
-submit_triangle_draw(VkDevice device, VkQueue queue,
-                     struct triangle_resources *r, uint32_t vertex_count)
+static VkResult
+submit_triangle_draw_result(VkDevice device, VkQueue queue,
+                            struct triangle_resources *r,
+                            uint32_t vertex_count)
 {
    VkCommandBuffer cmd;
    assert(vkAllocateCommandBuffers(
@@ -477,13 +479,21 @@ submit_triangle_draw(VkDevice device, VkQueue queue,
                                     }) == VK_SUCCESS);
    record_triangle_draw(cmd, r, vertex_count);
    assert(vkEndCommandBuffer(cmd) == VK_SUCCESS);
-   assert(vkQueueSubmit(queue, 1,
+   return vkQueueSubmit(queue, 1,
                         &(VkSubmitInfo){
                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                            .commandBufferCount = 1,
                            .pCommandBuffers = &cmd,
                         },
-                        VK_NULL_HANDLE) == VK_SUCCESS);
+                        VK_NULL_HANDLE);
+}
+
+static void
+submit_triangle_draw(VkDevice device, VkQueue queue,
+                     struct triangle_resources *r, uint32_t vertex_count)
+{
+   assert(submit_triangle_draw_result(device, queue, r, vertex_count) ==
+          VK_SUCCESS);
    assert(vkQueueWaitIdle(queue) == VK_SUCCESS);
 }
 
@@ -659,6 +669,33 @@ main(int argc, char **argv)
    vkGetDeviceQueue(device, 0, 0, &queue);
 
    struct triangle_resources res = create_triangle_resources(device);
+   if (strcmp(arm, "write-failure-status") == 0) {
+      /* Device creation proves the capture parent exists.  Removing the
+       * still-empty parent afterward makes the post-completion transcript
+       * landing fail without changing the transport result.
+       */
+      assert(access(transcript, F_OK) != 0);
+      assert(rmdir(dir) == 0);
+      assert(submit_triangle_draw_result(device, queue, &res, 3) ==
+             VK_ERROR_DEVICE_LOST);
+      assert(r3v_native_queue_submission_status(device) ==
+             R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+
+      /* Device destruction lands the retained entry again.  Restoring the
+       * parent lets teardown release capture state without a second I/O
+       * failure obscuring the queue-status verdict above.
+       */
+      assert(mkdir(dir, 0700) == 0);
+      destroy_triangle_resources(device, &res);
+      vkDestroyDevice(device, NULL);
+      destroy_instance(instance, NULL);
+      assert(access(transcript, F_OK) == 0);
+      assert(unlink(transcript) == 0);
+      assert(rmdir(dir) == 0);
+      printf("write-failure-status: completed transport precedes capture "
+             "I/O failure\n");
+      return 0;
+   }
    VkMemoryRequirements reqs = res.image_reqs;
    /* Two distinct executable IBs: one and two clip-space source groups,
     * each retaining seven output-triangle slots per source triangle.

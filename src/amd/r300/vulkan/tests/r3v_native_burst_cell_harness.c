@@ -135,6 +135,8 @@ enum burst_lifetime_mode {
    BURST_LIFETIME_DIFFERENT_COMMAND_BUFFER,
    BURST_LIFETIME_SUBMIT_SHAPE,
    BURST_LIFETIME_TRACE_REFUSAL,
+   BURST_LIFETIME_QUERY_REFUSAL,
+   BURST_LIFETIME_EVENT_REFUSAL,
    BURST_LIFETIME_TEARDOWN,
    BURST_LIFETIME_KNOWN_BAD_RESET,
    BURST_LIFETIME_KNOWN_BAD_BINDING,
@@ -346,12 +348,34 @@ run_burst_leg(VkInstance instance,
       live_before_prepare = live_bos();
 
    if (lifetime_mode != BURST_LIFETIME_NONE) {
+      if (lifetime_mode == BURST_LIFETIME_QUERY_REFUSAL)
+         native_cmd->query_op_count = 1;
+      if (lifetime_mode == BURST_LIFETIME_EVENT_REFUSAL)
+         native_cmd->event_op_count = 1;
+
       /* The prepared lane consumes authorization ahead of the submit:
        * the token and both evidence groups exist before any ioctl, and
        * the following vkQueueSubmit carries the transport tail alone.
        */
       VkResult prepared =
          r3v_native_queue_prepare_submission(device, command_buffer);
+      if (lifetime_mode == BURST_LIFETIME_QUERY_REFUSAL ||
+          lifetime_mode == BURST_LIFETIME_EVENT_REFUSAL) {
+         CHECK(prepared == VK_ERROR_DEVICE_LOST,
+               "ordered host operations refuse preparation: %d", prepared);
+         CHECK(prepared_state_released(&native_device->prepared),
+               "the ordered-operation refusal leaves prepared state "
+               "released");
+         CHECK(trace.event_count == 0,
+               "the ordered-operation refusal reaches no transport event");
+         CHECK(!evidence_file_present(manifest_dir, "attempt.token") &&
+                  !evidence_file_present(manifest_dir, "ib.bin") &&
+                  !evidence_file_present(manifest_dir,
+                                         "submit_manifest.json"),
+               "the ordered-operation refusal retains no evidence");
+         rc = failures == 0 ? 0 : 1;
+         goto done;
+      }
       CHECK(prepared == VK_SUCCESS, "transport preparation: %d", prepared);
       CHECK(evidence_file_present(manifest_dir, "attempt.token"),
             "prepare writes the one-shot token before any submit");
@@ -576,7 +600,8 @@ main(int argc, char **argv)
    const char *selected = argc == 2 ? argv[1] : NULL;
    if (argc > 2) {
       fprintf(stderr, "usage: %s [admission|commit|reset|different-buffer|"
-                      "submit-shape|trace-refusal|teardown|"
+                      "submit-shape|trace-refusal|query-refusal|"
+                      "event-refusal|teardown|"
                       "known-bad-reset|known-bad-binding|"
                       "known-bad-teardown]\n",
               argv[0]);
@@ -587,6 +612,8 @@ main(int argc, char **argv)
        strcmp(selected, "different-buffer") != 0 &&
        strcmp(selected, "submit-shape") != 0 &&
        strcmp(selected, "trace-refusal") != 0 &&
+       strcmp(selected, "query-refusal") != 0 &&
+       strcmp(selected, "event-refusal") != 0 &&
        strcmp(selected, "teardown") != 0 &&
        strcmp(selected, "known-bad-reset") != 0 &&
        strcmp(selected, "known-bad-binding") != 0 &&
@@ -762,6 +789,16 @@ main(int argc, char **argv)
        run_lifetime_leg(instance, gipa, physical_device, &reference,
                         carrier_bytes, BURST_LIFETIME_TRACE_REFUSAL,
                         "submit-lifetime-trace-refusal") != 0)
+      goto done;
+   if (mode_selected(selected, "query-refusal") &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_QUERY_REFUSAL,
+                        "submit-lifetime-query-refusal") != 0)
+      goto done;
+   if (mode_selected(selected, "event-refusal") &&
+       run_lifetime_leg(instance, gipa, physical_device, &reference,
+                        carrier_bytes, BURST_LIFETIME_EVENT_REFUSAL,
+                        "submit-lifetime-event-refusal") != 0)
       goto done;
    if (mode_selected(selected, "teardown") &&
        run_lifetime_leg(instance, gipa, physical_device, &reference,

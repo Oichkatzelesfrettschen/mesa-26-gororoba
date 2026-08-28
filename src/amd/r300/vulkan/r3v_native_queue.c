@@ -1004,6 +1004,16 @@ r3v_native_prepared_release(struct r3v_native_device *device)
    memset(prepared, 0, sizeof(*prepared));
 }
 
+static bool
+r3v_native_cmd_buffer_requires_inline_ordering(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   return cmd_buffer->deferred_draw_count != 0 ||
+          cmd_buffer->deferred_dispatch.pending ||
+          cmd_buffer->deferred_copy_count != 0 ||
+          cmd_buffer->query_op_count != 0 || cmd_buffer->event_op_count != 0;
+}
+
 VkResult
 r3v_native_queue_prepare_submission(VkDevice _device,
                                     VkCommandBuffer commandBuffer)
@@ -1023,13 +1033,11 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                        "error %d", cmd_buffer->vk.record_result);
    }
    if (cmd_buffer->ib_size_dwords == 0 ||
-       cmd_buffer->deferred_draws[0].pending ||
-       cmd_buffer->deferred_dispatch.pending ||
-       cmd_buffer->deferred_copy_count != 0) {
+       r3v_native_cmd_buffer_requires_inline_ordering(cmd_buffer)) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                        "r3v-native: prepare covers transport-only command "
-                       "buffers; deferred host work executes submission-time "
-                       "semantics the prepare would hoist");
+                       "buffers; ordered host operations execute "
+                       "submission-time semantics the prepare would hoist");
    }
    if (!device->submit_hazard_accepted || device->manifest_dir == NULL) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -1265,6 +1273,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
     * its queue-phase meaning for the attended control.
     */
    device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
+   device->transport_enter_ns = 0;
+   device->transport_return_ns = 0;
+   device->transport_gpu_producer_delivery = false;
+   device->transport_cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    bool submit_has_executable_ib = false;
 
    /* An authorization declares one IB digest and its evidence directory
@@ -1535,9 +1547,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       /* The serial cell resubmits one unchanged semantic stream, so the
        * first admission retains ib.bin, relocs.bin, and manifest.json and
        * every later admission runs under that retained copy; the arming
-       * gate re-proves the stream digest against the declared one each
-       * admission, so the retained semantic cell stays bound to every
-       * admission it covers.
+       * gate r3v_native_arming_evaluate (rg --fixed-strings
+       * "r3v_native_arming_evaluate" src/amd/r300/vulkan/) re-proves the
+       * stream digest against the declared one each admission, so the
+       * retained semantic cell stays bound to every admission it covers.
        */
       const bool serial_kind =
          cmd_buffer->cell_kind ==
@@ -1876,6 +1889,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: submission or completion wait "
                           "failed: %d", result);
       }
+      device->queue_status =
+         r3v_native_queue_status_from_transport(ioctl_accepted, true);
       /* The completed GPU-producer delivery earns the routed verdict
        * here: the carrier read-back against the retained CPU oracle,
        * with a divergence quarantining the capability.
@@ -1913,8 +1928,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                              strerror(-written));
          }
       }
-      device->queue_status =
-         r3v_native_queue_status_from_transport(ioctl_accepted, true);
    }
 
    device->queue_status = r3v_native_queue_status_finalize_submit(

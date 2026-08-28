@@ -2056,11 +2056,11 @@ run_arm(enum arm arm, const char *name)
       /* The ioctl ran on the composed stream and the token was spent;
        * the shim executes no producer, so the carrier still holds the
        * poison the admission published, the read-back verdict reports
-       * device loss, and the capability quarantines.  The status stays
-       * at SUBMITTED: the verdict returns before the completion status
-       * is recorded. */
+       * device loss, and the capability quarantines.  The completion
+       * wait retires the transport before the wrong-result verdict.
+       */
       assert(submitted == VK_ERROR_DEVICE_LOST);
-      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMITTED);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
       assert(cs_ioctls == 1);
       assert(carrier_is_poison);
       assert(native_device->gpu_producer_quarantined);
