@@ -13,11 +13,11 @@ alone and is updated in place when a receipt or task changes.
 |---|---|---|
 | Document revision | `git log -1 -- docs/hardware/r3v-current-program-status.md` | the commit that carries this table |
 | Mesa reconciliation base | `0c288cc2654cc763abb3376731b0d57395b8c3e6` | source state inspected for this reconciliation; `git rev-parse HEAD` names the live checkout |
-| Latest target receipt source | `42ff2b207c8dedb0a789639bd1c4cd6159b07690` | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
-| Latest target receipt retention | `steinmarder-r300` `700b8b05257c1751f010766ddf1e126534b56bb2` | commit that adds the sealed direct-GA Flat color-0 bundle |
-| Evidence verification checkout | `steinmarder-r300` `9b252c3116b4175a0b596404343574def0862a62` | checkout in which `sha256sum -c bundle_hashes.sha256` passes |
-| Installed ICD source | `00e3c5dd25de` | installed-image receipt; the latest attended runner is statically linked and leaves this ICD unchanged |
-| Deployed kernel source checkpoint | `3c5ccb3` | kernel deployment reconciliation and installed module srcversion |
+| Latest target receipt source | `ac20ebc8bdba2c21f548ba3d9f1e286ba06ce961` | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
+| Latest target receipt retention | `steinmarder-r300` `7467cce8c` | commit that adds the sealed public NoPerspective direct GB W_SELECT route receipt |
+| Evidence verification checkout | `steinmarder-r300` `7467cce8c` | checkout in which `sha256sum -c bundle_hashes.sha256` passes |
+| Installed ICD source | `ad915232ef8` | `mesa-gororoba-debug-optimized 2:26.2.0-23`, build-id `ae8b99f5037d2197f1d68b1dd9510c41bb9205a0` across builddir, package, and installed DSO; the latest attended runner is statically linked at `ac20ebc8bdb`, whose driver source is identical |
+| Deployed kernel source checkpoint | `0104ede3f19` | `radeon-unified-dkms 0.8.12-1`, srcversion `729892A3F3530EB12B8D842`; kernel deployment reconciliation |
 | dEQP source | `43c65c132` | installed `deqp-vk` release identity and corpus pin |
 
 The boundaries assign one role to each revision. The document revision
@@ -100,22 +100,35 @@ first real submission waits on a planning pass that lands transcripts,
 
 | Field | Value |
 |---|---|
-| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-public-flat-color0-two-draw-first-delivery-rs482` |
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-noperspective-production-route-receipt-rs482` |
 | Evidence class | silicon; attended semantic cell; this receipt makes no CTS qualification claim |
-| Cell | public direct-GA Flat color-0 two-draw, two render passes, 452 IB dwords, four relocations |
-| Verdict | both targets are byte-equal to their independently generated provoking-vertex images; RGB and alpha are Flat |
-| Source | Mesa `42ff2b207c8dedb0a789639bd1c4cd6159b07690`; statically linked runner sha256 `cab4197feb8a...31f` |
-| Submission | cell BLAKE3 `3646c222b6c5...605c`; `vkQueueSubmit` 0; one guarded `DRM_IOCTL_RADEON_CS`; 140 us guarded interval |
-| Runtime | kernel `7.1.8-1-cachyos`; radeon srcversion `56B9C4000387BDA35C4CAAF`; `radeon-rs482-policy 0.8.11-1`; unchanged boot; dmesg delta 0 lines |
-| Oracle | first target under `0xf2ff0000`, second under `0x8c00ff00`; each reads 1,152 exact interior pixels, 2,944 exact exterior pixels, a clean canary, and zero mismatches |
-| Integrity | retained by `steinmarder-r300` `700b8b05257`; every entry in `bundle_hashes.sha256` verifies at `9b252c3116b` |
+| Cell | public NoPerspective two-draw (Smooth control, then the NoPerspective pipeline on `R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT` with every probe gate unset), two render passes, 472 IB dwords, four relocations; the streams differ in the one `GB_SELECT` dword (`0x401c`, `W_SELECT`) |
+| Verdict | control target perspective 882/882 judged pixels; NoPerspective target affine 882/882 (max deviation 1 UNORM8 quantum), perspective 0; carrier witness exact; sentinel exact over 3,008 exterior dwords |
+| Source | Mesa `ac20ebc8bdba2c21f548ba3d9f1e286ba06ce961`; statically linked runner sha256 `b2428e21cda0...d7b` |
+| Submission | cell BLAKE3 `32d547e9fb06...4afb`; `vkQueueSubmit` 0; one guarded `DRM_IOCTL_RADEON_CS` through fence completion; 116 us guarded interval |
+| Runtime | kernel `7.1.8-1-cachyos`; radeon srcversion `729892A3F3530EB12B8D842`; `radeon-unified-dkms 0.8.12-1`; unchanged boot; dmesg delta 0 lines |
+| Oracle | the probe census (`r300_rs_tex_adj_probe.h`): 882 judged interior pixels, tolerance 2, model separation 5 quanta; the affine model is the Vulkan NoPerspective value |
+| Integrity | retained by `steinmarder-r300` `7467cce8c`; every entry in `bundle_hashes.sha256` verifies there |
 
-The receipt proves end-to-end Vulkan `Flat` RGB and alpha through the
-RS482 GA color-0 provoking-vertex selection for the two attended draws.
-The carrier witness retains three distinct records per pass with record
-zero as the provoking vertex, which excludes host replication for this
-cell. Partially clipped primitives and CTS case movement remain outside
-this receipt.
+The receipt proves end-to-end Vulkan `NoPerspective` interpolation for
+one full float vec4 varying at location 0 on the CPU triangle-list route
+with clipping class ACCEPT: the public pipeline selects the route itself,
+and the delivered stream is byte-identical to the gated `W_SELECT`
+candidate cell the classification bundle
+(`r3v-native-rs-tex-adj-probe-classification-rs482`) judged affine.
+Every other NoPerspective interface is created
+`R3V_INTERPOLATION_ROUTE_UNSUPPORTED` and refuses its draw at record time
+(Mesa `ad915232ef8`); the `(a * w, w)` reciprocal carrier for those shapes
+is the open mechanism.
+
+The preceding target receipt is
+`r3v-native-public-flat-color0-two-draw-first-delivery-rs482` (Mesa
+`42ff2b207c8dedb0a789639bd1c4cd6159b07690`, cell BLAKE3 `3646c222b6c5...605c`,
+452 IB dwords): end-to-end Vulkan `Flat` RGB and alpha through the RS482
+GA color-0 provoking-vertex selection, both targets byte-equal to their
+provoking-vertex images, later replayed byte-equal under
+`radeon-unified-dkms 0.8.12-1`
+(`r300-tcl-bypass-vtx-check-color0-width-transition-rs482`).
 
 The latest CTS qualification receipt remains
 `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`: Mesa
