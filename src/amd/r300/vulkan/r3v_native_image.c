@@ -139,7 +139,14 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
          sampled ? MIN2(R3V_NATIVE_RENDER_MAX_EXTENT,
                         R3V_NATIVE_TRANSFER_DIMENSION_MAX)
                  : R3V_NATIVE_RENDER_MAX_EXTENT;
-      if (pCreateInfo->flags != 0 || volumetric ||
+      /* The cube-compatible flag names view types over the array layout
+       * the attachment route already carries, so it admits here; the
+       * alias flag stays refused, since the render cell owns its
+       * target's bytes.
+       */
+      if ((pCreateInfo->flags &
+           ~(VkImageCreateFlags)VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0 ||
+          volumetric ||
           (pCreateInfo->usage &
            ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                 VK_IMAGE_USAGE_SAMPLED_BIT |
