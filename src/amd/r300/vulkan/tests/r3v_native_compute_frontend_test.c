@@ -174,6 +174,40 @@ static void test_wrong_stage_refuses(void)
    assert(reason != NULL);
 }
 
+static void test_non_x_local_size_refuses(void)
+{
+   const size_t words = sizeof(r3v_reference_identity_map_spirv) / 4;
+   uint32_t mutated[2048];
+   assert(words <= 2048);
+   memcpy(mutated, r3v_reference_identity_map_spirv, words * 4);
+
+   bool rewrote_mode = false;
+   bool rewrote_workgroup = false;
+   size_t at = 5;
+   while (at < words) {
+      const uint32_t opcode = mutated[at] & 0xffffu;
+      const uint32_t length = mutated[at] >> 16;
+      assert(length != 0 && at + length <= words);
+      if (opcode == 16 && length == 6) {
+         mutated[at + 4] = 2;
+         mutated[at + 5] = 2;
+         rewrote_mode = true;
+      } else if (opcode == 43 && length == 4 && mutated[at + 2] == 33) {
+         mutated[at + 3] = 2;
+         rewrote_workgroup = true;
+      }
+      at += length;
+   }
+   assert(rewrote_mode && rewrote_workgroup);
+
+   struct r300_compute_job job;
+   const char *reason = NULL;
+   assert(!r3v_compute_job_from_spirv(mutated, words, "main", &job,
+                                      &reason));
+   assert(strcmp(reason,
+                 "LocalSize outside the x-only invocation domain") == 0);
+}
+
 /* Word-stream hardening: the reader refuses malformed streams by
  * bounds rather than reading past them.
  */
@@ -264,6 +298,7 @@ int main(void)
    test_unread_complement_refuses();
    test_reference_scatter_module();
    test_wrong_stage_refuses();
+   test_non_x_local_size_refuses();
    test_malformed_streams_refuse();
    printf("r3v-native-compute-frontend: all cases passed\n");
    return 0;

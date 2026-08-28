@@ -19,6 +19,13 @@ int r300_cpu_compute_job_validate(const struct r300_compute_job *job)
    if (job->local_size[0] == 0 || job->local_size[1] == 0 ||
        job->local_size[2] == 0)
       return -EINVAL;
+   /* The admitted SPIR-V grammar indexes storage with
+    * gl_GlobalInvocationID.x.  Y and Z therefore remain singleton axes;
+    * accepting either axis would execute duplicate stores for the same
+    * element instead of representing the shader's address domain.
+    */
+   if (job->local_size[1] != 1 || job->local_size[2] != 1)
+      return -EINVAL;
    const uint64_t volume = (uint64_t)job->local_size[0] *
                            job->local_size[1] * job->local_size[2];
    if (volume > R300_COMPUTE_JOB_MAX_INVOCATIONS)
@@ -35,16 +42,27 @@ int r300_cpu_compute_job_invocations(const struct r300_compute_job *job,
       return rc;
    if (group_counts == NULL || out == NULL)
       return -EINVAL;
+   for (unsigned axis = 0; axis < 3; axis++) {
+      if (group_counts[axis] > R300_COMPUTE_JOB_MAX_INVOCATIONS)
+         return -ERANGE;
+   }
    if (group_counts[0] == 0 || group_counts[1] == 0 ||
-       group_counts[2] == 0)
+       group_counts[2] == 0) {
+      *out = 0;
+      return 0;
+   }
+   /* The job's storage address is the X component of the global
+    * invocation id.  The dispatch contract keeps the other axes
+    * singleton so the flattened byte range remains one-to-one with the
+    * shader's writes.
+    */
+   if (group_counts[1] != 1 || group_counts[2] != 1)
       return -EINVAL;
    /* Each factor is bounded before it multiplies, so the running
     * product stays inside 64 bits and one final comparison decides.
     */
    uint64_t total = 1;
    for (unsigned axis = 0; axis < 3; axis++) {
-      if (group_counts[axis] > R300_COMPUTE_JOB_MAX_INVOCATIONS)
-         return -ERANGE;
       total *= group_counts[axis];
       if (total > R300_COMPUTE_JOB_MAX_INVOCATIONS)
          return -ERANGE;
@@ -66,22 +84,30 @@ int r300_cpu_compute_job_execute(const struct r300_compute_job *job,
                                              &invocations);
    if (rc != 0)
       return rc;
-   if (input == NULL || output == NULL)
-      return -EINVAL;
    const uint64_t bytes =
       (uint64_t)invocations * R300_COMPUTE_JOB_ELEMENT_BYTES;
+   if (bytes == 0)
+      return 0;
+   if (input == NULL || output == NULL)
+      return -EINVAL;
    if (input_bytes < bytes || output_bytes < bytes)
       return -ERANGE;
-   /* Both maps read every element before the write that would cover
-    * it, so overlapping ranges would make the result depend on element
-    * order; the refusal keeps every admitted execution
-    * order-independent.
+   /* An exact alias is safe for both admitted elementwise maps: each
+    * output element depends only on the input element at the same offset.
+    * A partial overlap would let one store change a later input, so the
+    * refusal keeps the execution order-independent.
     */
    const uintptr_t in_addr = (uintptr_t)input;
    const uintptr_t out_addr = (uintptr_t)output;
-   if (in_addr < out_addr + bytes && out_addr < in_addr + bytes)
-      return -EINVAL;
+   if (in_addr != out_addr) {
+      const uintptr_t span = (uintptr_t)bytes;
+      if ((in_addr < out_addr && out_addr - in_addr < span) ||
+          (out_addr < in_addr && in_addr - out_addr < span))
+         return -EINVAL;
+   }
    if (job->op == R300_COMPUTE_JOB_OP_IDENTITY) {
+      if (in_addr == out_addr)
+         return 0;
       memcpy(output, input, bytes);
       return 0;
    }
