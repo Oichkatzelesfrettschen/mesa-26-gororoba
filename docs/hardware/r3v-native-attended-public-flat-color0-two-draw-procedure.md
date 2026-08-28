@@ -184,3 +184,43 @@ resolving; a deviation on the alpha discriminator classifies the route rather th
 The shared procedure's record plus `first_target.bin`, `second_target.bin`, `first_expected.bin`,
 and `second_expected.bin`, each the shape's full footprint including the canary row.
 
+
+## Result
+
+The cell holds its silicon receipt from one attended submission on
+RS482 at Mesa `42ff2b207c8`, boot
+`e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming report matching
+all five declarations against cell blake3 `3646c222`, retained as
+`steinmarder-r300/src/re/r300/results/r3v-native-public-flat-color0-two-draw-first-delivery-rs482`.
+Every predicted value held:
+
+```text
+[interface] blake3 096d66a9 varying_mask=0x1 flat_mask=0x1 noperspective_mask=0x0 post_vs.flat_mask=0x1 provoking=0 route=direct-ga-color0
+[record] kind=16 references=4 deferred_draws=2 ib_dwords=452 recorded blake3 3646c222 emitted blake3 3646c222
+[state] direct plan registers established ahead of 2 draw(s)
+[oracle] first-under-own-provoking-0xf2ff0000 judged=1 coverage_exact=1 canary=1 interior=1152 analytic=1152 exterior=2944 ambiguous=0 mismatch=0
+[oracle] second-under-own-provoking-0x8c00ff00 judged=1 coverage_exact=1 canary=1 interior=1152 analytic=1152 exterior=2944 ambiguous=0 mismatch=0
+[witness] pass 0 carrier records distinct=1 record0_is_provoking=1
+[witness] pass 1 carrier records distinct=1 record0_is_provoking=1
+[oracle] first-vs-expected judged=1 differing=0 alpha_deviates=0
+[oracle] second-vs-expected judged=1 differing=0 alpha_deviates=0
+```
+
+All four non-provoking oracles read `interior=0`, `vkQueueSubmit`
+returned 0, the dmesg delta was empty, the boot id was unchanged, and
+the SB600 counter reported `armed verified 65535 65535 65369`,
+`disarmed verified 65362`, a 140 us guarded interval over
+`DRM_IOCTL_RADEON_CS` through fence completion, and `inactive` after.
+
+The receipt proves end-to-end Vulkan Flat, RGB and alpha, through RS482
+GA provoking-vertex selection over color 0: the device-fetched carriers
+still held three distinct records per pass with the provoking first, so
+host replication did not run, and each target is byte-equal to the
+image the replication oracle predicted.  The alpha lane, distinct at
+every vertex, held its provoking byte on every interior pixel, so
+`ALPHA0_SHADING_FLAT` selects as `RGB0_SHADING_FLAT` does.  The
+quarter-step alphas passed through the color 0 lane unchanged at UNORM8,
+which bounds the lane's precision to eight bits or wider on these three
+values and leaves the general float-vec4 precision of the lane a
+recorded hypothesis.  Partially clipped primitives retain replication
+and carry no receipt here.
