@@ -46,20 +46,23 @@ LEDGER = "docs/r3v-rename-allowlist.txt"
 # The ratchet names the tokens it scans for.
 SELF = "src/amd/r300/vulkan/tests/r3v_rename_ratchet.py"
 SKIP_DIRS = {".git", "__pycache__"}
-# Retained review-thread evidence: forge responses recorded verbatim,
-# which quote whatever spelling a pull request carried at the time.  The
-# ratchet governs maintained source and documentation, so these bytes
-# leave the token scan and take an integrity check instead.  A directory
-# directly under EVIDENCE_ROOT holding a manifest.json with a files dict
-# is a sealed bundle, and that dict is the whole definition of what the
-# bundle contains: every other file in it is pinned by SHA-256 or fails
-# as evidence outside the seal.  Membership rather than a path prefix
-# decides, so a capture shape the tree has not used yet -- a response
-# written beside raw/ rather than inside it -- is covered the moment the
-# manifest names it.  manifest.json is the seal rather than the
-# evidence, so it stays in the token scan, and a directory carrying no
-# manifest is unsealed and scanned the same way.
-EVIDENCE_ROOT = "build-infra/docs/review-thread-frontiers"
+# Retained review evidence: forge responses recorded verbatim and the
+# tables derived from them, which quote whatever spelling a pull request
+# carried at the time.  The ratchet governs maintained source and
+# documentation, so these bytes leave the token scan and take an
+# integrity check instead.  Membership in a manifest decides, with no
+# path prefix in the rule: the nearest ancestor directory holding a
+# manifest.json with a files dict seals every file below it, and that
+# dict is the whole definition of what the bundle contains.  A file the
+# dict names is pinned by SHA-256 and reports as modified evidence when
+# its bytes drift; a file below the seal the dict leaves out reports as
+# unpinned evidence.  A bundle therefore covers a capture shape the tree
+# has not used yet the moment its manifest names it, and a nested
+# manifest (a generated/ directory inside a corpus) seals its own
+# subtree while the files beside it stay maintained content.
+# manifest.json is the seal rather than the evidence, so it stays in the
+# token scan, and a directory carrying no manifest on any ancestor is
+# unsealed and scanned the same way.
 EVIDENCE_MANIFEST = "manifest.json"
 TEXT_SUFFIXES = {
     ".build", ".options", ".c", ".h", ".py", ".sh", ".md", ".txt", ".rst",
@@ -107,26 +110,25 @@ def scan_files(root: Path):
 def bundle_seal(root: Path, rel: str) -> tuple[str, str, dict] | None:
     """The sealed bundle holding rel, as (bundle, bundle-relative path,
     pinned files), or None when rel sits outside a sealed bundle.  The
-    seal is the manifest, so a directory without one holds no evidence
-    and its files stay in the token scan."""
-    prefix = f"{EVIDENCE_ROOT}/"
-    if not rel.startswith(prefix):
-        return None
-    tail = rel[len(prefix):].split("/")
-    if len(tail) < 2:
-        return None
-    bundle = f"{prefix}{tail[0]}"
-    inner = "/".join(tail[1:])
-    if inner == EVIDENCE_MANIFEST:
-        return None
-    try:
-        files = json.loads((root / bundle / EVIDENCE_MANIFEST).read_text(
-            encoding="utf-8")).get("files", {})
-    except (OSError, ValueError):
-        return None
-    if not isinstance(files, dict):
-        return None
-    return bundle, inner, files
+    seal is the nearest ancestor manifest, so a file with no manifest on
+    any ancestor holds no evidence and stays in the token scan."""
+    parts = rel.split("/")
+    if parts[-1] == EVIDENCE_MANIFEST:
+        parts = parts[:-1]
+    for depth in range(len(parts) - 1, 0, -1):
+        bundle = "/".join(parts[:depth])
+        try:
+            files = json.loads((root / bundle / EVIDENCE_MANIFEST).read_text(
+                encoding="utf-8")).get("files", {})
+        except (OSError, ValueError):
+            continue
+        if not isinstance(files, dict):
+            continue
+        inner = "/".join(parts[depth:])
+        if inner == EVIDENCE_MANIFEST or not inner:
+            return None
+        return bundle, inner, files
+    return None
 
 
 def immutable_evidence(root: Path) -> list[tuple[Path, str, dict]]:
@@ -338,12 +340,57 @@ def selftest() -> int:
 
         # A directory under the evidence root carrying no manifest is
         # unsealed, so it is maintained content and the scan reaches it.
-        unsealed = (root / EVIDENCE_ROOT / "merged-pr-range-fixture")
+        unsealed = (root / "build-infra/docs/review-thread-frontiers/"
+                    "merged-pr-range-fixture")
         unsealed.mkdir(parents=True)
         (unsealed / "action-frontier.tsv").write_text(
             "row\tR300VK_DEBUG\n", encoding="utf-8")
         expect("unsealed-directory-scanned", check(root, good), True,
                "R300VK spelling outside")
+        (unsealed / "action-frontier.tsv").unlink()
+
+        # Membership rather than a path prefix seals: a corpus under any
+        # other docs directory takes the same pinned, modified, and
+        # unpinned verdicts on its tables.
+        corpus = root / ("build-infra/docs/review-thread-corpus/"
+                         "unresolved-review-thread-corpus-fixture")
+        corpus.mkdir(parents=True)
+        table = corpus / "work-groups.tsv"
+        table.write_text("id\tr3v-native-backend\n", encoding="utf-8")
+        expect("corpus-table-no-manifest-scanned", check(root, good), True,
+               "r3v-native-backend spelling outside")
+        (corpus / EVIDENCE_MANIFEST).write_text(json.dumps({"files": {
+            "work-groups.tsv": hashlib.sha256(
+                table.read_bytes()).hexdigest()}}), encoding="utf-8")
+        expect("corpus-table-pinned", check(root, good), False)
+        table.write_text("id\tr3v-native-backend\tedited\n",
+                         encoding="utf-8")
+        expect("corpus-table-modified", check(root, good), True,
+               "immutable evidence modified")
+        table.write_text("id\tr3v-native-backend\n", encoding="utf-8")
+        (corpus / "group-members.tsv").write_text("id\tr300vk\n",
+                                                  encoding="utf-8")
+        expect("corpus-table-unpinned", check(root, good), True,
+               "outside the bundle manifest")
+        (corpus / "group-members.tsv").unlink()
+
+        # A nested manifest seals its own subtree only: the generated
+        # tables it pins pass, and a maintained table beside that
+        # subtree stays in the token scan.
+        clusters = root / ("build-infra/docs/review-thread-clusters/"
+                           "unresolved-review-thread-corpus-fixture")
+        generated = clusters / "generated"
+        generated.mkdir(parents=True)
+        derived = generated / "review-clusters.tsv"
+        derived.write_text("id\tr3v-native-backend\n", encoding="utf-8")
+        (generated / EVIDENCE_MANIFEST).write_text(json.dumps({"files": {
+            "review-clusters.tsv": hashlib.sha256(
+                derived.read_bytes()).hexdigest()}}), encoding="utf-8")
+        expect("nested-generated-pinned", check(root, good), False)
+        (clusters / "review-status.tsv").write_text(
+            "id\tr3v-native-backend\n", encoding="utf-8")
+        expect("beside-nested-seal-scanned", check(root, good), True,
+               "review-status.tsv:1: r3v-native-backend spelling outside")
 
     failed = [label for label, ok in checks if not ok]
     for label, ok in checks:
