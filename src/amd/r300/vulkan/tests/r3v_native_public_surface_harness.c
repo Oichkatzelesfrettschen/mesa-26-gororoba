@@ -1003,6 +1003,56 @@ main(void)
       empty_color_map[i] = COLOR_SEED;
    vkUnmapMemory(device, color_memory);
 
+   /* The executing boundary for the multi-slice view types.  An array
+    * view creates and destroys -- the object_management cases that name
+    * it never sample through it -- while the color backend places one
+    * slice's base in RB3D_COLOROFFSET0, so binding that view as an
+    * attachment refuses at the pass and the command buffer never
+    * reaches EXECUTABLE.  Admission without this refusal would render a
+    * capability the TX program and the color backend do not carry.
+    */
+   {
+      VkImageView array_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(
+                device,
+                &(VkImageViewCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .image = image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+                   .format = R3V_NATIVE_TARGET_FORMAT,
+                   .subresourceRange = { .aspectMask =
+                                            VK_IMAGE_ASPECT_COLOR_BIT,
+                                         .levelCount = 1,
+                                         .layerCount = 1 },
+                },
+                NULL, &array_view) == VK_SUCCESS &&
+             array_view != VK_NULL_HANDLE);
+
+      VkFramebuffer array_framebuffer = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(
+                device,
+                &(VkFramebufferCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                   .renderPass = pass,
+                   .attachmentCount = 1,
+                   .pAttachments = &array_view,
+                   .width = R3V_NATIVE_TARGET_WIDTH,
+                   .height = R3V_NATIVE_TARGET_HEIGHT,
+                   .layers = 1,
+                },
+                NULL, &array_framebuffer) == VK_SUCCESS);
+
+      VkCommandBuffer array_cmd = fresh_cmd();
+      VkRenderPassBeginInfo array_begin = begin_pass;
+      array_begin.framebuffer = array_framebuffer;
+      vkCmdBeginRenderPass(array_cmd, &array_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      assert(vkEndCommandBuffer(array_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+
+      vkDestroyFramebuffer(device, array_framebuffer, NULL);
+      vkDestroyImageView(device, array_view, NULL);
+   }
+
    /* The load-op clear realizes the pass's own VkClearColorValue: the
     * attachment's format is UNORM, so the live member is float32 and
     * the texel is that quadruple through the color buffer's UNORM8
@@ -3644,23 +3694,175 @@ main(void)
              layered_view != VK_NULL_HANDLE);
       vkDestroyImageView(device, layered_view, NULL);
 
+      /* A one-slice view type resolves its slice at creation, so more
+       * than one layer under VK_IMAGE_VIEW_TYPE_2D names a slice the
+       * stride cannot reach and refuses.
+       */
       layered_view_info.subresourceRange.layerCount = 2;
       assert(vkCreateImageView(device, &layered_view_info, NULL,
                                &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
              layered_view == VK_NULL_HANDLE);
 
+      /* The array view types create and destroy over the layers the
+       * image holds.  They name a coordinate axis no cell indexes, so
+       * the executing routes refuse them and creation does not; the
+       * refusal below at vkCmdBeginRenderPass is where that lands.
+       */
       layered_view_info.subresourceRange.layerCount = 1;
       layered_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
       assert(vkCreateImageView(device, &layered_view_info, NULL,
-                               &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
-             layered_view == VK_NULL_HANDLE);
+                               &layered_view) == VK_SUCCESS &&
+             layered_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, layered_view, NULL);
 
+      layered_view_info.subresourceRange.baseArrayLayer = 0;
+      layered_view_info.subresourceRange.layerCount = 12;
+      assert(vkCreateImageView(device, &layered_view_info, NULL,
+                               &layered_view) == VK_SUCCESS &&
+             layered_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, layered_view, NULL);
+
+      layered_view_info.subresourceRange.baseArrayLayer = 5;
+      layered_view_info.subresourceRange.layerCount = 1;
       layered_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
       layered_view_info.subresourceRange.baseArrayLayer = 12;
       assert(vkCreateImageView(device, &layered_view_info, NULL,
                                &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
              layered_view == VK_NULL_HANDLE);
+
+      /* A layer range past the image's own layers refuses whatever the
+       * view type: the stride reaches no such slice.
+       */
+      layered_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+      layered_view_info.subresourceRange.baseArrayLayer = 8;
+      layered_view_info.subresourceRange.layerCount = 8;
+      assert(vkCreateImageView(device, &layered_view_info, NULL,
+                               &layered_view) == R3V_NATIVE_REFUSAL_RESULT &&
+             layered_view == VK_NULL_HANDLE);
       vkDestroyImage(device, layered_image, NULL);
+      /* Downstream fixtures inherit this range, so it returns to the
+       * one-slice shape the 2D view type resolves.
+       */
+      layered_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      layered_view_info.subresourceRange.baseArrayLayer = 0;
+      layered_view_info.subresourceRange.layerCount = 1;
+
+      /* A volume image stacks its depth slices at the layer stride, so
+       * the footprint the requirement reports is that stride times the
+       * depth, and the 3D view type names the whole volume.  The
+       * attachment route has no volume binding, so the color-attachment
+       * usage refuses and the sampling and transfer usages admit.
+       */
+      VkImageCreateInfo volume_info = image_info;
+      volume_info.imageType = VK_IMAGE_TYPE_3D;
+      volume_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+      volume_info.extent.depth = 4;
+      volume_info.arrayLayers = 1;
+      VkImage volume_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &volume_info, NULL, &volume_image) ==
+                VK_SUCCESS &&
+             volume_image != VK_NULL_HANDLE);
+      VkMemoryRequirements volume_requirements;
+      vkGetImageMemoryRequirements(device, volume_image,
+                                   &volume_requirements);
+      VkSubresourceLayout volume_layout;
+      vkGetImageSubresourceLayout(
+         device, volume_image,
+         &(VkImageSubresource){ .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT },
+         &volume_layout);
+      assert(volume_layout.depthPitch != 0 && volume_layout.arrayPitch == 0);
+      assert(volume_requirements.size == 4 * volume_layout.depthPitch);
+
+      VkImageView volume_view = VK_NULL_HANDLE;
+      VkImageViewCreateInfo volume_view_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .image = volume_image,
+         .viewType = VK_IMAGE_VIEW_TYPE_3D,
+         .format = volume_info.format,
+         .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+         },
+      };
+      assert(vkCreateImageView(device, &volume_view_info, NULL,
+                               &volume_view) == VK_SUCCESS &&
+             volume_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, volume_view, NULL);
+
+      /* A 2D view of a volume image names a slice the type cannot
+       * resolve, and a 3D view of a 2D image names an axis the image
+       * does not carry; both refuse.
+       */
+      volume_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      assert(vkCreateImageView(device, &volume_view_info, NULL,
+                               &volume_view) == R3V_NATIVE_REFUSAL_RESULT &&
+             volume_view == VK_NULL_HANDLE);
+      vkDestroyImage(device, volume_image, NULL);
+
+      volume_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      assert(vkCreateImage(device, &volume_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
+      /* VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT takes a square 2D image with
+       * six layers per cube; the cube view types name whole cubes.
+       */
+      VkImageCreateInfo cube_info = image_info;
+      cube_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+      cube_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+      cube_info.extent.width = 64;
+      cube_info.extent.height = 64;
+      cube_info.arrayLayers = 12;
+      VkImage cube_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &cube_info, NULL, &cube_image) ==
+                VK_SUCCESS &&
+             cube_image != VK_NULL_HANDLE);
+
+      VkImageView cube_view = VK_NULL_HANDLE;
+      VkImageViewCreateInfo cube_view_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .image = cube_image,
+         .viewType = VK_IMAGE_VIEW_TYPE_CUBE,
+         .format = cube_info.format,
+         .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 6,
+         },
+      };
+      assert(vkCreateImageView(device, &cube_view_info, NULL, &cube_view) ==
+                VK_SUCCESS &&
+             cube_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, cube_view, NULL);
+
+      cube_view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+      cube_view_info.subresourceRange.layerCount = 12;
+      assert(vkCreateImageView(device, &cube_view_info, NULL, &cube_view) ==
+                VK_SUCCESS &&
+             cube_view != VK_NULL_HANDLE);
+      vkDestroyImageView(device, cube_view, NULL);
+
+      /* A cube view over five faces is not a cube. */
+      cube_view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+      cube_view_info.subresourceRange.layerCount = 5;
+      assert(vkCreateImageView(device, &cube_view_info, NULL, &cube_view) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             cube_view == VK_NULL_HANDLE);
+      vkDestroyImage(device, cube_image, NULL);
+
+      /* A non-square extent and a layer count outside whole cubes each
+       * refuse the flag at creation.
+       */
+      cube_info.extent.height = 32;
+      assert(vkCreateImage(device, &cube_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+      cube_info.extent.height = 64;
+      cube_info.arrayLayers = 7;
+      assert(vkCreateImage(device, &cube_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
 
       /* The render family's layer count answers to the cell's
        * RB3D_COLOROFFSET0 ceiling, which is below the device limit the
@@ -3726,10 +3928,21 @@ main(void)
                 R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);
 
+      /* A volume image carries its depth on the depth axis alone:
+       * Vulkan holds arrayLayers at one for VK_IMAGE_TYPE_3D
+       * (VUID-VkImageCreateInfo-imageType-00961), and a 2D image with a
+       * depth past one has no volume to describe.
+       */
       VkImageCreateInfo three_d_info = image_info;
       three_d_info.imageType = VK_IMAGE_TYPE_3D;
       three_d_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
       three_d_info.extent = (VkExtent3D){ 64, 64, 4 };
+      three_d_info.arrayLayers = 2;
+      assert(vkCreateImage(device, &three_d_info, NULL, &refused_image) ==
+                R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+      three_d_info.imageType = VK_IMAGE_TYPE_2D;
+      three_d_info.arrayLayers = 1;
       assert(vkCreateImage(device, &three_d_info, NULL, &refused_image) ==
                 R3V_NATIVE_REFUSAL_RESULT &&
              refused_image == VK_NULL_HANDLE);
