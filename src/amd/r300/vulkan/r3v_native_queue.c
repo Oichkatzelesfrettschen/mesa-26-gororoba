@@ -247,14 +247,40 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
       /* Two render-shape cells concatenated, the second bound to the
        * merged indices; r300_tcl_bypass_triangle_multi_pass_emit
        * reproduces the stream, so the digest carries the geometry.  The
-       * frozen facts are the merged binding: two to four entries, each
-       * a vertex page read alone or a color target written alone, since
-       * an entry carrying both directions is a role alias the emitter
-       * admits no binding for.  Every deferred draw has executed.
+       * kind has two forms.  The recorder form
+       * (r3v_native_record_multi_pass) installs both cells with no
+       * deferred draw.  The public form is a command buffer recording
+       * two render passes with a draw each: both deferred draws stay
+       * pending across every submission, because each submit re-reads
+       * the vertex stream and re-clears, and the predicate runs ahead
+       * of that execution, so the frozen fact is both pending over
+       * extents inside the render family.  One pending draw is neither
+       * form.  The frozen binding facts are shared: two to four
+       * entries, each a vertex page read alone or a color target
+       * written alone, since an entry carrying both directions is a
+       * role alias the emitter admits no binding for.
        */
-      if (cmd_buffer->deferred_draws[0].pending ||
-          cmd_buffer->deferred_draws[1].pending ||
-          cmd_buffer->reference_count < R300_TRIANGLE_RENDER_SLOT_COUNT ||
+      const bool first_pending = cmd_buffer->deferred_draws[0].pending;
+      const bool second_pending = cmd_buffer->deferred_draws[1].pending;
+      if (first_pending != second_pending)
+         return true;
+      if (first_pending) {
+         if (cmd_buffer->deferred_draw_count != 2)
+            return true;
+         for (uint32_t d = 0; d < 2; d++) {
+            const uint32_t width = cmd_buffer->deferred_draws[d].target_width;
+            const uint32_t height =
+               cmd_buffer->deferred_draws[d].target_height;
+            const uint32_t pitch_pixels =
+               r3v_native_render_row_pitch_bytes(width) / 4;
+            if (width < 1 || width > R3V_NATIVE_RENDER_MAX_EXTENT ||
+                height < 1 || height > R3V_NATIVE_RENDER_MAX_EXTENT ||
+                pitch_pixels < width || pitch_pixels % 8 != 0 ||
+                pitch_pixels > R3V_NATIVE_RENDER_MAX_EXTENT)
+               return true;
+         }
+      }
+      if (cmd_buffer->reference_count < R300_TRIANGLE_RENDER_SLOT_COUNT ||
           cmd_buffer->reference_count > 2 * R300_TRIANGLE_RENDER_SLOT_COUNT)
          return true;
       const struct r3v_native_bo_reference *c = cmd_buffer->references;
