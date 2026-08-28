@@ -37,21 +37,38 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(vk_framebuffer, framebuffer,
                   pRenderPassBegin->framebuffer);
 
-   /* The bounded contract is one pass with at most one draw per command
-    * buffer; a second pass would need a second clear and draw lowering the
-    * cell does not carry, so it refuses instead of recording a pass whose
-    * load op never executes.  Copies already recorded are the pre-draw
-    * group the queue executes ahead of this pass, so they stand.
-    */
-   /* An active occlusion query's zero count is exact only while no
+   /* The bounded contract is R3V_NATIVE_DEFERRED_DRAW_MAX passes per
+    * command buffer, each carrying its own load-op clear, carrier, and
+    * vertex execution.  A pass past that bound has no deferred record to
+    * fill, so it refuses instead of recording a pass whose load op never
+    * executes.  Copies already recorded are the pre-draw group the queue
+    * executes ahead of the first pass, so they stand.
+    *
+    * Concatenating recorded cells produces a stream no offline emitter
+    * reproduces, so the arming digest has nothing to compare a second
+    * pass against; a multi-pass buffer therefore admits only while the
+    * submit hazard gate is closed, and the geometry predicate reports
+    * its kind unfrozen so an open gate refuses before any ioctl.
+    *
+    * An active occlusion query's zero count is exact only while no
     * fragment-producing span records, so the pass refuses inside one.
     */
-   if (cmd_buffer->pass_target != NULL || cmd_buffer->draw_recorded ||
+   if (cmd_buffer->pass_target != NULL ||
        cmd_buffer->active_query_pool != NULL ||
-       cmd_buffer->deferred_draw.pending ||
+       cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
        framebuffer->layers != 1 || framebuffer->attachment_count != 1) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
+   /* The GPU producer route composes one consumer stream over one
+    * carrier and judges one read-back, so a second pass beside it has no
+    * oracle; the route keeps the single-pass buffer.
+    */
+   if (cmd_buffer->deferred_draw_count != 0 &&
+       cmd_buffer->deferred_draws[0].gpu_producer_delivery) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -94,7 +111,9 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
 
    cmd_buffer->pass_target = view->image;
    cmd_buffer->pass_target_layer_offset = view->layer_offset_bytes;
-   cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
+   cmd_buffer->draw_recorded = false;
+   cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count++] =
+      (struct r3v_native_deferred_draw){
       .pending = true,
       .target_memory = view->image->memory,
       .target_fill_offset =
@@ -272,11 +291,16 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
     * draw's output; the pass carries one or the other.
     */
    if (cmd_buffer->pass_target == NULL || pipeline == NULL ||
-       cmd_buffer->draw_recorded ||
-       cmd_buffer->deferred_draw.clear_rect_count != 0) {
+       cmd_buffer->draw_recorded || cmd_buffer->deferred_draw_count == 0 ||
+       cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+             .clear_rect_count != 0) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
+   /* The draw fills the pass CmdBeginRenderPass opened, which is the
+    * last record in the list.
+    */
+   const uint32_t pass_slot = cmd_buffer->deferred_draw_count - 1;
 
    /* An indexed draw reads its indices from the bound index
     * buffer at execution, so the record proves the index range alone:
@@ -525,13 +549,15 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       return;
    }
 
-   cmd_buffer->owned_carrier = carrier;
+   cmd_buffer->owned_carriers[pass_slot] = carrier;
    /* The pass's load-op clear was resolved at CmdBeginRenderPass; the
     * draw record replaces the deferred draw whole, so the clear texel
     * travels across that replacement.
     */
-   const uint32_t clear_dword = cmd_buffer->deferred_draw.clear_dword;
-   cmd_buffer->deferred_draw = (struct r3v_native_deferred_draw){
+   const uint32_t clear_dword =
+      cmd_buffer->deferred_draws[pass_slot].clear_dword;
+   cmd_buffer->deferred_draws[pass_slot] =
+      (struct r3v_native_deferred_draw){
       .pending = true,
       .stream_mask = pipeline->attribute_mask,
       .first_vertex = args->first_vertex,
@@ -558,7 +584,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
    };
-   memcpy(cmd_buffer->deferred_draw.streams, streams, sizeof(streams));
+   memcpy(cmd_buffer->deferred_draws[pass_slot].streams, streams,
+          sizeof(streams));
    cmd_buffer->draw_recorded = true;
 }
 

@@ -158,10 +158,10 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * through one register class, so a shape inside the family is
        * geometry the emission already froze.
        */
-      if (!cmd_buffer->deferred_draw.pending)
+      if (!cmd_buffer->deferred_draws[0].pending)
          return false;
-      const uint32_t width = cmd_buffer->deferred_draw.target_width;
-      const uint32_t height = cmd_buffer->deferred_draw.target_height;
+      const uint32_t width = cmd_buffer->deferred_draws[0].target_width;
+      const uint32_t height = cmd_buffer->deferred_draws[0].target_height;
       const uint32_t pitch_pixels =
          r3v_native_render_row_pitch_bytes(width) / 4;
       return width < 1 || width > R3V_NATIVE_RENDER_MAX_EXTENT ||
@@ -170,21 +170,21 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
              pitch_pixels > R3V_NATIVE_RENDER_MAX_EXTENT;
    }
    case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
-      return cmd_buffer->deferred_draw.pending &&
-             (cmd_buffer->deferred_draw.target_width !=
+      return cmd_buffer->deferred_draws[0].pending &&
+             (cmd_buffer->deferred_draws[0].target_width !=
                  R3V_NATIVE_TARGET_WIDTH ||
-              cmd_buffer->deferred_draw.target_height !=
+              cmd_buffer->deferred_draws[0].target_height !=
                  R3V_NATIVE_TARGET_HEIGHT);
    case R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED: {
       /* The sampled cell rides the render family's extent contract with
        * a third relocation: vertex and texture device-read, color
        * device-written.
        */
-      if (!cmd_buffer->deferred_draw.pending ||
+      if (!cmd_buffer->deferred_draws[0].pending ||
           cmd_buffer->reference_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT)
          return true;
-      const uint32_t s_width = cmd_buffer->deferred_draw.target_width;
-      const uint32_t s_height = cmd_buffer->deferred_draw.target_height;
+      const uint32_t s_width = cmd_buffer->deferred_draws[0].target_width;
+      const uint32_t s_height = cmd_buffer->deferred_draws[0].target_height;
       const uint32_t s_pitch =
          r3v_native_render_row_pitch_bytes(s_width) / 4;
       if (s_width < 1 || s_width > R3V_NATIVE_RENDER_MAX_EXTENT ||
@@ -211,7 +211,7 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * the vertex page device-read and the color target device-written,
        * with no deferred public draw riding the kind.
        */
-      if (cmd_buffer->deferred_draw.pending ||
+      if (cmd_buffer->deferred_draws[0].pending ||
           cmd_buffer->reference_count != R300_TRIANGLE_RENDER_SLOT_COUNT)
          return true;
       const struct r3v_native_bo_reference *vertex =
@@ -231,7 +231,7 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * arrays and the second target keep one direction each.  No
        * deferred public draw rides the kind.
        */
-      if (cmd_buffer->deferred_draw.pending ||
+      if (cmd_buffer->deferred_draws[0].pending ||
           cmd_buffer->reference_count != R3V_NATIVE_COMPOSED_REFERENCE_COUNT)
          return true;
       const struct r3v_native_bo_reference *c = cmd_buffer->references;
@@ -243,6 +243,12 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
              c[2].write_domain != 0 || c[3].read_domains != 0 ||
              c[3].write_domain != RADEON_GEM_DOMAIN_GTT;
    }
+   case R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS:
+      /* The concatenated stream is the recording's own, so no offline
+       * emitter reproduces the digest the gate would compare it
+       * against; the kind reports unfrozen and the armed path refuses.
+       */
+      return true;
    case R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE: {
       /* The declared shapes are the geometry and the digest carries
        * them; the frozen facts are the merged binding the recorder
@@ -254,7 +260,7 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * device-written in GTT, where the host reads it back.  No
        * deferred public draw rides the kind.
        */
-      if (cmd_buffer->deferred_draw.pending ||
+      if (cmd_buffer->deferred_draws[0].pending ||
           cmd_buffer->reference_count != R3V_NATIVE_MSAA_REFERENCE_COUNT)
          return true;
       const struct r3v_native_bo_reference *m = cmd_buffer->references;
@@ -270,10 +276,10 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * and crosses the carrier through both engines, so the vertex
        * slot's relocation carries the GTT domain in both directions.
        */
-      if (!cmd_buffer->deferred_draw.pending ||
-          cmd_buffer->deferred_draw.target_width !=
+      if (!cmd_buffer->deferred_draws[0].pending ||
+          cmd_buffer->deferred_draws[0].target_width !=
              R3V_NATIVE_TARGET_WIDTH ||
-          cmd_buffer->deferred_draw.target_height !=
+          cmd_buffer->deferred_draws[0].target_height !=
              R3V_NATIVE_TARGET_HEIGHT)
          return true;
       if (cmd_buffer->reference_count != R300_TRIANGLE_RENDER_SLOT_COUNT)
@@ -289,10 +295,10 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
        * the color target is written, and the slot and source arrays are
        * device-read; the slot array is the admission's own page.
        */
-      if (!cmd_buffer->deferred_draw.pending ||
-          cmd_buffer->deferred_draw.target_width !=
+      if (!cmd_buffer->deferred_draws[0].pending ||
+          cmd_buffer->deferred_draws[0].target_width !=
              R3V_NATIVE_TARGET_WIDTH ||
-          cmd_buffer->deferred_draw.target_height !=
+          cmd_buffer->deferred_draws[0].target_height !=
              R3V_NATIVE_TARGET_HEIGHT)
          return true;
       if (cmd_buffer->reference_count != 4)
@@ -966,7 +972,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                        "error %d", cmd_buffer->vk.record_result);
    }
    if (cmd_buffer->ib_size_dwords == 0 ||
-       cmd_buffer->deferred_draw.pending ||
+       cmd_buffer->deferred_draws[0].pending ||
        cmd_buffer->deferred_dispatch.pending ||
        cmd_buffer->deferred_copy_count != 0) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -1148,7 +1154,7 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
     * path does, so one accessor describes both.
     */
    device->transport_gpu_producer_delivery =
-      cmd_buffer->deferred_draw.gpu_producer_delivery;
+      cmd_buffer->deferred_draws[0].gpu_producer_delivery;
    device->transport_cell_kind = cmd_buffer->cell_kind;
    device->transport_return_ns = 0;
    device->transport_enter_ns = r3v_native_raw_now_ns();
@@ -1376,7 +1382,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             return vk_error(device, VK_ERROR_DEVICE_LOST);
          }
          VkResult deferred =
-            r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
+            r3v_native_cmd_buffer_execute_deferred_draws(device, cmd_buffer);
          if (deferred != VK_SUCCESS) {
             if (deferred == VK_ERROR_MEMORY_MAP_FAILED)
                return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1676,7 +1682,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * authorization.
        */
       VkResult deferred =
-         r3v_native_cmd_buffer_execute_deferred_draw(device, cmd_buffer);
+         r3v_native_cmd_buffer_execute_deferred_draws(device, cmd_buffer);
       if (deferred != VK_SUCCESS) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -1764,7 +1770,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * open transcript, and it runs identically on every route.
        */
       device->transport_gpu_producer_delivery =
-         cmd_buffer->deferred_draw.gpu_producer_delivery;
+         cmd_buffer->deferred_draws[0].gpu_producer_delivery;
       device->transport_cell_kind = cmd_buffer->cell_kind;
       device->transport_return_ns = 0;
       device->transport_enter_ns = r3v_native_raw_now_ns();

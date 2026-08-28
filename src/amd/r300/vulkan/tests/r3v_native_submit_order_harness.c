@@ -1568,7 +1568,7 @@ run_arm(enum arm arm, const char *name)
 
    struct r3v_native_cmd_buffer *native_cmd =
       r3v_native_cmd_buffer_from_handle(cmd);
-   assert(native_cmd->ib_size_dwords != 0 && native_cmd->owned_carrier);
+   assert(native_cmd->ib_size_dwords != 0 && native_cmd->owned_carriers[0]);
    /* The recorded cell is the varying cell exactly when the pipeline
     * carries the varying: its dword count and digest are the pinned
     * identity the arm declared. */
@@ -1618,15 +1618,15 @@ run_arm(enum arm arm, const char *name)
    {
       void *carrier_map = NULL;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_cmd->owned_carrier->bo,
+                                  &native_cmd->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       memcpy(carrier_before, carrier_map, sizeof(carrier_before));
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_cmd->owned_carrier->bo, carrier_map);
+                             &native_cmd->owned_carriers[0]->bo, carrier_map);
    }
 
    if (arm == ARM_KNOWN_BAD_PREMATURE_DRAW) {
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_cmd) == VK_SUCCESS);
    }
    if (arm == ARM_GPU_FETCHED_COMPOSE_FAILURE)
@@ -1662,11 +1662,11 @@ run_arm(enum arm arm, const char *name)
    {
       void *carrier_map = NULL;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_cmd->owned_carrier->bo,
+                                  &native_cmd->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       memcpy(carrier_after, carrier_map, sizeof(carrier_after));
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_cmd->owned_carrier->bo, carrier_map);
+                             &native_cmd->owned_carriers[0]->bo, carrier_map);
    }
    const bool carrier_untouched =
       memcmp(carrier_before, carrier_after, sizeof(carrier_before)) == 0;
@@ -1853,6 +1853,7 @@ run_arm(enum arm arm, const char *name)
       break;
    case ARM_MULTI_ATTRIBUTE_UNBOUND_REFUSED:
    case ARM_MULTI_ATTRIBUTE_ALIAS_TARGET_REFUSED:
+   case ARM_SAMPLED_ARRAY_VIEW_REFUSED:
       /* Returned above at vkEndCommandBuffer. */
       assert(!"unreachable");
       break;

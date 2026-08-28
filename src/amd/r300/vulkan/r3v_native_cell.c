@@ -429,6 +429,28 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
          };
    }
 
+   /* A second recorded pass appends its cell to the installed stream:
+    * each half opens with its own first-draw contract, so the
+    * concatenation carries no state across the boundary, and every cell
+    * closes with the destination-cache flush that publishes its writes
+    * before the next one runs -- the coherency edge the composed cell
+    * holds on silicon.  A first pass installs.
+    */
+   if (cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1) {
+      const VkResult appended = r3v_native_cmd_buffer_append_ib(
+         device, cmd_buffer, &cell, references, slot_count);
+      free(references);
+      if (appended != VK_SUCCESS) {
+         r300_tcl_bypass_triangle_release(&cell);
+         return appended;
+      }
+      /* append_ib copied the appended dwords; the descriptor still owns
+       * its allocation.
+       */
+      r300_tcl_bypass_triangle_release(&cell);
+      return VK_SUCCESS;
+   }
+
    r3v_native_cmd_buffer_install_ib(cmd_buffer,
                                     sampled != NULL
                                        ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
@@ -527,17 +549,18 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                          triangle_count, sampled);
 }
 
-/* Submission-time execution of the public render pass: an empty pass applies
- * its load-op clear, while a draw also reads the bound stream.  Both paths
- * execute here, so a vertex write between record and submit is honored and
- * an unsubmitted command buffer leaves application memory untouched.
+/* Submission-time execution of one recorded render pass: an empty pass
+ * applies its load-op clear, while a draw also reads the bound stream.
+ * Both paths execute here, so a vertex write between record and submit
+ * is honored and an unsubmitted command buffer leaves application
+ * memory untouched.  The pass carries its own carrier, so a command
+ * buffer holding several passes calls this once per record.
  */
-VkResult
-r3v_native_cmd_buffer_execute_deferred_draw(
-   struct r3v_native_device *device,
-   struct r3v_native_cmd_buffer *cmd_buffer)
+static VkResult
+execute_one_deferred_draw(struct r3v_native_device *device,
+                          struct r3v_native_deferred_draw *draw,
+                          struct r3v_native_memory *carrier)
 {
-   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
    if (!draw->pending)
       return VK_SUCCESS;
 
@@ -588,8 +611,6 @@ r3v_native_cmd_buffer_execute_deferred_draw(
       }
       return VK_SUCCESS;
    }
-
-   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
 
    /* Every stream the job reads maps for the execution; two slots may
     * share one memory (one buffer bound to two bindings, or two buffers
@@ -986,6 +1007,26 @@ r3v_native_cmd_buffer_execute_deferred_draw(
    return fill_color(device, draw->target_memory, draw->target_fill_offset,
                      draw->target_fill_bytes, draw->clear_dword);
 }
+/* Submission-time execution of every recorded render pass, in record
+ * order: each carries its own load-op clear, its own carrier, and its
+ * own vertex execution, so a second pass executes exactly what a first
+ * one does over its own state.
+ */
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draws(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   const uint32_t count = MAX2(cmd_buffer->deferred_draw_count, 1u);
+   for (uint32_t i = 0; i < count; i++) {
+      const VkResult result = execute_one_deferred_draw(
+         device, &cmd_buffer->deferred_draws[i],
+         cmd_buffer->owned_carriers[i]);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   return VK_SUCCESS;
+}
 
 /* The producer footprint over the triangle's three records: the odd
  * count pads to the four-slot pitch, sixteen dwords of C4_32_FP row.
@@ -1021,7 +1062,7 @@ static VkResult
 admit_fetched_producer(struct r3v_native_device *device,
                        struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draws[0];
 
    if (device->gpu_producer_quarantined) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -1079,7 +1120,7 @@ admit_fetched_producer(struct r3v_native_device *device,
     * driver-owned and distinct by construction; the application's source
     * memory must not be the color target's.
     */
-   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carriers[0];
    if (memory->bo.handle == draw->target_memory->bo.handle ||
        memory->bo.handle == carrier->bo.handle) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
@@ -1337,7 +1378,7 @@ r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draws[0];
    if (!draw->pending || draw->stream_mask == 0)
       return VK_SUCCESS;
 
@@ -1550,7 +1591,7 @@ r3v_native_deferred_draw_admit_gpu_producer(
     * decides every slot: a record dword still holding the poison names
     * a slot the pass left unwritten, and the pad slot must keep it.
     */
-   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carriers[0];
    bool owns_carrier_map = carrier->map == NULL;
    if (owns_carrier_map &&
        radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
@@ -1601,7 +1642,7 @@ r3v_native_deferred_draw_verify_gpu_producer(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draw;
+   struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draws[0];
    if (!draw->gpu_producer_delivery)
       return VK_SUCCESS;
 
@@ -1614,7 +1655,7 @@ r3v_native_deferred_draw_verify_gpu_producer(
     */
    assert(draw->gpu_producer_dwords != 0);
 
-   struct r3v_native_memory *carrier = cmd_buffer->owned_carrier;
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carriers[0];
    bool owns_map = carrier->map == NULL;
    if (owns_map &&
        radeon_drm_vk_bo_map(&device->drm, &carrier->bo,

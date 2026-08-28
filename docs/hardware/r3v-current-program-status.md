@@ -736,13 +736,30 @@ above is rung zero; the ladder after it runs in this order:
    `TX_INVALTAGS` on this silicon.  The submission ran inside a
    hardware-armed SB600 counter over `DRM_IOCTL_RADEON_CS` through fence
    completion, a 134 us guarded interval against the 1.7 s operational
-   grace.  Open behind it, a recording contract
-   admitting a second render pass and a second deferred draw per command
-   buffer, which the one-pass bound refuses today
-   (`r3v_CmdBeginRenderPass`) because `deferred_draw` carries one clear,
-   one carrier, and one vertex execution; the receipt opens it, since
-   a conformance case reaching the path moves a row now that the cell
-   holds silicon evidence.
+   grace.  The recording contract behind it lands: a
+   command buffer carries `R3V_NATIVE_DEFERRED_DRAW_MAX` render passes,
+   each with its own load-op clear, carrier, and vertex execution, and
+   the queue executes them in record order.  Two clear-only passes take
+   the zero-IB path and execute under the closed submission gate, both
+   targets carrying their own `VkClearColorValue`; a pass past the bound
+   has no deferred record to fill and refuses.  A second pass that
+   records a draw appends its cell to the installed stream through
+   `r3v_native_cmd_buffer_append_ib`, which merges the buffer references
+   by handle and binds the appended payloads to the merged indices, the
+   queue's own merge over the result staying idempotent.  Each half opens
+   with its own first-draw contract and closes with the
+   destination-cache flush, so no state crosses the boundary -- the
+   coherency edge this rung's receipt holds on silicon.  The
+   concatenation is the recording's own stream, so no offline emitter
+   reproduces the digest the arming gate compares against: the
+   `triangle_multi_pass` kind reports its geometry unfrozen and an armed
+   submission refuses before any ioctl, while the plan capture and
+   replay routes, whose plan binds the exact recorded stream at capture,
+   execute it.  Open behind that: an offline emitter for the
+   concatenation, which is what would let a two-cell buffer reach an
+   attended arming, and the GPU producer route, which composes one
+   consumer stream over one carrier and judges one read-back, so a
+   second pass beside it refuses by name.
 
 A mandatory format feature the RS482 pixel pipe lacks stays classified as
 structural nonconformance; a software claim for it is fabricated

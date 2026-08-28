@@ -931,25 +931,25 @@ main(void)
    assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
    assert(setenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
    r3v_native_device_refresh_delivery_gates(constant_device);
-   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
              constant_device, native_constant) ==
           VK_ERROR_INITIALIZATION_FAILED);
    assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
    assert(unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") == 0);
    r3v_native_device_refresh_delivery_gates(constant_device);
 
-   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
              constant_device, native_constant) == VK_SUCCESS);
    void *constant_carrier_map = NULL;
    assert(radeon_drm_vk_bo_map(&constant_device->drm,
-                               &native_constant->owned_carrier->bo,
+                               &native_constant->owned_carriers[0]->bo,
                                &constant_carrier_map) == 0);
    static const float expected_constant[4] = { 8.0f, 8.0f, 0.0f, 1.0f };
    for (unsigned vertex = 0; vertex < 3; vertex++)
       assert(memcmp((const uint8_t *)constant_carrier_map + vertex * 16,
                     expected_constant, sizeof(expected_constant)) == 0);
    radeon_drm_vk_bo_unmap(&constant_device->drm,
-                          &native_constant->owned_carrier->bo,
+                          &native_constant->owned_carriers[0]->bo,
                           constant_carrier_map);
    uint32_t *constant_color_map = NULL;
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
@@ -971,9 +971,9 @@ main(void)
    vkCmdEndRenderPass(empty_cmd);
    assert(vkEndCommandBuffer(empty_cmd) == VK_SUCCESS);
    assert(native_empty->ib_size_dwords == 0);
-   assert(native_empty->deferred_draw.pending);
-   assert(native_empty->deferred_draw.stream_mask == 0);
-   assert(native_empty->owned_carrier == NULL);
+   assert(native_empty->deferred_draws[0].pending);
+   assert(native_empty->deferred_draws[0].stream_mask == 0);
+   assert(native_empty->owned_carriers[0] == NULL);
    uint32_t *empty_color_map = NULL;
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&empty_color_map) == VK_SUCCESS);
@@ -1051,6 +1051,211 @@ main(void)
 
       vkDestroyFramebuffer(device, array_framebuffer, NULL);
       vkDestroyImageView(device, array_view, NULL);
+   }
+
+   /* Two render passes in one command buffer.  Each carries its own
+    * load-op clear, its own carrier, and its own vertex execution, so
+    * the second executes exactly what the first does over its own
+    * state, and the queue runs them in record order.  The clear-only
+    * shape takes the zero-IB path, which the closed submission gate
+    * admits, so both targets carry their own clear after one submit.
+    */
+   {
+      VkImage second_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &image_info, NULL, &second_image) ==
+             VK_SUCCESS);
+      VkMemoryRequirements second_reqs;
+      vkGetImageMemoryRequirements(device, second_image, &second_reqs);
+      VkDeviceMemory second_memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(
+                device,
+                &(VkMemoryAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                   .allocationSize = second_reqs.size,
+                   .memoryTypeIndex = 0,
+                },
+                NULL, &second_memory) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, second_image, second_memory, 0) ==
+             VK_SUCCESS);
+      VkImageView second_view = VK_NULL_HANDLE;
+      assert(vkCreateImageView(
+                device,
+                &(VkImageViewCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .image = second_image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                   .format = R3V_NATIVE_TARGET_FORMAT,
+                   .subresourceRange = { .aspectMask =
+                                            VK_IMAGE_ASPECT_COLOR_BIT,
+                                         .levelCount = 1,
+                                         .layerCount = 1 },
+                },
+                NULL, &second_view) == VK_SUCCESS);
+      VkFramebuffer second_framebuffer = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(
+                device,
+                &(VkFramebufferCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                   .renderPass = pass,
+                   .attachmentCount = 1,
+                   .pAttachments = &second_view,
+                   .width = R3V_NATIVE_TARGET_WIDTH,
+                   .height = R3V_NATIVE_TARGET_HEIGHT,
+                   .layers = 1,
+                },
+                NULL, &second_framebuffer) == VK_SUCCESS);
+
+      /* Distinct clear colors, so each target names the pass that wrote
+       * it.  B8G8R8A8 stores the bytes B, G, R, A, so (1, 0, 0, 1)
+       * reads 0xffff0000 as a little-endian dword and (0, 0, 1, 1)
+       * reads 0xff0000ff.
+       */
+      VkRenderPassBeginInfo first_begin = begin_pass;
+      first_begin.pClearValues = &(VkClearValue){
+         .color = { .float32 = { 1.0f, 0.0f, 0.0f, 1.0f } },
+      };
+      VkRenderPassBeginInfo second_begin = begin_pass;
+      second_begin.framebuffer = second_framebuffer;
+      second_begin.pClearValues = &(VkClearValue){
+         .color = { .float32 = { 0.0f, 0.0f, 1.0f, 1.0f } },
+      };
+
+      uint32_t *seed = NULL;
+      assert(vkMapMemory(device, second_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&seed) == VK_SUCCESS);
+      for (unsigned i = 0; i < R3V_NATIVE_TARGET_MEMORY_BYTES / 4; i++)
+         seed[i] = COLOR_SEED;
+      vkUnmapMemory(device, second_memory);
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&seed) == VK_SUCCESS);
+      for (unsigned i = 0; i < R3V_NATIVE_TARGET_MEMORY_BYTES / 4; i++)
+         seed[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
+
+      VkCommandBuffer two_pass_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(two_pass_cmd, &first_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(two_pass_cmd);
+      vkCmdBeginRenderPass(two_pass_cmd, &second_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(two_pass_cmd);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_two_pass, two_pass_cmd);
+      assert(native_two_pass->deferred_draw_count == 2);
+      assert(native_two_pass->deferred_draws[0].pending &&
+             native_two_pass->deferred_draws[1].pending);
+      /* Neither pass records a draw, so the buffer carries no cell and
+       * takes the zero-IB path.
+       */
+      assert(native_two_pass->ib_size_dwords == 0);
+      assert(vkEndCommandBuffer(two_pass_cmd) == VK_SUCCESS);
+      assert(vkQueueSubmit(
+                queue, 1,
+                &(VkSubmitInfo){
+                   .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                   .commandBufferCount = 1,
+                   .pCommandBuffers = &two_pass_cmd,
+                },
+                VK_NULL_HANDLE) == VK_SUCCESS);
+
+      uint32_t *first_map = NULL;
+      uint32_t *second_map = NULL;
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&first_map) == VK_SUCCESS);
+      assert(vkMapMemory(device, second_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&second_map) == VK_SUCCESS);
+      assert(first_map[0] == 0xffff0000u);
+      assert(first_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+             0xffff0000u);
+      assert(second_map[0] == 0xff0000ffu);
+      assert(second_map[(R3V_NATIVE_TARGET_MEMORY_BYTES / 4) - 1] ==
+             0xff0000ffu);
+      vkUnmapMemory(device, color_memory);
+      vkUnmapMemory(device, second_memory);
+
+      /* A third pass has no deferred record to fill and refuses. */
+      VkCommandBuffer three_pass_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(three_pass_cmd, &first_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(three_pass_cmd);
+      vkCmdBeginRenderPass(three_pass_cmd, &second_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(three_pass_cmd);
+      vkCmdBeginRenderPass(three_pass_cmd, &first_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      assert(vkEndCommandBuffer(three_pass_cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
+      /* Two passes that each record a draw carry two cells, so the
+       * second appends to the installed stream: the concatenation keeps
+       * both lengths, merges the four buffer references by handle, and
+       * binds the appended payloads to the merged indices.  Each half
+       * opens with its own first-draw contract and closes with the
+       * destination-cache flush, so no state crosses the boundary.
+       */
+      VkCommandBuffer two_draw_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(two_draw_cmd, &first_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(two_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(two_draw_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(two_draw_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(two_draw_cmd);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_two_draw, two_draw_cmd);
+      const uint32_t one_cell_dwords = native_two_draw->ib_size_dwords;
+      assert(one_cell_dwords != 0);
+
+      vkCmdBeginRenderPass(two_draw_cmd, &second_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(two_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(two_draw_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(two_draw_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(two_draw_cmd);
+      assert(vkEndCommandBuffer(two_draw_cmd) == VK_SUCCESS);
+
+      assert(native_two_draw->deferred_draw_count == 2);
+      assert(native_two_draw->deferred_draws[0].stream_mask != 0 &&
+             native_two_draw->deferred_draws[1].stream_mask != 0);
+      assert(native_two_draw->owned_carriers[0] != NULL &&
+             native_two_draw->owned_carriers[1] != NULL &&
+             native_two_draw->owned_carriers[0] !=
+                native_two_draw->owned_carriers[1]);
+      assert(native_two_draw->cell_kind ==
+             R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS);
+      assert(native_two_draw->ib_size_dwords == 2 * one_cell_dwords);
+      /* Four distinct buffer objects: a carrier and a target per pass. */
+      assert(native_two_draw->reference_count == 4);
+      for (uint32_t a = 0; a < native_two_draw->reference_count; a++) {
+         for (uint32_t b = a + 1; b < native_two_draw->reference_count; b++)
+            assert(native_two_draw->references[a].handle !=
+                   native_two_draw->references[b].handle);
+      }
+
+      /* The concatenation is the recording's own stream, so no offline
+       * emitter reproduces the digest the arming gate would compare it
+       * against.  The multi-pass kind is what carries that: its geometry
+       * predicate reports unfrozen, so an armed submission refuses
+       * before any ioctl, and the plan capture and replay routes, whose
+       * plan binds the exact recorded stream at capture, are where the
+       * concatenation executes.  Submitting here would lose the device
+       * for every fixture that follows, so the kind assertion above
+       * stands for the refusal.
+       */
+
+      vkDestroyFramebuffer(device, second_framebuffer, NULL);
+      vkDestroyImageView(device, second_view, NULL);
+      vkDestroyImage(device, second_image, NULL);
+      vkFreeMemory(device, second_memory, NULL);
+
+      /* Restore the seed the following fixtures expect. */
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&first_map) == VK_SUCCESS);
+      for (unsigned i = 0;
+           i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4; i++)
+         first_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
    }
 
    /* The load-op clear realizes the pass's own VkClearColorValue: the
@@ -1355,9 +1560,9 @@ main(void)
    assert(memcmp(native_cmd->ib, reference.ib,
                  reference.ib_size_dwords * sizeof(uint32_t)) == 0);
    assert(native_cmd->reference_count == R300_TRIANGLE_RENDER_SLOT_COUNT);
-   assert(native_cmd->owned_carrier != NULL);
+   assert(native_cmd->owned_carriers[0] != NULL);
    struct r3v_native_memory *const recorded_carrier =
-      native_cmd->owned_carrier;
+      native_cmd->owned_carriers[0];
    assert(native_cmd->references[R300_TRIANGLE_SLOT_VERTEX].handle ==
           recorded_carrier->bo.handle);
    r300_tcl_bypass_triangle_release(&reference);
@@ -1367,7 +1572,7 @@ main(void)
     * touched neither the application's image memory nor its own
     * carrier.
     */
-   assert(native_cmd->deferred_draw.pending);
+   assert(native_cmd->deferred_draws[0].pending);
    uint32_t *color_map = NULL;
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&color_map) == VK_SUCCESS);
@@ -1526,7 +1731,7 @@ main(void)
                            VK_SUBPASS_CONTENTS_INLINE);
       vkCmdEndRenderPass(ordered_copy_cmd);
       vkCmdCopyBuffer(ordered_copy_cmd, staging, staging, 1, &buffer_copy);
-      assert(native_ordered_copy->deferred_draw.pending);
+      assert(native_ordered_copy->deferred_draws[0].pending);
       assert(native_ordered_copy->deferred_copy_count == 2);
       assert(native_ordered_copy->deferred_copies[1].group ==
              R3V_NATIVE_COPY_GROUP_AFTER_DRAW);
@@ -2424,11 +2629,11 @@ main(void)
    uint32_t carrier_before[R300_TRIANGLE_VERTEX_DWORDS];
    void *carrier_map = NULL;
    assert(radeon_drm_vk_bo_map(&native_device->drm,
-                               &native_cmd->owned_carrier->bo,
+                               &native_cmd->owned_carriers[0]->bo,
                                &carrier_map) == 0);
    memcpy(carrier_before, carrier_map, sizeof(carrier_before));
    radeon_drm_vk_bo_unmap(&native_device->drm,
-                          &native_cmd->owned_carrier->bo, carrier_map);
+                          &native_cmd->owned_carriers[0]->bo, carrier_map);
    const VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .commandBufferCount = 1,
@@ -2437,11 +2642,11 @@ main(void)
    assert(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE) ==
           VK_ERROR_DEVICE_LOST);
    assert(radeon_drm_vk_bo_map(&native_device->drm,
-                               &native_cmd->owned_carrier->bo,
+                               &native_cmd->owned_carriers[0]->bo,
                                &carrier_map) == 0);
    assert(memcmp(carrier_before, carrier_map, sizeof(carrier_before)) == 0);
    radeon_drm_vk_bo_unmap(&native_device->drm,
-                          &native_cmd->owned_carrier->bo, carrier_map);
+                          &native_cmd->owned_carriers[0]->bo, carrier_map);
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&color_map) == VK_SUCCESS);
    assert(color_map[0] == COLOR_SEED);
@@ -2451,10 +2656,10 @@ main(void)
    /* The execution re-reads the live stream: the deferred executor,
     * driven directly, carries the mutated record into the carrier.
     */
-   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
              native_device, native_cmd) == VK_SUCCESS);
    assert(radeon_drm_vk_bo_map(&native_device->drm,
-                               &native_cmd->owned_carrier->bo,
+                               &native_cmd->owned_carriers[0]->bo,
                                &carrier_map) == 0);
    {
       /* The carrier holds the transformed stream: the mutated NDC x
@@ -2472,7 +2677,7 @@ main(void)
       assert(carrier_first == expected_bits);
    }
    radeon_drm_vk_bo_unmap(&native_device->drm,
-                          &native_cmd->owned_carrier->bo, carrier_map);
+                          &native_cmd->owned_carriers[0]->bo, carrier_map);
 
    /* Restore and re-execute: the runtime latches the device lost after
     * the refused submit and later submits return before the driver
@@ -2485,17 +2690,17 @@ main(void)
           VK_SUCCESS);
    memcpy(map, ndc_triangle, sizeof(ndc_triangle));
    vkUnmapMemory(device, vertex_memory);
-   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
              native_device, native_cmd) == VK_SUCCESS);
-   assert(native_cmd->owned_carrier == recorded_carrier);
+   assert(native_cmd->owned_carriers[0] == recorded_carrier);
 
    assert(radeon_drm_vk_bo_map(&native_device->drm,
-                               &native_cmd->owned_carrier->bo,
+                               &native_cmd->owned_carriers[0]->bo,
                                &carrier_map) == 0);
    assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
                  R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
    radeon_drm_vk_bo_unmap(&native_device->drm,
-                          &native_cmd->owned_carrier->bo, carrier_map);
+                          &native_cmd->owned_carriers[0]->bo, carrier_map);
 
    /* The load-op clear executed over the image's declared footprint
     * alone: sentinel inside, the page past the footprint untouched.
@@ -2539,15 +2744,15 @@ main(void)
    vkCmdEndRenderPass(xyz_cmd);
    assert(vkEndCommandBuffer(xyz_cmd) == VK_SUCCESS);
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_xyz, xyz_cmd);
-   assert(r3v_native_cmd_buffer_execute_deferred_draw(
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
              native_device, native_xyz) == VK_SUCCESS);
    assert(radeon_drm_vk_bo_map(&native_device->drm,
-                               &native_xyz->owned_carrier->bo,
+                               &native_xyz->owned_carriers[0]->bo,
                                &carrier_map) == 0);
    assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
                  R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
    radeon_drm_vk_bo_unmap(&native_device->drm,
-                          &native_xyz->owned_carrier->bo, carrier_map);
+                          &native_xyz->owned_carriers[0]->bo, carrier_map);
 
    /* A record outside the admitted clip volume, or one whose w is not
     * exactly 1, refuses at execution: the transform's perspective
@@ -2573,7 +2778,7 @@ main(void)
       vkCmdEndRenderPass(domain_cmd);
       assert(vkEndCommandBuffer(domain_cmd) == VK_SUCCESS);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_domain, domain_cmd);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_domain) != VK_SUCCESS);
 
       /* A NaN coordinate refuses through the same gate: the domain
@@ -2599,7 +2804,7 @@ main(void)
       vkCmdEndRenderPass(nan_cmd);
       assert(vkEndCommandBuffer(nan_cmd) == VK_SUCCESS);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_nan, nan_cmd);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_nan) != VK_SUCCESS);
 
       /* Restore the reference stream for the legs below. */
@@ -2622,15 +2827,15 @@ main(void)
    {
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_cmd) == VK_SUCCESS);
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_cmd->owned_carrier->bo,
+                                  &native_cmd->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
                     R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_cmd->owned_carrier->bo, carrier_map);
+                             &native_cmd->owned_carriers[0]->bo, carrier_map);
 
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
@@ -2638,7 +2843,7 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_cmd) == VK_SUCCESS);
 
       float narrow[12];
@@ -2648,7 +2853,7 @@ main(void)
                          &map) == VK_SUCCESS);
       memcpy(map, narrow, sizeof(narrow));
       vkUnmapMemory(device, vertex_memory);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_cmd) != VK_SUCCESS);
 
       /* The same stream rides the CPU route: an unset gate and a non-"1"
@@ -2656,11 +2861,11 @@ main(void)
        */
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "0", 1) == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_cmd) == VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_cmd) == VK_SUCCESS);
 
       /* Restore the reference stream for the legs below. */
@@ -2722,13 +2927,13 @@ main(void)
                 native_device, native_gpu) == VK_SUCCESS);
       assert(native_gpu->cell_kind ==
              R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC);
-      assert(native_gpu->deferred_draw.gpu_producer_delivery);
+      assert(native_gpu->deferred_draws[0].gpu_producer_delivery);
 
       struct r300_r2vb_producer_ib expected_producer;
       assert(r300_r2vb_producer_records_emit(
                 (const float(*)[4])positive_triangle,
                 &expected_producer) == 0);
-      assert(native_gpu->deferred_draw.gpu_producer_dwords ==
+      assert(native_gpu->deferred_draws[0].gpu_producer_dwords ==
              expected_producer.ib_size_dwords);
       assert(native_gpu->ib_size_dwords ==
              expected_producer.ib_size_dwords + consumer_dwords);
@@ -2757,7 +2962,7 @@ main(void)
       assert(r300_r2vb_public_route_validate_reloc_sites(&authorized) == 0);
       assert(authorized.ib_size_dwords == native_gpu->ib_size_dwords);
       assert(authorized.consumer_start_dwords ==
-             native_gpu->deferred_draw.gpu_producer_dwords);
+             native_gpu->deferred_draws[0].gpu_producer_dwords);
       /* The producer prefix is the offline composition's byte for
        * byte; the consumer slice carries the bound module's fragment
        * constant, so it equals the render-shape cell at the reference
@@ -2772,34 +2977,34 @@ main(void)
       r300_tcl_bypass_triangle_release(&module_shape_cell);
 
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_gpu->owned_carrier->bo,
+                                  &native_gpu->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       const uint32_t *carrier_words = carrier_map;
       for (unsigned i = 0; i < 16; i++)
          assert(carrier_words[i] == R300_R2VB_PRODUCER_POISON_DWORD);
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_gpu->owned_carrier->bo, carrier_map);
+                             &native_gpu->owned_carriers[0]->bo, carrier_map);
       for (unsigned i = 0; i < 12; i++) {
          uint32_t bits;
          memcpy(&bits, &positive_triangle[i], 4);
-         assert(native_gpu->deferred_draw.gpu_expected_carrier[i] == bits);
+         assert(native_gpu->deferred_draws[0].gpu_expected_carrier[i] == bits);
       }
       for (unsigned i = 12; i < 16; i++)
-         assert(native_gpu->deferred_draw.gpu_expected_carrier[i] ==
+         assert(native_gpu->deferred_draws[0].gpu_expected_carrier[i] ==
                 R300_R2VB_PRODUCER_POISON_DWORD);
 
       /* The deferred execution under an admitted delivery clears the
        * target and leaves the poisoned carrier for the device.
        */
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_gpu) == VK_SUCCESS);
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_gpu->owned_carrier->bo,
+                                  &native_gpu->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       assert(((const uint32_t *)carrier_map)[0] ==
              R300_R2VB_PRODUCER_POISON_DWORD);
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_gpu->owned_carrier->bo, carrier_map);
+                             &native_gpu->owned_carriers[0]->bo, carrier_map);
 
       /* A resubmission re-reads the stream: the producer prefix
        * re-emits over the live bytes at the same fixed length.
@@ -2815,7 +3020,7 @@ main(void)
                 native_device, native_gpu) == VK_SUCCESS);
       uint32_t shifted_bits;
       memcpy(&shifted_bits, &shifted[0], 4);
-      assert(native_gpu->deferred_draw.gpu_expected_carrier[0] ==
+      assert(native_gpu->deferred_draws[0].gpu_expected_carrier[0] ==
              shifted_bits);
 
       /* The read-back verdict: the unwritten carrier diverges from the
@@ -2830,12 +3035,12 @@ main(void)
                 native_device, native_gpu) == VK_ERROR_DEVICE_LOST);
       native_device->gpu_producer_quarantined = false;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_gpu->owned_carrier->bo,
+                                  &native_gpu->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
-      memcpy(carrier_map, native_gpu->deferred_draw.gpu_expected_carrier,
-             sizeof(native_gpu->deferred_draw.gpu_expected_carrier));
+      memcpy(carrier_map, native_gpu->deferred_draws[0].gpu_expected_carrier,
+             sizeof(native_gpu->deferred_draws[0].gpu_expected_carrier));
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_gpu->owned_carrier->bo, carrier_map);
+                             &native_gpu->owned_carriers[0]->bo, carrier_map);
       /* Host-model read side: the carrier carries no live mapping here,
        * so the post-completion invalidate over the command buffer's live
        * mappings never reaches it and the read-back itself owns the
@@ -2850,7 +3055,7 @@ main(void)
       assert(native_device->drm.cache_sync_count ==
              readback_sync_before + 1);
       assert(native_device->drm.cache_sync_last.bo_handle ==
-             native_gpu->owned_carrier->bo.handle);
+             native_gpu->owned_carriers[0]->bo.handle);
       assert(!native_device->gpu_producer_quarantined);
 
       /* The closed hazard gate still refuses the composed submission
@@ -2902,15 +3107,15 @@ main(void)
                          &map) == VK_SUCCESS);
       memcpy(map, xyz, sizeof(xyz));
       vkUnmapMemory(device, vertex_memory);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xyz) == VK_SUCCESS);
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_xyz->owned_carrier->bo,
+                                  &native_xyz->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
                     R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_xyz->owned_carrier->bo, carrier_map);
+                             &native_xyz->owned_carriers[0]->bo, carrier_map);
 
       float positive_xyz[9];
       for (unsigned v = 0; v < 3; v++)
@@ -2921,7 +3126,7 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xyz) == VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
@@ -2954,15 +3159,15 @@ main(void)
       vkCmdEndRenderPass(xy_cmd);
       assert(vkEndCommandBuffer(xy_cmd) == VK_SUCCESS);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_xy, xy_cmd);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xy) == VK_SUCCESS);
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_xy->owned_carrier->bo,
+                                  &native_xy->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       assert(memcmp(carrier_map, r300_tcl_bypass_triangle_vertices,
                     R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_xy->owned_carrier->bo, carrier_map);
+                             &native_xy->owned_carriers[0]->bo, carrier_map);
 
       float positive_xy[6];
       for (unsigned v = 0; v < 3; v++)
@@ -2973,7 +3178,7 @@ main(void)
       vkUnmapMemory(device, vertex_memory);
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xy) == VK_SUCCESS);
 
       /* Domain narrowing per shape: an off-grid x refuses the F32_3
@@ -2987,13 +3192,13 @@ main(void)
                          &map) == VK_SUCCESS);
       memcpy(map, xyz_narrow, sizeof(xyz_narrow));
       vkUnmapMemory(device, vertex_memory);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xyz) != VK_SUCCESS);
 
       /* Replay the same F32_3 bytes before staging the F32_2 payload. */
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xyz) == VK_SUCCESS);
       float expected_xyz_cpu[12];
       for (unsigned v = 0; v < 3; v++) {
@@ -3005,12 +3210,12 @@ main(void)
          expected_xyz_cpu[v * 4 + 3] = 1.0f;
       }
       assert(radeon_drm_vk_bo_map(&native_device->drm,
-                                  &native_xyz->owned_carrier->bo,
+                                  &native_xyz->owned_carriers[0]->bo,
                                   &carrier_map) == 0);
       assert(memcmp(carrier_map, expected_xyz_cpu,
                     R300_TRIANGLE_VERTEX_DWORDS * 4) == 0);
       radeon_drm_vk_bo_unmap(&native_device->drm,
-                             &native_xyz->owned_carrier->bo, carrier_map);
+                             &native_xyz->owned_carriers[0]->bo, carrier_map);
 
       assert(setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1) == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
@@ -3022,11 +3227,11 @@ main(void)
                          &map) == VK_SUCCESS);
       memcpy(map, xy_narrow, sizeof(xy_narrow));
       vkUnmapMemory(device, vertex_memory);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xy) != VK_SUCCESS);
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_xy) == VK_SUCCESS);
 
       vkDestroyPipeline(device, xy_pipeline, NULL);
@@ -3148,7 +3353,7 @@ main(void)
                     sub_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
       r300_tcl_bypass_triangle_release(&sub_expected);
 
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_sub) == VK_SUCCESS);
       assert(vkMapMemory(device, sub_memory, 0, VK_WHOLE_SIZE, 0,
                          (void **)&sub_map) == VK_SUCCESS);
@@ -3417,7 +3622,7 @@ main(void)
       assert(fill_map[0] == fill_pattern);
       vkUnmapMemory(device, readback_memory);
 
-      assert(r3v_native_cmd_buffer_execute_deferred_draw(
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
                 native_device, native_wide) == VK_SUCCESS);
 
       assert(r3v_native_cmd_buffer_execute_deferred_copies(
