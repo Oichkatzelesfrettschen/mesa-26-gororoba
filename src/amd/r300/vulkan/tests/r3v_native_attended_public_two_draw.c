@@ -138,7 +138,8 @@ main(int argc, char **argv)
       r300_tcl_bypass_triangle_render_shape_draw_dword(&mp.pass[1]);
 
    struct r300_tcl_bypass_triangle_ib armed;
-   if (r300_tcl_bypass_triangle_multi_pass_emit(&mp, &armed) != 0) {
+   if (r300_tcl_bypass_triangle_clip_space_multi_pass_emit(&mp, &armed) !=
+       0) {
       fprintf(stderr, "the two-pass cell refused to emit\n");
       return 1;
    }
@@ -666,7 +667,8 @@ main(int argc, char **argv)
       strcmp(recorded_digest, digest) == 0;
    if (!stream_agrees) {
       struct r300_tcl_bypass_triangle_ib offline;
-      if (r300_tcl_bypass_triangle_multi_pass_emit(&mp, &offline) == 0) {
+      if (r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+             &mp, &offline) == 0) {
          uint32_t differing = 0;
          const uint32_t common = offline.ib_size_dwords < native->ib_size_dwords
                                     ? offline.ib_size_dwords

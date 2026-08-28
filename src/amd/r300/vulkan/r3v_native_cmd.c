@@ -38,10 +38,13 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
    }
 
    free(cmd_buffer->ib);
+   free(cmd_buffer->window_space_ib);
    free(cmd_buffer->references);
    cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    cmd_buffer->ib = NULL;
    cmd_buffer->ib_size_dwords = 0;
+   cmd_buffer->window_space_ib = NULL;
+   cmd_buffer->window_space_ib_size_dwords = 0;
    cmd_buffer->references = NULL;
    cmd_buffer->reference_count = 0;
    cmd_buffer->burst_draws = 0;

@@ -41,6 +41,8 @@
 #include "util/u_math.h"
 
 #include <assert.h>
+#include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,7 +194,8 @@ check_timeline_wait_consumption(void)
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
    f(vkCmdClearAttachments) f(vkCmdSetViewport) f(vkCmdSetScissor)          \
-   f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdDraw)             \
+   f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdBindIndexBuffer) \
+   f(vkCmdDraw) f(vkCmdDrawIndexed)                                      \
    f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
    f(vkCmdCopyImageToBuffer) f(vkCmdFillBuffer)                            \
    f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
@@ -222,6 +225,77 @@ fresh_cmd(void)
                               VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                         });
    return cmd;
+}
+
+static VkCommandBuffer
+record_triangle_draw(const VkRenderPassBeginInfo *begin_pass,
+                     VkPipeline pipeline, VkBuffer vertex_buffer,
+                     uint32_t vertex_count, uint32_t instance_count,
+                     uint32_t first_vertex)
+{
+   VkCommandBuffer command_buffer = fresh_cmd();
+   vkCmdBeginRenderPass(command_buffer, begin_pass,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                     pipeline);
+   vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer,
+                          &(VkDeviceSize){ 0 });
+   vkCmdDraw(command_buffer, vertex_count, instance_count, first_vertex, 0);
+   vkCmdEndRenderPass(command_buffer);
+   assert(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
+   return command_buffer;
+}
+
+static VkCommandBuffer
+record_indexed_triangle_draw(const VkRenderPassBeginInfo *begin_pass,
+                             VkPipeline pipeline, VkBuffer vertex_buffer,
+                             VkBuffer index_buffer)
+{
+   VkCommandBuffer command_buffer = fresh_cmd();
+   vkCmdBeginRenderPass(command_buffer, begin_pass,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                     pipeline);
+   vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer,
+                          &(VkDeviceSize){ 0 });
+   vkCmdBindIndexBuffer(command_buffer, index_buffer, 0,
+                        VK_INDEX_TYPE_UINT16);
+   vkCmdDrawIndexed(command_buffer, 3, 1, 0, 0, 0);
+   vkCmdEndRenderPass(command_buffer);
+   assert(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
+   return command_buffer;
+}
+
+static double
+carrier_triangle_area(const float *records, uint32_t record_dwords,
+                      uint32_t triangle)
+{
+   const float *first = &records[(triangle * 3u) * record_dwords];
+   const float *second = &records[(triangle * 3u + 1u) * record_dwords];
+   const float *third = &records[(triangle * 3u + 2u) * record_dwords];
+   return ((double)second[0] - first[0]) *
+             ((double)third[1] - first[1]) -
+          ((double)third[0] - first[0]) *
+             ((double)second[1] - first[1]);
+}
+
+static uint32_t
+carrier_nondegenerate_triangle_count(const float *records,
+                                     uint32_t record_dwords)
+{
+   uint32_t count = 0;
+   for (uint32_t triangle = 0;
+        triangle < R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT;
+        triangle++) {
+      count += carrier_triangle_area(records, record_dwords, triangle) != 0.0;
+   }
+   return count;
+}
+
+static void
+assert_float_near(float actual, float expected)
+{
+   assert(fabsf(actual - expected) <= 1.0e-5f);
 }
 
 static void
@@ -284,6 +358,11 @@ struct pipeline_shape {
    /* Enable the logic op; the op itself. */
    VkBool32 logic_op_enable;
    VkLogicOp logic_op;
+   VkCullModeFlags cull_mode;
+   VkFrontFace front_face;
+   /* Zero selects the position pass-through vertex module. */
+   const uint32_t *vertex_words;
+   size_t vertex_bytes;
    const uint32_t *fragment_words;
    size_t fragment_bytes;
    /* Viewport/scissor extent; zero selects the maximum target extent. */
@@ -298,8 +377,13 @@ static VkResult
 make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
               VkPipelineLayout layout, VkPipeline *pipeline)
 {
-   VkShaderModule vs = make_module(r3v_reference_vertex_spirv,
-                                   sizeof(r3v_reference_vertex_spirv));
+   const uint32_t *vertex_words = shape->vertex_words != NULL
+                                     ? shape->vertex_words
+                                     : r3v_reference_vertex_spirv;
+   const size_t vertex_bytes = shape->vertex_words != NULL
+                                  ? shape->vertex_bytes
+                                  : sizeof(r3v_reference_vertex_spirv);
+   VkShaderModule vs = make_module(vertex_words, vertex_bytes);
    VkShaderModule fs =
       make_module(shape->fragment_words, shape->fragment_bytes);
    const uint32_t extent_width = shape->extent_width != 0
@@ -373,7 +457,8 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
             .sType =
                VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_NONE,
+            .cullMode = shape->cull_mode,
+            .frontFace = shape->front_face,
             .lineWidth = 1.0f,
          },
       .pMultisampleState =
@@ -1268,7 +1353,8 @@ main(void)
          struct r300_triangle_multi_pass mp;
          r3v_native_multi_pass_public_reference(&mp);
          struct r300_tcl_bypass_triangle_ib offline;
-         assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &offline) == 0);
+         assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+                   &mp, &offline) == 0);
          assert(offline.ib_size_dwords == native_two_draw->ib_size_dwords);
          uint32_t offline_differing = 0;
          for (uint32_t i = 0; i < offline.ib_size_dwords; i++) {
@@ -1295,8 +1381,8 @@ main(void)
          struct r300_triangle_multi_pass armed_mp;
          r3v_native_multi_pass_public_reference(&armed_mp);
          struct r300_tcl_bypass_triangle_ib armed_cell;
-         assert(r300_tcl_bypass_triangle_multi_pass_emit(&armed_mp,
-                                                          &armed_cell) == 0);
+         assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+                   &armed_mp, &armed_cell) == 0);
          char armed_digest[BLAKE3_OUT_LEN * 2 + 1];
          r300_triangle_ib_digest_hex(armed_cell.ib, armed_cell.ib_size_dwords,
                                      armed_digest);
@@ -1666,11 +1752,18 @@ main(void)
    const uint32_t module_color[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
    memcpy(module_shape.color_bits, module_color, sizeof(module_color));
    struct r300_tcl_bypass_triangle_ib reference;
-   assert(r300_tcl_bypass_triangle_render_shape_emit(&module_shape,
-                                                     &reference) == 0);
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &module_shape, 1, &reference) == 0);
    assert(native_cmd->ib_size_dwords == reference.ib_size_dwords);
    assert(memcmp(native_cmd->ib, reference.ib,
                  reference.ib_size_dwords * sizeof(uint32_t)) == 0);
+   struct r300_tcl_bypass_triangle_ib window_reference;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&module_shape,
+                                                     &window_reference) == 0);
+   assert(native_cmd->window_space_ib_size_dwords ==
+          window_reference.ib_size_dwords);
+   assert(memcmp(native_cmd->window_space_ib, window_reference.ib,
+                 window_reference.ib_size_dwords * sizeof(uint32_t)) == 0);
    assert(native_cmd->reference_count == R300_TRIANGLE_RENDER_SLOT_COUNT);
    assert(native_cmd->owned_carriers[0] != NULL);
    struct r3v_native_memory *const recorded_carrier =
@@ -1678,6 +1771,30 @@ main(void)
    assert(native_cmd->references[R300_TRIANGLE_SLOT_VERTEX].handle ==
           recorded_carrier->bo.handle);
    r300_tcl_bypass_triangle_release(&reference);
+   r300_tcl_bypass_triangle_release(&window_reference);
+
+   /* Beginning a new recording releases both position-space IBs and the
+    * carrier owned by the prior recording.  The command buffer then accepts a
+    * new empty recording without retaining either consumer.
+    */
+   VkCommandBuffer window_lifecycle_cmd = record_triangle_draw(
+      &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_window_lifecycle,
+                  window_lifecycle_cmd);
+   assert(native_window_lifecycle->ib != NULL);
+   assert(native_window_lifecycle->window_space_ib != NULL);
+   assert(native_window_lifecycle->owned_carriers[0] != NULL);
+   assert(vkBeginCommandBuffer(
+             window_lifecycle_cmd,
+             &(VkCommandBufferBeginInfo){
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+             }) == VK_SUCCESS);
+   assert(native_window_lifecycle->ib == NULL);
+   assert(native_window_lifecycle->ib_size_dwords == 0);
+   assert(native_window_lifecycle->window_space_ib == NULL);
+   assert(native_window_lifecycle->window_space_ib_size_dwords == 0);
+   assert(native_window_lifecycle->owned_carriers[0] == NULL);
+   assert(vkEndCommandBuffer(window_lifecycle_cmd) == VK_SUCCESS);
 
    /* Execution-time boundary, record side: recording defers the vertex
     * gather and load-op clear, so the executable command buffer has
@@ -2866,64 +2983,585 @@ main(void)
    radeon_drm_vk_bo_unmap(&native_device->drm,
                           &native_xyz->owned_carriers[0]->bo, carrier_map);
 
-   /* A record outside the admitted clip volume, or one whose w is not
-    * exactly 1, refuses at execution: the transform's perspective
-    * divide is the identity only there, so the route reports instead
-    * of rasterizing an untransformed stream.
+   /* Homogeneous clipping: finite non-unit W, each default clip plane, full
+    * rejection, the seven-triangle capacity case, and non-finite refusal all
+    * execute through the same public draw and deferred carrier path.
     */
    {
-      float out_of_domain[12];
-      memcpy(out_of_domain, ndc_triangle, sizeof(out_of_domain));
-      out_of_domain[3] = 2.0f;
+      float homogeneous[12];
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         homogeneous[vertex * 4 + 0] = ndc_triangle[vertex * 4 + 0] * 2.0f;
+         homogeneous[vertex * 4 + 1] = ndc_triangle[vertex * 4 + 1] * 2.0f;
+         homogeneous[vertex * 4 + 2] = ndc_triangle[vertex * 4 + 2] * 2.0f;
+         homogeneous[vertex * 4 + 3] = 2.0f;
+      }
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
-      memcpy(map, out_of_domain, sizeof(out_of_domain));
+      memcpy(map, homogeneous, sizeof(homogeneous));
       vkUnmapMemory(device, vertex_memory);
-      VkCommandBuffer domain_cmd = fresh_cmd();
-      vkCmdBeginRenderPass(domain_cmd, &begin_pass,
-                           VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(domain_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pipeline);
-      vkCmdBindVertexBuffers(domain_cmd, 0, 1, &vertex_buffer,
-                             &(VkDeviceSize){ 0 });
-      vkCmdDraw(domain_cmd, 3, 1, 0, 0);
-      vkCmdEndRenderPass(domain_cmd);
-      assert(vkEndCommandBuffer(domain_cmd) == VK_SUCCESS);
-      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_domain, domain_cmd);
+      VkCommandBuffer homogeneous_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_homogeneous,
+                     homogeneous_cmd);
       assert(r3v_native_cmd_buffer_execute_deferred_draws(
-                native_device, native_domain) != VK_SUCCESS);
+                native_device, native_homogeneous) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_homogeneous->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *homogeneous_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(homogeneous_records, 4) ==
+             1);
+      static const float expected_xy[3][2] = {
+         { 8.0f, 8.0f }, { 56.0f, 8.0f }, { 32.0f, 56.0f },
+      };
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         assert_float_near(homogeneous_records[vertex * 4 + 0],
+                           expected_xy[vertex][0]);
+         assert_float_near(homogeneous_records[vertex * 4 + 1],
+                           expected_xy[vertex][1]);
+         assert_float_near(homogeneous_records[vertex * 4 + 2], 0.0f);
+         assert_float_near(homogeneous_records[vertex * 4 + 3], 0.5f);
+      }
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_homogeneous->owned_carriers[0]->bo,
+         carrier_map);
 
-      /* A NaN coordinate refuses through the same gate: the domain
-       * check is a negated conjunction of ordered comparisons, and
-       * every ordered comparison on NaN is false, so the negation
-       * admits the record into the refusal branch rather than past it.
+      /* A scale-invariant clip position remains valid at the smallest
+       * positive normal W.  The divide recovers the same window coordinates
+       * and publishes a finite reciprocal instead of refusing the draw.
        */
-      uint32_t nan_bits = 0x7fc00000u;
-      memcpy(&out_of_domain[0], &nan_bits, sizeof(nan_bits));
-      out_of_domain[3] = 1.0f;
+      float small_w[12];
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         small_w[vertex * 4 + 0] = ndc_triangle[vertex * 4 + 0] * FLT_MIN;
+         small_w[vertex * 4 + 1] = ndc_triangle[vertex * 4 + 1] * FLT_MIN;
+         small_w[vertex * 4 + 2] = ndc_triangle[vertex * 4 + 2] * FLT_MIN;
+         small_w[vertex * 4 + 3] = FLT_MIN;
+      }
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
-      memcpy(map, out_of_domain, sizeof(out_of_domain));
+      memcpy(map, small_w, sizeof(small_w));
       vkUnmapMemory(device, vertex_memory);
-      VkCommandBuffer nan_cmd = fresh_cmd();
-      vkCmdBeginRenderPass(nan_cmd, &begin_pass,
-                           VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(nan_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pipeline);
-      vkCmdBindVertexBuffers(nan_cmd, 0, 1, &vertex_buffer,
-                             &(VkDeviceSize){ 0 });
-      vkCmdDraw(nan_cmd, 3, 1, 0, 0);
-      vkCmdEndRenderPass(nan_cmd);
-      assert(vkEndCommandBuffer(nan_cmd) == VK_SUCCESS);
-      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_nan, nan_cmd);
+      VkCommandBuffer small_w_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_small_w, small_w_cmd);
       assert(r3v_native_cmd_buffer_execute_deferred_draws(
-                native_device, native_nan) != VK_SUCCESS);
+                native_device, native_small_w) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm, &native_small_w->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *small_w_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(small_w_records, 4) == 1);
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         assert_float_near(small_w_records[vertex * 4 + 0],
+                           expected_xy[vertex][0]);
+         assert_float_near(small_w_records[vertex * 4 + 1],
+                           expected_xy[vertex][1]);
+         assert_float_near(small_w_records[vertex * 4 + 2], 0.0f);
+         assert(isfinite(small_w_records[vertex * 4 + 3]));
+         assert(small_w_records[vertex * 4 + 3] == 1.0f / FLT_MIN);
+      }
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_small_w->owned_carriers[0]->bo,
+         carrier_map);
 
-      /* Restore the reference stream for the legs below. */
+      /* A positive subnormal W also represents valid homogeneous geometry.
+       * One common reciprocal scale keeps every source-triangle W finite
+       * while preserving the ratios used for perspective interpolation.
+       */
+      const float subnormal_w_value = ldexpf(1.0f, -140);
+      static const float subnormal_ndc[3][3] = {
+         { -0.5f, -0.5f, 0.5f },
+         { 0.5f, -0.5f, 0.5f },
+         { 0.0f, 0.5f, 0.5f },
+      };
+      float subnormal_w[12];
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         const float vertex_w = ldexpf(subnormal_w_value, vertex);
+         for (uint32_t component = 0; component < 3; component++) {
+            subnormal_w[vertex * 4 + component] =
+               subnormal_ndc[vertex][component] * vertex_w;
+         }
+         subnormal_w[vertex * 4 + 3] = vertex_w;
+      }
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, subnormal_w, sizeof(subnormal_w));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer subnormal_w_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_subnormal_w,
+                     subnormal_w_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_subnormal_w) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_subnormal_w->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *subnormal_w_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(subnormal_w_records, 4) ==
+             1);
+      static const float subnormal_expected_xy[3][2] = {
+         { 16.0f, 16.0f }, { 48.0f, 16.0f }, { 32.0f, 48.0f },
+      };
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         assert_float_near(subnormal_w_records[vertex * 4 + 0],
+                           subnormal_expected_xy[vertex][0]);
+         assert_float_near(subnormal_w_records[vertex * 4 + 1],
+                           subnormal_expected_xy[vertex][1]);
+         assert_float_near(subnormal_w_records[vertex * 4 + 2], 0.5f);
+         assert(isfinite(subnormal_w_records[vertex * 4 + 3]));
+         assert(subnormal_w_records[vertex * 4 + 3] > 0.0f);
+      }
+      assert(subnormal_w_records[3] == FLT_MAX);
+      assert(subnormal_w_records[7] == FLT_MAX / 2.0f);
+      assert(subnormal_w_records[11] == FLT_MAX / 4.0f);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_subnormal_w->owned_carriers[0]->bo,
+         carrier_map);
+
+      const float inside[12] = {
+         -0.5f, -0.5f, 0.5f, 1.0f,
+          0.5f, -0.5f, 0.5f, 1.0f,
+          0.0f,  0.5f, 0.5f, 1.0f,
+      };
+      float plane_crossings[6][12];
+      for (uint32_t plane = 0; plane < 6; plane++)
+         memcpy(plane_crossings[plane], inside, sizeof(inside));
+      plane_crossings[0][0] = -1.5f;
+      plane_crossings[1][4] = 1.5f;
+      plane_crossings[2][1] = -1.5f;
+      plane_crossings[3][9] = 1.5f;
+      plane_crossings[4][2] = -0.5f;
+      plane_crossings[5][10] = 1.5f;
+      static const uint32_t boundary_component[6] = { 0, 0, 1, 1, 2, 2 };
+      static const float boundary_value[6] = {
+         0.0f, 64.0f, 0.0f, 64.0f, 0.0f, 1.0f,
+      };
+      for (uint32_t plane = 0; plane < 6; plane++) {
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, plane_crossings[plane], sizeof(plane_crossings[plane]));
+         vkUnmapMemory(device, vertex_memory);
+         VkCommandBuffer plane_cmd = record_triangle_draw(
+            &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_plane, plane_cmd);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_plane) == VK_SUCCESS);
+         assert(radeon_drm_vk_bo_map(
+                   &native_device->drm, &native_plane->owned_carriers[0]->bo,
+                   &carrier_map) == 0);
+         const float *plane_records = carrier_map;
+         assert(carrier_nondegenerate_triangle_count(plane_records, 4) == 2);
+         bool found_boundary = false;
+         for (uint32_t vertex = 0; vertex < 6; vertex++) {
+            const float *record = &plane_records[vertex * 4];
+            assert(isfinite(record[0]) && record[0] >= 0.0f &&
+                   record[0] <= 64.0f);
+            assert(isfinite(record[1]) && record[1] >= 0.0f &&
+                   record[1] <= 64.0f);
+            assert(isfinite(record[2]) && record[2] >= 0.0f &&
+                   record[2] <= 1.0f);
+            assert_float_near(record[3], 1.0f);
+            found_boundary |=
+               fabsf(record[boundary_component[plane]] -
+                     boundary_value[plane]) <= 1.0e-5f;
+         }
+         assert(found_boundary);
+         radeon_drm_vk_bo_unmap(
+            &native_device->drm, &native_plane->owned_carriers[0]->bo,
+            carrier_map);
+      }
+
+      /* Binary64 intersections preserve previously established clip planes
+       * when one edge joins clip positions with widely separated scales.
+       * Every reserved record must remain finite and inside the viewport.
+       */
+      static const float disparate_scale[12] = {
+         -1241626443776.0f, 2212753571840.0f, -2019629465600.0f,
+         -2088773484544.0f,
+         -3.025635297859708e-11f, 2.617332912902004e-11f,
+         1.5946070852645988e-11f, 1.8961415770846202e-11f,
+         -28365.953125f, 68691.125f, -117244.2421875f, 128468.484375f,
+      };
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, disparate_scale, sizeof(disparate_scale));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer disparate_scale_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_disparate_scale,
+                     disparate_scale_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_disparate_scale) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_disparate_scale->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *disparate_scale_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(disparate_scale_records,
+                                                  4) >= 1);
+      for (uint32_t vertex = 0;
+           vertex <
+              R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u;
+           vertex++) {
+         const float *position = &disparate_scale_records[vertex * 4u];
+         assert(isfinite(position[0]) && position[0] >= 0.0f &&
+                position[0] <= 64.0f);
+         assert(isfinite(position[1]) && position[1] >= 0.0f &&
+                position[1] <= 64.0f);
+         assert(isfinite(position[2]) && position[2] >= 0.0f &&
+                position[2] <= 1.0f);
+         assert(isfinite(position[3]) && position[3] > 0.0f);
+      }
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm,
+         &native_disparate_scale->owned_carriers[0]->bo, carrier_map);
+
+      /* Clipping can generate a positive W below FLT_TRUE_MIN.  When one
+       * source polygon also reaches FLT_MAX, no exact common binary32
+       * reciprocal scale exists; every live and reserved record still keeps
+       * a finite positive reciprocal instead of rounding to zero.
+       */
+      const float minimum_float = FLT_TRUE_MIN;
+      const float reciprocal_range[12] = {
+         -2.0f * minimum_float, 0.0f, 0.0f, minimum_float,
+         3.0f * minimum_float, 0.0f, 0.0f, -minimum_float,
+         0.0f, FLT_MAX / 2.0f, FLT_MAX / 2.0f, FLT_MAX,
+      };
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, reciprocal_range, sizeof(reciprocal_range));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer reciprocal_range_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_reciprocal_range,
+                     reciprocal_range_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_reciprocal_range) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_reciprocal_range->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *reciprocal_range_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(reciprocal_range_records,
+                                                  4) == 3);
+      bool found_minimum_reciprocal = false;
+      for (uint32_t vertex = 0;
+           vertex <
+              R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u;
+           vertex++) {
+         const float *position = &reciprocal_range_records[vertex * 4u];
+         assert(isfinite(position[0]) && position[0] >= 0.0f &&
+                position[0] <= 64.0f);
+         assert(isfinite(position[1]) && position[1] >= 0.0f &&
+                position[1] <= 64.0f);
+         assert(isfinite(position[2]) && position[2] >= 0.0f &&
+                position[2] <= 1.0f);
+         assert(isfinite(position[3]) && position[3] > 0.0f);
+         found_minimum_reciprocal |= position[3] == FLT_TRUE_MIN;
+      }
+      assert(found_minimum_reciprocal);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm,
+         &native_reciprocal_range->owned_carriers[0]->bo, carrier_map);
+
+      float fully_clipped[12];
+      memcpy(fully_clipped, inside, sizeof(fully_clipped));
+      fully_clipped[0] = -2.0f;
+      fully_clipped[4] = -2.0f;
+      fully_clipped[8] = -2.0f;
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, fully_clipped, sizeof(fully_clipped));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer fully_clipped_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_fully_clipped,
+                     fully_clipped_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_fully_clipped) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_fully_clipped->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      assert(carrier_nondegenerate_triangle_count(carrier_map, 4) == 0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_fully_clipped->owned_carriers[0]->bo,
+         carrier_map);
+
+      static const float seven_triangle_input[12] = {
+         -5.57813016f, -6.03323114f,  3.33600657f, 6.03171393f,
+         -8.93891653f,  8.02412914f,  8.80076537f, 3.93535488f,
+          9.53063369f, -0.01053131f, -3.90294560f, 3.07934032f,
+      };
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, seven_triangle_input, sizeof(seven_triangle_input));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer seven_triangle_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_seven_triangle,
+                     seven_triangle_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_seven_triangle) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_seven_triangle->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      assert(carrier_nondegenerate_triangle_count(carrier_map, 4) ==
+             R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_seven_triangle->owned_carriers[0]->bo,
+         carrier_map);
+
+      const size_t clip_carrier_dwords =
+         R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u * 4u;
+      uint32_t carrier_seed
+         [R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u * 4u];
+      for (uint32_t dword = 0; dword < clip_carrier_dwords; dword++)
+         carrier_seed[dword] = 0x5a000000u | dword;
+      static const uint32_t nonfinite_bits[2] = { 0x7fc00000u, 0x7f800000u };
+      for (uint32_t mutant = 0; mutant < ARRAY_SIZE(nonfinite_bits); mutant++) {
+         float nonfinite[12];
+         memcpy(nonfinite, inside, sizeof(nonfinite));
+         memcpy(&nonfinite[0], &nonfinite_bits[mutant], sizeof(uint32_t));
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, nonfinite, sizeof(nonfinite));
+         vkUnmapMemory(device, vertex_memory);
+         VkCommandBuffer nonfinite_cmd = record_triangle_draw(
+            &begin_pass, pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_nonfinite,
+                        nonfinite_cmd);
+         assert(radeon_drm_vk_bo_map(
+                   &native_device->drm,
+                   &native_nonfinite->owned_carriers[0]->bo,
+                   &carrier_map) == 0);
+         memcpy(carrier_map, carrier_seed, sizeof(carrier_seed));
+         radeon_drm_vk_bo_cache_sync(
+            &native_device->drm, carrier_map, sizeof(carrier_seed));
+         radeon_drm_vk_bo_unmap(
+            &native_device->drm, &native_nonfinite->owned_carriers[0]->bo,
+            carrier_map);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_nonfinite) != VK_SUCCESS);
+         assert(radeon_drm_vk_bo_map(
+                   &native_device->drm,
+                   &native_nonfinite->owned_carriers[0]->bo,
+                   &carrier_map) == 0);
+         assert(memcmp(carrier_map, carrier_seed, sizeof(carrier_seed)) == 0);
+         radeon_drm_vk_bo_unmap(
+            &native_device->drm, &native_nonfinite->owned_carriers[0]->bo,
+            carrier_map);
+      }
+
+      /* Publication is transactional across the complete source list: a
+       * non-finite position in the second triangle leaves both fixed-capacity
+       * output groups byte-identical to their pre-execution seed.
+       */
+      float later_nonfinite[24];
+      memcpy(later_nonfinite, inside, sizeof(inside));
+      memcpy(later_nonfinite + 12, inside, sizeof(inside));
+      memcpy(&later_nonfinite[12], &nonfinite_bits[0], sizeof(uint32_t));
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, later_nonfinite, sizeof(later_nonfinite));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer later_nonfinite_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 6, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_later_nonfinite,
+                     later_nonfinite_cmd);
+      uint32_t two_group_seed
+         [2u * R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u * 4u];
+      for (uint32_t dword = 0; dword < ARRAY_SIZE(two_group_seed); dword++)
+         two_group_seed[dword] = 0xa5000000u | dword;
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_later_nonfinite->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      memcpy(carrier_map, two_group_seed, sizeof(two_group_seed));
+      radeon_drm_vk_bo_cache_sync(&native_device->drm, carrier_map,
+                                  sizeof(two_group_seed));
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm,
+         &native_later_nonfinite->owned_carriers[0]->bo, carrier_map);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_later_nonfinite) != VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &native_later_nonfinite->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      assert(memcmp(carrier_map, two_group_seed, sizeof(two_group_seed)) == 0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm,
+         &native_later_nonfinite->owned_carriers[0]->bo, carrier_map);
+
+      /* Restore the reference stream for the delivery-route legs below. */
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
       memcpy(map, ndc_triangle, sizeof(ndc_triangle));
       vkUnmapMemory(device, vertex_memory);
+   }
+
+   /* Generated vertices carry the smooth varying with the same clip-space
+    * edge parameter as gl_Position.  The left-plane crossing produces two
+    * intersections whose colors are the exact half-edge interpolants.
+    */
+   {
+      struct pipeline_shape varying_shape = contract_shape;
+      varying_shape.vertex_words = r3v_reference_vertex_varying_spirv;
+      varying_shape.vertex_bytes = sizeof(r3v_reference_vertex_varying_spirv);
+      varying_shape.fragment_words = r3v_reference_fragment_varying_spirv;
+      varying_shape.fragment_bytes =
+         sizeof(r3v_reference_fragment_varying_spirv);
+      VkPipeline varying_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&varying_shape, pass, layout, &varying_pipeline) ==
+             VK_SUCCESS);
+      const float varying_crossing[12] = {
+         -2.0f,  0.0f, 0.5f, 1.0f,
+          0.0f, -0.5f, 0.5f, 1.0f,
+          0.0f,  0.5f, 0.5f, 1.0f,
+      };
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, varying_crossing, sizeof(varying_crossing));
+      vkUnmapMemory(device, vertex_memory);
+      VkCommandBuffer varying_cmd = record_triangle_draw(
+         &begin_pass, varying_pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_varying, varying_cmd);
+      assert(native_varying->window_space_ib == NULL);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_varying) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm, &native_varying->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *varying_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(varying_records, 8) == 2);
+      static const float first_intersection[8] = {
+         0.0f, 40.0f, 0.5f, 1.0f, 0.0f, 0.625f, 0.25f, 1.0f,
+      };
+      static const float second_intersection[8] = {
+         0.0f, 24.0f, 0.5f, 1.0f, 0.0f, 0.375f, 0.25f, 1.0f,
+      };
+      for (uint32_t component = 0; component < 8; component++) {
+         assert_float_near(varying_records[component],
+                           first_intersection[component]);
+         assert_float_near(varying_records[8 + component],
+                           second_intersection[component]);
+      }
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_varying->owned_carriers[0]->bo,
+         carrier_map);
+      vkDestroyPipeline(device, varying_pipeline, NULL);
+
+      assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                         &map) == VK_SUCCESS);
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+      vkUnmapMemory(device, vertex_memory);
+   }
+
+   /* Facing is decided after clipping and viewport projection.  The reference
+    * triangle is counter-clockwise, so front-face culling collapses its one
+    * live slot and leaves all seven fixed slots degenerate.
+    */
+   {
+      struct pipeline_shape cull_shape = contract_shape;
+      cull_shape.cull_mode = VK_CULL_MODE_FRONT_BIT;
+      cull_shape.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      VkPipeline cull_pipeline = VK_NULL_HANDLE;
+      assert(make_pipeline(&cull_shape, pass, layout, &cull_pipeline) ==
+             VK_SUCCESS);
+      VkCommandBuffer cull_cmd = record_triangle_draw(
+         &begin_pass, cull_pipeline, vertex_buffer, 3, 1, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cull, cull_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_cull) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm, &native_cull->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      assert(carrier_nondegenerate_triangle_count(carrier_map, 4) == 0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_cull->owned_carriers[0]->bo,
+         carrier_map);
+      vkDestroyPipeline(device, cull_pipeline, NULL);
+   }
+
+   /* Instance expansion and indexed gathers feed source triangles into the
+    * same seven-slot clipper.  Two instances own two independent slot groups;
+    * the cyclic index order proves the indexed source order reaches projection.
+    */
+   {
+      VkCommandBuffer instanced_cmd = record_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, 3, 2, 0);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_instanced, instanced_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_instanced) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm, &native_instanced->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *instanced_records = carrier_map;
+      const uint32_t records_per_source =
+         R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u;
+      assert(carrier_nondegenerate_triangle_count(instanced_records, 4) == 1);
+      assert(carrier_nondegenerate_triangle_count(
+                instanced_records + records_per_source * 4u, 4) == 1);
+      assert(memcmp(instanced_records,
+                    instanced_records + records_per_source * 4u,
+                    R300_TRIANGLE_VERTEX_DWORDS * sizeof(float)) == 0);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_instanced->owned_carriers[0]->bo,
+         carrier_map);
+
+      VkDeviceMemory index_memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(device,
+                              &(VkMemoryAllocateInfo){
+                                 .sType =
+                                    VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                 .allocationSize = 4096,
+                                 .memoryTypeIndex = 0,
+                              },
+                              NULL, &index_memory) == VK_SUCCESS);
+      VkBuffer index_buffer = VK_NULL_HANDLE;
+      assert(vkCreateBuffer(device,
+                            &(VkBufferCreateInfo){
+                               .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = 6,
+                               .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            },
+                            NULL, &index_buffer) == VK_SUCCESS);
+      assert(vkBindBufferMemory(device, index_buffer, index_memory, 0) ==
+             VK_SUCCESS);
+      assert(vkMapMemory(device, index_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
+             VK_SUCCESS);
+      const uint16_t indices[3] = { 2, 0, 1 };
+      memcpy(map, indices, sizeof(indices));
+      vkUnmapMemory(device, index_memory);
+      VkCommandBuffer indexed_cmd = record_indexed_triangle_draw(
+         &begin_pass, pipeline, vertex_buffer, index_buffer);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_indexed, indexed_cmd);
+      assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                native_device, native_indexed) == VK_SUCCESS);
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm, &native_indexed->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *indexed_records = carrier_map;
+      assert(carrier_nondegenerate_triangle_count(indexed_records, 4) == 1);
+      static const float indexed_xy[3][2] = {
+         { 32.0f, 56.0f }, { 8.0f, 8.0f }, { 56.0f, 8.0f },
+      };
+      for (uint32_t vertex = 0; vertex < 3; vertex++) {
+         assert_float_near(indexed_records[vertex * 4 + 0],
+                           indexed_xy[vertex][0]);
+         assert_float_near(indexed_records[vertex * 4 + 1],
+                           indexed_xy[vertex][1]);
+      }
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm, &native_indexed->owned_carriers[0]->bo,
+         carrier_map);
+      vkDestroyBuffer(device, index_buffer, NULL);
+      vkFreeMemory(device, index_memory, NULL);
    }
 
    /* The R2VB identity delivery route keeps its source-domain boundary
@@ -3012,7 +3650,13 @@ main(void)
       vkCmdEndRenderPass(gpu_cmd);
       assert(vkEndCommandBuffer(gpu_cmd) == VK_SUCCESS);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_gpu, gpu_cmd);
-      const uint32_t consumer_dwords = native_gpu->ib_size_dwords;
+      const uint32_t expanded_consumer_dwords = native_gpu->ib_size_dwords;
+      const uint32_t window_consumer_dwords =
+         native_gpu->window_space_ib_size_dwords;
+      assert(native_gpu->window_space_ib != NULL);
+      assert(window_consumer_dwords == expanded_consumer_dwords);
+      assert(memcmp(native_gpu->window_space_ib, native_gpu->ib,
+                    expanded_consumer_dwords * sizeof(uint32_t)) != 0);
 
       /* The GPU gate alone selects nothing: the route resolver keeps
        * the CPU default, so admission is a no-op and the consumer IB
@@ -3025,7 +3669,9 @@ main(void)
       assert(r3v_native_deferred_draw_admit_gpu_producer(
                 native_device, native_gpu) == VK_SUCCESS);
       assert(native_gpu->cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE);
-      assert(native_gpu->ib_size_dwords == consumer_dwords);
+      assert(native_gpu->ib_size_dwords == expanded_consumer_dwords);
+      assert(native_gpu->window_space_ib_size_dwords ==
+             window_consumer_dwords);
 
       /* The double opt-in admits: the IB becomes producer ++ consumer
        * with the producer prefix byte-identical to the records
@@ -3048,11 +3694,13 @@ main(void)
       assert(native_gpu->deferred_draws[0].gpu_producer_dwords ==
              expected_producer.ib_size_dwords);
       assert(native_gpu->ib_size_dwords ==
-             expected_producer.ib_size_dwords + consumer_dwords);
+             expected_producer.ib_size_dwords + window_consumer_dwords);
+      assert(native_gpu->window_space_ib == NULL);
+      assert(native_gpu->window_space_ib_size_dwords == 0);
       struct r300_tcl_bypass_triangle_ib module_shape_cell;
       assert(r300_tcl_bypass_triangle_render_shape_emit(
                 &module_shape, &module_shape_cell) == 0);
-      assert(module_shape_cell.ib_size_dwords == consumer_dwords);
+      assert(module_shape_cell.ib_size_dwords == window_consumer_dwords);
       assert(memcmp(native_gpu->ib, expected_producer.ib,
                     expected_producer.ib_size_dwords * 4) == 0);
       assert(native_gpu->references[R300_TRIANGLE_SLOT_VERTEX]
@@ -3443,8 +4091,8 @@ main(void)
       vkCmdEndRenderPass(sub_cmd);
       assert(vkEndCommandBuffer(sub_cmd) == VK_SUCCESS);
 
-      /* The target leaves the reference pitch, so the draw lowers
-       * through the render-shape emitter carrying the module's own
+      /* The target leaves the reference pitch, so the draw lowers through
+       * the clip-space render-shape emitter carrying the module's own
        * constant; the recorded stream is that emission byte for byte.
        */
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_sub, sub_cmd);
@@ -3458,8 +4106,8 @@ main(void)
       sub_render_shape.color_bits[2] = 0;
       sub_render_shape.color_bits[3] = 0x3f800000u;
       struct r300_tcl_bypass_triangle_ib sub_expected;
-      assert(r300_tcl_bypass_triangle_render_shape_emit(
-                &sub_render_shape, &sub_expected) == 0);
+      assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+                &sub_render_shape, 1u, &sub_expected) == 0);
       assert(native_sub->ib_size_dwords == sub_expected.ib_size_dwords);
       assert(memcmp(native_sub->ib, sub_expected.ib,
                     sub_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
@@ -3706,15 +4354,15 @@ main(void)
       wide_shape.color_bits[2] = 0;
       wide_shape.color_bits[3] = 0x3f000000u;
       struct r300_tcl_bypass_triangle_ib wide_expected;
-      assert(r300_tcl_bypass_triangle_render_shape_emit(
-                &wide_shape, &wide_expected) == 0);
+      assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+                &wide_shape, 1u, &wide_expected) == 0);
       assert(native_wide->ib_size_dwords == wide_expected.ib_size_dwords);
       assert(memcmp(native_wide->ib, wide_expected.ib,
                     wide_expected.ib_size_dwords * sizeof(uint32_t)) == 0);
       r300_tcl_bypass_triangle_release(&wide_expected);
 
-      /* Copies are host-only, so the recorded IB is the cell the render
-       * shape emits whichever group the buffer carries.
+      /* Copies are host-only, so the recorded IB is the clip-space cell the
+       * render shape emits whichever group the buffer carries.
        */
       assert(native_wide->deferred_copy_count == 2);
       assert(native_wide->deferred_copies[0].group ==

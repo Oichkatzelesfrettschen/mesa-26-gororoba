@@ -73,11 +73,11 @@ enum arm {
    /* Robust buffer access over a two-record vertex buffer under the
     * three-vertex draw: enabled, the F32_3 attribute's third record
     * reads (0, 0, 0, 1) and the armed submit delivers; enabled with an
-    * F32_4 attribute, the third record reads w = 0, outside the CPU
-    * route's admitted clip volume, and the draw refuses by name;
-    * disabled, the record-time bound proof refuses the recording. */
+    * F32_4 attribute, the third record reads the homogeneous zero
+    * position and clipping emits only degenerate records; disabled, the
+    * record-time bound proof refuses the recording. */
    ARM_ROBUST_OOB_ENABLED,
-   ARM_ROBUST_OOB_W0_REFUSED,
+   ARM_ROBUST_OOB_W0_DEGENERATE_ARMED,
    ARM_ROBUST_OOB_DISABLED,
    /* The fetched GPU-producer route under the three exact gates, over
     * the reference window-space records: composed, the submit-time IB
@@ -168,17 +168,18 @@ enum arm {
     * index past the bound, so the F32_3 record reads (0, 0, 0, 1) and
     * the draw delivers the robust carrier; restart enabled on the
     * pipeline refuses at creation; an index past the bound with the
-    * feature off refuses at execution before any write; an index range
-    * past the index buffer, an unbound index buffer, a UINT8 index type,
-    * and an index buffer bound into the pass target's footprint each
-    * refuse at recording; and the fetched gates over an indexed draw
-    * refuse at admission, the producer routes fetching one linear
-    * source range. */
+    * feature off can still address zero-initialized bytes inside the
+    * bound vertex buffer, producing the homogeneous zero position and
+    * only degenerate records; an index range past the index buffer, an
+    * unbound index buffer, a UINT8 index type, and an index buffer bound
+    * into the pass target's footprint each refuse at recording; and the
+    * fetched gates over an indexed draw refuse at admission, the producer
+    * routes fetching one linear source range. */
    ARM_INDEXED_ARMED,
    ARM_INDEXED_PERMUTED_ARMED,
    ARM_INDEXED_ROBUST_RESTART_ARMED,
    ARM_INDEXED_RESTART_ENABLED_REFUSED,
-   ARM_INDEXED_OUT_OF_BOUNDS_REFUSED,
+   ARM_INDEXED_ZERO_RECORD_DEGENERATE_ARMED,
    ARM_INDEXED_RANGE_REFUSED,
    ARM_INDEXED_UNBOUND_REFUSED,
    ARM_INDEXED_UINT8_REFUSED,
@@ -243,7 +244,7 @@ static const struct {
    { "completion-failure", ARM_COMPLETION_FAILURE },
    { "known-bad-premature-draw", ARM_KNOWN_BAD_PREMATURE_DRAW },
    { "robust-oob-enabled", ARM_ROBUST_OOB_ENABLED },
-   { "robust-oob-w0-refused", ARM_ROBUST_OOB_W0_REFUSED },
+   { "robust-oob-w0-degenerate", ARM_ROBUST_OOB_W0_DEGENERATE_ARMED },
    { "robust-oob-disabled", ARM_ROBUST_OOB_DISABLED },
    { "gpu-fetched-composed", ARM_GPU_FETCHED_COMPOSED },
    { "gpu-fetched-composed-f32_3", ARM_GPU_FETCHED_COMPOSED_F32_3 },
@@ -273,7 +274,8 @@ static const struct {
    { "indexed-permuted-armed", ARM_INDEXED_PERMUTED_ARMED },
    { "indexed-robust-restart-armed", ARM_INDEXED_ROBUST_RESTART_ARMED },
    { "indexed-restart-enabled-refused", ARM_INDEXED_RESTART_ENABLED_REFUSED },
-   { "indexed-out-of-bounds-refused", ARM_INDEXED_OUT_OF_BOUNDS_REFUSED },
+   { "indexed-zero-record-degenerate",
+     ARM_INDEXED_ZERO_RECORD_DEGENERATE_ARMED },
    { "indexed-range-refused", ARM_INDEXED_RANGE_REFUSED },
    { "indexed-unbound-refused", ARM_INDEXED_UNBOUND_REFUSED },
    { "indexed-uint8-refused", ARM_INDEXED_UINT8_REFUSED },
@@ -463,17 +465,32 @@ check_target(VkDevice device, const struct target *target, bool cleared,
    assert(deviations == 0);
 }
 
-/* The cell the public draw records at the reference geometry: the
- * render-shape emitter carrying the bound fragment module's constant.
+/* The window-space cell a producer route consumes at the reference geometry:
+ * the render-shape emitter carrying the bound fragment module's constant.
  */
 static void
-module_constant_cell(struct r300_tcl_bypass_triangle_ib *out)
+module_constant_window_cell(struct r300_tcl_bypass_triangle_ib *out)
 {
    struct r300_triangle_render_shape shape;
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    const uint32_t module_color[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
    memcpy(shape.color_bits, module_color, sizeof(module_color));
    assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, out) == 0);
+}
+
+/* The cell a CPU public draw records at the reference geometry: the same
+ * module constant with seven fixed-capacity output triangles for clipping.
+ */
+static void
+module_constant_clip_cell(uint32_t source_triangle_count,
+                          struct r300_tcl_bypass_triangle_ib *out)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   const uint32_t module_color[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
+   memcpy(shape.color_bits, module_color, sizeof(module_color));
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &shape, source_triangle_count, out) == 0);
 }
 
 /* The composed fetched route the driver submits for a width: the
@@ -495,7 +512,7 @@ module_constant_route_digest(int format_id, const char *producer_pin,
    assert(strcmp(reference_hex, producer_pin) == 0);
 
    struct r300_tcl_bypass_triangle_ib consumer;
-   module_constant_cell(&consumer);
+   module_constant_window_cell(&consumer);
    assert(route.ib_size_dwords - route.consumer_start_dwords ==
           consumer.ib_size_dwords);
    memcpy(route.ib + route.consumer_start_dwords, consumer.ib,
@@ -552,6 +569,15 @@ run_arm(enum arm arm, const char *name)
    assert(reference.ib_size_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
    assert(strcmp(reference_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
    r300_tcl_bypass_triangle_release(&reference);
+   struct r300_tcl_bypass_triangle_ib module_clip_cell;
+   module_constant_clip_cell(1u, &module_clip_cell);
+   char module_clip_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(module_clip_cell.ib,
+                               module_clip_cell.ib_size_dwords,
+                               module_clip_digest);
+   const uint32_t module_clip_dwords = module_clip_cell.ib_size_dwords;
+   assert(strcmp(module_clip_digest, reference_digest) != 0);
+   r300_tcl_bypass_triangle_release(&module_clip_cell);
    const bool fetched_refusal_arm =
       arm == ARM_GPU_FETCHED_OFFSET_MISALIGNED ||
       arm == ARM_GPU_FETCHED_STRIDE_MISALIGNED ||
@@ -580,7 +606,7 @@ run_arm(enum arm arm, const char *name)
                             arm == ARM_INDEXED_PERMUTED_ARMED ||
                             arm == ARM_INDEXED_ROBUST_RESTART_ARMED ||
                             arm == ARM_INDEXED_RESTART_ENABLED_REFUSED ||
-                            arm == ARM_INDEXED_OUT_OF_BOUNDS_REFUSED ||
+                            arm == ARM_INDEXED_ZERO_RECORD_DEGENERATE_ARMED ||
                             arm == ARM_INDEXED_RANGE_REFUSED ||
                             arm == ARM_INDEXED_UNBOUND_REFUSED ||
                             arm == ARM_INDEXED_UINT8_REFUSED ||
@@ -599,18 +625,24 @@ run_arm(enum arm arm, const char *name)
                                  arm == ARM_INSTANCED_FETCHED_REFUSED ||
                                  arm == ARM_MULTI_TRIANGLE_ARMED;
    struct r300_tcl_bypass_triangle_ib two_triangles;
-   assert(r300_tcl_bypass_triangle_family_emit(
-             R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, false, 2,
-             &two_triangles) == 0);
+   module_constant_clip_cell(2u, &two_triangles);
    char two_triangle_digest[BLAKE3_OUT_LEN * 2 + 1];
    r300_triangle_ib_digest_hex(two_triangles.ib, two_triangles.ib_size_dwords,
                                two_triangle_digest);
    const uint32_t two_triangle_dwords = two_triangles.ib_size_dwords;
-   /* The family member keeps the reference dword count and differs
-    * from it in exactly two payloads. */
-   assert(two_triangle_dwords == R300_RETAINED_CPU_ROUTE_IB_DWORDS);
-   assert(strcmp(two_triangle_digest, reference_digest) != 0);
+   /* Both source triangles keep seven output slots in one segmented stream. */
+   assert(strcmp(two_triangle_digest, module_clip_digest) != 0);
    r300_tcl_bypass_triangle_release(&two_triangles);
+   struct r300_tcl_bypass_triangle_ib varying_cell;
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, true, 1,
+             &varying_cell) == 0);
+   char varying_cell_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(varying_cell.ib,
+                               varying_cell.ib_size_dwords,
+                               varying_cell_digest);
+   const uint32_t varying_cell_dwords = varying_cell.ib_size_dwords;
+   r300_tcl_bypass_triangle_release(&varying_cell);
    /* The varying cell is the recorded identity of every arm whose job
     * stores the varying. */
    const bool sampled_arm = arm == ARM_SAMPLED_ARMED ||
@@ -628,7 +660,7 @@ run_arm(enum arm arm, const char *name)
    uint32_t route_dwords = 0;
    if (arm == ARM_AUTHORIZATION_REFUSED) {
       char wrong[BLAKE3_OUT_LEN * 2 + 1];
-      memcpy(wrong, reference_digest, sizeof(wrong));
+      memcpy(wrong, module_clip_digest, sizeof(wrong));
       wrong[0] = wrong[0] == '0' ? '1' : '0';
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", wrong, 1);
    } else if (arm == ARM_GPU_FETCHED_WRONG_DIGEST) {
@@ -647,7 +679,7 @@ run_arm(enum arm arm, const char *name)
       /* The sampled cell's authorized identity is its own offline
        * emission at this arm's parameters. */
       struct r300_tcl_bypass_triangle_ib sampled_cell;
-      assert(r300_tcl_bypass_triangle_sampled_emit(
+      assert(r300_tcl_bypass_triangle_clip_space_sampled_emit(
                 R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
                 sampled_texture_offset, 16, 16, 16,
                 R300_TRIANGLE_LANES_R8G8B8A8, &sampled_cell) == 0);
@@ -656,8 +688,7 @@ run_arm(enum arm arm, const char *name)
       r300_tcl_bypass_triangle_release(&sampled_cell);
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", route_digest, 1);
    } else if (varying_cell_arm) {
-      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", R300_VARYING_CELL_IB_BLAKE3,
-             1);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", varying_cell_digest, 1);
    } else if (two_triangle_arm) {
       setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", two_triangle_digest, 1);
    } else if (fetched_arm) {
@@ -676,8 +707,7 @@ run_arm(enum arm arm, const char *name)
        * render-shape cell, so the authorized identity is the
        * module-constant stream rather than the emitter's oracle
        * color. */
-      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
-             R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", module_clip_digest, 1);
    }
    struct utsname host;
    assert(uname(&host) == 0);
@@ -726,10 +756,10 @@ run_arm(enum arm arm, const char *name)
    assert((enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) &&
           pdev_count == 1);
    const bool robust_arm = arm == ARM_ROBUST_OOB_ENABLED ||
-                           arm == ARM_ROBUST_OOB_W0_REFUSED ||
+                           arm == ARM_ROBUST_OOB_W0_DEGENERATE_ARMED ||
                            arm == ARM_ROBUST_OOB_DISABLED;
    const bool robust_enabled = arm == ARM_ROBUST_OOB_ENABLED ||
-                               arm == ARM_ROBUST_OOB_W0_REFUSED ||
+                               arm == ARM_ROBUST_OOB_W0_DEGENERATE_ARMED ||
                                arm == ARM_GPU_FETCHED_OUT_OF_BOUNDS ||
                                arm == ARM_INDEXED_ROBUST_RESTART_ARMED ||
                                arm == ARM_INSTANCED_ROBUST_ARMED;
@@ -1035,7 +1065,7 @@ run_arm(enum arm arm, const char *name)
             const uint16_t indices[4] = {
                0, 1,
                arm == ARM_INDEXED_ROBUST_RESTART_ARMED    ? 0xffffu
-               : arm == ARM_INDEXED_OUT_OF_BOUNDS_REFUSED ? 7
+               : arm == ARM_INDEXED_ZERO_RECORD_DEGENERATE_ARMED ? 7
                                                            : 2,
                0
             };
@@ -1582,7 +1612,7 @@ run_arm(enum arm arm, const char *name)
           * bound 16x16 texture at the selected layer's stride over the
           * 16-texel pitch. */
          struct r300_tcl_bypass_triangle_ib offline;
-         assert(r300_tcl_bypass_triangle_sampled_emit(
+         assert(r300_tcl_bypass_triangle_clip_space_sampled_emit(
                    R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT, 1,
                    sampled_texture_offset, 16, 16, 16,
                    R300_TRIANGLE_LANES_R8G8B8A8, &offline) == 0);
@@ -1593,8 +1623,8 @@ run_arm(enum arm arm, const char *name)
          assert(strcmp(recorded_digest, offline_digest) == 0);
          r300_tcl_bypass_triangle_release(&offline);
       } else if (varying_cell_arm) {
-         assert(native_cmd->ib_size_dwords == R300_VARYING_CELL_IB_DWORDS);
-         assert(strcmp(recorded_digest, R300_VARYING_CELL_IB_BLAKE3) == 0);
+         assert(native_cmd->ib_size_dwords == varying_cell_dwords);
+         assert(strcmp(recorded_digest, varying_cell_digest) == 0);
       } else if (two_triangle_arm) {
          /* Two instances record the two-triangle family member: the
           * reference dword count, the family digest. */
@@ -1606,15 +1636,15 @@ run_arm(enum arm arm, const char *name)
           * bound module's and the stream is the module-constant
           * identity rather than the emitter's oracle color.
           */
-         assert(native_cmd->ib_size_dwords ==
-                R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
-         assert(strcmp(recorded_digest,
-                       R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3) == 0);
+         assert(native_cmd->ib_size_dwords == module_clip_dwords);
+         assert(strcmp(recorded_digest, module_clip_digest) == 0);
       }
    }
-   /* The carrier snapshots cover the varying record span; the
-    * position-only arms leave the tail untouched. */
-   uint32_t carrier_before[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   /* The carrier snapshots cover either two position-only source groups
+    * or one varying source group, including every clipping-capacity slot. */
+   uint32_t carrier_before[2u *
+                           R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+                           R300_TRIANGLE_VERTEX_DWORDS];
    {
       void *carrier_map = NULL;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -1633,6 +1663,23 @@ run_arm(enum arm arm, const char *name)
       native_device->gpu_producer_compose_inject_errno = -ENOMEM;
    const uint32_t references_before = native_cmd->reference_count;
    const enum r3v_native_cell_kind kind_before = native_cmd->cell_kind;
+   const uint32_t ib_dwords_before = native_cmd->ib_size_dwords;
+   const uint32_t window_dwords_before =
+      native_cmd->window_space_ib_size_dwords;
+   uint32_t *ib_before = NULL;
+   uint32_t *window_before = NULL;
+   if (arm == ARM_GPU_FETCHED_COMPOSE_FAILURE) {
+      assert(native_cmd->ib != NULL && ib_dwords_before != 0);
+      assert(native_cmd->window_space_ib != NULL && window_dwords_before != 0);
+      ib_before = malloc((size_t)ib_dwords_before * sizeof(uint32_t));
+      window_before =
+         malloc((size_t)window_dwords_before * sizeof(uint32_t));
+      assert(ib_before != NULL && window_before != NULL);
+      memcpy(ib_before, native_cmd->ib,
+             (size_t)ib_dwords_before * sizeof(uint32_t));
+      memcpy(window_before, native_cmd->window_space_ib,
+             (size_t)window_dwords_before * sizeof(uint32_t));
+   }
    assert(references_before == (sampled_arm
                                    ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
                                    : R300_TRIANGLE_RENDER_SLOT_COUNT));
@@ -1658,7 +1705,9 @@ run_arm(enum arm arm, const char *name)
    if (arm == ARM_RETENTION_UNWRITABLE)
       assert(chmod(manifest_dir, 0700) == 0);
 
-   uint32_t carrier_after[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   uint32_t carrier_after[2u *
+                          R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+                          R300_TRIANGLE_VERTEX_DWORDS];
    {
       void *carrier_map = NULL;
       assert(radeon_drm_vk_bo_map(&native_device->drm,
@@ -1676,14 +1725,24 @@ run_arm(enum arm arm, const char *name)
    const bool carrier_is_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_vertices,
              sizeof(r300_tcl_bypass_triangle_vertices)) == 0;
-   /* The instanced arms' expected carrier: each record the job
-    * produces in NDC -- the triangle translated by its instance's
-    * offset record, by InstanceIndex * (0.0625, 0, 0, 0), or by
-    * VertexIndex * (0, 0.0625, 0, 0); every term is exact in binary32,
-    * so the fused and the separate evaluations agree -- through the
-    * viewport transform, instance-major. */
-   float expected_carrier[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
-   unsigned expected_records = 0;
+   /* Each source triangle owns seven output-triangle slots.  Initialize
+    * every slot to the clipper's degenerate record, then place each
+    * admitted triangle at the start of its source group. */
+   float expected_carrier[2u *
+                          R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+                          R300_TRIANGLE_VERTEX_DWORDS] = {0};
+   const unsigned records_per_source =
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u;
+   const unsigned expected_source_triangles =
+      arm == ARM_INSTANCED_ARMED || arm == ARM_INSTANCED_INDEX_ARMED ||
+            arm == ARM_MULTI_TRIANGLE_ARMED
+         ? 2u
+         : 1u;
+   for (unsigned source = 0; source < expected_source_triangles; source++) {
+      for (unsigned record = 0; record < records_per_source; record++)
+         expected_carrier[(source * records_per_source + record) * 4u + 3u] =
+            1.0f;
+   }
    if (arm == ARM_CULL_BACK_DROPPED_ARMED ||
        arm == ARM_SAMPLE_MASK_ZERO_ARMED ||
        arm == ARM_WRITE_MASK_ZERO_ARMED) {
@@ -1695,24 +1754,26 @@ run_arm(enum arm arm, const char *name)
       first[1] = (first[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
       for (unsigned v = 0; v < 3; v++)
          memcpy(&expected_carrier[v * 4], first, 16);
-      expected_records = 3;
    } else if (arm == ARM_MULTI_TRIANGLE_ARMED) {
-      /* Six records, one instance: the reference triangle then its
-       * translated twin, each through the viewport transform. */
-      for (unsigned v = 0; v < 6; v++) {
-         float *record = &expected_carrier[v * 4];
-         memcpy(record, &ndc_triangle[(v % 3) * 4], 16);
-         if (v >= 3)
-            record[0] += 0.0625f;
-         record[0] = (record[0] + 1.0f) * (R3V_NATIVE_TARGET_WIDTH / 2.0f);
-         record[1] = (record[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
+      for (unsigned source = 0; source < 2; source++) {
+         for (unsigned vertex = 0; vertex < 3; vertex++) {
+            float *record =
+               &expected_carrier[(source * records_per_source + vertex) * 4];
+            memcpy(record, &ndc_triangle[vertex * 4], 16);
+            if (source == 1)
+               record[0] += 0.0625f;
+            record[0] =
+               (record[0] + 1.0f) * (R3V_NATIVE_TARGET_WIDTH / 2.0f);
+            record[1] =
+               (record[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
+         }
       }
-      expected_records = 6;
    } else {
       const unsigned instances = instance_count ? instance_count : 1;
       for (unsigned i = 0; i < instances; i++) {
          for (unsigned v = 0; v < 3; v++) {
-            float *record = &expected_carrier[(i * 3 + v) * 4];
+            float *record =
+               &expected_carrier[(i * records_per_source + v) * 4];
             memcpy(record, &ndc_triangle[v * 4], 16);
             if (arm == ARM_INSTANCED_ARMED ||
                 arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED) {
@@ -1726,13 +1787,13 @@ run_arm(enum arm arm, const char *name)
             }
             record[0] = (record[0] + 1.0f) * (R3V_NATIVE_TARGET_WIDTH / 2.0f);
             record[1] = (record[1] + 1.0f) * (R3V_NATIVE_TARGET_HEIGHT / 2.0f);
-            expected_records = i * 3 + v + 1;
          }
       }
    }
    const bool carrier_is_expected =
-      expected_records != 0 &&
-      memcmp(carrier_after, expected_carrier, expected_records * 16) == 0;
+      memcmp(carrier_after, expected_carrier,
+             expected_source_triangles * records_per_source * 4u *
+                sizeof(float)) == 0;
    const bool carrier_is_varying_reference =
       memcmp(carrier_after, r300_tcl_bypass_triangle_varying_vertices,
              sizeof(r300_tcl_bypass_triangle_varying_vertices)) == 0;
@@ -1749,6 +1810,16 @@ run_arm(enum arm arm, const char *name)
    }
    const bool carrier_is_robust =
       memcmp(carrier_after, robust_expected, sizeof(robust_expected)) == 0;
+   bool carrier_is_degenerate = true;
+   for (unsigned i = 0;
+        i < R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+               R300_TRIANGLE_VERTEX_DWORDS;
+        i += 4) {
+      carrier_is_degenerate &= carrier_after[i] == 0u;
+      carrier_is_degenerate &= carrier_after[i + 1] == 0u;
+      carrier_is_degenerate &= carrier_after[i + 2] == 0u;
+      carrier_is_degenerate &= carrier_after[i + 3] == 0x3f800000u;
+   }
    const bool token = file_present(manifest_dir, "attempt.token");
 
    printf("%s: result=%d status=%d cs_ioctls=%u failed_mmaps=%u "
@@ -1762,7 +1833,10 @@ run_arm(enum arm arm, const char *name)
                          ? "reference"
                          : (carrier_is_robust
                                ? "robust"
-                               : (carrier_is_poison ? "poison" : "other")))),
+                               : (carrier_is_degenerate
+                                     ? "degenerate"
+                                     : (carrier_is_poison ? "poison"
+                                                          : "other"))))),
           token ? "spent" : "unspent");
    fflush(stdout);
 
@@ -1792,16 +1866,16 @@ run_arm(enum arm arm, const char *name)
       check_target(device, &target, true, name);
       assert(token);
       break;
-   case ARM_INDEXED_OUT_OF_BOUNDS_REFUSED:
-      /* The index selects vertex 7 of a three-record stream with the
-       * feature off: the executor refuses at execution, after every
-       * gate and before any write. */
-      assert(submitted == VK_ERROR_DEVICE_LOST);
-      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
-      assert(cs_ioctls == 0);
-      assert(carrier_untouched);
-      check_target(device, &target, false, name);
-      assert(!token);
+   case ARM_INDEXED_ZERO_RECORD_DEGENERATE_ARMED:
+      /* Index 7 addresses zero-initialized bytes inside the bound vertex
+       * buffer.  The homogeneous zero position remains contained during
+       * clipping and the stream collapses to degenerate records. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_degenerate);
+      check_target(device, &target, true, name);
+      assert(token);
       break;
    case ARM_INDEXED_RESTART_ENABLED_REFUSED:
       /* Returned above at pipeline creation. */
@@ -1899,6 +1973,15 @@ run_arm(enum arm arm, const char *name)
       assert(native_cmd->cell_kind == kind_before);
       assert(native_cmd->reference_count == references_before);
       assert(native_cmd->owned_slot == NULL);
+      if (arm == ARM_GPU_FETCHED_COMPOSE_FAILURE) {
+         assert(native_cmd->ib_size_dwords == ib_dwords_before);
+         assert(native_cmd->window_space_ib_size_dwords ==
+                window_dwords_before);
+         assert(memcmp(native_cmd->ib, ib_before,
+                       (size_t)ib_dwords_before * sizeof(uint32_t)) == 0);
+         assert(memcmp(native_cmd->window_space_ib, window_before,
+                       (size_t)window_dwords_before * sizeof(uint32_t)) == 0);
+      }
       assert(!native_device->gpu_producer_quarantined);
       check_target(device, &target, false, name);
       assert(!token);
@@ -1915,15 +1998,15 @@ run_arm(enum arm arm, const char *name)
       /* Returned above at vkEndCommandBuffer. */
       assert(!"unreachable");
       break;
-   case ARM_ROBUST_OOB_W0_REFUSED:
-      /* Refuses inside the deferred draw, after every gate and before
-       * any write: the w = 0 record leaves the admitted clip volume. */
-      assert(submitted == VK_ERROR_DEVICE_LOST);
-      assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
-      assert(cs_ioctls == 0);
-      assert(carrier_untouched);
-      check_target(device, &target, false, name);
-      assert(!token);
+   case ARM_ROBUST_OOB_W0_DEGENERATE_ARMED:
+      /* Robust F32_4 reads supply the homogeneous zero position.  The
+       * clipper contains it and emits only degenerate records. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_degenerate);
+      check_target(device, &target, true, name);
+      assert(token);
       break;
    case ARM_GATE_CLOSED:
    case ARM_KNOWN_BAD_PREMATURE_DRAW:
@@ -2067,9 +2150,8 @@ run_arm(enum arm arm, const char *name)
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);
-      assert(submitted_dwords == R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
-      assert(strcmp(submitted_digest,
-                    R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3) == 0);
+      assert(submitted_dwords == module_clip_dwords);
+      assert(strcmp(submitted_digest, module_clip_digest) == 0);
    }
    /* The two-instance armed arms submitted the two-triangle family
     * member the recording installed. */
@@ -2105,6 +2187,9 @@ run_arm(enum arm arm, const char *name)
       assert(strcmp(R300_FETCHED_F32_3_ROUTE_IB_BLAKE3,
                     R300_FETCHED_F32_2_ROUTE_IB_BLAKE3) != 0);
    }
+
+   free(window_before);
+   free(ib_before);
 
    vkDestroyCommandPool(device, pool, NULL);
    vkDestroyPipeline(device, pipeline, NULL);

@@ -46,6 +46,7 @@ static bool cell_compute_identity = false;
  * with its own digest and cell kind.
  */
 static bool cell_render_shape = false;
+static bool cell_clip_space_render_shape = false;
 static struct r300_triangle_render_shape render_shape;
 /* --sampled selects the sampled triangle cell: the varying vertex path
  * with the sampled fragment binary and the TX unit-0 block over one
@@ -108,7 +109,10 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
          r3v_native_multi_pass_public_reference(&mp);
       else
          r3v_native_multi_pass_reference(&mp);
-      return r300_tcl_bypass_triangle_multi_pass_emit(&mp, cell);
+      return cell_multi_pass_public
+                ? r300_tcl_bypass_triangle_clip_space_multi_pass_emit(&mp,
+                                                                       cell)
+                : r300_tcl_bypass_triangle_multi_pass_emit(&mp, cell);
    }
    if (cell_msaa) {
       struct r300_triangle_msaa_resolve msaa;
@@ -137,7 +141,11 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
          r3v_sampled_arm_row_pitch_texels(cell_sampled_arm),
          cell_sampled_arm->lanes, cell);
    if (cell_render_shape)
-      return r300_tcl_bypass_triangle_render_shape_emit(&render_shape, cell);
+      return cell_clip_space_render_shape
+                ? r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+                     &render_shape, 1, cell)
+                : r300_tcl_bypass_triangle_render_shape_emit(&render_shape,
+                                                               cell);
    return cell_varying
              ? r300_tcl_bypass_triangle_varying_extent_emit(cell_width,
                                                             cell_height, cell)
@@ -304,7 +312,10 @@ main(int argc, char **argv)
       }
       argi += 2;
    } else if (argc >= argi + 1 + R3V_RENDER_SHAPE_ARGC &&
-              strcmp(argv[argi], "--shape") == 0) {
+              (strcmp(argv[argi], "--shape") == 0 ||
+               strcmp(argv[argi], "--clip-space-shape") == 0)) {
+      cell_clip_space_render_shape =
+         strcmp(argv[argi], "--clip-space-shape") == 0;
       if (!r3v_render_shape_parse(&argv[argi + 1], &render_shape))
          return 2;
       cell_render_shape = true;
@@ -380,11 +391,12 @@ main(int argc, char **argv)
               "usage: %s [--varying|--compute-identity|--sampled|"
               "--sampled-bgra|--sampled-arm <name>|--composed <offset>|"
               "--msaa <sample-count>|--multi-pass|--multi-pass-public|"
-              "--shape <w> <h> "
+              "--shape <w> <h> | --clip-space-shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "
               "<evidence-directory> | [--varying|--compute-identity|"
-              "--shape ...] [--extent <w> <h>] --emit-ib <path>\n",
+              "--shape ...|--clip-space-shape ...] "
+              "[--extent <w> <h>] --emit-ib <path>\n",
               argv[0]);
       return 2;
    }

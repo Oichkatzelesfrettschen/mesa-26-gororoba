@@ -40,38 +40,54 @@ gates enables the witnessed raster output; it does not identify the
 historical predecessor state. The direct-write control proves the shared
 BO, cache, relocation, and readback transport carries device writes; it
 does not identify a 3D color-write gate. The proven raster path is that
-one fixed cell. The public recording surface now reaches it: a bounded
-render-pass/pipeline/draw vocabulary -- the qualified linear color
-target at any extent inside the 64x64 maximum, a pipeline admitted by
-byte equality with the reference SPIR-V pair and the cell's fixed
-state vector, and a draw that gathers
-the bound vertex buffer through the CPU executor, applies the Vulkan
-viewport transform over the pass target's extent inside a bounded
-clip-volume domain (w exactly 1, NDC inside the clip volume, so
-scissor and clip coincide and the identity perspective divide is
-exact), and lands the window-space records in a
-command-buffer-owned carrier -- records the byte-identical cell IB
-through public `vkCmd*` entry points, at the drm-shim host-model class
-under the `r3v-native-public-surface` harness, and every contract
-deviation poisons or refuses.  The loader boundary is proven at the
+one fixed cell. The public recording surface now reaches it through a
+bounded render-pass/pipeline/draw vocabulary: the qualified linear color
+target at any extent inside the 64x64 maximum, a pipeline admitted by byte
+equality with the reference SPIR-V pair and the cell's fixed state vector,
+and a draw that executes the bound vertex streams through the CPU executor.
+The clip-space delivery path clips each triangle against the Vulkan view
+volume `-w <= x <= w`, `-w <= y <= w`, and `0 <= z <= w` before perspective
+division. It clips the admitted smooth `vec4` varying with the same edge
+parameter, fan-triangulates the resulting polygon, writes reciprocal clip W
+into the pretransformed position, applies the viewport, and then applies
+facing cull. Each input triangle owns seven fixed output-triangle slots, the
+maximum produced by clipping a triangle against six planes; unused slots are
+degenerate, and the cell divides the fixed capacity into draws that each fit
+the R300 16-bit vertex count. The recorded IB therefore remains independent
+of submission-time vertex values. When the polygon's W ratio fits binary32's
+positive dynamic range, one positive scale per source triangle keeps every
+reciprocal W representable; perspective interpolation is invariant to that
+common scale. A clipped polygon can span more than the complete positive
+binary32 dynamic range; at that boundary, smaller weights round upward to
+`FLT_TRUE_MIN` so a finite homogeneous position never becomes the singular
+carrier value zero. That positive-preserving rounding is host-model evidence,
+not an RS482 interpolation-accuracy claim.
+
+The admitted shader grammar exposes neither `Flat` nor `NoPerspective`, and
+the device exposes no user clip or cull distances. Pipeline admission also
+requires default depth clipping and rejects depth clamp, so this mechanism's
+six planes cover the full exposed clip volume. Finite non-unit W and partial
+plane crossings must execute without device loss; a fully clipped triangle
+must produce no fragments; clipped smooth varyings must match clip-space
+linear interpolation; and a non-finite position must refuse before carrier
+publication. Any violation of those outcomes, any output beyond the seven
+reserved triangles, or any emitted draw exceeding 65,535 vertices falsifies
+the mechanism.
+
+The gated GPU-producer route keeps its fixed three-record window-space
+consumer and performs no host clipping or viewport transform. Route admission
+selects that consumer before the relocation list and digest are retained. The
+expanded clip-space consumer has host-unit and drm-shim evidence only; it has
+no RS482 submission or raster witness. The loader boundary is proven at the
 same host-model class: the `r3v-native-loader-application` gate links a
-standalone application against the installed Vulkan loader alone,
-reaches the ICD only through its manifest, performs the complete
-instance-to-submit sequence, and byte-compares the submit-retained IB
-against the independently emitted reference cell, while its symbol
-audit holds the binary free of every audited driver-symbol prefix in
-any binding, the reference SPIR-V data header being the one driver
-artifact the application compiles in.
-The recorded IB equals the digest the
-arming authority qualifies, so the command-stream grammar the silicon
-witnessed is what the public route records; the witness's rendered
-pixels are bound to the window-space payload the attended run carried,
-which the public route reproduces byte-exactly from the NDC triangle
-the viewport transform maps onto it; other in-domain records or a
-nonzero `firstVertex` change the carrier bytes the same IB fetches, an
-input set the silicon has not yet observed.  General vertex routes and the
-complete Vulkan semantic/conformance sections remain implementation
-contracts.
+standalone application against the installed Vulkan loader alone, reaches the
+ICD only through its manifest, performs the complete instance-to-submit
+sequence, and byte-compares the submit-retained IB against the independently
+emitted clip-space-capacity cell. Its symbol audit holds the binary free of
+every audited driver-symbol prefix in any binding, with the reference SPIR-V
+data header as the one driver artifact the application compiles in. General
+vertex routes and the complete Vulkan semantic and conformance sections
+remain implementation contracts.
 
 The native graphics family carries a bounded transfer surface in addition
 to the fixed render cell: one linear `B8G8R8A8_UNORM` format. Its single
@@ -862,9 +878,10 @@ mechanisms are:
   SPIR-V pair and the cell's fixed state vector with the
   viewport/scissor pair as its target-extent claim, and the
   render-pass/bind/draw command subset whose draw lowers through the
-  CPU vertex carrier -- viewport-transformed inside the bounded
-  clip-volume domain -- into the extent-resolved cell, with the vertex
-  gather and load-op clear executing at queue submission;
+  CPU vertex carrier -- clipped in homogeneous coordinates, perspective
+  divided, viewport-transformed, and expanded into fixed degenerate-padded
+  triangle slots -- into the extent-resolved cell, with the vertex gather and
+  load-op clear executing at queue submission;
 - the fixed TCL-bypass triangle lowered into a native command buffer by
   `r3v_native_record_tcl_bypass_triangle`, a private entry linked directly
   by the pre-hardware harness; the recording opens with the neutral
