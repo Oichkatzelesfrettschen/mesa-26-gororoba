@@ -456,7 +456,12 @@ main(int argc, char **argv)
     * ones, so the footprint census separates a permuted order from an
     * absent write.
     */
-   const uint32_t *pixels = destination_map;
+   /* The census walks the render footprint from the target base, the
+    * same window the oracle judges and a subset of the retained bytes,
+    * so its counts describe what resolve_destination.bin holds.
+    */
+   const uint32_t *pixels =
+      (const uint32_t *)destination_map + msaa.destination.target_offset / 4u;
    const uint32_t footprint_pixels =
       msaa.destination.pitch_pixels * msaa.destination.height;
    uint32_t census_downsample = 0, census_fragment = 0, census_seed = 0;

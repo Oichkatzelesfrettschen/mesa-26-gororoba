@@ -135,6 +135,12 @@ If the cell is correct, exactly one pass reads `interior_exact=1` with
 `judged=1` on all four, and the dmesg delta is zero.  The run classifies
 which; each of the four is a recorded outcome rather than a deviation.
 
+One attempt spends one sample count.  The arm runs at four samples, the
+1104-pixel denominator, since the 4x grid is where the subsample set
+meets the slope -2 edge exactly and the margin rule earns its keep; the
+two-sample arm at 1128 pixels is the follow-on and a 4x result settles
+nothing about it.
+
 The exterior is a named scope cut.  The multisample surface takes no
 clear, so the resolve carries whatever that surface held outside the
 analytic triangle into the destination; the subsample-set oracle leaves
