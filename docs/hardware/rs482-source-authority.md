@@ -56,7 +56,9 @@ generated output equivalence. `radeon-custom` consumes an immutable signed
 commit and tree instead of constructing the active module from its historical
 patch files.
 
-The public cutover anchors bind each proof layer to a tracked record:
+The cutover anchors bind the migration boundary to tracked records. They remain
+the foundation for later package pins; the current package and runtime
+identities are recorded separately below.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -64,8 +66,6 @@ The public cutover anchors bind each proof layer to a tracked record:
 | --- | --- | --- |
 | Signed source equivalence | `linux-radeon-gororoba/docs/source-equivalence-attestation.toml` | tag object `81a2510e34d1d62f5486683bcd6e240db8223b7d`, commit `9079be562eebd184da9cf891fbc6a72d5ac0d9f3`, driver tree `b0f40a1970f57d00b690890120ad1ba8fd1e474c` |
 | Normalized source and generated output | `linux-radeon-gororoba/MIGRATION_INPUT.toml` | base manifest SHA-256 `1f085124056f24cdfe26ff3c19e615c32cefdb5fef5a9343205acce17e7d94c7`, migration manifest SHA-256 `71ae424fc8af1828200ec98e9233b646c6483c11ecfb778d91ec64ef6bf9f5dc`, generated output proof SHA-256 `1efe8d77577c8c9173093d5c47a8df2905fd487471a22c5c9d0507693502909a` |
-| Active package source pin | `radeon-custom/packaging/arch/radeon-unified-dkms/source-identity.toml` | signed tag object `c3745d24ea7481ec56c5c0b1aa397be4b8788b72`, source commit `2433cbd69cd99d1dd002447bb4d481ed66141562`, driver tree `e3432f8dda41e2fcb93fad23a0f3825541c15e93` |
-| Loaded module identity | `steinmarder-r300/src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/` | manifest SHA-256 `84340d65c87cb4ca3aa1f01faaa559a00d7950a55fad4cee344b988d3eeff386`, ledger SHA-256 `cc8a82f210cdccc847f9320faa7dc9f6136e537ef3555c78d867f0055ca70e42` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -73,31 +73,35 @@ The current identities stay on separate axes:
 
 <!-- markdownlint-disable MD013 -->
 
-| Identity axis | Authority | Current evidence |
+| Identity axis | Authority | Exact identity and claim boundary |
 | --- | --- | --- |
-| Modified source | `linux-radeon-gororoba` | canonical source continues beyond the shipped pins |
-| Active package recipe | `radeon-custom` 0.8-1 | signed tag object `c3745d24ea7481ec56c5c0b1aa397be4b8788b72`, source commit `2433cbd69cd99d1dd002447bb4d481ed66141562`, driver tree `e3432f8dda41e2fcb93fad23a0f3825541c15e93` |
-| Loaded target deployment | `radeon-custom` 0.7-1 | source commit `293a4ae3fe82cd03585ef3157e82b0b59b641b47`, driver tree `d57a22ad5356637d7075cb2aba83e22af71f7bfb`, srcversion `A7F72BE636B52D7EED42415` |
-| Loaded binary | `steinmarder-r300` retained identity bundle | compressed SHA-256 `6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`, GNU Build ID `a5f1ae7e6e040b20c53278d2978ea7a17a29b696` |
-| Parked device behavior | `steinmarder-r300` retained 0.6-1 bundle | latest attended park verdict; later package identity does not promote this behavior evidence |
+| Modified source | `linux-radeon-gororoba` | current main commit `01aab9a5fdf75c771baa2aabb785c201649c476e`, driver tree `bedfecb34af16222225c04bb112a832e0c9578e6`; this tree includes commit `dc4c6ed` beyond the active package pin and carries no package or runtime claim |
+| Active package recipe | `radeon-custom` 0.8.11-1 | package commit `a329c2116298e3c5f7858777fd6e7686723b9e11`, recipe tree `ee444215769f3304784d01ea7c8630901900e7b3`, `PKGBUILD` blob `d858650a2f6eeed89b0bafd77d96597469b359da`, source identity blob `0ec95e27144cf26d8244395ffad6860bdcb8d151`; the recipe pins signed source tag object `b0102041d170882928c4a795d51c1626a945f2d1`, source commit `3c5ccb3cfb684c975efbb30c3e312c310b741cf9`, and driver tree `e3a54399a004c714402b5c9bd56e1edcfd1caa1c` |
+| Target deployment runtime | `steinmarder-r300/results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-deployment-runtime/` | retaining commit `59f9361e277bb63c52d335eda9009aa94b7d989c`, manifest SHA-256 `2ab2b00758b5226ac096da4d63c30652ebceef245f56373374b8f6fc21171ec6`, hash ledger SHA-256 `7bff34920965ddb4292b54a7bc9313f1f38102dd1592339a09d6cfd1ff6ff1e7`; records `radeon-unified-dkms-dev` 0.8.11-1, source commit `3c5ccb3cfb684c975efbb30c3e312c310b741cf9`, driver tree `e3a54399a004c714402b5c9bd56e1edcfd1caa1c`, and srcversion `727CE89E79FB2D14663C381` across a reboot |
+| Loaded module byte identity | `steinmarder-r300/src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/` | retaining commit `55e74d6bbb7cdc061ed0c154f22cd8ede35a7ca1`, manifest SHA-256 `84340d65c87cb4ca3aa1f01faaa559a00d7950a55fad4cee344b988d3eeff386`, hash ledger SHA-256 `cc8a82f210cdccc847f9320faa7dc9f6136e537ef3555c78d867f0055ca70e42`, compressed module SHA-256 `6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`, GNU Build ID `a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, and srcversion `A7F72BE636B52D7EED42415`; no newer retained bundle records the loaded module bytes |
+| Parked-device behavior | `steinmarder-r300/src/re/r300/results/cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z/` | retaining commit `baa6b2d496c52392c0ecb5e18306db02e9dfd6cf`, outcome SHA-256 `f053e84ec97332abb5ec9c0611ac84d988c5070bdd2bc28eb22d1e10da82c243`, hash ledger SHA-256 `ab36a1a974679a8f9cb8c7da5bf0fd4452dbba3a5ca6151f5001841d926d96ae`; measures the 0.6-1 parked-entry contract, while later package and deployment identities carry no newer parked-device run |
 
 <!-- markdownlint-enable MD013 -->
 
-The 0.8 package gates build and verify the split package set. The target kernel
-gate compiles its verified production package on RS482. The repository carries
-no 0.8-1 signed release attestation or loaded module identity. The loaded
-production authority therefore remains 0.7-1.
+The active 0.8.11-1 recipe packages source commit `3c5ccb3c`. The modified
+source authority has advanced to `01aab9a5`; that source becomes package or
+deployment authority only after `radeon-custom` advances its recipe and a
+retained target capture proves the resulting deployment.
 
-The 0.7 identity bundle joins package, DKMS source, installed module bytes,
-loaded srcversion, loaded GNU Build ID, build profile, and PCI `1002:5974`.
-It records successful boot ring and indirect buffer initialization. It runs no
-controlled graphics workload and establishes no conformance, reset, register,
-performance, or silicon safety verdict.
+The 0.8.11-1 deployment bundle joins the installed package and board policy to
+the recipe's source commit and driver tree, built DKMS modules for both served
+kernels, the running kernel, the loaded srcversion, and the boot-image digests
+pinned by both boot entries. The observed boot records successful ring and
+indirect-buffer initialization. The capture retains no loaded module bytes or
+Build ID and opens no DRM device, so the older 0.7-1 identity bundle remains
+the newest byte-level loaded-module record. Neither bundle establishes API
+conformance, reset behavior, workload performance, or general silicon safety.
 
-The target capture observes installed package version 0.7-1. It does not bind
-the installed files to the signed release archive bytes. Exact signed archive
-installation provenance therefore remains open even though the loaded module
-to source identity join closes.
+The 0.6-1 parked-entry matrix remains the newest retained parked-device run.
+The newer package contains the parked-device mechanisms in source, but source
+presence and ordinary reboot evidence do not reproduce a park. A newer package
+inherits no parked-device verdict until an attended run records the same
+behavior against that exact deployment.
 
 The durable cutover proof retains the migration input, source closure,
 normalization and export manifests, generated output comparison, source tag,
@@ -221,6 +225,16 @@ python3 -m venv "$rs482_schema_venv"
 
 Dependency installation is the only package-resolution step. The verifier
 reads the tracked schema and fixtures without network access.
+
+The authority-row verifier uses the Python standard library and rejects a
+current identity table that merges evidence axes, omits the package recipe
+objects, or leaves a retained deployment or parked-device run without an exact
+bundle and hash identity:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 \
+  docs/hardware/tests/test_rs482_source_authority.py -v
+```
 
 ## Registry currency
 
