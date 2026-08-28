@@ -2,14 +2,14 @@
  * SPDX-License-Identifier: MIT
  *
  * The route dispatch timing runner declares three authorizations from
- * two offline compositions: the immediate composed stream's digest for
- * the GPU route, the fetched F32_4 composed stream's digest for the
- * fetched route, and the consumer slice's digest for the CPU route.
- * The CPU declaration holds only while the consumer slice of each
- * composed reference is the recorded triangle consumer verbatim, so
- * this test pins that identity dword for dword in both compositions
- * and proves the three digests differ pairwise, which is what keeps
- * one route's authorization from admitting another's stream.
+ * two offline compositions and one clip-space consumer: the immediate
+ * composed stream's digest for the GPU route, the fetched F32_4 composed
+ * stream's digest for the fetched route, and the expanded consumer's digest
+ * for the CPU route.  Both producer compositions retain the ordinary
+ * window-space consumer, while the CPU route records seven output triangle
+ * slots for homogeneous clipping.  This test pins those identities dword
+ * for dword and proves the three digests differ pairwise, which keeps one
+ * route's authorization from admitting another's stream.
  *
  * The runner also states one triangle in two spaces, because the two
  * routes admit different ones: the GPU producer route declares
@@ -67,9 +67,15 @@ main(int argc, char **argv)
                                                  &fetched) != 0)
       return fail("fetched route composition failed");
 
-   struct r300_tcl_bypass_triangle_ib consumer;
-   if (r300_tcl_bypass_triangle_reference_emit(&consumer) != 0)
-      return fail("consumer reference emission failed");
+   struct r300_tcl_bypass_triangle_ib window_consumer;
+   if (r300_tcl_bypass_triangle_reference_emit(&window_consumer) != 0)
+      return fail("window-space consumer reference emission failed");
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   struct r300_tcl_bypass_triangle_ib clip_consumer;
+   if (r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+          &shape, 1u, &clip_consumer) != 0)
+      return fail("clip-space consumer reference emission failed");
 
    if (route.ib_size_dwords != R300_RETAINED_GPU_ROUTE_IB_DWORDS)
       return fail("composed stream length differs from the retained "
@@ -77,9 +83,9 @@ main(int argc, char **argv)
    if (route.consumer_start_dwords !=
        R300_RETAINED_GPU_ROUTE_CONSUMER_START_DWORDS)
       return fail("consumer split differs from the retained GPU route");
-   if (consumer.ib_size_dwords != R300_RETAINED_CPU_ROUTE_IB_DWORDS)
-      return fail("consumer cell length differs from the retained "
-                  "CPU route");
+   if (window_consumer.ib_size_dwords != R300_RETAINED_CPU_ROUTE_IB_DWORDS)
+      return fail("window-space consumer length differs from the retained "
+                  "producer route consumer");
    if (fetched.ib_size_dwords != R300_FETCHED_F32_4_ROUTE_IB_DWORDS)
       return fail("fetched stream length differs from the retained "
                   "fetched F32_4 route");
@@ -88,7 +94,7 @@ main(int argc, char **argv)
       return fail("fetched consumer split differs from the retained "
                   "fetched F32_4 route");
    if (inject_consumer_drift) {
-      consumer.ib[consumer.ib_size_dwords - 1] ^= 1u;
+      clip_consumer.ib[clip_consumer.ib_size_dwords - 1] ^= 1u;
       route.ib[route.ib_size_dwords - 1] ^= 1u;
       fetched.ib[fetched.ib_size_dwords - 1] ^= 1u;
    }
@@ -97,33 +103,42 @@ main(int argc, char **argv)
       return fail("composed stream carries no consumer slice");
    const uint32_t slice_dwords =
       route.ib_size_dwords - route.consumer_start_dwords;
-   if (slice_dwords != consumer.ib_size_dwords)
-      return fail("consumer slice length differs from the recorded cell");
-   if (memcmp(route.ib + route.consumer_start_dwords, consumer.ib,
+   if (slice_dwords != window_consumer.ib_size_dwords)
+      return fail("consumer slice length differs from the window-space cell");
+   if (memcmp(route.ib + route.consumer_start_dwords, window_consumer.ib,
               slice_dwords * sizeof(uint32_t)) != 0)
-      return fail("consumer slice bytes differ from the recorded cell");
+      return fail("consumer slice bytes differ from the window-space cell");
    /* The fetched composition carries the same consumer behind its own
     * producer, so the CPU declaration names the slice of either stream.
     */
    if (fetched.ib_size_dwords <= fetched.consumer_start_dwords)
       return fail("fetched stream carries no consumer slice");
    if (fetched.ib_size_dwords - fetched.consumer_start_dwords !=
-       consumer.ib_size_dwords)
+       window_consumer.ib_size_dwords)
       return fail("fetched consumer slice length differs from the "
-                  "recorded cell");
-   if (memcmp(fetched.ib + fetched.consumer_start_dwords, consumer.ib,
+                  "window-space cell");
+   if (memcmp(fetched.ib + fetched.consumer_start_dwords,
+              window_consumer.ib,
               slice_dwords * sizeof(uint32_t)) != 0)
       return fail("fetched consumer slice bytes differ from the recorded "
                   "cell");
+   if (clip_consumer.ib_size_dwords != window_consumer.ib_size_dwords)
+      return fail("the one-draw clip and window consumers differ in length");
+   if (memcmp(clip_consumer.ib, window_consumer.ib,
+              clip_consumer.ib_size_dwords * sizeof(uint32_t)) == 0)
+      return fail("the clip and window consumers are byte-identical");
 
    char gpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    char cpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
-   char consumer_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   char window_consumer_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords, gpu_digest);
    r300_triangle_ib_digest_hex(route.ib + route.consumer_start_dwords,
                                slice_dwords, cpu_digest);
-   r300_triangle_ib_digest_hex(consumer.ib, consumer.ib_size_dwords,
-                               consumer_digest);
+   r300_triangle_ib_digest_hex(clip_consumer.ib,
+                               clip_consumer.ib_size_dwords, cpu_digest);
+   r300_triangle_ib_digest_hex(window_consumer.ib,
+                               window_consumer.ib_size_dwords,
+                               window_consumer_digest);
    char fetched_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    r300_triangle_ib_digest_hex(fetched.ib, fetched.ib_size_dwords,
                                fetched_digest);
@@ -134,10 +149,12 @@ main(int argc, char **argv)
    if (strcmp(fetched_digest, R300_FETCHED_F32_4_ROUTE_IB_BLAKE3) != 0)
       return fail("fetched digest differs from the retained fetched F32_4 "
                   "route");
-   if (strcmp(cpu_digest, consumer_digest) != 0)
-      return fail("cpu digest differs from the recorded consumer digest");
-   if (strcmp(cpu_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) != 0)
-      return fail("cpu digest differs from the retained CPU route");
+   if (strcmp(cpu_digest, window_consumer_digest) == 0)
+      return fail("cpu digest equals the window-space consumer digest");
+   if (strcmp(window_consumer_digest,
+              R300_RETAINED_CPU_ROUTE_IB_BLAKE3) != 0)
+      return fail("window-space consumer digest differs from the retained "
+                  "producer route consumer");
    if (strcmp(gpu_digest, R300_RETAINED_GPU_ROUTE_IB_BLAKE3) != 0)
       return fail("gpu digest differs from the retained GPU route");
 
@@ -166,7 +183,8 @@ main(int argc, char **argv)
 
    r300_r2vb_public_route_release(&route);
    r300_r2vb_fetched_route_release(&fetched);
-   r300_tcl_bypass_triangle_release(&consumer);
+   r300_tcl_bypass_triangle_release(&clip_consumer);
+   r300_tcl_bypass_triangle_release(&window_consumer);
    printf("route-timing-digest: consumer slice identity holds in both "
           "compositions and the clip round trip is exact; gpu %.8s.. "
           "cpu %.8s.. fetched %.8s..\n",

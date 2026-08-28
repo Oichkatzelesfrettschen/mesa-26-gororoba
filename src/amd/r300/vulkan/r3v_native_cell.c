@@ -29,7 +29,9 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <float.h>
 #include <inttypes.h>
+#include <math.h>
 #include <radeon_drm.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -323,6 +325,44 @@ fill_color(struct r3v_native_device *device,
    return VK_SUCCESS;
 }
 
+static int
+emit_triangle_cell_for_position_space(
+   const struct r300_triangle_render_shape *shape, bool varying,
+   uint32_t source_triangle_count,
+   const struct r3v_native_sampled_texture *sampled, bool clip_space,
+   struct r300_tcl_bypass_triangle_ib *cell)
+{
+   if (sampled != NULL) {
+      if (clip_space) {
+         return r300_tcl_bypass_triangle_clip_space_sampled_emit(
+            shape->width, shape->height, source_triangle_count,
+            sampled->texture_offset, sampled->texture_width,
+            sampled->texture_height, sampled->texture_pitch_texels,
+            sampled->texture_lanes, cell);
+      }
+      return r300_tcl_bypass_triangle_sampled_emit(
+         shape->width, shape->height, source_triangle_count,
+         sampled->texture_offset, sampled->texture_width,
+         sampled->texture_height, sampled->texture_pitch_texels,
+         sampled->texture_lanes, cell);
+   }
+
+   if (clip_space) {
+      if (varying) {
+         return r300_tcl_bypass_triangle_clip_space_family_emit(
+            shape->width, shape->height, true, source_triangle_count, cell);
+      }
+      return r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+         shape, source_triangle_count, cell);
+   }
+
+   if (varying || source_triangle_count != 1) {
+      return r300_tcl_bypass_triangle_family_emit(
+         shape->width, shape->height, varying, source_triangle_count, cell);
+   }
+   return r300_tcl_bypass_triangle_render_shape_emit(shape, cell);
+}
+
 /* Cell emission and installation with no memory writes: the emitted IB
  * and its references depend only on the two BO handles, so the recorded
  * digest is independent of when the carrier and target bytes land.
@@ -333,7 +373,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *vertex_memory,
                                struct r3v_native_memory *color_memory,
                                const struct r300_triangle_render_shape *shape,
-                               bool varying, uint32_t triangle_count,
+                               bool clip_space, bool varying,
+                               uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
                                   *sampled)
 {
@@ -366,27 +407,39 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       shape->pitch_pixels == reference.pitch_pixels &&
       shape->lanes == reference.lanes && shape->target_offset == 0 &&
       shape->width <= reference.width && shape->height <= reference.height;
-   struct r300_tcl_bypass_triangle_ib cell;
-   int emit_result;
-   if (sampled != NULL) {
-      /* The sampled cell rides the varying family's reference-target
-       * constraint and adds the TX block over the declared texture.
-       */
-      if (!reference_target || !varying)
-         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-      emit_result = r300_tcl_bypass_triangle_sampled_emit(
-         shape->width, shape->height, triangle_count,
-         sampled->texture_offset, sampled->texture_width,
-         sampled->texture_height, sampled->texture_pitch_texels,
-         sampled->texture_lanes, &cell);
-   } else if (varying || triangle_count != 1) {
-      if (!reference_target)
-         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
-      emit_result = r300_tcl_bypass_triangle_family_emit(
-         shape->width, shape->height, varying, triangle_count, &cell);
-   } else {
-      emit_result = r300_tcl_bypass_triangle_render_shape_emit(shape, &cell);
+   /* Varying and sampled cells retain the reference target family.  The
+    * constant-color render-shape emitter carries arbitrary admitted target
+    * geometry directly.
+    */
+   if ((sampled != NULL || varying || triangle_count != 1) &&
+       !reference_target)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+   if (sampled != NULL && !varying)
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   /* CPU and host-model delivery need a fixed seven-triangle capacity per
+    * source triangle because the stream bytes arrive after recording.  The
+    * GPU producer instead owns an already transformed three-record stream;
+    * retain its ordinary consumer for the one source shape that route admits.
+    */
+   struct r300_tcl_bypass_triangle_ib window_cell = {0};
+   const bool retain_window_cell =
+      clip_space && cmd_buffer->ib == NULL && sampled == NULL && !varying &&
+      triangle_count == 1;
+   int emit_result = 0;
+   if (retain_window_cell) {
+      emit_result = emit_triangle_cell_for_position_space(
+         shape, varying, triangle_count, sampled, false, &window_cell);
+      if (emit_result != 0)
+         return vk_error(device,
+                         r3v_native_cell_vk_result_from_errno(emit_result));
    }
+
+   struct r300_tcl_bypass_triangle_ib cell = {0};
+   emit_result = emit_triangle_cell_for_position_space(
+      shape, varying, triangle_count, sampled, clip_space, &cell);
+   if (emit_result != 0)
+      r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -405,6 +458,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       calloc(slot_count, sizeof(*references));
    if (references == NULL) {
       r300_tcl_bypass_triangle_release(&cell);
+      r300_tcl_bypass_triangle_release(&window_cell);
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
    references[R300_TRIANGLE_SLOT_VERTEX] = (struct r3v_native_bo_reference){
@@ -442,12 +496,14 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       free(references);
       if (appended != VK_SUCCESS) {
          r300_tcl_bypass_triangle_release(&cell);
+         r300_tcl_bypass_triangle_release(&window_cell);
          return appended;
       }
       /* append_ib copied the appended dwords; the descriptor still owns
        * its allocation.
        */
       r300_tcl_bypass_triangle_release(&cell);
+      r300_tcl_bypass_triangle_release(&window_cell);
       return VK_SUCCESS;
    }
 
@@ -460,6 +516,12 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_tcl_bypass_triangle_release(&cell);
+   if (retain_window_cell) {
+      cmd_buffer->window_space_ib = window_cell.ib;
+      cmd_buffer->window_space_ib_size_dwords = window_cell.ib_size_dwords;
+      window_cell.ib = NULL;
+   }
+   r300_tcl_bypass_triangle_release(&window_cell);
 
    return VK_SUCCESS;
 }
@@ -488,7 +550,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    struct r300_triangle_render_shape shape;
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
-                                         color_memory, &shape, false, 1,
+                                         color_memory, &shape, false, false, 1,
                                          NULL);
 }
 
@@ -510,15 +572,18 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    if (triangle_count < 1 || triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
    const uint64_t carrier_bytes =
-      (uint64_t)triangle_count * (varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
-                                          : R3V_TRIANGLE_VERTEX_BYTES);
+      (uint64_t)triangle_count *
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+      (varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
+               : R3V_TRIANGLE_VERTEX_BYTES);
    const uint64_t target_base =
       target_image->memory_offset + target_layer_offset;
    if (carrier_memory->bo.size < carrier_bytes ||
        color_memory->bo.size - target_base < target_image->layer_pitch_bytes) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: triangle cell needs %" PRIu64
-                       " vertex bytes and the target image's declared "
+                       " clipping-capacity vertex bytes and the target "
+                       "image's declared "
                        "footprint",
                        carrier_bytes);
    }
@@ -545,8 +610,367 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    if (!varying)
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
-                                         color_memory, &shape, varying,
+                                         color_memory, &shape, true, varying,
                                          triangle_count, sampled);
+}
+
+/* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume
+ * as six homogeneous half-spaces and clips shader outputs with the same edge
+ * parameter before perspective division.  Clipping a convex triangle against
+ * six planes can add at most one vertex per plane: nine polygon vertices and
+ * seven fan triangles.
+ */
+#define R3V_NATIVE_CLIP_PLANE_COUNT 6u
+#define R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES \
+   (3u + R3V_NATIVE_CLIP_PLANE_COUNT)
+#define R3V_NATIVE_CLIP_MAX_RECORD_DWORDS \
+   (R300_VERTEX_JOB_POSITION_DWORDS + R300_VERTEX_JOB_VARYING_DWORDS)
+
+struct r3v_native_clip_vertex {
+   double values[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS];
+};
+
+static double
+clip_plane_distance(const struct r3v_native_clip_vertex *vertex,
+                    uint32_t plane)
+{
+   const double *position = vertex->values;
+   switch (plane) {
+   case 0:
+      return (double)position[0] + position[3];
+   case 1:
+      return (double)position[3] - position[0];
+   case 2:
+      return (double)position[1] + position[3];
+   case 3:
+      return (double)position[3] - position[1];
+   case 4:
+      return position[2];
+   case 5:
+      return (double)position[3] - position[2];
+   default:
+      assert(!"clip plane outside the fixed view volume");
+      return -1.0;
+   }
+}
+
+static int
+append_clip_vertex(struct r3v_native_clip_vertex vertices[],
+                   uint32_t *vertex_count,
+                   const struct r3v_native_clip_vertex *vertex)
+{
+   if (*vertex_count >= R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES)
+      return -EOVERFLOW;
+   vertices[(*vertex_count)++] = *vertex;
+   return 0;
+}
+
+static int
+intersect_clip_edge(const struct r3v_native_clip_vertex *previous,
+                    const struct r3v_native_clip_vertex *current,
+                    double previous_distance, double current_distance,
+                    uint32_t plane, uint32_t record_dwords,
+                    struct r3v_native_clip_vertex *intersection)
+{
+   const double previous_weight = fabs(current_distance);
+   const double current_weight = fabs(previous_distance);
+   const double weight_sum = previous_weight + current_weight;
+   if (weight_sum == 0.0 || !isfinite(weight_sum))
+      return -EDOM;
+
+   memset(intersection, 0, sizeof(*intersection));
+   for (uint32_t component = 0; component < record_dwords; component++) {
+      intersection->values[component] =
+         (previous->values[component] * previous_weight +
+          current->values[component] * current_weight) /
+         weight_sum;
+   }
+
+   /* Put the generated position exactly on the active plane.  The weighted
+    * intersection stays in binary64 through all six planes, so later plane
+    * intersections retain the containment established by earlier planes.
+    */
+   switch (plane) {
+   case 0:
+      intersection->values[0] = -intersection->values[3];
+      break;
+   case 1:
+      intersection->values[0] = intersection->values[3];
+      break;
+   case 2:
+      intersection->values[1] = -intersection->values[3];
+      break;
+   case 3:
+      intersection->values[1] = intersection->values[3];
+      break;
+   case 4:
+      intersection->values[2] = 0.0;
+      break;
+   case 5:
+      intersection->values[2] = intersection->values[3];
+      break;
+   default:
+      return -EINVAL;
+   }
+   return 0;
+}
+
+static bool
+clip_vertex_inside_all_planes(const struct r3v_native_clip_vertex *vertex)
+{
+   for (uint32_t plane = 0; plane < R3V_NATIVE_CLIP_PLANE_COUNT; plane++) {
+      if (!(clip_plane_distance(vertex, plane) >= 0.0))
+         return false;
+   }
+   return true;
+}
+
+static int
+clip_one_triangle(const uint32_t *records, uint32_t record_dwords,
+                  struct r3v_native_clip_vertex clipped[],
+                  uint32_t *clipped_count)
+{
+   struct r3v_native_clip_vertex current[R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES] =
+      {0};
+   struct r3v_native_clip_vertex next[R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES] =
+      {0};
+   uint32_t current_count = 3;
+   for (uint32_t vertex = 0; vertex < current_count; vertex++) {
+      for (uint32_t component = 0; component < record_dwords; component++) {
+         float value;
+         memcpy(&value, &records[vertex * record_dwords + component],
+                sizeof(value));
+         if (component < R300_VERTEX_JOB_POSITION_DWORDS && !isfinite(value))
+            return -EDOM;
+         current[vertex].values[component] = value;
+      }
+   }
+
+   for (uint32_t plane = 0;
+        plane < R3V_NATIVE_CLIP_PLANE_COUNT && current_count != 0; plane++) {
+      uint32_t next_count = 0;
+      const struct r3v_native_clip_vertex *previous =
+         &current[current_count - 1];
+      double previous_distance = clip_plane_distance(previous, plane);
+      bool previous_inside = previous_distance >= 0.0;
+      for (uint32_t vertex = 0; vertex < current_count; vertex++) {
+         const struct r3v_native_clip_vertex *candidate = &current[vertex];
+         const double candidate_distance =
+            clip_plane_distance(candidate, plane);
+         const bool candidate_inside = candidate_distance >= 0.0;
+         if (previous_inside != candidate_inside) {
+            struct r3v_native_clip_vertex intersection;
+            int result = intersect_clip_edge(
+               previous, candidate, previous_distance, candidate_distance,
+               plane, record_dwords, &intersection);
+            if (result != 0)
+               return result;
+            result = append_clip_vertex(next, &next_count, &intersection);
+            if (result != 0)
+               return result;
+         }
+         if (candidate_inside) {
+            const int result =
+               append_clip_vertex(next, &next_count, candidate);
+            if (result != 0)
+               return result;
+         }
+         previous = candidate;
+         previous_distance = candidate_distance;
+         previous_inside = candidate_inside;
+      }
+      memcpy(current, next, (size_t)next_count * sizeof(next[0]));
+      current_count = next_count;
+   }
+
+   for (uint32_t vertex = 0; vertex < current_count; vertex++) {
+      if (!clip_vertex_inside_all_planes(&current[vertex]))
+         return -ERANGE;
+   }
+
+   memcpy(clipped, current, (size_t)current_count * sizeof(current[0]));
+   *clipped_count = current_count;
+   return 0;
+}
+
+static void
+write_degenerate_record(float record[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS],
+                        uint32_t record_dwords)
+{
+   memset(record, 0, (size_t)record_dwords * sizeof(float));
+   record[3] = 1.0f;
+}
+
+static bool
+project_clip_vertex(const struct r3v_native_clip_vertex *vertex,
+                    uint32_t record_dwords, uint32_t target_width,
+                    uint32_t target_height, double reciprocal_scale,
+                    float output[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS])
+{
+   const double clip_w = vertex->values[3];
+   if (clip_w <= 0.0 || reciprocal_scale <= 0.0)
+      return false;
+   const double normalized_x = vertex->values[0] / clip_w;
+   const double normalized_y = vertex->values[1] / clip_w;
+   const double normalized_z = vertex->values[2] / clip_w;
+   const double window_x =
+      (normalized_x + 1.0) * ((double)target_width / 2.0);
+   const double window_y =
+      (normalized_y + 1.0) * ((double)target_height / 2.0);
+   if (!(normalized_x >= -1.0 && normalized_x <= 1.0) ||
+       !(normalized_y >= -1.0 && normalized_y <= 1.0) ||
+       !(normalized_z >= 0.0 && normalized_z <= 1.0) ||
+       !isfinite(window_x) || !isfinite(window_y))
+      return false;
+
+   const double reciprocal_w = reciprocal_scale / clip_w;
+   if (!(reciprocal_w > 0.0) || !isfinite(reciprocal_w))
+      return false;
+
+   memset(output, 0, (size_t)record_dwords * sizeof(float));
+   output[0] = (float)window_x;
+   output[1] = (float)window_y;
+   output[2] = (float)normalized_z;
+   /* R300's software-transformed vertex convention carries reciprocal clip
+    * W in the pretransformed position for perspective-correct raster
+    * interpolation.
+    */
+   output[3] = (float)MIN2(reciprocal_w, (double)FLT_MAX);
+   if (output[3] == 0.0f)
+      output[3] = FLT_TRUE_MIN;
+   for (uint32_t component = R300_VERTEX_JOB_POSITION_DWORDS;
+        component < record_dwords; component++)
+      output[component] = (float)vertex->values[component];
+   return true;
+}
+
+static int
+expand_clip_space_triangles(
+   const uint32_t *source_records, uint32_t source_triangle_count,
+   uint32_t record_dwords, uint32_t target_width, uint32_t target_height,
+   VkCullModeFlags cull_mode, VkFrontFace front_face, bool sample_mask_zero,
+   uint32_t *output_records, uint32_t output_capacity_dwords)
+{
+   if ((record_dwords != R300_VERTEX_JOB_POSITION_DWORDS &&
+        record_dwords != R3V_NATIVE_CLIP_MAX_RECORD_DWORDS) ||
+       source_triangle_count == 0 || source_records == NULL ||
+       output_records == NULL)
+      return -EINVAL;
+
+   const uint64_t output_vertex_count =
+      (uint64_t)source_triangle_count *
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u;
+   const uint64_t required_dwords = output_vertex_count * record_dwords;
+   if (required_dwords > output_capacity_dwords)
+      return -ENOSPC;
+
+   const uint32_t vertices_per_source =
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u;
+   for (uint32_t triangle = 0; triangle < source_triangle_count; triangle++) {
+      uint32_t *triangle_output =
+         &output_records[(uint64_t)triangle * vertices_per_source *
+                         record_dwords];
+      float degenerate[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS];
+      write_degenerate_record(degenerate, record_dwords);
+      for (uint32_t vertex = 0; vertex < vertices_per_source; vertex++) {
+         memcpy(&triangle_output[vertex * record_dwords], degenerate,
+                (size_t)record_dwords * sizeof(float));
+      }
+
+      struct r3v_native_clip_vertex
+         polygon[R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES];
+      uint32_t polygon_count = 0;
+      const int clipped = clip_one_triangle(
+         &source_records[(uint64_t)triangle * 3u * record_dwords],
+         record_dwords, polygon, &polygon_count);
+      if (clipped != 0)
+         return clipped;
+      if (polygon_count < 3)
+         continue;
+
+      double minimum_positive_w = DBL_MAX;
+      double maximum_positive_w = 0.0;
+      for (uint32_t vertex = 0; vertex < polygon_count; vertex++) {
+         const double clip_w = polygon[vertex].values[3];
+         if (clip_w > 0.0 && clip_w < minimum_positive_w)
+            minimum_positive_w = clip_w;
+         if (clip_w > maximum_positive_w)
+            maximum_positive_w = clip_w;
+      }
+      if (minimum_positive_w == DBL_MAX)
+         continue;
+
+      /* Multiplying every reciprocal W in one source triangle by the same
+       * positive scale leaves perspective interpolation unchanged.  Clamp
+       * that scale to the interval whose smallest and largest reciprocals
+       * fit binary32.  A generated clip vertex can lie closer to W = 0 than
+       * FLT_TRUE_MIN even though every input was binary32; when that makes
+       * the interval empty, keep the largest reciprocal finite and round
+       * smaller positive weights up to FLT_TRUE_MIN instead of publishing
+       * the singular value zero.
+       */
+      const double minimum_reciprocal_scale =
+         (double)FLT_TRUE_MIN * maximum_positive_w;
+      const double maximum_reciprocal_scale =
+         (double)FLT_MAX * minimum_positive_w;
+      double reciprocal_scale = 1.0;
+      if (reciprocal_scale < minimum_reciprocal_scale)
+         reciprocal_scale = minimum_reciprocal_scale;
+      if (reciprocal_scale > maximum_reciprocal_scale)
+         reciprocal_scale = maximum_reciprocal_scale;
+
+      const uint32_t fan_triangle_count = polygon_count - 2u;
+      if (fan_triangle_count >
+          R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT)
+         return -EOVERFLOW;
+      for (uint32_t fan = 0; fan < fan_triangle_count; fan++) {
+         const struct r3v_native_clip_vertex *fan_vertices[3] = {
+            &polygon[0], &polygon[fan + 1], &polygon[fan + 2],
+         };
+         float window[3][R3V_NATIVE_CLIP_MAX_RECORD_DWORDS];
+         bool projected = true;
+         for (uint32_t vertex = 0; vertex < 3; vertex++) {
+            projected &= project_clip_vertex(
+               fan_vertices[vertex], record_dwords, target_width,
+               target_height, reciprocal_scale, window[vertex]);
+         }
+         /* The only fixed-volume point with W zero is the homogeneous
+          * origin.  Perspective division is singular there; containing its
+          * fan triangle as a degenerate produces no invalid carrier values.
+          */
+         if (!projected)
+            continue;
+
+         const double area2 =
+            ((double)window[1][0] - window[0][0]) *
+               ((double)window[2][1] - window[0][1]) -
+            ((double)window[2][0] - window[0][0]) *
+               ((double)window[1][1] - window[0][1]);
+         bool collapse = sample_mask_zero;
+         if (!collapse && area2 != 0.0 && cull_mode != VK_CULL_MODE_NONE) {
+            const bool counter_clockwise = area2 > 0.0;
+            const bool front_facing =
+               counter_clockwise ==
+               (front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            const VkCullModeFlags facing_bit =
+               front_facing ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+            collapse = (cull_mode & facing_bit) != 0;
+         }
+         if (collapse) {
+            memcpy(window[1], window[0],
+                   (size_t)record_dwords * sizeof(float));
+            memcpy(window[2], window[0],
+                   (size_t)record_dwords * sizeof(float));
+         }
+         uint32_t *fan_output =
+            &triangle_output[fan * 3u * record_dwords];
+         for (uint32_t vertex = 0; vertex < 3; vertex++) {
+            memcpy(&fan_output[vertex * record_dwords], window[vertex],
+                   (size_t)record_dwords * sizeof(float));
+         }
+      }
+   }
+   return 0;
 }
 
 /* Submission-time execution of one recorded render pass: an empty pass
@@ -742,21 +1166,39 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                         draw->clear_dword);
    }
 
-   /* The CPU route stages its records on the host and the carrier
-    * receives them only after the clip-volume check below, so a
-    * refused record leaves the carrier untouched.  The staging covers
-    * the draw's 3 * instance_count records of record_dwords each (a
-    * job storing the varying writes eight-dword records; the positions
-    * sit at the head of each record for the transform below): the
-    * reference three ride the stack, a larger expansion rides a host
-    * allocation released before return. */
+   /* The CPU route stages the vertex-job outputs and the fixed-capacity
+    * clip result separately.  The carrier receives one copy only after every
+    * input triangle clips successfully, so a refused later record cannot
+    * leave a partially expanded stream behind.  The reference input and its
+    * seven-triangle output ride the stack; larger draws use command-scope
+    * host allocations released before return.
+    */
    const uint32_t record_dwords =
       r300_vertex_job_record_dwords(&draw->vertex_job);
    const uint32_t record_count = draw->vertex_count * draw->instance_count;
+   const uint32_t source_triangle_count = record_count / 3u;
    const uint32_t staged_dwords = record_count * record_dwords;
+   const uint64_t expanded_dwords_u64 =
+      (uint64_t)source_triangle_count *
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u * record_dwords;
+   if (expanded_dwords_u64 > UINT32_MAX) {
+      vk_free(&device->vk.alloc, vertex_ids_heap);
+      for (uint32_t i = 0; i < owned_map_count; i++) {
+         radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
+                                owned_maps[i]->map);
+         owned_maps[i]->map = NULL;
+      }
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   const uint32_t expanded_dwords = (uint32_t)expanded_dwords_u64;
    uint32_t staged_stack[R300_TRIANGLE_VARYING_VERTEX_DWORDS];
+   uint32_t expanded_stack
+      [R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+       R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    uint32_t *staged_heap = NULL;
+   uint32_t *expanded_heap = NULL;
    uint32_t *staged = staged_stack;
+   uint32_t *expanded = expanded_stack;
    if (staged_dwords > ARRAY_SIZE(staged_stack)) {
       staged_heap = vk_alloc(&device->vk.alloc,
                              (size_t)staged_dwords * sizeof(uint32_t), 8,
@@ -764,6 +1206,15 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       if (staged_heap == NULL)
          result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       staged = staged_heap;
+   }
+   if (result == VK_SUCCESS &&
+       expanded_dwords > ARRAY_SIZE(expanded_stack)) {
+      expanded_heap = vk_alloc(&device->vk.alloc,
+                               (size_t)expanded_dwords * sizeof(uint32_t), 8,
+                               VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (expanded_heap == NULL)
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      expanded = expanded_heap;
    }
 
    bool owns_carrier_map = result == VK_SUCCESS && carrier->map == NULL;
@@ -822,6 +1273,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                                          stream.first_vertex,
                                          R300_TRIANGLE_VERTEX_DWORDS / 4);
       int gathered = 0;
+      uint32_t delivered[R300_TRIANGLE_VERTEX_DWORDS];
       if (result != VK_SUCCESS) {
          /* The refused route delivers nothing; the shared unmap and
           * error paths below still run.
@@ -829,7 +1281,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       } else if (r2vb_route) {
          gathered = r300_r2vb_identity_deliver(
             stream.format_id, &source, stream.first_vertex,
-            R300_TRIANGLE_VERTEX_DWORDS / 4, carrier->map,
+            R300_TRIANGLE_VERTEX_DWORDS / 4, delivered,
             R300_TRIANGLE_VERTEX_DWORDS);
          if (gathered == 0) {
             uint32_t oracle[R300_TRIANGLE_VERTEX_DWORDS];
@@ -838,13 +1290,15 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                R300_TRIANGLE_VERTEX_DWORDS / 4, oracle,
                R300_TRIANGLE_VERTEX_DWORDS);
             if (gathered == 0 &&
-                memcmp(oracle, carrier->map,
+                memcmp(oracle, delivered,
                        R300_TRIANGLE_VERTEX_DWORDS * 4) != 0) {
                result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                                   "r3v-native: R2VB delivery diverged "
                                   "from the CPU gather oracle");
             }
          }
+         if (gathered == 0 && result == VK_SUCCESS)
+            memcpy(staged, delivered, sizeof(delivered));
       } else {
          /* The CPU route executes the pipeline's vertex job over every
           * stream it reads, once per instance from first_instance,
@@ -873,118 +1327,37 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       } else if (result == VK_SUCCESS &&
                  route_decision.position_space ==
                     R300_CARRIER_POSITION_CLIP) {
-         /* The route declares a clip-space carrier, so the one
-          * viewport transform happens here; a WINDOW declaration
-          * means the producer already transformed on the device and
-          * the carrier binds untransformed.  The admitted vertex
-          * program passes its input to
-          * gl_Position, so the CPU vertex node realizes the Vulkan
-          * viewport transform here: x and y map from NDC to window
-          * coordinates over the pass target's extent, z passes
-          * through the identity depth range, and w carries the exact
-          * value 1 -- the perspective divide is the identity there.
-          * The admitted domain is the clip volume, so scissor and
-          * clip coincide and the raster needs no clipper; a record
-          * outside it refuses, and the submit reports device loss.
-          * The R2VB delivery landed in the carrier, so it transforms
-          * through a host copy; the CPU route transforms its staging.
-          */
-         uint32_t delivered[R300_TRIANGLE_VERTEX_DWORDS];
-         uint32_t *records = staged;
-         uint32_t position_count = record_count;
-         uint32_t position_stride = record_dwords;
-         uint32_t position_dwords = staged_dwords;
-         if (r2vb_route) {
-            memcpy(delivered, carrier->map, sizeof(delivered));
-            records = delivered;
-            position_count = R300_TRIANGLE_VERTEX_DWORDS / 4;
-            position_stride = 4;
-            position_dwords = R300_TRIANGLE_VERTEX_DWORDS;
+         const int clipped = expand_clip_space_triangles(
+            staged, source_triangle_count, record_dwords, draw->target_width,
+            draw->target_height, draw->cull_mode, draw->front_face,
+            draw->sample_mask_zero, expanded, expanded_dwords);
+         if (clipped != 0) {
+            result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                               "r3v-native: homogeneous triangle clipping "
+                               "refused (%d): %s",
+                               clipped, strerror(-clipped));
+         } else {
+            memcpy(carrier->map, expanded,
+                   (size_t)expanded_dwords * sizeof(uint32_t));
          }
-         for (uint32_t v = 0; result == VK_SUCCESS && v < position_count;
-              v++) {
-            float pos[4];
-            memcpy(pos, &records[v * position_stride], sizeof(pos));
-            /* Negated-conjunction bounds: an unordered comparison
-             * fails its conjunct, so a NaN component refuses instead
-             * of passing every ordered test.
-             */
-            if (!(pos[3] == 1.0f) ||
-                !(pos[0] >= -1.0f && pos[0] <= 1.0f) ||
-                !(pos[1] >= -1.0f && pos[1] <= 1.0f) ||
-                !(pos[2] >= 0.0f && pos[2] <= 1.0f)) {
-               result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                                  "r3v-native: vertex %u outside the "
-                                  "admitted clip volume or w != 1", v);
-               break;
-            }
-            pos[0] = (pos[0] + 1.0f) * ((float)draw->target_width / 2.0f);
-            pos[1] = (pos[1] + 1.0f) * ((float)draw->target_height / 2.0f);
-            memcpy(&records[v * position_stride], pos, sizeof(pos));
-         }
-         /* Facing cull in window coordinates: the signed area
-          * 2A = (x1-x0)(y2-y0) - (x2-x0)(y1-y0), positive for a
-          * counter-clockwise triangle; a culled triangle's three
-          * records collapse to its first vertex, a degenerate
-          * triangle the raster draws no fragment for, so the IB and
-          * record count stand.  A zero-area triangle already draws
-          * nothing and passes through.
-          */
-         if (result == VK_SUCCESS &&
-             (draw->cull_mode != VK_CULL_MODE_NONE ||
-              draw->sample_mask_zero)) {
-            for (uint32_t t = 0; t + 3 <= position_count; t += 3) {
-               float p[3][2];
-               for (unsigned v = 0; v < 3; v++)
-                  memcpy(p[v], &records[(t + v) * position_stride],
-                         sizeof(p[v]));
-               const double area2 =
-                  ((double)p[1][0] - p[0][0]) *
-                     ((double)p[2][1] - p[0][1]) -
-                  ((double)p[2][0] - p[0][0]) *
-                     ((double)p[1][1] - p[0][1]);
-               /* Zero coverage collapses every triangle; culling
-                * decides by facing. */
-               if (!draw->sample_mask_zero) {
-                  if (area2 == 0.0)
-                     continue;
-                  const bool counter_clockwise = area2 > 0.0;
-                  const bool front_facing =
-                     counter_clockwise ==
-                     (draw->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
-                  const VkCullModeFlags facing_bit =
-                     front_facing ? VK_CULL_MODE_FRONT_BIT
-                                  : VK_CULL_MODE_BACK_BIT;
-                  if ((draw->cull_mode & facing_bit) == 0)
-                     continue;
-               }
-               for (unsigned v = 1; v < 3; v++)
-                  memcpy(&records[(t + v) * position_stride],
-                         &records[t * position_stride],
-                         (size_t)position_stride * sizeof(uint32_t));
-            }
-         }
-         if (result == VK_SUCCESS)
-            memcpy(carrier->map, records,
-                   (size_t)position_dwords * sizeof(uint32_t));
-      } else if (result == VK_SUCCESS && !r2vb_route) {
+      } else if (result == VK_SUCCESS) {
          memcpy(carrier->map, staged,
                 (size_t)staged_dwords * sizeof(uint32_t));
       }
-      /* Publication is delivery-unconditional: a WINDOW-space carrier
-       * skips the transform branch above yet its bytes still cross to
-       * the device through this one sync.
-       */
-      if (result == VK_SUCCESS)
+      if (result == VK_SUCCESS) {
+         const size_t publication_bytes =
+            route_decision.position_space == R300_CARRIER_POSITION_CLIP
+               ? (size_t)expanded_dwords * sizeof(uint32_t)
+               : (size_t)staged_dwords * sizeof(uint32_t);
          radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
-                                     r2vb_route ? R3V_TRIANGLE_VERTEX_BYTES
-                                                : (size_t)staged_dwords *
-                                                     sizeof(uint32_t));
+                                     publication_bytes);
+      }
    }
    if (owns_carrier_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
       carrier->map = NULL;
    }
+   vk_free(&device->vk.alloc, expanded_heap);
    vk_free(&device->vk.alloc, staged_heap);
    vk_free(&device->vk.alloc, vertex_ids_heap);
 
@@ -1075,14 +1448,15 @@ admit_fetched_producer(struct r3v_native_device *device,
     * other slot would need a relocation the composition has no role
     * for. */
    if (!draw->vertex_job_identity || draw->stream_mask != 1u ||
+       cmd_buffer->deferred_draw_count != 1 ||
        (cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE &&
         cmd_buffer->cell_kind !=
            R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: fetched GPU producer route admits the "
                        "identity vertex job over one source stream on the "
-                       "recorded triangle consumer alone; the route binds "
-                       "one source relocation role");
+                       "recorded single-draw triangle consumer alone; the "
+                       "route binds one source relocation role");
    }
 
    /* Source geometry: the first fetched record's byte offset inside the
@@ -1188,12 +1562,19 @@ admit_fetched_producer(struct r3v_native_device *device,
     */
    const bool composed_before =
       cmd_buffer->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED;
+   if (!composed_before &&
+       (cmd_buffer->window_space_ib == NULL ||
+        cmd_buffer->window_space_ib_size_dwords == 0)) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: fetched GPU producer route requires the "
+                       "recorded window-space triangle consumer");
+   }
    const uint32_t *consumer_words =
       composed_before ? cmd_buffer->ib + draw->gpu_producer_dwords
-                      : cmd_buffer->ib;
+                      : cmd_buffer->window_space_ib;
    const uint32_t consumer_dwords =
       composed_before ? cmd_buffer->ib_size_dwords - draw->gpu_producer_dwords
-                      : cmd_buffer->ib_size_dwords;
+                      : cmd_buffer->window_space_ib_size_dwords;
    uint32_t site_index[2];
    uint32_t site_payload[2];
    const int sites = r300_pm4_scan_reloc_sites(
@@ -1335,9 +1716,12 @@ admit_fetched_producer(struct r3v_native_device *device,
 
    /* Every fallible step has completed: install the composed stream. */
    free(cmd_buffer->ib);
+   free(cmd_buffer->window_space_ib);
    free(cmd_buffer->references);
    cmd_buffer->ib = route.ib;
    cmd_buffer->ib_size_dwords = route.ib_size_dwords;
+   cmd_buffer->window_space_ib = NULL;
+   cmd_buffer->window_space_ib_size_dwords = 0;
    cmd_buffer->references = references;
    cmd_buffer->reference_count = R3V_FETCHED_REFERENCE_COUNT;
    cmd_buffer->owned_slot = slot;
@@ -1451,13 +1835,14 @@ r3v_native_deferred_draw_admit_gpu_producer(
     * consumer kind are the remaining shape facts.
     */
    if (!draw->vertex_job_identity || draw->stream_mask != 1u ||
+       cmd_buffer->deferred_draw_count != 1 ||
        (cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE &&
         cmd_buffer->cell_kind !=
            R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC)) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: GPU producer route admits the "
                        "identity vertex job over one source stream on the "
-                       "recorded triangle consumer alone");
+                       "recorded single-draw triangle consumer alone");
    }
 
    /* The oracle read: the same execution-time gather the CPU route
@@ -1536,6 +1921,15 @@ r3v_native_deferred_draw_admit_gpu_producer(
                        "qualified transport contract (%d)", emit_result);
    }
 
+   if (!draw->gpu_producer_delivery &&
+       (cmd_buffer->window_space_ib == NULL ||
+        cmd_buffer->window_space_ib_size_dwords == 0)) {
+      r300_r2vb_producer_pass_release(&producer);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: GPU producer route requires the recorded "
+                       "window-space triangle consumer");
+   }
+
    /* Composition: producer ++ consumer in one IB.  The producer's
     * carrier relocation payload and the consumer's vertex slot payload
     * both name relocation entry zero, and the consumer's reference list
@@ -1544,7 +1938,7 @@ r3v_native_deferred_draw_admit_gpu_producer(
     */
    if (!draw->gpu_producer_delivery) {
       const uint32_t combined_dwords =
-         producer.ib_size_dwords + cmd_buffer->ib_size_dwords;
+         producer.ib_size_dwords + cmd_buffer->window_space_ib_size_dwords;
       uint32_t *combined = malloc(combined_dwords * sizeof(uint32_t));
       if (combined == NULL) {
          r300_r2vb_producer_pass_release(&producer);
@@ -1552,11 +1946,14 @@ r3v_native_deferred_draw_admit_gpu_producer(
       }
       memcpy(combined, producer.ib,
              producer.ib_size_dwords * sizeof(uint32_t));
-      memcpy(combined + producer.ib_size_dwords, cmd_buffer->ib,
-             cmd_buffer->ib_size_dwords * sizeof(uint32_t));
+      memcpy(combined + producer.ib_size_dwords, cmd_buffer->window_space_ib,
+             cmd_buffer->window_space_ib_size_dwords * sizeof(uint32_t));
       free(cmd_buffer->ib);
+      free(cmd_buffer->window_space_ib);
       cmd_buffer->ib = combined;
       cmd_buffer->ib_size_dwords = combined_dwords;
+      cmd_buffer->window_space_ib = NULL;
+      cmd_buffer->window_space_ib_size_dwords = 0;
       draw->gpu_producer_dwords = producer.ib_size_dwords;
       cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC;
       cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX].write_domain =

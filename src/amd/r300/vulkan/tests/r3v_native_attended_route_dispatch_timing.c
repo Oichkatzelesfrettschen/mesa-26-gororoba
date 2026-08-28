@@ -279,17 +279,24 @@ main(int argc, char **argv)
    }
    char gpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords, gpu_digest);
-   /* The consumer slice of the composed stream is the recorded consumer
-    * cell verbatim, so its digest is what the arming gate reads on the
-    * CPU route, where the consumer submits alone; the shim calibration
-    * leg proves that equality before any hardware declaration rests on
-    * it.
+   /* CPU delivery records the clip-space consumer with seven output
+    * triangle slots.  Both producer routes retain the ordinary window-space
+    * consumer behind their producer, so the CPU authorization comes from a
+    * separate expansion-capacity emission.
     */
+   struct r300_triangle_render_shape cpu_shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&cpu_shape);
+   struct r300_tcl_bypass_triangle_ib cpu_consumer;
+   if (r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+          &cpu_shape, 1u, &cpu_consumer) != 0) {
+      fprintf(stderr, "CPU consumer emission failed\n");
+      r300_r2vb_public_route_release(&route);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
    char cpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
-   r300_triangle_ib_digest_hex(route.ib + route.consumer_start_dwords,
-                               route.ib_size_dwords -
-                                  route.consumer_start_dwords,
-                               cpu_digest);
+   r300_triangle_ib_digest_hex(cpu_consumer.ib,
+                               cpu_consumer.ib_size_dwords, cpu_digest);
+   r300_tcl_bypass_triangle_release(&cpu_consumer);
    printf("route ib_dwords=%u consumer_start_dwords=%u\n",
           route.ib_size_dwords, route.consumer_start_dwords);
    r300_r2vb_public_route_release(&route);
@@ -508,11 +515,11 @@ main(int argc, char **argv)
     * device producer routes declare R300_CARRIER_POSITION_WINDOW, so
     * the device pass rasterizes the screen-space records and the
     * consumer binds the carrier untransformed; the CPU route declares
-    * R300_CARRIER_POSITION_CLIP, validates the clip volume, and
-    * realizes the one viewport transform itself as
-    * (ndc + 1) * extent / 2.  Feeding the screen-space records to the
-    * CPU route refuses every vertex as outside the clip volume, so the
-    * NDC below is the same triangle stated in that route's own space.
+    * R300_CARRIER_POSITION_CLIP, clips the input volume, and realizes
+    * the one viewport transform itself as (ndc + 1) * extent / 2.
+    * Feeding the screen-space records to the CPU route fully clips that
+    * input and produces no triangle, so the NDC below is the same
+    * triangle stated in that route's own space.
     * Every leg therefore renders one triangle to one target and the
     * color oracle holds each to it; the transform each route performs
     * is part of what the interval measures.

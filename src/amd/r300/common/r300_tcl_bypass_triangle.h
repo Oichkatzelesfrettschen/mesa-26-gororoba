@@ -129,6 +129,22 @@ struct r300_tcl_bypass_triangle_params {
  */
 #define R300_TRIANGLE_MAX_TRIANGLES 21845u
 
+/* Homogeneous clipping can turn one input triangle into at most seven
+ * output triangles.  The fixed-capacity vertex allocation reserves every
+ * slot, while the command stream presents the allocation to hardware as at
+ * most seven draws whose local vertex counts each fit the 16-bit fields.
+ */
+#define R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT 7u
+#define R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES \
+   (R300_TRIANGLE_MAX_TRIANGLES * \
+    R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT)
+#define R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS 7u
+static_assert(R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES == 152915u,
+              "clip output capacity is exact");
+static_assert(R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS ==
+                 R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT,
+              "one full draw segment exists per input expansion bound");
+
 /* One IB position whose payload names a relocation slot. */
 struct r300_tcl_bypass_triangle_reloc_site {
    uint32_t ib_index;
@@ -143,7 +159,11 @@ struct r300_tcl_bypass_triangle_reloc_site {
  * entry; its seven-site sequence is matched in full instead.
  */
 #define R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT 7u
-#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT
+#define R300_TRIANGLE_CLIP_RENDER_SITE_COUNT \
+   (1u + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
+#define R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT \
+   (2u + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
+#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT
 static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
               "slot uniqueness is proven in a 32-bit mask");
 
@@ -182,8 +202,9 @@ int r300_tcl_bypass_triangle_emit_into(
 void r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib);
 
 /* Checks the emitted relocation sites against the stream they index: one site
- * per slot in stream order, each inside the stream, and each naming the slot
- * whose payload sits at that index.  Returns 0 or a negative errno.
+ * per buffer reference in stream order, each inside the stream, and each
+ * naming the slot whose payload sits at that index.  Expanded streams repeat
+ * the vertex slot once per draw segment.  Returns 0 or a negative errno.
  */
 int r300_tcl_bypass_triangle_validate_reloc_sites(
    const struct r300_tcl_bypass_triangle_ib *ib);
@@ -210,6 +231,17 @@ int r300_tcl_bypass_triangle_sampled_fs(struct r300_fragment_binary *fs);
  */
 int r300_tcl_bypass_triangle_sampled_emit(
    uint32_t width, uint32_t height, uint32_t triangle_count,
+   uint32_t texture_offset, uint32_t texture_width,
+   uint32_t texture_height, uint32_t texture_pitch_texels,
+   enum r300_triangle_lane_order texture_lanes,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The sampled clip-space capacity form reserves seven output triangles for
+ * every source triangle.  Its vertex stream is emitted as one to seven
+ * ordered hardware draws, each with its own vertex relocation.
+ */
+int r300_tcl_bypass_triangle_clip_space_sampled_emit(
+   uint32_t width, uint32_t height, uint32_t source_triangle_count,
    uint32_t texture_offset, uint32_t texture_width,
    uint32_t texture_height, uint32_t texture_pitch_texels,
    enum r300_triangle_lane_order texture_lanes,
@@ -286,6 +318,15 @@ int r300_tcl_bypass_triangle_varying_reference_emit(
  */
 int r300_tcl_bypass_triangle_family_emit(
    uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* The extent/record-shape clip-space capacity form.  source_triangle_count
+ * remains bounded by R300_TRIANGLE_MAX_TRIANGLES; the emitted output stream
+ * reserves exactly seven whole, ordered triangles per source triangle.
+ */
+int r300_tcl_bypass_triangle_clip_space_family_emit(
+   uint32_t width, uint32_t height, bool varying,
+   uint32_t source_triangle_count,
    struct r300_tcl_bypass_triangle_ib *out);
 
 /* The cell's render geometry.  The manifest publishes these and the contract
@@ -686,6 +727,15 @@ int r300_tcl_bypass_triangle_render_shape_emit(
    const struct r300_triangle_render_shape *shape,
    struct r300_tcl_bypass_triangle_ib *out);
 
+/* The arbitrary render-shape clip-space capacity form.  The shape continues
+ * to describe one record shape; source_triangle_count sizes the separate
+ * fixed-capacity vertex stream at seven output triangles per input.
+ */
+int r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+   const struct r300_triangle_render_shape *shape,
+   uint32_t source_triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out);
+
 /* The pretransformed vertex payload for the shape's extent: the NDC
  * reference triangle through the viewport transform, z = 0, w = 1.
  */
@@ -877,6 +927,13 @@ uint32_t r300_tcl_bypass_triangle_multi_pass_reference_count(
  * r300_tcl_bypass_triangle_bind_reloc_indices refuses it.
  */
 int r300_tcl_bypass_triangle_multi_pass_emit(
+   const struct r300_triangle_multi_pass *mp,
+   struct r300_tcl_bypass_triangle_ib *out);
+
+/* Emits the same bound two-pass stream with seven clip-capacity triangle
+ * slots per source triangle in each pass.
+ */
+int r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
    const struct r300_triangle_multi_pass *mp,
    struct r300_tcl_bypass_triangle_ib *out);
 

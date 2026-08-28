@@ -483,10 +483,11 @@ struct r3v_native_deferred_draw {
    uint32_t index_bytes;
    uint32_t first_index;
    int32_t vertex_offset;
-   /* The draw's instances: the host executes the three vertices once
-    * per instance from first_instance, instance-major, into the
-    * carrier the cell family's 3 * instance_count vertex-list draw
-    * consumes; InstanceIndex observes first_instance + instance. */
+   /* The draw's instances: the host executes the source vertices once per
+    * instance from first_instance, instance-major, then expands each source
+    * triangle into seven fixed output slots for homogeneous clipping;
+    * InstanceIndex observes first_instance + instance.
+    */
    uint32_t first_instance;
    uint32_t instance_count;
    /* The pipeline's facing state, applied by the host after the
@@ -557,6 +558,14 @@ struct r3v_native_cmd_buffer {
    enum r3v_native_cell_kind cell_kind;
    uint32_t *ib;
    uint32_t ib_size_dwords;
+   /* The GPU producer owns a window-space three-record delivery and must
+    * consume the ordinary fixed cell.  CPU and host-model delivery own
+    * clip-space records and consume the expanded clipping-capacity cell in
+    * ib.  Recording retains this second fixed stream until route admission
+    * selects it before relocation and digest construction.
+    */
+   uint32_t *window_space_ib;
+   uint32_t window_space_ib_size_dwords;
    struct r3v_native_bo_reference *references;
    uint32_t reference_count;
 
@@ -1574,9 +1583,10 @@ VkResult r3v_native_record_tcl_bypass_triangle_gathered(
  * The target image carries the shape's extent, row pitch, and lane
  * order and color_bits the constant-color program's RGBA, so the
  * emitted cell renders the color the module wrote into the target the
- * pass bound.  The carrier holds 3 * triangle_count records.  The
- * vertex gather and the sentinel clear ride cmd_buffer->deferred_draws[0]
- * and execute at queue submission.
+ * pass bound.  The carrier holds seven three-record output slots per source
+ * triangle, with unused slots degenerate.  The vertex gather, clipping, and
+ * sentinel clear ride cmd_buffer->deferred_draws[0] and execute at queue
+ * submission.
  */
 /* The sampled cell's texture binding: the bound image's memory and
  * offset with the declared linear geometry the TX block programs.

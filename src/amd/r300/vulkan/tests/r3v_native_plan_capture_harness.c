@@ -660,9 +660,8 @@ main(int argc, char **argv)
 
    struct triangle_resources res = create_triangle_resources(device);
    VkMemoryRequirements reqs = res.image_reqs;
-   /* Two distinct executable IBs: the retained three-vertex cell and the
-    * two-triangle family member, which differs from it in exactly the
-    * vertex-count dwords.
+   /* Two distinct executable IBs: one and two clip-space source groups,
+    * each retaining seven output-triangle slots per source triangle.
     */
    const uint32_t vertex_counts[2] = { 3, 6 };
    for (unsigned i = 0; i < 2; i++) {
@@ -705,33 +704,43 @@ main(int argc, char **argv)
                         },
                         VK_NULL_HANDLE) == VK_ERROR_DEVICE_LOST);
 
+   struct r300_triangle_render_shape module_shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&module_shape);
+   const uint32_t module_color[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
+   memcpy(module_shape.color_bits, module_color, sizeof(module_color));
+   struct r300_tcl_bypass_triangle_ib one;
    struct r300_tcl_bypass_triangle_ib two;
-   assert(r300_tcl_bypass_triangle_family_emit(R3V_NATIVE_TARGET_WIDTH,
-                                               R3V_NATIVE_TARGET_HEIGHT,
-                                               false, 2, &two) == 0);
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &module_shape, 1u, &one) == 0);
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &module_shape, 2u, &two) == 0);
+   char one_digest[BLAKE3_OUT_LEN * 2 + 1];
    char two_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(one.ib, one.ib_size_dwords, one_digest);
    r300_triangle_ib_digest_hex(two.ib, two.ib_size_dwords, two_digest);
+   const uint32_t one_dwords = one.ib_size_dwords;
+   const uint32_t two_dwords = two.ib_size_dwords;
+   r300_tcl_bypass_triangle_release(&one);
    r300_tcl_bypass_triangle_release(&two);
 
    destroy_triangle_resources(device, &res);
    vkDestroyDevice(device, NULL);
    destroy_instance(instance, NULL);
 
-   /* The transcript: two entries in submission order, the retained CPU
-    * route digest then the two-triangle digest, each with the target,
-    * vertex, and completion relocations, the host identity the driver
-    * knows, and placeholders for the run identities.
+   /* The transcript: two entries in submission order, the one-source
+    * digest then the two-source digest, each with the target, vertex, and
+    * completion relocations, the host identity the driver knows, and
+    * placeholders for the run identities.
     */
    size_t n;
    char *text = read_file(transcript, &n);
    struct r3v_native_plan p;
    assert(r3v_native_plan_parse(text, n, &p) == R3V_NATIVE_PLAN_PARSE_OK);
    assert(p.submission_count == 2 && p.max_submissions == 2);
-   assert(strcmp(p.submissions[0].ib_blake3,
-                 R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3) == 0);
-   assert(p.submissions[0].ib_dwords ==
-          R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
+   assert(strcmp(p.submissions[0].ib_blake3, one_digest) == 0);
+   assert(p.submissions[0].ib_dwords == one_dwords);
    assert(strcmp(p.submissions[1].ib_blake3, two_digest) == 0);
+   assert(p.submissions[1].ib_dwords == two_dwords);
    assert(strcmp(p.submissions[0].ib_blake3, p.submissions[1].ib_blake3) != 0);
    for (unsigned i = 0; i < 2; i++) {
       const struct r3v_native_plan_submission *s = &p.submissions[i];
@@ -752,7 +761,7 @@ main(int argc, char **argv)
       }
       assert(command_bytes == reqs.size + 4096);
    }
-   assert(p.max_ib_dwords == R300_MODULE_CONSTANT_CPU_ROUTE_IB_DWORDS);
+   assert(p.max_ib_dwords == two_dwords);
    assert(p.max_relocs == 3);
    assert(p.max_cumulative_bytes == 2 * (reqs.size + 4096 + 4));
    struct utsname host;

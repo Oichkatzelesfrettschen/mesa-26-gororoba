@@ -72,10 +72,81 @@ write_reloc(struct r300_pm4_builder *b, struct r300_tcl_bypass_triangle_ib *out,
       };
 }
 
-int
-r300_tcl_bypass_triangle_emit_into(
+static bool
+checked_u32_multiply(uint32_t left, uint32_t right, uint32_t *product)
+{
+   if (left != 0 && right > UINT32_MAX / left)
+      return false;
+   *product = left * right;
+   return true;
+}
+
+static bool
+checked_u32_add(uint32_t left, uint32_t right, uint32_t *sum)
+{
+   if (right > UINT32_MAX - left)
+      return false;
+   *sum = left + right;
+   return true;
+}
+
+static int
+clip_output_triangle_count(uint32_t source_triangle_count,
+                           uint32_t *output_triangle_count)
+{
+   if (source_triangle_count < 1u ||
+       source_triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   if (!checked_u32_multiply(
+          source_triangle_count,
+          R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT,
+          output_triangle_count) ||
+       *output_triangle_count > R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES)
+      return -EOVERFLOW;
+   return 0;
+}
+
+static uint32_t
+first_segment_max_vertex_index(uint32_t triangle_count)
+{
+   const uint32_t first_segment_triangle_count =
+      MIN2(triangle_count, R300_TRIANGLE_MAX_TRIANGLES);
+   return 3u * first_segment_triangle_count - 1u;
+}
+
+static int
+validate_vertex_segment_offsets(uint32_t triangle_count,
+                                uint32_t record_bytes,
+                                uint32_t initial_vertex_offset)
+{
+   uint32_t triangle_offset = 0;
+   while (triangle_offset < triangle_count) {
+      const uint32_t segment_triangle_count =
+         MIN2(triangle_count - triangle_offset, R300_TRIANGLE_MAX_TRIANGLES);
+      uint32_t segment_vertex_count;
+      uint32_t preceding_vertex_count;
+      uint32_t segment_byte_offset;
+      uint32_t ignored_vertex_offset;
+      if (!checked_u32_multiply(segment_triangle_count, 3u,
+                                &segment_vertex_count) ||
+          segment_vertex_count > 0xffffu ||
+          !checked_u32_multiply(triangle_offset, 3u,
+                                &preceding_vertex_count) ||
+          !checked_u32_multiply(preceding_vertex_count, record_bytes,
+                                &segment_byte_offset) ||
+          !checked_u32_add(initial_vertex_offset, segment_byte_offset,
+                           &ignored_vertex_offset))
+         return -EOVERFLOW;
+      triangle_offset += segment_triangle_count;
+   }
+   return 0;
+}
+
+static int
+emit_triangle_stream_into(
    const struct r300_tcl_bypass_triangle_params *params, uint32_t *words,
-   uint32_t capacity, struct r300_tcl_bypass_triangle_ib *out)
+   uint32_t capacity, uint32_t triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out)
 {
    const struct r300_fragment_binary *fs = params->fragment_binary;
 
@@ -84,7 +155,8 @@ r300_tcl_bypass_triangle_emit_into(
       return -EINVAL;
    }
 
-   if (params->triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+   if (triangle_count == 0 ||
+       triangle_count > R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES)
       return -EINVAL;
    /* The sampled cell rides the varying vertex path for its coordinate,
     * the TX width/height masks hold extent - 1 in 11 bits, the pitch
@@ -100,8 +172,18 @@ r300_tcl_bypass_triangle_emit_into(
         (params->texture_lanes != R300_TRIANGLE_LANES_B8G8R8A8 &&
          params->texture_lanes != R300_TRIANGLE_LANES_R8G8B8A8)))
       return -EINVAL;
-   const uint32_t vertex_count =
-      3 * (params->triangle_count ? params->triangle_count : 1);
+   const uint32_t record_dwords = params->varying ? 8u : 4u;
+   const uint32_t record_bytes = record_dwords * 4u;
+   const uint32_t first_segment_triangle_count =
+      MIN2(triangle_count, R300_TRIANGLE_MAX_TRIANGLES);
+   uint32_t first_segment_vertex_count;
+   if (!checked_u32_multiply(first_segment_triangle_count, 3u,
+                             &first_segment_vertex_count))
+      return -EOVERFLOW;
+   const int offset_validation = validate_vertex_segment_offsets(
+      triangle_count, record_bytes, params->vertex_offset);
+   if (offset_validation != 0)
+      return offset_validation;
 
    struct r300_pm4_builder b;
    r300_pm4_builder_init(&b, words, capacity);
@@ -145,7 +227,8 @@ r300_tcl_bypass_triangle_emit_into(
                       RB3D_COLOR_CHANNEL_MASK_GREEN_MASK0 |
                       RB3D_COLOR_CHANNEL_MASK_RED_MASK0 |
                       RB3D_COLOR_CHANNEL_MASK_ALPHA_MASK0);
-      r300_pm4_emit_vertex_index_range(&b, 0, vertex_count - 1);
+      r300_pm4_emit_vertex_index_range(&b, 0,
+                                       first_segment_vertex_count - 1u);
    }
 
    /* Vertex path: pretransformed positions bypass the TCL block, one
@@ -156,7 +239,6 @@ r300_tcl_bypass_triangle_emit_into(
     * it as a four-component TEX0 output, and fetches eight dwords per
     * vertex, the identity-list arithmetic the same check proves.
     */
-   const uint32_t record_dwords = params->varying ? 8 : 4;
    r300_pm4_reg(&b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
    r300_pm4_reg(&b, R300_VAP_PROG_STREAM_CNTL_0,
                 params->varying
@@ -264,23 +346,48 @@ r300_tcl_bypass_triangle_emit_into(
    write_reloc(&b, out, R300_TRIANGLE_SLOT_COLOR);
    r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
 
-   /* Vertex fetch: one array, one record per vertex, stride one record. */
-   const uint32_t record_bytes = record_dwords * 4;
-   const uint32_t vbpntr[3] = {
-      1 | R300_VC_FORCE_PREFETCH,
-      R300_VBPNTR_SIZE0(record_bytes) | R300_VBPNTR_STRIDE0(record_bytes),
-      params->vertex_offset,
-   };
-   r300_pm4_packet3(&b, R300_PACKET3_3D_LOAD_VBPNTR, vbpntr,
-                    ARRAY_SIZE(vbpntr));
-   write_reloc(&b, out, R300_TRIANGLE_SLOT_VERTEX);
+   /* Each hardware draw uses local vertex indices and a rebased byte offset,
+    * so the 16-bit count and maximum-index fields never describe more than
+    * one 21,845-triangle segment.  Segment boundaries preserve triangle
+    * order and can divide one source triangle's seven reserved output slots,
+    * because no output triangle is itself divided.
+    */
+   uint32_t emitted_triangle_count = 0;
+   while (emitted_triangle_count < triangle_count && b.error == 0) {
+      const uint32_t segment_triangle_count = MIN2(
+         triangle_count - emitted_triangle_count,
+         R300_TRIANGLE_MAX_TRIANGLES);
+      uint32_t segment_vertex_count;
+      uint32_t preceding_vertex_count;
+      uint32_t segment_byte_offset;
+      uint32_t vertex_offset;
+      if (!checked_u32_multiply(segment_triangle_count, 3u,
+                                &segment_vertex_count) ||
+          !checked_u32_multiply(emitted_triangle_count, 3u,
+                                &preceding_vertex_count) ||
+          !checked_u32_multiply(preceding_vertex_count, record_bytes,
+                                &segment_byte_offset) ||
+          !checked_u32_add(params->vertex_offset, segment_byte_offset,
+                           &vertex_offset)) {
+         b.error = -EOVERFLOW;
+         break;
+      }
 
-   /* One vertex-list draw of the cell's triangles; the draw packet
-    * carries VAP_VF_CNTL. */
-   const uint32_t draw = R300_VAP_VF_CNTL__PRIM_TRIANGLES |
-                         R300_PRIM_WALK_LIST |
-                         (vertex_count << R300_PRIM_NUM_VERTICES_SHIFT);
-   r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &draw, 1);
+      const uint32_t vbpntr[3] = {
+         1 | R300_VC_FORCE_PREFETCH,
+         R300_VBPNTR_SIZE0(record_bytes) | R300_VBPNTR_STRIDE0(record_bytes),
+         vertex_offset,
+      };
+      r300_pm4_packet3(&b, R300_PACKET3_3D_LOAD_VBPNTR, vbpntr,
+                       ARRAY_SIZE(vbpntr));
+      write_reloc(&b, out, R300_TRIANGLE_SLOT_VERTEX);
+
+      const uint32_t draw =
+         R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
+         (segment_vertex_count << R300_PRIM_NUM_VERTICES_SHIFT);
+      r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &draw, 1);
+      emitted_triangle_count += segment_triangle_count;
+   }
 
    /* Destination-cache publication retires the color writes before the IB
     * completes.
@@ -299,31 +406,54 @@ r300_tcl_bypass_triangle_emit_into(
 }
 
 int
-r300_tcl_bypass_triangle_emit(
-   const struct r300_tcl_bypass_triangle_params *params,
-   struct r300_tcl_bypass_triangle_ib *out)
+r300_tcl_bypass_triangle_emit_into(
+   const struct r300_tcl_bypass_triangle_params *params, uint32_t *words,
+   uint32_t capacity, struct r300_tcl_bypass_triangle_ib *out)
+{
+   const uint32_t triangle_count =
+      params->triangle_count ? params->triangle_count : 1u;
+   if (triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   return emit_triangle_stream_into(params, words, capacity, triangle_count,
+                                    out);
+}
+
+static int
+emit_triangle_stream(const struct r300_tcl_bypass_triangle_params *params,
+                     uint32_t triangle_count,
+                     struct r300_tcl_bypass_triangle_ib *out)
 {
    const struct r300_fragment_binary *fs = params->fragment_binary;
 
    memset(out, 0, sizeof(*out));
-   if (fs == NULL || !fs->validated) {
+   if (fs == NULL || !fs->validated)
       return -EINVAL;
-   }
 
    const uint32_t capacity = R300_TRIANGLE_MAX_DWORDS + fs->cb_code_size;
    uint32_t *ib = calloc(capacity, sizeof(uint32_t));
-   if (ib == NULL) {
+   if (ib == NULL)
       return -ENOMEM;
-   }
 
-   const int rc = r300_tcl_bypass_triangle_emit_into(params, ib, capacity,
-                                                     out);
+   const int rc = emit_triangle_stream_into(params, ib, capacity,
+                                            triangle_count, out);
    if (rc != 0) {
       free(ib);
       return rc;
    }
    out->owns_ib = true;
    return 0;
+}
+
+int
+r300_tcl_bypass_triangle_emit(
+   const struct r300_tcl_bypass_triangle_params *params,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   const uint32_t triangle_count =
+      params->triangle_count ? params->triangle_count : 1u;
+   if (triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   return emit_triangle_stream(params, triangle_count, out);
 }
 
 void
@@ -334,40 +464,65 @@ r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib)
    memset(ib, 0, sizeof(*ib));
 }
 
+static bool
+reloc_sequence_matches(const struct r300_tcl_bypass_triangle_ib *ib,
+                       const uint32_t *slots, uint32_t slot_count)
+{
+   if (ib->reloc_site_count != slot_count)
+      return false;
+   for (uint32_t site_index = 0; site_index < slot_count; site_index++) {
+      if (ib->reloc_sites[site_index].slot != slots[site_index])
+         return false;
+   }
+   return true;
+}
+
+static bool
+reloc_repeated_vertex_sequence_matches(
+   const struct r300_tcl_bypass_triangle_ib *ib,
+   const uint32_t *prefix_slots, uint32_t prefix_slot_count)
+{
+   if (ib->reloc_site_count < prefix_slot_count + 1u ||
+       ib->reloc_site_count >
+          prefix_slot_count + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
+      return false;
+   for (uint32_t site_index = 0; site_index < prefix_slot_count;
+        site_index++) {
+      if (ib->reloc_sites[site_index].slot != prefix_slots[site_index])
+         return false;
+   }
+   for (uint32_t site_index = prefix_slot_count;
+        site_index < ib->reloc_site_count; site_index++) {
+      if (ib->reloc_sites[site_index].slot != R300_TRIANGLE_SLOT_VERTEX)
+         return false;
+   }
+   return true;
+}
+
 int
 r300_tcl_bypass_triangle_validate_reloc_sites(
    const struct r300_tcl_bypass_triangle_ib *ib)
 {
-   /* The emitter places one site per slot in a fixed order, so the cell's
-    * relocation list is fully determined: every slot appears once, each site
-    * indexes the payload of a relocation NOP inside the stream, and that
-    * payload names the slot.  A relocation list built from sites failing any
-    * of these resolves a BO into a position the stream does not reference.
-    */
-   if (ib->reloc_site_count != R300_TRIANGLE_RENDER_SLOT_COUNT &&
-       ib->reloc_site_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT &&
-       ib->reloc_site_count != R300_TRIANGLE_COMPOSED_SLOT_COUNT &&
-       ib->reloc_site_count != R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT)
+   if (ib == NULL || ib->ib == NULL || ib->reloc_site_count < 2u ||
+       ib->reloc_site_count > R300_TRIANGLE_MAX_RELOC_SITES)
       return -EINVAL;
 
-   /* The uniqueness set below is one uint32_t of slot bits.  The cleared
-    * multisample cell's clear half reuses the color and cover-vertex
-    * slots, so its seven sites are proven by the full sequence match
-    * below rather than by uniqueness.
+   /* Every site is the payload of a relocation NOP and initially names its
+    * semantic slot.  Expanded render and sampled cells intentionally repeat
+    * the vertex slot once per draw segment; the exact sequence check below
+    * distinguishes those repetitions from malformed duplicates.
     */
    static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
                  "slot uniqueness is proven in a 32-bit mask");
-   const bool unique_slots =
-      ib->reloc_site_count != R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT;
-
    uint32_t seen = 0;
+   bool repeated_slot = false;
    for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
       const struct r300_tcl_bypass_triangle_reloc_site *site =
          &ib->reloc_sites[i];
       if (site->slot >= R300_TRIANGLE_SLOT_COUNT)
          return -EINVAL;
-      if (unique_slots && (seen & (1u << site->slot)) != 0)
-         return -EEXIST;
+      if ((seen & (1u << site->slot)) != 0)
+         repeated_slot = true;
       seen |= 1u << site->slot;
 
       /* The site is the payload dword of a relocation NOP, so the header
@@ -382,23 +537,19 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
          return -EINVAL;
    }
 
-   /* The relocation list follows the stream: the color target is programmed
-    * before the vertex array is bound.  Command-stream order is its own
-    * fact, distinct from enum order, so the expected sequence is spelled
-    * out rather than derived.
+   /* The ordinary and expanded relocation lists follow the stream: target
+    * state precedes one to seven vertex-array bindings.  Sampled state adds
+    * the texture before the target.  The composed and multisample forms stay
+    * exact because their repeated slots describe different passes rather
+    * than homogeneous clip-capacity segments.
     */
-   static const uint32_t render_slots[] = {
+   static const uint32_t render_prefix[] = {
       R300_TRIANGLE_SLOT_COLOR,
-      R300_TRIANGLE_SLOT_VERTEX,
    };
-   static const uint32_t sampled_slots[] = {
+   static const uint32_t sampled_prefix[] = {
       R300_TRIANGLE_SLOT_TEXTURE,
       R300_TRIANGLE_SLOT_COLOR,
-      R300_TRIANGLE_SLOT_VERTEX,
    };
-   /* The composed cell's render half runs first, so its two sites lead
-    * and the sample half's three follow on the composed slots.
-    */
    static const uint32_t composed_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
@@ -406,14 +557,6 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_COMPOSED_COLOR,
       R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
    };
-   /* The multisample cell binds the same five slots as the composed cell
-    * in its own order: its render half writes the multisample surface
-    * and its vertices, the resolve destination's relocation follows the
-    * resolve register run, and the resolve half binds the multisample
-    * surface a second time on the texture slot with its cover geometry
-    * behind it.  Site count alone does not separate the two cells, so
-    * both five-site sequences are admitted and the stream matches one.
-    */
    static const uint32_t msaa_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
@@ -421,11 +564,6 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_TEXTURE,
       R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
    };
-   /* The cleared multisample cell leads with its clear half -- the
-    * multisample surface on the color slot and the cover geometry on the
-    * composed vertex slot -- and the multisample cell's five sites
-    * follow.
-    */
    static const uint32_t msaa_clear_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
@@ -435,35 +573,26 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_TEXTURE,
       R300_TRIANGLE_SLOT_COMPOSED_VERTEX,
    };
-   const uint32_t *candidates[2] = { NULL, NULL };
-   if (ib->reloc_site_count == R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT) {
-      candidates[0] = msaa_clear_slots;
-   } else if (ib->reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT) {
-      candidates[0] = composed_slots;
-      candidates[1] = msaa_slots;
-   } else if (ib->reloc_site_count == R300_TRIANGLE_SAMPLED_SLOT_COUNT) {
-      candidates[0] = sampled_slots;
-   } else {
-      candidates[0] = render_slots;
-   }
+
+   const bool sequence_matches =
+      reloc_repeated_vertex_sequence_matches(
+         ib, render_prefix, ARRAY_SIZE(render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, sampled_prefix, ARRAY_SIZE(sampled_prefix)) ||
+      reloc_sequence_matches(ib, composed_slots, ARRAY_SIZE(composed_slots)) ||
+      reloc_sequence_matches(ib, msaa_slots, ARRAY_SIZE(msaa_slots)) ||
+      reloc_sequence_matches(ib, msaa_clear_slots,
+                             ARRAY_SIZE(msaa_clear_slots));
+   if (!sequence_matches)
+      return repeated_slot ? -EEXIST : -EINVAL;
 
    /* Every cell's relocations follow the stream, so the sites rise
-    * whichever sequence matches.
+    * whichever exact sequence matched.
     */
    for (uint32_t i = 1; i < ib->reloc_site_count; i++)
       if (ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
          return -EINVAL;
-
-   for (unsigned c = 0; c < ARRAY_SIZE(candidates); c++) {
-      if (candidates[c] == NULL)
-         continue;
-      bool match = true;
-      for (uint32_t i = 0; i < ib->reloc_site_count && match; i++)
-         match = ib->reloc_sites[i].slot == candidates[c][i];
-      if (match)
-         return 0;
-   }
-   return -EINVAL;
+   return 0;
 }
 
 int
@@ -546,12 +675,13 @@ r300_tcl_bypass_triangle_reference_contract(
 }
 
 static int
-family_emit(uint32_t width, uint32_t height, bool varying,
-            uint32_t triangle_count, struct r300_tcl_bypass_triangle_ib *out)
+family_emit_triangle_stream(
+   uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out)
 {
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
-       triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+       triangle_count > R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES)
       return -EINVAL;
 
    struct r300_fragment_binary fs;
@@ -570,7 +700,7 @@ family_emit(uint32_t width, uint32_t height, bool varying,
       .width = width,
       .height = height,
       .min_vtx_index = 0,
-      .max_vtx_index = 3 * triangle_count - 1,
+      .max_vtx_index = first_segment_max_vertex_index(triangle_count),
       .texture_enabled = false,
    };
    struct r300_first_draw_contract contract;
@@ -594,9 +724,20 @@ family_emit(uint32_t width, uint32_t height, bool varying,
       .varying = varying,
       .triangle_count = triangle_count,
    };
-   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   rc = emit_triangle_stream(&params, triangle_count, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+static int
+family_emit(uint32_t width, uint32_t height, bool varying,
+            uint32_t triangle_count, struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (triangle_count < 1u ||
+       triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   return family_emit_triangle_stream(width, height, varying, triangle_count,
+                                      out);
 }
 
 static int
@@ -615,7 +756,22 @@ r300_tcl_bypass_triangle_family_emit(
 }
 
 int
-r300_tcl_bypass_triangle_sampled_emit(
+r300_tcl_bypass_triangle_clip_space_family_emit(
+   uint32_t width, uint32_t height, bool varying,
+   uint32_t source_triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   uint32_t output_triangle_count;
+   const int rc = clip_output_triangle_count(source_triangle_count,
+                                             &output_triangle_count);
+   if (rc != 0)
+      return rc;
+   return family_emit_triangle_stream(width, height, varying,
+                                      output_triangle_count, out);
+}
+
+static int
+sampled_emit_triangle_stream(
    uint32_t width, uint32_t height, uint32_t triangle_count,
    uint32_t texture_offset, uint32_t texture_width,
    uint32_t texture_height, uint32_t texture_pitch_texels,
@@ -624,7 +780,7 @@ r300_tcl_bypass_triangle_sampled_emit(
 {
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
-       triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+       triangle_count > R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES)
       return -EINVAL;
 
    struct r300_fragment_binary fs;
@@ -640,7 +796,7 @@ r300_tcl_bypass_triangle_sampled_emit(
       .width = width,
       .height = height,
       .min_vtx_index = 0,
-      .max_vtx_index = 3 * triangle_count - 1,
+      .max_vtx_index = first_segment_max_vertex_index(triangle_count),
       .texture_enabled = true,
    };
    struct r300_first_draw_contract contract;
@@ -667,9 +823,43 @@ r300_tcl_bypass_triangle_sampled_emit(
       .texture_lanes = texture_lanes,
       .triangle_count = triangle_count,
    };
-   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   rc = emit_triangle_stream(&params, triangle_count, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_tcl_bypass_triangle_sampled_emit(
+   uint32_t width, uint32_t height, uint32_t triangle_count,
+   uint32_t texture_offset, uint32_t texture_width,
+   uint32_t texture_height, uint32_t texture_pitch_texels,
+   enum r300_triangle_lane_order texture_lanes,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (triangle_count < 1u ||
+       triangle_count > R300_TRIANGLE_MAX_TRIANGLES)
+      return -EINVAL;
+   return sampled_emit_triangle_stream(
+      width, height, triangle_count, texture_offset, texture_width,
+      texture_height, texture_pitch_texels, texture_lanes, out);
+}
+
+int
+r300_tcl_bypass_triangle_clip_space_sampled_emit(
+   uint32_t width, uint32_t height, uint32_t source_triangle_count,
+   uint32_t texture_offset, uint32_t texture_width,
+   uint32_t texture_height, uint32_t texture_pitch_texels,
+   enum r300_triangle_lane_order texture_lanes,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   uint32_t output_triangle_count;
+   const int rc = clip_output_triangle_count(source_triangle_count,
+                                             &output_triangle_count);
+   if (rc != 0)
+      return rc;
+   return sampled_emit_triangle_stream(
+      width, height, output_triangle_count, texture_offset, texture_width,
+      texture_height, texture_pitch_texels, texture_lanes, out);
 }
 
 int
@@ -1541,9 +1731,13 @@ r300_tcl_bypass_triangle_render_shape_fs(
 static int
 render_shape_emit_aa(const struct r300_triangle_render_shape *shape,
                      const struct r300_triangle_multisample_state *aa,
+                     uint32_t triangle_count,
                      struct r300_tcl_bypass_triangle_ib *out)
 {
    memset(out, 0, sizeof(*out));
+   if (triangle_count < 1u ||
+       triangle_count > R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES)
+      return -EINVAL;
    struct r300_fragment_binary fs;
    int rc = r300_tcl_bypass_triangle_render_shape_fs(shape, &fs);
    if (rc != 0)
@@ -1554,7 +1748,7 @@ render_shape_emit_aa(const struct r300_triangle_render_shape *shape,
       .width = shape->width,
       .height = shape->height,
       .min_vtx_index = 0,
-      .max_vtx_index = 3 * shape->triangle_count - 1,
+      .max_vtx_index = first_segment_max_vertex_index(triangle_count),
       .texture_enabled = false,
    };
    /* The contract writes GB_AA_CONFIG, both GB_MSPOS words, and
@@ -1609,9 +1803,9 @@ render_shape_emit_aa(const struct r300_triangle_render_shape *shape,
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
       .varying = false,
-      .triangle_count = shape->triangle_count,
+      .triangle_count = triangle_count,
    };
-   rc = r300_tcl_bypass_triangle_emit(&params, out);
+   rc = emit_triangle_stream(&params, triangle_count, out);
    r300_fragment_binary_finish(&fs);
    return rc;
 }
@@ -1621,7 +1815,23 @@ r300_tcl_bypass_triangle_render_shape_emit(
    const struct r300_triangle_render_shape *shape,
    struct r300_tcl_bypass_triangle_ib *out)
 {
-   return render_shape_emit_aa(shape, NULL, out);
+   return render_shape_emit_aa(shape, NULL,
+                               shape != NULL ? shape->triangle_count : 0u,
+                               out);
+}
+
+int
+r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+   const struct r300_triangle_render_shape *shape,
+   uint32_t source_triangle_count,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   uint32_t output_triangle_count;
+   const int rc = clip_output_triangle_count(source_triangle_count,
+                                             &output_triangle_count);
+   if (rc != 0)
+      return rc;
+   return render_shape_emit_aa(shape, NULL, output_triangle_count, out);
 }
 
 /* The US_OUT_FMT_0 word a shape's lane order names: the C*_SEL fields
@@ -1892,16 +2102,19 @@ r300_tcl_bypass_triangle_msaa_resolve_emit(
              sizeof(clear_shape.color_bits));
       if (r300_tcl_bypass_triangle_render_shape_validate(&clear_shape) != 0)
          return -EINVAL;
-      rc = render_shape_emit_aa(&clear_shape, &render_aa, &clear_half);
+      rc = render_shape_emit_aa(&clear_shape, &render_aa,
+                                clear_shape.triangle_count, &clear_half);
       if (rc != 0)
          return rc;
    }
-   rc = render_shape_emit_aa(&msaa->render, &render_aa, &render_half);
+   rc = render_shape_emit_aa(&msaa->render, &render_aa,
+                             msaa->render.triangle_count, &render_half);
    if (rc != 0) {
       r300_tcl_bypass_triangle_release(&clear_half);
       return rc;
    }
-   rc = render_shape_emit_aa(&resolve_shape, &resolve_aa, &resolve_half);
+   rc = render_shape_emit_aa(&resolve_shape, &resolve_aa,
+                             resolve_shape.triangle_count, &resolve_half);
    if (rc != 0) {
       r300_tcl_bypass_triangle_release(&clear_half);
       r300_tcl_bypass_triangle_release(&render_half);
@@ -2048,20 +2261,27 @@ r300_tcl_bypass_triangle_multi_pass_reference_count(
           (mp->second_color_index >= 2 ? 1u : 0u);
 }
 
-int
-r300_tcl_bypass_triangle_multi_pass_emit(
-   const struct r300_triangle_multi_pass *mp,
-   struct r300_tcl_bypass_triangle_ib *out)
+static int
+multi_pass_emit(const struct r300_triangle_multi_pass *mp, bool clip_space,
+                struct r300_tcl_bypass_triangle_ib *out)
 {
    memset(out, 0, sizeof(*out));
    if (r300_tcl_bypass_triangle_multi_pass_binding_validate(mp) != 0)
       return -EINVAL;
 
    struct r300_tcl_bypass_triangle_ib first, second;
-   int rc = r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[0], &first);
+   int rc = clip_space
+               ? r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+                    &mp->pass[0], 1u, &first)
+               : r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[0],
+                                                             &first);
    if (rc != 0)
       return rc;
-   rc = r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[1], &second);
+   rc = clip_space
+           ? r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+                &mp->pass[1], 1u, &second)
+           : r300_tcl_bypass_triangle_render_shape_emit(&mp->pass[1],
+                                                         &second);
    if (rc != 0) {
       r300_tcl_bypass_triangle_release(&first);
       return rc;
@@ -2106,6 +2326,22 @@ r300_tcl_bypass_triangle_multi_pass_emit(
    r300_tcl_bypass_triangle_release(&first);
    r300_tcl_bypass_triangle_release(&second);
    return 0;
+}
+
+int
+r300_tcl_bypass_triangle_multi_pass_emit(
+   const struct r300_triangle_multi_pass *mp,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return multi_pass_emit(mp, false, out);
+}
+
+int
+r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+   const struct r300_triangle_multi_pass *mp,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return multi_pass_emit(mp, true, out);
 }
 
 int

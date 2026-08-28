@@ -155,6 +155,57 @@ track(struct tracker *t, const uint32_t *ib, uint32_t count)
    assert(i == count);
 }
 
+/* Each segmented draw rebases the same vertex buffer and places its
+ * relocation between the VBPNTR packet and the draw packet.  Checking from
+ * the recorded relocation site proves the packet order, local vertex count,
+ * record stride, and byte offset together.
+ */
+static void
+assert_segmented_draws(
+   const struct r300_tcl_bypass_triangle_ib *ib, uint32_t prefix_site_count,
+   uint32_t record_bytes, const uint32_t *segment_triangle_counts,
+   uint32_t segment_count)
+{
+   assert(ib->reloc_site_count == prefix_site_count + segment_count);
+   uint32_t preceding_triangle_count = 0;
+   for (uint32_t segment_index = 0; segment_index < segment_count;
+        segment_index++) {
+      const struct r300_tcl_bypass_triangle_reloc_site *vertex_site =
+         &ib->reloc_sites[prefix_site_count + segment_index];
+      const uint32_t relocation_index = vertex_site->ib_index;
+      const uint32_t vertex_count = 3u * segment_triangle_counts[segment_index];
+
+      assert(vertex_site->slot == R300_TRIANGLE_SLOT_VERTEX);
+      assert(relocation_index >= 5u);
+      assert(relocation_index + 2u < ib->ib_size_dwords);
+
+      const uint32_t vbpntr_header = ib->ib[relocation_index - 5u];
+      assert(vbpntr_header >> 30 == 3u);
+      assert((vbpntr_header & 0xff00u) == R300_PACKET3_3D_LOAD_VBPNTR);
+      assert(((vbpntr_header >> 16) & 0x3fffu) + 1u == 3u);
+      assert(ib->ib[relocation_index - 4u] ==
+             (1u | R300_VC_FORCE_PREFETCH));
+      assert(ib->ib[relocation_index - 3u] ==
+             (R300_VBPNTR_SIZE0(record_bytes) |
+              R300_VBPNTR_STRIDE0(record_bytes)));
+      assert(ib->ib[relocation_index - 2u] ==
+             preceding_triangle_count * 3u * record_bytes);
+      assert(ib->ib[relocation_index - 1u] == 0xC0001000u);
+      assert(ib->ib[relocation_index] ==
+             R300_TRIANGLE_SLOT_VERTEX * 4u);
+
+      const uint32_t draw_header = ib->ib[relocation_index + 1u];
+      const uint32_t draw_payload = ib->ib[relocation_index + 2u];
+      assert(draw_header >> 30 == 3u);
+      assert((draw_header & 0xff00u) == R300_PACKET3_3D_DRAW_VBUF_2);
+      assert(((draw_header >> 16) & 0x3fffu) + 1u == 1u);
+      assert(draw_payload ==
+             (R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
+              (vertex_count << R300_PRIM_NUM_VERTICES_SHIFT)));
+      preceding_triangle_count += segment_triangle_counts[segment_index];
+   }
+}
+
 static void
 make_cell(struct r300_fragment_binary *fs,
           struct r300_tcl_bypass_triangle_ib *cell)
@@ -1209,6 +1260,183 @@ test_family_emit_deviates_in_count_words_alone(void)
    }
 }
 
+/* Homogeneous clip capacity reserves seven output triangles per source
+ * triangle.  The maximum source count therefore becomes seven full hardware
+ * draws, while the first count that crosses one draw becomes one full draw
+ * plus two triangles.
+ */
+static void
+test_clip_space_family_segments_and_refusals(void)
+{
+   assert(R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT == 7u);
+   assert(R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES == 152915u);
+   assert(R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES ==
+          R300_TRIANGLE_MAX_TRIANGLES * 7u);
+
+   const uint32_t maximum_segments[R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS] = {
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+   };
+   for (uint32_t record_shape = 0; record_shape < 2u; record_shape++) {
+      const bool varying = record_shape == 1u;
+      struct r300_tcl_bypass_triangle_ib ib;
+      assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+                R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+                varying, R300_TRIANGLE_MAX_TRIANGLES, &ib) == 0);
+      assert(ib.reloc_sites[0].slot == R300_TRIANGLE_SLOT_COLOR);
+      assert(r300_tcl_bypass_triangle_validate_reloc_sites(&ib) == 0);
+      assert_segmented_draws(
+         &ib, 1u, varying ? 32u : 16u, maximum_segments,
+         R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS);
+
+      struct tracker tracked = { 0 };
+      track(&tracked, ib.ib, ib.ib_size_dwords);
+      assert(tracked.max_vtx_index_seen &&
+             tracked.max_vtx_index == 0xfffeu);
+      assert(tracked.draw_count == R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS);
+
+      const uint32_t slot_indices[R300_TRIANGLE_SLOT_COUNT] = {
+         [R300_TRIANGLE_SLOT_VERTEX] = 4u,
+         [R300_TRIANGLE_SLOT_COLOR] = 1u,
+         [R300_TRIANGLE_SLOT_TEXTURE] = 2u,
+         [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 3u,
+         [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 0u,
+      };
+      assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+                &ib, slot_indices, R300_TRIANGLE_SLOT_COUNT) == 0);
+      for (uint32_t site_index = 1u; site_index < ib.reloc_site_count;
+           site_index++) {
+         assert(ib.ib[ib.reloc_sites[site_index].ib_index] == 16u);
+      }
+      r300_tcl_bypass_triangle_release(&ib);
+   }
+
+   const uint32_t boundary_segments[2] = {
+      R300_TRIANGLE_MAX_TRIANGLES,
+      2u,
+   };
+   struct r300_tcl_bypass_triangle_ib boundary;
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, false,
+             3121u, &boundary) == 0);
+   assert_segmented_draws(&boundary, 1u, 16u, boundary_segments,
+                          ARRAY_SIZE(boundary_segments));
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&boundary) == 0);
+   r300_tcl_bypass_triangle_release(&boundary);
+
+   struct r300_tcl_bypass_triangle_ib refused = { 0 };
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, false,
+             0u, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT, false,
+             R300_TRIANGLE_MAX_TRIANGLES + 1u, &refused) == -EINVAL);
+   assert(refused.ib == NULL);
+}
+
+/* The render-shape and sampled entry points keep their state-specific
+ * relocation prefixes and append one vertex relocation per draw.  Changing
+ * a repeated vertex site into a second color site creates a malformed order,
+ * and relocation binding updates every repeated vertex payload.
+ */
+static void
+test_clip_space_render_and_sampled_relocations(void)
+{
+   const uint32_t maximum_segments[R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS] = {
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+      R300_TRIANGLE_MAX_TRIANGLES,
+   };
+   const uint32_t slot_indices[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = 4u,
+      [R300_TRIANGLE_SLOT_COLOR] = 1u,
+      [R300_TRIANGLE_SLOT_TEXTURE] = 2u,
+      [R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 3u,
+      [R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 0u,
+   };
+
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   struct r300_tcl_bypass_triangle_ib render;
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &shape, R300_TRIANGLE_MAX_TRIANGLES, &render) == 0);
+   assert(render.reloc_site_count == R300_TRIANGLE_CLIP_RENDER_SITE_COUNT);
+   assert(render.reloc_sites[0].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert_segmented_draws(
+      &render, 1u, 16u, maximum_segments,
+      R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&render) == 0);
+
+   const uint32_t mutated_site_index = 3u;
+   const struct r300_tcl_bypass_triangle_reloc_site saved_site =
+      render.reloc_sites[mutated_site_index];
+   const uint32_t saved_payload = render.ib[saved_site.ib_index];
+   render.reloc_sites[mutated_site_index].slot = R300_TRIANGLE_SLOT_COLOR;
+   render.ib[saved_site.ib_index] = R300_TRIANGLE_SLOT_COLOR * 4u;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&render) == -EEXIST);
+   render.reloc_sites[mutated_site_index] = saved_site;
+   render.ib[saved_site.ib_index] = saved_payload;
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&render) == 0);
+
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &render, slot_indices, R300_TRIANGLE_SLOT_COUNT) == 0);
+   for (uint32_t site_index = 1u; site_index < render.reloc_site_count;
+        site_index++) {
+      assert(render.ib[render.reloc_sites[site_index].ib_index] == 16u);
+   }
+   r300_tcl_bypass_triangle_release(&render);
+
+   struct r300_tcl_bypass_triangle_ib sampled;
+   assert(r300_tcl_bypass_triangle_clip_space_sampled_emit(
+             R300_TRIANGLE_TARGET_WIDTH, R300_TRIANGLE_TARGET_HEIGHT,
+             R300_TRIANGLE_MAX_TRIANGLES, 4096u, 64u, 64u, 64u,
+             R300_TRIANGLE_LANES_R8G8B8A8, &sampled) == 0);
+   assert(sampled.reloc_site_count == R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT);
+   assert(sampled.reloc_sites[0].slot == R300_TRIANGLE_SLOT_TEXTURE);
+   assert(sampled.reloc_sites[1].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert_segmented_draws(
+      &sampled, 2u, 32u, maximum_segments,
+      R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&sampled) == 0);
+
+   struct tracker tracked = { 0 };
+   track(&tracked, sampled.ib, sampled.ib_size_dwords);
+   assert(tracked.max_vtx_index_seen && tracked.max_vtx_index == 0xfffeu);
+   assert(tracked.draw_count == R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS);
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &sampled, slot_indices, R300_TRIANGLE_SLOT_COUNT) == 0);
+   for (uint32_t site_index = 2u; site_index < sampled.reloc_site_count;
+        site_index++) {
+      assert(sampled.ib[sampled.reloc_sites[site_index].ib_index] == 16u);
+   }
+   r300_tcl_bypass_triangle_release(&sampled);
+
+   struct r300_tcl_bypass_triangle_ib refused = { 0 };
+   assert(r300_tcl_bypass_triangle_clip_space_sampled_emit(
+             64u, 64u, 0u, 4096u, 64u, 64u, 64u,
+             R300_TRIANGLE_LANES_R8G8B8A8, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_clip_space_sampled_emit(
+             64u, 64u, R300_TRIANGLE_MAX_TRIANGLES + 1u, 4096u, 64u, 64u,
+             64u, R300_TRIANGLE_LANES_R8G8B8A8, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &shape, 0u, &refused) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &shape, R300_TRIANGLE_MAX_TRIANGLES + 1u, &refused) == -EINVAL);
+   shape.triangle_count = 2u;
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &shape, 1u, &refused) == -EINVAL);
+   assert(refused.ib == NULL);
+}
+
 /* Counts the dwords where two same-sized IBs differ and records the
  * first R300_TRIANGLE_MAX_DWORDS of their indices.
  */
@@ -1809,6 +2037,37 @@ test_multi_pass_cell(void)
       assert(two.ib[two.reloc_sites[i].ib_index] ==
              RELOC_PAYLOAD(two.reloc_sites[i].slot));
 
+   /* The clip-space form preserves the same two-pass binding while each
+    * half draws seven fixed-capacity triangle slots.  Binding the second
+    * half rewrites its color site and every vertex site.
+    */
+   struct r300_tcl_bypass_triangle_ib clip_one, clip_two;
+   assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
+             &mp.pass[0], 1u, &clip_one) == 0);
+   assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+             &mp, &clip_two) == 0);
+   assert(clip_two.ib_size_dwords == 2 * clip_one.ib_size_dwords);
+   assert(clip_two.reloc_site_count == 2u * clip_one.reloc_site_count);
+   assert(memcmp(clip_two.ib, clip_one.ib,
+                 clip_one.ib_size_dwords * sizeof(uint32_t)) == 0);
+   uint32_t clip_differing = 0;
+   for (uint32_t i = 0; i < clip_one.ib_size_dwords; i++)
+      clip_differing +=
+         clip_two.ib[clip_one.ib_size_dwords + i] != clip_one.ib[i];
+   assert(clip_differing == clip_one.reloc_site_count);
+   for (uint32_t i = clip_one.reloc_site_count;
+        i < clip_two.reloc_site_count; i++) {
+      const struct r300_tcl_bypass_triangle_reloc_site *site =
+         &clip_two.reloc_sites[i];
+      const uint32_t expected_index =
+         site->slot == R300_TRIANGLE_SLOT_VERTEX
+            ? mp.second_vertex_index
+            : mp.second_color_index;
+      assert(clip_two.ib[site->ib_index] == RELOC_PAYLOAD(expected_index));
+   }
+   r300_tcl_bypass_triangle_release(&clip_two);
+   r300_tcl_bypass_triangle_release(&clip_one);
+
    /* Each pass flushes its destination cache and re-establishes the
     * contract's color target: two writes of each across the stream,
     * one per half.
@@ -1862,6 +2121,8 @@ test_multi_pass_cell(void)
              -EINVAL);
       assert(r300_tcl_bypass_triangle_multi_pass_reference_count(&mp) == 0);
       assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == -EINVAL);
+      assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+                &mp, &two) == -EINVAL);
    }
 
    /* A second pass with its own fragment constant moves the four
@@ -1897,6 +2158,8 @@ test_multi_pass_cell(void)
    const float off = 0.1f;
    memcpy(&mp.pass[1].color_bits[0], &off, sizeof(float));
    assert(r300_tcl_bypass_triangle_multi_pass_emit(&mp, &two) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_clip_space_multi_pass_emit(
+             &mp, &two) == -EINVAL);
    r300_tcl_bypass_triangle_release(&one);
 }
 
@@ -3150,6 +3413,8 @@ main(void)
    test_multi_pass_cell();
    test_composed_render_sample_cell();
    test_composed_reloc_payloads_bind_to_merged_indices();
+   test_clip_space_family_segments_and_refusals();
+   test_clip_space_render_and_sampled_relocations();
    test_family_emit_deviates_in_count_words_alone();
    test_contract_cell_size_and_digest_are_pinned();
    test_varying_cell_tuple_and_digest_are_pinned();

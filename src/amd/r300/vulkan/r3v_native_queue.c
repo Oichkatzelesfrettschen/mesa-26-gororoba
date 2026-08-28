@@ -245,9 +245,9 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
    }
    case R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS: {
       /* Two render-shape cells concatenated, the second bound to the
-       * merged indices; r300_tcl_bypass_triangle_multi_pass_emit
-       * reproduces the stream, so the digest carries the geometry.  The
-       * kind has two forms.  The recorder form
+       * merged indices; the matching ordinary or clip-space multi-pass
+       * emitter reproduces the stream, so the digest carries the geometry.
+       * The kind has two forms.  The recorder form
        * (r3v_native_record_multi_pass) installs both cells with no
        * deferred draw.  The public form is a command buffer recording
        * two render passes with a draw each: both deferred draws stay

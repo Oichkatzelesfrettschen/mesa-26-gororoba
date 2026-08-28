@@ -452,9 +452,11 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
 
    /* The carrier descriptor is recording-lifetime state, so it rides
     * the command pool's allocator and a custom host-memory policy
-    * covers it with the command buffer itself.  The carrier BO holds
-    * the 3 * instance_count records the host expansion writes, in whole
-    * GTT pages; one page carries the reference three.
+    * covers it with the command buffer itself.  A triangle clipped by
+    * six planes can produce a nine-vertex polygon and seven fan
+    * triangles.  The carrier reserves that fixed output capacity per
+    * source triangle in whole GTT pages, so submission-time clipping
+    * never changes the recorded IB's draw counts.
     */
    struct r3v_native_memory *carrier =
       vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*carrier), 8,
@@ -465,11 +467,18 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    }
    const uint64_t carrier_record_bytes =
       4 * r300_vertex_job_record_dwords(&pipeline->vertex_job);
+   const uint64_t source_triangle_count =
+      ((uint64_t)args->vertex_count / 3u) * args->instance_count;
+   const uint64_t carrier_payload_bytes =
+      source_triangle_count * R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+      3u * carrier_record_bytes;
+   if (carrier_payload_bytes > UINT64_MAX - 4095u) {
+      vk_free(&cmd_buffer->vk.pool->alloc, carrier);
+      poison(commandBuffer, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return;
+   }
    const uint64_t carrier_bytes =
-      ((uint64_t)args->vertex_count * args->instance_count *
-          carrier_record_bytes +
-       4095) &
-      ~(uint64_t)4095;
+      (carrier_payload_bytes + 4095u) & ~(uint64_t)4095u;
    if (radeon_drm_vk_bo_create(&device->drm, carrier_bytes,
                                R3V_NATIVE_MEMORY_ALIGNMENT,
                                RADEON_GEM_DOMAIN_GTT, 0, false,
