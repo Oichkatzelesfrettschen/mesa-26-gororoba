@@ -4041,6 +4041,26 @@ main(void)
              cube_view != VK_NULL_HANDLE);
       vkDestroyImageView(device, cube_view, NULL);
 
+      /* The object_management image_view_cube cases build the cube
+       * image with SAMPLED | COLOR_ATTACHMENT usage
+       * (vktApiObjectManagementTests.cpp imgCube), which routes creation
+       * through the attachment family; the flag admits there over the
+       * same array layout, while the alias flag keeps its refusal.
+       */
+      VkImageCreateInfo cube_attachment_info = cube_info;
+      cube_attachment_info.usage =
+         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      VkImage cube_attachment_image = VK_NULL_HANDLE;
+      assert(vkCreateImage(device, &cube_attachment_info, NULL,
+                           &cube_attachment_image) == VK_SUCCESS &&
+             cube_attachment_image != VK_NULL_HANDLE);
+      vkDestroyImage(device, cube_attachment_image, NULL);
+      cube_attachment_info.flags = VK_IMAGE_CREATE_ALIAS_BIT;
+      cube_attachment_info.arrayLayers = 1;
+      assert(vkCreateImage(device, &cube_attachment_info, NULL,
+                           &refused_image) == R3V_NATIVE_REFUSAL_RESULT &&
+             refused_image == VK_NULL_HANDLE);
+
       cube_view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
       cube_view_info.subresourceRange.layerCount = 12;
       assert(vkCreateImageView(device, &cube_view_info, NULL, &cube_view) ==
