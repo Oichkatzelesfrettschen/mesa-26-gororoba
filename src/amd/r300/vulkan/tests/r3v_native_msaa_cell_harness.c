@@ -62,8 +62,13 @@ main(int argc, char **argv)
     * refuses.
     */
    const bool unbound = argc == 2 && strcmp(argv[1], "unbound") == 0;
+   /* bound-clear records the cleared cell: the clear half's two extra
+    * sites reuse the color and cover-vertex slots, so the same four
+    * references install and one more payload moves on binding.
+    */
+   const bool clear = argc == 2 && strcmp(argv[1], "bound-clear") == 0;
    struct r300_triangle_msaa_resolve armed_shape;
-   r3v_native_msaa_reference(&armed_shape, MSAA_SAMPLE_COUNT);
+   r3v_native_msaa_reference_cleared(&armed_shape, MSAA_SAMPLE_COUNT, clear);
    struct r300_tcl_bypass_triangle_ib armed_cell;
    CHECK(r300_tcl_bypass_triangle_msaa_resolve_emit(&armed_shape,
                                                     &armed_cell) == 0,
@@ -207,7 +212,7 @@ main(int argc, char **argv)
    CHECK(result == VK_SUCCESS, "vkBeginCommandBuffer: %d", result);
 
    struct r300_triangle_msaa_resolve msaa;
-   r3v_native_msaa_reference(&msaa, MSAA_SAMPLE_COUNT);
+   r3v_native_msaa_reference_cleared(&msaa, MSAA_SAMPLE_COUNT, clear);
 
    /* A repeated handle merges entries whose roles carry different
     * domains, so the recorder refuses before emitting.
@@ -318,7 +323,8 @@ main(int argc, char **argv)
       if (reference_cell.ib[i] != native_cmd->ib[i])
          differing++;
    }
-   CHECK(differing == 3, "three payloads move, got %u", differing);
+   CHECK(differing == (clear ? 4u : 3u), "%s payloads move, got %u",
+         clear ? "four" : "three", differing);
 
    CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
             &reference_cell, r300_tcl_bypass_triangle_msaa_slot_index,

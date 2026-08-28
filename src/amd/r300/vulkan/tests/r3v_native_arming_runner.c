@@ -64,6 +64,7 @@ static uint32_t cell_composed_sample_offset;
  * then the extent covered again under AARESOLVE_MODE_RESOLVE.
  */
 static bool cell_msaa = false;
+static bool cell_msaa_clear = false;
 static uint32_t cell_msaa_sample_count;
 
 static int
@@ -91,7 +92,8 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
    }
    if (cell_msaa) {
       struct r300_triangle_msaa_resolve msaa;
-      r3v_native_msaa_reference(&msaa, cell_msaa_sample_count);
+      r3v_native_msaa_reference_cleared(&msaa, cell_msaa_sample_count,
+                                        cell_msaa_clear);
       const int emitted =
          r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, cell);
       if (emitted != 0)
@@ -258,8 +260,10 @@ main(int argc, char **argv)
       cell_composed_sample_offset =
          (uint32_t)strtoul(argv[argi + 1], NULL, 0);
       argi += 2;
-   } else if (argc >= argi + 2 && strcmp(argv[argi], "--msaa") == 0) {
+   } else if (argc >= argi + 2 && (strcmp(argv[argi], "--msaa") == 0 ||
+                                   strcmp(argv[argi], "--msaa-clear") == 0)) {
       cell_msaa = true;
+      cell_msaa_clear = strcmp(argv[argi], "--msaa-clear") == 0;
       cell_msaa_sample_count = (uint32_t)strtoul(argv[argi + 1], NULL, 0);
       argi += 2;
    } else if (argc >= argi + 2 &&

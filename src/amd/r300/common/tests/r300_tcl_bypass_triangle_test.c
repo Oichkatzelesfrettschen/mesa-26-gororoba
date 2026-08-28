@@ -2566,6 +2566,201 @@ test_msaa_resolve_cell(void)
  * independent enumeration in exact rational arithmetic: 1152 at one
  * sample, 1128 at two, 1104 at four.
  */
+/* The cleared multisample cell: a cover draw under the subsample set
+ * leads the render half, so every sample holds the clear color before
+ * the triangle lands and the exterior resolves to a known dword.
+ */
+static void
+test_msaa_clear_cell(void)
+{
+   struct r300_triangle_msaa_resolve msaa;
+   memset(&msaa, 0, sizeof(msaa));
+   r300_tcl_bypass_triangle_render_shape_reference(&msaa.render);
+   r300_tcl_bypass_triangle_render_shape_reference(&msaa.destination);
+   msaa.destination.target_offset = 0;
+   msaa.sample_count = 4;
+   const float resolve_rgba[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+   const float clear_rgba[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+   for (unsigned i = 0; i < 4; i++) {
+      memcpy(&msaa.resolve_color_bits[i], &resolve_rgba[i], sizeof(float));
+      memcpy(&msaa.clear_color_bits[i], &clear_rgba[i], sizeof(float));
+   }
+
+   struct r300_tcl_bypass_triangle_ib plain, cleared;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, &plain) == 0);
+   msaa.clear = true;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, &cleared) == 0);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cleared) == 0);
+
+   /* The clear half is one more render-shape half ahead of the stream:
+    * the plain cell's dwords are its tail, byte for byte.
+    */
+   assert(cleared.ib_size_dwords > plain.ib_size_dwords);
+   const uint32_t clear_dwords = cleared.ib_size_dwords - plain.ib_size_dwords;
+   assert(cleared.reloc_site_count == R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT);
+   assert(plain.reloc_site_count == R300_TRIANGLE_COMPOSED_SLOT_COUNT);
+   for (uint32_t i = 0; i < plain.ib_size_dwords; i++) {
+      /* Relocation payloads name the same slots; every other dword of
+       * the tail is the plain cell's.
+       */
+      assert(cleared.ib[clear_dwords + i] == plain.ib[i]);
+   }
+   for (uint32_t i = 0; i < plain.reloc_site_count; i++) {
+      assert(cleared.reloc_sites[2 + i].slot == plain.reloc_sites[i].slot);
+      assert(cleared.reloc_sites[2 + i].ib_index ==
+             plain.reloc_sites[i].ib_index + clear_dwords);
+   }
+   assert(cleared.reloc_sites[0].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert(cleared.reloc_sites[1].slot == R300_TRIANGLE_SLOT_COMPOSED_VERTEX);
+   assert(cleared.reloc_sites[1].ib_index < clear_dwords);
+
+   /* A clear color off the FP24 lattice refuses, since it reaches
+    * R300_PFS_PARAM_0 like any render-shape constant.
+    */
+   struct r300_triangle_msaa_resolve off = msaa;
+   const float off_lattice = 0.1f;
+   memcpy(&off.clear_color_bits[0], &off_lattice, sizeof(float));
+   struct r300_tcl_bypass_triangle_ib refused;
+   assert(r300_tcl_bypass_triangle_msaa_resolve_emit(&off, &refused) ==
+          -EINVAL);
+
+   /* The value sequences: the clear half's contract arms the set too,
+    * so four GB_AA_CONFIG writes end in the disable, three MSPOS0
+    * writes all carry the set, and RB3D_AARESOLVE_CTL runs NORMAL,
+    * NORMAL, RESOLVE, NORMAL.
+    */
+   uint32_t aa_config_values[8], mspos0_values[8], resolve_ctl_values[8];
+   uint32_t aa_config_count = 0, mspos0_count = 0, resolve_ctl_count = 0;
+   for (uint32_t i = 0; i < cleared.ib_size_dwords;) {
+      const uint32_t header = cleared.ib[i];
+      if ((header >> 30) != 0) {
+         i += 2 + ((header >> 16) & 0x3fff);
+         continue;
+      }
+      const uint32_t count = ((header >> 16) & 0x3fff) + 1;
+      const uint32_t reg = (header & 0x1fff) * 4;
+      for (uint32_t k = 0; k < count && i + 1 + k < cleared.ib_size_dwords;
+           k++) {
+         const uint32_t at = reg + 4 * k;
+         const uint32_t value = cleared.ib[i + 1 + k];
+         if (at == R300_GB_AA_CONFIG && aa_config_count < 8)
+            aa_config_values[aa_config_count++] = value;
+         else if (at == R300_GB_MSPOS0 && mspos0_count < 8)
+            mspos0_values[mspos0_count++] = value;
+         else if (at == R300_RB3D_AARESOLVE_CTL && resolve_ctl_count < 8)
+            resolve_ctl_values[resolve_ctl_count++] = value;
+      }
+      i += 1 + count;
+   }
+   assert(aa_config_count == 4);
+   for (unsigned i = 0; i < 3; i++)
+      assert(aa_config_values[i] == r300_tcl_bypass_triangle_gb_aa_config(4));
+   assert(aa_config_values[3] == R300_GB_AA_CONFIG_AA_DISABLE);
+   assert(mspos0_count == 3);
+   for (unsigned i = 0; i < 3; i++)
+      assert(mspos0_values[i] == r300_tcl_bypass_triangle_gb_mspos(0, 4));
+   assert(resolve_ctl_count == 4);
+   assert(resolve_ctl_values[0] ==
+          R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
+   assert(resolve_ctl_values[1] ==
+          R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
+   assert(resolve_ctl_values[2] ==
+          (R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_RESOLVE |
+           R300_RB3D_AARESOLVE_CTL_AARESOLVE_ALPHA_AVERAGE));
+   assert(resolve_ctl_values[3] ==
+          R300_RB3D_AARESOLVE_CTL_AARESOLVE_MODE_NORMAL);
+
+   /* The bound form resolves both color sites and both cover-vertex
+    * sites to one relocation index each.
+    */
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &cleared, r300_tcl_bypass_triangle_msaa_slot_index,
+             R300_TRIANGLE_SLOT_COUNT) == 0);
+   assert(cleared.ib[cleared.reloc_sites[0].ib_index] ==
+          cleared.ib[cleared.reloc_sites[2].ib_index]);
+   assert(cleared.ib[cleared.reloc_sites[1].ib_index] ==
+          cleared.ib[cleared.reloc_sites[6].ib_index]);
+
+   r300_tcl_bypass_triangle_release(&plain);
+   r300_tcl_bypass_triangle_release(&cleared);
+}
+
+/* The exterior oracle partitions the extent with the interior one: at
+ * every sample count the interior, exterior, and unjudged counts sum to
+ * the 4096 pixels, and each verdict judges only its own side.
+ */
+static void
+test_sample_set_exterior_oracle_calibration(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   const uint32_t draw = 0x11223344u, clear = 0x55667788u;
+   const uint32_t footprint =
+      shape.pitch_pixels * (shape.height + R300_TRIANGLE_CANARY_ROWS);
+   uint32_t *pixels = malloc((size_t)footprint * sizeof(uint32_t));
+   assert(pixels != NULL);
+   const uint32_t counts[3] = { 1, 2, 4 };
+   const uint32_t interior[3] = { 1152, 1128, 1104 };
+   const uint32_t exterior[3] = { 2944, 2920, 2896 };
+   const uint32_t unjudged[3] = { 0, 48, 96 };
+
+   /* Known good: the pixel-center partition painted with the draw color
+    * inside and the clear color outside, which every sample count's
+    * judged sets are subsets of.
+    */
+   for (uint32_t i = 0; i < footprint; i++)
+      pixels[i] = 0xdead0000u + (i & 0xffffu);
+   for (uint32_t y = 0; y < shape.height; y++)
+      for (uint32_t x = 0; x < shape.width; x++)
+         pixels[y * shape.pitch_pixels + x] =
+            sample_inside_reference((float)x + 0.5f, (float)y + 0.5f)
+               ? draw
+               : clear;
+   struct r300_triangle_sample_set_verdict in, out;
+   for (unsigned i = 0; i < 3; i++) {
+      r300_tcl_bypass_triangle_sample_set_oracle(
+         &shape, counts[i], &draw, 1, pixels, footprint * sizeof(uint32_t),
+         &in);
+      r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+         &shape, counts[i], &clear, 1, pixels, footprint * sizeof(uint32_t),
+         &out);
+      assert(in.judged && out.judged);
+      assert(in.interior_exact && out.interior_exact);
+      assert(in.analytic_pixels == interior[i]);
+      assert(out.analytic_pixels == exterior[i]);
+      assert(in.unjudged_pixels == unjudged[i]);
+      assert(out.unjudged_pixels == unjudged[i]);
+      assert(interior[i] + exterior[i] + unjudged[i] ==
+             shape.width * shape.height);
+   }
+
+   /* Known bad: an exterior that kept an allocation's stale contents in
+    * one pixel fails exactly, and the interior verdict is untouched.
+    */
+   pixels[0] = 0xa5a5a5a5u;
+   r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+      &shape, 4, &clear, 1, pixels, footprint * sizeof(uint32_t), &out);
+   assert(out.judged && !out.interior_exact);
+   assert(out.interior_pixels == exterior[2] - 1);
+   r300_tcl_bypass_triangle_sample_set_oracle(
+      &shape, 4, &draw, 1, pixels, footprint * sizeof(uint32_t), &in);
+   assert(in.interior_exact);
+
+   /* The draw color in the exterior is a wrong-side write, so it fails
+    * the exterior verdict the same way.
+    */
+   pixels[0] = draw;
+   r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+      &shape, 4, &clear, 1, pixels, footprint * sizeof(uint32_t), &out);
+   assert(!out.interior_exact);
+
+   /* A refused call reports judged=0 with every counter zero. */
+   r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+      &shape, 3, &clear, 1, pixels, footprint * sizeof(uint32_t), &out);
+   assert(!out.judged && out.analytic_pixels == 0);
+   free(pixels);
+}
+
 static void
 test_sample_set_oracle_calibration(void)
 {
@@ -2819,7 +3014,9 @@ main(void)
    test_coverage_oracle_predicted_calibration();
    test_interior_oracle_calibration();
    test_sample_set_oracle_calibration();
+   test_sample_set_exterior_oracle_calibration();
    test_msaa_resolve_cell();
+   test_msaa_clear_cell();
    test_pack_unorm8_dword();
    test_varying_shape_vertices_scale_positions_alone();
    test_varying_tex0_is_the_window_position_fraction();

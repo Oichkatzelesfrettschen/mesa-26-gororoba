@@ -135,11 +135,15 @@ struct r300_tcl_bypass_triangle_reloc_site {
    uint32_t slot;
 };
 
-/* The emitter references each slot exactly once, so the site array holds one
- * entry per slot.  The site validator proves slot uniqueness in one uint32_t
- * of slot bits, so the slot space stays inside 32.
+/* The five-site cells reference each slot exactly once, and the site
+ * validator proves that uniqueness in one uint32_t of slot bits, so the
+ * slot space stays inside 32.  The cleared multisample cell adds a clear
+ * half whose two sites reuse the color and cover-vertex slots, since the
+ * kernel resolves every relocation NOP naming one index to the same
+ * entry; its seven-site sequence is matched in full instead.
  */
-#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_SLOT_COUNT
+#define R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT 7u
+#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_MSAA_CLEAR_SITE_COUNT
 static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
               "slot uniqueness is proven in a 32-bit mask");
 
@@ -577,6 +581,17 @@ struct r300_triangle_msaa_resolve {
     * the FP24 lattice, distinct from the render half's color.
     */
    uint32_t resolve_color_bits[4];
+   /* A clear half runs ahead of the render half: the cover triangle
+    * drawn under the same subsample set with clear_color_bits as its
+    * fragment constant, so every sample of the multisample surface
+    * holds a known color before the triangle lands.  R300 carries no
+    * fast clear (r300g clears through a draw as well), so the cover
+    * draw is the clear.  The resolve then carries the clear color to
+    * every fully exterior destination pixel, which the exterior oracle
+    * judges.
+    */
+   bool clear;
+   uint32_t clear_color_bits[4];
 };
 
 /* Emits the multisample resolve cell.  Returns 0 or a negative errno;
@@ -854,6 +869,23 @@ struct r300_triangle_sample_set_verdict {
 void r300_tcl_bypass_triangle_sample_set_oracle(
    const struct r300_triangle_render_shape *shape, uint32_t sample_count,
    const uint32_t *interior_dwords, uint32_t interior_dword_count,
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_triangle_sample_set_verdict *verdict);
+
+/* The exterior verdict over a resolved target whose multisample surface
+ * was cleared: a pixel is judged when every subsample clears the
+ * analytic edges outward by R300_TRIANGLE_SAMPLE_MARGIN, so its resolve
+ * reads the clear color alone.  The same edge band stays unjudged, and
+ * the verdict's counters keep their names: analytic_pixels is the fully
+ * exterior denominator inside the extent, interior_pixels the count that
+ * holds an admitted dword, interior_exact their equality.  At the
+ * reference geometry the denominator is 2944 at one sample, 2920 at
+ * two, and 2896 at four, which with the interior and unjudged counts
+ * partitions the 4096-pixel extent.
+ */
+void r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+   const struct r300_triangle_render_shape *shape, uint32_t sample_count,
+   const uint32_t *exterior_dwords, uint32_t exterior_dword_count,
    const uint32_t *pixels, uint32_t size_bytes,
    struct r300_triangle_sample_set_verdict *verdict);
 

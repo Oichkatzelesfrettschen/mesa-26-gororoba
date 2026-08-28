@@ -1557,7 +1557,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     c_args : [no_override_init_args],
     gnu_symbol_visibility : 'hidden',
   )
-  foreach msaa_mode : ['bound', 'unbound']
+  foreach msaa_mode : ['bound', 'unbound', 'bound-clear']
     test(
       'r3v-native-msaa-cell-reloc-@0@'.format(msaa_mode),
       r3v_native_msaa_cell_harness,
@@ -2230,6 +2230,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       r3v_native_attended_msaa_resolve,
       args : [meson.current_build_dir(), '--samples', msaa_samples,
               '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  # The cleared cell's recording boundary: the clear half leads the
+  # stream and its sites bind through the same merged indices.
+  foreach msaa_samples : ['2', '4']
+    test(
+      'r3v-native-msaa-resolve-record-cleared-@0@x'.format(msaa_samples),
+      r3v_native_attended_msaa_resolve,
+      args : [meson.current_build_dir(), '--samples', msaa_samples,
+              '--clear', '--record-only'],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,

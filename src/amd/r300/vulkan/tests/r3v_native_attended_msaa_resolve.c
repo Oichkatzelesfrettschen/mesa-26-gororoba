@@ -95,10 +95,13 @@ main(int argc, char **argv)
    bool record_only = false;
    const char *waiver_path = NULL;
    uint32_t sample_count = 4;
+   bool clear = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0)
          record_only = true;
+      else if (strcmp(argv[i], "--clear") == 0)
+         clear = true;
       else if (strcmp(argv[i], "--waiver") == 0 && i + 1 < argc)
          waiver_path = argv[++i];
       else if (strcmp(argv[i], "--samples") == 0 && i + 1 < argc)
@@ -108,7 +111,7 @@ main(int argc, char **argv)
    }
    if (usage_error) {
       fprintf(stderr,
-              "usage: %s <evidence-directory> [--samples 2|4] "
+              "usage: %s <evidence-directory> [--samples 2|4] [--clear] "
               "[--record-only] [--waiver <path>]\n",
               argv[0]);
       return 2;
@@ -128,12 +131,13 @@ main(int argc, char **argv)
    }
 
    struct r300_triangle_msaa_resolve msaa;
-   r3v_native_msaa_reference(&msaa, sample_count);
+   r3v_native_msaa_reference_cleared(&msaa, sample_count, clear);
 
    const uint32_t color_bytes =
       r300_tcl_bypass_triangle_render_shape_color_bytes(&msaa.destination);
    const uint32_t downsample_dword = r3v_native_msaa_downsample_dword(&msaa);
    const uint32_t fragment_dword = r3v_native_msaa_fragment_dword(&msaa);
+   const uint32_t clear_dword = r3v_native_msaa_clear_dword(&msaa);
 
    struct r300_tcl_bypass_triangle_ib armed;
    if (r300_tcl_bypass_triangle_msaa_resolve_emit(&msaa, &armed) != 0) {
@@ -157,11 +161,17 @@ main(int argc, char **argv)
     * an edge carries a blend no single dword names, so it stays
     * unjudged and counted.
     */
-   printf("[shape] %ux%u pitch %u at %ux MSAA, destination %ux%u pitch %u, "
-          "%u IB dwords, cell blake3 %.8s\n",
+   printf("[shape] %ux%u pitch %u at %ux MSAA%s, destination %ux%u pitch "
+          "%u, %u IB dwords, cell blake3 %.8s\n",
           msaa.render.width, msaa.render.height, msaa.render.pitch_pixels,
-          sample_count, msaa.destination.width, msaa.destination.height,
-          msaa.destination.pitch_pixels, ib_dwords, digest);
+          sample_count, clear ? " cleared" : "", msaa.destination.width,
+          msaa.destination.height, msaa.destination.pitch_pixels, ib_dwords,
+          digest);
+   if (clear)
+      printf("[predict] the clear half writes 0x%08x into every sample, so "
+             "every fully exterior destination pixel reads it and the "
+             "fragment constant appears nowhere\n",
+             clear_dword);
    printf("[predict] downsampled samples read 0x%08x, a fragment write "
           "reads 0x%08x, a mixture reads neither, and an unwritten "
           "destination reads the 0x%08x seed\n",
@@ -450,6 +460,22 @@ main(int argc, char **argv)
    report("seed", &seed);
    report("either", &either);
 
+   /* With the clear half in the stream the exterior is judged too: a
+    * pixel whose every subsample lies outside the triangle resolves
+    * samples that all hold the clear color.
+    */
+   struct r300_triangle_sample_set_verdict exterior = { 0 };
+   if (clear) {
+      r300_tcl_bypass_triangle_sample_set_exterior_oracle(
+         &msaa.destination, sample_count, &clear_dword, 1, destination_map,
+         color_bytes, &exterior);
+      printf("[oracle] exterior judged=%d exterior_exact=%d exterior=%u "
+             "analytic=%u unjudged=%u\n",
+             exterior.judged, exterior.interior_exact,
+             exterior.interior_pixels, exterior.analytic_pixels,
+             exterior.unjudged_pixels);
+   }
+
    /* The byte-order falsifier is decidable without a tiling model: a
     * destination that holds the predicted dwords in the wrong places
     * carries the same multiset as one that holds them in the right
@@ -465,6 +491,7 @@ main(int argc, char **argv)
    const uint32_t footprint_pixels =
       msaa.destination.pitch_pixels * msaa.destination.height;
    uint32_t census_downsample = 0, census_fragment = 0, census_seed = 0;
+   uint32_t census_clear = 0;
    for (uint32_t p = 0; p < footprint_pixels; p++) {
       if (pixels[p] == downsample_dword)
          census_downsample++;
@@ -472,10 +499,13 @@ main(int argc, char **argv)
          census_fragment++;
       else if (pixels[p] == R300_TRIANGLE_COLOR_SENTINEL)
          census_seed++;
+      else if (clear && pixels[p] == clear_dword)
+         census_clear++;
    }
    printf("[census] footprint %u pixels holds downsample %u fragment %u "
-          "seed %u\n",
-          footprint_pixels, census_downsample, census_fragment, census_seed);
+          "seed %u clear %u\n",
+          footprint_pixels, census_downsample, census_fragment, census_seed,
+          census_clear);
 
    const uint32_t cx = msaa.destination.width / 2;
    const uint32_t cy = (msaa.destination.height * 3) / 8;
@@ -508,9 +538,21 @@ main(int argc, char **argv)
       semantics = "the destination holds none of the predicted dwords; "
                   "the addressing or the coverage is the finding";
    printf("[classify] %s\n", semantics);
+   if (clear) {
+      printf("[classify] exterior: %s\n",
+             exterior.interior_exact
+                ? "every fully exterior pixel resolves the clear color; "
+                  "the surface inherited nothing"
+             : census_fragment != 0
+                ? "the fragment constant reaches the destination outside "
+                  "the triangle; the resolve writes where the clear "
+                  "half's samples were not read"
+                : "the exterior carries an unpredicted dword; the retained "
+                  "destination names it");
+   }
 
    const bool judged = downsample.judged && fragment.judged && seed.judged &&
-                       either.judged;
+                       either.judged && (!clear || exterior.judged);
    const bool classified =
       judged && (downsample.interior_exact || fragment.interior_exact ||
                  seed.interior_exact || either.interior_exact);
