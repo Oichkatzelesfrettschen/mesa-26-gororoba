@@ -1490,6 +1490,15 @@ bool r3v_native_queue_wait_is_permanent_binary(
 int r3v_native_evidence_write_file(const char *dir, const char *name,
                                    const void *data, size_t size);
 
+/* Checks the one-shot destination names before a hazardous producer run.
+ * Every final artifact must be absent before submission; an existing name
+ * returns -EEXIST so the caller can refuse before the ioctl and preserve the
+ * prior evidence group.  Returns 0 or a negative errno.
+ */
+int r3v_native_evidence_require_fresh(const char *dir,
+                                      const char *const *names,
+                                      size_t count);
+
 /* Fixed-cell recorder, linked directly by the pre-hardware harness and the
  * attended-cell runner: lowers the TCL-bypass triangle into the command
  * buffer from the two live buffer-object memories.  Recording is

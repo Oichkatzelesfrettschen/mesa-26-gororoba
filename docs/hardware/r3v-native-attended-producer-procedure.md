@@ -12,7 +12,8 @@ ladder step with its own evidence class.
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
 boundary statement, the host preconditions, the identity freeze, the
 arming conjunction, the rollback rules, and the retained-record layout;
-this document adds only what the producer cell changes.
+the producer procedure adds the producer cell's distinct carrier and oracle
+contract.
 
 ## Cell identity
 
@@ -47,6 +48,26 @@ Recorded before the run; deviation is the finding.
    `r300_r2vb_producer_reference_expected` computes -- the delivery
    identity over the reference records -- byte-exact.
 3. Every dword past the expected extent still holds the poison.
+
+## Exact submit-object parser replay
+
+`src/amd/r300/vulkan/tests/run_producer_submit_object_replay.sh` drives
+`r3v_native_producer_cell_harness open` through the shim and replays the
+retained submit object with `R3V_CS_TRACK_REPLAY_TOOL`. The retained final
+relocation list contains exactly two native entries: the 64-byte producer
+carrier at index 0 and the four-byte completion BO at index 1. The checker
+binds both entries' handles, domains, sizes, roles, chunk descriptors, and
+BLAKE3 digests to `submit_manifest.json` before the parser consumes
+`ib.bin`.
+
+The known-good replay requires one accepted draw with two relocations. The
+same IB rejects an undersized `VAP_VTX_SIZE`, a 32-byte carrier, and a
+truncated final packet. When `R3V_KERNEL_REPLAY_TOOL` is available, the
+narrow TCL-bypass model separately reports the immediate draw as declined;
+that predicate does not replace CS-track acceptance. Offline parser
+acceptance proves command-stream admissibility only. A successful ioctl,
+retired completion, and empty dmesg validation delta remain separate live
+transport observations for the attended procedure.
 
 ## Falsifiers
 

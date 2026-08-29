@@ -117,7 +117,7 @@ r3v_native_evidence_write_file(const char *dir, const char *name,
    return fsync_dir(dir);
 }
 
-static int
+int
 r3v_native_evidence_require_fresh(const char *dir,
                                   const char *const *names, size_t count)
 {
