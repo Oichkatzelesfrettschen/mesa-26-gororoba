@@ -633,6 +633,58 @@ op_repoison(void *ctx, uint32_t iteration)
    return 0;
 }
 
+static int
+write_status_load_outcome(const struct serial_run *run, uint32_t iterations,
+                          uint32_t burst_draws, bool model_float4,
+                          enum r3v_status_load_sampler_mode
+                             expected_sampler_mode,
+                          bool sampler_stopped)
+{
+   const enum r3v_status_load_phase phase =
+      r3v_status_load_machine_phase(&run->machine);
+   const bool declared_census_absent =
+      run->machine.sampler_mode == R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT;
+   const char *declared_sampler_mode =
+      sampler_mode_name(run->machine.sampler_mode);
+   char outcome_json[1024];
+   int length = snprintf(
+      outcome_json, sizeof(outcome_json),
+      "{\n"
+      "  \"schema\": \"%s\",\n"
+      "  \"run_nonce\": \"%s\",\n"
+      "  \"declared_submissions\": %u,\n"
+      "  \"burst_draws\": %u,\n"
+      "  \"model_width\": \"%s\",\n"
+      "  \"expected_sampler_mode\": \"%s\",\n"
+      "  \"sampler_mode\": \"%s\",\n"
+      "  \"census_absent\": %s,\n"
+      "  \"iterations_delivered\": %u,\n"
+      "  \"machine_phase\": \"%s\",\n"
+      "  \"abort_reason\": \"%s\",\n"
+      "  \"sampler_stopped_observed\": %s,\n"
+      "  \"last_submit_result\": %d,\n"
+      "  \"last_queue_status\": \"%s\"\n"
+      "}\n",
+      burst_draws != 0 ? "r3v-native-status-load-burst-outcome/2"
+                       : "r3v-native-status-load-serial-outcome/2",
+      run->nonce, iterations, burst_draws,
+      model_float4 ? "float4" : "float2",
+      sampler_mode_name(expected_sampler_mode), declared_sampler_mode,
+      declared_census_absent ? "true" : "false", run->iterations_delivered,
+      phase == R3V_STATUS_LOAD_COMPLETE
+         ? "COMPLETE"
+         : (phase == R3V_STATUS_LOAD_ABORTED ? "ABORTED" : "RUNNING"),
+      r3v_status_load_machine_abort_reason(&run->machine),
+      sampler_stopped ? "true" : "false", run->last_submit_result,
+      r3v_native_queue_status_name(run->last_queue_status));
+   if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
+       r3v_native_evidence_write_file(run->evidence_dir,
+                                      "status_load_outcome.json",
+                                      outcome_json, (size_t)length) != 0)
+      return -1;
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -746,7 +798,7 @@ main(int argc, char **argv)
    }
 
    const char *nonce = getenv("R3V_STATUS_LOAD_RUN_NONCE");
-   if (nonce == NULL || strlen(nonce) != R3V_STATUS_LOAD_NONCE_LENGTH) {
+   if (!r3v_status_load_nonce_valid(nonce)) {
       fprintf(stderr,
               "R3V_STATUS_LOAD_RUN_NONCE is not 32 lowercase hex "
               "characters\n");
@@ -979,7 +1031,30 @@ main(int argc, char **argv)
    run.carrier_map = carrier_map;
    run.vertex_map = vertex_map;
 
-   /* The burst prepares its transport before the barrier channel even
+   const struct r3v_status_load_ops ops = {
+      .ctx = &run,
+      .poison = op_poison,
+      .arm = op_arm,
+      .submit = op_submit,
+      .post_submit_check = op_post_submit_check,
+      .verify = op_verify,
+      .retain = op_retain,
+      .repoison = op_repoison,
+      .now_ns = run_now_ns,
+      .emit = run_emit,
+   };
+   if (r3v_status_load_machine_init(&run.machine, &ops, run.nonce,
+                                    iterations) != 0 ||
+       r3v_status_load_machine_set_expected_sampler_mode(
+          &run.machine, expected_sampler_mode) != 0) {
+      fprintf(stderr, "status-load machine initialization refused\n");
+      return 1;
+   }
+
+   /* The transport preparation call is discoverable with
+    * (rg --fixed-strings r3v_native_queue_prepare_submission
+    * src/amd/r300/vulkan/r3v_native_queue.c).  The burst prepares its
+    * transport before the barrier channel even
     * exists: relocation list, completion reference, the single CS
     * build, the retained evidence, and the arming disarm all land
     * here.  The sampler paces itself from its own connection, so the
@@ -994,6 +1069,20 @@ main(int argc, char **argv)
       VkResult prep =
          r3v_native_queue_prepare_submission(run.device, run.cmd);
       if (prep != VK_SUCCESS) {
+         run.last_submit_result = prep;
+         run.last_queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
+         r3v_status_load_machine_fault(&run.machine,
+                                       "transport preparation refused");
+         if (write_status_load_outcome(&run, iterations, burst_draws,
+                                       model_float4, expected_sampler_mode,
+                                       false) != 0)
+            fprintf(stderr, "preparation outcome retention failed\n");
+         fclose(run.transcript);
+         vkDestroyCommandPool(run.device, pool, NULL);
+         vkFreeMemory(run.device, carrier_memory, NULL);
+         vkFreeMemory(run.device, vertex_memory, NULL);
+         vkDestroyDevice(run.device, NULL);
+         vkDestroyInstance(instance, NULL);
          fprintf(stderr, "transport preparation refused: %d\n", prep);
          return 1;
       }
@@ -1029,29 +1118,6 @@ main(int argc, char **argv)
    close(listener);
    if (run.sampler_fd < 0) {
       fprintf(stderr, "sampler accept failed\n");
-      return 1;
-   }
-
-   const struct r3v_status_load_ops ops = {
-      .ctx = &run,
-      .poison = op_poison,
-      .arm = op_arm,
-      .submit = op_submit,
-      .post_submit_check = op_post_submit_check,
-      .verify = op_verify,
-      .retain = op_retain,
-      .repoison = op_repoison,
-      .now_ns = run_now_ns,
-      .emit = run_emit,
-   };
-   if (r3v_status_load_machine_init(&run.machine, &ops, run.nonce,
-                                    iterations) != 0) {
-      fprintf(stderr, "machine initialization refused its inputs\n");
-      return 1;
-   }
-   if (r3v_status_load_machine_set_expected_sampler_mode(
-          &run.machine, expected_sampler_mode) != 0) {
-      fprintf(stderr, "sampler mode expectation configuration failed\n");
       return 1;
    }
 
@@ -1109,46 +1175,8 @@ main(int argc, char **argv)
    stage("outcome");
    const enum r3v_status_load_phase phase =
       r3v_status_load_machine_phase(&run.machine);
-   const bool declared_census_absent =
-      run.machine.sampler_mode == R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT;
-   const char *declared_sampler_mode =
-      sampler_mode_name(run.machine.sampler_mode);
-   char outcome_json[1024];
-   int length = snprintf(
-      outcome_json, sizeof(outcome_json),
-      "{\n"
-      "  \"schema\": \"%s\",\n"
-      "  \"run_nonce\": \"%s\",\n"
-      "  \"declared_submissions\": %u,\n"
-      "  \"burst_draws\": %u,\n"
-      "  \"model_width\": \"%s\",\n"
-      "  \"expected_sampler_mode\": \"%s\",\n"
-      "  \"sampler_mode\": \"%s\",\n"
-      "  \"census_absent\": %s,\n"
-      "  \"iterations_delivered\": %u,\n"
-      "  \"machine_phase\": \"%s\",\n"
-      "  \"abort_reason\": \"%s\",\n"
-      "  \"sampler_stopped_observed\": %s,\n"
-      "  \"last_submit_result\": %d,\n"
-      "  \"last_queue_status\": \"%s\"\n"
-      "}\n",
-      burst_draws != 0 ? "r3v-native-status-load-burst-outcome/2"
-                       : "r3v-native-status-load-serial-outcome/2",
-      run.nonce, iterations, burst_draws,
-      model_float4 ? "float4" : "float2",
-      sampler_mode_name(expected_sampler_mode), declared_sampler_mode,
-      declared_census_absent ? "true" : "false",
-      run.iterations_delivered,
-      phase == R3V_STATUS_LOAD_COMPLETE
-         ? "COMPLETE"
-         : (phase == R3V_STATUS_LOAD_ABORTED ? "ABORTED" : "RUNNING"),
-      r3v_status_load_machine_abort_reason(&run.machine),
-      sampler_stopped ? "true" : "false", run.last_submit_result,
-      r3v_native_queue_status_name(run.last_queue_status));
-   if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
-       r3v_native_evidence_write_file(run.evidence_dir,
-                                      "status_load_outcome.json",
-                                      outcome_json, (size_t)length) != 0) {
+   if (write_status_load_outcome(&run, iterations, burst_draws, model_float4,
+                                 expected_sampler_mode, sampler_stopped) != 0) {
       fprintf(stderr, "outcome retention failed\n");
       return 1;
    }
