@@ -2583,6 +2583,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The forced reciprocal-carrier rung's recording boundary: under the
+  # exact force gate the NoPerspective pipeline selects the carrier route
+  # and pass 1 records the TC1 carrier cell.
+  test(
+    'r3v-native-noperspective-carrier-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'reciprocal-carrier'],
+    env : environment(r3v_native_cell_vars +
+                      {'R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE' : '1'}),
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding
