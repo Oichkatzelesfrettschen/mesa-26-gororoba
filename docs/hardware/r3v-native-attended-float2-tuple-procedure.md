@@ -118,8 +118,13 @@ An attended RS482 (1002:5974) run delivered this digest CARRIER_DELIVERED
 byte-exact -- twelve carrier dwords exact, poison-preserved padding,
 intact vertex source, vkQueueSubmit COMPLETED, empty dmesg delta -- under
 the loaded radeon-unified-dkms 0.8.3 XY01-aware validator (module
-srcversion 95D23C4E23D42D8E205F8F5). The three added dwords are the
-paired MIN write, and the delivery matches the 298-dword predecessor, so
+srcversion 95D23C4E23D42D8E205F8F5). The three added dwords come from two
+emission sites: `r300_first_draw_state_emit()` emits each contract entry
+as a separate PACKET0 header/value pair, so the new
+`VAP_VF_MIN_VTX_INDX` entry contributes two dwords;
+`r300_pm4_emit_vertex_index_range()` replaces the bare two-dword
+`VAP_VF_MAX_VTX_INDX` write with a three-dword MAX/MIN run, contributing
+the remaining dword. The delivery matches the 298-dword predecessor, so
 the index-pair change is neutral to the carrier result on silicon. The
 run is retained as steinmarder-r300
 `results/r3v-native-float2-tuple-index-pair-loaded-validator-rs482/`.

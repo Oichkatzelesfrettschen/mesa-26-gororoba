@@ -113,7 +113,7 @@ main(void)
    }
 
    /* Composed relocation domains preserve each use-site's declared DRM
-    * intent (RADEON_GEM_DOMAIN_GTT = 0x2 on the UMA target): the
+    * intent (the DRM UAPI constant RADEON_GEM_DOMAIN_GTT = 0x2): the
     * carrier is a producer color-backend write then a consumer
     * vertex-fetch read as two separate uses, the color target takes
     * the consuming draw's write, and no other domain bit appears.
