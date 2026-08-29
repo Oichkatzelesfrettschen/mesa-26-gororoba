@@ -12,6 +12,63 @@
 #include <stdio.h>
 #include <string.h>
 
+static int
+valid_nonce(const char *nonce)
+{
+   if (nonce == NULL || strlen(nonce) != R3V_STATUS_LOAD_NONCE_LENGTH)
+      return 0;
+   for (size_t i = 0; i < R3V_STATUS_LOAD_NONCE_LENGTH; i++) {
+      const char c = nonce[i];
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+         return 0;
+   }
+   return 1;
+}
+
+static int
+valid_sender_role(const char *sender_role)
+{
+   return sender_role != NULL &&
+          (strcmp(sender_role, "submitter") == 0 ||
+           strcmp(sender_role, "sampler") == 0);
+}
+
+static int
+valid_state(const char *state)
+{
+   static const char *const states[] = {
+      "PREPARE",
+      "POISONED",
+      "ARMED",
+      "SAMPLER_OPEN",
+      "SAMPLER_CALIBRATED",
+      "SAMPLER_READY",
+      "SAMPLER_ENTER_READ",
+      "QUEUE_SUBMIT_ENTER",
+      "CS_IOCTL_ENTER",
+      "CS_IOCTL_RETURN",
+      "COMPLETION_WAIT_BEGIN",
+      "COMPLETION_WAIT_RETURN",
+      "QUEUE_SUBMIT_RETURN",
+      "POST_SUBMIT_STATUS_CHECK_BEGIN",
+      "POST_SUBMIT_STATUS_CHECK_END",
+      "VERIFY_BEGIN",
+      "VERIFY_END",
+      "EVIDENCE_RETAINED",
+      "REPOISONED",
+      "SAMPLER_STOPPED",
+      "COMPLETE",
+      "ABORT",
+   };
+   if (state == NULL)
+      return 0;
+   for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+      if (strcmp(state, states[i]) == 0)
+         return 1;
+   }
+   return 0;
+}
+
 int
 r3v_status_load_format_message(char *buffer, size_t capacity,
                                const char *sender_role, const char *state,
@@ -19,8 +76,8 @@ r3v_status_load_format_message(char *buffer, size_t capacity,
                                uint64_t message_sequence,
                                uint64_t timestamp_ns)
 {
-   if (buffer == NULL || sender_role == NULL || state == NULL ||
-       nonce == NULL)
+   if (buffer == NULL || !valid_sender_role(sender_role) ||
+       !valid_state(state) || !valid_nonce(nonce))
       return -1;
    int length = snprintf(
       buffer, capacity,
@@ -37,11 +94,15 @@ r3v_status_load_format_message(char *buffer, size_t capacity,
 }
 
 /* Marks the run aborted with the first reason and emits the ABORT
- * message on a best-effort basis: a failing sink cannot un-abort the
- * run, so its error is absorbed here.
+ * message on a best-effort basis.  A supplied sequence identifies an
+ * undelivered candidate from emit_submitter(), so a recovering sink
+ * reuses that sequence instead of creating a gap in the transcript.
+ * A zero sequence allocates the next message number for an independent
+ * fault; a failing sink cannot un-abort the run, so its error is absorbed.
  */
 static void
-machine_abort(struct r3v_status_load_machine *machine, const char *reason)
+machine_abort_with_sequence(struct r3v_status_load_machine *machine,
+                            const char *reason, uint64_t message_sequence)
 {
    if (machine->phase != R3V_STATUS_LOAD_RUNNING)
       return;
@@ -54,15 +115,23 @@ machine_abort(struct r3v_status_load_machine *machine, const char *reason)
       now = machine->last_submitter_ns;
    machine->last_submitter_ns = now;
    machine->have_submitter_ns = 1;
-   machine->submitter_sequence++;
+   if (message_sequence == 0)
+      message_sequence = machine->submitter_sequence + 1;
+   machine->submitter_sequence = message_sequence;
    uint32_t index =
       machine->next_iteration < machine->total_iterations
          ? machine->next_iteration
          : machine->total_iterations - 1;
    if (r3v_status_load_format_message(line, sizeof(line), "submitter",
                                       "ABORT", machine->nonce, index,
-                                      machine->submitter_sequence, now) > 0)
+                                      message_sequence, now) > 0)
       machine->ops.emit(machine->ops.ctx, line);
+}
+
+static void
+machine_abort(struct r3v_status_load_machine *machine, const char *reason)
+{
+   machine_abort_with_sequence(machine, reason, 0);
 }
 
 /* Emits one submitter ladder message.  A clock regression or a failing
@@ -80,19 +149,22 @@ emit_submitter(struct r3v_status_load_machine *machine, const char *state,
    }
    machine->last_submitter_ns = now;
    machine->have_submitter_ns = 1;
-   machine->submitter_sequence++;
+   const uint64_t message_sequence = machine->submitter_sequence + 1;
 
    char line[R3V_STATUS_LOAD_MESSAGE_CAPACITY];
    if (r3v_status_load_format_message(line, sizeof(line), "submitter", state,
                                       machine->nonce, submission_index,
-                                      machine->submitter_sequence, now) < 0) {
-      machine_abort(machine, "message formatting failed");
+                                      message_sequence, now) < 0) {
+      machine_abort_with_sequence(machine, "message formatting failed",
+                                   message_sequence);
       return -1;
    }
    if (machine->ops.emit(machine->ops.ctx, line) != 0) {
-      machine_abort(machine, "message sink failed");
+      machine_abort_with_sequence(machine, "message sink failed",
+                                   message_sequence);
       return -1;
    }
+   machine->submitter_sequence = message_sequence;
    return 0;
 }
 
@@ -110,21 +182,29 @@ r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
       return -1;
    if (iterations < 1 || iterations > R3V_STATUS_LOAD_MAX_ITERATIONS)
       return -1;
-   if (strlen(nonce) != R3V_STATUS_LOAD_NONCE_LENGTH)
+   if (!valid_nonce(nonce))
       return -1;
-   for (size_t i = 0; i < R3V_STATUS_LOAD_NONCE_LENGTH; i++) {
-      const char c = nonce[i];
-      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-         return -1;
-   }
 
    memset(machine, 0, sizeof(*machine));
    machine->ops = *ops;
    memcpy(machine->nonce, nonce, R3V_STATUS_LOAD_NONCE_LENGTH + 1);
    machine->total_iterations = iterations;
    machine->sampler = R3V_STATUS_LOAD_SAMPLER_ABSENT;
+   machine->sampler_read_required = 1;
    machine->phase = R3V_STATUS_LOAD_RUNNING;
    machine->abort_reason = "";
+   return 0;
+}
+
+int
+r3v_status_load_machine_set_sampler_read_required(
+   struct r3v_status_load_machine *machine, int required)
+{
+   if (machine == NULL || machine->phase != R3V_STATUS_LOAD_RUNNING ||
+       machine->next_iteration != 0 ||
+       machine->sampler != R3V_STATUS_LOAD_SAMPLER_ABSENT)
+      return -1;
+   machine->sampler_read_required = required != 0;
    return 0;
 }
 
@@ -182,9 +262,12 @@ r3v_status_load_machine_transport_event(
 
 int
 r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
-                                const char *state_name, uint64_t timestamp_ns)
+                                const char *state_name,
+                                uint32_t submission_index,
+                                uint64_t timestamp_ns)
 {
-   if (machine->phase != R3V_STATUS_LOAD_RUNNING)
+   if (machine == NULL || state_name == NULL ||
+       machine->phase != R3V_STATUS_LOAD_RUNNING)
       return -1;
    if (machine->have_sampler_ns && timestamp_ns < machine->last_sampler_ns) {
       machine_abort(machine, "sampler clock regressed");
@@ -202,6 +285,10 @@ r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
       next = R3V_STATUS_LOAD_SAMPLER_READY;
    else if (strcmp(state_name, "SAMPLER_STOPPED") == 0)
       next = R3V_STATUS_LOAD_SAMPLER_STOPPED;
+   else if (strcmp(state_name, "ABORT") == 0) {
+      machine_abort(machine, "sampler requested abort");
+      return -1;
+   }
    else {
       machine_abort(machine, "sampler sent an unknown state");
       return -1;
@@ -215,8 +302,21 @@ r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
    if (next == R3V_STATUS_LOAD_SAMPLER_STOPPED)
       valid = machine->sampler != R3V_STATUS_LOAD_SAMPLER_ABSENT &&
               machine->sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED;
-   else if (strcmp(state_name, "SAMPLER_ENTER_READ") == 0)
-      valid = machine->sampler == R3V_STATUS_LOAD_SAMPLER_READY;
+   else if (strcmp(state_name, "SAMPLER_ENTER_READ") == 0) {
+      if (machine->sampler != R3V_STATUS_LOAD_SAMPLER_READY) {
+         machine_abort(machine, "sampler transition out of order");
+         return -1;
+      }
+      if (machine->sampler_read_pending) {
+         machine_abort(machine, "sampler sent duplicate ENTER_READ");
+         return -1;
+      }
+      if (submission_index != machine->next_iteration) {
+         machine_abort(machine, "sampler submission index differs");
+         return -1;
+      }
+      valid = 1;
+   }
    else
       valid = (int)next == (int)machine->sampler + 1;
    if (!valid) {
@@ -227,6 +327,10 @@ r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
    machine->sampler = next;
    machine->last_sampler_ns = timestamp_ns;
    machine->have_sampler_ns = 1;
+   if (strcmp(state_name, "SAMPLER_ENTER_READ") == 0) {
+      machine->sampler_read_pending = 1;
+      machine->sampler_read_index = submission_index;
+   }
    return 0;
 }
 
@@ -271,6 +375,13 @@ r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine)
       machine_abort(machine, "sampler never reached ready");
       return -1;
    }
+   if (machine->sampler_read_required &&
+       (!machine->sampler_read_pending ||
+        machine->sampler_read_index != i)) {
+      machine_abort(machine, "sampler ENTER_READ missing for submission");
+      return -1;
+   }
+   machine->sampler_read_pending = 0;
 
    if (emit_submitter(machine, "QUEUE_SUBMIT_ENTER", i) != 0)
       return -1;
@@ -308,6 +419,12 @@ r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine)
    if (emit_submitter(machine, "VERIFY_END", i) != 0)
       return -1;
    if (verify_status > 0) {
+      if (machine->ops.retain(ctx, i) != 0) {
+         machine_abort(machine, "evidence retention failed");
+         return -1;
+      }
+      if (emit_submitter(machine, "EVIDENCE_RETAINED", i) != 0)
+         return -1;
       machine_abort(machine, "verification mismatch");
       return -1;
    }

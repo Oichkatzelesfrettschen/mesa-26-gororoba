@@ -53,8 +53,8 @@ enum r3v_status_load_phase {
 struct r3v_status_load_machine;
 
 /* The sampler's resting states as the submitter tracks them.
- * SAMPLER_ENTER_READ is a recorded event inside READY, so READY absorbs
- * it rather than adding a state.
+ * SAMPLER_ENTER_READ is a one-shot event inside READY, so READY remains
+ * the resting state while the machine records a pending per-index token.
  */
 enum r3v_status_load_sampler {
    R3V_STATUS_LOAD_SAMPLER_ABSENT,
@@ -112,6 +112,9 @@ struct r3v_status_load_machine {
    enum r3v_status_load_sampler sampler;
    uint64_t last_sampler_ns;
    int have_sampler_ns;
+   int sampler_read_required;
+   int sampler_read_pending;
+   uint32_t sampler_read_index;
    uint32_t transport_submission_index;
    enum r3v_status_load_transport_phase transport_phase;
    enum r3v_status_load_phase phase;
@@ -142,21 +145,35 @@ r3v_status_load_machine_transport_event(
    enum r3v_status_load_transport_event event);
 
 /* Binds the ops table, the shared nonce, and the declared iteration
- * count (1 through R3V_STATUS_LOAD_MAX_ITERATIONS).  Returns 0, or -1
- * for a malformed nonce, an out-of-bound count, or a missing operation.
+ * count (1 through R3V_STATUS_LOAD_MAX_ITERATIONS).  Serial submissions
+ * require one fresh sampler read token per iteration by default.  Returns
+ * 0, or -1 for a malformed nonce, an out-of-bound count, or a missing
+ * operation.
  */
 int
 r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
                              const struct r3v_status_load_ops *ops,
                              const char *nonce, uint32_t iterations);
 
-/* Feeds one observed sampler event by protocol state name.  An
- * out-of-order sampler transition or a sampler timestamp regression
+/* Selects whether each applicable submission must consume a sampler
+ * SAMPLER_ENTER_READ token.  The census-absent control sets false before
+ * the first sampler event; observed runs keep the default true value.
+ * Returns 0 when the mode changes on a running, unused machine.
+ */
+int
+r3v_status_load_machine_set_sampler_read_required(
+   struct r3v_status_load_machine *machine, int required);
+
+/* Feeds one observed sampler event by protocol state name and its
+ * 0-based submission index.  SAMPLER_ENTER_READ is a one-shot token for
+ * that index and must match the machine's next iteration.  An out-of-order
+ * transition, duplicate token, index mismatch, or timestamp regression
  * aborts the run.  Returns 0 while the run keeps going.
  */
 int
 r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
                                 const char *state_name,
+                                uint32_t submission_index,
                                 uint64_t timestamp_ns);
 
 /* Runs one full submission through the ladder.  Returns 0 when the
