@@ -397,6 +397,7 @@ r3v_native_plan_parse(const char *text, size_t size,
    struct r3v_native_plan_submission *cur = NULL;
    uint32_t submissions_seen = 0;
    uint32_t relocs_seen = 0;
+   uint64_t referenced_bytes = 0;
    bool first = true;
    char *save = NULL;
    for (char *line = strtok_r(body, "\n", &save); line != NULL;
@@ -515,6 +516,12 @@ r3v_native_plan_parse(const char *text, size_t size,
             result = R3V_NATIVE_PLAN_PARSE_BAD_VALUE;
             break;
          }
+         if (r->size > UINT64_MAX - referenced_bytes ||
+             referenced_bytes + r->size > plan->max_cumulative_bytes) {
+            result = R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED;
+            break;
+         }
+         referenced_bytes += r->size;
          continue;
       }
       if (header_done || n != 2) {

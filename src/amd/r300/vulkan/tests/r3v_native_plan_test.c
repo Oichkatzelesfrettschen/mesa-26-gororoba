@@ -215,6 +215,9 @@ test_parse_refusals(void)
                 R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED);
    expect_parse("max_submissions\t4", "max_submissions\t1", true,
                 R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED);
+   expect_parse("\tcompletion\t2\t2\t4\trw\n",
+                "\tcompletion\t2\t2\t1040000\trw\n", true,
+                R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED);
    expect_parse("\t231\ttriangle\t", "\t231\tundeclared\t", true,
                 R3V_NATIVE_PLAN_PARSE_BAD_VALUE);
    expect_parse("\t96\tr\n", "\t96\tx\n", true,
