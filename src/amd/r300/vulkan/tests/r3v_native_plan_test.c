@@ -119,6 +119,19 @@ test_round_trip(void)
    struct r3v_native_plan_identity id = good_identity();
    assert(r3v_native_plan_bind(&p, &id) == R3V_NATIVE_PLAN_BIND_OK);
    r3v_native_plan_finish(&p);
+
+   struct r3v_native_plan maximum_kernel_release = good_plan();
+   memset(maximum_kernel_release.kernel_release, 'k',
+          R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX);
+   maximum_kernel_release.kernel_release[R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX] =
+      '\0';
+   long maximum_size = r3v_native_plan_write(&maximum_kernel_release, NULL, 0);
+   assert(maximum_size > 0 && (size_t)maximum_size < sizeof(again));
+   assert(r3v_native_plan_write(&maximum_kernel_release, again, sizeof(again)) ==
+          maximum_size);
+   assert(parse_text(again, (size_t)maximum_size, &p) ==
+          R3V_NATIVE_PLAN_PARSE_OK);
+   r3v_native_plan_finish(&p);
 }
 
 /* Applies one textual edit to the good plan, re-seals unless the edit

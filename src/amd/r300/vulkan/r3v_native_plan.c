@@ -253,7 +253,8 @@ set_field(struct r3v_native_plan *p, enum field f, const char *v)
    case F_QUEUE_CLAIM:
       return r3v_native_plan_queue_claim_parse(v, &p->queue_claim);
    case F_KERNEL:
-      return copy_name(p->kernel_release, v, R3V_NATIVE_PLAN_NAME_MAX);
+      return copy_name(p->kernel_release, v,
+                       R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX);
    case F_MODULE:
       return copy_name(p->module_srcversion, v, R3V_NATIVE_PLAN_NAME_MAX);
    case F_PCI: {
@@ -619,7 +620,7 @@ plan_in_schema(const struct r3v_native_plan *plan)
        !hex_ok(plan->partition_sha256, R3V_NATIVE_PLAN_HEX64) ||
        !hex_ok(plan->caselist_sha256, R3V_NATIVE_PLAN_HEX64) ||
        r3v_native_plan_queue_claim_name(plan->queue_claim) == NULL ||
-       !name_ok(plan->kernel_release, R3V_NATIVE_PLAN_NAME_MAX) ||
+       !name_ok(plan->kernel_release, R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX) ||
        !name_ok(plan->module_srcversion, R3V_NATIVE_PLAN_NAME_MAX) ||
        plan->pci_vendor_id > 0xffff || plan->pci_device_id > 0xffff ||
        !hex_ok(plan->nonce, 32) || plan->evidence_dir[0] != '/' ||

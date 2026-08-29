@@ -29,6 +29,7 @@
 #define R3V_NATIVE_PLAN_SCHEMA_VERSION 1u
 #define R3V_NATIVE_PLAN_HEX64 64u
 #define R3V_NATIVE_PLAN_NAME_MAX 63u
+#define R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX 64u
 #define R3V_NATIVE_PLAN_PATH_MAX 255u
 #define R3V_NATIVE_PLAN_RELOC_MAX 64u
 #define R3V_NATIVE_PLAN_SUBMISSION_MAX 65536u
@@ -83,7 +84,7 @@ struct r3v_native_plan {
    char partition_sha256[R3V_NATIVE_PLAN_HEX64 + 1];
    char caselist_sha256[R3V_NATIVE_PLAN_HEX64 + 1];
    enum r3v_native_plan_queue_claim queue_claim;
-   char kernel_release[R3V_NATIVE_PLAN_NAME_MAX + 1];
+   char kernel_release[R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX + 1];
    char module_srcversion[R3V_NATIVE_PLAN_NAME_MAX + 1];
    uint32_t pci_vendor_id;
    uint32_t pci_device_id;
