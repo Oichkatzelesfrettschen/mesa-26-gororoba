@@ -26,6 +26,7 @@
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <stdbool.h>
@@ -35,6 +36,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
@@ -161,7 +163,50 @@ struct serial_run {
    uint32_t iterations_delivered;
    VkResult last_submit_result;
    enum r3v_native_queue_status last_queue_status;
+   bool dmesg_before_captured;
+   bool dmesg_after_captured;
+   int dmesg_before_status;
+   int dmesg_after_status;
 };
+
+/* Runs dmesg directly so the evidence names never cross a shell parser.  The
+ * fixed pre- and post-window names bind the capture to this one submission
+ * session; a pre-existing file therefore refuses the run rather than mixing
+ * observations from two hazard windows.
+ */
+static bool
+capture_dmesg(struct serial_run *run, const char *name, bool *captured,
+              int *status)
+{
+   char path[PATH_MAX];
+   const int length = snprintf(path, sizeof(path), "%s/%s", run->evidence_dir,
+                               name);
+   if (length < 0 || (size_t)length >= sizeof(path))
+      return false;
+
+   const int output = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+   if (output < 0)
+      return false;
+
+   const pid_t child = fork();
+   if (child == 0) {
+      if (dup2(output, STDOUT_FILENO) < 0)
+         _exit(127);
+      close(output);
+      execlp("dmesg", "dmesg", "--color=never", (char *)NULL);
+      _exit(127);
+   }
+   close(output);
+   if (child < 0)
+      return false;
+
+   int child_status = 0;
+   if (waitpid(child, &child_status, 0) != child)
+      return false;
+   *status = child_status;
+   *captured = WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0;
+   return *captured;
+}
 
 static uint64_t
 run_now_ns(void *ctx)
@@ -662,6 +707,10 @@ write_status_load_outcome(const struct serial_run *run, uint32_t iterations,
       "  \"machine_phase\": \"%s\",\n"
       "  \"abort_reason\": \"%s\",\n"
       "  \"sampler_stopped_observed\": %s,\n"
+      "  \"dmesg_before_captured\": %s,\n"
+      "  \"dmesg_before_status\": %d,\n"
+      "  \"dmesg_after_captured\": %s,\n"
+      "  \"dmesg_after_status\": %d,\n"
       "  \"last_submit_result\": %d,\n"
       "  \"last_queue_status\": \"%s\"\n"
       "}\n",
@@ -675,7 +724,10 @@ write_status_load_outcome(const struct serial_run *run, uint32_t iterations,
          ? "COMPLETE"
          : (phase == R3V_STATUS_LOAD_ABORTED ? "ABORTED" : "RUNNING"),
       r3v_status_load_machine_abort_reason(&run->machine),
-      sampler_stopped ? "true" : "false", run->last_submit_result,
+      sampler_stopped ? "true" : "false",
+      run->dmesg_before_captured ? "true" : "false",
+      run->dmesg_before_status, run->dmesg_after_captured ? "true" : "false",
+      run->dmesg_after_status, run->last_submit_result,
       r3v_native_queue_status_name(run->last_queue_status));
    if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
        r3v_native_evidence_write_file(run->evidence_dir,
@@ -1130,6 +1182,19 @@ main(int argc, char **argv)
                                        "within the wait budget");
    }
 
+   stage("dmesg baseline");
+   if (!capture_dmesg(&run, "dmesg-before.txt", &run.dmesg_before_captured,
+                      &run.dmesg_before_status)) {
+      r3v_status_load_machine_fault(&run.machine,
+                                    "dmesg baseline capture failed");
+      if (write_status_load_outcome(&run, iterations, burst_draws,
+                                    model_float4, expected_sampler_mode,
+                                    false) != 0)
+         fprintf(stderr, "baseline outcome retention failed\n");
+      fprintf(stderr, "dmesg baseline capture failed\n");
+      return 1;
+   }
+
    /* The hazard: up to the declared bound of live DRM_RADEON_CS
     * submissions, one outstanding at a time, each under the full event
     * ladder.  Both census legs consume an indexed ENTER_WINDOW token
@@ -1169,6 +1234,12 @@ main(int argc, char **argv)
    const bool sampler_stopped =
       sampler_wait(&run, R3V_STATUS_LOAD_SAMPLER_STOPPED,
                    SAMPLER_WAIT_BUDGET_MS / 4);
+   stage("dmesg post-run");
+   if (!capture_dmesg(&run, "dmesg-after.txt", &run.dmesg_after_captured,
+                      &run.dmesg_after_status) &&
+       run.machine.phase == R3V_STATUS_LOAD_RUNNING)
+      r3v_status_load_machine_fault(&run.machine,
+                                    "dmesg post-run capture failed");
    if (run.machine.phase == R3V_STATUS_LOAD_RUNNING)
       r3v_status_load_machine_finish(&run.machine);
 

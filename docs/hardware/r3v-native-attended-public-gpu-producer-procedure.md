@@ -60,8 +60,9 @@ this document adds only what the public route changes.
   The suite runs it as `r3v-native-public-gpu-producer-record`, so a
   sequence the driver's recording contract refuses fails there rather
   than on an authorized hardware attempt.  The recording mode reaches no
-  ioctl, reports no verdict, and is the one mode that runs under an
-  interposer.
+  `DRM_RADEON_CS`, and is the one mode that runs under an interposer. Vulkan
+  allocation and mapping can still issue GEM create or map ioctls, and a
+  recording validation failure emits its refusal verdict.
 - Allocations: the carrier is driver-owned and poisoned with
   `R300_R2VB_PRODUCER_POISON_DWORD` across its sixteen dwords before the
   ioctl; the color target is the cell's 64x64 B8G8R8A8 surface with the

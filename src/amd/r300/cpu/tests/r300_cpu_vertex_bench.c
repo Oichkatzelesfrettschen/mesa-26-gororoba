@@ -34,8 +34,9 @@
 
 #include "git_sha1.h"
 
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+#if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
+#define R300_CPU_VERTEX_BENCH_HAVE_CPUID 1
 #endif
 
 #include "amd/r300/common/r300_vertex_format.h"
@@ -187,7 +188,8 @@ struct bench_lane {
  */
 static void
 bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
-            uint32_t base_offset, uint32_t vertex_count, unsigned reps)
+            uint32_t base_offset, uint32_t vertex_count, unsigned reps,
+            bool sse3_available)
 {
    const struct r300_vertex_stream stream = {
       .data = records + base_offset,
@@ -203,6 +205,8 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
    unsigned present_count = 0;
    uint64_t best[LANE_COUNT];
    for (unsigned l = 0; l < LANE_COUNT; l++) {
+      if (strcmp(lanes[l].label, "sse3") == 0 && !sse3_available)
+         continue;
       if (calibrate_lane(lanes[l].label, lanes[l].fn, format_id, &stream,
                          vertex_count, lanes[l].allow_unsupported))
          present[present_count++] = l;
@@ -246,44 +250,29 @@ bench_shape(const struct bench_lane *lanes, int format_id, uint32_t stride,
 int
 main(int argc, char **argv)
 {
-   /* The K8 target binary's rows decide the TL-66 dispatch, and K8
-    * codegen on another microarchitecture times that host's pipeline,
-    * so the executing CPU must identify as AMD family 0Fh (K8) or the
-    * rows mark as smoke output.  The SSE3 feature bit is a hard
-    * refusal: the whole binary compiles at -march=k8-sse3, so a host
-    * without SSE3 -- an early-revision family 0Fh part -- would fault
-    * mid-run instead of producing marked rows.
+   /* The K8/SSE3 candidates reside in a separate library. The baseline
+    * runner checks CPUID before it can call an SSE3 entry point.
     */
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
+   bool sse3_available = false;
+#ifdef R300_CPU_VERTEX_BENCH_HAVE_CPUID
    {
       unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
-      int is_k8 = 0;
-      int has_sse3 = 0;
       if (__get_cpuid(0, &eax, &ebx, &ecx, &edx) &&
           ebx == 0x68747541u /* "Auth" */ &&
           edx == 0x69746e65u /* "enti" */ &&
           ecx == 0x444d4163u /* "cAMD" */ &&
           __get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-         unsigned base_family = (eax >> 8) & 0xf;
-         unsigned ext_family = (eax >> 20) & 0xff;
-         is_k8 = base_family == 0xf && ext_family == 0;
-         has_sse3 = (ecx & bit_SSE3) != 0;
-      }
-      if (!has_sse3) {
-         fprintf(stderr,
-                 "error: executing CPU lacks SSE3; this binary's "
-                 "k8-sse3 codegen would fault\n");
-         return 1;
-      }
-      if (!is_k8) {
-         fprintf(stderr,
-                 "warning: executing CPU is not AMD family 0Fh (K8); "
-                 "rows are smoke output, not dispatch evidence\n");
-         printf("# non-K8 host: rows are smoke output, not dispatch "
-                "evidence\n");
+         sse3_available = (ecx & bit_SSE3) != 0;
       }
    }
 #endif
+   if (!sse3_available) {
+      fprintf(stderr,
+              "warning: executing CPU lacks SSE3; specialized rows are "
+              "smoke output and the baseline runner blocks entry\n");
+      printf("# no SSE3: specialized rows are smoke output; baseline runner "
+             "blocks entry\n");
+   }
 
    unsigned reps = 9;
    if (argc > 1) {
@@ -349,6 +338,8 @@ main(int argc, char **argv)
          { "sse3", r300_cpu_vertex_gather_sse3 },
       };
       for (unsigned t = 0; t < 2; t++) {
+         if (strcmp(tuned[t].label, "sse3") == 0 && !sse3_available)
+            continue;
          if (tuned[t].fn(R300_VERTEX_FORMAT_F32_4, &probe_stream, 0, 3,
                          carrier, MAX_VERTICES * 4) == -ENOSYS) {
             printf("# lane absent: %s (build carries no such instruction "
@@ -396,7 +387,7 @@ main(int argc, char **argv)
                    (uint64_t)MAX_VERTICES * 32)
                   continue;
                bench_shape(lanes, formats[f], strides[s], offsets[o],
-                           counts[c], reps);
+                           counts[c], reps, sse3_available);
             }
          }
       }

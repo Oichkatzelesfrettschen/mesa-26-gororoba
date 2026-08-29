@@ -66,13 +66,43 @@ def strip_comments(text: str) -> str:
     return re.sub(r"//[^\n]*", " ", text)
 
 
-def audit_sources(paths: list[str]) -> int:
-    """Include and identifier scan over the native compilation's sources."""
+def native_header_path(include: str, including: Path, native_root: Path) -> Path | None:
+    """Resolve a quoted include that remains inside the native R300 tree."""
+    candidates = [including.parent / include, native_root / include]
+    if include.startswith("amd/r300/"):
+        candidates.append(native_root.parents[1] / include)
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(native_root)
+        except ValueError:
+            continue
+        return resolved
+    return None
+
+
+def audit_sources(paths: list[str], native_root_name: str | None = None) -> int:
+    """Scan native translation units and every reachable native header."""
     import re
 
     failures = []
-    for path_name in paths:
-        path = Path(path_name)
+    initial_paths = [Path(path_name).resolve() for path_name in paths]
+    if native_root_name is None:
+        native_root = None
+    else:
+        native_root = Path(native_root_name).resolve()
+        if not native_root.is_dir():
+            print(f"native source root missing: {native_root}", file=sys.stderr)
+            return AUDIT_INPUT_MISSING
+    paths_to_scan = list(initial_paths)
+    seen = set()
+    while paths_to_scan:
+        path = paths_to_scan.pop()
+        if path in seen:
+            continue
+        seen.add(path)
         if not path.is_file():
             print(f"source audit input missing: {path}", file=sys.stderr)
             return AUDIT_INPUT_MISSING
@@ -87,6 +117,10 @@ def audit_sources(paths: list[str]) -> int:
                     f"{path}:{number}: forbidden include " f"{include.group(1)}"
                 )
                 continue
+            if include and native_root is not None and '"' in line:
+                header = native_header_path(include.group(1), path, native_root)
+                if header is not None:
+                    paths_to_scan.append(header)
             if re.match(r"\s*struct\s+\w+\s*;\s*$", line):
                 # A bare forward declaration references nothing.
                 continue
@@ -99,7 +133,7 @@ def audit_sources(paths: list[str]) -> int:
         print("\n".join(failures))
         return AUDIT_FORBIDDEN_SOURCE
     print(
-        f"r3v_native_separation_audit: {len(paths)} sources free of "
+        f"r3v_native_separation_audit: {len(seen)} sources and reachable headers free of "
         "Gallium includes and identifiers"
     )
     return AUDIT_OK
@@ -430,8 +464,20 @@ def selftest() -> int:
         diagnostics = io.StringIO()
         with contextlib.redirect_stderr(diagnostics):
             status = audit_sources([str(root / "absent.c")])
-        if status != AUDIT_INPUT_MISSING:
-            print(f"source selftest missing-input: got {status}")
+            if status != AUDIT_INPUT_MISSING:
+                print(f"source selftest missing-input: got {status}")
+                return 1
+
+        native_root = root / "src" / "amd" / "r300"
+        nested_header = native_root / "common" / "nested.h"
+        nested_header.parent.mkdir(parents=True)
+        nested_header.write_text('#include "pipe/p_defines.h"\n')
+        nested_source = native_root / "native.c"
+        nested_source.write_text('#include "amd/r300/common/nested.h"\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = audit_sources([str(nested_source)], str(native_root))
+        if status != AUDIT_FORBIDDEN_SOURCE:
+            print(f"source selftest nested-header: got {status}")
             return 1
 
         import json
@@ -569,8 +615,12 @@ def main() -> int:
             return 1
         print(f"r3v_native_separation_audit: exact status {actual_status} matched")
         return AUDIT_OK
-    if len(sys.argv) >= 3 and sys.argv[1] == "--sources":
-        return audit_sources(sys.argv[2:])
+    if (
+        len(sys.argv) >= 5
+        and sys.argv[1] == "--sources"
+        and sys.argv[2] == "--native-root"
+    ):
+        return audit_sources(sys.argv[4:], sys.argv[3])
     if len(sys.argv) == 4 and sys.argv[1] == "--compile-commands":
         return audit_compile_commands(sys.argv[2], sys.argv[3])
     if len(sys.argv) == 4 and sys.argv[1] == "--dynamic":
@@ -578,7 +628,8 @@ def main() -> int:
     if len(sys.argv) != 3:
         print(
             "usage: r3v_native_separation_audit.py <nm> <library> | "
-            "--sources <file...> | --compile-commands <json> <marker> | "
+            "--sources --native-root <dir> <file...> | "
+            "--compile-commands <json> <marker> | "
             "--dynamic <readelf> <library> | --selftest"
         )
         return AUDIT_USAGE

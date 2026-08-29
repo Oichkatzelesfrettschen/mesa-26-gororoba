@@ -279,6 +279,12 @@ function_body() {
   sed -n "/^$1(/,/^}/p" "$2"
 }
 
+# Public producer admission and verification remain bound to named source
+# mechanisms.  Each query returns the exact gate that this document names.
+rg --fixed-strings r300_r2vb_producer_pass_semantic_equal src/amd/r300/
+rg --fixed-strings r3v_native_deferred_draw_admit_gpu_producer src/amd/r300/
+rg --fixed-strings r3v_native_deferred_draw_verify_gpu_producer src/amd/r300/
+
 # Absence checks accept only ripgrep's status 1 no-match result.  A match
 # fails the check, and an execution error propagates to the ledger.
 assert_absent() {
@@ -1226,7 +1232,8 @@ planner belongs to the GL lane and is never an R3V execution path.
 ### Public GPU-producer route scope
 
 The public GPU-producer route admits through `vkCmdDraw` plus `vkQueueSubmit`
-on the exact double opt-in, and its admission composes the producer pass over
+only when `R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL=1` and
+`R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL=1`; its admission composes the producer pass over
 the application's gathered records ahead of the recorded triangle consumer in
 one IB. The producer embeds those records as literal `DRAW_IMMD_2` body
 dwords, so the composed stream's digest is a function of the vertex payload:
@@ -1243,8 +1250,10 @@ which compares every dword outside the embedded record payloads), and numeric
 domain, and the gathered records become the post-completion read-back oracle).
 A completed submission whose carrier diverges from that oracle retains the
 observed bytes, quarantines the capability on the device, and reports device
-loss; a completed submission that agrees retains the same bytes beside the
-expectation, so a delivery is auditable from the bundle rather than from the
+loss; either carrier-evidence write failure also quarantines the capability
+and reports device loss, so the route treats observed-byte retention as a
+fail-closed delivery condition. A completed submission that agrees retains the
+same bytes beside the expectation, so a delivery is auditable from the bundle rather than from the
 exit status.
 
 `docs/hardware/r3v-native-attended-public-gpu-producer-procedure.md` carries
@@ -1456,9 +1465,10 @@ does not promote another.
     storage. Native dispatch timing remains open over the command-buffer-owned
     mapped GTT carrier, which each submission maps, rewrites, publishes, and
     unmaps.
-11. Migrate native R2VB producer and live delivery (`F32_4` control, then
-    `F32_3`, then `F32_2`).
-    The identity-delivery host model and no-submit producer emitter are
+11. Validate the landed public native R2VB producer and live delivery, then
+    extend the public route from its authorized `F32_4` payload to `F32_3`
+    and `F32_2` only with new admission and silicon evidence. The
+    identity-delivery host model and no-submit producer emitter are
     landed. Operator-armed producer, FP24 boundary, same-IB re-ingest, and
     exact F32 `FLOAT_2 + XY01` cells carry retained RS482 results; their
     procedure documents own the contracts and point to the result bundles:

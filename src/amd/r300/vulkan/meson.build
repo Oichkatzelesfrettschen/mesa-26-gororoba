@@ -571,7 +571,8 @@ if with_tests
   test(
     'r3v-native-gallium-separation-sources',
     prog_python,
-    args : [files('tests/r3v_native_separation_audit.py'), '--sources']
+    args : [files('tests/r3v_native_separation_audit.py'), '--sources',
+            '--native-root', meson.current_source_dir() / '..']
            + r3v_loader_base_files + r3v_native_files + r300_cpu_files
            + files(
       'r3v_cpu_sync.h',

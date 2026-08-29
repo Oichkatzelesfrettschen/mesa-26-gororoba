@@ -411,13 +411,63 @@ software rendering.
 
 ## Build and cache doctrine
 
-Enforce build and cache separation as specified in `build-infra/CLAUDE.md`: maintain clear isolation across release and debug profiles, host environments, build directories, and install prefixes; execute clean and reconfigure cycles systematically; and route compiler acceleration through designated distcc/ccache pipelines.
+Mesa builds from this repository alone with reproducible native files and
+environment variables. Meson owns configuration and Ninja generation. Make
+and build-infra own host selection, audit checks, generated native overlays,
+cleaning, building, and installation. A build-system change requires explicit
+authorization before changing that division.
 
-Maintain a strict division of build responsibilities:
-- Assign build configuration and Ninja generation exclusively to Meson.
-- Manage host selection, audit checks, generated native overlays, clean passes, compilation runs, and installation through Make and build-infra tooling.
-- Obtain explicit user authorization prior to altering this architectural separation.
-- Review `build-infra/CLAUDE.md` before modifying any Meson option, native file, host environment variable, install prefix, or cache lane.
+Use `meson configure` and repository-local options before choosing a build
+configuration. Scripts discover their checkout through
+`repo_root=$(git rev-parse --show-toplevel)` and use repository-relative
+paths, PATH-resolved tools, or declared user roots. An omitted or `auto`
+Meson option receives an audit of the target-host dependencies that Meson
+enables. Hazardous submit paths require exact opt-ins such as
+`R300_TRACE_HAZARD_ACCEPTED=1`.
+
+Release, debugoptimized, and debug builds use separate build directories and
+install prefixes. Release builds supply conformance and silicon evidence;
+debugoptimized and debug builds change timing, allocation, and error behavior.
+Run complete configure, build, and install cycles for one build before using
+another. A probe declares one prefix through its Meson `prefix` and `libdir`,
+sets matching `LIBGL_DRIVERS_PATH`, `LD_LIBRARY_PATH`, and, for Vulkan, the
+matching installed ICD JSON. Mixed release/debug loader paths invalidate an
+evidence claim.
+
+The active profiles live in `build-infra/configs/` and
+`build-infra/configs/alternates/`; the Makefile resolves `PROFILE=` by
+basename. `4_r300_full_release_*` provides the R300 conformance baseline.
+The numbered clang profiles use
+`vostro1000-x86-64-v1-clang22-ccache-distcc.env`; the GCC diagnostic profile
+uses `vostro1000-x86-64-v1-gcc-ccache-distcc.env` with
+`COMPILER_FAMILY=gnu`. Historical pump environments remain under
+`build-infra/env/Archive/` and supply no active Make target.
+
+Each profile maps to `build/mesa-<profile>/` and an isolated default prefix
+`/opt/local/mesa-<profile>`. The only operator-selected shared prefixes are
+`/opt/local/mesa-26-gororoba` for release and
+`/opt/mesa-gororoba-debug-optimized` for debugoptimized, with
+`/opt/local/mesa-gororoba-debug-optimized` as its compatibility alias. An
+in-repository install tree contaminates the worktree and supplies no valid
+evidence surface.
+
+`ninja -C <builddir> clean` preserves Meson configuration. A Meson-option or
+Meson-version change uses `meson setup --wipe <builddir>`, followed by full
+build and install cycles. Only Meson changes generated
+`meson-private/cmd_line.txt`.
+
+Native files name PATH-resolved compilers or generated local overlays. Make
+writes version-coupled LLVM helpers to `$BUILDDIR/mesa-toolchain.meson` before
+configuration and selects a coherent installed clang/clang++/llvm-config set,
+honoring `MESA_LLVM_VERSION` when declared. The active C/C++ cache chain is
+`ccache -> distcc -> clang` through Meson `[binaries]` plus
+`CCACHE_PREFIX=distcc`; Rust uses `sccache -> rustc`. Wrapper scripts that
+invoke `ccache distcc clang` remain retired because ccache identifies distcc
+as the compiler and rejects multi-source calls. `RUSTC_WRAPPER` controls Cargo
+only and does not select Meson Rust. Cache wiring changes update the
+reproducible recipe after consulting the workspace ccache and sccache notes.
+`ccache --show-stats --verbose` records the cache state; a warmed unchanged
+build normally exceeds 90 percent hits.
 
 ## Owned-origin publication and upstream intake
 
