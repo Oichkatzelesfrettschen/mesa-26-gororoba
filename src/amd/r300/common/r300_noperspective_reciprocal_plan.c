@@ -186,6 +186,25 @@ r300_noperspective_reciprocal_pack_triangle(
    return 0;
 }
 
+static int
+validate_carrier_record(const struct r300_noperspective_reciprocal_plan *plan,
+                        const float *record)
+{
+   const uint32_t carrier_lane =
+      R300_NOPERSPECTIVE_CARRIER_POSITION_DWORDS +
+      plan->carrier_vector * R300_NOPERSPECTIVE_CARRIER_VECTOR_DWORDS;
+   for (uint32_t lane = R300_NOPERSPECTIVE_CARRIER_POSITION_DWORDS;
+        lane < carrier_lane; lane++)
+      if (!isfinite(record[lane]) ||
+          fabs(record[lane]) > R300_NOPERSPECTIVE_CARRIER_LANE_MAX)
+         return -EDOM;
+   const float c = record[carrier_lane];
+   if (!(c > 0.0f) || !(c <= 1.0f) || record[carrier_lane + 1] != 0.0f ||
+       record[carrier_lane + 2] != 0.0f || record[carrier_lane + 3] != 1.0f)
+      return -EDOM;
+   return 0;
+}
+
 int
 r300_noperspective_reciprocal_validate_stream(
    const struct r300_noperspective_reciprocal_plan *plan,
@@ -196,23 +215,62 @@ r300_noperspective_reciprocal_validate_stream(
       return -EINVAL;
    const uint32_t carrier_dwords =
       r300_noperspective_reciprocal_plan_record_dwords(plan);
-   const uint32_t carrier_lane =
-      R300_NOPERSPECTIVE_CARRIER_POSITION_DWORDS +
-      plan->carrier_vector * R300_NOPERSPECTIVE_CARRIER_VECTOR_DWORDS;
    for (uint64_t vertex = 0; vertex < (uint64_t)triangle_count * 3u;
         vertex++) {
-      const float *record = &carrier_records[vertex * carrier_dwords];
-      for (uint32_t lane = R300_NOPERSPECTIVE_CARRIER_POSITION_DWORDS;
-           lane < carrier_lane; lane++)
-         if (!isfinite(record[lane]) ||
-             fabs(record[lane]) > R300_NOPERSPECTIVE_CARRIER_LANE_MAX)
-            return -EDOM;
-      const float c = record[carrier_lane];
-      if (!(c > 0.0f) || !(c <= 1.0f) || record[carrier_lane + 1] != 0.0f ||
-          record[carrier_lane + 2] != 0.0f || record[carrier_lane + 3] != 1.0f)
-         return -EDOM;
+      const int rc = validate_carrier_record(
+         plan, &carrier_records[vertex * carrier_dwords]);
+      if (rc != 0)
+         return rc;
    }
    return 0;
+}
+
+static bool
+is_padding_record(const float *record, uint32_t record_dwords)
+{
+   if (record[3] != 1.0f)
+      return false;
+   for (uint32_t lane = 0; lane < record_dwords; lane++)
+      if (lane != 3 && record[lane] != 0.0f)
+         return false;
+   return true;
+}
+
+int
+r300_noperspective_reciprocal_validate_expanded(
+   const struct r300_noperspective_reciprocal_plan *plan,
+   const float *carrier_records, uint32_t vertex_count)
+{
+   if (r300_noperspective_reciprocal_plan_validate(plan) != 0 ||
+       (carrier_records == NULL && vertex_count != 0))
+      return -EINVAL;
+   const uint32_t carrier_dwords =
+      r300_noperspective_reciprocal_plan_record_dwords(plan);
+   int live = 0;
+   for (uint32_t vertex = 0; vertex < vertex_count; vertex++) {
+      const float *record = &carrier_records[vertex * carrier_dwords];
+      if (is_padding_record(record, carrier_dwords))
+         continue;
+      for (uint32_t lane = 0; lane < R300_NOPERSPECTIVE_CARRIER_POSITION_DWORDS;
+           lane++)
+         if (!isfinite(record[lane]))
+            return -EDOM;
+      const int rc = validate_carrier_record(plan, record);
+      if (rc != 0)
+         return rc;
+      live++;
+   }
+   return live;
+}
+
+double
+r300_noperspective_reciprocal_clipped_edge_value(double a, double w_a,
+                                                 double b, double w_b,
+                                                 double t)
+{
+   const double weight_a = (1.0 - t) * w_a;
+   const double weight_b = t * w_b;
+   return (weight_a * a + weight_b * b) / (weight_a + weight_b);
 }
 
 /* The seven R300 draw opcodes r300_cs_parse dispatches through

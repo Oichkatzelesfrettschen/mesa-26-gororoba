@@ -524,9 +524,11 @@ struct r3v_native_deferred_draw {
    bool direct_noperspective;
    /* Set when the pipeline selected the reciprocal carrier route: the
     * post-VS stage widens each record to the TC1 carrier shape ahead of
-    * the clipper and the recorded cell is the carrier cell; execution
-    * admits the clipping class ACCEPT alone until the partial-clip rung
-    * lands (r3v_interpolation_lowering.h). */
+    * the clipper and the recorded cell is the carrier cell; the clipper
+    * blends the premultiplied payload and the carrier lane with one
+    * edge parameter, so every clipping class is admitted and the
+    * expanded stream is validated ahead of publication
+    * (r3v_interpolation_lowering.h). */
    bool noperspective_carrier;
    /* The rasterizer control word the recorded cell carries (enum
     * r3v_rs_probe_candidate): a gated probe candidate, W_SELECT_ONE on

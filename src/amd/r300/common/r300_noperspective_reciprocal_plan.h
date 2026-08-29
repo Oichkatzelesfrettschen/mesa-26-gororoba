@@ -104,6 +104,28 @@ int r300_noperspective_reciprocal_validate_stream(
    const struct r300_noperspective_reciprocal_plan *plan,
    const float *carrier_records, uint32_t triangle_count);
 
+/* Validates the clipper's expanded carrier stream of vertex_count records:
+ * the padding record the clipper writes for an absent fan triangle
+ * (position 0, 0, 0, 1 and every other lane 0) is skipped, and every
+ * live record holds the same invariants r300_noperspective_reciprocal_
+ * validate_stream checks.  A clipped carrier vertex is a convex
+ * combination of source records, so its carrier lane stays inside
+ * (0, 1] and its payload inside the envelope; the check is the evidence
+ * assertion behind that bound.  Returns the live record count, -EDOM on
+ * the first violation, -EINVAL on a null stream. */
+int r300_noperspective_reciprocal_validate_expanded(
+   const struct r300_noperspective_reciprocal_plan *plan,
+   const float *carrier_records, uint32_t vertex_count);
+
+/* The value Vulkan assigns a NoPerspective output at a clipped vertex
+ * (Clipping Shader Outputs): the clip-space edge parameter t rescaled to
+ * window space, t' = t * w_b / ((1 - t) * w_a + t * w_b), so the value is
+ * ((1 - t) * w_a * a + t * w_b * b) / ((1 - t) * w_a + t * w_b).  The
+ * clipper interpolates the premultiplied lane and the carrier lane with
+ * the same t, so their ratio at the generated vertex is this value. */
+double r300_noperspective_reciprocal_clipped_edge_value(
+   double a, double w_a, double b, double w_b, double t);
+
 /* Walks a PM4 stream and returns the number of draw packets ahead of
  * which every carrier register -- GB_SELECT at gb_select_base (W_SELECT
  * clear), VAP_VTX_SIZE, VAP_PROG_STREAM_CNTL_0/1, VAP_OUTPUT_VTX_FMT_1,

@@ -200,6 +200,47 @@ test_recover_model(void)
    }
 }
 
+/* The expanded-stream validator over a clipper fan: padding records
+ * (position 0, 0, 0, 1, every other lane 0) are skipped and counted
+ * out, a live record with a carrier lane outside (0, 1] refuses, and
+ * the clipped-edge oracle is the perspective-weighted blend. */
+static void
+test_validate_expanded(void)
+{
+   const float w[3] = { 1.0f, 4.0f, 2.0f };
+   float source[3][8];
+   fill_source(source, w);
+   struct r300_noperspective_reciprocal_plan plan;
+   r300_noperspective_reciprocal_plan_tc1(&plan);
+   float fan[6][12];
+   memset(fan, 0, sizeof(fan));
+   CHECK(r300_noperspective_reciprocal_pack_triangle(
+            &plan, &source[0][0], &fan[0][0]) == 0);
+   for (unsigned v = 3; v < 6; v++)
+      fan[v][3] = 1.0f;
+   CHECK(r300_noperspective_reciprocal_validate_expanded(&plan, &fan[0][0],
+                                                         6) == 3);
+   /* A midpoint of records 0 and 1 is a live convex combination. */
+   for (unsigned lane = 0; lane < 12; lane++)
+      fan[3][lane] = 0.5f * fan[0][lane] + 0.5f * fan[1][lane];
+   CHECK(r300_noperspective_reciprocal_validate_expanded(&plan, &fan[0][0],
+                                                         6) == 4);
+   fan[3][8] = 0.0f;
+   CHECK(r300_noperspective_reciprocal_validate_expanded(&plan, &fan[0][0],
+                                                         6) == -EDOM);
+   CHECK(r300_noperspective_reciprocal_validate_expanded(&plan, NULL, 0) ==
+         0);
+   CHECK(r300_noperspective_reciprocal_validate_expanded(&plan, NULL, 1) ==
+         -EINVAL);
+   /* t = 1/2 between w 1 and w 4: weights 1 and 4 of 5. */
+   CHECK(fabs(r300_noperspective_reciprocal_clipped_edge_value(
+                 0.0, 1.0, 1.0, 4.0, 0.5) - 0.8) <= 1e-12);
+   CHECK(r300_noperspective_reciprocal_clipped_edge_value(
+            3.0, 1.0, 7.0, 4.0, 0.0) == 3.0);
+   CHECK(r300_noperspective_reciprocal_clipped_edge_value(
+            3.0, 1.0, 7.0, 4.0, 1.0) == 7.0);
+}
+
 /* The per-draw stream check over the emitted carrier cell: the cell
  * establishes every word ahead of its draw; each word mutated in place
  * names draw 0; the legacy varying cell (VTX_SIZE 8, one interpolator)
@@ -275,6 +316,7 @@ main(void)
    test_register_words();
    test_pack_identity_and_envelope();
    test_recover_model();
+   test_validate_expanded();
    test_stream_check();
    if (failures != 0) {
       fprintf(stderr, "r300_noperspective_reciprocal_plan_test: %d "
