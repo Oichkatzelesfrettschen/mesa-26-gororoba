@@ -10,15 +10,12 @@
 # (r300_triangle_multi_pass::second_vertex_index/second_color_index).
 # Ordinary CS tracking (packet framing, register admission, relocation
 # consumption, buffer-size bounds) does not read VAP_OUTPUT_VTX_FMT_0's
-# COLOR_0_PRESENT bit, so both cells ACCEPT here; the kernel TCL-bypass
-# vertex check that declines the direct cell is a separate parser stage,
-# covered by run_flat_color0_kernel_replay.sh.  The one place the two
-# streams diverge under CS tracking is VAP_VTX_SIZE: the direct cell's
-# PSC record is wider than VAP_VTX_SIZE declares (the color-0-present
-# vertex carries the interpolated varying without adding to the
-# declared stride), so the "VAP_VTX_SIZE below the output width" control
-# does not hold for it, while the replicated cell's ordinary TEX0 record
-# keeps that control passing.
+# COLOR_0_PRESENT bit, so both cells ACCEPT here.  The replay tool runs
+# the kernel TCL-bypass vertex check (r300_tcl_bypass_vtx_check.h) at
+# each draw as a second stage, and that check counts COLOR_0_PRESENT as
+# four required dwords, so the "VAP_VTX_SIZE below the output width"
+# control rejects the direct cell's stream at VAP_VTX_SIZE 3 exactly as
+# it rejects the replicated cell's: every control holds for both.
 #
 # R3V_CS_TRACK_REPLAY_TOOL names replay_r300_cs_track, built from the
 # Linux radeon source tree against that tree's r300 safe-register bitmap
@@ -112,37 +109,16 @@ if ! replicate_controls=$("${R3V_CS_TRACK_CONTROLS}" \
 fi
 echo "${replicate_controls}"
 
-# The direct cell: every control holds except the one VAP_VTX_SIZE
-# predicate, which the wider color-0-present PSC record violates.  The
-# controls script itself reports a nonzero exit whenever any control
-# misses, so a clean pass here would mean the direct cell stopped
-# diverging from its declared width -- the falsifier this test pins.
-if direct_controls=$("${R3V_CS_TRACK_CONTROLS}" \
+# The direct cell: every control holds, the VAP_VTX_SIZE predicate
+# included, because the width stage reads COLOR_0_PRESENT.
+if ! direct_controls=$("${R3V_CS_TRACK_CONTROLS}" \
     "${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/direct/bundle.txt" \
     "${workdir}/direct/ib.bin" 2>&1); then
     echo "${direct_controls}"
-    echo "direct flat-color0 cell: every control held, expected exactly" \
-         "one miss (VAP_VTX_SIZE below the output width)" >&2
+    echo "direct flat-color0 cell: a control did not hold" >&2
     exit 1
 fi
 echo "${direct_controls}"
 
-misses=$(printf '%s\n' "${direct_controls}" | \
-    grep -c ', .* expected$' || true)
-if [ "${misses}" -ne 1 ]; then
-    echo "direct flat-color0 cell: ${misses} controls missed, expected 1" \
-         >&2
-    exit 1
-fi
-case "${direct_controls}" in
-    *"VAP_VTX_SIZE below the output width            accept, reject"*) ;;
-    *)
-        echo "direct flat-color0 cell: the one miss was not" \
-             "VAP_VTX_SIZE below the output width" >&2
-        exit 1
-        ;;
-esac
-
 echo "run_flat_color0_cs_track_replay: both cells ACCEPT draws=2" \
-     "passed=2; replicate holds every control, direct misses exactly" \
-     "VAP_VTX_SIZE below the output width"
+     "passed=2 and hold every control"
