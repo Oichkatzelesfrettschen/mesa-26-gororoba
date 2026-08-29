@@ -4726,30 +4726,32 @@ test_fd_identity_contract(int fd, uint16_t expected_device_id)
     * process on the host shares, and concurrent shim-test processes raced
     * that real lock: the loser's non-blocking acquire observed EAGAIN
     * instead of the exclusivity the calibration means to prove.
-    * O_TMPFILE opens an unnamed inode private to this file description,
-    * so no concurrent process can ever name it and no lock request can
-    * ever contend with this one.
+    * memfd_create opens an unnamed inode private to this file description,
+    * so no filesystem feature such as O_TMPFILE and no concurrent process
+    * can make a lock request contend with this one.
     */
-   int null_fd = open("/tmp", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
-   TEST_CHECK(null_fd >= 0,
-              "lockf character calibration open failed with errno %d",
+   int lock_control_fd =
+      memfd_create("radeon-shim-lock-character",
+                   MFD_CLOEXEC | MFD_ALLOW_SEALING);
+   TEST_CHECK(lock_control_fd >= 0,
+              "lockf character calibration memfd failed with errno %d",
               errno);
-   if (null_fd >= 0) {
-      TEST_CHECK(lseek64(null_fd, 0, SEEK_SET) == 0,
+   if (lock_control_fd >= 0) {
+      TEST_CHECK(lseek64(lock_control_fd, 0, SEEK_SET) == 0,
                  "lockf character calibration lseek failed with errno %d",
                  errno);
-      ret = lockf64(null_fd, F_TLOCK, 0);
+      ret = lockf64(lock_control_fd, F_TLOCK, 0);
       TEST_CHECK(ret == 0,
                  "lockf character calibration lock returned %d errno %d",
                  ret, errno);
       if (ret == 0) {
-         ret = lockf64(null_fd, F_ULOCK, 0);
+         ret = lockf64(lock_control_fd, F_ULOCK, 0);
          TEST_CHECK(ret == 0,
                     "lockf character calibration unlock returned %d "
                     "errno %d",
                     ret, errno);
       }
-      close(null_fd);
+      close(lock_control_fd);
    }
    TEST_CHECK(lseek64(fd, 0, SEEK_SET) == 0,
               "lockf render lseek failed with errno %d", errno);
