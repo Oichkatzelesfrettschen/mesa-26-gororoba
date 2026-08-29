@@ -15,9 +15,28 @@
 #include <stdbool.h>
 #include <string.h>
 
-/* Lanes travel as 32-bit patterns; arithmetic converts through memcpy
- * so every operator is one host binary32 operation with one rounding.
+/* Lanes retain the canonical little-endian byte encoding used by the
+ * carrier.  Arithmetic decodes and encodes that representation explicitly,
+ * so the scalar route keeps the same value on little- and big-endian hosts.
  */
+static uint32_t
+load_le_bits(const uint32_t *lane)
+{
+   const uint8_t *bytes = (const uint8_t *)lane;
+   return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+          ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static void
+store_le_bits(uint32_t *lane, uint32_t bits)
+{
+   uint8_t *bytes = (uint8_t *)lane;
+   bytes[0] = (uint8_t)bits;
+   bytes[1] = (uint8_t)(bits >> 8);
+   bytes[2] = (uint8_t)(bits >> 16);
+   bytes[3] = (uint8_t)(bits >> 24);
+}
+
 static float bits_to_float(uint32_t bits)
 {
    float value;
@@ -207,6 +226,9 @@ static int execute_guard(const struct r300_vertex_job *job,
    if (!streams || !carrier || !draw || draw->vertex_count == 0 ||
        draw->instance_count == 0)
       return -EINVAL;
+   if (!draw->vertex_ids &&
+       (uint64_t)draw->first_vertex + draw->vertex_count - 1 > UINT32_MAX)
+      return -EINVAL;
    if ((uint64_t)draw->vertex_count * draw->instance_count *
           r300_vertex_job_record_dwords(job) >
        carrier_dwords)
@@ -347,8 +369,9 @@ static int execute_scalar(const struct r300_vertex_job *job,
                    sizeof(inputs[inst->src0]));
             break;
          case R300_VERTEX_JOB_OP_LOAD_CONSTANT:
-            memcpy(temps[inst->dst], job->constants[inst->src0],
-                   sizeof(temps[inst->dst]));
+            for (uint32_t lane = 0; lane < 4; lane++)
+               store_le_bits(&temps[inst->dst][lane],
+                             job->constants[inst->src0][lane]);
             break;
          case R300_VERTEX_JOB_OP_MOV:
             memcpy(temps[inst->dst], temps[inst->src0],
@@ -359,25 +382,34 @@ static int execute_scalar(const struct r300_vertex_job *job,
                (enum r300_vertex_job_system_value)inst->src0, draw, vertex,
                instance);
             for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = value;
+               store_le_bits(&temps[inst->dst][lane], value);
             break;
          }
          case R300_VERTEX_JOB_OP_CONVERT_S_TO_F:
             for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] =
-                  int_to_float_bits(temps[inst->src0][lane]);
+               store_le_bits(
+                  &temps[inst->dst][lane],
+                  int_to_float_bits(load_le_bits(&temps[inst->src0][lane])));
             break;
          case R300_VERTEX_JOB_OP_FADD:
-            for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = float_result_to_bits(
-                  bits_to_float(temps[inst->src0][lane]) +
-                  bits_to_float(temps[inst->src1][lane]));
+            for (uint32_t lane = 0; lane < 4; lane++) {
+               const float lhs =
+                  bits_to_float(load_le_bits(&temps[inst->src0][lane]));
+               const float rhs =
+                  bits_to_float(load_le_bits(&temps[inst->src1][lane]));
+               store_le_bits(&temps[inst->dst][lane],
+                             float_result_to_bits(lhs + rhs));
+            }
             break;
          case R300_VERTEX_JOB_OP_FMUL:
-            for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = float_result_to_bits(
-                  bits_to_float(temps[inst->src0][lane]) *
-                  bits_to_float(temps[inst->src1][lane]));
+            for (uint32_t lane = 0; lane < 4; lane++) {
+               const float lhs =
+                  bits_to_float(load_le_bits(&temps[inst->src0][lane]));
+               const float rhs =
+                  bits_to_float(load_le_bits(&temps[inst->src1][lane]));
+               store_le_bits(&temps[inst->dst][lane],
+                             float_result_to_bits(lhs * rhs));
+            }
             break;
          case R300_VERTEX_JOB_OP_FMAD:
             /* Two roundings: the product commits to binary32 before
@@ -385,18 +417,23 @@ static int execute_scalar(const struct r300_vertex_job *job,
              * substrate the K8 target implements. */
             for (uint32_t lane = 0; lane < 4; lane++) {
                const volatile float product =
-                  bits_to_float(temps[inst->src0][lane]) *
-                  bits_to_float(temps[inst->src1][lane]);
-               temps[inst->dst][lane] = float_result_to_bits(
-                  product + bits_to_float(temps[inst->src2][lane]));
+                  bits_to_float(load_le_bits(&temps[inst->src0][lane])) *
+                  bits_to_float(load_le_bits(&temps[inst->src1][lane]));
+               store_le_bits(
+                  &temps[inst->dst][lane],
+                  float_result_to_bits(
+                     product +
+                     bits_to_float(load_le_bits(&temps[inst->src2][lane]))));
             }
             break;
          case R300_VERTEX_JOB_OP_FFMA:
             for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = float_result_to_bits(fmaf(
-                  bits_to_float(temps[inst->src0][lane]),
-                  bits_to_float(temps[inst->src1][lane]),
-                  bits_to_float(temps[inst->src2][lane])));
+               store_le_bits(
+                  &temps[inst->dst][lane],
+                  float_result_to_bits(fmaf(
+                     bits_to_float(load_le_bits(&temps[inst->src0][lane])),
+                     bits_to_float(load_le_bits(&temps[inst->src1][lane])),
+                     bits_to_float(load_le_bits(&temps[inst->src2][lane])))));
             break;
          case R300_VERTEX_JOB_OP_DP4: {
             /* Seed with the first product: an additive zero seed would
@@ -409,18 +446,18 @@ static int execute_scalar(const struct r300_vertex_job *job,
              * multiply-then-add the SSE2 kernel executes.
              */
             const volatile float seed =
-               bits_to_float(temps[inst->src0][0]) *
-               bits_to_float(temps[inst->src1][0]);
+               bits_to_float(load_le_bits(&temps[inst->src0][0])) *
+               bits_to_float(load_le_bits(&temps[inst->src1][0]));
             float sum = seed;
             for (uint32_t lane = 1; lane < 4; lane++) {
                const volatile float product =
-                  bits_to_float(temps[inst->src0][lane]) *
-                  bits_to_float(temps[inst->src1][lane]);
+                  bits_to_float(load_le_bits(&temps[inst->src0][lane])) *
+                  bits_to_float(load_le_bits(&temps[inst->src1][lane]));
                sum += product;
             }
             const uint32_t bits = float_result_to_bits(sum);
             for (uint32_t lane = 0; lane < 4; lane++)
-               temps[inst->dst][lane] = bits;
+               store_le_bits(&temps[inst->dst][lane], bits);
             break;
          }
          case R300_VERTEX_JOB_OP_STORE_POSITION:
