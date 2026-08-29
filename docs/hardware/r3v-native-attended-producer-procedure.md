@@ -163,9 +163,9 @@ table's maximum-exponent lanes sit at the corrected lattice edge. The
 retained record lives in the `steinmarder-r300` bundle
 `results/r3v-native-fp24-bisect-ceiling-rs482/`.
 
-## Executed run
+## Executed reference run
 
-The cell ran on RS482 on 2026-08-14 from main `cb3d078ed41` (IB blake3
+The reference cell ran on RS482 on 2026-08-14 from main `cb3d078ed41` (IB blake3
 `680dfd6f73fe336a87669cfe4da601e0e5f29b25f78b600de64f91f2f35612dc`,
 313 dwords) and returned `CARRIER_DELIVERED`: all three predictions
 held (`expected_pass=1 tail_poison_pass=1 mismatched=0

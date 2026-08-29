@@ -65,6 +65,32 @@ R300_R2VB_PRODUCER_FS_BLOCK = (
     Path(__file__).resolve().parents[1] / "r300_r2vb_producer_fs_block.h"
 )
 
+# Independent carrier oracles for every stream the manifest writer exposes.
+# The binary32 encodings mirror the calibrated tables in
+# `r300_r2vb_producer_pass_test.c` (rg --fixed-strings
+# "sweep_bits" src/amd/r300/common/tests/r300_r2vb_producer_pass_test.c),
+# while the reference positions come from
+# `r300_tcl_bypass_triangle_vertices` in the common emitter.  Keeping these
+# values here prevents a manifest that pairs a stream name with another
+# stream's records from becoming self-consistent by construction.
+EXPECTED_STREAM_RECORD_BITS: dict[str, tuple[tuple[int, ...], ...]] = {
+    "reference": (
+        (0x41000000, 0x41000000, 0x00000000, 0x3F800000),
+        (0x42600000, 0x41000000, 0x00000000, 0x3F800000),
+        (0x42000000, 0x42600000, 0x00000000, 0x3F800000),
+    ),
+    "fp24-sweep": (
+        (0x00000000, 0x21000000, 0x21000080, 0x21800000),
+        (0x3F800000, 0x3F800080, 0x3FFFFF80, 0x40000000),
+        (0x4479C000, 0x5F800000, 0x5FFFFF00, 0x5FFFFF80),
+    ),
+    "fp24-bisect": (
+        (0x4F800000, 0x57800000, 0x5B800000, 0x5C800000),
+        (0x5D000000, 0x5D800000, 0x5E000000, 0x5E800000),
+        (0x5F000000, 0x5F7FFF80, 0x5F800000, 0x5FFFFF80),
+    ),
+}
+
 
 def fail(message: str) -> None:
     print(f"producer manifest check: {message}", file=sys.stderr)
@@ -247,12 +273,23 @@ def remove_us_program(path: Path) -> None:
     write_words(path, words)
 
 
-def validate(outdir: Path, have_b3sum: bool) -> None:
+def validate(
+    outdir: Path, have_b3sum: bool, expected_stream: str = "reference"
+) -> None:
     manifest = read_json(outdir / "manifest.json")
     bo_table = read_json(outdir / "bo_table.json")
     words = read_words(outdir / "ib.bin")
     if not isinstance(manifest, dict) or not isinstance(bo_table, dict):
         raise CheckFailure("manifest and BO table must be JSON objects")
+
+    stream_records = EXPECTED_STREAM_RECORD_BITS.get(expected_stream)
+    if stream_records is None:
+        raise CheckFailure(f"unsupported expected stream: {expected_stream!r}")
+    if manifest.get("stream") != expected_stream:
+        raise CheckFailure(
+            f"manifest stream {manifest.get('stream')!r} != "
+            f"expected {expected_stream!r}"
+        )
 
     if manifest.get("schema") != "r300-r2vb-producer-pass/1":
         raise CheckFailure(f"unexpected schema: {manifest.get('schema')!r}")
@@ -263,8 +300,9 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
             f"ib_dwords {manifest.get('ib_dwords')} != "
             f"ib.bin dword count {len(words)}"
         )
-    if manifest.get("vertex_count") != R300_R2VB_REFERENCE_COUNT:
-        raise CheckFailure("vertex_count does not describe the reference pass")
+    stream_count = len(stream_records)
+    if manifest.get("vertex_count") != stream_count:
+        raise CheckFailure("vertex_count does not describe the selected stream")
     if manifest.get("carrier_pitch_pixels") != R300_R2VB_REFERENCE_PITCH:
         raise CheckFailure("carrier pitch does not describe the reference pass")
     if manifest.get("carrier_height") != R300_R2VB_REFERENCE_HEIGHT:
@@ -279,12 +317,18 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         raise CheckFailure("carrier size does not derive from pitch * height * cpp")
 
     expected = manifest.get("expected_carrier_dwords")
-    if not isinstance(expected, list) or len(expected) != R300_R2VB_REFERENCE_COUNT * 4:
+    if not isinstance(expected, list) or len(expected) != stream_count * 4:
         raise CheckFailure("expected carrier content does not cover the written slots")
     try:
         expected_words = [int(word, 16) for word in expected]
     except (TypeError, ValueError) as error:
         raise CheckFailure(f"expected carrier dword is not hex: {error}") from error
+    stream_expected_words = [word for record in stream_records for word in record]
+    if expected_words != stream_expected_words:
+        raise CheckFailure(
+            f"expected carrier content does not match the {expected_stream} "
+            "stream oracle"
+        )
 
     # The embedded records reach the carrier through the pass, so the
     # expected content is the same little-endian FLOAT_4 bytes the draw
@@ -294,7 +338,7 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         body_index = draw_index + 2
     if body_index is None:
         raise CheckFailure("no immediate draw carries the records")
-    for vertex in range(R300_R2VB_REFERENCE_COUNT):
+    for vertex in range(stream_count):
         slot = words[
             body_index
             + vertex * R300_R2VB_REFERENCE_VTX_DWORDS
@@ -409,8 +453,8 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
         raise CheckFailure("RS_IP_0 does not route the TEX0 varying in order")
     if registers.get(R300_RS_INST_0) != R300_R2VB_REFERENCE_RS_INST_0:
         raise CheckFailure("RS_INST_0 does not write US input register 0")
-    if registers.get(R300_VAP_VF_MAX_VTX_INDX) != R300_R2VB_REFERENCE_COUNT - 1:
-        raise CheckFailure("VAP_VF_MAX_VTX_INDX does not match the reference count")
+    if registers.get(R300_VAP_VF_MAX_VTX_INDX) != stream_count - 1:
+        raise CheckFailure("VAP_VF_MAX_VTX_INDX does not match the stream count")
     if registers.get(R300_VAP_VF_MIN_VTX_INDX) != 0:
         raise CheckFailure(
             "VAP_VF_MIN_VTX_INDX is not the zero lower bound; an "
@@ -419,11 +463,11 @@ def validate(outdir: Path, have_b3sum: bool) -> None:
     if len(draws) != 1:
         raise CheckFailure(f"expected one immediate draw, got {len(draws)}")
     draw_index, raw_draw_count = draws[0]
-    expected_payload = 1 + R300_R2VB_REFERENCE_COUNT * R300_R2VB_REFERENCE_VTX_DWORDS
+    expected_payload = 1 + stream_count * R300_R2VB_REFERENCE_VTX_DWORDS
     if raw_draw_count + 1 != expected_payload:
         raise CheckFailure("immediate draw payload does not match VAP_VTX_SIZE")
     vf_cntl = words[draw_index + 1]
-    expected_vf_cntl = (R300_R2VB_REFERENCE_COUNT << 16) | 0x31
+    expected_vf_cntl = (stream_count << 16) | 0x31
     if vf_cntl != expected_vf_cntl:
         raise CheckFailure(f"unexpected embedded VF control 0x{vf_cntl:08x}")
 
@@ -450,12 +494,35 @@ def clone(good: Path, target: Path) -> None:
         shutil.copy(good / name, target / name)
 
 
-def expect_reject(outdir: Path, have_b3sum: bool, label: str) -> None:
+def expect_reject(
+    outdir: Path,
+    have_b3sum: bool,
+    label: str,
+    expected_stream: str = "reference",
+) -> None:
     try:
-        validate(outdir, have_b3sum)
+        validate(outdir, have_b3sum, expected_stream)
     except CheckFailure:
         return
     fail(f"calibration mutant '{label}' passed validation")
+
+
+def generate_manifest(tool: str, outdir: Path, stream: str) -> dict:
+    outdir.mkdir()
+    command = [tool, str(outdir)]
+    if stream != "reference":
+        command.append(stream)
+    run = subprocess.run(command, capture_output=True, text=True, check=False)
+    if run.returncode != 0:
+        fail(f"{stream} manifest tool exited {run.returncode}: {run.stderr}")
+    manifest = read_json(outdir / "manifest.json")
+    if not isinstance(manifest, dict):
+        fail(f"{stream} manifest is not an object")
+    try:
+        validate(outdir, shutil.which("b3sum") is not None, stream)
+    except CheckFailure as error:
+        fail(f"{stream} manifest is invalid: {error}")
+    return manifest
 
 
 def main() -> int:
@@ -467,20 +534,18 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="r300-r2vb-producer-manifest-") as tmp:
         root = Path(tmp)
         good = root / "good"
-        good.mkdir()
-        run = subprocess.run(
-            [tool, str(good)], capture_output=True, text=True, check=False
-        )
-        if run.returncode != 0:
-            fail(f"manifest tool exited {run.returncode}: {run.stderr}")
-        try:
-            validate(good, have_b3sum)
-        except CheckFailure as error:
-            fail(str(error))
-
-        manifest = read_json(good / "manifest.json")
-        if not isinstance(manifest, dict):
-            fail("manifest is not an object")
+        manifest = generate_manifest(tool, good, "reference")
+        sweep_good = root / "fp24-sweep"
+        sweep_manifest = generate_manifest(tool, sweep_good, "fp24-sweep")
+        if manifest["ib_blake3"] == sweep_manifest["ib_blake3"]:
+            fail("reference and fp24-sweep streams share one digest")
+        if read_words(good / "ib.bin") == read_words(sweep_good / "ib.bin"):
+            fail("reference and fp24-sweep streams share one IB")
+        if (
+            manifest["expected_carrier_dwords"]
+            == sweep_manifest["expected_carrier_dwords"]
+        ):
+            fail("reference and fp24-sweep streams share one carrier oracle")
 
         mutant = root / "truncated-ib"
         clone(good, mutant)
@@ -624,6 +689,28 @@ def main() -> int:
                 "b3sum absent; stale digest recomputation mutant not run",
                 file=sys.stderr,
             )
+
+        mutant = root / "sweep-wrong-stream"
+        clone(sweep_good, mutant)
+        changed = dict(sweep_manifest)
+        changed["stream"] = "reference"
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "sweep-wrong-stream", "fp24-sweep")
+
+        mutant = root / "sweep-reference-oracle"
+        clone(sweep_good, mutant)
+        changed = dict(sweep_manifest)
+        changed["expected_carrier_dwords"] = manifest["expected_carrier_dwords"]
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "sweep-reference-oracle", "fp24-sweep")
+
+        mutant = root / "sweep-stale-digest"
+        clone(sweep_good, mutant)
+        changed = dict(sweep_manifest)
+        digest = sweep_manifest["ib_blake3"]
+        changed["ib_blake3"] = ("0" if digest[0] != "0" else "1") + digest[1:]
+        (mutant / "manifest.json").write_text(json.dumps(changed))
+        expect_reject(mutant, have_b3sum, "sweep-stale-digest", "fp24-sweep")
 
     print("producer manifest artifacts are consistent and reject calibrated mutants")
     return 0
