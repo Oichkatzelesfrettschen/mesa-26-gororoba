@@ -310,6 +310,27 @@ main(int argc, char **argv)
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   /* The queue retains the exact submit object before the ioctl, while the
+    * attended producer runner owns the carrier and verdict files after
+    * readback.  Refuse a reused final name before submission so a stale carrier
+    * or verdict cannot
+    * consume the one-shot hazard authorization and leave a mixed evidence
+    * group when the post-submit writer encounters EEXIST.
+    */
+   static const char *const runner_artifacts[] = {
+      "carrier.bin",
+      "producer_outcome.json",
+   };
+   int freshness = r3v_native_evidence_require_fresh(
+      evidence_dir, runner_artifacts,
+      sizeof(runner_artifacts) / sizeof(runner_artifacts[0]));
+   if (freshness != 0) {
+      fprintf(stderr,
+              "runner evidence destination is not fresh: %s\n",
+              strerror(-freshness));
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+
    /* The hazard: a live DRM_RADEON_CS reaches the command processor here,
     * and the bounded completion wait follows it inside the queue.  The
     * submission is one-shot; whatever it returns, no resubmission follows.

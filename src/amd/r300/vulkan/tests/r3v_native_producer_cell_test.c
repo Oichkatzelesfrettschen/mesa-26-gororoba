@@ -20,11 +20,14 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <radeon_drm.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* The BO handle the fixture binds; installation records the handle and
  * reads no kernel object.
@@ -191,12 +194,51 @@ test_unknown_cell_kind_refuses_arming(void)
           R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND);
 }
 
+static void
+test_runner_artifact_freshness(void)
+{
+   const char *temporary_root = getenv("TMPDIR");
+   if (temporary_root == NULL || temporary_root[0] == '\0')
+      temporary_root = ".";
+   char directory_template[PATH_MAX];
+   int template_length = snprintf(directory_template,
+                                  sizeof(directory_template), "%s/%s",
+                                  temporary_root,
+                                  "r3v-producer-fresh-XXXXXX");
+   assert(template_length > 0 &&
+          (size_t)template_length < sizeof(directory_template));
+   char *directory = mkdtemp(directory_template);
+   assert(directory != NULL);
+   static const char *const names[] = {
+      "carrier.bin",
+      "producer_outcome.json",
+   };
+
+   assert(r3v_native_evidence_require_fresh(
+              directory, names, sizeof(names) / sizeof(names[0])) == 0);
+
+   char stale_path[256];
+   int length = snprintf(stale_path, sizeof(stale_path), "%s/%s", directory,
+                         names[0]);
+   assert(length > 0 && (size_t)length < sizeof(stale_path));
+   FILE *stale = fopen(stale_path, "wb");
+   assert(stale != NULL);
+   assert(fputs("stale carrier\n", stale) >= 0);
+   assert(fclose(stale) == 0);
+   assert(r3v_native_evidence_require_fresh(
+              directory, names, sizeof(names) / sizeof(names[0])) == -EEXIST);
+
+   assert(unlink(stale_path) == 0);
+   assert(rmdir(directory) == 0);
+}
+
 int
 main(void)
 {
    test_installed_stream_is_the_reference_pass();
    test_carrier_oracle_poison_contract();
    test_unknown_cell_kind_refuses_arming();
+   test_runner_artifact_freshness();
    printf("r3v-native-producer-cell: ok\n");
    return 0;
 }

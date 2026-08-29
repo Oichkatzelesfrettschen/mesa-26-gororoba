@@ -3339,6 +3339,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The producer cell's exact-submit replay binds the 64-byte carrier and
+  # four-byte completion BO from submit_manifest.json to the full CS-track
+  # parser, then rejects malformed stream, geometry, and truncation controls.
+  # Runtime-gated on R3V_CS_TRACK_REPLAY_TOOL (skip 77 when unset).
+  test(
+    'r3v-native-producer-submit-object-replay',
+    files('tests/run_producer_submit_object_replay.sh')[0],
+    args : [r3v_native_producer_cell_harness],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # Authority parity: one digest names the direct-write cell across the
   # standalone manifest writer, the arming runner, and the
   # queue-retained IB from both harness legs, and each attended runner
