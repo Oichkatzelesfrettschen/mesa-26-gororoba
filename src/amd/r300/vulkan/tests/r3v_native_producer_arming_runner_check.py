@@ -2,9 +2,10 @@
 #
 # Drives the non-submitting producer-cell arming runner over a fresh
 # evidence directory: requires the refusal a run with no declarations
-# must produce, the cell-identity lines an operator reads to build an
-# authorization, and the wrong-cell refusal when the triangle runner's
-# digest is declared against the producer pass.
+# must produce, a deterministic ARMED collection/reporting path, the
+# cell-identity lines an operator reads to build an authorization, and the
+# wrong-cell refusal when the triangle runner's digest is declared against
+# the producer pass.
 
 import os
 import re
@@ -31,6 +32,8 @@ def main():
         "R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
         "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE",
         "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+        "R3V_NATIVE_RUNNER_PCI_VENDOR",
+        "R3V_NATIVE_RUNNER_PCI_DEVICE",
     ):
         environment.pop(declaration, None)
 
@@ -63,6 +66,44 @@ def main():
         if digest is None:
             print("FAIL: report carries no cell digest", file=sys.stderr)
             return 1
+
+        # The fixture provider exercises the runner's complete collection and
+        # reporting path with exact kernel/module declarations, while the
+        # production runner remains host-backed by default.  The fixture mode
+        # cannot submit because this executable has no submission path.
+        armed = run(runner, evidence_dir, environment, "reference", "--fixture")
+        if armed.returncode != 0 or "verdict: armed" not in armed.stdout:
+            print("FAIL: deterministic ARMED calibration refused",
+                  file=sys.stderr)
+            print(armed.stdout, file=sys.stderr)
+            return 1
+        if "provider=fixture" not in armed.stdout:
+            print("FAIL: ARMED calibration did not use its fixture provider",
+                  file=sys.stderr)
+            return 1
+        if "no submission attempted" not in armed.stdout:
+            print("FAIL: ARMED calibration omits the no-submission statement",
+                  file=sys.stderr)
+            return 1
+
+        # A malformed PCI declaration must fail before the report can claim
+        # a matching identity.  Exercise both trailing data and uint32_t
+        # overflow so prefix parsing cannot authorize a wrapped device.
+        for variable, value in (
+            ("R3V_NATIVE_RUNNER_PCI_DEVICE", "0x5974junk"),
+            ("R3V_NATIVE_RUNNER_PCI_DEVICE", "0x100000000"),
+            ("R3V_NATIVE_RUNNER_PCI_VENDOR", "0x1002junk"),
+        ):
+            environment[variable] = value
+            malformed = run(runner, evidence_dir, environment)
+            if malformed.returncode != 2 or \
+                    "invalid {}".format(variable) not in malformed.stderr:
+                print("FAIL: malformed {} was accepted".format(variable),
+                      file=sys.stderr)
+                print(malformed.stdout, file=sys.stderr)
+                print(malformed.stderr, file=sys.stderr)
+                return 1
+            environment.pop(variable, None)
 
         # The triangle runner's digest names a different stream; declared
         # against the producer pass, the wrong-cell authorization refuses
@@ -103,7 +144,8 @@ def main():
         # A wrong chip refuses even with the bundle declared correctly.
         environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = digest.group(1)
         environment["R3V_NATIVE_RUNNER_PCI_DEVICE"] = "0x5975"
-        wrong_chip = run(runner, evidence_dir, environment)
+        wrong_chip = run(runner, evidence_dir, environment, "reference",
+                         "--fixture")
         if wrong_chip.returncode == 0 or \
                 "not the authorized RS482 identity" not in wrong_chip.stdout:
             print("FAIL: wrong chip did not refuse", file=sys.stderr)
@@ -181,7 +223,7 @@ def main():
             return 1
 
         # No run may claim a submission happened.
-        for result in (undeclared, wrong_cell, stale_run, wrong_chip,
+        for result in (undeclared, armed, wrong_cell, stale_run, wrong_chip,
                        sweep, cross, bisect, bisect_cross):
             if "no submission attempted" not in result.stdout:
                 print("FAIL: report omits the no-submission statement",

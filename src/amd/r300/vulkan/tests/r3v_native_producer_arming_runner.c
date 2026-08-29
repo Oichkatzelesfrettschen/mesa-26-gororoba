@@ -17,16 +17,22 @@
 
 #include "util/mesa-blake3.h"
 
+#include <ctype.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* Builds the reference producer pass and returns its IB digest, the
  * content an authorization declares through
  * R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The reference emission is the same
  * construction r3v_native_producer_cell_install records and the queue
- * recomputes, so the armed digest names the submitted bytes.
+ * recomputes, so the armed digest names the submitted bytes.  The recorder
+ * and queue call sites are reproducible with
+ * (rg --fixed-strings "r3v_native_producer_cell_install"
+ * src/amd/r300/vulkan/).
  */
 static int
 cell_digest(const struct r300_r2vb_producer_stream_ops *stream,
@@ -41,6 +47,116 @@ cell_digest(const struct r300_r2vb_producer_stream_ops *stream,
    *ib_dwords = cell.ib_size_dwords;
    r300_r2vb_producer_pass_release(&cell);
    return 0;
+}
+
+/* PCI identity overrides are operator declarations, not convenience
+ * formatting.  Parse the complete token into an unnarrowed type before the
+ * uint32_t assignment so trailing bytes, signs, whitespace, and overflow
+ * remain refusals instead of changing the identity that reaches the gate.
+ */
+static bool
+parse_pci_id(const char *text, uint32_t *value)
+{
+   if (text == NULL || text[0] == '\0' || text[0] == '+' ||
+       text[0] == '-' || isspace((unsigned char)text[0]))
+      return false;
+
+   errno = 0;
+   char *end = NULL;
+   const unsigned long parsed = strtoul(text, &end, 0);
+   if (errno == ERANGE || end == text || *end != '\0' ||
+       parsed > UINT32_MAX)
+      return false;
+
+   *value = (uint32_t)parsed;
+   return true;
+}
+
+struct fixture_provider {
+   const char *evidence_dir;
+   const char *digest;
+};
+
+static const char *
+fixture_read_env(void *ctx, const char *name)
+{
+   const struct fixture_provider *fixture = ctx;
+   if (strcmp(name, "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED") == 0)
+      return "1";
+   if (strcmp(name, "R3V_NATIVE_AUTHORIZED_IB_BLAKE3") == 0)
+      return fixture->digest;
+   if (strcmp(name, "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE") == 0)
+      return "r3v-producer-arming-fixture-kernel";
+   if (strcmp(name, "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION") == 0)
+      return "R3V_PRODUCER_ARMING_FIXTURE_MODULE";
+   return NULL;
+}
+
+static void
+fixture_read_kernel_release(void *ctx, char *out, size_t size)
+{
+   (void)ctx;
+   snprintf(out, size, "%s", "r3v-producer-arming-fixture-kernel");
+}
+
+static void
+fixture_read_module_srcversion(void *ctx, char *out, size_t size)
+{
+   (void)ctx;
+   snprintf(out, size, "%s", "R3V_PRODUCER_ARMING_FIXTURE_MODULE");
+}
+
+static bool
+fixture_directory_present(void *ctx, const char *path)
+{
+   const struct fixture_provider *fixture = ctx;
+   struct stat status;
+   return strcmp(path, fixture->evidence_dir) == 0 &&
+          stat(path, &status) == 0 && S_ISDIR(status.st_mode);
+}
+
+static bool
+fixture_file_present(void *ctx, const char *path)
+{
+   const struct fixture_provider *fixture = ctx;
+   char token_path[R3V_NATIVE_ARMING_PATH_MAX];
+   const int length = snprintf(token_path, sizeof(token_path), "%s/%s",
+                               fixture->evidence_dir, "attempt.token");
+   struct stat status;
+   return length >= 0 && (size_t)length < sizeof(token_path) &&
+          strcmp(path, token_path) == 0 && stat(path, &status) == 0;
+}
+
+static void
+collect_facts(const char *evidence_dir, const char *digest, bool fixture,
+              uint32_t vendor_id, uint32_t device_id,
+              struct r3v_native_arming_facts *facts, char *kernel,
+              size_t kernel_size, char *module, size_t module_size)
+{
+   if (!fixture) {
+      r3v_native_arming_collect(facts, vendor_id, device_id,
+                                R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, digest,
+                                evidence_dir, kernel, kernel_size, module,
+                                module_size);
+      return;
+   }
+
+   struct fixture_provider fixture_provider = {
+      .evidence_dir = evidence_dir,
+      .digest = digest,
+   };
+   const struct r3v_native_arming_provider provider = {
+      .read_env = fixture_read_env,
+      .read_kernel_release = fixture_read_kernel_release,
+      .read_module_srcversion = fixture_read_module_srcversion,
+      .directory_present = fixture_directory_present,
+      .file_present = fixture_file_present,
+      .ctx = &fixture_provider,
+   };
+   r3v_native_arming_collect_from(
+      &provider, facts, vendor_id, device_id,
+      R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, digest, evidence_dir, kernel,
+      kernel_size, module, module_size);
 }
 
 static void
@@ -64,13 +180,30 @@ main(int argc, char **argv)
     * selector mirrors the attended runner's: the sweep stream carries
     * its own digest under the same cell kind and geometry.
     */
-   if (argc != 2 && argc != 3) {
-      fprintf(stderr, "usage: %s <evidence-directory> [stream]\n", argv[0]);
+   if (argc != 2 && argc != 3 && argc != 4) {
+      fprintf(stderr,
+              "usage: %s <evidence-directory> [stream] [--fixture]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+   bool fixture = false;
+   const char *stream_name = "reference";
+   if (argc == 3) {
+      if (strcmp(argv[2], "--fixture") == 0)
+         fixture = true;
+      else
+         stream_name = argv[2];
+   } else if (argc == 4) {
+      if (strcmp(argv[3], "--fixture") != 0) {
+         fprintf(stderr, "unknown runner option %s\n", argv[3]);
+         return 2;
+      }
+      stream_name = argv[2];
+      fixture = true;
+   }
    const struct r300_r2vb_producer_stream_ops *stream =
-      r300_r2vb_producer_stream_find(argc == 3 ? argv[2] : "reference");
+      r300_r2vb_producer_stream_find(stream_name);
    if (stream == NULL) {
       fprintf(stderr, "unknown stream selector %s\n", argv[2]);
       return 2;
@@ -88,24 +221,27 @@ main(int argc, char **argv)
     */
    const char *vendor_env = getenv("R3V_NATIVE_RUNNER_PCI_VENDOR");
    const char *device_env = getenv("R3V_NATIVE_RUNNER_PCI_DEVICE");
-   uint32_t vendor_id = vendor_env != NULL
-                           ? (uint32_t)strtoul(vendor_env, NULL, 0)
-                           : R3V_NATIVE_ARMING_PCI_VENDOR;
-   uint32_t device_id = device_env != NULL
-                           ? (uint32_t)strtoul(device_env, NULL, 0)
-                           : R3V_NATIVE_ARMING_PCI_DEVICE;
+   uint32_t vendor_id = R3V_NATIVE_ARMING_PCI_VENDOR;
+   uint32_t device_id = R3V_NATIVE_ARMING_PCI_DEVICE;
+   if (vendor_env != NULL && !parse_pci_id(vendor_env, &vendor_id)) {
+      fprintf(stderr, "invalid R3V_NATIVE_RUNNER_PCI_VENDOR override\n");
+      return 2;
+   }
+   if (device_env != NULL && !parse_pci_id(device_env, &device_id)) {
+      fprintf(stderr, "invalid R3V_NATIVE_RUNNER_PCI_DEVICE override\n");
+      return 2;
+   }
 
    char kernel[128];
    char module[128];
    struct r3v_native_arming_facts facts;
-   r3v_native_arming_collect(&facts, vendor_id, device_id,
-                             R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, digest,
-                             evidence_dir, kernel, sizeof(kernel), module,
-                             sizeof(module));
+   collect_facts(evidence_dir, digest, fixture, vendor_id, device_id, &facts,
+                 kernel, sizeof(kernel), module, sizeof(module));
 
    printf("r3v native r2vb-producer arming report\n");
    printf("cell_kind=r2vb-producer\n");
    printf("stream=%s\n", stream->name);
+   printf("provider=%s\n", fixture ? "fixture" : "host");
    printf("ib_dwords=%u\n", ib_dwords);
    printf("ib_blake3=%s\n", digest);
    printf("  %-22s declared=%-34s observed=%-34s %s\n", "hazard gate",
