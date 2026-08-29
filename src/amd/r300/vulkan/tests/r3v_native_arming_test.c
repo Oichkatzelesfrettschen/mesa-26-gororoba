@@ -193,8 +193,15 @@ test_disarm_is_one_shot(void)
       temp_root = ".";
 
    char dir[R3V_NATIVE_ARMING_PATH_MAX];
+   char token_path[R3V_NATIVE_ARMING_PATH_MAX];
    assert(join_path(dir, sizeof(dir), temp_root, "/r3v-arming-XXXXXX"));
+   /* Reserve the token suffix before mkdtemp creates a directory. */
+   assert(join_path(token_path, sizeof(token_path), dir,
+                    "/attempt.token"));
    assert(mkdtemp(dir) != NULL);
+   /* mkdtemp replaces the template markers, so rebuild the child name. */
+   assert(join_path(token_path, sizeof(token_path), dir,
+                    "/attempt.token"));
 
    char kernel[128];
    char module[128];
@@ -217,9 +224,6 @@ test_disarm_is_one_shot(void)
     * armed and when.
     */
    {
-      char token_path[R3V_NATIVE_ARMING_PATH_MAX];
-      assert(join_path(token_path, sizeof(token_path), dir,
-                       "/attempt.token"));
       FILE *token_file = fopen(token_path, "r");
       assert(token_file != NULL);
       char contents[512] = "";
@@ -241,9 +245,7 @@ test_disarm_is_one_shot(void)
    assert(r3v_native_arming_disarm(NULL, "x") != 0);
    assert(r3v_native_arming_disarm("", "x") != 0);
 
-   char token[R3V_NATIVE_ARMING_PATH_MAX];
-   assert(join_path(token, sizeof(token), dir, "/attempt.token"));
-   remove(token);
+   remove(token_path);
    rmdir(dir);
 
    /* A directory that no longer exists refuses on the evidence factor. */
