@@ -214,8 +214,8 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
    out->frame_num = vl_h264_u(reader, sps->log2_max_frame_num_minus4 + 4);
 
    /* Frame-raster reconstruction cannot represent field macroblock addresses.
-    * Consume the field pair before refusing the slice so a malformed or
-    * truncated field header remains bounded by the bitstream reader. */
+    * Consume bottom_field_flag for field pictures, then reject MBAFF frames
+    * before any syntax consumer can interpret field macroblock state. */
    unsigned field_pic_flag = 0;
    if (!sps->frame_mbs_only_flag) {
       field_pic_flag = vl_h264_u(reader, 1);
@@ -223,6 +223,8 @@ vl_h264_parse_slice_header(struct vl_h264_reader *reader,
          (void) vl_h264_u(reader, 1);   /* bottom_field_flag */
          return false;
       }
+      if (sps->mb_adaptive_frame_field_flag)
+         return false;
    }
 
    if (out->idr)
