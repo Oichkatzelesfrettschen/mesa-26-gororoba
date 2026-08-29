@@ -320,7 +320,7 @@ split(char *line, char **cols, unsigned max)
       *tab = '\0';
       p = tab + 1;
    }
-   return strchr(p, '\t') == NULL && *p == '\0' ? n : max + 1;
+   return max + 1;
 }
 
 static bool

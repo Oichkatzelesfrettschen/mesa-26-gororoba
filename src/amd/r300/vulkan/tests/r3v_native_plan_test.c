@@ -248,7 +248,7 @@ test_parse_refusals(void)
                 "source_clean\t1\nsource_sha\t" H40 "\n", true,
                 R3V_NATIVE_PLAN_PARSE_NONCANONICAL);
    expect_parse("\t96\tr\n", "\t96\tr\t\n", true,
-                R3V_NATIVE_PLAN_PARSE_NONCANONICAL);
+                R3V_NATIVE_PLAN_PARSE_MALFORMED_LINE);
    expect_parse("\ttarget\t4\t4\t", "\ttarget\t0x4\t4\t", true,
                 R3V_NATIVE_PLAN_PARSE_BAD_VALUE);
    expect_parse("\ttarget\t4\t4\t", "\ttarget\t04\t4\t", true,
