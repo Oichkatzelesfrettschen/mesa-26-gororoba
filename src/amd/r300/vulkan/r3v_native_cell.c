@@ -1364,6 +1364,15 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       } else if (result == VK_SUCCESS &&
                  route_decision.position_space ==
                     R300_CARRIER_POSITION_CLIP) {
+         /* The semantic vertex job writes computed gl_Position values into
+          * the staged records.  The clip-space delivery route clips those
+          * homogeneous positions against Vulkan's six view-volume planes,
+          * performs perspective division and viewport projection, and
+          * publishes window x/y, normalized z, and a finite reciprocal
+          * clip-W in the R300 pre-transformed position.  The window-space
+          * route consumes producer-transformed records without another
+          * viewport transform.
+          */
          const int clipped = expand_clip_space_triangles(
             staged, source_triangle_count, record_dwords, draw->target_width,
             draw->target_height, draw->cull_mode, draw->front_face,

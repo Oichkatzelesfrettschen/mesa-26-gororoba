@@ -16,7 +16,8 @@
 
 /* The NIR and SPIR-V ingestion options every job-front-end consumer
  * uses, so the driver and the calibration tests prepare shaders through
- * one path.
+ * one path.  Verify the all-consumer scope with
+ * (rg --fixed-strings r300_vertex_job_nir_options src/).
  */
 const nir_shader_compiler_options *r300_vertex_job_nir_options(void);
 const struct spirv_to_nir_options *r300_vertex_job_spirv_options(void);
