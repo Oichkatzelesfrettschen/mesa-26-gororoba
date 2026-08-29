@@ -109,10 +109,25 @@ W_SELECT target; that isolates TC1, the widened record, the second
 interpolator, and the US program from clipping.
 
 Rung B, partial clipping: the reciprocal carrier serves the partial clip
-class the direct W_SELECT route refuses. Generated carrier vertices stay
-finite, each generated (a w, w) pair reconstructs the framebuffer-linear
-edge value, the safe-interior affine census is complete with zero
-perspective matches, and fan size and carrier writes stay bounded.
+class the direct W_SELECT route refuses. R3V packs ahead of the clipper,
+and the clipper blends the premultiplied payload and the carrier lane with
+one clip-space edge parameter t, so a generated vertex's payload / carrier
+is `((1 - t) w_a a + t w_b b) / ((1 - t) w_a + t w_b)`, the value the
+Vulkan specification assigns a clipped NoPerspective output (Clipping
+Shader Outputs: t' = t w_b / ((1 - t) w_a + t w_b)). A clipped carrier
+vertex is a convex combination of source records, so its carrier lane
+stays inside (0, 1] and its payload inside the envelope;
+`r300_noperspective_reciprocal_validate_expanded` asserts that over the
+published fan and skips the clipper's padding records. The host proof is
+the public-surface harness's unequal-w one-plane triangle (w 1 past
+x = -w, w 2 inside; both crossings at t = 1/2 exactly): the fan of two
+triangles carries three source and three generated records, carrier lane
+3/4 at each generated vertex, and the FP24 recovery model lands within one
+UNORM8 quantum of the clipped-edge value. The PM4 stream is byte-identical
+to rung A's cell, so the kernel replay of rung A stands for rung B; the
+silicon receipt needs its own attended probe geometry (a partially clipped
+unequal-w triangle with a census over safe-interior pixels away from the
+clip edge and the fan diagonal) and stays open.
 
 Rung C, q-lane carrier: vec1 through vec3 place normalized w in the unused
 q lane, `rcp(input0.w)` then `input0.xyz * reciprocal`, keeping the

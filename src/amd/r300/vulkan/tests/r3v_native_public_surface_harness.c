@@ -4184,8 +4184,9 @@ main(void)
           * interface selects the carrier route, records the TC1 carrier
           * cell byte for byte, executes the ACCEPT triangle into a
           * twelve-dword record stream whose carrier lane is the
-          * normalized w with the payload premultiplied, and refuses the
-          * partially clipped triangle ahead of publication. */
+          * normalized w with the payload premultiplied, and clips the
+          * partially clipped triangle into a validated fan whose
+          * generated vertices carry the clipped NoPerspective value. */
          setenv("R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE", "1", 1);
          r3v_native_device_refresh_delivery_gates(native_device);
          VkPipeline carrier_pipeline = VK_NULL_HANDLE;
@@ -4225,8 +4226,126 @@ main(void)
             r300_tcl_bypass_triangle_release(&expected_cell);
          }
          assert(r3v_native_cmd_buffer_execute_deferred_draws(
-                   native_device, native_carrier_partial) ==
-                VK_ERROR_INITIALIZATION_FAILED);
+                   native_device, native_carrier_partial) == VK_SUCCESS);
+         {
+            /* varying_crossing's clip w is 1 at every vertex, so the
+             * fan of two triangles carries carrier lanes at 1. */
+            void *carrier_map = NULL;
+            assert(radeon_drm_vk_bo_map(
+                      &native_device->drm,
+                      &native_carrier_partial->owned_carriers[0]->bo,
+                      &carrier_map) == 0);
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            assert(r300_noperspective_reciprocal_validate_expanded(
+                      &plan, carrier_map,
+                      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u) ==
+                   6);
+            radeon_drm_vk_bo_unmap(
+               &native_device->drm,
+               &native_carrier_partial->owned_carriers[0]->bo, carrier_map);
+         }
+
+         /* One plane, unequal w: vertex 0 lies past x = -w with w 1,
+          * vertices 1 and 2 inside with w 2.  Both crossing edges meet
+          * the plane at t = 1/2 exactly, so the polygon is a quad (two
+          * fan triangles) and each generated vertex's payload / carrier
+          * is the Vulkan clipped NoPerspective value
+          * (a_0 * w_0 + a_1 * w_1) / (w_0 + w_1) with the carrier lane
+          * (w_0 + w_1) / (2 * max w) = 3/4. */
+         static const float unequal_w_crossing[12] = {
+            -3.0f,  0.0f, 0.5f, 1.0f,
+             0.0f, -1.0f, 1.0f, 2.0f,
+             0.0f,  1.0f, 1.0f, 2.0f,
+         };
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, unequal_w_crossing, sizeof(unequal_w_crossing));
+         vkUnmapMemory(device, vertex_memory);
+         VkCommandBuffer carrier_unequal_cmd = record_triangle_draw(
+            &begin_pass, carrier_pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_carrier_unequal,
+                        carrier_unequal_cmd);
+         assert(native_carrier_unequal->ib_size_dwords ==
+                   native_carrier_partial->ib_size_dwords &&
+                memcmp(native_carrier_unequal->ib,
+                       native_carrier_partial->ib,
+                       native_carrier_partial->ib_size_dwords * 4u) == 0);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_carrier_unequal) == VK_SUCCESS);
+         {
+            void *carrier_map = NULL;
+            assert(radeon_drm_vk_bo_map(
+                      &native_device->drm,
+                      &native_carrier_unequal->owned_carriers[0]->bo,
+                      &carrier_map) == 0);
+            const float *records = carrier_map;
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            assert(r300_noperspective_reciprocal_validate_expanded(
+                      &plan, records,
+                      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u) ==
+                   6);
+            /* The smooth reference vertex module writes the varying
+             * fma(position, (0.5, 0.5, 0, 0), (0.5, 0.5, 0.25, 1)) from
+             * the clip-space input. */
+            float varying[3][4];
+            for (unsigned v = 0; v < 3; v++) {
+               varying[v][0] = unequal_w_crossing[v * 4] * 0.5f + 0.5f;
+               varying[v][1] = unequal_w_crossing[v * 4 + 1] * 0.5f + 0.5f;
+               varying[v][2] = 0.25f;
+               varying[v][3] = 1.0f;
+            }
+            unsigned source_records = 0, generated_records = 0;
+            for (unsigned r = 0; r < 6; r++) {
+               const float *record =
+                  &records[r * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+               const float c = record[8];
+               assert(record[9] == 0.0f && record[10] == 0.0f &&
+                      record[11] == 1.0f);
+               if (c == 1.0f) {
+                  /* A source vertex with w 2: payload is the varying. */
+                  source_records++;
+                  bool matched = false;
+                  for (unsigned v = 1; v < 3 && !matched; v++) {
+                     matched = true;
+                     for (unsigned k = 0; k < 4; k++)
+                        matched &= fabsf(record[4 + k] - varying[v][k]) <=
+                                   1e-6f;
+                  }
+                  assert(matched);
+                  continue;
+               }
+               assert(c == 0.75f);
+               generated_records++;
+               /* The generated vertex sits on x = -w between vertex 0
+                * and vertex 1 or 2, window x 0 after projection; its
+                * recovered payload is the clipped-edge value. */
+               assert(record[0] == 0.0f);
+               bool matched = false;
+               for (unsigned v = 1; v < 3 && !matched; v++) {
+                  matched = true;
+                  for (unsigned k = 0; k < 4; k++) {
+                     const double expected =
+                        r300_noperspective_reciprocal_clipped_edge_value(
+                           varying[0][k], unequal_w_crossing[3], varying[v][k],
+                           unequal_w_crossing[v * 4 + 3], 0.5);
+                     matched &= fabs(record[4 + k] / c - expected) <= 1e-6;
+                     matched &= fabsf(r300_noperspective_reciprocal_recover(
+                                         record[4 + k], c) -
+                                      (float)expected) <= 1.0f / 255.0f;
+                  }
+               }
+               assert(matched);
+            }
+            /* The clipper walks edges 0-1, 1-2, 2-0 against x = -w:
+             * polygon (I01, v1, v2, I20), fan (I01, v1, v2) and
+             * (I01, v2, I20) -- three source, three generated records. */
+            assert(source_records == 3 && generated_records == 3);
+            radeon_drm_vk_bo_unmap(
+               &native_device->drm,
+               &native_carrier_unequal->owned_carriers[0]->bo, carrier_map);
+         }
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                             &map) == VK_SUCCESS);
          memcpy(map, ndc_triangle, sizeof(ndc_triangle));

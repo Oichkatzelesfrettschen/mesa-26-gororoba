@@ -1428,34 +1428,23 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                }
             }
             /* The reciprocal carrier route packs each triangle into
-             * the TC1 shape in place; the forced-carrier rung admits
-             * the clipping class ACCEPT alone, so the recorded target
-             * judges TC1, the widened record, the second interpolator,
-             * and the US program apart from clipping. */
+             * the TC1 shape in place ahead of the clipper.  The clipper
+             * interpolates the premultiplied payload and the carrier
+             * lane with one clip-space edge parameter, so a generated
+             * vertex's payload / carrier is the value Vulkan assigns a
+             * clipped NoPerspective output (Clipping Shader Outputs),
+             * and every clipping class is admitted; the expanded stream
+             * is validated below ahead of publication. */
             if (gathered == 0 && result == VK_SUCCESS &&
                 draw->post_vs.reciprocal_carrier) {
-               for (uint32_t t = 0; t < source_triangle_count; t++) {
-                  if (r3v_interpolation_clip_class_of_triangle(
-                         &staged[(size_t)t * 3u * record_dwords],
-                         record_dwords) != R3V_INTERPOLATION_CLIP_ACCEPT) {
-                     result = vk_errorf(
-                        device, VK_ERROR_INITIALIZATION_FAILED,
-                        "r3v-native: the reciprocal carrier NoPerspective "
-                        "route admits the clipping class ACCEPT alone; "
-                        "source triangle %u is partially clipped", t);
-                     break;
-                  }
-               }
-               if (result == VK_SUCCESS) {
-                  const int packed = r3v_post_vs_pack_noperspective_carrier(
-                     &draw->post_vs, staged, source_triangle_count,
-                     record_dwords, staged);
-                  if (packed != 0) {
-                     result = vk_errorf(
-                        device, VK_ERROR_INITIALIZATION_FAILED,
-                        "r3v-native: reciprocal carrier packing refused "
-                        "(%d): %s", packed, strerror(-packed));
-                  }
+               const int packed = r3v_post_vs_pack_noperspective_carrier(
+                  &draw->post_vs, staged, source_triangle_count,
+                  record_dwords, staged);
+               if (packed != 0) {
+                  result = vk_errorf(
+                     device, VK_ERROR_INITIALIZATION_FAILED,
+                     "r3v-native: reciprocal carrier packing refused "
+                     "(%d): %s", packed, strerror(-packed));
                }
             }
          }
@@ -1486,11 +1475,30 @@ execute_one_deferred_draw(struct r3v_native_device *device,
             draw->target_width,
             draw->target_height, draw->cull_mode, draw->front_face,
             draw->sample_mask_zero, expanded, expanded_dwords);
+         int expanded_carrier = 0;
+         if (clipped == 0 && draw->post_vs.reciprocal_carrier) {
+            /* A clipped carrier vertex is a convex combination of
+             * source records, so its carrier lane stays inside (0, 1]
+             * and its payload inside the envelope; the validator is
+             * the evidence assertion behind that bound, and a padding
+             * record the clipper wrote for an absent fan triangle is
+             * skipped. */
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            expanded_carrier = r300_noperspective_reciprocal_validate_expanded(
+               &plan, (const float *)expanded,
+               expanded_dwords / published_record_dwords);
+         }
          if (clipped != 0) {
             result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                                "r3v-native: homogeneous triangle clipping "
                                "refused (%d): %s",
                                clipped, strerror(-clipped));
+         } else if (expanded_carrier < 0) {
+            result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                               "r3v-native: the clipped reciprocal carrier "
+                               "stream refused (%d): %s",
+                               expanded_carrier, strerror(-expanded_carrier));
          } else {
             memcpy(carrier->map, expanded,
                    (size_t)expanded_dwords * sizeof(uint32_t));
