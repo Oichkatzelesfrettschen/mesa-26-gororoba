@@ -159,6 +159,56 @@ test_compose_rejections(void)
                            &comp) == -ENOSPC);
    assert(b.count == 0 && ib[0] == 0);
 
+   /* Duplicate descriptors for one fragment payload refuse before copying. */
+   static const struct r300_pm4_reloc_site duplicate_sites[] = {
+      {.dword_index = 3,
+       .role = R300_R2VB_BO_CARRIER,
+       .write_domain = 2},
+      {.dword_index = 3,
+       .role = R300_R2VB_BO_COLOR,
+       .read_domains = 2},
+   };
+   const struct r300_pm4_fragment duplicate_fragment = {
+      .dwords = frag_a_words,
+      .dword_count = 4,
+      .relocs = duplicate_sites,
+      .reloc_count = 2,
+   };
+   memset(ib, 0, sizeof(ib));
+   r300_pm4_builder_init(&b, ib, 4);
+   assert(r300_pm4_compose(&b, &duplicate_fragment, 1, &reference_roles,
+                           &comp) == -EEXIST);
+   assert(b.count == 0 && ib[0] == 0);
+
+   /* Writer ownership follows the resolved chunk, not the symbolic role. */
+   struct r300_pm4_role_map aliased_roles = reference_roles;
+   aliased_roles.chunk_index[R300_R2VB_BO_COLOR] =
+      aliased_roles.chunk_index[R300_R2VB_BO_CARRIER];
+   memset(ib, 0, sizeof(ib));
+   r300_pm4_builder_init(&b, ib, 9);
+   assert(r300_pm4_compose(&b, reference_fragments, 2, &aliased_roles,
+                           &comp) == -EEXIST);
+   assert(b.count == 0 && ib[0] == 0);
+
+   /* The largest representable four-dword payload index is accepted. */
+   struct r300_pm4_role_map boundary_roles = reference_roles;
+   boundary_roles.chunk_index[R300_R2VB_BO_CARRIER] =
+      (int32_t)(UINT32_MAX / 4u);
+   memset(ib, 0, sizeof(ib));
+   r300_pm4_builder_init(&b, ib, 4);
+   assert(r300_pm4_compose(&b, &reference_fragments[0], 1,
+                           &boundary_roles, &comp) == 0);
+   assert(ib[3] == UINT32_MAX - 3u);
+
+   /* The next chunk index refuses before the builder receives any dword. */
+   boundary_roles.chunk_index[R300_R2VB_BO_CARRIER] =
+      (int32_t)(UINT32_MAX / 4u + 1u);
+   memset(ib, 0, sizeof(ib));
+   r300_pm4_builder_init(&b, ib, 4);
+   assert(r300_pm4_compose(&b, &reference_fragments[0], 1,
+                           &boundary_roles, &comp) == -EOVERFLOW);
+   assert(b.count == 0 && ib[0] == 0);
+
    /* Zero fragments and a null list refuse. */
    r300_pm4_builder_init(&b, ib, 8);
    assert(r300_pm4_compose(&b, reference_fragments, 0, &reference_roles,
@@ -172,7 +222,7 @@ main(void)
 {
    test_compose_rebases_and_rewrites();
    test_compose_rejections();
-   printf("r300_pm4_compose_test: rebase, rewrite, and rejection controls "
+   printf("r300_pm4_compose_test: ownership, overflow, and rejection controls "
           "held\n");
    return 0;
 }

@@ -15,8 +15,8 @@
 /* One relocation site inside a fragment: the dword index of the payload
  * behind a NOP header, the symbolic BO role it resolves through, and
  * the DRM read/write domains the submission's BO table needs for the
- * use.  Two roles resolving to the same BO stay separate uses: use-site
- * identity is what the kernel validates and the evidence retains.
+ * use.  Read-only roles may resolve to the same BO; writer roles are checked
+ * by their resolved relocation-chunk index so one destination has one owner.
  */
 struct r300_pm4_reloc_site {
    uint32_t dword_index;
@@ -32,9 +32,12 @@ struct r300_pm4_fragment {
    uint32_t reloc_count;
 };
 
-/* The caller's role map: for each role, the relocation-chunk index the
- * kernel resolves the NOP payload against, or -1 for a role this
- * composition does not bind.
+/* The caller's role map: for each role, the relocation-chunk index the Linux
+ * radeon_cs_packet_next_reloc() parser resolves from the NOP payload, or -1
+ * for a role the composition does not bind.  Symbol discovery uses
+ * (rg --fixed-strings radeon_cs_packet_next_reloc drivers/gpu/drm/radeon/)
+ * in the Linux kernel source tree; the parser requires an aligned four-dword
+ * relocation record.
  */
 struct r300_pm4_role_map {
    int32_t chunk_index[4];
@@ -67,10 +70,11 @@ struct r300_pm4_composition {
  * Rejects, before writing any dword: a null or empty fragment list,
  * more fragments than fragment_start holds, a dword-count sum that
  * overflows, a relocation index outside its fragment or not preceded by
- * the NOP header, a role the map leaves unbound, more sites than the
- * composition holds, and two sites writing the same role (a duplicate
- * write target reads as two owners of one destination).  Returns 0 or a
- * negative errno.
+ * the NOP header, duplicate relocation descriptors within one fragment, a
+ * role the map leaves unbound, a chunk index whose four-dword payload would
+ * overflow, more sites than the composition holds, and two writer sites
+ * resolving to one chunk (a duplicate write target reads as two owners of
+ * one destination).  Returns 0 or a negative errno.
  */
 int r300_pm4_compose(struct r300_pm4_builder *b,
                      const struct r300_pm4_fragment *fragments,
