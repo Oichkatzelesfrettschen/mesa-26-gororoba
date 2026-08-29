@@ -24,8 +24,10 @@
 #include "vk_log.h"
 #include "vk_util.h"
 
-/* PIPE_FORMAT_* values come from util/format/u_formats.h through
- * idep_mesautil; the ICD compiles with no Gallium include root. */
+/* PIPE_FORMAT_* provenance is canonical in r3v_format.h; the native ICD
+ * compiles the util/format/u_formats.h include graph through idep_mesautil
+ * without a Gallium include root.  Revalidate the origin with
+ * (rg --fixed-strings PIPE_FORMAT_ src/). */
 
 #include <fcntl.h>
 #include <stdbool.h>

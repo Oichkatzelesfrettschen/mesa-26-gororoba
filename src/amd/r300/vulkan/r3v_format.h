@@ -14,6 +14,11 @@
 extern "C" {
 #endif
 
+/* PIPE_FORMAT_* provenance is src/util/format/u_formats.h, reached through
+ * util/format/u_format.h; idep_mesautil in vulkan/meson.build supplies that
+ * include graph to r3v_native_deps.  Revalidate the symbol origin with
+ * (rg --fixed-strings PIPE_FORMAT_ src/). */
+
 /* The single VkFormat -> pipe_format authority for r3v.
  *
  * util's vk_format_to_pipe_format maps the two packed depth-stencil VkFormats
