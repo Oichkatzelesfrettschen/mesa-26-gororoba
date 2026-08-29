@@ -190,6 +190,23 @@ main(int argc, char **argv)
    CHECK(!vl_h264_overrun(&reader));
    vl_h264_reader_fini(&reader);
 
+   /* A frame picture with mb_adaptive_frame_field_flag set is an MBAFF
+    * picture.  Its macroblock pairs carry mb_field_decoding_flag, but the
+    * frame-raster decoder has no MBAFF neighbor topology or syntax consumer;
+    * consume field_pic_flag and refuse the picture before macroblock state. */
+   static const uint8_t mbaff_frame_slice[] = { 0xb8, 0x00 };
+   fill_fixture_sps_pps(&sps, &pps);
+   pps.deblocking_filter_control_present_flag = 0;
+   sps.frame_mbs_only_flag = 0;
+   sps.mb_adaptive_frame_field_flag = 1;
+   pic.pps = &pps;
+   CHECK(vl_h264_reader_init(&reader, mbaff_frame_slice,
+                             sizeof(mbaff_frame_slice)));
+   CHECK(!vl_h264_parse_slice_header(&reader, &pic, 0, 1, &sh));
+   CHECK(vl_h264_bits_consumed(&reader) == 10);
+   CHECK(!vl_h264_overrun(&reader));
+   vl_h264_reader_fini(&reader);
+
    /* The P-slice bits are 1|1|1|0000|0|1|00100|1|1, where the fields are
     * first_mb_in_slice, slice_type, pps_id, frame_num, override flag,
     * ref_pic_list_modification_flag_l0, idc=3, slice_qp_delta, and the

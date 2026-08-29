@@ -15,6 +15,10 @@ import subprocess
 import sys
 
 
+class ExtractionError(ValueError):
+    """The specification text does not contain a complete VLC domain."""
+
+
 def pdf_lines(path):
     text = subprocess.run(
         ["pdftotext", "-layout", path, "-"],
@@ -34,17 +38,35 @@ def bits_to_entry(bitstr, value):
     return int(bitstr, 2), len(bitstr), value
 
 
-def section(lines, start_marker, stop_markers):
-    """Return the last table section between the named markers."""
-    start_index = None
-    for index, line in enumerate(lines):
-        if start_marker in line:
-            start_index = index
-    if start_index is None:
-        return []
+def is_table_caption(line, start_marker):
+    """Identify a table caption while ignoring contents and TOC references."""
+    caption = line.lstrip("\f ")
+    if not caption.startswith(start_marker):
+        return False
+    remainder = caption[len(start_marker) :]
+    if re.search(r"\.{4,}", remainder):
+        return False
+    return any(marker in remainder for marker in ("-", "–", "—")) or (
+        "continued" in remainder.lower()
+    )
 
+
+def section(lines, start_marker, stop_markers):
+    """Return every page of the table between its caption and section end.
+
+    A PDF can repeat a table caption on continuation pages.  Caption
+    detection skips the table of contents and prose references, then keeps
+    collecting across each continuation until the syntax section that follows
+    the complete table.
+    """
+    collecting = False
     out = []
-    for line in lines[start_index + 1 :]:
+    for line in lines:
+        if is_table_caption(line, start_marker):
+            collecting = True
+            continue
+        if not collecting:
+            continue
         if any(stop in line for stop in stop_markers):
             break
         out.append(line)
@@ -119,6 +141,60 @@ def parse_run_before(lines):
     return tables
 
 
+def validate_table_cardinalities(
+    coeff, total_zeros_1_7, total_zeros_8_15, total_zeros_chroma, run_before
+):
+    """Reject a partial table before emitting a silently incomplete header."""
+    expected_coeff = {"nc0": 62, "nc2": 62, "nc4": 62, "chroma": 14}
+    for context, expected in expected_coeff.items():
+        actual = len(coeff.get(context, ()))
+        if actual != expected:
+            raise ExtractionError(
+                f"coeff_token {context} has {actual} rows; expected {expected}"
+            )
+
+    for total_coeff in range(1, 8):
+        expected = 17 - total_coeff
+        actual = len(total_zeros_1_7.get(total_coeff - 1, ()))
+        if actual != expected:
+            raise ExtractionError(
+                f"total_zeros 4x4 TotalCoeff {total_coeff} has {actual} rows; "
+                f"expected {expected}"
+            )
+
+    for total_coeff in range(8, 16):
+        expected = 17 - total_coeff
+        actual = len(total_zeros_8_15.get(total_coeff - 8, ()))
+        if actual != expected:
+            raise ExtractionError(
+                f"total_zeros 4x4 TotalCoeff {total_coeff} has {actual} rows; "
+                f"expected {expected}"
+            )
+
+    for total_coeff in range(1, 4):
+        expected = 5 - total_coeff
+        actual = len(total_zeros_chroma.get(total_coeff - 1, ()))
+        if actual != expected:
+            raise ExtractionError(
+                f"total_zeros chroma TotalCoeff {total_coeff} has {actual} rows; "
+                f"expected {expected}"
+            )
+
+    for zeros_left in range(1, 7):
+        expected = zeros_left + 1
+        actual = len(run_before.get(zeros_left - 1, ()))
+        if actual != expected:
+            raise ExtractionError(
+                f"run_before zerosLeft {zeros_left} has {actual} rows; "
+                f"expected {expected}"
+            )
+    actual = len(run_before.get(6, ()))
+    if actual != 15:
+        raise ExtractionError(
+            f"run_before zerosLeft > 6 has {actual} rows; expected 15"
+        )
+
+
 def emit_entries(name, entries):
     print(f"static const struct vl_h264_vlc {name}[] = {{")
     for code, length, value in entries:
@@ -153,6 +229,13 @@ def emit_header(lines):
         [str(number) for number in range(1, 4)],
     )
     run_before = parse_run_before(section(lines, "Table 9-10", ["9.2.4", "Combining"]))
+    validate_table_cardinalities(
+        coeff,
+        total_zeros_1_7,
+        total_zeros_8_15,
+        total_zeros_chroma,
+        run_before,
+    )
 
     print("/*")
     print(" * SPDX-License-Identifier: MIT")
@@ -227,14 +310,76 @@ def emit_header(lines):
     print("#endif /* vl_h264_cavlc_tables_h */")
 
 
+def selftest():
+    """Exercise continuation-caption accumulation and cardinality refusal."""
+    repeated_caption = [
+        "Table 9-5 - contents................................................154",
+        "\f Table 9-5 - coeff_token mapping",
+        "first-page-row",
+        "\f Table 9-5 (continued)",
+        "second-page-row",
+        "9.2.2    Parsing process for level information",
+    ]
+    rows = section(repeated_caption, "Table 9-5", ["9.2.2"])
+    if rows != ["first-page-row", "second-page-row"]:
+        raise ExtractionError(
+            f"continuation-caption fixture returned unexpected rows: {rows!r}"
+        )
+
+    def synthetic_rows(count):
+        return [(0, 1, value) for value in range(count)]
+
+    coeff = {
+        context: synthetic_rows(count)
+        for context, count in (("nc0", 62), ("nc2", 62), ("nc4", 62), ("chroma", 14))
+    }
+    total_zeros_1_7 = {index: synthetic_rows(16 - index) for index in range(7)}
+    total_zeros_8_15 = {index: synthetic_rows(9 - index) for index in range(8)}
+    total_zeros_chroma = {index: synthetic_rows(4 - index) for index in range(3)}
+    run_before = {index: synthetic_rows(index + 2) for index in range(6)}
+    run_before[6] = synthetic_rows(15)
+    validate_table_cardinalities(
+        coeff,
+        total_zeros_1_7,
+        total_zeros_8_15,
+        total_zeros_chroma,
+        run_before,
+    )
+    coeff["nc0"].pop()
+    try:
+        validate_table_cardinalities(
+            coeff,
+            total_zeros_1_7,
+            total_zeros_8_15,
+            total_zeros_chroma,
+            run_before,
+        )
+    except ExtractionError as error:
+        if "coeff_token nc0" not in str(error):
+            raise
+    else:
+        raise ExtractionError("partial coeff_token fixture was accepted")
+    print(
+        "selftest: continuation captions accumulate and incomplete table "
+        "cardinalities fail"
+    )
+    return 0
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest":
+        return selftest()
     if len(sys.argv) == 2 and sys.argv[1] in {"-h", "--help"}:
         print(f"usage: {sys.argv[0]} <spec.pdf>")
         return 0
     if len(sys.argv) != 2:
         print(f"usage: {sys.argv[0]} <spec.pdf>", file=sys.stderr)
         return 2
-    emit_header(pdf_lines(sys.argv[1]))
+    try:
+        emit_header(pdf_lines(sys.argv[1]))
+    except ExtractionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
