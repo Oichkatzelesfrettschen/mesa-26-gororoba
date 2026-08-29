@@ -404,6 +404,7 @@ main(int argc, char **argv)
       "  \"carrier_expected_pass\": %s,\n"
       "  \"carrier_tail_poison_pass\": %s,\n"
       "  \"carrier_mismatched_dwords\": %u,\n"
+      "  \"carrier_poison_dwords\": %u,\n"
       "  \"color_size_bytes\": %u,\n"
       "  \"target_executed\": %s,\n"
       "  \"target_interior_pass\": %s,\n"
@@ -414,7 +415,8 @@ main(int argc, char **argv)
       r3v_native_queue_status_name(queue_status), carrier_bytes,
       carrier_verdict.expected_pass ? "true" : "false",
       carrier_verdict.tail_poison_pass ? "true" : "false",
-      carrier_verdict.mismatched_dwords, color_bytes,
+      carrier_verdict.mismatched_dwords, carrier_verdict.poison_dwords,
+      color_bytes,
       target_verdict.executed ? "true" : "false",
       target_verdict.interior_pass ? "true" : "false",
       target_verdict.exterior_pass ? "true" : "false",
