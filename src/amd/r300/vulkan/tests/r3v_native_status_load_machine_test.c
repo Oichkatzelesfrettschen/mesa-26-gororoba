@@ -12,12 +12,14 @@
 
 #include "r3v_native_status_load_machine.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define NONCE "b1946ac92492d2347c6235b4d2611184"
 #define MAX_LINES 1600
+#define MAX_DEFERRED_TRANSPORT_LINES 8
 
 /* The submitter's whole-ladder outputs are checks against these exact
  * sequences, so the expected transcript is spelled once.
@@ -57,6 +59,11 @@ struct fake {
    uint32_t emit_failures_remaining;
    char lines[MAX_LINES][R3V_STATUS_LOAD_MESSAGE_CAPACITY];
    uint32_t line_count;
+   char deferred_transport_lines[MAX_DEFERRED_TRANSPORT_LINES]
+      [R3V_STATUS_LOAD_MESSAGE_CAPACITY];
+   uint32_t deferred_transport_line_count;
+   bool defer_transport_emit;
+   uint32_t transport_flush_count;
    uint64_t sampler_sequence;
 };
 
@@ -83,11 +90,42 @@ fake_emit(void *ctx, const char *line)
       fake->emit_failures_remaining--;
       return -1;
    }
+   if (fake->defer_transport_emit) {
+      if (fake->deferred_transport_line_count >=
+          MAX_DEFERRED_TRANSPORT_LINES)
+         return -1;
+      snprintf(fake->deferred_transport_lines[
+                   fake->deferred_transport_line_count],
+               sizeof(fake->deferred_transport_lines[0]), "%s", line);
+      fake->deferred_transport_line_count++;
+      return 0;
+   }
    if (fake->line_count >= MAX_LINES)
       return -1;
    snprintf(fake->lines[fake->line_count],
             sizeof(fake->lines[fake->line_count]), "%s", line);
    fake->line_count++;
+   return 0;
+}
+
+/* A live transport hook timestamps and queues its line while the kernel
+ * operation is active; the runner flushes all queued lines after the queue
+ * call returns.  The fake mirrors that ordering so the machine test catches
+ * a queue that emits transport lines into the ordinary sink immediately. */
+static int
+fake_flush_transport(struct fake *fake)
+{
+   const uint32_t queued = fake->deferred_transport_line_count;
+   for (uint32_t i = 0; i < queued; i++) {
+      if (fake->line_count >= MAX_LINES)
+         return -1;
+      snprintf(fake->lines[fake->line_count],
+               sizeof(fake->lines[fake->line_count]), "%s",
+               fake->deferred_transport_lines[i]);
+      fake->line_count++;
+   }
+   fake->deferred_transport_line_count = 0;
+   fake->transport_flush_count++;
    return 0;
 }
 
@@ -119,20 +157,30 @@ fake_submit(void *ctx, struct r3v_status_load_machine *machine, uint32_t i)
       return -1;
    if (fake_stage(fake, FAIL_TRANSPORT_TRACE, i) != 0)
       return 0;
-   if (fake_stage(fake, FAIL_TRANSPORT_OUT_OF_ORDER, i) != 0)
-      return r3v_status_load_machine_transport_event(
+   fake->defer_transport_emit = true;
+   int result = 0;
+   if (fake_stage(fake, FAIL_TRANSPORT_OUT_OF_ORDER, i) != 0) {
+      result = r3v_status_load_machine_transport_event(
          machine, R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN);
-   static const enum r3v_status_load_transport_event events[] = {
-      R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_ENTER,
-      R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN,
-      R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_BEGIN,
-      R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_RETURN,
-   };
-   for (size_t e = 0; e < sizeof(events) / sizeof(events[0]); e++) {
-      if (r3v_status_load_machine_transport_event(machine, events[e]) != 0)
-         return -1;
+   } else {
+      static const enum r3v_status_load_transport_event events[] = {
+         R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_ENTER,
+         R3V_STATUS_LOAD_TRANSPORT_CS_IOCTL_RETURN,
+         R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_BEGIN,
+         R3V_STATUS_LOAD_TRANSPORT_COMPLETION_WAIT_RETURN,
+      };
+      for (size_t e = 0; e < sizeof(events) / sizeof(events[0]); e++) {
+         if (r3v_status_load_machine_transport_event(machine, events[e]) !=
+             0) {
+            result = -1;
+            break;
+         }
+      }
    }
-   return 0;
+   fake->defer_transport_emit = false;
+   if (fake_flush_transport(fake) != 0)
+      return -1;
+   return result;
 }
 
 static int
