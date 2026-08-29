@@ -553,12 +553,26 @@ r300_r2vb_reingest_manifest = executable(
   gnu_symbol_visibility : 'hidden',
 )
 
+# The re-ingest writer's artifacts are checked against each other and against
+# the fixed stream contract.  Calibration mutants keep malformed retained
+# metadata from becoming a green replay-only result.
+test(
+  'r300-r2vb-reingest-manifest-integration',
+  prog_python,
+  args : [files('tests/r300_r2vb_reingest_manifest_check.py'),
+          r300_r2vb_reingest_manifest.full_path()],
+  depends : [r300_r2vb_reingest_manifest],
+  suite : ['r300'],
+)
+
 # Offline kernel replay of the re-ingest stream, gated on
 # R3V_CS_TRACK_REPLAY_TOOL; absent tool exits 77 (meson SKIP).
 test(
   'r300-r2vb-reingest-replay',
   files('tests/run_r2vb_reingest_replay.sh')[0],
-  args : [r300_r2vb_reingest_manifest],
+  args : [r300_r2vb_reingest_manifest,
+          files('tests/r300_r2vb_reingest_manifest_check.py')[0]],
+  depends : [r300_r2vb_reingest_manifest],
   suite : ['r300'],
 )
 
