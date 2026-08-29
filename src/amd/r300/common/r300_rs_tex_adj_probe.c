@@ -265,6 +265,24 @@ r300_rs_tex_adj_probe_clip_vertices(
    }
 }
 
+void
+r300_rs_tex_adj_probe_partial_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS])
+{
+   r300_rs_tex_adj_probe_vertices(shape, out);
+   out[0] = (R300_RS_TEX_ADJ_PROBE_PARTIAL_NDC_X0 + 1.0f) *
+            ((float)shape->width / 2.0f);
+}
+
+void
+r300_rs_tex_adj_probe_partial_clip_vertices(
+   float out[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS])
+{
+   r300_rs_tex_adj_probe_clip_vertices(out);
+   out[0] = R300_RS_TEX_ADJ_PROBE_PARTIAL_NDC_X0 * out[3];
+}
+
 const char *
 r300_rs_tex_adj_probe_model_name(enum r300_rs_tex_adj_probe_model model)
 {
@@ -411,11 +429,17 @@ footprint(const struct r300_triangle_render_shape *shape,
  * R300_RS_TEX_ADJ_PROBE_SEPARATION in some channel. */
 static bool
 judged_pixel(const float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS],
-             uint32_t x, uint32_t y, uint32_t *perspective_dword,
+             uint32_t width, uint32_t height, uint32_t x, uint32_t y,
+             uint32_t *perspective_dword,
              uint32_t *affine_dword)
 {
    const float px = (float)x + 0.5f, py = (float)y + 0.5f;
    if (signed_margin(records, px, py) < 2.0)
+      return false;
+   if (px < R300_RS_TEX_ADJ_PROBE_BORDER_MARGIN ||
+       py < R300_RS_TEX_ADJ_PROBE_BORDER_MARGIN ||
+       px > (double)width - R300_RS_TEX_ADJ_PROBE_BORDER_MARGIN ||
+       py > (double)height - R300_RS_TEX_ADJ_PROBE_BORDER_MARGIN)
       return false;
    float p[4], a[4];
    if (!r300_rs_tex_adj_probe_model_value(
@@ -504,7 +528,7 @@ r300_rs_tex_adj_probe_census(
          if (signed_margin(records, px, py) <= 0.0)
             continue;
          uint32_t perspective_dword, affine_dword;
-         if (!judged_pixel(records, x, y, &perspective_dword,
+         if (!judged_pixel(records, shape->width, shape->height, x, y, &perspective_dword,
                            &affine_dword)) {
             out->unjudged_interior++;
             continue;
