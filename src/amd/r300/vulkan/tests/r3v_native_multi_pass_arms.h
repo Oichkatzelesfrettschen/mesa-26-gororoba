@@ -120,4 +120,17 @@ r3v_native_multi_pass_public_rs_tex_adj_probe_reference(
    out->pass[1].rs_tex_adj_candidate = (uint8_t)candidate;
 }
 
+/* The forced reciprocal-carrier two-draw form: pass 0 is the control
+ * varying cell the census reads as the perspective premise, pass 1 the
+ * TC1 carrier cell the NoPerspective interface records under
+ * R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1
+ * (r300_noperspective_reciprocal_plan.h).  The binding stays (2, 3). */
+static inline void
+r3v_native_multi_pass_public_noperspective_carrier_reference(
+   struct r300_triangle_multi_pass *out)
+{
+   r3v_native_multi_pass_public_flat_reference(out);
+   out->pass[1].noperspective_carrier = true;
+}
+
 #endif /* R3V_NATIVE_MULTI_PASS_ARMS_H */

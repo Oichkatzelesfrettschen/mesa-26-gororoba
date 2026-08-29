@@ -16,6 +16,47 @@ void r3v_post_vs_lowering_from_interface(
    memset(out, 0, sizeof(*out));
    out->flat_mask = link->flat_mask;
    out->provoking_vertex = R3V_POST_VS_PROVOKING_VERTEX_FIRST;
+   out->noperspective_mask = link->noperspective_mask;
+}
+
+int
+r3v_post_vs_pack_noperspective_carrier(
+   const struct r3v_post_vs_lowering *lowering, const uint32_t *records,
+   uint32_t triangle_count, uint32_t record_dwords, uint32_t *carrier)
+{
+   if (lowering == NULL || !lowering->reciprocal_carrier ||
+       lowering->noperspective_mask != 1u ||
+       record_dwords != R300_VERTEX_JOB_POSITION_DWORDS +
+                           R300_VERTEX_JOB_VARYING_DWORDS ||
+       (triangle_count != 0 && (records == NULL || carrier == NULL)))
+      return -EINVAL;
+   struct r300_noperspective_reciprocal_plan plan;
+   r300_noperspective_reciprocal_plan_tc1(&plan);
+   const uint32_t carrier_dwords =
+      r300_noperspective_reciprocal_plan_record_dwords(&plan);
+   /* Every triangle's envelope is judged before the first write, so a
+    * refusal leaves the source list intact. */
+   for (uint32_t triangle = 0; triangle < triangle_count; triangle++) {
+      float probe[3 * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+      const int rc = r300_noperspective_reciprocal_pack_triangle(
+         &plan,
+         (const float *)&records[(size_t)triangle * 3u * record_dwords],
+         probe);
+      if (rc != 0)
+         return rc;
+   }
+   for (uint32_t triangle = triangle_count; triangle-- > 0;) {
+      float packed[3 * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+      const int rc = r300_noperspective_reciprocal_pack_triangle(
+         &plan,
+         (const float *)&records[(size_t)triangle * 3u * record_dwords],
+         packed);
+      if (rc != 0)
+         return rc;
+      memcpy(&carrier[(size_t)triangle * 3u * carrier_dwords], packed,
+             sizeof(packed));
+   }
+   return 0;
 }
 
 int r3v_post_vs_lower_triangles(const struct r3v_post_vs_lowering *lowering,

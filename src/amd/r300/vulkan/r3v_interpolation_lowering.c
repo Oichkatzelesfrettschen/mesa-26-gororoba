@@ -49,11 +49,19 @@ r3v_interpolation_route_select_noperspective(
          why = "fragment program does not consume the RS destination";
       }
    }
+   if (why != NULL) {
+      if (reason != NULL)
+         *reason = why;
+      return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;
+   }
+   if (query->carrier_forced) {
+      if (reason != NULL)
+         *reason = "forced reciprocal carrier: TEX0 = a * w, TEX1.x = w";
+      return R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER;
+   }
    if (reason != NULL)
-      *reason = why != NULL ? why
-                            : "direct GB W_SELECT NoPerspective through TEX0";
-   return why != NULL ? R3V_INTERPOLATION_ROUTE_UNSUPPORTED
-                      : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
+      *reason = "direct GB W_SELECT NoPerspective through TEX0";
+   return R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
 }
 
 enum r3v_interpolation_route

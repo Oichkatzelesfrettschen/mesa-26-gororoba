@@ -522,6 +522,12 @@ struct r3v_native_deferred_draw {
     * under GB_SELECT.W_SELECT = 1, and execution admits the clipping
     * class ACCEPT alone (r3v_interpolation_lowering.h). */
    bool direct_noperspective;
+   /* Set when the pipeline selected the reciprocal carrier route: the
+    * post-VS stage widens each record to the TC1 carrier shape ahead of
+    * the clipper and the recorded cell is the carrier cell; execution
+    * admits the clipping class ACCEPT alone until the partial-clip rung
+    * lands (r3v_interpolation_lowering.h). */
+   bool noperspective_carrier;
    /* The rasterizer control word the recorded cell carries (enum
     * r3v_rs_probe_candidate): a gated probe candidate, W_SELECT_ONE on
     * the direct NoPerspective route, or zero for the control varying
@@ -938,6 +944,10 @@ struct r3v_native_device {
     * named rasterizer probe candidate (r3v_rs_probe_candidate_select). */
    const char *rs_tex_adj_probe_gate;
    const char *rs_w_select_probe_gate;
+   /* R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE at the exact value 1: the
+    * W_SELECT conjunction selects the reciprocal carrier route
+    * (r3v_interpolation_lowering.h), the forced-carrier rung. */
+   const char *noperspective_carrier_force;
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
@@ -1697,7 +1707,8 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
-   bool varying, bool flat_color0, uint8_t rs_probe_candidate,
+   bool varying, bool flat_color0, bool noperspective_carrier,
+   uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled);
 

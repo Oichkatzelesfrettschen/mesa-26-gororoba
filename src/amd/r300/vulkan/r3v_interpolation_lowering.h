@@ -66,6 +66,15 @@ enum r3v_interpolation_route {
     * the varying perspective interpolation, so the draw refuses at
     * record time with R3V_NATIVE_REFUSAL_RESULT. */
    R3V_INTERPOLATION_ROUTE_UNSUPPORTED,
+   /* NoPerspective through the perspective-interpolated reciprocal
+    * carrier (r300_noperspective_reciprocal_plan.h): the post-VS stage
+    * packs a * w into TEX0 and the triangle-normalized w into TEX1.x,
+    * and the US recovers a as TEX0 * rcp(TEX1.x) with GB_SELECT.W_SELECT
+    * at 0.  The route is per varying, so it serves the shapes W_SELECT
+    * cannot; until each shape's silicon receipt lands the selector
+    * takes it for the W_SELECT conjunction alone under the exact gate
+    * R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1, the forced-carrier rung. */
+   R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
 };
 
 enum r3v_interpolation_clip_class {
@@ -89,6 +98,9 @@ struct r3v_interpolation_query {
    bool fragment_consumes_destination;
    /* GA_COLOR_CONTROL.PROVOKING_VERTEX_FIRST exists on the target. */
    bool provoking_first_representable;
+   /* The forced-carrier gate is open: the W_SELECT conjunction selects
+    * the reciprocal carrier instead. */
+   bool carrier_forced;
 };
 
 /* The record-time form of the query: everything but the clipping class,

@@ -17,6 +17,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -168,6 +169,86 @@ static void test_metadata_drop_and_wrong_provoking(void)
       assert(memcmp(&records[v][4], &oracle[v][4], 16) != 0);
 }
 
+/* The reciprocal carrier packing: a triangle whose clip w is 1, 2, 4
+ * normalizes to carrier lanes 1/4, 1/2, 1 with the payload scaled by the
+ * same factors, so payload / carrier at each vertex is the source
+ * varying; the in-place walk over two triangles lands both; and the
+ * envelope refusals (nonpositive w, a non-finite lane, the w ratio past
+ * 2^16) leave the source untouched. */
+static void test_noperspective_carrier_pack(void)
+{
+   struct r3v_post_vs_lowering lowering = {
+      .noperspective_mask = 1u,
+      .reciprocal_carrier = true,
+   };
+   const float w[3] = { 1.0f, 2.0f, 4.0f };
+   float source[2][3][8];
+   for (unsigned t = 0; t < 2; t++) {
+      for (unsigned v = 0; v < 3; v++) {
+         source[t][v][0] = 0.25f * (float)v;
+         source[t][v][1] = -0.5f;
+         source[t][v][2] = 0.5f;
+         source[t][v][3] = w[v];
+         for (unsigned c = 0; c < 4; c++)
+            source[t][v][4 + c] = (float)(t * 16 + v * 4 + c + 1);
+      }
+   }
+   uint32_t buffer[2 * 3 * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+   memcpy(buffer, source, sizeof(source));
+   assert(r3v_post_vs_pack_noperspective_carrier(&lowering, buffer, 2, 8,
+                                                 buffer) == 0);
+   const float *packed = (const float *)buffer;
+   for (unsigned t = 0; t < 2; t++) {
+      for (unsigned v = 0; v < 3; v++) {
+         const float *record =
+            &packed[(t * 3 + v) * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+         assert(memcmp(record, source[t][v], 16) == 0);
+         const float carrier = w[v] / 4.0f;
+         assert(record[8] == carrier && record[9] == 0.0f &&
+                record[10] == 0.0f && record[11] == 1.0f);
+         for (unsigned c = 0; c < 4; c++)
+            assert(record[4 + c] / record[8] == source[t][v][4 + c]);
+      }
+   }
+   struct r300_noperspective_reciprocal_plan plan;
+   r300_noperspective_reciprocal_plan_tc1(&plan);
+   assert(r300_noperspective_reciprocal_validate_stream(&plan, packed, 2) ==
+          0);
+
+   float bad[3][8];
+   uint32_t out[3 * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+   memcpy(bad, source[0], sizeof(bad));
+   bad[1][3] = 0.0f;
+   memset(out, 0xa5, sizeof(out));
+   assert(r3v_post_vs_pack_noperspective_carrier(
+             &lowering, (const uint32_t *)bad, 1, 8, out) == -EDOM);
+   assert(out[0] == 0xa5a5a5a5u);
+   memcpy(bad, source[0], sizeof(bad));
+   bad[2][5] = INFINITY;
+   assert(r3v_post_vs_pack_noperspective_carrier(
+             &lowering, (const uint32_t *)bad, 1, 8, out) == -EDOM);
+   memcpy(bad, source[0], sizeof(bad));
+   bad[2][3] = 131072.0f;
+   assert(r3v_post_vs_pack_noperspective_carrier(
+             &lowering, (const uint32_t *)bad, 1, 8, out) == -EDOM);
+   bad[2][3] = 65536.0f;
+   assert(r3v_post_vs_pack_noperspective_carrier(
+             &lowering, (const uint32_t *)bad, 1, 8, out) == 0);
+
+   struct r3v_post_vs_lowering off = lowering;
+   off.reciprocal_carrier = false;
+   assert(r3v_post_vs_pack_noperspective_carrier(&off, buffer, 1, 8, out) ==
+          -EINVAL);
+   off = lowering;
+   off.noperspective_mask = 2u;
+   assert(r3v_post_vs_pack_noperspective_carrier(&off, buffer, 1, 8, out) ==
+          -EINVAL);
+   assert(r3v_post_vs_pack_noperspective_carrier(&lowering, buffer, 1, 12,
+                                                 out) == -EINVAL);
+   assert(r3v_post_vs_pack_noperspective_carrier(&lowering, NULL, 1, 8,
+                                                 out) == -EINVAL);
+}
+
 static void test_refusals(void)
 {
    uint32_t records[3][8];
@@ -203,6 +284,7 @@ int main(void)
    test_mixed_flat_and_smooth();
    test_indexed_permutation();
    test_metadata_drop_and_wrong_provoking();
+   test_noperspective_carrier_pack();
    test_refusals();
    printf("r3v_post_vs_lowering: smooth default, one flat location, mixed "
           "mask, indexed permutation, dropped qualifier, wrong provoking "
