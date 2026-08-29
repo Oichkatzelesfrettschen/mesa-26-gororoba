@@ -2597,6 +2597,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The partial-clip rung of the same runner: vertex 0 past x = -w, the
+  # carrier fan validated and the census judged away from the border.
+  test(
+    'r3v-native-noperspective-carrier-partial-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'reciprocal-carrier-partial'],
+    env : environment(r3v_native_cell_vars +
+                      {'R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE' : '1'}),
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding

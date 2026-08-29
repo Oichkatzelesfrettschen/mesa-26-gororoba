@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -482,6 +483,63 @@ test_carrier_and_oracle(void)
    free(control);
 }
 
+/* The partial-clip form: vertex 0 projects off the target, the models
+ * over the source triangle stay separable on the visible part, each
+ * model's own image classifies as that model alone, and no judged
+ * pixel touches the border the clip edge lies on. */
+static void
+test_partial_carrier_and_oracle(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.varying = true;
+   float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   r300_rs_tex_adj_probe_partial_vertices(&shape, records);
+   float clip[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   r300_rs_tex_adj_probe_partial_clip_vertices(clip);
+   CHECK(records[0] < 0.0f);
+   CHECK(clip[0] < -clip[3]);
+   for (unsigned v = 1; v < 3; v++)
+      CHECK(clip[v * 8] >= -clip[v * 8 + 3] && clip[v * 8] <= clip[v * 8 + 3]);
+   const float x0 = (clip[0] / clip[3] + 1.0f) * (float)shape.width / 2.0f;
+   CHECK(fabsf(x0 - records[0]) < 1e-3f);
+
+   const uint32_t size = r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
+   uint32_t *image = malloc(size);
+   CHECK(image != NULL);
+   if (image == NULL)
+      return;
+   struct r300_rs_tex_adj_probe_census census;
+   static const enum r300_rs_tex_adj_probe_classification class_of_model[] = {
+      R300_RS_TEX_ADJ_PROBE_CLASS_PERSPECTIVE,
+      R300_RS_TEX_ADJ_PROBE_CLASS_AFFINE,
+      R300_RS_TEX_ADJ_PROBE_CLASS_PROJECTIVE_Q,
+   };
+   for (unsigned m = 0; m < 3; m++) {
+      CHECK(r300_rs_tex_adj_probe_expected(&shape, records, m, image, size) == 0);
+      /* The clip edge is the target's left border: every pixel of
+       * the border columns keeps the sentinel or the fill rule's
+       * value, and the census leaves them unjudged. */
+      CHECK(r300_rs_tex_adj_probe_census(&shape, records, image, NULL, size,
+                                         &census) == 0);
+      CHECK(census.judged > 100);
+      CHECK(census.match[m] == census.judged);
+      for (unsigned other = 0; other < 3; other++)
+         if (other != m)
+            CHECK(census.match[other] < census.judged);
+      CHECK(r300_rs_tex_adj_probe_classify(&census) == class_of_model[m]);
+      /* A border-column mutation leaves the census unchanged. */
+      uint32_t *row = image + shape.target_offset / 4u;
+      for (uint32_t y = 0; y < shape.height; y++)
+         row[y * shape.pitch_pixels] ^= 0x00ffffffu;
+      struct r300_rs_tex_adj_probe_census mutated;
+      CHECK(r300_rs_tex_adj_probe_census(&shape, records, image, NULL, size,
+                                         &mutated) == 0);
+      CHECK(mutated.match[m] == census.judged);
+   }
+   free(image);
+}
+
 int
 main(void)
 {
@@ -490,6 +548,7 @@ main(void)
    test_plan_mutations_refuse_and_localize();
    test_stream_mutations();
    test_carrier_and_oracle();
+   test_partial_carrier_and_oracle();
    if (failures != 0) {
       fprintf(stderr, "%d failure(s)\n", failures);
       return EXIT_FAILURE;

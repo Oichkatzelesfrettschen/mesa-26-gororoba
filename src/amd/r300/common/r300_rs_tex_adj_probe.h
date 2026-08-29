@@ -124,6 +124,22 @@ void r300_rs_tex_adj_probe_vertices(
 void r300_rs_tex_adj_probe_clip_vertices(
    float out[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS]);
 
+/* The partial-clip form of the carrier: vertex 0 moves to NDC x
+ * R300_RS_TEX_ADJ_PROBE_PARTIAL_NDC_X0, past the x = -w plane, so the
+ * clipper cuts the triangle on that one plane into a quad and the
+ * rasterizer draws a fan of two triangles.  The window records carry
+ * vertex 0's projected position off the target (negative window x);
+ * every model evaluates over the source triangle, which is exact for
+ * the visible part because perspective interpolation and the Vulkan
+ * clipped NoPerspective value both restrict to the source triangle's
+ * own interpolants on each fan triangle. */
+#define R300_RS_TEX_ADJ_PROBE_PARTIAL_NDC_X0 (-1.5f)
+void r300_rs_tex_adj_probe_partial_vertices(
+   const struct r300_triangle_render_shape *shape,
+   float out[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS]);
+void r300_rs_tex_adj_probe_partial_clip_vertices(
+   float out[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS]);
+
 /* Interpolation models the census registers ahead of submission.
  * Each is a function of the record triple at a pixel center. */
 enum r300_rs_tex_adj_probe_model {
@@ -170,8 +186,13 @@ int r300_rs_tex_adj_probe_expected(
  * UNORM8 rounding mode against the reference's round-to-nearest at
  * most one, so two quanta covers the conversion. */
 #define R300_RS_TEX_ADJ_PROBE_TOLERANCE 2u
+/* Pixels within this many pixels of the target's border are not judged:
+ * a clip edge lies on the border, and the fill rule there is the
+ * hardware's. */
+#define R300_RS_TEX_ADJ_PROBE_BORDER_MARGIN 2.0
 /* A pixel is judged when it sits at least the coverage oracle's margin
- * inside the triangle and the perspective and affine predictions
+ * inside the triangle, the border margin inside the target, and the
+ * perspective and affine predictions
  * differ by more than twice the tolerance in some channel, so no
  * observed dword can satisfy both. */
 #define R300_RS_TEX_ADJ_PROBE_SEPARATION \

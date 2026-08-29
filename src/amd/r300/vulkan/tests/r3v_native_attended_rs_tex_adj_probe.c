@@ -211,6 +211,13 @@ main(int argc, char **argv)
     * (r300_noperspective_reciprocal_plan.h) over the same probe
     * records; the same census judges the US recovery affine. */
    bool carrier_route = false;
+   /* The partial-clip rung of the carrier: the same TC1 cell over the
+    * probe triangle with vertex 0 past the x = -w plane
+    * (r300_rs_tex_adj_probe_partial_clip_vertices), so the driver's
+    * clipper packs, cuts, and publishes a fan; the census judges the
+    * visible part against the source-triangle models away from the
+    * border the clip edge lies on. */
+   bool partial = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0) {
@@ -240,6 +247,14 @@ main(int argc, char **argv)
             candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
             other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
             candidate_word_name = "RECIPROCAL_CARRIER_TC1";
+         } else if (strcmp(name, "reciprocal-carrier-partial") == 0) {
+            carrier_route = true;
+            partial = true;
+            candidate = R300_RS_TEX_ADJ_PROBE_CONTROL;
+            route_candidate = R3V_RS_PROBE_NONE;
+            candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
+            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_word_name = "RECIPROCAL_CARRIER_TC1_PARTIAL";
          } else {
             usage_error = true;
          }
@@ -251,7 +266,8 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s <evidence-directory> [--record-only] "
               "[--waiver <path>] [--candidate "
-              "tex-adj|w-select|reciprocal-carrier] [--production]\n",
+              "tex-adj|w-select|reciprocal-carrier|reciprocal-carrier-partial] "
+              "[--production]\n",
               argv[0]);
       return 2;
    }
@@ -447,9 +463,17 @@ main(int argc, char **argv)
     * census all read these, and the carrier read-back after the
     * submission is what ties them to the bytes the device fetched. */
    float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
-   r300_rs_tex_adj_probe_vertices(&mp.pass[0], records);
    float clip_stream[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
-   r300_rs_tex_adj_probe_clip_vertices(clip_stream);
+   if (partial) {
+      r300_rs_tex_adj_probe_partial_vertices(&mp.pass[0], records);
+      r300_rs_tex_adj_probe_partial_clip_vertices(clip_stream);
+   } else {
+      r300_rs_tex_adj_probe_vertices(&mp.pass[0], records);
+      r300_rs_tex_adj_probe_clip_vertices(clip_stream);
+   }
+   emit("[geometry] %s: vertex 0 window x=%g (target width %u)\n",
+        partial ? "partial clip, one plane x = -w" : "unclipped",
+        records[0], mp.pass[0].width);
 
    emit("[models] registered outcomes: %s, %s, %s, %s (also reported as "
         "%s), %s, %s\n",
@@ -753,7 +777,11 @@ main(int argc, char **argv)
    for (unsigned v = 0; v < 3; v++) {
       const float *pos = &clip_stream[v * 8];
       const float w = 1.0f / r300_rs_tex_adj_probe_reciprocal_w[v];
-      if (!(pos[3] == w) || !(pos[0] >= -pos[3] && pos[0] <= pos[3]) ||
+      /* The partial form places vertex 0 alone past x = -w. */
+      const bool x_inside = partial && v == 0
+                               ? pos[0] < -pos[3]
+                               : pos[0] >= -pos[3] && pos[0] <= pos[3];
+      if (!(pos[3] == w) || !x_inside ||
           !(pos[1] >= -pos[3] && pos[1] <= pos[3]) ||
           !(pos[2] >= 0.0f && pos[2] <= pos[3])) {
          fprintf(stderr,
@@ -1402,11 +1430,64 @@ main(int argc, char **argv)
          const bool carrier_pass = carrier_route && p == 1;
          const unsigned stride =
             carrier_pass ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS : 8u;
+         const unsigned fan_records =
+            partial ? R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u
+                    : 3u;
          if (r3v_native_evidence_write_file(evidence_dir, carrier_file[p],
                                             carrier_map,
-                                            3u * stride * 4u) != 0) {
+                                            fan_records * stride * 4u) != 0) {
             fprintf(stderr, "carrier retention failed\n");
             return 1;
+         }
+         if (partial) {
+            /* The clipper's fan: the quad's two triangles are six live
+             * records, the rest padding.  A live record's window
+             * position lies inside the source triangle; the control
+             * pass carries the perspective-correct source value there
+             * (the clipper blends in clip space), and the carrier pass
+             * carries payload / carrier equal to the window-linear
+             * source value, the Vulkan clipped NoPerspective value. */
+            unsigned live = 0, exact = 0;
+            bool proportional = true;
+            double scale_product = 0.0;
+            for (unsigned r = 0; r < fan_records; r++) {
+               const float *rec = &carrier_records[r * stride];
+               bool padding = rec[3] == 1.0f;
+               for (unsigned k = 0; k < stride && padding; k++)
+                  padding = k == 3 || rec[k] == 0.0f;
+               if (padding)
+                  continue;
+               live++;
+               float model[4];
+               const bool inside = r300_rs_tex_adj_probe_model_value(
+                  records,
+                  carrier_pass ? R300_RS_TEX_ADJ_PROBE_MODEL_AFFINE
+                               : R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE,
+                  0, rec[0], rec[1], model);
+               bool match = inside;
+               const float c = carrier_pass ? rec[8] : 1.0f;
+               for (unsigned k = 0; k < 4 && match; k++)
+                  match = fabsf(rec[4 + k] / c - model[k]) <= 1e-4f;
+               if (carrier_pass) {
+                  match &= c > 0.0f && c <= 1.0f && rec[9] == 0.0f &&
+                           rec[10] == 0.0f && rec[11] == 1.0f;
+                  /* c = s * w and the position lane k / w: their
+                   * product is one constant over the fan. */
+                  const double product = (double)c * rec[3];
+                  if (scale_product == 0.0)
+                     scale_product = product;
+                  proportional &= fabs(product - scale_product) <=
+                                  1e-5 * scale_product;
+               }
+               exact += match;
+            }
+            emit("[witness] pass %u stride=%u fan live=%u exact=%u "
+                 "proportional=%d\n",
+                 p, stride, live, exact, (int)proportional);
+            carrier_witness &= live == 6 && exact == live && proportional;
+            radeon_drm_vk_bo_unmap(&native_device->drm, &carrier->bo,
+                                   carrier_map);
+            continue;
          }
          bool payload_exact = true;
          for (unsigned v = 0; v < 3; v++) {
@@ -1539,6 +1620,14 @@ main(int argc, char **argv)
              "classification printed above; affine is the Vulkan "
              "NoPerspective value, so that classification is the receipt "
              "of the direct GB W_SELECT route on RS482"
+        : partial
+           ? "the control cell interpolates perspective-correct over the "
+             "clipped fan and the forced reciprocal-carrier pipeline's "
+             "target carries the classification printed above; affine is "
+             "the Vulkan NoPerspective value, so that classification is "
+             "the receipt of the carrier through the clipper -- packed "
+             "ahead of the cut, generated vertices at the clipped-edge "
+             "value -- on RS482"
         : carrier_route
            ? "the control cell interpolates perspective-correct and the "
              "forced reciprocal-carrier pipeline's target carries the "
