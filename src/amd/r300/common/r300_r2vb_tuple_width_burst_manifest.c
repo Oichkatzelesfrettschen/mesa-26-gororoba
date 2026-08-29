@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Manifest writer for the R2VB FLOAT_2 tuple burst pass: retained
+ * Manifest writer for the R2VB tuple-width burst pass: retained
  * no-submit evidence in the exact form the offline kernel-parser
  * replays consume, one carrier row per member.
  */
@@ -220,7 +220,7 @@ main(int argc, char **argv)
    r300_r2vb_float2_tuple_burst_release(&burst);
 
    if (rc == 0) {
-      printf("r300_r2vb_float2_tuple_burst_manifest: wrote ib.bin, "
+      printf("r300_r2vb_tuple_width_burst_manifest: wrote ib.bin, "
              "vertex.bin, bo_table.json, manifest.json (draws=%u, "
              "model=%s) to %s\n",
              draws, model_float4 ? "float4" : "float2", dir);

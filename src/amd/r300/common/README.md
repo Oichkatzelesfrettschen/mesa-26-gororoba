@@ -82,7 +82,7 @@ executables with `main()` rather than driver objects.
 | `r300_compute_identity_carrier_manifest.c` | Test-only compute identity carrier evidence writer (ib.bin, manifest.json). | `none` | `r300-compute-identity-carrier-cs-track-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_fetched_route_manifest.c` | Test-only fetched-route evidence writer (ib.bin, bo_table.json, manifest.json per source width). | `none` | `r300-r2vb-fetched-route-replay-f32_4`, `r300-r2vb-fetched-route-replay-f32_3`, `r300-r2vb-fetched-route-replay-f32_2` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_float2_tuple_manifest.c` | Test-only FLOAT_2 tuple evidence writer. | `none` | `r300-r2vb-float2-tuple-replay` | `KEEP_SILICON_CONTRACT` |
-| `r300_r2vb_float2_tuple_burst_manifest.c` | Test-only tuple-burst evidence writer. | `none` | `r300-r2vb-float2-tuple-burst-replay` | `KEEP_SILICON_CONTRACT` |
+| `r300_r2vb_tuple_width_burst_manifest.c` | Test-only tuple-width burst evidence writer for FLOAT_2 and FLOAT_4 model streams. | `none` | `r300-r2vb-tuple-width-burst-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_producer_manifest.c` | Test-only producer evidence writer. | `none` | `r300-r2vb-producer-manifest-integration`, `r300-r2vb-producer-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_public_route_manifest.c` | Test-only composed-route evidence writer. | `none` | `r300-r2vb-public-route-replay` | `KEEP_SILICON_CONTRACT` |
 | `r300_r2vb_reingest_manifest.c` | Test-only reingest evidence writer. | `none` | `r300-r2vb-reingest-replay` | `KEEP_SILICON_CONTRACT` |

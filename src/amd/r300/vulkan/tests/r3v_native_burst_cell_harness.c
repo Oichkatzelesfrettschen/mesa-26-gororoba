@@ -8,6 +8,7 @@
  */
 
 #include <dlfcn.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -116,6 +117,31 @@ evidence_file_present(const char *directory, const char *name)
       return false;
    struct stat status;
    return stat(path, &status) == 0;
+}
+
+static const char *
+native_temporary_root(void)
+{
+   const char *root = getenv("TMPDIR");
+   if (root == NULL || root[0] == '\0')
+      root = getenv("MESON_BUILD_ROOT");
+   return root != NULL && root[0] != '\0' ? root : ".";
+}
+
+static int
+make_evidence_directory(char *directory, size_t capacity,
+                        const char *temporary_root, const char *stem)
+{
+   if (directory == NULL || temporary_root == NULL ||
+       temporary_root[0] == '\0' || stem == NULL || stem[0] == '\0')
+      return -1;
+   const size_t root_length = strlen(temporary_root);
+   const int length = snprintf(
+      directory, capacity, "%s%s%s-XXXXXX", temporary_root,
+      temporary_root[root_length - 1] == '/' ? "" : "/", stem);
+   if (length < 0 || (size_t)length >= capacity)
+      return -1;
+   return mkdtemp(directory) == NULL ? -1 : 0;
 }
 
 /* One device, one recorded burst command buffer, one submission; the
@@ -578,11 +604,9 @@ run_lifetime_leg(VkInstance instance,
                  uint32_t carrier_bytes, enum burst_lifetime_mode mode,
                  const char *directory_stem)
 {
-   char directory[128];
-   int length = snprintf(directory, sizeof(directory),
-                         "/tmp/r3v-native-%s-XXXXXX", directory_stem);
-   if (length < 0 || (size_t)length >= sizeof(directory) ||
-       mkdtemp(directory) == NULL) {
+   char directory[PATH_MAX];
+   if (make_evidence_directory(directory, sizeof(directory),
+                               native_temporary_root(), directory_stem) != 0) {
       fprintf(stderr, "%s evidence directory creation failed\n",
               directory_stem);
       return 2;
@@ -624,6 +648,8 @@ main(int argc, char **argv)
 
    if (attest_shim_provider() != 0)
       return 3;
+
+   const char *temporary_root = native_temporary_root();
 
    struct r300_r2vb_float2_tuple_burst_ib reference;
    CHECK(r300_r2vb_float2_tuple_burst_reference_emit(BURST_DRAWS,
@@ -684,8 +710,10 @@ main(int argc, char **argv)
        * composition, so the arming refuses before the ioctl and before any
        * token exists.
        */
-      char mismatch_dir[] = "/tmp/r3v-native-burst-mismatch-XXXXXX";
-      if (mkdtemp(mismatch_dir) == NULL) {
+      char mismatch_dir[PATH_MAX];
+      if (make_evidence_directory(mismatch_dir, sizeof(mismatch_dir),
+                                  temporary_root,
+                                  "r3v-native-burst-mismatch") != 0) {
          fprintf(stderr, "mismatch evidence directory creation failed\n");
          return 2;
       }
@@ -709,8 +737,10 @@ main(int argc, char **argv)
       /* Admission leg: matching declaration, one admitted submission, then
        * the one-shot token refuses the resubmission.
        */
-      char admit_dir[] = "/tmp/r3v-native-burst-cell-XXXXXX";
-      if (mkdtemp(admit_dir) == NULL) {
+      char admit_dir[PATH_MAX];
+      if (make_evidence_directory(admit_dir, sizeof(admit_dir),
+                                  temporary_root,
+                                  "r3v-native-burst-cell") != 0) {
          fprintf(stderr, "evidence directory creation failed\n");
          return 2;
       }
@@ -738,8 +768,10 @@ main(int argc, char **argv)
     * resubmission then refuses on the token the prepare wrote.
     */
    if (mode_selected(selected, "commit")) {
-      char prepared_dir[] = "/tmp/r3v-native-burst-prepared-XXXXXX";
-      if (mkdtemp(prepared_dir) == NULL) {
+      char prepared_dir[PATH_MAX];
+      if (make_evidence_directory(prepared_dir, sizeof(prepared_dir),
+                                  temporary_root,
+                                  "r3v-native-burst-prepared") != 0) {
          fprintf(stderr, "prepared evidence directory creation failed\n");
          return 2;
       }
@@ -761,8 +793,10 @@ main(int argc, char **argv)
     * CS aimed at freed storage.
     */
    if (mode_selected(selected, "reset")) {
-      char reset_dir[] = "/tmp/r3v-native-burst-reset-XXXXXX";
-      if (mkdtemp(reset_dir) == NULL) {
+      char reset_dir[PATH_MAX];
+      if (make_evidence_directory(reset_dir, sizeof(reset_dir),
+                                  temporary_root,
+                                  "r3v-native-burst-reset") != 0) {
          fprintf(stderr, "reset evidence directory creation failed\n");
          return 2;
       }
@@ -840,8 +874,10 @@ main(int argc, char **argv)
                                   float4_digest);
       CHECK(strcmp(float4_digest, reference_digest) != 0,
             "the width contrast produces its own stream digest");
-      char float4_dir[] = "/tmp/r3v-native-burst-float4-XXXXXX";
-      if (mkdtemp(float4_dir) == NULL) {
+      char float4_dir[PATH_MAX];
+      if (make_evidence_directory(float4_dir, sizeof(float4_dir),
+                                  temporary_root,
+                                  "r3v-native-burst-float4") != 0) {
          fprintf(stderr, "float4 evidence directory creation failed\n");
          r300_r2vb_float2_tuple_burst_release(&float4_reference);
          return 2;
