@@ -55,6 +55,20 @@ stage(const char *name)
    fflush(stdout);
 }
 
+static const char *
+sampler_mode_name(enum r3v_status_load_sampler_mode mode)
+{
+   switch (mode) {
+   case R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT:
+      return "census_present";
+   case R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT:
+      return "census_absent";
+   case R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED:
+      return "undeclared";
+   }
+   return "invalid";
+}
+
 static bool
 same_directory(const char *a, const char *b)
 {
@@ -120,10 +134,13 @@ struct serial_run {
    FILE *transcript;
    int sampler_fd;
    bool sampler_closed;
-   /* Set when the machine accepts a SAMPLER_ENTER_READ message.  The
-    * token names the submission index whose census read is in progress,
-    * so the queue call issued after it lands inside that capture.
+   /* The sampler's one-shot window and read tokens are retained locally
+    * so the queue call checks the same indexed barrier immediately before
+    * admission.  The window covers both census legs; the read token only
+    * exists for a census-present capture.
     */
+   bool enter_window_seen;
+   uint32_t enter_window_index;
    bool enter_read_seen;
    uint32_t enter_read_index;
    uint64_t sampler_sequence;
@@ -306,7 +323,10 @@ sampler_pump(struct serial_run *run, int timeout_ms)
       run->sampler_sequence_seen = true;
       run->sampler_last_submission_index = submission_index;
       run->sampler_submission_index_seen = true;
-      if (strcmp(state, "SAMPLER_ENTER_READ") == 0) {
+      if (strcmp(state, "SAMPLER_ENTER_WINDOW") == 0) {
+         run->enter_window_seen = true;
+         run->enter_window_index = submission_index;
+      } else if (strcmp(state, "SAMPLER_ENTER_READ") == 0) {
          run->enter_read_seen = true;
          run->enter_read_index = submission_index;
       }
@@ -338,6 +358,31 @@ sampler_wait(struct serial_run *run, enum r3v_status_load_sampler target,
       sampler_pump(run, (int)((deadline - now) / 1000000ull) + 1);
    }
    return run->machine.sampler == target;
+}
+
+/* Pumps until the sampler grants the common indexed submission window.
+ * Both census legs use this edge; only the observed leg adds an
+ * ENTER_READ token after it.
+ */
+static bool
+sampler_wait_for_enter_window(struct serial_run *run,
+                              uint32_t submission_index, int budget_ms)
+{
+   const uint64_t deadline =
+      run_now_ns(NULL) + (uint64_t)budget_ms * 1000000ull;
+   while (run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
+          run->machine.sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED &&
+          (!run->enter_window_seen ||
+           run->enter_window_index != submission_index)) {
+      uint64_t now = run_now_ns(NULL);
+      if (now >= deadline || run->sampler_closed)
+         return false;
+      sampler_pump(run, (int)((deadline - now) / 1000000ull) + 1);
+   }
+   return run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
+          run->machine.sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED &&
+          run->enter_window_seen &&
+          run->enter_window_index == submission_index;
 }
 
 /* Pumps until the sampler grants the one-shot token for the requested
@@ -439,7 +484,14 @@ sampler_gate_submission(struct serial_run *run, uint32_t iteration)
          "sampler is not ready before queue submission");
       return -1;
    }
-   if (run->machine.sampler_read_required &&
+   if (!run->enter_window_seen || run->enter_window_index != iteration) {
+      r3v_status_load_machine_fault(
+         &run->machine,
+         "sampler ENTER_WINDOW missing immediately before queue submission");
+      return -1;
+   }
+   if (run->machine.sampler_mode ==
+          R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT &&
        (!run->enter_read_seen || run->enter_read_index != iteration)) {
       r3v_status_load_machine_fault(
          &run->machine,
@@ -612,15 +664,26 @@ main(int argc, char **argv)
       return 1;
    }
 
-   /* The census-absent declaration names a queue-call-duration control run:
-    * the sampler walks the barrier ladder with the census node unread,
-    * so the run differs from an observed run by exactly the census MMIO
-    * read stream.  The declaration takes the exact value 1; any other
-    * spelling leaves the run observed, and the burst submission then
-    * keeps waiting for the sampler's ENTER_READ.
+   /* The submitter selects the expected census leg, and the sampler must
+    * declare the same leg after calibration.  The exact values 1 and 0
+    * select census-absent and census-present respectively; an invalid
+    * spelling refuses the run instead of silently changing its meaning.
     */
    const char *absent = getenv("R3V_STATUS_LOAD_CENSUS_ABSENT");
-   const bool census_absent = absent != NULL && strcmp(absent, "1") == 0;
+   enum r3v_status_load_sampler_mode expected_sampler_mode =
+      R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT;
+   if (absent != NULL) {
+      if (strcmp(absent, "1") == 0) {
+         expected_sampler_mode =
+            R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT;
+      } else if (strcmp(absent, "0") != 0) {
+         fprintf(stderr,
+                 "R3V_STATUS_LOAD_CENSUS_ABSENT takes the exact value 0 or 1\n");
+         return 1;
+      }
+   }
+   const bool selected_census_absent =
+      expected_sampler_mode == R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT;
 
    /* The fetch-width selector: the exact value "float4" swaps the burst
     * workload for the FLOAT_4 model emission, the fetch-width contrast
@@ -949,10 +1012,9 @@ main(int argc, char **argv)
       fprintf(stderr, "machine initialization refused its inputs\n");
       return 1;
    }
-   if (census_absent &&
-       r3v_status_load_machine_set_sampler_read_required(&run.machine, 0) !=
-          0) {
-      fprintf(stderr, "census-absent gate configuration failed\n");
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &run.machine, expected_sampler_mode) != 0) {
+      fprintf(stderr, "sampler mode expectation configuration failed\n");
       return 1;
    }
 
@@ -967,22 +1029,27 @@ main(int argc, char **argv)
 
    /* The hazard: up to the declared bound of live DRM_RADEON_CS
     * submissions, one outstanding at a time, each under the full event
-    * ladder.  Observed submissions consume one sampler ENTER_READ token
-    * keyed to their iteration before the queue call.  A census-absent
-    * control explicitly omits that token while retaining READY gating.
-    * The machine stops the run at its first failure and no resubmission
-    * follows an abort.
+    * ladder.  Both census legs consume an indexed ENTER_WINDOW token
+    * before the queue call.  The census-present leg then consumes an
+    * ENTER_READ token, while the census-absent leg proves that the node
+    * stays unread.  The machine stops the run at its first failure and no
+    * resubmission follows an abort.
     */
    stage("serial submissions");
-   if (!census_absent)
+   if (!selected_census_absent)
       stage("sampler read tokens");
    for (uint32_t i = 0; i < iterations; i++) {
       if (run.machine.phase != R3V_STATUS_LOAD_RUNNING)
          break;
-      if (census_absent) {
-         sampler_pump(&run, 0);
-      } else if (!sampler_wait_for_enter_read(
-                    &run, i, SAMPLER_WAIT_BUDGET_MS)) {
+      if (!sampler_wait_for_enter_window(&run, i, SAMPLER_WAIT_BUDGET_MS)) {
+         if (run.machine.phase == R3V_STATUS_LOAD_RUNNING)
+            r3v_status_load_machine_fault(
+               &run.machine,
+               "sampler ENTER_WINDOW missing for submission index");
+         break;
+      }
+      if (!selected_census_absent &&
+          !sampler_wait_for_enter_read(&run, i, SAMPLER_WAIT_BUDGET_MS)) {
          if (run.machine.phase == R3V_STATUS_LOAD_RUNNING)
             r3v_status_load_machine_fault(
                &run.machine,
@@ -991,6 +1058,7 @@ main(int argc, char **argv)
       }
       if (r3v_status_load_machine_iterate(&run.machine) != 0)
          break;
+      run.enter_window_seen = false;
       run.enter_read_seen = false;
    }
 
@@ -1004,6 +1072,10 @@ main(int argc, char **argv)
    stage("outcome");
    const enum r3v_status_load_phase phase =
       r3v_status_load_machine_phase(&run.machine);
+   const bool declared_census_absent =
+      run.machine.sampler_mode == R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT;
+   const char *declared_sampler_mode =
+      sampler_mode_name(run.machine.sampler_mode);
    char outcome_json[1024];
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
@@ -1013,6 +1085,8 @@ main(int argc, char **argv)
       "  \"declared_submissions\": %u,\n"
       "  \"burst_draws\": %u,\n"
       "  \"model_width\": \"%s\",\n"
+      "  \"expected_sampler_mode\": \"%s\",\n"
+      "  \"sampler_mode\": \"%s\",\n"
       "  \"census_absent\": %s,\n"
       "  \"iterations_delivered\": %u,\n"
       "  \"machine_phase\": \"%s\",\n"
@@ -1024,7 +1098,9 @@ main(int argc, char **argv)
       burst_draws != 0 ? "r3v-native-status-load-burst-outcome/2"
                        : "r3v-native-status-load-serial-outcome/2",
       run.nonce, iterations, burst_draws,
-      model_float4 ? "float4" : "float2", census_absent ? "true" : "false",
+      model_float4 ? "float4" : "float2",
+      sampler_mode_name(expected_sampler_mode), declared_sampler_mode,
+      declared_census_absent ? "true" : "false",
       run.iterations_delivered,
       phase == R3V_STATUS_LOAD_COMPLETE
          ? "COMPLETE"

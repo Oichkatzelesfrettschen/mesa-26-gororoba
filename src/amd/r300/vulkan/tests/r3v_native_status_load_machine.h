@@ -52,9 +52,9 @@ enum r3v_status_load_phase {
 
 struct r3v_status_load_machine;
 
-/* The sampler's resting states as the submitter tracks them.
- * SAMPLER_ENTER_READ is a one-shot event inside READY, so READY remains
- * the resting state while the machine records a pending per-index token.
+/* The sampler's resting states as the submitter tracks them.  Mode
+ * declarations and the submission window are orthogonal one-shot events
+ * recorded beside these resting states.
  */
 enum r3v_status_load_sampler {
    R3V_STATUS_LOAD_SAMPLER_ABSENT,
@@ -62,6 +62,16 @@ enum r3v_status_load_sampler {
    R3V_STATUS_LOAD_SAMPLER_CALIBRATED,
    R3V_STATUS_LOAD_SAMPLER_READY,
    R3V_STATUS_LOAD_SAMPLER_STOPPED,
+};
+
+/* The submitter compares the sampler's declaration with the selected
+ * census leg before it admits a queue submission.  UNDECLARED is the
+ * initialization state and never describes a valid run.
+ */
+enum r3v_status_load_sampler_mode {
+   R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED,
+   R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT,
+   R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT,
 };
 
 enum r3v_status_load_transport_event {
@@ -110,9 +120,12 @@ struct r3v_status_load_machine {
    uint64_t last_submitter_ns;
    int have_submitter_ns;
    enum r3v_status_load_sampler sampler;
+   enum r3v_status_load_sampler_mode sampler_mode;
+   enum r3v_status_load_sampler_mode expected_sampler_mode;
    uint64_t last_sampler_ns;
    int have_sampler_ns;
-   int sampler_read_required;
+   int sampler_window_pending;
+   uint32_t sampler_window_index;
    int sampler_read_pending;
    uint32_t sampler_read_index;
    uint32_t transport_submission_index;
@@ -145,9 +158,10 @@ r3v_status_load_machine_transport_event(
    enum r3v_status_load_transport_event event);
 
 /* Binds the ops table, the shared nonce, and the declared iteration
- * count (1 through R3V_STATUS_LOAD_MAX_ITERATIONS).  Serial submissions
- * require one fresh sampler read token per iteration by default.  Returns
- * 0, or -1 for a malformed nonce, an out-of-bound count, or a missing
+ * count (1 through R3V_STATUS_LOAD_MAX_ITERATIONS).  Each run selects one
+ * census leg before the sampler handshake; the selected leg determines
+ * whether each indexed submission also requires a read token.  Returns 0,
+ * or -1 for a malformed nonce, an out-of-bound count, or a missing
  * operation.
  */
 int
@@ -155,20 +169,24 @@ r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
                              const struct r3v_status_load_ops *ops,
                              const char *nonce, uint32_t iterations);
 
-/* Selects whether each applicable submission must consume a sampler
- * SAMPLER_ENTER_READ token.  The census-absent control sets false before
- * the first sampler event; observed runs keep the default true value.
- * Returns 0 when the mode changes on a running, unused machine.
+/* Selects the census leg expected from the sampler.  The sampler must
+ * declare the matching SAMPLER_MODE_CENSUS_PRESENT or
+ * SAMPLER_MODE_CENSUS_ABSENT event after calibration; the machine derives
+ * read-token requirements from that declaration.  Returns 0 when the
+ * expectation is set on a running, unused machine.
  */
 int
-r3v_status_load_machine_set_sampler_read_required(
-   struct r3v_status_load_machine *machine, int required);
+r3v_status_load_machine_set_expected_sampler_mode(
+   struct r3v_status_load_machine *machine,
+   enum r3v_status_load_sampler_mode mode);
 
 /* Feeds one observed sampler event by protocol state name and its
- * 0-based submission index.  SAMPLER_ENTER_READ is a one-shot token for
- * that index and must match the machine's next iteration.  An out-of-order
- * transition, duplicate token, index mismatch, or timestamp regression
- * aborts the run.  Returns 0 while the run keeps going.
+ * 0-based submission index.  A mode declaration follows calibration and
+ * must match the expected mode.  SAMPLER_ENTER_WINDOW is a one-shot
+ * submission barrier; census-present runs follow it with an indexed
+ * SAMPLER_ENTER_READ token, while census-absent runs omit the read token.
+ * An out-of-order transition, duplicate token, index mismatch, or timestamp
+ * regression aborts the run.  Returns 0 while the run keeps going.
  */
 int
 r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
@@ -176,12 +194,14 @@ r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
                                 uint32_t submission_index,
                                 uint64_t timestamp_ns);
 
-/* Runs one full submission through the ladder.  Returns 0 when the
- * iteration reached REPOISONED; nonzero means the run aborted at the
- * position named by the abort reason, and no later transition was
- * emitted.  A call past the declared count aborts a running machine;
- * a call after a terminal phase is refused with nothing emitted, so a
- * completed run keeps its verdict.
+/* Runs one full submission through the ladder.  The call consumes the
+ * indexed SAMPLER_ENTER_WINDOW token and, for census-present mode, its
+ * matching SAMPLER_ENTER_READ token before QUEUE_SUBMIT_ENTER.  Returns 0
+ * when the iteration reached REPOISONED; nonzero means the run aborted at
+ * the position named by the abort reason, and no later transition was
+ * emitted.  A call past the declared count aborts a running machine; a call
+ * after a terminal phase is refused with nothing emitted, so a completed
+ * run keeps its verdict.
  */
 int
 r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine);
