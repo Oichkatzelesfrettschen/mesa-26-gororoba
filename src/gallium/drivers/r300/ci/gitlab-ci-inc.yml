@@ -12,6 +12,7 @@
     - !reference [.gl-rules, rules]
     - changes: &r300_file_list
         - src/gallium/drivers/r300/*
+        - src/gallium/drivers/r300/tests/**/*
         - src/amd/r300/common/**/*
         - src/amd/r300/compiler/**/*
         - src/gallium/drivers/r300/ci/gitlab-ci.yml
