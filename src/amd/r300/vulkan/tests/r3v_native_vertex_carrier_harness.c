@@ -13,6 +13,7 @@
 
 #include "r3v_native.h"
 
+#include "amd/r300/cpu/r300_cpu_vertex.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 
@@ -28,6 +29,7 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 
 #define COLOR_BYTES (64 * 65 * 4)
 #define VERTEX_BYTES 4096
+#define REFERENCE_BYTES (R300_TRIANGLE_VERTEX_DWORDS * sizeof(uint32_t))
 
 static VkDevice device;
 static VkDeviceMemory vertex_memory;
@@ -38,6 +40,24 @@ static PFN_vkBeginCommandBuffer begin_cmd;
 static PFN_vkEndCommandBuffer end_cmd;
 static PFN_vkMapMemory map_memory;
 static PFN_vkUnmapMemory unmap_memory;
+
+/* Encode the canonical triangle table as the little-endian bytes consumed by
+ * the VAP.  The common table remains the oracle; the conversion makes the
+ * comparison independent of the host float object representation. */
+static void
+encode_float_carrier_bytes(uint8_t output[REFERENCE_BYTES],
+                           const float vertices[R300_TRIANGLE_VERTEX_DWORDS])
+{
+   for (unsigned component = 0; component < R300_TRIANGLE_VERTEX_DWORDS;
+        component++) {
+      uint32_t bits;
+      memcpy(&bits, &vertices[component], sizeof(bits));
+      output[component * 4 + 0] = (uint8_t)(bits >> 0);
+      output[component * 4 + 1] = (uint8_t)(bits >> 8);
+      output[component * 4 + 2] = (uint8_t)(bits >> 16);
+      output[component * 4 + 3] = (uint8_t)(bits >> 24);
+   }
+}
 
 static VkCommandBuffer
 fresh_cmd(void)
@@ -177,8 +197,11 @@ main(void)
     * the F32_3 (XYZ1) and F32_2 (XY01) deliveries must reproduce the
     * frozen carrier byte-identically, and the F32_4 delivery is the
     * pass-through identity.
-    */
+   */
    const float *ref = r300_tcl_bypass_triangle_vertices;
+   uint8_t reference_bytes[REFERENCE_BYTES];
+   encode_float_carrier_bytes(reference_bytes,
+                              r300_tcl_bypass_triangle_vertices);
 
    check_delivery(&(struct r3v_native_vertex_stream_desc){
                      .records = ref,
@@ -186,11 +209,16 @@ main(void)
                      .stride = 16,
                      .format_id = R300_VERTEX_FORMAT_F32_4,
                   },
-                  ref, 48);
+                  reference_bytes, sizeof(reference_bytes));
 
-   /* The VAP fetch contract consumes little-endian component bytes.  This
-    * independent packed leg exercises that representation directly instead
-    * of relying on the host float object representation.
+   /* The VAP fetch contract consumes little-endian component bytes.  The
+    * r300_cpu_vertex_gather_baseline oracle (rg --fixed-strings
+    * r300_cpu_vertex_gather_baseline src/) copies physical component bytes
+    * verbatim and writes explicit synthesized lanes, while R300_VAP_VTX_SIZE
+    * (rg --fixed-strings R300_VAP_VTX_SIZE src/) fixes the dword fetch width.
+    * This independent packed leg exercises that representation directly
+    * against the canonical triangle table instead of relying on the host
+    * float object representation.
     */
    static const uint8_t byte_defined_ref[48] = {
       0x00, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00, 0x41,
@@ -200,13 +228,15 @@ main(void)
       0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x60, 0x42,
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
    };
+   assert(memcmp(byte_defined_ref, reference_bytes,
+                 sizeof(byte_defined_ref)) == 0);
    check_delivery(&(struct r3v_native_vertex_stream_desc){
                      .records = byte_defined_ref,
                      .size_bytes = sizeof(byte_defined_ref),
                      .stride = 16,
                      .format_id = R300_VERTEX_FORMAT_F32_4,
                   },
-                  byte_defined_ref, sizeof(byte_defined_ref));
+                  reference_bytes, sizeof(reference_bytes));
 
    float xyz[9];
    float xy[6];
@@ -220,14 +250,14 @@ main(void)
                      .stride = 12,
                      .format_id = R300_VERTEX_FORMAT_F32_3,
                   },
-                  ref, 48);
+                  reference_bytes, sizeof(reference_bytes));
    check_delivery(&(struct r3v_native_vertex_stream_desc){
                      .records = xy,
                      .size_bytes = sizeof(xy),
                      .stride = 8,
                      .format_id = R300_VERTEX_FORMAT_F32_2,
                   },
-                  ref, 48);
+                  reference_bytes, sizeof(reference_bytes));
 
    /* Padded stride and nonzero first_vertex reach the same records. */
    uint8_t padded[4 * 24];
@@ -241,7 +271,7 @@ main(void)
                      .first_vertex = 1,
                      .format_id = R300_VERTEX_FORMAT_F32_4,
                   },
-                  ref, 48);
+                  reference_bytes, sizeof(reference_bytes));
 
    /* Known-bad calibration: a stream with a mutated W writes a carrier
     * the comparison rejects, so the identity legs above are
@@ -250,6 +280,8 @@ main(void)
    float mutated[12];
    memcpy(mutated, ref, sizeof(mutated));
    mutated[7] = 2.0f;
+   uint8_t mutated_bytes[REFERENCE_BYTES];
+   encode_float_carrier_bytes(mutated_bytes, mutated);
    VkCommandBuffer cmd = fresh_cmd();
    assert(r3v_native_record_tcl_bypass_triangle_from_stream(
              cmd, vertex_memory, color_memory,
@@ -264,7 +296,7 @@ main(void)
    assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS &&
           map != NULL);
-   assert(memcmp(map, ref, 48) != 0);
+   assert(memcmp(map, reference_bytes, sizeof(reference_bytes)) != 0);
    unmap_memory(device, vertex_memory);
 
    /* Refusals report before any BO write: a bound too short for the
@@ -295,19 +327,29 @@ main(void)
    assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS &&
           map != NULL);
-   assert(memcmp(map, mutated, sizeof(mutated)) == 0);
+   assert(memcmp(map, mutated_bytes, sizeof(mutated_bytes)) == 0);
    unmap_memory(device, vertex_memory);
 
-   /* A source range inside the carrier is a rejected alias, not an
-    * in-place gather.  The snapshot catches a future implementation that
-    * writes one output vertex before noticing the overlap.
+   /* A source range inside the carrier is a valid alias.  The recorder
+    * snapshots all three records before copying the result, so the output
+    * follows the original source bytes instead of reading a prefix that an
+    * in-place gather already overwrote.
     */
    assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS &&
           map != NULL);
    memset(map, 0xa5, VERTEX_BYTES);
-   uint8_t overlap_before[VERTEX_BYTES];
-   memcpy(overlap_before, map, sizeof(overlap_before));
+   uint8_t overlap_source[24];
+   memcpy(overlap_source, map, sizeof(overlap_source));
+   uint32_t overlap_expected[R300_TRIANGLE_VERTEX_DWORDS];
+   const struct r300_vertex_stream overlap_stream = {
+      .data = overlap_source,
+      .stride = 8,
+      .size_bytes = sizeof(overlap_source),
+   };
+   assert(r300_cpu_vertex_gather_baseline(
+             R300_VERTEX_FORMAT_F32_2, &overlap_stream, 0, 3,
+             overlap_expected, R300_TRIANGLE_VERTEX_DWORDS) == 0);
    cmd = fresh_cmd();
    assert(r3v_native_record_tcl_bypass_triangle_from_stream(
              cmd, vertex_memory, color_memory,
@@ -316,19 +358,28 @@ main(void)
                 .size_bytes = 24,
                 .stride = 8,
                 .format_id = R300_VERTEX_FORMAT_F32_2,
-             }) == VK_ERROR_INITIALIZATION_FAILED);
-   assert(memcmp(map, overlap_before, sizeof(overlap_before)) == 0);
+             }) == VK_SUCCESS);
+   assert(memcmp(map, overlap_expected, sizeof(overlap_expected)) == 0);
    unmap_memory(device, vertex_memory);
 
-   /* A constant stream still aliases the carrier when its one record starts
-    * inside the destination BO.  The overlap guard uses that one-record
-    * source range before the gather can write any repeated output vertex.
+   /* A zero-stride source aliases the carrier in the same way.  Staging
+    * reads the one source record before writing each repeated output vertex.
     */
    assert(map_memory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS &&
           map != NULL);
    memset(map, 0x5a, VERTEX_BYTES);
-   memcpy(overlap_before, map, sizeof(overlap_before));
+   uint8_t constant_source[16];
+   memcpy(constant_source, map, sizeof(constant_source));
+   uint32_t constant_expected[R300_TRIANGLE_VERTEX_DWORDS];
+   const struct r300_vertex_stream constant_stream = {
+      .data = constant_source,
+      .stride = 0,
+      .size_bytes = sizeof(constant_source),
+   };
+   assert(r300_cpu_vertex_gather_baseline(
+             R300_VERTEX_FORMAT_F32_4, &constant_stream, 0, 3,
+             constant_expected, R300_TRIANGLE_VERTEX_DWORDS) == 0);
    cmd = fresh_cmd();
    assert(r3v_native_record_tcl_bypass_triangle_from_stream(
              cmd, vertex_memory, color_memory,
@@ -337,8 +388,8 @@ main(void)
                 .size_bytes = 16,
                 .stride = 0,
                 .format_id = R300_VERTEX_FORMAT_F32_4,
-             }) == VK_ERROR_INITIALIZATION_FAILED);
-   assert(memcmp(map, overlap_before, sizeof(overlap_before)) == 0);
+             }) == VK_SUCCESS);
+   assert(memcmp(map, constant_expected, sizeof(constant_expected)) == 0);
    unmap_memory(device, vertex_memory);
 
    printf("r3v_native_vertex_carrier: every delivery shape reproduces the "
