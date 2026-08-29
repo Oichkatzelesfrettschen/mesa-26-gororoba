@@ -50,6 +50,12 @@ class PartitionRefusal(Exception):
     pass
 
 
+def output_safe_slice_basename(name):
+    return name not in (".", "..") and \
+        "/" not in name and "\\" not in name and \
+        all(character.isalnum() or character in "._-" for character in name)
+
+
 def sha256_lines(lines):
     return hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
 
@@ -120,6 +126,9 @@ def load_partition(path):
         order, name, groups, hazard, evidence = f
         if name in names:
             raise PartitionRefusal(f"{path}:{n}: slice {name} repeats")
+        if not output_safe_slice_basename(name):
+            raise PartitionRefusal(f"{path}:{n}: slice {name!r} is not an "
+                                   "output-safe basename")
         names.add(name)
         if hazard not in HAZARDS:
             raise PartitionRefusal(f"{path}:{n}: hazard {hazard!r} unknown")
@@ -629,6 +638,10 @@ def selftest():
         write_table(good + [("5", "info", "dEQP-VK.x", "none", "host-model")])
         expect(lambda: generate(table, corpus, out, "exhaustive", False),
                "repeats")
+        write_table(good + [("5", "../escaped", "dEQP-VK.x", "none",
+                             "host-model")])
+        expect(lambda: generate(table, corpus, out, "pilot", False),
+               "output-safe basename")
         write_table(good)
         expect(lambda: generate(table, corpus, out, "weekly", False),
                "is not one of")
