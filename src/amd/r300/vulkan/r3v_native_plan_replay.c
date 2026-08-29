@@ -436,7 +436,8 @@ r3v_native_plan_replay_close(struct r3v_native_plan_replay *replay)
    if (!replay->bound)
       return replay->refused ? "refused" : "unbound";
    enum r3v_native_plan_session_result finished =
-      r3v_native_plan_session_finish(&replay->session);
+      r3v_native_plan_session_finish(&replay->session,
+                                     monotonic_seconds() - replay->bound_seconds);
    const char *state = finished == R3V_NATIVE_PLAN_SESSION_ADMITTED
                           ? "complete"
                        : finished == R3V_NATIVE_PLAN_SESSION_INCOMPLETE

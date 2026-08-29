@@ -398,7 +398,7 @@ test_session(void)
    /* Unbound refuses admission and finish. */
    assert(r3v_native_plan_session_admit(&s, &g.submissions[0], 1, 0) ==
           R3V_NATIVE_PLAN_SESSION_UNBOUND);
-   assert(r3v_native_plan_session_finish(&s) ==
+   assert(r3v_native_plan_session_finish(&s, 0) ==
           R3V_NATIVE_PLAN_SESSION_UNBOUND);
    assert(r3v_native_plan_session_bind(&s, &g) ==
           R3V_NATIVE_PLAN_SESSION_ADMITTED);
@@ -408,7 +408,7 @@ test_session(void)
    /* The ordered replay admits each entry once and proves exhaustion. */
    assert(r3v_native_plan_session_admit(&s, &g.submissions[0], 1, 1) ==
           R3V_NATIVE_PLAN_SESSION_ADMITTED);
-   assert(r3v_native_plan_session_finish(&s) ==
+   assert(r3v_native_plan_session_finish(&s, 1) ==
           R3V_NATIVE_PLAN_SESSION_INCOMPLETE);
    /* An incomplete finish is itself terminal. */
    assert(s.terminal);
@@ -446,7 +446,7 @@ test_session(void)
       assert(t.terminal && t.next_index == 0);
       assert(r3v_native_plan_session_admit(&t, &g.submissions[0], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
       assert(r3v_native_plan_session_bind(&t, &g) ==
              R3V_NATIVE_PLAN_SESSION_CONSUMED);
@@ -474,7 +474,7 @@ test_session(void)
       assert(r3v_native_plan_session_admit(&t, &g.submissions[1], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_EXHAUSTED);
       assert(t.terminal);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
    }
    /* The complete replay finishes once and refuses reuse. */
@@ -487,9 +487,9 @@ test_session(void)
       assert(r3v_native_plan_session_admit(&t, &g.submissions[1], 1, 5) ==
              R3V_NATIVE_PLAN_SESSION_ADMITTED);
       assert(t.referenced_bytes == 16384 + 4 + 96);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 5) ==
              R3V_NATIVE_PLAN_SESSION_ADMITTED);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 5) ==
              R3V_NATIVE_PLAN_SESSION_CONSUMED);
       assert(r3v_native_plan_session_admit(&t, &g.submissions[0], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
@@ -522,6 +522,23 @@ test_session(void)
              R3V_NATIVE_PLAN_SESSION_ADMITTED);
       assert(r3v_native_plan_session_admit(&t, &small.submissions[1], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_BYTES_EXCEEDED);
+   }
+   /* The final time check catches a session that crossed its deadline
+    * after its last admission.
+    */
+   {
+      struct r3v_native_plan deadline = good_plan();
+      deadline.max_runtime_seconds = 5;
+      struct r3v_native_plan_session t;
+      r3v_native_plan_session_init(&t);
+      assert(r3v_native_plan_session_bind(&t, &deadline) ==
+             R3V_NATIVE_PLAN_SESSION_ADMITTED);
+      assert(r3v_native_plan_session_admit(&t, &deadline.submissions[0], 1, 4) ==
+             R3V_NATIVE_PLAN_SESSION_ADMITTED);
+      assert(r3v_native_plan_session_admit(&t, &deadline.submissions[1], 1, 5) ==
+             R3V_NATIVE_PLAN_SESSION_ADMITTED);
+      assert(r3v_native_plan_session_finish(&t, 6) ==
+             R3V_NATIVE_PLAN_SESSION_RUNTIME_EXCEEDED);
    }
 }
 

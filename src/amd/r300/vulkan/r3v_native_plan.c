@@ -936,7 +936,8 @@ r3v_native_plan_session_fail(struct r3v_native_plan_session *s,
 }
 
 enum r3v_native_plan_session_result
-r3v_native_plan_session_finish(struct r3v_native_plan_session *s)
+r3v_native_plan_session_finish(struct r3v_native_plan_session *s,
+                               uint64_t elapsed_seconds)
 {
    if (!s->bound)
       return R3V_NATIVE_PLAN_SESSION_UNBOUND;
@@ -946,6 +947,8 @@ r3v_native_plan_session_finish(struct r3v_native_plan_session *s)
       return R3V_NATIVE_PLAN_SESSION_CONSUMED;
    if (s->next_index != s->plan->submission_count)
       return latch(s, R3V_NATIVE_PLAN_SESSION_INCOMPLETE);
+   if (elapsed_seconds > s->plan->max_runtime_seconds)
+      return latch(s, R3V_NATIVE_PLAN_SESSION_RUNTIME_EXCEEDED);
    s->completed = true;
    return R3V_NATIVE_PLAN_SESSION_ADMITTED;
 }

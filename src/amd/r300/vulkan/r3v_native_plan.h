@@ -292,12 +292,14 @@ void r3v_native_plan_session_fail(struct r3v_native_plan_session *session,
                                   enum r3v_native_plan_session_result why);
 
 /* Proves plan exhaustion after the last expected submission: every entry
- * consumed and no failure latched.  An incomplete session is INCOMPLETE
- * and latches terminal, so a shard that stopped short cannot be resumed
- * or reported complete.
+ * consumed, no failure latched, and the elapsed monotonic runtime stays
+ * within the plan's ceiling.  An incomplete or overdue session latches
+ * terminal, so a shard that stopped short or finished late cannot be
+ * resumed or reported complete.
  */
 enum r3v_native_plan_session_result
-r3v_native_plan_session_finish(struct r3v_native_plan_session *session);
+r3v_native_plan_session_finish(struct r3v_native_plan_session *session,
+                               uint64_t elapsed_seconds);
 
 const char *r3v_native_plan_parse_result_name(
    enum r3v_native_plan_parse_result r);
