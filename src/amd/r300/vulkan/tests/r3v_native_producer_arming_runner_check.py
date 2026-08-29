@@ -175,6 +175,27 @@ def main():
             print("FAIL: sweep stream does not carry its own digest",
                   file=sys.stderr)
             return 1
+
+        # A matching sweep digest must arm the sweep stream under the same
+        # deterministic fixture contract as the reference calibration.
+        environment["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"] = "1"
+        environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = \
+            sweep_digest.group(1)
+        sweep_authorized = run(runner, evidence_dir, environment,
+                               "fp24-sweep", "--fixture")
+        if sweep_authorized.returncode != 0 or \
+                "verdict: armed" not in sweep_authorized.stdout:
+            print("FAIL: sweep digest did not arm the sweep stream",
+                  file=sys.stderr)
+            print(sweep_authorized.stdout, file=sys.stderr)
+            return 1
+        if "provider=fixture" not in sweep_authorized.stdout or \
+                "stream=fp24-sweep" not in sweep_authorized.stdout:
+            print("FAIL: sweep ARMED calibration did not identify its "
+                  "fixture stream", file=sys.stderr)
+            print(sweep_authorized.stdout, file=sys.stderr)
+            return 1
+
         environment["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"] = "1"
         environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = digest.group(1)
         cross = run(runner, evidence_dir, environment, "fp24-sweep")
@@ -182,6 +203,15 @@ def main():
             print("FAIL: reference digest declared against the sweep "
                   "stream did not refuse", file=sys.stderr)
             print(cross.stdout, file=sys.stderr)
+            return 1
+        environment["R3V_NATIVE_AUTHORIZED_IB_BLAKE3"] = \
+            sweep_digest.group(1)
+        reverse_cross = run(runner, evidence_dir, environment)
+        if reverse_cross.returncode == 0 or \
+                "MISMATCH" not in reverse_cross.stdout:
+            print("FAIL: sweep digest declared against the reference "
+                  "stream did not refuse", file=sys.stderr)
+            print(reverse_cross.stdout, file=sys.stderr)
             return 1
         bad_selector = run(runner, evidence_dir, environment, "fp25-sweep")
         if bad_selector.returncode != 2:
@@ -224,7 +254,8 @@ def main():
 
         # No run may claim a submission happened.
         for result in (undeclared, armed, wrong_cell, stale_run, wrong_chip,
-                       sweep, cross, bisect, bisect_cross):
+                       sweep, sweep_authorized, cross, reverse_cross, bisect,
+                       bisect_cross):
             if "no submission attempted" not in result.stdout:
                 print("FAIL: report omits the no-submission statement",
                       file=sys.stderr)

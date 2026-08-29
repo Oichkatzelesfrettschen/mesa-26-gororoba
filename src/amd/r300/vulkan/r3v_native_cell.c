@@ -2622,10 +2622,11 @@ r3v_native_producer_fp24_bisect_cell_install(
 
 /* Records the producer-only cell: fills the carrier allocation with the
  * manifest poison, publishes it for the unsnooped GART, and installs the
- * reference producer pass against that one BO.  The poison is what makes
- * the read-back decidable -- a slot still holding it is a slot the pass
- * left unwritten -- so the prefill covers the whole allocation while the
- * expected extent covers the written slots alone.
+ * callback-selected reference, FP24 sweep, or FP24 bisection producer pass
+ * against that one BO.  The poison is what makes the read-back decidable --
+ * a slot still holding it is a slot the pass left unwritten -- so the
+ * prefill covers the whole allocation while the expected extent covers the
+ * written slots alone.
  */
 static VkResult
 record_r2vb_producer_stream(VkCommandBuffer commandBuffer,
