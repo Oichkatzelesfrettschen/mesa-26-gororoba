@@ -120,11 +120,16 @@ struct serial_run {
    FILE *transcript;
    int sampler_fd;
    bool sampler_closed;
-   /* Set when a SAMPLER_ENTER_READ message arrives: the census read is
-    * in progress from that instant, so a submission issued after it
-    * lands inside the capture.
+   /* Set when the machine accepts a SAMPLER_ENTER_READ message.  The
+    * token names the submission index whose census read is in progress,
+    * so the queue call issued after it lands inside that capture.
     */
    bool enter_read_seen;
+   uint32_t enter_read_index;
+   uint64_t sampler_sequence;
+   uint32_t sampler_last_submission_index;
+   bool sampler_sequence_seen;
+   bool sampler_submission_index_seen;
    char nonce[R3V_STATUS_LOAD_NONCE_LENGTH + 1];
    struct r3v_status_load_machine machine;
    uint32_t iterations_delivered;
@@ -194,18 +199,14 @@ sampler_pump(struct serial_run *run, int timeout_ms)
          datagram[got] = '\n';
          datagram[got + 1] = '\0';
       }
-      if (fputs(datagram, run->transcript) == EOF ||
-          fflush(run->transcript) != 0) {
-         r3v_status_load_machine_fault(&run->machine,
-                                       "transcript retention failed");
-         return;
-      }
 
       char role[32];
       char state[32];
       char timestamp[32];
       char protocol_magic[16];
       char protocol_version[16];
+      char submission_index_text[32];
+      char message_sequence_text[32];
       char nonce[R3V_STATUS_LOAD_NONCE_LENGTH + 2];
       if (!message_field(datagram, "sender_role", role, sizeof(role)) ||
           !message_field(datagram, "state", state, sizeof(state)) ||
@@ -215,6 +216,10 @@ sampler_pump(struct serial_run *run, int timeout_ms)
                          sizeof(protocol_magic)) ||
           !message_field(datagram, "protocol_version", protocol_version,
                          sizeof(protocol_version)) ||
+          !message_field(datagram, "submission_index", submission_index_text,
+                         sizeof(submission_index_text)) ||
+          !message_field(datagram, "message_sequence", message_sequence_text,
+                         sizeof(message_sequence_text)) ||
           !message_field(datagram, "run_nonce", nonce, sizeof(nonce))) {
          r3v_status_load_machine_fault(&run->machine,
                                        "sampler message is malformed");
@@ -249,9 +254,68 @@ sampler_pump(struct serial_run *run, int timeout_ms)
                                        "sampler timestamp is not decimal");
          return;
       }
-      if (strcmp(state, "SAMPLER_ENTER_READ") == 0)
+      errno = 0;
+      end = NULL;
+      unsigned long long parsed_submission_index =
+         strtoull(submission_index_text, &end, 10);
+      if (errno != 0 || end == submission_index_text || *end != '\0' ||
+          parsed_submission_index > UINT32_MAX) {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "sampler submission index is not a "
+                                       "32-bit decimal");
+         return;
+      }
+      errno = 0;
+      end = NULL;
+      unsigned long long parsed_message_sequence =
+         strtoull(message_sequence_text, &end, 10);
+      if (errno != 0 || end == message_sequence_text || *end != '\0') {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "sampler message sequence is not "
+                                       "decimal");
+         return;
+      }
+      const uint32_t submission_index = (uint32_t)parsed_submission_index;
+      const uint64_t message_sequence = (uint64_t)parsed_message_sequence;
+      char canonical[R3V_STATUS_LOAD_MESSAGE_CAPACITY];
+      if (r3v_status_load_format_message(
+             canonical, sizeof(canonical), role, state, nonce,
+             submission_index, message_sequence, (uint64_t)ns) < 0 ||
+          strcmp(canonical, datagram) != 0) {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "sampler message is not canonical");
+         return;
+      }
+      if (run->sampler_sequence_seen &&
+          message_sequence <= run->sampler_sequence) {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "sampler message sequence regressed");
+         return;
+      }
+      if (run->sampler_submission_index_seen &&
+          submission_index < run->sampler_last_submission_index) {
+         r3v_status_load_machine_fault(
+            &run->machine, "sampler submission index regressed");
+         return;
+      }
+      if (r3v_status_load_machine_sampler(&run->machine, state,
+                                          submission_index, (uint64_t)ns) !=
+          0)
+         return;
+      run->sampler_sequence = message_sequence;
+      run->sampler_sequence_seen = true;
+      run->sampler_last_submission_index = submission_index;
+      run->sampler_submission_index_seen = true;
+      if (strcmp(state, "SAMPLER_ENTER_READ") == 0) {
          run->enter_read_seen = true;
-      r3v_status_load_machine_sampler(&run->machine, state, (uint64_t)ns);
+         run->enter_read_index = submission_index;
+      }
+      if (fputs(datagram, run->transcript) == EOF ||
+          fflush(run->transcript) != 0) {
+         r3v_status_load_machine_fault(&run->machine,
+                                       "transcript retention failed");
+         return;
+      }
       /* Loop with a zero wait so a burst of datagrams drains whole. */
       timeout_ms = 0;
    }
@@ -273,6 +337,29 @@ sampler_wait(struct serial_run *run, enum r3v_status_load_sampler target,
       sampler_pump(run, (int)((deadline - now) / 1000000ull) + 1);
    }
    return run->machine.sampler == target;
+}
+
+/* Pumps until the sampler grants the one-shot token for the requested
+ * submission index.  A token for another index is rejected by the machine;
+ * a missing token stays a bounded barrier failure instead of racing the
+ * census read window.
+ */
+static bool
+sampler_wait_for_enter_read(struct serial_run *run, uint32_t submission_index,
+                            int budget_ms)
+{
+   const uint64_t deadline =
+      run_now_ns(NULL) + (uint64_t)budget_ms * 1000000ull;
+   while (run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
+          (!run->enter_read_seen ||
+           run->enter_read_index != submission_index)) {
+      uint64_t now = run_now_ns(NULL);
+      if (now >= deadline || run->sampler_closed)
+         return false;
+      sampler_pump(run, (int)((deadline - now) / 1000000ull) + 1);
+   }
+   return run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
+          run->enter_read_seen && run->enter_read_index == submission_index;
 }
 
 static void
@@ -827,6 +914,12 @@ main(int argc, char **argv)
       fprintf(stderr, "machine initialization refused its inputs\n");
       return 1;
    }
+   if (census_absent &&
+       r3v_status_load_machine_set_sampler_read_required(&run.machine, 0) !=
+          0) {
+      fprintf(stderr, "census-absent gate configuration failed\n");
+      return 1;
+   }
 
    stage("sampler ready");
    if (!sampler_wait(&run, R3V_STATUS_LOAD_SAMPLER_READY,
@@ -839,39 +932,31 @@ main(int argc, char **argv)
 
    /* The hazard: up to the declared bound of live DRM_RADEON_CS
     * submissions, one outstanding at a time, each under the full event
-    * ladder.  The machine stops the run at its first failure and no
-    * resubmission follows an abort.
+    * ladder.  Observed submissions consume one sampler ENTER_READ token
+    * keyed to their iteration before the queue call.  A census-absent
+    * control explicitly omits that token while retaining READY gating.
+    * The machine stops the run at its first failure and no resubmission
+    * follows an abort.
     */
-   /* The burst's single window must overlap the census capture, so the
-    * submission waits for the sampler's ENTER_READ: the kernel is
-    * recording from that message on, and the queue call issued after it
-    * puts the GPU-busy interval inside the capture instead of racing it.
-    * The serial cell keeps its many-window overlap and submits from
-    * READY.  A census-absent control run has no capture to overlap, so
-    * it submits from READY too.
-    */
-   if (burst_draws != 0 && !census_absent) {
-      stage("census read in progress");
-      const uint64_t read_deadline =
-         run_now_ns(NULL) + (uint64_t)SAMPLER_WAIT_BUDGET_MS * 1000000ull;
-      while (run.machine.phase == R3V_STATUS_LOAD_RUNNING &&
-             !run.enter_read_seen && !run.sampler_closed &&
-             run_now_ns(NULL) < read_deadline)
-         sampler_pump(&run, 100);
-      if (!run.enter_read_seen &&
-          run.machine.phase == R3V_STATUS_LOAD_RUNNING)
-         r3v_status_load_machine_fault(&run.machine,
-                                       "census read never began within "
-                                       "the wait budget");
-   }
-
    stage("serial submissions");
+   if (!census_absent)
+      stage("sampler read tokens");
    for (uint32_t i = 0; i < iterations; i++) {
-      sampler_pump(&run, 0);
       if (run.machine.phase != R3V_STATUS_LOAD_RUNNING)
          break;
+      if (census_absent) {
+         sampler_pump(&run, 0);
+      } else if (!sampler_wait_for_enter_read(
+                    &run, i, SAMPLER_WAIT_BUDGET_MS)) {
+         if (run.machine.phase == R3V_STATUS_LOAD_RUNNING)
+            r3v_status_load_machine_fault(
+               &run.machine,
+               "sampler ENTER_READ missing for submission index");
+         break;
+      }
       if (r3v_status_load_machine_iterate(&run.machine) != 0)
          break;
+      run.enter_read_seen = false;
    }
 
    stage("sampler stop");

@@ -41,6 +41,7 @@ enum fail_stage {
    FAIL_POST_SUBMIT_CHECK,
    FAIL_VERIFY_REFUSE,
    FAIL_VERIFY_MISMATCH,
+   FAIL_VERIFY_MISMATCH_RETAIN,
    FAIL_RETAIN,
    FAIL_REPOISON,
 };
@@ -53,6 +54,7 @@ struct fake {
    enum fail_stage fail_stage;
    uint32_t fail_iteration;
    int emit_failure;
+   uint32_t emit_failures_remaining;
    char lines[MAX_LINES][R3V_STATUS_LOAD_MESSAGE_CAPACITY];
    uint32_t line_count;
    uint64_t sampler_sequence;
@@ -77,6 +79,10 @@ fake_emit(void *ctx, const char *line)
    struct fake *fake = ctx;
    if (fake->emit_failure)
       return -1;
+   if (fake->emit_failures_remaining != 0) {
+      fake->emit_failures_remaining--;
+      return -1;
+   }
    if (fake->line_count >= MAX_LINES)
       return -1;
    snprintf(fake->lines[fake->line_count],
@@ -141,7 +147,9 @@ fake_verify(void *ctx, uint32_t i)
    struct fake *fake = ctx;
    if (fake->fail_stage == FAIL_VERIFY_REFUSE && fake->fail_iteration == i)
       return -1;
-   if (fake->fail_stage == FAIL_VERIFY_MISMATCH && fake->fail_iteration == i)
+   if ((fake->fail_stage == FAIL_VERIFY_MISMATCH ||
+        fake->fail_stage == FAIL_VERIFY_MISMATCH_RETAIN) &&
+       fake->fail_iteration == i)
       return 1;
    return 0;
 }
@@ -149,7 +157,11 @@ fake_verify(void *ctx, uint32_t i)
 static int
 fake_retain(void *ctx, uint32_t i)
 {
-   return fake_stage(ctx, FAIL_RETAIN, i);
+   struct fake *fake = ctx;
+   if (fake_stage(fake, FAIL_RETAIN, i) != 0 ||
+       fake_stage(fake, FAIL_VERIFY_MISMATCH_RETAIN, i) != 0)
+      return -1;
+   return 0;
 }
 
 static int
@@ -193,7 +205,8 @@ sampler_event(struct fake *fake, struct r3v_status_load_machine *machine,
       return -1;
    if (fake_emit(fake, line) != 0)
       return -1;
-   return r3v_status_load_machine_sampler(machine, state, now);
+   return r3v_status_load_machine_sampler(machine, state, submission_index,
+                                          now);
 }
 
 static int failures;
@@ -390,12 +403,35 @@ main(int argc, char **argv)
          if (out == NULL) {
             fail("transcript_write", "cannot open the output path");
          } else {
-            for (uint32_t n = 0; n < fake.line_count; n++)
-               fputs(fake.lines[n], out);
-            fclose(out);
+            int write_failed = 0;
+            for (uint32_t n = 0; n < fake.line_count; n++) {
+               if (fputs(fake.lines[n], out) == EOF) {
+                  write_failed = 1;
+                  break;
+               }
+            }
+            if (write_failed)
+               fail("transcript_write", "writing a transcript line failed");
+            if (fclose(out) != 0)
+               fail("transcript_close", "closing the transcript failed");
          }
       }
    }
+
+   /* A sink that rejects one attempted line recovers for ABORT.  The
+    * undelivered line's sequence is reused, so the retained transcript has
+    * a contiguous per-sender sequence with no phantom message.
+    */
+   memset(&fake, 0, sizeof(fake));
+   fake.emit_failures_remaining = 1;
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   r3v_status_load_machine_iterate(&machine);
+   expect_abort("one_shot_sink_failure", &fake, &machine, "sink failed", 0,
+                0);
+   if (fake.line_count != 1 ||
+       strstr(fake.lines[0], "\"message_sequence\": 1") == NULL)
+      fail("one_shot_sink_failure", "ABORT did not reuse sequence one");
 
    /* iterate() past COMPLETE aborts instead of emitting a ladder. */
    if (r3v_status_load_machine_iterate(&machine) == 0)
@@ -418,11 +454,66 @@ main(int argc, char **argv)
    sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
    sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
    sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    r3v_status_load_machine_iterate(&machine);
    sampler_event(&fake, &machine, "SAMPLER_STOPPED", 0);
    r3v_status_load_machine_iterate(&machine);
    expect_abort("sampler_stopped_midrun", &fake, &machine,
                 "sampler stopped", 1, 3);
+
+   /* ENTER_READ is a one-shot capability tied to the next iteration. */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 2);
+   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
+   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
+   r3v_status_load_machine_iterate(&machine);
+   r3v_status_load_machine_iterate(&machine);
+   expect_abort("sampler_token_reuse", &fake, &machine,
+                "ENTER_READ missing", 1, 3);
+
+   /* A token for a later iteration cannot open an earlier submission. */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
+   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 1);
+   expect_abort("sampler_token_index", &fake, &machine,
+                "submission index differs", 0, 0);
+
+   /* Duplicate ENTER_READ events are protocol faults, even when the
+    * duplicate carries the same index.
+    */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
+   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
+   expect_abort("sampler_token_duplicate", &fake, &machine,
+                "duplicate ENTER_READ", 0, 0);
+
+   /* The census-absent control explicitly releases the token gate while
+    * retaining the sampler-ready and sampler-stopped barriers.
+    */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   if (r3v_status_load_machine_set_sampler_read_required(&machine, 0) != 0)
+      fail("census_absent_gate", "control gate could not be disabled");
+   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
+   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   if (r3v_status_load_machine_iterate(&machine) != 0 ||
+       r3v_status_load_machine_finish(&machine) != 0 ||
+       r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_COMPLETE)
+      fail("census_absent_gate", "control run did not complete");
 
    /* Operation failures, each at its exact ladder position. */
    static const struct {
@@ -442,7 +533,9 @@ main(int argc, char **argv)
         "post-submit status check failed", 10 },
       { "verify_refusal", FAIL_VERIFY_REFUSE, "verification refused", 12 },
       { "verify_mismatch", FAIL_VERIFY_MISMATCH, "verification mismatch",
-        13 },
+        14 },
+      { "mismatch_retention_failure", FAIL_VERIFY_MISMATCH_RETAIN,
+        "retention failed", 13 },
       { "retention_failure", FAIL_RETAIN, "retention failed", 13 },
       { "repoison_failure", FAIL_REPOISON, "repoison failed", 14 },
    };
@@ -542,6 +635,21 @@ main(int argc, char **argv)
       if (r3v_status_load_format_message(tiny, sizeof(tiny), "submitter",
                                          "PREPARE", NONCE, 0, 1, 1000) >= 0)
          fail("format_capacity", "short buffer accepted");
+   }
+   {
+      char line[R3V_STATUS_LOAD_MESSAGE_CAPACITY];
+      if (r3v_status_load_format_message(line, sizeof(line), "sampler\"",
+                                         "SAMPLER_READY", NONCE, 0, 1,
+                                         1000) >= 0)
+         fail("format_sender_role", "quoted sender role accepted");
+      if (r3v_status_load_format_message(line, sizeof(line), "sampler",
+                                         "SAMPLER_READY\"",
+                                         NONCE, 0, 1, 1000) >= 0)
+         fail("format_state", "quoted state accepted");
+      if (r3v_status_load_format_message(line, sizeof(line), "sampler",
+                                         "SAMPLER_READY", "bad\"nonce", 0,
+                                         1, 1000) >= 0)
+         fail("format_nonce", "quoted nonce accepted");
    }
 
    if (failures) {
