@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 #
-# Offline kernel replay of the R2VB FLOAT_2 tuple burst pass.
+# Offline kernel replay of the R2VB tuple-width burst pass.
 #
 # R3V_CS_TRACK_REPLAY_TOOL names replay_r300_cs_track, built from the
 # Linux radeon source tree; the known-good arms prove the parser admits
@@ -12,13 +12,13 @@
 # width predicate over every member draw.  An unset variable is an
 # absent configuration and skips.
 #
-# Usage: run_r2vb_float2_tuple_burst_replay.sh \
-#            <r300_r2vb_float2_tuple_burst_manifest>
+# Usage: run_r2vb_tuple_width_burst_replay.sh \
+#            <r300_r2vb_tuple_width_burst_manifest>
 
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <r300_r2vb_float2_tuple_burst_manifest-binary>" >&2
+    echo "usage: $0 <r300_r2vb_tuple_width_burst_manifest-binary>" >&2
     exit 1
 fi
 
@@ -37,7 +37,8 @@ if [ ! -x "${manifest_tool}" ]; then
     exit 1
 fi
 
-workdir=$(mktemp -d)
+temporary_root=${TMPDIR:-.}
+workdir=$(mktemp -d "${temporary_root%/}/r3v-tuple-width-burst-replay.XXXXXX")
 trap 'rm -rf "${workdir}"' EXIT
 
 # expect_reject NAME [ARGS...]: the mutated replay must report a parser
@@ -225,6 +226,6 @@ BUNDLE
     fi
 done
 
-echo "run_r2vb_float2_tuple_burst_replay: the burst parses clean at both" \
+echo "run_r2vb_tuple_width_burst_replay: the burst parses clean at both" \
      "depths and both model widths, every known-bad arm rejects, and the" \
      "width predicate passes every member draw"
