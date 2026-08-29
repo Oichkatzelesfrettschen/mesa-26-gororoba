@@ -35,20 +35,22 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 
 # Lines a header may carry that name a holder.  Each entry is a holder this
 # tree preserves verbatim because the upstream attribution is reviewed for
-# files in this lane.
-REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = (
-    # r300_reg.h carries its upstream register-header attribution verbatim
-    # through the move into src/amd/r300/common.
-    "Nicolai Haehnle et al.",
-)
+# every audited file.  PATH_COPYRIGHT_HOLDERS carries file-specific
+# exceptions.
+REAL_COPYRIGHT_HOLDERS: tuple[str, ...] = ()
 
 # Attribution introduced to the R3V audit by a directory move is reviewed for
-# the exact historical file, not promoted into a lane-wide template.  Both
-# entries below preserve the pre-move Gallium header verbatim.  Keeping this
+# the exact historical file, not promoted into a lane-wide template.  The
+# entries preserve pre-move Gallium headers verbatim.  Keeping the
 # rule path-specific prevents a new file from borrowing an established
 # contributor's name merely because another file in the tree legitimately
 # carries it.
 PATH_COPYRIGHT_HOLDERS: dict[str, tuple[str, ...]] = {
+    # r300_reg.h carries its upstream register-header attribution verbatim
+    # through the move into src/amd/r300/common.
+    "src/amd/r300/common/r300_reg.h": (
+        "Nicolai Haehnle et al.",
+    ),
     "src/amd/r300/common/r300_capabilities.h": (
         "Corbin Simpson <MostAwesomeDude@gmail.com>",
     ),
@@ -80,10 +82,12 @@ REAL_COPYRIGHT_HOLDER_KEYS = frozenset(
     normalize_holder(holder) for holder in REAL_COPYRIGHT_HOLDERS)
 
 
-def path_holder_keys(path: Path) -> frozenset[str]:
+def path_holder_keys(
+    path: Path, repository_root: Path = REPO_ROOT
+) -> frozenset[str]:
     """Return reviewed holder keys for the exact repository-relative path."""
     try:
-        path_posix = path.resolve().relative_to(REPO_ROOT).as_posix()
+        path_posix = path.resolve().relative_to(repository_root.resolve()).as_posix()
     except ValueError:
         return frozenset()
     for reviewed_path, holders in PATH_COPYRIGHT_HOLDERS.items():
@@ -128,7 +132,7 @@ def has_spdx_identifier(line: str) -> bool:
     return bool(value and value.strip())
 
 
-def audit_file(path: Path):
+def audit_file(path: Path, repository_root: Path = REPO_ROOT):
     """Return the defects in one file's header."""
     try:
         head = path.read_text(errors="replace").splitlines()[:HEADER_LINES]
@@ -136,7 +140,9 @@ def audit_file(path: Path):
         return [f"{path}: unreadable: {exc}"]
 
     defects = []
-    reviewed_holder_keys = REAL_COPYRIGHT_HOLDER_KEYS | path_holder_keys(path)
+    reviewed_holder_keys = REAL_COPYRIGHT_HOLDER_KEYS | path_holder_keys(
+        path, repository_root
+    )
     if not any(has_spdx_identifier(line) for line in head):
         defects.append(f"{path}: no SPDX-License-Identifier in the first "
                        f"{HEADER_LINES} lines")
@@ -272,13 +278,24 @@ def selftest():
         "reviewed-copyright-sign": "Copyright \u00a9 2008 Nicolai Haehnle et al.",
         "reviewed-copyright-comma": "Copyright (c) 2008, Nicolai Haehnle et al.",
     }
-    for name, line in reviewed_headers.items():
-        reviewed_header = CLEAN_HEADER.replace(
-            "/* SPDX-License-Identifier: MIT */",
-            "/* SPDX-License-Identifier: MIT\n * " + line + "\n */")
-        reviewed_defects = fixture_defects(reviewed_header)
-        if reviewed_defects:
-            raise AssertionError((name, reviewed_defects))
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture_root = Path(tmp)
+        scoped_path = fixture_root / "src/amd/r300/common/r300_reg.h"
+        scoped_path.parent.mkdir(parents=True, exist_ok=True)
+        unrelated_path = fixture_root / "fixture.c"
+        for name, line in reviewed_headers.items():
+            reviewed_header = CLEAN_HEADER.replace(
+                "/* SPDX-License-Identifier: MIT */",
+                "/* SPDX-License-Identifier: MIT\n * " + line + "\n */")
+            scoped_path.write_text(reviewed_header)
+            reviewed_defects = audit_file(scoped_path, fixture_root)
+            if reviewed_defects:
+                raise AssertionError((name, reviewed_defects))
+            unrelated_path.write_text(reviewed_header)
+            unrelated_defects = audit_file(unrelated_path, fixture_root)
+            if (len(unrelated_defects) != 1 or
+                    "unreviewed holder" not in unrelated_defects[0]):
+                raise AssertionError((name, unrelated_defects))
     with tempfile.TemporaryDirectory() as tmp:
         for reviewed_path, holders in PATH_COPYRIGHT_HOLDERS.items():
             path = REPO_ROOT / reviewed_path
@@ -304,7 +321,7 @@ def selftest():
             raise AssertionError((name, defects))
     print(f"r3v_source_header_audit selftest: {len(FIXTURES)} isolated "
           f"defect legs, {len(PATH_COPYRIGHT_HOLDERS)} path-attribution "
-          f"pairs, and {len(reviewed_headers) + 1} generic clean legs OK")
+          f"pairs, and {len(reviewed_headers)} scoped punctuation legs OK")
     return 0
 
 
