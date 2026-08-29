@@ -60,7 +60,9 @@ static const uint32_t tuple_psc_ext[8] = {
 
 /* The FLOAT_4 model contrast: both elements fetch at full width under
  * the identity swizzle, so the logical input equals the stored record
- * with no PSC expansion.
+ * with no PSC expansion.  Symbol discovery uses (rg --fixed-strings
+ * float4_model_psc src/amd/r300/common/; rg --fixed-strings
+ * R300_DATA_TYPE_FLOAT_4 src/amd/r300/common/).
  */
 static const uint32_t float4_model_psc[8] = {
    (R300_DATA_TYPE_FLOAT_4 | (TUPLE_PSC_SLOT_VEC << R300_DST_VEC_LOC_SHIFT)) |

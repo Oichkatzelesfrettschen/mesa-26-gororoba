@@ -183,7 +183,8 @@ r300_r2vb_input_order_rank_by_identity(nir_shader *vs_nir,
  * removes non-position stores, runs DCE, and compacts the inputs before the
  * fragment pass is compiled.  Telemetry uses the same clone reduction so
  * every physical application input feeding gl_Position keeps its measured
- * identity. */
+ * identity.  Symbol discovery uses (rg --fixed-strings
+ * r300_r2vb_nir_restage_vs_as_fs src/amd/r300/compiler/). */
 unsigned
 r300_r2vb_position_source_scan_list_status(
     nir_shader *vs_nir, struct r300_r2vb_position_source *out,

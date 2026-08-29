@@ -100,6 +100,9 @@ struct r300_zb_depth_control_ib {
     R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS * 4u)
 /* R300_DEPTHFORMAT_16BIT_INT_Z stores two bytes per pixel, the width the
  * kernel's r300_packet0_check reads out of ZB_FORMAT as track->zb.cpp.
+ * Symbol discovery uses (rg --fixed-strings r300_packet0_check
+ * drivers/gpu/drm/radeon/; rg --fixed-strings track->zb.cpp
+ * drivers/gpu/drm/radeon/) in the Linux kernel source tree.
  */
 #define R300_ZB_DEPTH_CONTROL_DEPTH_CPP 2u
 #define R300_ZB_DEPTH_CONTROL_DEPTH_BYTES \
