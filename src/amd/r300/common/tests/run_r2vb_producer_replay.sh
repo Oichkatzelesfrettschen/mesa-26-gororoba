@@ -63,12 +63,89 @@ for artifact in bo_table.json manifest.json; do
     fi
 done
 
+# Join the generated metadata before constructing the parser bundle.  The
+# producer manifest derives the carrier extent from pitch * height * cpp;
+# the BO table must repeat that exact extent and its read/write GTT domains.
+# Keeping this check in the replay wrapper makes the ACCEPT verdict cover the
+# same allocation that the generator publishes, rather than a larger control
+# allocation that could hide an undersized-carrier regression.
+carrier_size=$(python3 - "${workdir}/bo_table.json" \
+    "${workdir}/manifest.json" "${workdir}/ib.bin" <<'PY'
+import json
+import pathlib
+import sys
+
+
+def reject(message):
+    print(f"producer metadata: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+bo_path = pathlib.Path(sys.argv[1])
+manifest_path = pathlib.Path(sys.argv[2])
+ib_path = pathlib.Path(sys.argv[3])
+try:
+    bo_table = json.loads(bo_path.read_text())
+    manifest = json.loads(manifest_path.read_text())
+    ib_size = ib_path.stat().st_size
+except (OSError, json.JSONDecodeError) as error:
+    reject(f"cannot parse generated metadata: {error}")
+
+if not isinstance(bo_table, dict) or not isinstance(manifest, dict):
+    reject("manifest and BO table must be JSON objects")
+if manifest.get("schema") != "r300-r2vb-producer-pass/1":
+    reject(f"unexpected schema {manifest.get('schema')!r}")
+if manifest.get("emitter") != "r300_r2vb_producer_pass":
+    reject(f"unexpected emitter {manifest.get('emitter')!r}")
+if ib_size % 4 or manifest.get("ib_dwords") != ib_size // 4:
+    reject("manifest ib_dwords does not match ib.bin")
+
+geometry_fields = (
+    "carrier_pitch_pixels",
+    "carrier_height",
+    "carrier_cpp_bytes",
+)
+if any(not isinstance(manifest.get(field), int) for field in geometry_fields):
+    reject("carrier geometry fields must be integers")
+pitch, height, cpp = (manifest[field] for field in geometry_fields)
+expected_size = pitch * height * cpp
+if expected_size <= 0 or manifest.get("carrier_size_bytes") != expected_size:
+    reject("carrier size does not derive from manifest geometry")
+
+slots = bo_table.get("slots")
+if (
+    not isinstance(slots, list)
+    or len(slots) != 1
+    or not isinstance(slots[0], dict)
+):
+    reject("BO table must contain one carrier slot")
+slot = slots[0]
+if (
+    slot.get("slot") != 0
+    or slot.get("role") != "carrier"
+    or slot.get("domain") != "GTT"
+    or slot.get("read_domains") != 2
+    or slot.get("write_domain") != 2
+    or slot.get("size") != expected_size
+):
+    reject(f"carrier BO metadata does not match manifest: {slot!r}")
+
+print(expected_size)
+PY
+)
+case "${carrier_size}" in
+    ''|*[!0-9]*)
+        echo "producer metadata returned a non-numeric carrier size" >&2
+        exit 1
+        ;;
+esac
+
 # One buffer object: the carrier, written through the color backend and
 # read back as the vertex stream, so both domains are GTT and the entry
 # carries read and write.
-cat > "${workdir}/bundle.txt" <<'BUNDLE'
+cat > "${workdir}/bundle.txt" <<BUNDLE
 family rs480
-bo 0 role=carrier size=4096 read_domains=0x2 write_domain=0x2
+bo 0 role=carrier size=${carrier_size} read_domains=0x2 write_domain=0x2
 BUNDLE
 
 good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
