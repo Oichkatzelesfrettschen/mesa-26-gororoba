@@ -47,6 +47,7 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
  * expiry is recorded rather than fatal.
  */
 #define SAMPLER_WAIT_BUDGET_MS 120000
+#define MAX_DEFERRED_TRANSPORT_LINES 8
 
 static void
 stage(const char *name)
@@ -132,6 +133,14 @@ struct serial_run {
    uint32_t member_stride_bytes;
    const char *evidence_dir;
    FILE *transcript;
+   /* Transport boundary callbacks run inside the CS ioctl and completion
+    * wait brackets.  Keep their already-timestamped protocol lines in this
+    * bounded queue until vkQueueSubmit returns, so transcript I/O cannot
+    * widen either measured interval. */
+   char deferred_transport_lines[MAX_DEFERRED_TRANSPORT_LINES]
+      [R3V_STATUS_LOAD_MESSAGE_CAPACITY];
+   uint32_t deferred_transport_line_count;
+   bool defer_transport_emit;
    int sampler_fd;
    bool sampler_closed;
    /* The sampler's one-shot window and read tokens are retained locally
@@ -167,9 +176,35 @@ static int
 run_emit(void *ctx, const char *line)
 {
    struct serial_run *run = ctx;
+   if (run->defer_transport_emit) {
+      if (run->deferred_transport_line_count >=
+          MAX_DEFERRED_TRANSPORT_LINES)
+         return -1;
+      snprintf(run->deferred_transport_lines[
+                   run->deferred_transport_line_count],
+               sizeof(run->deferred_transport_lines[0]), "%s", line);
+      run->deferred_transport_line_count++;
+      return 0;
+   }
    if (fputs(line, run->transcript) == EOF)
       return -1;
    return fflush(run->transcript) == 0 ? 0 : -1;
+}
+
+/* Transport callbacks capture their protocol timestamp before the kernel
+ * operation and queue the formatted line in run_emit().  The queue flushes
+ * only after vkQueueSubmit returns, outside both raw transport intervals. */
+static int
+flush_deferred_transport(struct serial_run *run)
+{
+   int result = 0;
+   for (uint32_t i = 0; i < run->deferred_transport_line_count; i++) {
+      if (fputs(run->deferred_transport_lines[i], run->transcript) == EOF ||
+          fflush(run->transcript) != 0)
+         result = -1;
+   }
+   run->deferred_transport_line_count = 0;
+   return result;
 }
 
 /* Receives every pending sampler datagram, retains each line in the
@@ -460,8 +495,11 @@ op_submission_trace(void *ctx, enum r3v_native_submission_trace_event event)
    default:
       return -1;
    }
-   return r3v_status_load_machine_transport_event(&run->machine,
-                                                   machine_event);
+   run->defer_transport_emit = true;
+   const int result = r3v_status_load_machine_transport_event(&run->machine,
+                                                               machine_event);
+   run->defer_transport_emit = false;
+   return result;
 }
 
 static int
@@ -519,14 +557,12 @@ op_submit(void *ctx, struct r3v_status_load_machine *machine,
                      .pCommandBuffers = &run->cmd,
                   },
                   VK_NULL_HANDLE);
-   run->last_queue_status = r3v_native_queue_submission_status(run->device);
-   /* The queue status carries whether transport reached the raw submission;
-    * the machine records the raw ioctl and completion boundaries through the
-    * trace hook during vkQueueSubmit.
+   const int flush_result = flush_deferred_transport(run);
+   /* The Vulkan result determines whether the queue call itself succeeded;
+    * the sideband queue status is sampled by the labeled post-submit check.
+    * Transport lines flush only after the timed queue operation returns.
     */
-   return run->last_queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED
-             ? -1
-             : 0;
+   return run->last_submit_result == VK_SUCCESS && flush_result == 0 ? 0 : -1;
 }
 
 static int
@@ -534,6 +570,7 @@ op_post_submit_check(void *ctx, uint32_t iteration)
 {
    (void)iteration;
    struct serial_run *run = ctx;
+   run->last_queue_status = r3v_native_queue_submission_status(run->device);
    return run->last_queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED ? 0
                                                                       : -1;
 }
