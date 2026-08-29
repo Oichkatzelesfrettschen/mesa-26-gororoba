@@ -454,6 +454,9 @@ test_immediate_points(void)
    r300_pm4_builder_init(&b, g.words, 14);
    r300_pm4_emit_immediate_points(&b, 2, 4, payload);
    assert(b.error == -ENOSPC);
+   assert(b.count == 0);
+   for (unsigned i = 0; i < ARRAY_SIZE(g.words); i++)
+      assert(g.words[i] == 0);
    uint32_t published = 0xffffffffu;
    assert(r300_pm4_builder_finish(&b, &published) == -ENOSPC);
    assert(published == 0);
