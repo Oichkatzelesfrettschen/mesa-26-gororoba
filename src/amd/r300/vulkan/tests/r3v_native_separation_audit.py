@@ -30,8 +30,8 @@ AUDIT_FORBIDDEN_SOURCE = 4
 AUDIT_INPUT_MISSING = 5
 
 # Gallium include roots and runtime identifiers the native compilation
-# must stay free of.  PIPE_FORMAT_* stays admissible because it comes
-# from util/format through idep_mesautil, not from a Gallium root.
+# must stay free of.  The PIPE_FORMAT_* provenance authority is
+# r3v_format.h; the native dependency edge is checked separately.
 FORBIDDEN_INCLUDE_PREFIXES = ("pipe/", "r300/", "winsys/", "gallium")
 FORBIDDEN_IDENTIFIERS = (
     "pipe_screen",
@@ -40,7 +40,12 @@ FORBIDDEN_IDENTIFIERS = (
     "r300_context",
     "radeon_winsys",
 )
-FORBIDDEN_INCLUDE_DIR_MARKERS = ("/gallium/",)
+
+
+def include_directory_is_forbidden(include_dir: str) -> bool:
+    """Return whether an include path contains the Gallium root directory."""
+    normalized = include_dir.replace("\\", "/")
+    return any(component == "gallium" for component in normalized.split("/"))
 
 
 def native_active_lines(text: str):
@@ -56,6 +61,7 @@ def native_active_lines(text: str):
 def strip_comments(text: str) -> str:
     """Remove block and line comments so citations stay out of the scan."""
     import re
+
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
     return re.sub(r"//[^\n]*", " ", text)
 
@@ -63,6 +69,7 @@ def strip_comments(text: str) -> str:
 def audit_sources(paths: list[str]) -> int:
     """Include and identifier scan over the native compilation's sources."""
     import re
+
     failures = []
     for path_name in paths:
         path = Path(path_name)
@@ -73,11 +80,12 @@ def audit_sources(paths: list[str]) -> int:
         for number, line in native_active_lines(stripped):
             include = re.match(r'\s*#\s*include\s+["<]([^">]+)[">]', line)
             if include and any(
-                    include.group(1).startswith(prefix)
-                    for prefix in FORBIDDEN_INCLUDE_PREFIXES):
+                include.group(1).startswith(prefix)
+                for prefix in FORBIDDEN_INCLUDE_PREFIXES
+            ):
                 failures.append(
-                    f"{path}:{number}: forbidden include "
-                    f"{include.group(1)}")
+                    f"{path}:{number}: forbidden include " f"{include.group(1)}"
+                )
                 continue
             if re.match(r"\s*struct\s+\w+\s*;\s*$", line):
                 # A bare forward declaration references nothing.
@@ -85,13 +93,15 @@ def audit_sources(paths: list[str]) -> int:
             for identifier in FORBIDDEN_IDENTIFIERS:
                 if re.search(rf"\b{identifier}\b", line):
                     failures.append(
-                        f"{path}:{number}: forbidden identifier "
-                        f"{identifier}")
+                        f"{path}:{number}: forbidden identifier " f"{identifier}"
+                    )
     if failures:
         print("\n".join(failures))
         return AUDIT_FORBIDDEN_SOURCE
-    print(f"r3v_native_separation_audit: {len(paths)} sources free of "
-          "Gallium includes and identifiers")
+    print(
+        f"r3v_native_separation_audit: {len(paths)} sources free of "
+        "Gallium includes and identifiers"
+    )
     return AUDIT_OK
 
 
@@ -99,6 +109,7 @@ def audit_compile_commands(path_name: str, object_marker: str) -> int:
     """Prove the native objects' compile commands carry no Gallium -I."""
     import json
     import shlex
+
     path = Path(path_name)
     if not path.is_file():
         print(f"compile_commands.json missing: {path}", file=sys.stderr)
@@ -110,31 +121,71 @@ def audit_compile_commands(path_name: str, object_marker: str) -> int:
         return AUDIT_INPUT_MISSING
     matched = 0
     failures = []
+    if not isinstance(entries, list):
+        print("compile_commands.json must contain an array", file=sys.stderr)
+        return AUDIT_INPUT_MISSING
     for entry in entries:
+        if not isinstance(entry, dict):
+            print("compile_commands.json entry is not an object", file=sys.stderr)
+            return AUDIT_INPUT_MISSING
         output = entry.get("output", "")
+        if not isinstance(output, str):
+            print("compile command output path is not text", file=sys.stderr)
+            return AUDIT_INPUT_MISSING
         if object_marker not in output:
             continue
         matched += 1
         arguments = entry.get("arguments")
         if arguments is None:
-            arguments = shlex.split(entry.get("command", ""))
-        for argument in arguments:
+            command = entry.get("command", "")
+            if not isinstance(command, str):
+                print(f"compile command for {output} is not text", file=sys.stderr)
+                return AUDIT_INPUT_MISSING
+            try:
+                arguments = shlex.split(command)
+            except ValueError as error:
+                print(
+                    f"compile command for {output} is unreadable: {error}",
+                    file=sys.stderr,
+                )
+                return AUDIT_INPUT_MISSING
+        if not isinstance(arguments, list) or not all(
+            isinstance(argument, str) for argument in arguments
+        ):
+            print(
+                f"compile command arguments for {output} are malformed", file=sys.stderr
+            )
+            return AUDIT_INPUT_MISSING
+        argument_index = 0
+        while argument_index < len(arguments):
+            argument = arguments[argument_index]
             include_dir = None
-            if argument.startswith("-I"):
+            if argument == "-I":
+                argument_index += 1
+                if argument_index == len(arguments) or arguments[
+                    argument_index
+                ].startswith("-"):
+                    failures.append(f"{output}: -I has no include directory")
+                    break
+                include_dir = arguments[argument_index]
+            elif argument.startswith("-I"):
                 include_dir = argument[2:]
-            if include_dir and any(marker in include_dir for marker in
-                                   FORBIDDEN_INCLUDE_DIR_MARKERS):
-                failures.append(f"{output}: forbidden include dir "
-                                f"{include_dir}")
+            if include_dir and include_directory_is_forbidden(include_dir):
+                failures.append(f"{output}: forbidden include dir " f"{include_dir}")
+            argument_index += 1
     if matched == 0:
-        print(f"no compile command matches object marker {object_marker!r}",
-              file=sys.stderr)
+        print(
+            f"no compile command matches object marker {object_marker!r}",
+            file=sys.stderr,
+        )
         return AUDIT_INPUT_MISSING
     if failures:
         print("\n".join(failures))
         return AUDIT_FORBIDDEN_SOURCE
-    print(f"r3v_native_separation_audit: {matched} native compile "
-          "commands free of Gallium include dirs")
+    print(
+        f"r3v_native_separation_audit: {matched} native compile "
+        "commands free of Gallium include dirs"
+    )
     return AUDIT_OK
 
 
@@ -144,22 +195,34 @@ def audit_dynamic_section(readelf: str, library: str) -> int:
         print(f"library missing: {library}", file=sys.stderr)
         return AUDIT_INPUT_MISSING
     try:
-        result = subprocess.run([readelf, "-d", library], check=False,
-                                capture_output=True, text=True)
+        result = subprocess.run(
+            [readelf, "-d", library], check=False, capture_output=True, text=True
+        )
     except (OSError, subprocess.SubprocessError, UnicodeError) as error:
         print(f"readelf failed for {library}: {error}", file=sys.stderr)
         return AUDIT_NM_FAILURE
-    if result.returncode != 0 or not result.stdout.strip():
-        print(f"readelf produced no dynamic section for {library}",
-              file=sys.stderr)
+    import re
+
+    dynamic_header = re.search(
+        r"(?m)^\s*Dynamic section at offset .* contains \d+ entries?:\s*$",
+        result.stdout,
+    )
+    dynamic_tags = re.findall(
+        r"(?m)^\s*0x[0-9a-fA-F]+\s+\([^)]+\)",
+        result.stdout,
+    )
+    if result.returncode != 0 or not (dynamic_header or dynamic_tags):
+        print(f"readelf produced no dynamic section for {library}", file=sys.stderr)
         return AUDIT_NM_FAILURE
-    failures = [line.strip() for line in result.stdout.splitlines()
-                if "NEEDED" in line and "gallium" in line.lower()]
+    failures = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if "NEEDED" in line and "gallium" in line.lower()
+    ]
     if failures:
         print("\n".join(failures))
         return AUDIT_FORBIDDEN_SYMBOL
-    print("r3v_native_separation_audit: dynamic section names no "
-          "Gallium library")
+    print("r3v_native_separation_audit: dynamic section names no " "Gallium library")
     return AUDIT_OK
 
 
@@ -316,20 +379,41 @@ def selftest() -> int:
 
     with tempfile.TemporaryDirectory(prefix="r3v-native-sources-") as tmp:
         root = Path(tmp)
+        native_backend_macro = "R3V_" + "NATIVE_BACKEND"
         source_cases = (
-            ("clean", '#include "util/format/u_formats.h"\n'
-             "struct pipe_screen;\n"
-             "/* comment names pipe_context and pipe/p_defines.h */\n",
-             AUDIT_OK),
-            ("include", '#include "pipe/p_defines.h"\n',
-             AUDIT_FORBIDDEN_SOURCE),
-            ("identifier", "struct pipe_screen *screen;\n",
-             AUDIT_FORBIDDEN_SOURCE),
-            ("conditional-arm", "#ifdef __SSE3__\n"
-             "int vector;\n"
-             "#else\n"
-             '#include "winsys/radeon_winsys.h"\n'
-             "#endif\n", AUDIT_FORBIDDEN_SOURCE),
+            (
+                "clean",
+                (
+                    '#include "util/format/u_formats.h"\n'
+                    "struct pipe_screen;\n"
+                    "/* comment names pipe_context and pipe/p_defines.h */\n"
+                ),
+                AUDIT_OK,
+            ),
+            ("include", '#include "pipe/p_defines.h"\n', AUDIT_FORBIDDEN_SOURCE),
+            ("identifier", "struct pipe_screen *screen;\n", AUDIT_FORBIDDEN_SOURCE),
+            (
+                "conditional-arm",
+                (
+                    "#ifdef __SSE3__\n"
+                    "int vector;\n"
+                    "#else\n"
+                    '#include "winsys/radeon_winsys.h"\n'
+                    "#endif\n"
+                ),
+                AUDIT_FORBIDDEN_SOURCE,
+            ),
+            (
+                "conditional-elif",
+                (
+                    "#if 0\n"
+                    "int vector;\n"
+                    f"#elif defined({native_backend_macro})\n"
+                    '#include "winsys/radeon_winsys.h"\n'
+                    "#endif\n"
+                ),
+                AUDIT_FORBIDDEN_SOURCE,
+            ),
         )
         for label, content, expected_status in source_cases:
             source = root / f"{label}.c"
@@ -338,8 +422,10 @@ def selftest() -> int:
             with contextlib.redirect_stdout(diagnostics):
                 status = audit_sources([str(source)])
             if status != expected_status:
-                print(f"source selftest {label}: expected "
-                      f"{expected_status}, got {status}")
+                print(
+                    f"source selftest {label}: expected "
+                    f"{expected_status}, got {status}"
+                )
                 return 1
         diagnostics = io.StringIO()
         with contextlib.redirect_stderr(diagnostics):
@@ -349,65 +435,109 @@ def selftest() -> int:
             return 1
 
         import json
+
         commands = root / "compile_commands.json"
-        commands.write_text(json.dumps([
-            {"output": "libr3v_native_impl.a.p/a.c.o",
-             "command": "cc -Isrc -Iinclude -c a.c"},
-            {"output": "other.p/b.c.o",
-             "command": "cc -Isrc/gallium/include -c b.c"},
-        ]))
+        commands.write_text(
+            json.dumps(
+                [
+                    {
+                        "output": "libr3v_native_impl.a.p/a.c.o",
+                        "arguments": ["cc", "-I", "src", "-Iinclude", "-c", "a.c"],
+                    },
+                    {
+                        "output": "other.p/b.c.o",
+                        "command": "cc -Isrc/gallium/include -c b.c",
+                    },
+                ]
+            )
+        )
         with contextlib.redirect_stdout(io.StringIO()):
-            status = audit_compile_commands(str(commands),
-                                            "libr3v_native_impl")
+            status = audit_compile_commands(str(commands), "libr3v_native_impl")
         if status != AUDIT_OK:
             print(f"compile-commands selftest clean: got {status}")
             return 1
-        commands.write_text(json.dumps([
-            {"output": "libr3v_native_impl.a.p/a.c.o",
-             "command": "cc -Isrc/gallium/include -c a.c"},
-        ]))
+        commands.write_text(
+            json.dumps(
+                [
+                    {
+                        "output": "libr3v_native_impl.a.p/a.c.o",
+                        "command": "cc -I src/gallium/include -c a.c",
+                    },
+                ]
+            )
+        )
         with contextlib.redirect_stdout(io.StringIO()):
-            status = audit_compile_commands(str(commands),
-                                            "libr3v_native_impl")
+            status = audit_compile_commands(str(commands), "libr3v_native_impl")
         if status != AUDIT_FORBIDDEN_SOURCE:
             print(f"compile-commands selftest forbidden: got {status}")
             return 1
         commands.write_text(json.dumps([]))
         with contextlib.redirect_stderr(io.StringIO()):
-            status = audit_compile_commands(str(commands),
-                                            "libr3v_native_impl")
+            status = audit_compile_commands(str(commands), "libr3v_native_impl")
         if status != AUDIT_INPUT_MISSING:
             print(f"compile-commands selftest unmatched: got {status}")
             return 1
         with contextlib.redirect_stderr(io.StringIO()):
-            status = audit_compile_commands(str(root / "absent.json"),
-                                            "libr3v_native_impl")
+            status = audit_compile_commands(
+                str(root / "absent.json"), "libr3v_native_impl"
+            )
         if status != AUDIT_INPUT_MISSING:
             print(f"compile-commands selftest missing: got {status}")
             return 1
+        commands.write_text(
+            json.dumps(
+                [
+                    {
+                        "output": "libr3v_native_impl.a.p/a.c.o",
+                        "arguments": ["cc", "-I", "-c", "a.c"],
+                    },
+                ]
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = audit_compile_commands(str(commands), "libr3v_native_impl")
+        if status != AUDIT_FORBIDDEN_SOURCE:
+            print(f"compile-commands selftest missing -I operand: got {status}")
+            return 1
 
         readelf = root / "readelf"
-        readelf.write_text("#!/bin/sh\ncat \"$2\"\n")
+        readelf.write_text('#!/bin/sh\ncat "$2"\n')
         readelf.chmod(0o755)
         dynamic = root / "clean.so"
         dynamic.write_text(
-            " 0x0000000000000001 (NEEDED) Shared library: [libdrm.so.2]\n")
+            " 0x0000000000000001 (NEEDED) Shared library: [libdrm.so.2]\n"
+        )
         with contextlib.redirect_stdout(io.StringIO()):
             status = audit_dynamic_section(str(readelf), str(dynamic))
         if status != AUDIT_OK:
             print(f"dynamic selftest clean: got {status}")
             return 1
         dynamic.write_text(
-            " 0x0000000000000001 (NEEDED) Shared library: "
-            "[libgallium.so]\n")
+            " 0x0000000000000001 (NEEDED) Shared library: " "[libgallium.so]\n"
+        )
         with contextlib.redirect_stdout(io.StringIO()):
             status = audit_dynamic_section(str(readelf), str(dynamic))
         if status != AUDIT_FORBIDDEN_SYMBOL:
             print(f"dynamic selftest forbidden: got {status}")
             return 1
+        dynamic.write_text("Dynamic section at offset 0x0 contains 0 entries:\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = audit_dynamic_section(str(readelf), str(dynamic))
+        if status != AUDIT_OK:
+            print(f"dynamic selftest header-only: got {status}")
+            return 1
+        dynamic.write_text("There is no dynamic section in this file.\n")
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stderr(diagnostics):
+            status = audit_dynamic_section(str(readelf), str(dynamic))
+        if status != AUDIT_NM_FAILURE:
+            print(f"dynamic selftest no-section: got {status}")
+            return 1
+        if "no dynamic section" not in diagnostics.getvalue():
+            print("dynamic selftest no-section diagnostic missing")
+            return 1
         with contextlib.redirect_stderr(io.StringIO()):
-            status = audit_dynamic_section(str(readelf),
-                                           str(root / "absent.so"))
+            status = audit_dynamic_section(str(readelf), str(root / "absent.so"))
         if status != AUDIT_INPUT_MISSING:
             print(f"dynamic selftest missing: got {status}")
             return 1
@@ -446,9 +576,11 @@ def main() -> int:
     if len(sys.argv) == 4 and sys.argv[1] == "--dynamic":
         return audit_dynamic_section(sys.argv[2], sys.argv[3])
     if len(sys.argv) != 3:
-        print("usage: r3v_native_separation_audit.py <nm> <library> | "
-              "--sources <file...> | --compile-commands <json> <marker> | "
-              "--dynamic <readelf> <library> | --selftest")
+        print(
+            "usage: r3v_native_separation_audit.py <nm> <library> | "
+            "--sources <file...> | --compile-commands <json> <marker> | "
+            "--dynamic <readelf> <library> | --selftest"
+        )
         return AUDIT_USAGE
     return audit_library(sys.argv[1], sys.argv[2])
 

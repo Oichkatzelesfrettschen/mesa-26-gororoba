@@ -198,10 +198,10 @@ r3v_native_files = files(
   'r3v_vertex_spirv.c',
 )
 
-# The ICD compiles with no Gallium include root: PIPE_FORMAT_* comes from
-# util/format through idep_mesautil, and the separation-audit tests prove
-# the sources, compile commands, and linked library stay free of Gallium
-# includes and symbols.
+# The ICD compiles with no Gallium include root.  r3v_format.h owns the
+# PIPE_FORMAT_* provenance and idep_mesautil supplies its util/format include
+# graph; the separation-audit tests prove the sources, compile commands, and
+# linked library stay free of Gallium includes and symbols.
 r3v_native_inc = [
   inc_include,
   inc_src,
