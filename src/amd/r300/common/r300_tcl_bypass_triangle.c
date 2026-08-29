@@ -374,8 +374,9 @@ emit_triangle_stream_into(
    r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
 
    /* Each hardware draw uses local vertex indices and a rebased byte offset,
-    * so the 16-bit count and maximum-index fields never describe more than
-    * one 21,845-triangle segment.  Segment boundaries preserve triangle
+    * so each 16-bit count field describes at most one 21,845-triangle
+    * segment; the separate maximum-index field remains 24-bit. Segment
+    * boundaries preserve triangle
     * order and can divide one source triangle's seven reserved output slots,
     * because no output triangle is itself divided.
     */

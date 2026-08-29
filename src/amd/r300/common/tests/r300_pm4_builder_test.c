@@ -315,8 +315,8 @@ test_null_destination(void)
 
 /* The vertex-index-range write is one PACKET0 run over the adjacent
  * VAP_VF_MAX_VTX_INDX/VAP_VF_MIN_VTX_INDX pair, maximum first, so the
- * stream is header, max, min.  An inverted pair or an index past the
- * registers' 16-bit width is -EINVAL before any reservation; a
+ * stream is header, max, min. An inverted pair or an index past the
+ * registers' 24-bit width is -EINVAL before any reservation; a
  * destination one dword short takes none of the run.
  */
 static void
@@ -336,11 +336,17 @@ test_vertex_index_range(void)
    assert(g.words[2] == 0);
    guards_hold(&g);
 
-   /* min=max=0 and the largest accepted maximum both encode. */
+   /* min=max=0, a value above the old count ceiling, and the largest
+    * accepted maximum all encode. */
    r300_pm4_builder_init(&b, g.words, 3);
    r300_pm4_emit_vertex_index_range(&b, 0, 0);
    assert(b.error == 0 && b.count == 3);
    assert(g.words[1] == 0 && g.words[2] == 0);
+
+   r300_pm4_builder_init(&b, g.words, 3);
+   r300_pm4_emit_vertex_index_range(&b, 0x10000, 0x10000);
+   assert(b.error == 0 && b.count == 3);
+   assert(g.words[1] == 0x10000 && g.words[2] == 0x10000);
 
    r300_pm4_builder_init(&b, g.words, 3);
    r300_pm4_emit_vertex_index_range(&b, R300_PM4_VTX_INDX_LIMIT,
@@ -357,7 +363,7 @@ test_vertex_index_range(void)
    assert(b.count == 0);
    assert(g.words[0] == 0);
 
-   /* An index past the 16-bit register width refuses. */
+   /* An index past the 24-bit register width refuses. */
    r300_pm4_builder_init(&b, g.words, 3);
    r300_pm4_emit_vertex_index_range(&b, 0, R300_PM4_VTX_INDX_LIMIT + 1);
    assert(b.error == -EINVAL);
@@ -428,7 +434,7 @@ test_immediate_points(void)
    r300_pm4_emit_immediate_points(&b, 0, 4, payload);
    assert(b.error == -EINVAL && b.count == 0 && g.words[0] == 0);
    r300_pm4_builder_init(&b, g.words, 16);
-   r300_pm4_emit_immediate_points(&b, R300_PM4_VTX_INDX_LIMIT + 1, 4,
+   r300_pm4_emit_immediate_points(&b, R300_PM4_VTX_COUNT_LIMIT + 1, 4,
                                   payload);
    assert(b.error == -EINVAL && b.count == 0);
    r300_pm4_builder_init(&b, g.words, 16);

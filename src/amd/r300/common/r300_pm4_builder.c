@@ -162,7 +162,7 @@ r300_pm4_emit_immediate_points(struct r300_pm4_builder *b,
     */
    const uint64_t body_dwords =
       1u + (uint64_t)num_vertices * (uint64_t)vtx_dwords;
-   if (num_vertices == 0 || num_vertices > R300_PM4_VTX_INDX_LIMIT ||
+   if (num_vertices == 0 || num_vertices > R300_PM4_VTX_COUNT_LIMIT ||
        vtx_dwords == 0 || body_dwords - 1 > 0x3fffu ||
        vertex_dwords == NULL) {
       b->error = -EINVAL;

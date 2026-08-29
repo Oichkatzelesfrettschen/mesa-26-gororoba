@@ -14,6 +14,7 @@
 
 #include "r300_first_draw_state.h"
 #include "r300_fragment_binary.h"
+#include "r300_pm4_builder.h"
 #include "r300_tcl_bypass_triangle.h"
 
 #include "r300_reg.h"
@@ -307,8 +308,8 @@ main(void)
    struct r300_first_draw_params bad = params;
    bad.width = 0;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
-   /* 4095 - 1440 + 1 is the largest extent whose high coordinate fits. */
-   const uint32_t max_extent = 2656;
+   /* 8191 - 1440 + 1 is the largest extent whose high coordinate fits. */
+   const uint32_t max_extent = 6752;
    bad.width = max_extent;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
    bad.width++;
@@ -325,18 +326,21 @@ main(void)
    bad.height = UINT32_MAX;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
 
-   /* An inverted index pair or an index past the registers' 16-bit width
-    * refuses; the full 16-bit bound resolves.
+   /* An inverted index pair or an index past the registers' 24-bit width
+    * refuses; the full 24-bit bound resolves.
     */
    bad = params;
    bad.min_vtx_index = 3;
    bad.max_vtx_index = 2;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
    bad = params;
-   bad.max_vtx_index = 0x10000;
+   bad.max_vtx_index = R300_PM4_VTX_INDX_LIMIT + 1;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == -22);
-   bad.min_vtx_index = 0xffff;
-   bad.max_vtx_index = 0xffff;
+   bad.min_vtx_index = 0x10000;
+   bad.max_vtx_index = 0x10000;
+   assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
+   bad.min_vtx_index = R300_PM4_VTX_INDX_LIMIT;
+   bad.max_vtx_index = R300_PM4_VTX_INDX_LIMIT;
    assert(r300_first_draw_contract_resolve(&bad, &scratch) == 0);
 
    /* The reference artifacts stay out: no depth-resource or dummy-texture

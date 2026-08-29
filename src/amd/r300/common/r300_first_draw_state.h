@@ -63,7 +63,7 @@ struct r300_first_draw_params {
     * index, so the contract establishes minimum and maximum together; a
     * draw that writes only the maximum inherits the previous client's
     * minimum and folds low indices onto it. min_vtx_index <= max_vtx_index
-    * <= 0xffff, the registers' 16-bit index width.
+    * <= 0xffffff, the registers' 24-bit index width.
     */
    uint32_t min_vtx_index;
    uint32_t max_vtx_index;

@@ -155,7 +155,10 @@ main(void)
    r300_pm4_builder_init(&b, ib, total);
    assert(r300_r2vb_target_state_emit(&b, &bad, &color_reloc) == -EINVAL);
    bad = reference_params();
-   bad.height = 2657;
+   bad.height = 6752;
+   r300_pm4_builder_init(&b, ib, total);
+   assert(r300_r2vb_target_state_emit(&b, &bad, &color_reloc) == 0);
+   bad.height++;
    r300_pm4_builder_init(&b, ib, total);
    assert(r300_r2vb_target_state_emit(&b, &bad, &color_reloc) == -EINVAL);
    bad = reference_params();

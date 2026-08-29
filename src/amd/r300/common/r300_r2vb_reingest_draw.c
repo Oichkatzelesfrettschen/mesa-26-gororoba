@@ -62,7 +62,7 @@ int r300_r2vb_reingest_draw_emit(
       return -EINVAL;
    }
    if (params->vertex_count == 0 ||
-       params->vertex_count > R300_PM4_VTX_INDX_LIMIT)
+       params->vertex_count > R300_PM4_VTX_COUNT_LIMIT)
       goto invalid;
    /* 64-bit last-byte bound: the draw fetches vertex_count contiguous
     * FP32x4 rows from vertex_offset_bytes. */

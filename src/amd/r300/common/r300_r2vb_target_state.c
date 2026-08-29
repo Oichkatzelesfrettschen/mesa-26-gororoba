@@ -7,11 +7,15 @@
 #include <errno.h>
 #include <stddef.h>
 
-/* Non-R500 scissor coordinates carry a 1440 bias; 4095 is the widest
- * biased coordinate, so 2656 is the largest encodable extent.
- */
+/* Non-R500 scissor coordinates carry a 1440 bias. The X and Y fields are
+ * thirteen bits wide, so the largest biased coordinate is 8191 and the
+ * largest encodable inclusive extent is 6752 pixels. */
 #define R300_R2VB_TARGET_SCISSOR_BIAS 1440u
-#define R300_R2VB_TARGET_MAX_EXTENT (4095u - R300_R2VB_TARGET_SCISSOR_BIAS + 1)
+#define R300_R2VB_TARGET_SCISSOR_FIELD_MAX \
+   (R300_SCISSORS_X_MASK >> R300_SCISSORS_X_SHIFT)
+#define R300_R2VB_TARGET_MAX_EXTENT \
+   (R300_R2VB_TARGET_SCISSOR_FIELD_MAX - \
+    R300_R2VB_TARGET_SCISSOR_BIAS + 1u)
 
 int
 r300_r2vb_target_state_emit(struct r300_pm4_builder *b,

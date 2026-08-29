@@ -188,14 +188,31 @@ static void expect_refusal(struct r300_r2vb_reingest_draw_params params)
 static void test_refusals(void)
 {
    struct r300_r2vb_reingest_draw_params params = bare_params();
+   struct r300_r2vb_reingest_draw_relocs relocs;
 
    params.vertex_count = 0;
    expect_refusal(params);
 
    params = bare_params();
-   params.vertex_count = R300_PM4_VTX_INDX_LIMIT + 1;
+   params.vertex_count = R300_PM4_VTX_COUNT_LIMIT + 1;
    params.vertex_bo_size_bytes = UINT64_MAX;
    expect_refusal(params);
+
+   /* The largest VAP_VF_CNTL count remains encodable when the source BO
+    * covers the complete contiguous stream. */
+   params = bare_params();
+   params.vertex_count = R300_PM4_VTX_COUNT_LIMIT;
+   params.vertex_bo_size_bytes = 64 +
+                                 (uint64_t)params.vertex_count * 16;
+   uint32_t max_words[18];
+   struct r300_pm4_builder max_builder;
+   r300_pm4_builder_init(&max_builder, max_words, 18);
+   assert(r300_r2vb_reingest_draw_emit(&max_builder, &params, &relocs) == 0);
+   assert(max_words[17] ==
+          ((R300_PM4_VTX_COUNT_LIMIT <<
+            R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
+           R300_VAP_VF_CNTL__PRIM_POINTS |
+           R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST));
 
    /* The last fetched byte lies one past the BO. */
    params = bare_params();
@@ -206,7 +223,7 @@ static void test_refusals(void)
     * 64-bit bound rather than wrapping. */
    params = bare_params();
    params.vertex_offset_bytes = UINT32_MAX;
-   params.vertex_count = R300_PM4_VTX_INDX_LIMIT;
+   params.vertex_count = R300_PM4_VTX_COUNT_LIMIT;
    params.vertex_bo_size_bytes = UINT32_MAX;
    expect_refusal(params);
 
@@ -222,7 +239,6 @@ static void test_refusals(void)
    params = bare_params();
    uint32_t words[17];
    struct r300_pm4_builder b;
-   struct r300_r2vb_reingest_draw_relocs relocs;
    r300_pm4_builder_init(&b, words, 17);
    assert(r300_r2vb_reingest_draw_emit(&b, &params, &relocs) == -ENOSPC);
    assert(b.count == 0);

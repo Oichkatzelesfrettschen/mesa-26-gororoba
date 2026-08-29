@@ -48,7 +48,7 @@ r300_r2vb_fetch_pass_emit(struct r300_pm4_builder *b,
    if (params == NULL || params->state == NULL || relocs == NULL)
       return -EINVAL;
    if (params->vertex_count == 0 ||
-       params->vertex_count > R300_PM4_VTX_INDX_LIMIT + 1)
+       params->vertex_count > R300_PM4_VTX_COUNT_LIMIT)
       return -EINVAL;
    for (unsigned i = 0; i < 2; i++) {
       const int rc =
