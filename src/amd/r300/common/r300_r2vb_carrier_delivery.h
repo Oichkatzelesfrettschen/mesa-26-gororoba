@@ -14,21 +14,29 @@
 
 #include "amd/r300/common/r300_vertex_stream.h"
 
+/* The generic FP24 storage model reaches the 0xC0 exponent bin, while the
+ * measured RS482 R2VB identity route delivers that bin with a decremented
+ * exponent.  Keep the route ceiling explicit so generic source reads and
+ * route-specific byte-identity admission cannot silently share a bound. */
+#define R300_R2VB_FP24_IDENTITY_MAX_F32_BITS 0x5FFFFF80u
+
 /* The R2VB producer routes every attribute through the US fragment
  * datapath: the input registers, the copy, and the interpolator carry
  * s1e7m16 (FP24), and the C4_32_FP color target widens the result back
  * to binary32.  A binary32 value therefore survives delivery byte-exact
  * only when it is a fixed point of that round trip, and the delivery
  * model admits non-negative binary32 values that are already fixed points
- * of the shared FP24 quantizer: positive zero and normal values from the
- * measured minimum through the measured finite maximum with the low 7
- * mantissa bits clear.  The RS48x source-read model canonicalizes negative
- * zero and steps negative nonzero values toward zero, so negative values
- * refuse.  Infinities, NaNs, denormals, off-grid values, and values outside
- * the measured normal range also refuse because quantization changes their
- * bits.  On the admitted domain the round trip is the identity, so the
- * delivery is a verbatim copy there and the model needs no rounding
- * arithmetic.
+ * of the shared FP24 quantizer, with a route-specific ceiling at
+ * R300_R2VB_FP24_IDENTITY_MAX_F32_BITS: positive zero and normal values
+ * from the measured minimum through that ceiling with the low 7 mantissa
+ * bits clear.  The generic quantizer's upper exponent bin remains valid
+ * storage but is outside this measured identity route.  The RS48x
+ * source-read model canonicalizes negative zero and steps negative nonzero
+ * values toward zero, so negative values refuse.  Infinities, NaNs,
+ * denormals, off-grid values, and values outside the measured normal range
+ * also refuse because quantization changes their bits.  On the admitted
+ * domain the round trip is the identity, so delivery is a verbatim copy
+ * there and the model needs no rounding arithmetic.
  */
 bool r300_r2vb_fp24_identity_admits(uint32_t bits);
 
@@ -40,7 +48,7 @@ bool r300_r2vb_fp24_identity_admits(uint32_t bits);
  * other format --
  * F32_1's synthesized Y stays a CPU-route shape until its identity
  * control exists.  Source components are little-endian binary32 bytes and
- * must admit into the FP24 fixed-point domain above; an out-of-domain
+ * must admit into the R2VB identity domain above; an out-of-domain
  * component refuses with -EDOM before any carrier write, so the caller's
  * rollback authority selects the CPU route instead of receiving bytes the
  * silicon producer would not reproduce.  The lanes past the source record

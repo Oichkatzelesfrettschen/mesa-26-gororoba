@@ -3,7 +3,7 @@
  *
  * Identity control for R2VB F32_4 carrier delivery: the delivery model,
  * the portable CPU baseline, and the dispatched CPU gather produce one
- * byte-identical carrier on the admitted FP24 fixed-point domain, and
+ * byte-identical carrier on the admitted R2VB identity domain, and
  * the delivery refuses every input class the silicon producer would not
  * reproduce byte-exact.
  */
@@ -45,7 +45,7 @@ static const uint32_t admitted_bits[] = {
    0x41000000u, /* 8.0 */
    0x42600000u, /* 56.0 */
    R300_FP24_MIN_NORMAL_F32_BITS,
-   R300_FP24_MAX_FINITE_F32_BITS,
+   R300_R2VB_FP24_IDENTITY_MAX_F32_BITS,
 };
 
 /* Encodings the source-read and FP24 models do not reproduce: negative
@@ -66,21 +66,33 @@ static const uint32_t refused_bits[] = {
    0x3f800001u, /* 1.0 + one binary32 ulp */
    0x20800000u, /* 2^-62, below the FP24 normal range */
    0x60000000u, /* 2^65: RS482 delivers the exponent field decremented */
-   0x61000000u, /* above the FP24 finite maximum */
+   R300_FP24_MAX_FINITE_F32_BITS, /* generic FP24 upper bin, outside R2VB */
+   0x61000000u, /* above the generic FP24 finite maximum */
 };
 
 static void
 test_admission_predicate(void)
 {
+   /* The generic storage model and the measured R2VB identity route carry
+    * distinct upper bounds.  The upper generic lattice value remains a
+    * valid stored FP24 value, while the route rejects it before equality
+    * with the generic quantizer can admit it.
+    */
+   assert(r300_fp24_quantize_bits(R300_FP24_MAX_FINITE_F32_BITS) ==
+          R300_FP24_MAX_FINITE_F32_BITS);
+   assert(r300_fp24_quantize_bits(R300_R2VB_FP24_IDENTITY_MAX_F32_BITS) ==
+          R300_R2VB_FP24_IDENTITY_MAX_F32_BITS);
+   assert(r300_r2vb_fp24_identity_admits(
+             R300_R2VB_FP24_IDENTITY_MAX_F32_BITS));
+   assert(!r300_r2vb_fp24_identity_admits(0x60000000u));
+   assert(!r300_r2vb_fp24_identity_admits(R300_FP24_MAX_FINITE_F32_BITS));
+
    for (unsigned i = 0; i < sizeof(admitted_bits) / 4; i++) {
       assert(r300_r2vb_fp24_identity_admits(admitted_bits[i]));
       assert(r300_fp24_quantize_bits(admitted_bits[i]) == admitted_bits[i]);
    }
    for (unsigned i = 0; i < sizeof(refused_bits) / 4; i++) {
       assert(!r300_r2vb_fp24_identity_admits(refused_bits[i]));
-      if ((refused_bits[i] & 0x80000000u) == 0)
-         assert(r300_fp24_quantize_bits(refused_bits[i]) !=
-                refused_bits[i]);
    }
 }
 

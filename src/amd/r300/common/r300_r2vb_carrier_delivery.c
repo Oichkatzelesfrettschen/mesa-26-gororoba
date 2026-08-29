@@ -28,10 +28,18 @@ r300_r2vb_fp24_identity_admits(uint32_t bits)
    if ((bits & 0x80000000u) != 0)
       return false;
 
-   /* The shared FP24 store quantizer is authoritative for the lattice
-    * boundary, saturation, and low-mantissa policy.  Equality rejects
-    * infinities, NaNs, denormals, off-grid values, and values outside the
-    * measured normal range without duplicating its constants here.
+   /* The measured R2VB identity ceiling is narrower than the generic FP24
+    * storage range.  Reject the upper exponent bin before consulting the
+    * generic quantizer so a valid stored value cannot become an invalid
+    * byte-identity admission.
+    */
+   if ((bits & 0x7fffffffU) > R300_R2VB_FP24_IDENTITY_MAX_F32_BITS)
+      return false;
+
+   /* The shared FP24 store quantizer remains authoritative for the lattice
+    * boundary, saturation, and low-mantissa policy inside the route ceiling.
+    * Equality rejects infinities, NaNs, denormals, and off-grid values
+    * without duplicating those generic rules here.
     */
    return r300_fp24_quantize_bits(bits) == bits;
 }

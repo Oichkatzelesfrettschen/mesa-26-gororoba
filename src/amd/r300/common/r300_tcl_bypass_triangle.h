@@ -560,8 +560,10 @@ struct r300_triangle_render_shape {
    uint32_t pitch_pixels;
    enum r300_triangle_lane_order lanes;
    /* The fragment constant as four IEEE-754 binary32 bit patterns,
-    * RGBA, each on the FP24 lattice (r300_fp24_quantize_bits leaves it
-    * unchanged), so the register word is the value the oracle predicts.
+    * RGBA, each on the generic FP24 storage lattice
+    * (r300_fp24_quantize_bits leaves it unchanged), so the register word
+    * is the value the oracle predicts.  Route-specific carrier ceilings
+    * belong to their own admission predicates.
     */
    uint32_t color_bits[4];
    /* Pinned to 1: r300_tcl_bypass_triangle_render_shape_vertices writes

@@ -61,15 +61,13 @@ enum r300_source_read_model {
    R300_SOURCE_READ_UNMODELED,
 };
 
-/* FP32 bit patterns of the FP24 lattice boundaries.  Min normal 2^-61 and
- * max finite (2 - 2^-16) * 2^64 follow from s1e7m16 with bias 62 and the
- * top exponent field reserved.  RS482 delivers every magnitude through
- * (2 - 2^-16) * 2^64 byte-exact on the R2VB identity route and delivers
- * 2^65-bin magnitudes with the exponent field decremented, so the finite
- * ceiling sits one exponent bin below an all-fields-usable reading of the
- * format. */
+/* FP32 bit patterns of the generic FP24 lattice boundaries.  Min normal
+ * 2^-61 and max finite (2 - 2^-16) * 2^65 follow from s1e7m16 with bias 62.
+ * Consumers that require a byte-identical transport can impose a narrower
+ * route contract; the measured RS482 R2VB identity ceiling lives in
+ * r300_r2vb_carrier_delivery.h rather than in this generic storage model. */
 #define R300_FP24_MIN_NORMAL_F32_BITS 0x21000000u
-#define R300_FP24_MAX_FINITE_F32_BITS 0x5FFFFF80u
+#define R300_FP24_MAX_FINITE_F32_BITS 0x607FFF80u
 
 static inline uint32_t
 r300_f32_to_bits(float value)
