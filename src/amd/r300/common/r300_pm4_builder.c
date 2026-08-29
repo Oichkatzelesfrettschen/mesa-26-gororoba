@@ -168,10 +168,16 @@ r300_pm4_emit_immediate_points(struct r300_pm4_builder *b,
       b->error = -EINVAL;
       return;
    }
+   /* Reserve the complete seven-dword prefix and embedded vertex body before
+    * storing any part of this multi-packet draw.  A short destination must
+    * leave both the count and every destination word unchanged, matching the
+    * builder's all-or-nothing operation contract.
+    */
+   const uint32_t payload_dwords = (uint32_t)(body_dwords - 1);
+   if (!r300_pm4_builder_reserve(b, payload_dwords + 7u))
+      return;
    r300_pm4_reg(b, R300_VAP_VTX_SIZE, vtx_dwords);
    r300_pm4_emit_vertex_index_range(b, 0, num_vertices - 1);
-   if (!r300_pm4_builder_reserve(b, (uint32_t)body_dwords + 1))
-      return;
    r300_pm4_dword(b, CP_PACKET3(R300_PACKET3_3D_DRAW_IMMD_2,
                                 (uint32_t)body_dwords - 1));
    r300_pm4_dword(b, R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED |
