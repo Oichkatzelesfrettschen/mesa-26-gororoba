@@ -558,6 +558,40 @@ blake3_hex(const void *data, size_t size, char out[BLAKE3_OUT_LEN * 2 + 1])
    _mesa_blake3_format(out, digest);
 }
 
+bool
+r3v_native_serial_semantic_identity_matches(
+   const struct r3v_native_serial_semantic_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   const struct radeon_drm_vk_reloc_list *relocs)
+{
+   if (!identity->valid || identity->cmd_buffer != cmd_buffer ||
+       identity->ib_size_dwords != cmd_buffer->ib_size_dwords ||
+       identity->reloc_count != relocs->count)
+      return false;
+
+   char relocs_digest[BLAKE3_OUT_LEN * 2 + 1];
+   blake3_hex(relocs->relocs,
+              relocs->count * sizeof(relocs->relocs[0]), relocs_digest);
+   return strcmp(identity->ib_blake3, ib_digest) == 0 &&
+          strcmp(identity->relocs_blake3, relocs_digest) == 0;
+}
+
+static void
+r3v_native_serial_semantic_identity_capture(
+   struct r3v_native_serial_semantic_identity *identity,
+   struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   const struct radeon_drm_vk_reloc_list *relocs)
+{
+   identity->cmd_buffer = cmd_buffer;
+   identity->ib_size_dwords = cmd_buffer->ib_size_dwords;
+   identity->reloc_count = relocs->count;
+   memcpy(identity->ib_blake3, ib_digest, R3V_NATIVE_PLAN_HEX64 + 1);
+   blake3_hex(relocs->relocs,
+              relocs->count * sizeof(relocs->relocs[0]),
+              identity->relocs_blake3);
+   identity->valid = true;
+}
+
 /* Retains the semantic cell -- the IB and the command buffer's own
  * relocation list, before the completion reference folds in -- as
  * content-bound evidence: ib.bin and relocs.bin land atomically, and
@@ -1090,12 +1124,31 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    const bool serial_continuation =
       serial_kind && device->serial_submissions_consumed > 0;
    VkResult result = VK_SUCCESS;
+   if (serial_continuation &&
+       !r3v_native_serial_semantic_identity_matches(
+          &device->serial_semantic_identity, cmd_buffer, ib_digest,
+          &prepared->relocs)) {
+      result = vk_errorf(
+         device, VK_ERROR_DEVICE_LOST,
+         "r3v-native: serial continuation changed the command-buffer or "
+         "relocation identity; refusing before evidence retention");
+      goto prepare_fail;
+   }
    if (facts.attempt_token_present && !serial_continuation) {
       result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
                          "r3v-native: prepare refused before evidence "
                          "retention: %s",
                          r3v_native_arming_verdict_name(
                             R3V_NATIVE_ARMING_ALREADY_ATTEMPTED));
+      goto prepare_fail;
+   }
+
+   enum r3v_native_arming_verdict arming =
+      r3v_native_arming_evaluate(&facts);
+   if (serial_kind && arming != R3V_NATIVE_ARMING_ARMED) {
+      result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                         "r3v-native: prepare refused: %s",
+                         r3v_native_arming_verdict_name(arming));
       goto prepare_fail;
    }
 
@@ -1108,6 +1161,10 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                          "failed; refusing before any ioctl");
       goto prepare_fail;
    }
+   if (serial_kind && !serial_continuation)
+      r3v_native_serial_semantic_identity_capture(
+         &device->serial_semantic_identity, cmd_buffer, ib_digest,
+         &prepared->relocs);
 
    if (radeon_drm_vk_completion_init(&device->drm, &prepared->completion) !=
        0) {
@@ -1144,8 +1201,6 @@ r3v_native_queue_prepare_submission(VkDevice _device,
       goto prepare_fail;
    }
 
-   enum r3v_native_arming_verdict arming =
-      r3v_native_arming_evaluate(&facts);
    if (arming != R3V_NATIVE_ARMING_ARMED) {
       radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
       result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -1166,8 +1221,9 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                          "before the ioctl");
       goto prepare_fail;
    }
-   if (serial_kind)
+   if (serial_kind) {
       device->serial_submissions_consumed++;
+   }
 
    prepared->cmd_buffer = cmd_buffer;
    prepared->valid = true;
@@ -1494,6 +1550,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       char kernel_release[128];
       char module_srcversion[128];
       struct r3v_native_arming_facts facts = {0};
+      const bool serial_kind =
+         cmd_buffer->cell_kind ==
+         R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+      const bool serial_continuation =
+         serial_kind && device->serial_submissions_consumed > 0;
       if (device->submit_hazard_accepted) {
          /* An open gate without a retention destination fails before the
           * deferred CPU execution and before any evidence bytes are written.
@@ -1528,10 +1589,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           * this early refusal only keeps a foreign token from reaching
           * evidence retention.
           */
-         const bool serial_continuation =
-            cmd_buffer->cell_kind ==
-               R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL &&
-            device->serial_submissions_consumed > 0;
          if (facts.attempt_token_present && !serial_continuation) {
             free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
@@ -1541,6 +1598,18 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                "%s",
                r3v_native_arming_verdict_name(
                   R3V_NATIVE_ARMING_ALREADY_ATTEMPTED));
+         }
+
+         if (serial_continuation &&
+             !r3v_native_serial_semantic_identity_matches(
+                &device->serial_semantic_identity, cmd_buffer, ib_digest,
+                &relocs)) {
+            free(reference_indices);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(
+               device, VK_ERROR_DEVICE_LOST,
+               "r3v-native: serial continuation changed the command-buffer "
+               "or relocation identity; refusing before evidence retention");
          }
       }
 
@@ -1552,9 +1621,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * stream digest against the declared one each admission, so the
        * retained semantic cell stays bound to every admission it covers.
        */
-      const bool serial_kind =
-         cmd_buffer->cell_kind ==
-         R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
       const bool semantic_cell_retained =
          serial_kind && device->serial_submissions_consumed > 0;
       if (device->manifest_dir != NULL && !semantic_cell_retained &&
@@ -1567,6 +1633,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: semantic-cell evidence retention "
                           "failed; refusing before any ioctl");
       }
+      if (serial_kind && !serial_continuation &&
+          device->submit_hazard_accepted)
+         r3v_native_serial_semantic_identity_capture(
+            &device->serial_semantic_identity, cmd_buffer, ib_digest,
+            &relocs);
 
       /* Finite completion: a 4-byte write-domain BO rides the relocation
        * chunk, the kernel fences it at submit, and the bounded
@@ -1686,6 +1757,21 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * before the ioctl.  The exact ioctl payload retains before that gate,
        * and a retention failure refuses with nothing sent.
        */
+      enum r3v_native_arming_verdict arming =
+         device->plan_capture_active || device->plan_replay_active
+            ? R3V_NATIVE_ARMING_ARMED
+            : r3v_native_arming_evaluate(&facts);
+      const bool serial_attended =
+         serial_kind && device->submit_hazard_accepted &&
+         !device->plan_capture_active && !device->plan_replay_active;
+      if (serial_attended && arming != R3V_NATIVE_ARMING_ARMED) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: submission refused: %s",
+                          r3v_native_arming_verdict_name(arming));
+      }
       if (!device->plan_capture_active && !device->plan_replay_active &&
           r3v_native_queue_write_submit_object(
              device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,
@@ -1710,10 +1796,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * attempt token disarms the directory, so a second run through the
        * same evidence refuses even with the same environment.
        */
-      enum r3v_native_arming_verdict arming =
-         device->plan_capture_active || device->plan_replay_active
-            ? R3V_NATIVE_ARMING_ARMED
-            : r3v_native_arming_evaluate(&facts);
       if (arming != R3V_NATIVE_ARMING_ARMED) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -1800,8 +1882,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "before the ioctl");
       }
       if (cmd_buffer->cell_kind ==
-          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL)
+          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL) {
          device->serial_submissions_consumed++;
+      }
 
       /* The IB at the ioctl boundary is the IB the session admitted. */
       if (device->plan_replay_active) {
