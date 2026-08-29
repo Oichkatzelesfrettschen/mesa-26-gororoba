@@ -311,9 +311,12 @@ def verify_manifest(path):
     executable = 0
     for s in manifest["slices"]:
         if s.get("hazard") not in HAZARDS or \
+                s.get("required_evidence") not in EVIDENCE or \
+                (s["hazard"] != "none" and
+                 s["required_evidence"] != "silicon") or \
                 s.get("executable") != (s["hazard"] != "unknown"):
-            raise PartitionRefusal(f"slice {s.get('slice')}: executable flag "
-                                   "does not derive from its hazard")
+            raise PartitionRefusal(f"slice {s.get('slice')}: execution "
+                                   "contract does not derive from its hazard")
         executable += s["case_count"] if s["executable"] else 0
         f = p.parent / s["caselist"]
         if not f.is_file():
@@ -590,6 +593,8 @@ def selftest():
         for edit, needle in (
                 (lambda mm: mm["slices"][3].__setitem__("executable", True),
                  "does not derive"),
+                (lambda mm: mm["slices"][2].__setitem__(
+                    "required_evidence", "host-model"), "does not derive"),
                 (flip("executable_case_count", 5), "executable counts"),
                 (flip("exact_cover", False), "without exact cover"),
                 (flip("manifest_version", 2), "version unknown"),
