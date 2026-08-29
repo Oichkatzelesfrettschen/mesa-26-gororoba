@@ -13,6 +13,7 @@
 
 #include "util/macros.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,8 +75,10 @@ calibration_child_high_bit_failure(void)
 
 /* Run the complete child verdict boundary shared by calibration and sweep
  * legs: fork, normalize the body result before _exit(), wait for the child,
- * and decode WEXITSTATUS in the parent.  A signaled child has no exit byte,
- * so the caller receives false and keeps that distinction in its verdict.
+ * and decode WEXITSTATUS in the parent.  A signal interruption leaves the
+ * child waitable, so waitpid retries on EINTR.  A signaled child has no exit
+ * byte, so the caller receives false and keeps that distinction in its
+ * verdict.
  */
 static bool
 run_child(const char *label, int (*body)(void), int *exit_status)
@@ -92,7 +95,11 @@ run_child(const char *label, int (*body)(void), int *exit_status)
    }
 
    int status = 0;
-   if (waitpid(pid, &status, 0) != pid) {
+   pid_t waited_pid;
+   do {
+      waited_pid = waitpid(pid, &status, 0);
+   } while (waited_pid < 0 && errno == EINTR);
+   if (waited_pid != pid) {
       fprintf(stderr, "FAIL: %s: waitpid failed\n", label);
       return false;
    }
