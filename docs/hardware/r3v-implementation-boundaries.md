@@ -72,8 +72,17 @@ RS482 census classified affine). A partially clipped triangle refuses on that
 route, and every other NoPerspective interface -- a Smooth or Flat location
 beside it, an open R2VB delivery gate, a narrower or non-float varying -- is
 created with the `UNSUPPORTED` route and refuses every draw at record time,
-because replication would interpolate the varying with perspective; the
-`(a * w, w)` reciprocal carrier that would serve those shapes is not built.
+because replication would interpolate the varying with perspective. The
+`(a * w, w)` reciprocal carrier that serves those shapes
+(`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`) exists as
+the `RECIPROCAL_CARRIER` route -- the post-VS stage packs `a * w` into TEX0
+and the triangle-normalized `w` into TEX1.x, the TC1 cell fetches twelve
+dwords per vertex through two RS interpolators, and the US recovers the
+window-linear value as `TEX0 * rcp(TEX1.x)` with `W_SELECT` clear -- and the
+selector takes it for the W_SELECT conjunction alone under the exact gate
+`R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1`, the forced-carrier rung, until
+each further shape's silicon receipt lands; the refused shapes stay
+`UNSUPPORTED` meanwhile.
 The device exposes
 no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
