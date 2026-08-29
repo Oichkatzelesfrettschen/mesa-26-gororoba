@@ -53,7 +53,7 @@ for _legacy_name in GOROROBA_DEBUG_BUILDDIR GOROROBA_DEBUG_SRCROOT; do
 done
 unset _legacy_name
 pkgver=26.2.0
-pkgrel=23
+pkgrel=24
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
