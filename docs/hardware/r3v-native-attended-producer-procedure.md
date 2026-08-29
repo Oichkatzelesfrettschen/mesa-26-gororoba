@@ -38,9 +38,11 @@ this document adds only what the producer cell changes.
 
 Recorded before the run; deviation is the finding.
 
-1. The kernel CS parser accepts the stream (the offline replay already
-   reports `verdict=ACCEPT relocs=1 draws=1`), the fence retires, and
-   dmesg carries no radeon validation delta.
+1. The kernel CS parser accepts the producer stream (the offline replay
+   reports `verdict=ACCEPT relocs=1 draws=1`). Parser acceptance is a
+   command-stream admissibility result. The attended run separately proves
+   live transport through a successful `DRM_RADEON_CS`, a retired fence, and
+   an empty dmesg validation delta.
 2. The expected extent of the carrier holds the dwords
    `r300_r2vb_producer_reference_expected` computes -- the delivery
    identity over the reference records -- byte-exact.
@@ -52,13 +54,21 @@ Recorded before the run; deviation is the finding.
   color write that reached the carrier; the US program, RS routing, or
   the color-backend retarget failed as a unit. The retained IB and
   registers decide which; the run is not repeated on the same boot.
-- Wrong bytes in the expected extent: the write landed but the shaded
-  value is wrong -- interpolator routing, US program semantics, format
-  conversion in the C4_32_FP path, or FP24 narrowing. The byte pattern
-  against the expected dwords localizes the stage.
-- Poison disturbed past the expected extent: the producer wrote outside
-  its row; pitch, height, or the draw's slot addressing is wrong, and
-  the cell stops until the overrun is explained.
+- Poison in only part of the expected extent: the producer wrote some
+  slots but left other slots unwritten. The runner records
+  `CARRIER_PARTIAL_UNWRITTEN`; the poisoned dwords remain direct evidence
+  of missing production, and the non-poison mismatches remain a separate
+  value question.
+- Wrong bytes with no poison in the expected extent: the write landed but
+  the shaded value is wrong -- interpolator routing, US program semantics,
+  format conversion in the C4_32_FP path, or FP24 narrowing. The byte
+  pattern against the expected dwords localizes the stage and the runner
+  records `CARRIER_MISMATCH`.
+- Poison disturbed in the rounded tail past the expected extent: the
+  three-record layout rounds to a four-pixel row, so the disturbed dwords
+  are in-row padding rather than bytes outside the allocation. The result
+  names a slot-addressing or coverage failure; it does not establish an
+  out-of-row write.
 - A dmesg validation delta or an unretired fence: kernel-boundary
   finding; the wedged state is preserved for inspection and the host is
   cold-power-cycled rather than resubmitted.
@@ -68,8 +78,14 @@ Recorded before the run; deviation is the finding.
 `r300_r2vb_producer_carrier_check` computes the verdict from the mapped
 carrier: expected-extent compare, tail poison retention, and refusal of
 a poison value colliding with any expected dword, since that pairing
-leaves the unwritten case undecidable. A parser acceptance or a retired
-fence alone proves transport; only the carrier bytes prove production.
+leaves the unwritten case undecidable. `poison_dwords == expected_dwords`
+means `CARRIER_UNWRITTEN`; a nonzero smaller poison count means
+`CARRIER_PARTIAL_UNWRITTEN`; zero poison with mismatches means
+`CARRIER_MISMATCH`. The runner keeps these carrier classes after the
+transport checks. Offline parser acceptance proves command-stream
+admissibility, while a successful ioctl and retired fence prove live
+transport; neither class stands in for the other, and only the carrier
+bytes prove production.
 
 ## FP24 boundary-sweep stream
 
@@ -106,8 +122,10 @@ the ceiling to within a lane pair; twelve exact lanes name `0x5fffff80`
 as the smallest viable ceiling and move the bracket above it, and a
 deviation of any other shape (a wrong mantissa, a non-monotone
 exact/wrong pattern) falsifies the exponent-window hypothesis itself.
-The verdict for a partial delivery is `CARRIER_MISMATCH`; the retained
-carrier bytes carry the per-lane result.
+The verdict for a partial delivery with any poisoned expected dword is
+`CARRIER_PARTIAL_UNWRITTEN`; the retained carrier bytes carry the per-lane
+result. A partial delivery whose expected extent contains no poison remains
+`CARRIER_MISMATCH` because every mismatching dword has a produced value.
 
 ## Executed bisection run
 
@@ -156,8 +174,9 @@ predated the delivered-but-wrong outcome class, so the retained
 verdict string reads `CARRIER_UNWRITTEN`; the retained bytes in the
 `steinmarder-r300` bundle
 `results/r3v-native-fp24-sweep-top-bin-halving-rs482/` carry the
-mismatch evidence, and `CARRIER_MISMATCH` names this class in later
-runs.
+mismatch evidence. Later runs name a mixed-poison carrier
+`CARRIER_PARTIAL_UNWRITTEN`; `CARRIER_MISMATCH` remains the class for
+mismatches whose expected extent contains no poison.
 
 ## Pending requalification
 

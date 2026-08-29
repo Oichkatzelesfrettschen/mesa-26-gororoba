@@ -121,6 +121,18 @@ test_carrier_oracle_poison_contract(void)
    assert(verdict.mismatched_dwords == expected_dwords);
    assert(verdict.poison_dwords == expected_dwords);
 
+   /* A mixed carrier is neither fully unwritten nor delivered-but-wrong:
+    * one expected slot still carries the prefill while the other slots
+    * match, so the producer result remains partially unwritten.
+    */
+   memcpy(carrier, expected, sizeof(expected));
+   carrier[expected_dwords / 2] = R300_R2VB_PRODUCER_POISON_DWORD;
+   assert(r300_r2vb_producer_carrier_check(
+             expected, expected_dwords, R300_R2VB_PRODUCER_POISON_DWORD,
+             carrier, carrier_bytes, &verdict) == 0);
+   assert(!verdict.expected_pass);
+   assert(verdict.mismatched_dwords == 1 && verdict.poison_dwords == 1);
+
    /* A carrier written to a wrong value keeps poison_dwords below the
     * extent, so delivered-but-wrong separates from never-written.
     */
@@ -132,7 +144,7 @@ test_carrier_oracle_poison_contract(void)
    assert(!verdict.expected_pass);
    assert(verdict.mismatched_dwords == 1 && verdict.poison_dwords == 0);
 
-   /* A disturbed tail dword is an out-of-extent device write. */
+   /* A disturbed tail dword changes the rounded row's padding slot. */
    memcpy(carrier, expected, sizeof(expected));
    carrier[carrier_dwords - 1] = 0u;
    assert(r300_r2vb_producer_carrier_check(
