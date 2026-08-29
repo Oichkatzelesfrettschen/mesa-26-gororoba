@@ -1,0 +1,12 @@
+{
+  "cluster_status_sha256": "811fe00a15de20d14b4c883a8e43c9521fc2e5a5842addce1deb7778158ffe4a",
+  "corpus_manifest_sha256": "75a8b5b68925f90b0e9c002adfeac1bc2bfa89761fb9ba336113493c62a1f10e",
+  "files": {
+    "resolution-evidence.tsv": "11b3f1fd613226c3ecb8815c3bc3df89f2232c655c603ca83bcce33bd280526e"
+  },
+  "frontier_sha256": "6a05a4579b469328c6e6bdb7c516c30b3cdbbde5261864fc7019cefa5b83232e",
+  "overrides_sha256": "895af2cad7dfb07226c972e6154d5323211b864348e4c0232f4df8a951747763",
+  "revision": "ba1652a87e55351b40743b79f0bec9dee44a9f6b",
+  "schema": "mesa-review-thread-reconciliation-v1",
+  "thread_count": 294
+}

@@ -199,6 +199,11 @@ override REVIEW_THREAD_CORPUS_TOOL := $(CURDIR)/scripts/review_thread_corpus.py
 override REVIEW_THREAD_GROUP_HISTORY_TOOL := $(CURDIR)/scripts/review_thread_group_history.py
 override REVIEW_THREAD_CLUSTERS := $(CURDIR)/docs/review-thread-clusters/unresolved-review-thread-corpus-4b965810d471
 override REVIEW_THREAD_CLUSTERS_TOOL := $(CURDIR)/scripts/review_thread_clusters.py
+override REVIEW_THREAD_RECONCILIATION_REVISION := ba1652a87e55351b40743b79f0bec9dee44a9f6b
+override REVIEW_THREAD_RECONCILIATION := $(CURDIR)/docs/review-thread-reconciliations/resolved-thread-merge-evidence-4b965810d471
+override REVIEW_THREAD_RECONCILIATION_TOOL := $(CURDIR)/scripts/review_thread_reconciliation.py
+override REVIEW_THREAD_RECONCILIATION_FRONTIER := $(REVIEW_THREAD_RECONCILIATION)/frontier.tsv
+override REVIEW_THREAD_RECONCILIATION_OVERRIDES := $(REVIEW_THREAD_RECONCILIATION)/evidence-overrides.tsv
 override REVIEW_THREAD_TVPLC_FRONTIER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/action-frontier.tsv
 override REVIEW_THREAD_TVPLC_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/resolution-ledger.tsv
 override REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER := $(CURDIR)/docs/review-thread-classifications/merged-thread-frontier-after-TvpLc/evidence-refresh-ledger.tsv
@@ -466,7 +471,8 @@ endef
         naming-policy-test \
         review-thread-frontier-check review-thread-frontier-live-check \
         review-thread-frontier-unit-test review-thread-corpus-check \
-        review-thread-corpus-unit-test headless-hardware-gl-runner-test \
+        review-thread-corpus-unit-test review-thread-reconciliation-check \
+        review-thread-reconciliation-unit-test headless-hardware-gl-runner-test \
         source-root-selection-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean-registered-build clean clean-all distclean install \
@@ -842,6 +848,22 @@ review-thread-corpus-unit-test:
 			$(CURDIR)/tests/test_review_thread_group_history.py \
 			$(CURDIR)/tests/test_review_thread_clusters.py
 
+review-thread-reconciliation-check:
+	PYTHONDONTWRITEBYTECODE=1 \
+		python3 $(REVIEW_THREAD_RECONCILIATION_TOOL) check \
+			--corpus-dir $(REVIEW_THREAD_CORPUS) \
+			--cluster-dir $(REVIEW_THREAD_CLUSTERS) \
+			--repo-root $(CURDIR)/.. \
+			--revision $(REVIEW_THREAD_RECONCILIATION_REVISION) \
+			--frontier $(REVIEW_THREAD_RECONCILIATION_FRONTIER) \
+			--overrides $(REVIEW_THREAD_RECONCILIATION_OVERRIDES) \
+			--output-dir $(REVIEW_THREAD_RECONCILIATION)
+
+review-thread-reconciliation-unit-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
+		python3 -m pytest -q \
+			$(CURDIR)/tests/test_review_thread_reconciliation.py
+
 headless-hardware-gl-runner-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 		python3 -m pytest -q \
@@ -865,6 +887,8 @@ help:
 	@echo "  review-thread-frontier-unit-test calibrate review closure rejection paths"
 	@echo "  review-thread-corpus-check replay the complete unresolved-thread corpus and source histories"
 	@echo "  review-thread-corpus-unit-test calibrate corpus and history rejection paths"
+	@echo "  review-thread-reconciliation-check replay resolved-thread source ownership and exact GitHub closures"
+	@echo "  review-thread-reconciliation-unit-test calibrate resolved-thread reconciliation rejection paths"
 	@echo "  headless-hardware-gl-runner-test calibrate transient Xorg unit teardown"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
