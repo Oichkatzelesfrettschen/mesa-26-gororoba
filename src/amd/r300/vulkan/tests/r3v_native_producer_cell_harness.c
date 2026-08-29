@@ -3,13 +3,18 @@
  *
  * Drives the R2VB producer-only cell through the native ICD on the radeon
  * noop drm-shim: instance, device, the one GEM-backed carrier, recording
- * through the exported producer recorder, and the gated queue submission.
- * The shim absorbs DRM_RADEON_CS and executes nothing, so an accepted
- * submission leaves the recorder's poison prefill standing across the whole
- * carrier; asserting transport acceptance and the unwritten-carrier verdict
- * side by side is what separates a delivered submission from a delivered
- * carrier.  The closed-gate mode proves the fail-closed verdict and the
- * byte-identity of the retained IB against the reference pass, and the
+ * through r3v_native_record_r2vb_producer (rg --fixed-strings
+ * r3v_native_record_r2vb_producer src/amd/r300/vulkan/), and the gated
+ * r3v_native_queue_submit transport (rg --fixed-strings
+ * r3v_native_queue_submit src/amd/r300/vulkan/).  The shim's
+ * radeon_ioctl_cs provider (rg --fixed-strings radeon_ioctl_cs
+ * src/amd/drm-shim/radeon_noop_drm_shim.c) absorbs DRM_RADEON_CS and
+ * executes nothing, so an accepted submission leaves the recorder's poison
+ * prefill standing across the whole carrier; r300_r2vb_producer_carrier_check
+ * (rg --fixed-strings r300_r2vb_producer_carrier_check
+ * src/amd/r300/common/) separates transport acceptance from the unwritten-
+ * carrier verdict.  The closed-gate mode proves the fail-closed verdict and
+ * the byte-identity of the retained IB against the reference pass, and the
  * geometry mode binds a wrong-size carrier so the producer kind's frozen
  * geometry is the only arming factor that fails.
  */

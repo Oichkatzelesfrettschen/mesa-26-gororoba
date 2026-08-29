@@ -197,8 +197,9 @@ if with_tests and cc.get_define(
   # a synthetic sysfs open under parallel test load intermittently
   # reports EAGAIN (observed on /sys/dev/char/226:128/device/vendor in
   # the loaded-modern leg), which would make an exact-signature check
-  # flaky.  The fd-alias adoption path is drm_shim_fd_adopt_raw_aliases;
-  # the EAGAIN source under load is unattributed.
+  # flaky.  The fd-alias adoption path is drm_shim_fd_adopt_raw_aliases
+  # (rg --fixed-strings drm_shim_fd_adopt_raw_aliases
+  # src/drm-shim/device.c); the EAGAIN source under load is unattributed.
   test(
     'radeon-noop-drm-shim-preload-modern',
     radeon_noop_drm_shim_preload_test,
