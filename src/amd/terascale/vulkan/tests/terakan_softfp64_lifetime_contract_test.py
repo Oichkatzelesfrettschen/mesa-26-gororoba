@@ -4,12 +4,12 @@
 The physical-device initializer creates the soft-fp64 mutex before fallible
 ISA, Vulkan, and WSI initialization.  Every failure edge reaches the shared
 mutex cleanup, and the build and runtime comments name the first lazy-library
-call.  The mutant checks reject missing cleanup, a direct calloc return, and
-either stale lazy-trigger description.
+call.  The verifier checks each guarded edge's effective transfer and rejects
+missing cleanup, early returns, redirected branches, and stale trigger text.
 """
 
+import re
 from pathlib import Path
-
 
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "terakan_physical_device.c"
 MESON_PATH = Path(__file__).resolve().parents[1] / "meson.build"
@@ -18,6 +18,14 @@ SOFTFP64_PATH = Path(__file__).resolve().parents[1] / "terakan_softfp64.c"
 
 class ContractViolationError(AssertionError):
     """The soft-fp64 lifetime source contract does not hold."""
+
+
+FAILURE_EDGES = (
+    ("if (device->isa == NULL)", "goto fail_mutex;"),
+    ("if (r600_isa_init(", "goto fail_isa;"),
+    ("result = vk_physical_device_init(", "goto fail_isa;"),
+    ("result = terakan_wsi_init(", "goto fail_device;"),
+)
 
 
 def matching_brace(source: str, opening: int) -> int:
@@ -44,6 +52,29 @@ def block_body(source: str, anchor: str) -> str:
     return source[opening : matching_brace(source, opening) + 1]
 
 
+def strip_c_comments_and_strings(source: str) -> str:
+    without_comments = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.DOTALL)
+    return re.sub(r'"(?:\\.|[^"\\])*"', '""', without_comments)
+
+
+def top_level_control_transfers(block: str) -> tuple[str, ...]:
+    clean = strip_c_comments_and_strings(block)
+    transfers = []
+    for match in re.finditer(r"\b(?:goto\s+[A-Za-z_]\w*|return\b[^;{}]*)\s*;", clean):
+        depth = clean[: match.start()].count("{") - clean[: match.start()].count("}")
+        if depth == 1:
+            transfers.append(" ".join(match.group().split()))
+    return tuple(transfers)
+
+
+def require_failure_edge(block: str, expected: str) -> None:
+    transfers = top_level_control_transfers(block)
+    if transfers != (expected,):
+        raise ContractViolationError(
+            f"failure block transfers {transfers!r}; expected only {expected!r}"
+        )
+
+
 def verify_contract(source: str, meson: str, softfp64: str) -> None:
     init = function_body(source, "terakan_physical_device_init")
     mutex_init = "simple_mtx_init(&device->softfp64_mutex, mtx_plain);"
@@ -53,15 +84,8 @@ def verify_contract(source: str, meson: str, softfp64: str) -> None:
     if init.count(mutex_destroy) != 1:
         raise ContractViolationError("initializer has one softfp64 mutex cleanup")
 
-    failure_edges = (
-        ("if (device->isa == NULL)", "goto fail_mutex;"),
-        ("if (r600_isa_init(", "goto fail_isa;"),
-        ("result = vk_physical_device_init(", "goto fail_isa;"),
-        ("result = terakan_wsi_init(", "goto fail_device;"),
-    )
-    for anchor, edge in failure_edges:
-        if edge not in block_body(init, anchor):
-            raise ContractViolationError(f"{anchor} does not reach {edge}")
+    for anchor, edge in FAILURE_EDGES:
+        require_failure_edge(block_body(init, anchor), edge)
 
     fail_device = init.index("fail_device:")
     fail_isa = init.index("fail_isa:", fail_device)
@@ -109,6 +133,18 @@ def restore_calloc_direct_return(source: str) -> str:
     )
 
 
+def replace_in_block(source: str, anchor: str, old: str, new: str) -> str:
+    anchor_index = source.index(anchor)
+    opening = source.index("{", anchor_index)
+    closing = matching_brace(source, opening)
+    edge_index = source.index(old, opening, closing)
+    return source[:edge_index] + new + source[edge_index + len(old) :]
+
+
+def insert_return_before_edge(source: str, anchor: str, edge: str) -> str:
+    return replace_in_block(source, anchor, edge, f"return result;\n      {edge}")
+
+
 def restore_stale_physical_comment(source: str) -> str:
     return source.replace(
         "terakan_physical_device_get_softfp64(), not here.",
@@ -131,7 +167,7 @@ def main() -> int:
     softfp64 = SOFTFP64_PATH.read_text(encoding="utf-8")
     verify_contract(source, meson, softfp64)
 
-    mutants = (
+    mutants = [
         ("missing mutex cleanup", remove_mutex_cleanup(source), meson),
         ("calloc direct return", restore_calloc_direct_return(source), meson),
         (
@@ -140,6 +176,23 @@ def main() -> int:
             meson,
         ),
         ("stale Meson trigger", source, restore_stale_meson_comment(meson)),
+    ]
+    for anchor, edge in FAILURE_EDGES:
+        mutants.append(
+            (
+                f"early return before {edge}",
+                insert_return_before_edge(source, anchor, edge),
+                meson,
+            )
+        )
+    mutants.append(
+        (
+            "redirected WSI failure edge",
+            replace_in_block(
+                source, FAILURE_EDGES[-1][0], "goto fail_device;", "goto fail_isa;"
+            ),
+            meson,
+        )
     )
     for name, mutant_source, mutant_meson in mutants:
         try:
