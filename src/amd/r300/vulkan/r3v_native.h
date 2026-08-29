@@ -916,6 +916,10 @@ struct r3v_native_device {
     * radeon module cannot become a matchable live identity. */
    const struct r3v_native_arming_provider *arming_provider;
    struct r3v_native_prepared_submission prepared;
+   /* Test harnesses can refuse semantic-cell retention with a negative errno
+    * before any artifact write.  Production devices leave this zero.
+    */
+   int semantic_cell_retention_inject_errno;
    /* R2VB delivery gates, read once at device creation: each holds the
     * literal "1" when its environment variable carried the exact opt-in
     * value, and NULL otherwise, so the route decision cannot drift

@@ -6,11 +6,11 @@
  * target, submitted once per arm on a fresh device.  The armed arm is the
  * positive control (the shim absorbs the CS ioctl; the draw executes and
  * the one-shot token is spent).  Every pre-commit failure -- closed gate,
- * unwritable evidence directory, refused authorization, failed vertex
- * mapping -- leaves the target and the carrier byte-identical to their
- * pre-submit content and spends no authorization; the two transport
- * failures -- refused CS ioctl, failed completion wait -- come after the
- * draw, so the draw has executed exactly once and the token is spent.
+ * injected retention failure, refused authorization, failed vertex mapping
+ * -- leaves the target and the carrier byte-identical to their pre-submit
+ * content and spends no authorization; the two transport failures --
+ * refused CS ioctl, failed completion wait -- come after the draw, so the
+ * draw has executed exactly once and the token is spent.
  */
 
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
@@ -61,7 +61,7 @@ static const float ndc_triangle[12] = {
 enum arm {
    ARM_ARMED,
    ARM_GATE_CLOSED,
-   ARM_RETENTION_UNWRITABLE,
+   ARM_RETENTION_FAILURE,
    ARM_AUTHORIZATION_REFUSED,
    ARM_MAP_FAILURE,
    ARM_IOCTL_REFUSED,
@@ -237,7 +237,7 @@ static const struct {
 } arm_names[] = {
    { "armed", ARM_ARMED },
    { "gate-closed", ARM_GATE_CLOSED },
-   { "retention-unwritable", ARM_RETENTION_UNWRITABLE },
+   { "retention-failure", ARM_RETENTION_FAILURE },
    { "authorization-refused", ARM_AUTHORIZATION_REFUSED },
    { "map-failure", ARM_MAP_FAILURE },
    { "ioctl-refused", ARM_IOCTL_REFUSED },
@@ -542,6 +542,34 @@ arm_fetched_route(enum arm arm, int *format_id, const char **producer_pin)
    }
 }
 
+static bool
+make_manifest_directory(char *manifest_dir, size_t capacity)
+{
+   const char *temporary_roots[] = { getenv("TMPDIR"), "." };
+   static const char manifest_write_suffix[] =
+      "/.submit_manifest.json.XXXXXX";
+
+   for (size_t i = 0; i < sizeof(temporary_roots) / sizeof(temporary_roots[0]);
+        i++) {
+      const char *temporary_root = temporary_roots[i];
+      if (temporary_root == NULL || temporary_root[0] == '\0')
+         continue;
+
+      const size_t root_length = strlen(temporary_root);
+      const int length = snprintf(
+         manifest_dir, capacity, "%s%s%s", temporary_root,
+         temporary_root[root_length - 1] == '/' ? "" : "/",
+         "r3v-native-submit-order-XXXXXX");
+      if (length < 0 || (size_t)length >= capacity ||
+          (size_t)length + sizeof(manifest_write_suffix) > capacity)
+         continue;
+      if (mkdtemp(manifest_dir) != NULL)
+         return true;
+   }
+
+   return false;
+}
+
 static int
 run_arm(enum arm arm, const char *name)
 {
@@ -551,16 +579,13 @@ run_arm(enum arm arm, const char *name)
 
    /* The gate and the evidence directory are read at device creation,
     * so every arm builds its own device under its own environment. */
-   char manifest_dir[] = "/tmp/r3v-native-submit-order-XXXXXX";
-   assert(mkdtemp(manifest_dir) != NULL);
+   char manifest_dir[1024];
+   assert(make_manifest_directory(manifest_dir, sizeof(manifest_dir)));
    setenv("R3V_NATIVE_MANIFEST_DIR", manifest_dir, 1);
    if (arm == ARM_GATE_CLOSED || arm == ARM_KNOWN_BAD_PREMATURE_DRAW)
       unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
    else
       setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
-   if (arm == ARM_RETENTION_UNWRITABLE)
-      assert(chmod(manifest_dir, 0500) == 0);
-
    struct r300_tcl_bypass_triangle_ib reference;
    assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
    char reference_digest[BLAKE3_OUT_LEN * 2 + 1];
@@ -1661,6 +1686,8 @@ run_arm(enum arm arm, const char *name)
    }
    if (arm == ARM_GPU_FETCHED_COMPOSE_FAILURE)
       native_device->gpu_producer_compose_inject_errno = -ENOMEM;
+   if (arm == ARM_RETENTION_FAILURE)
+      native_device->semantic_cell_retention_inject_errno = -EIO;
    const uint32_t references_before = native_cmd->reference_count;
    const enum r3v_native_cell_kind kind_before = native_cmd->cell_kind;
    const uint32_t ib_dwords_before = native_cmd->ib_size_dwords;
@@ -1702,8 +1729,7 @@ run_arm(enum arm arm, const char *name)
       r3v_native_queue_submission_status(device);
    native_device->drm.ops = saved_ops;
    native_device->gpu_producer_compose_inject_errno = 0;
-   if (arm == ARM_RETENTION_UNWRITABLE)
-      assert(chmod(manifest_dir, 0700) == 0);
+   native_device->semantic_cell_retention_inject_errno = 0;
 
    uint32_t carrier_after[2u *
                           R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
@@ -2010,7 +2036,7 @@ run_arm(enum arm arm, const char *name)
       break;
    case ARM_GATE_CLOSED:
    case ARM_KNOWN_BAD_PREMATURE_DRAW:
-   case ARM_RETENTION_UNWRITABLE:
+   case ARM_RETENTION_FAILURE:
    case ARM_AUTHORIZATION_REFUSED:
       assert(submitted == VK_ERROR_DEVICE_LOST);
       assert(status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
@@ -2126,18 +2152,18 @@ run_arm(enum arm arm, const char *name)
       break;
    }
 
-   /* Evidence retention precedes the gate verdict: every armed-gate arm
-    * that reached retention keeps ib.bin; the closed gate, the
-    * unwritable directory, and the admission refused ahead of retention
-    * retain none. */
+   /* Semantic-cell retention precedes the final gate verdict.  Every arm
+    * that reaches it retains ib.bin, including the closed gate; admission
+    * refusals before command submission and the injected write failure do
+    * not retain the file. */
    const bool ib_retained = file_present(manifest_dir, "ib.bin");
-   if (arm == ARM_RETENTION_UNWRITABLE ||
+   if (arm == ARM_RETENTION_FAILURE ||
        arm == ARM_GPU_FETCHED_COMPOSE_FAILURE || fetched_refusal_arm ||
        arm == ARM_MULTI_ATTRIBUTE_FETCHED_REFUSED ||
        arm == ARM_INDEXED_FETCHED_REFUSED ||
        arm == ARM_INSTANCED_FETCHED_REFUSED)
       assert(!ib_retained);
-   else if (arm != ARM_GATE_CLOSED && arm != ARM_KNOWN_BAD_PREMATURE_DRAW)
+   else
       assert(ib_retained);
 
    /* The bytes the armed submit retained and handed to the ioctl are the
