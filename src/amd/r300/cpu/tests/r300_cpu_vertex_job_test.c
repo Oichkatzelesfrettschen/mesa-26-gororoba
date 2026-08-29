@@ -657,6 +657,13 @@ static void test_execute_refusals_no_partial_write(void)
    rc = r300_cpu_vertex_job_execute(&job, &stream, 0xffffffffu, 2, carrier,
                                     CARRIER_DWORDS);
    assert(rc == -EINVAL);
+   /* A robust stream still cannot represent a logical vertex above the
+    * 32-bit gather address space; the guard rejects the range before the
+    * robust zero substitution can hide the wrapped index. */
+   stream.oob_reads_zero = true;
+   rc = r300_cpu_vertex_job_execute(&job, &stream, 0xffffffffu, 2, carrier,
+                                    CARRIER_DWORDS);
+   assert(rc == -EINVAL);
    for (uint32_t i = 0; i < CARRIER_DWORDS; i++)
       assert(carrier[i] == CANARY);
 
