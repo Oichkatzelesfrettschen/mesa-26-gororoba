@@ -140,6 +140,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     *R3V_FLOAT2_TUPLE_REQUIRED_TESTS,
     "r3v-native-entrypoint-audit-selftest",
     "r3v-native-entrypoint-audit-baseline",
+    "r3v-native-entrypoint-audit-baseline-bind-buffer-memory2-drop",
     "r3v-native-entrypoint-audit-baseline-known-bad-extra",
     "r3v-native-entrypoint-closure",
     "r3v-native-entrypoint-closure-known-bad-BindBufferMemory2",

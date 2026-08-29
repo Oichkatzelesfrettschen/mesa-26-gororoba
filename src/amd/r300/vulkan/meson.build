@@ -726,6 +726,17 @@ if with_tests and prog_nm_r3v.found()
     depends : libvulkan_r3v,
     suite : ['r3v'],
   )
+  # Dropping the target of the BindBufferMemory bridge produces one known
+  # open slot.  This passing leg proves the baseline comparator observes that
+  # exact slot before the extra-drop leg adds a second, unexpected slot.
+  test(
+    'r3v-native-entrypoint-audit-baseline-bind-buffer-memory2-drop',
+    prog_python,
+    args : [r3v_native_entrypoint_audit_args, '--baseline',
+            'BindBufferMemory', '--drop', 'BindBufferMemory2'],
+    depends : libvulkan_r3v,
+    suite : ['r3v'],
+  )
   test(
     'r3v-native-entrypoint-audit-baseline-known-bad-extra',
     prog_python,
