@@ -119,6 +119,19 @@ test_round_trip(void)
    struct r3v_native_plan_identity id = good_identity();
    assert(r3v_native_plan_bind(&p, &id) == R3V_NATIVE_PLAN_BIND_OK);
    r3v_native_plan_finish(&p);
+
+   struct r3v_native_plan maximum_kernel_release = good_plan();
+   memset(maximum_kernel_release.kernel_release, 'k',
+          R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX);
+   maximum_kernel_release.kernel_release[R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX] =
+      '\0';
+   long maximum_size = r3v_native_plan_write(&maximum_kernel_release, NULL, 0);
+   assert(maximum_size > 0 && (size_t)maximum_size < sizeof(again));
+   assert(r3v_native_plan_write(&maximum_kernel_release, again, sizeof(again)) ==
+          maximum_size);
+   assert(parse_text(again, (size_t)maximum_size, &p) ==
+          R3V_NATIVE_PLAN_PARSE_OK);
+   r3v_native_plan_finish(&p);
 }
 
 /* Applies one textual edit to the good plan, re-seals unless the edit
@@ -215,6 +228,9 @@ test_parse_refusals(void)
                 R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED);
    expect_parse("max_submissions\t4", "max_submissions\t1", true,
                 R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED);
+   expect_parse("\tcompletion\t2\t2\t4\trw\n",
+                "\tcompletion\t2\t2\t1040000\trw\n", true,
+                R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED);
    expect_parse("\t231\ttriangle\t", "\t231\tundeclared\t", true,
                 R3V_NATIVE_PLAN_PARSE_BAD_VALUE);
    expect_parse("\t96\tr\n", "\t96\tx\n", true,
@@ -248,7 +264,7 @@ test_parse_refusals(void)
                 "source_clean\t1\nsource_sha\t" H40 "\n", true,
                 R3V_NATIVE_PLAN_PARSE_NONCANONICAL);
    expect_parse("\t96\tr\n", "\t96\tr\t\n", true,
-                R3V_NATIVE_PLAN_PARSE_NONCANONICAL);
+                R3V_NATIVE_PLAN_PARSE_MALFORMED_LINE);
    expect_parse("\ttarget\t4\t4\t", "\ttarget\t0x4\t4\t", true,
                 R3V_NATIVE_PLAN_PARSE_BAD_VALUE);
    expect_parse("\ttarget\t4\t4\t", "\ttarget\t04\t4\t", true,
@@ -382,7 +398,7 @@ test_session(void)
    /* Unbound refuses admission and finish. */
    assert(r3v_native_plan_session_admit(&s, &g.submissions[0], 1, 0) ==
           R3V_NATIVE_PLAN_SESSION_UNBOUND);
-   assert(r3v_native_plan_session_finish(&s) ==
+   assert(r3v_native_plan_session_finish(&s, 0) ==
           R3V_NATIVE_PLAN_SESSION_UNBOUND);
    assert(r3v_native_plan_session_bind(&s, &g) ==
           R3V_NATIVE_PLAN_SESSION_ADMITTED);
@@ -392,7 +408,7 @@ test_session(void)
    /* The ordered replay admits each entry once and proves exhaustion. */
    assert(r3v_native_plan_session_admit(&s, &g.submissions[0], 1, 1) ==
           R3V_NATIVE_PLAN_SESSION_ADMITTED);
-   assert(r3v_native_plan_session_finish(&s) ==
+   assert(r3v_native_plan_session_finish(&s, 1) ==
           R3V_NATIVE_PLAN_SESSION_INCOMPLETE);
    /* An incomplete finish is itself terminal. */
    assert(s.terminal);
@@ -430,7 +446,7 @@ test_session(void)
       assert(t.terminal && t.next_index == 0);
       assert(r3v_native_plan_session_admit(&t, &g.submissions[0], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
       assert(r3v_native_plan_session_bind(&t, &g) ==
              R3V_NATIVE_PLAN_SESSION_CONSUMED);
@@ -458,7 +474,7 @@ test_session(void)
       assert(r3v_native_plan_session_admit(&t, &g.submissions[1], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_EXHAUSTED);
       assert(t.terminal);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
    }
    /* The complete replay finishes once and refuses reuse. */
@@ -471,9 +487,9 @@ test_session(void)
       assert(r3v_native_plan_session_admit(&t, &g.submissions[1], 1, 5) ==
              R3V_NATIVE_PLAN_SESSION_ADMITTED);
       assert(t.referenced_bytes == 16384 + 4 + 96);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 5) ==
              R3V_NATIVE_PLAN_SESSION_ADMITTED);
-      assert(r3v_native_plan_session_finish(&t) ==
+      assert(r3v_native_plan_session_finish(&t, 5) ==
              R3V_NATIVE_PLAN_SESSION_CONSUMED);
       assert(r3v_native_plan_session_admit(&t, &g.submissions[0], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_TERMINAL);
@@ -506,6 +522,23 @@ test_session(void)
              R3V_NATIVE_PLAN_SESSION_ADMITTED);
       assert(r3v_native_plan_session_admit(&t, &small.submissions[1], 1, 0) ==
              R3V_NATIVE_PLAN_SESSION_BYTES_EXCEEDED);
+   }
+   /* The final time check catches a session that crossed its deadline
+    * after its last admission.
+    */
+   {
+      struct r3v_native_plan deadline = good_plan();
+      deadline.max_runtime_seconds = 5;
+      struct r3v_native_plan_session t;
+      r3v_native_plan_session_init(&t);
+      assert(r3v_native_plan_session_bind(&t, &deadline) ==
+             R3V_NATIVE_PLAN_SESSION_ADMITTED);
+      assert(r3v_native_plan_session_admit(&t, &deadline.submissions[0], 1, 4) ==
+             R3V_NATIVE_PLAN_SESSION_ADMITTED);
+      assert(r3v_native_plan_session_admit(&t, &deadline.submissions[1], 1, 5) ==
+             R3V_NATIVE_PLAN_SESSION_ADMITTED);
+      assert(r3v_native_plan_session_finish(&t, 6) ==
+             R3V_NATIVE_PLAN_SESSION_RUNTIME_EXCEEDED);
    }
 }
 
@@ -545,6 +578,9 @@ test_writer_refuses_out_of_schema(void)
    g = good_plan();
    g.submissions[0].relocs[0].read_domains = 0x8;
    assert(r3v_native_plan_write(&g, NULL, 0) == -1);
+   g = good_plan();
+   g.max_cumulative_bytes = 16384;
+   assert(r3v_native_plan_write(&g, NULL, 0) == -1);
    /* A buffer too small for the whole plan stays untouched. */
    g = good_plan();
    char tiny[64];
@@ -553,6 +589,14 @@ test_writer_refuses_out_of_schema(void)
    assert(need > 64);
    for (unsigned i = 0; i < sizeof(tiny); i++)
       assert(tiny[i] == '#');
+}
+
+static void
+test_seal_refuses_out_of_range_bodies(void)
+{
+   char text[128] = {0};
+   assert(r3v_native_plan_seal(text, sizeof(text), sizeof(text)) == 0);
+   assert(r3v_native_plan_seal(text, sizeof(text), SIZE_MAX) == 0);
 }
 
 /* The gate enumeration names any open gate: the hazard gate, an
@@ -603,6 +647,7 @@ main(void)
    test_match_refusals();
    test_session();
    test_writer_refuses_out_of_schema();
+   test_seal_refuses_out_of_range_bodies();
    test_gates_open();
    printf("r3v-native-plan: round trip, seal, truncation, order, count, "
           "field, value, and ceiling refusals; sixteen identity binds; "

@@ -253,7 +253,8 @@ set_field(struct r3v_native_plan *p, enum field f, const char *v)
    case F_QUEUE_CLAIM:
       return r3v_native_plan_queue_claim_parse(v, &p->queue_claim);
    case F_KERNEL:
-      return copy_name(p->kernel_release, v, R3V_NATIVE_PLAN_NAME_MAX);
+      return copy_name(p->kernel_release, v,
+                       R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX);
    case F_MODULE:
       return copy_name(p->module_srcversion, v, R3V_NATIVE_PLAN_NAME_MAX);
    case F_PCI: {
@@ -320,7 +321,7 @@ split(char *line, char **cols, unsigned max)
       *tab = '\0';
       p = tab + 1;
    }
-   return strchr(p, '\t') == NULL && *p == '\0' ? n : max + 1;
+   return max + 1;
 }
 
 static bool
@@ -397,6 +398,7 @@ r3v_native_plan_parse(const char *text, size_t size,
    struct r3v_native_plan_submission *cur = NULL;
    uint32_t submissions_seen = 0;
    uint32_t relocs_seen = 0;
+   uint64_t referenced_bytes = 0;
    bool first = true;
    char *save = NULL;
    for (char *line = strtok_r(body, "\n", &save); line != NULL;
@@ -515,6 +517,12 @@ r3v_native_plan_parse(const char *text, size_t size,
             result = R3V_NATIVE_PLAN_PARSE_BAD_VALUE;
             break;
          }
+         if (r->size > UINT64_MAX - referenced_bytes ||
+             referenced_bytes + r->size > plan->max_cumulative_bytes) {
+            result = R3V_NATIVE_PLAN_PARSE_CEILING_EXCEEDED;
+            break;
+         }
+         referenced_bytes += r->size;
          continue;
       }
       if (header_done || n != 2) {
@@ -604,6 +612,7 @@ emit(char *out, size_t out_size, size_t *pos, const char *fmt, ...)
 static bool
 plan_in_schema(const struct r3v_native_plan *plan)
 {
+   uint64_t referenced_bytes = 0;
    if (plan->schema_version != R3V_NATIVE_PLAN_SCHEMA_VERSION ||
        !hex_ok(plan->source_sha, 40) ||
        !hex_ok(plan->dso_blake3, R3V_NATIVE_PLAN_HEX64) ||
@@ -612,7 +621,7 @@ plan_in_schema(const struct r3v_native_plan *plan)
        !hex_ok(plan->partition_sha256, R3V_NATIVE_PLAN_HEX64) ||
        !hex_ok(plan->caselist_sha256, R3V_NATIVE_PLAN_HEX64) ||
        r3v_native_plan_queue_claim_name(plan->queue_claim) == NULL ||
-       !name_ok(plan->kernel_release, R3V_NATIVE_PLAN_NAME_MAX) ||
+       !name_ok(plan->kernel_release, R3V_NATIVE_PLAN_KERNEL_RELEASE_MAX) ||
        !name_ok(plan->module_srcversion, R3V_NATIVE_PLAN_NAME_MAX) ||
        plan->pci_vendor_id > 0xffff || plan->pci_device_id > 0xffff ||
        !hex_ok(plan->nonce, 32) || plan->evidence_dir[0] != '/' ||
@@ -647,6 +656,10 @@ plan_in_schema(const struct r3v_native_plan *plan)
              rl->size > R3V_NATIVE_PLAN_CUMULATIVE_BYTES_MAX ||
              direction_name(rl->direction) == NULL)
             return false;
+         if (rl->size > UINT64_MAX - referenced_bytes ||
+             referenced_bytes + rl->size > plan->max_cumulative_bytes)
+            return false;
+         referenced_bytes += rl->size;
       }
    }
    return true;
@@ -721,7 +734,10 @@ emit_body(const struct r3v_native_plan *plan, char *out, size_t out_size)
 size_t
 r3v_native_plan_seal(char *text, size_t text_size, size_t body_size)
 {
-   size_t total = body_size + 5 + R3V_NATIVE_PLAN_HEX64 + 1;
+   const size_t seal_size = 5 + R3V_NATIVE_PLAN_HEX64 + 1;
+   if (body_size > text_size || body_size > SIZE_MAX - seal_size)
+      return 0;
+   size_t total = body_size + seal_size;
    if (total > text_size)
       return 0;
    char seal[BLAKE3_OUT_LEN * 2 + 1];
@@ -925,7 +941,8 @@ r3v_native_plan_session_fail(struct r3v_native_plan_session *s,
 }
 
 enum r3v_native_plan_session_result
-r3v_native_plan_session_finish(struct r3v_native_plan_session *s)
+r3v_native_plan_session_finish(struct r3v_native_plan_session *s,
+                               uint64_t elapsed_seconds)
 {
    if (!s->bound)
       return R3V_NATIVE_PLAN_SESSION_UNBOUND;
@@ -935,6 +952,8 @@ r3v_native_plan_session_finish(struct r3v_native_plan_session *s)
       return R3V_NATIVE_PLAN_SESSION_CONSUMED;
    if (s->next_index != s->plan->submission_count)
       return latch(s, R3V_NATIVE_PLAN_SESSION_INCOMPLETE);
+   if (elapsed_seconds > s->plan->max_runtime_seconds)
+      return latch(s, R3V_NATIVE_PLAN_SESSION_RUNTIME_EXCEEDED);
    s->completed = true;
    return R3V_NATIVE_PLAN_SESSION_ADMITTED;
 }

@@ -50,6 +50,12 @@ class PartitionRefusal(Exception):
     pass
 
 
+def output_safe_slice_basename(name):
+    return name not in (".", "..") and \
+        "/" not in name and "\\" not in name and \
+        all(character.isalnum() or character in "._-" for character in name)
+
+
 def sha256_lines(lines):
     return hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
 
@@ -120,6 +126,12 @@ def load_partition(path):
         order, name, groups, hazard, evidence = f
         if name in names:
             raise PartitionRefusal(f"{path}:{n}: slice {name} repeats")
+        if not output_safe_slice_basename(name):
+            raise PartitionRefusal(f"{path}:{n}: slice {name!r} is not an "
+                                   "output-safe basename")
+        if name == "uncovered":
+            raise PartitionRefusal(f"{path}:{n}: slice name {name!r} is "
+                                   "reserved for the uncovered caselist")
         names.add(name)
         if hazard not in HAZARDS:
             raise PartitionRefusal(f"{path}:{n}: hazard {hazard!r} unknown")
@@ -299,9 +311,12 @@ def verify_manifest(path):
     executable = 0
     for s in manifest["slices"]:
         if s.get("hazard") not in HAZARDS or \
+                s.get("required_evidence") not in EVIDENCE or \
+                (s["hazard"] != "none" and
+                 s["required_evidence"] != "silicon") or \
                 s.get("executable") != (s["hazard"] != "unknown"):
-            raise PartitionRefusal(f"slice {s.get('slice')}: executable flag "
-                                   "does not derive from its hazard")
+            raise PartitionRefusal(f"slice {s.get('slice')}: execution "
+                                   "contract does not derive from its hazard")
         executable += s["case_count"] if s["executable"] else 0
         f = p.parent / s["caselist"]
         if not f.is_file():
@@ -331,6 +346,23 @@ def verify_manifest(path):
             executable != manifest.get("executable_case_count"):
         raise PartitionRefusal("slice counts do not sum to the covered and "
                                "executable counts")
+    if total + manifest.get("uncovered_case_count", -1) != \
+            manifest.get("corpus_case_count"):
+        raise PartitionRefusal("covered and uncovered counts do not sum to "
+                               "the corpus")
+    if manifest["kind"] == "pilot":
+        uncovered = p.parent / "uncovered.txt"
+        if manifest.get("exact_cover"):
+            raise PartitionRefusal("a pilot manifest cannot claim exact cover")
+        if manifest["uncovered_case_count"] == 0:
+            if uncovered.exists():
+                raise PartitionRefusal("a fully covered pilot has an "
+                                       "uncovered caselist")
+        elif not uncovered.is_file() or len([
+                line for line in uncovered.read_text().splitlines() if line
+        ]) != manifest["uncovered_case_count"]:
+            raise PartitionRefusal("uncovered caselist does not match its "
+                                   "recorded count")
     if manifest["kind"] == "exhaustive" and (
             not manifest["exact_cover"] or
             manifest["covered_case_count"] != manifest["corpus_case_count"] or
@@ -578,6 +610,8 @@ def selftest():
         for edit, needle in (
                 (lambda mm: mm["slices"][3].__setitem__("executable", True),
                  "does not derive"),
+                (lambda mm: mm["slices"][2].__setitem__(
+                    "required_evidence", "host-model"), "does not derive"),
                 (flip("executable_case_count", 5), "executable counts"),
                 (flip("exact_cover", False), "without exact cover"),
                 (flip("manifest_version", 2), "version unknown"),
@@ -608,6 +642,14 @@ def selftest():
                 not (out / "pilot" / "uncovered.txt").is_file():
             raise SystemExit("selftest: pilot did not record the uncovered "
                              "case")
+        pilot_manifest = out / "pilot" / "partition_manifest.json"
+        pilot_body = json.loads(pilot_manifest.read_text())
+        pilot_body["uncovered_case_count"] = 0
+        pilot_body["corpus_case_count"] = pilot_body["covered_case_count"]
+        pilot_body["manifest_sha256"] = manifest_digest(pilot_body)
+        pilot_manifest.write_text(json.dumps(pilot_body))
+        expect(lambda: verify_manifest(pilot_manifest),
+               "fully covered pilot has an uncovered")
         # Double cover refuses in both kinds.
         write_table(good + [("5", "again", "dEQP-VK.api", "none",
                              "host-model")])
@@ -629,6 +671,14 @@ def selftest():
         write_table(good + [("5", "info", "dEQP-VK.x", "none", "host-model")])
         expect(lambda: generate(table, corpus, out, "exhaustive", False),
                "repeats")
+        write_table(good + [("5", "../escaped", "dEQP-VK.x", "none",
+                             "host-model")])
+        expect(lambda: generate(table, corpus, out, "pilot", False),
+               "output-safe basename")
+        write_table(good + [("5", "uncovered", "dEQP-VK.x", "none",
+                             "host-model")])
+        expect(lambda: generate(table, corpus, out, "pilot", False),
+               "reserved for the uncovered")
         write_table(good)
         expect(lambda: generate(table, corpus, out, "weekly", False),
                "is not one of")
