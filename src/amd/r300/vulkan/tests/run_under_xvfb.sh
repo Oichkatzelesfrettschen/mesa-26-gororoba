@@ -21,8 +21,9 @@
 # Once Xvfb accepts connections, the wrapper's exit status is exactly the
 # wrapped command's exit status. A failure while stopping Xvfb afterward is
 # reported on stderr and does not change that status.
-# The wrapped command runs as a child so signal traps run while it is active;
-# the trap stops that child and Xvfb before removing the displayfd directory.
+# The wrapped command runs in a dedicated setsid process group with the
+# wrapper's inherited stdin explicitly connected; signal traps stop the whole
+# group and Xvfb before removing the displayfd directory.
 
 set -u
 
@@ -42,6 +43,16 @@ fi
 
 if [ "$#" -eq 0 ]; then
     echo "run_under_xvfb.sh: no command given" >&2
+    exit 125
+fi
+
+if ! command -v setsid >/dev/null 2>&1; then
+    echo "run_under_xvfb.sh: setsid utility not found" >&2
+    exit 125
+fi
+
+if ! exec 7<&0; then
+    echo "run_under_xvfb.sh: cannot preserve inherited stdin" >&2
     exit 125
 fi
 
@@ -68,11 +79,13 @@ stop_command() {
         return
     fi
 
-    kill -TERM "$command_pid" 2>/dev/null || true
+    # setsid makes the command PID the process-group ID, so the negative PID
+    # targets every descendant without reaching the wrapper's own group.
+    kill -TERM -"$command_pid" 2>/dev/null || true
     command_wait_count=0
-    while kill -0 "$command_pid" 2>/dev/null; do
+    while kill -0 -"$command_pid" 2>/dev/null; do
         if [ "$command_wait_count" -ge 50 ]; then
-            kill -KILL "$command_pid" 2>/dev/null || true
+            kill -KILL -"$command_pid" 2>/dev/null || true
             break
         fi
         command_wait_count=$((command_wait_count + 1))
@@ -112,6 +125,7 @@ abort_wrapper() {
     stop_command
     cleanup_xvfb
     exec 8<&- 2>/dev/null || true
+    exec 7<&- 2>/dev/null || true
     cleanup_dir
     exit "$abort_status"
 }
@@ -169,13 +183,17 @@ fi
 DISPLAY=":$display_num"
 export DISPLAY
 
-"$@" &
+# An asynchronous POSIX command can receive /dev/null as stdin.  Reconnect
+# descriptor 7 explicitly, then close the duplicate in the child.  setsid
+# gives the command and every ordinary descendant one killable process group.
+setsid -- "$@" <&7 7<&- &
 command_pid=$!
 wait "$command_pid"
 cmd_status=$?
-command_pid=""
 
 trap - INT TERM HUP
+stop_command
+exec 7<&-
 cleanup_xvfb
 cleanup_dir
 

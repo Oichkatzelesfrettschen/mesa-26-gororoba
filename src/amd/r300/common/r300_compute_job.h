@@ -3,8 +3,8 @@
  *
  * CPU compute-job IR: the compiler's immutable lowering output for the
  * admitted compute-dispatch subset.  The job describes one elementwise
- * kernel over two storage-buffer ranges; the executor runs it once per
- * flattened invocation.
+ * kernel over two storage-buffer ranges; the executor runs the X address
+ * domain once per flattened invocation.
  */
 
 #ifndef R300_COMPUTE_JOB_H
@@ -39,7 +39,8 @@ enum r300_compute_job_op {
 
 /* One admitted compute kernel: the op, the two storage-buffer bindings
  * it names on descriptor set 0, and the workgroup size its module
- * declared.  The flattened invocation index addresses both ranges at
+ * declared.  The admitted shader uses singleton Y/Z dimensions and
+ * gl_GlobalInvocationID.x to address both ranges at
  * R300_COMPUTE_JOB_ELEMENT_BYTES stride.
  */
 struct r300_compute_job {

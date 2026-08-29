@@ -805,6 +805,8 @@ admit_module(const uint32_t *words, size_t word_count,
       return refuse(r, "entry function did not complete");
    if (local_size[0] == 0 || local_size[1] == 0 || local_size[2] == 0)
       return refuse(r, "LocalSize execution mode absent");
+   if (local_size[1] != 1 || local_size[2] != 1)
+      return refuse(r, "LocalSize outside the x-only invocation domain");
    if (load_var == 0 || store_var == 0 || stored_value == 0)
       return refuse(r, "kernel lacks the load/store pair");
    if (load_var == store_var)

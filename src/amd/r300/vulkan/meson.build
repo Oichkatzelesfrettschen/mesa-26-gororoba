@@ -726,6 +726,17 @@ if with_tests and prog_nm_r3v.found()
     depends : libvulkan_r3v,
     suite : ['r3v'],
   )
+  # Dropping the target of the BindBufferMemory bridge produces one known
+  # open slot.  This passing leg proves the baseline comparator observes that
+  # exact slot before the extra-drop leg adds a second, unexpected slot.
+  test(
+    'r3v-native-entrypoint-audit-baseline-bind-buffer-memory2-drop',
+    prog_python,
+    args : [r3v_native_entrypoint_audit_args, '--baseline',
+            'BindBufferMemory', '--drop', 'BindBufferMemory2'],
+    depends : libvulkan_r3v,
+    suite : ['r3v'],
+  )
   test(
     'r3v-native-entrypoint-audit-baseline-known-bad-extra',
     prog_python,
@@ -1485,6 +1496,37 @@ if with_tests
     ],
     suite : ['r3v'],
   )
+
+  # Non-submitting producer-cell arming runner: reports the reference
+  # producer pass's digest and every arming factor, then stops at the
+  # authorization boundary.  The check drives the refusal and deterministic
+  # ARMED calibration legs without requiring the optional drm-shim harness.
+  r3v_native_producer_arming_runner = executable(
+    'r3v_native_producer_arming_runner',
+    files('r3v_native_arming.c',
+          'tests/r3v_native_producer_arming_runner.c',
+          '../common/r300_first_draw_state.c',
+          '../common/r300_fragment_binary.c',
+          '../common/r300_pm4_builder.c',
+          '../common/r300_r2vb_carrier_delivery.c',
+          '../common/r300_r2vb_producer_pass.c',
+          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : [idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r3v-native-producer-arming-runner',
+    prog_python,
+    args : [
+      files('tests/r3v_native_producer_arming_runner_check.py'),
+      r3v_native_producer_arming_runner,
+      r3v_native_arming_runner,
+    ],
+    suite : ['r3v'],
+  )
+
   # The varying cell's two authorities -- the arming runner's --varying
   # emission and the manifest writer's --varying ib.bin -- are one byte
   # stream, so the digest the operator declares from either names the
@@ -1678,6 +1720,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     ['different-command-buffer', 'different-buffer'],
     ['submit-shape', 'submit-shape'],
     ['trace-refusal', 'trace-refusal'],
+    ['query-refusal', 'query-refusal'],
+    ['event-refusal', 'event-refusal'],
     ['teardown', 'teardown'],
   ]
     test(
@@ -2522,6 +2566,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The production NoPerspective route's recording boundary: no probe
+  # gate, the NoPerspective pipeline on the direct GB W_SELECT route,
+  # and the recorded stream the gated W_SELECT candidate's byte for byte.
+  test(
+    'r3v-native-noperspective-production-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'w-select', '--production'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding
@@ -2956,7 +3013,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   foreach capture_arm : ['capture', 'slot-roles', 'gate-open-refused',
                          'manifest-dir-refused', 'second-device-ordinal',
                          'derived-path-exists-refused',
-                         'missing-directory-refused']
+                         'missing-directory-refused',
+                         'relocation-count-diagnostic',
+                         'write-failure-status']
     test(
       'r3v-native-plan-capture-@0@'.format(capture_arm),
       r3v_native_plan_capture_harness,
@@ -3083,36 +3142,6 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     args : [
       files('tests/r3v_native_zb_depth_control_arming_runner_check.py'),
       r3v_native_zb_depth_control_arming_runner,
-      r3v_native_arming_runner,
-    ],
-    suite : ['r3v'],
-  )
-
-  # Non-submitting producer-cell arming runner: reports the reference
-  # producer pass's digest and every arming factor, then stops at the
-  # authorization boundary.  The check drives the refusal legs and the
-  # wrong-cell negative against the triangle runner's digest.
-  r3v_native_producer_arming_runner = executable(
-    'r3v_native_producer_arming_runner',
-    files('r3v_native_arming.c',
-          'tests/r3v_native_producer_arming_runner.c',
-          '../common/r300_first_draw_state.c',
-          '../common/r300_fragment_binary.c',
-          '../common/r300_pm4_builder.c',
-          '../common/r300_r2vb_carrier_delivery.c',
-          '../common/r300_r2vb_producer_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
-    include_directories : [r3v_native_inc, include_directories('.')],
-    dependencies : [idep_mesautil],
-    gnu_symbol_visibility : 'hidden',
-  )
-  test(
-    'r3v-native-producer-arming-runner',
-    prog_python,
-    args : [
-      files('tests/r3v_native_producer_arming_runner_check.py'),
-      r3v_native_producer_arming_runner,
       r3v_native_arming_runner,
     ],
     suite : ['r3v'],
@@ -3306,6 +3335,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-direct-write-submit-object-replay',
     files('tests/run_direct_write_submit_object_replay.sh')[0],
     args : [r3v_native_direct_write_harness],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  # The producer cell's exact-submit replay binds the 64-byte carrier and
+  # four-byte completion BO from submit_manifest.json to the full CS-track
+  # parser, then rejects malformed stream, geometry, and truncation controls.
+  # Runtime-gated on R3V_CS_TRACK_REPLAY_TOOL (skip 77 when unset).
+  test(
+    'r3v-native-producer-submit-object-replay',
+    files('tests/run_producer_submit_object_replay.sh')[0],
+    args : [r3v_native_producer_cell_harness],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,

@@ -5,7 +5,7 @@
 #sessionInfo vendorID 0x1002
 #sessionInfo deviceID 0x5974
 #sessionInfo deviceName ATI RS480 (RS482)
-#sessionInfo commandLineParameters "--deqp-case=dEQP-VK.info.* --deqp-log-filename=/run/info.qpa"
+#sessionInfo commandLineParameters "--deqp-case=dEQP-VK.info.* --deqp-log-filename=run.qpa"
 
 #beginSession
 

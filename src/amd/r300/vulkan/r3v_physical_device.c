@@ -719,7 +719,9 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
     * subset, advertised exactly so a capability-aware application reaches
     * the qualified route: the two 32-bpp lane orders the render-shape
     * cell places into its target and the F32-family vertex formats the
-    * CPU vertex executor gathers.
+    * CPU vertex executor gathers. BLIT bits remain absent because
+    * r3v_CmdBlitImage executes only a same-format, unflipped subset,
+    * which cannot satisfy Vulkan's full format-feature domain.
     */
    switch (vk_format) {
    case VK_FORMAT_R8G8B8A8_UNORM:

@@ -58,6 +58,21 @@ changes.
   the `[witness]` step reads each pass's carrier back and requires the TEX0 payload verbatim and
   the reciprocal W lanes pairwise distinct in the 1 : 1/4 : 1/2 ratio.
 
+## Production route receipt
+
+`--production` (with `--candidate w-select`) runs the same two-pass cell with every probe gate
+unset: the Smooth pipeline replicates and the NoPerspective pipeline selects
+`R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT` on its own (`r3v_interpolation_route_select`), the
+runner re-derives both routes through the selector and refuses any other pair, and the recorded
+stream is the gated `W_SELECT` candidate's byte for byte (cell blake3 `32d547e9`, the same arming
+digest from `--multi-pass-rs-w-select-probe`). The runner refuses a present probe gate ahead of
+object creation, since a gate would hand the interface a candidate instead of the route under
+test. The census, predictions, witness, and verdict are the probe's; an `affine` classification
+of the NoPerspective target under the perspective control premise is the receipt of the public
+Vulkan NoPerspective route on RS482, retained apart from the word-classification bundles. The
+recording boundary is calibrated on the drm-shim under
+`r3v-native-noperspective-production-route-record`.
+
 ## Registered models
 
 Each model is a function of the record triple at a pixel center, evaluated in binary64 and
@@ -105,6 +120,11 @@ expected images (`expected_perspective.bin`, `expected_affine.bin`, `expected_pr
 4. `vkQueueSubmit` returns 0, the dmesg delta is empty, and the watchdog counter returns to
    `inactive` after the guarded interval.
 
+RS482 classified `RS_INST_TEX_ADJ` as `perspective-perturbed` (881 of 882 judged pixels
+unchanged against the control, one within a quantum) and `GB_SELECT_W_SELECT` as `affine` (882 of
+882 within one quantum, zero perspective matches); the direct NoPerspective route in
+`r3v_interpolation_lowering.h` carries the W_SELECT word.
+
 Only an `affine` classification promotes the word into a direct NoPerspective contract; any other
 result sends R3V's NoPerspective lowering to the (a w, w) carrier with a reciprocal-multiply in the
 fragment program.
@@ -135,3 +155,8 @@ readbacks, the three expected images, and `run.txt` carrying every printed line:
 `[route]`, `[record]`, `[state]`, `[predict]`, `[models]`, `[witness]`, both `[census]` lines with
 every count, and `[classification] <register>=<name>`. The classification line is a statement
 about the bit, not a feature claim.
+
+The runner retains the recorded stream as `recorded_ib.bin` and the reference list as
+`references.bin` ahead of the ioctl, in record-only mode as well; `ib.bin`, `relocs.bin`, and
+`manifest.json` belong to the queue's own retention at submission, which refuses ahead of the ioctl
+when any of the three already exists, so the runner proves them fresh after its own retention.

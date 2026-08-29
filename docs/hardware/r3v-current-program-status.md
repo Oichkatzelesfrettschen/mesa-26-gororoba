@@ -1,29 +1,30 @@
 # R3V current program status
 
 This document is the one program-status authority for the R3V native
-Vulkan ICD on RS482. It states the repository heads, the target
-deployment, the active conformance partition, the latest target receipt,
-the DSO and queue-claim modes, the open tasks, and the documents it
-supersedes. Other documents point here; the status table lives here alone
-and is updated in place when a head, receipt, or task changes.
-`git log -1 -- docs/hardware/r3v-current-program-status.md` names the
-commit whose state a revision of this table describes.
+Vulkan ICD on RS482. It states the revision and evidence boundaries, the
+target deployment, the active conformance partition, the latest target
+receipt, the DSO and queue-claim modes, the open tasks, and the documents
+it supersedes. Other documents point here; the status table lives here
+alone and is updated in place when a receipt or task changes.
 
-## Repository heads
+## Revision and evidence boundaries
 
-| Repository | Head | Subject |
+| Boundary | Revision | Authority |
 |---|---|---|
-| `mesa-26-gororoba` | `84cf229c0d6` | r3v: arm the composed cell from its bound digest |
-| `steinmarder-r300` | `2ae932526` | r3v: read the varying interpolation out of the 256x256 target |
-| `steinmarder` (workspace index, cross-repo orchestration) | `77869e866` | tools/workspace-index-marker-and-trailer-retention |
-| `linux-radeon-gororoba` | `01aab9a` | rs4xx: GTT size-segregated placement (PR #123) |
-| `radeon-custom` (DKMS + package source pin) | `54acd22` | docs/rewrap-version-axis-paragraph (PR #171) |
-| `vostro1000-re` | `30e6c02e64` | docs/rank-content-description-precondition (PR #664) |
-| `deqp-vk-fork` | `43c65c132` | r3v: retire the pre-rename driver spelling from the fork |
+| Document revision | `git log -1 -- docs/hardware/r3v-current-program-status.md` | the commit that carries this table |
+| Mesa reconciliation base | `0c288cc2654cc763abb3376731b0d57395b8c3e6` | source state inspected for this reconciliation; `git rev-parse HEAD` names the live checkout |
+| Latest target receipt source | `ac20ebc8bdba2c21f548ba3d9f1e286ba06ce961` | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
+| Latest target receipt retention | `steinmarder-r300` `7467cce8c` | commit that adds the sealed public NoPerspective direct GB W_SELECT route receipt |
+| Evidence verification checkout | `steinmarder-r300` `7467cce8c` | checkout in which `sha256sum -c bundle_hashes.sha256` passes |
+| Installed ICD source | `ad915232ef8` | `mesa-gororoba-debug-optimized 2:26.2.0-23`, build-id `ae8b99f5037d2197f1d68b1dd9510c41bb9205a0` across builddir, package, and installed DSO; the latest attended runner is statically linked at `ac20ebc8bdb`, whose driver source is identical |
+| Deployed kernel source checkpoint | `0104ede3f19` | `radeon-unified-dkms 0.8.12-1`, srcversion `729892A3F3530EB12B8D842`; kernel deployment reconciliation |
+| dEQP source | `43c65c132` | installed `deqp-vk` release identity and corpus pin |
 
-The Mesa head is the source SHA the latest target receipts declare
-(`00e3c5dd25d` at run time, advanced by `59b77649a80` without a rebuild
-on the target).
+The boundaries assign one role to each revision. The document revision
+tracks prose, the reconciliation base tracks inspected source, each target
+receipt binds its own Mesa source, and the evidence checkout verifies the
+immutable retained bytes. A moving repository head never substitutes for a
+receipt source or a deployed binary identity.
 
 ## Target deployment
 
@@ -31,7 +32,7 @@ on the target).
 |---|---|---|
 | Host | `cachyos-vostro1000` (Dell Vostro 1000, AMD K8) | `docs/hardware/vostro1000-kernel-modules.md` |
 | GPU | RS482, PCI `1002:5974`, `CHIP_RS480`, renderer `ATI RS480` | `include/pci_ids/r300_pci_ids.h` |
-| Kernel | `7.1.8-1-cachyos`, radeon module srcversion `727CE89E79FB2D14663C381` | receipt `runtime_event` |
+| Kernel | `7.1.8-1-cachyos`, radeon module srcversion `56B9C4000387BDA35C4CAAF` | latest target receipt `identity.txt` |
 | Policy package | `radeon-rs482-policy 0.8.11-1` | `radeon-custom` |
 | Installed ICD | `libvulkan_r3v.so`, built from Mesa `00e3c5dd25d`, sha256 `c0348c6341de4f74f679e8ccdec887096e4b876448633ec2b223a86d8beb6314` | receipt `icd.dso_sha256` |
 | dEQP | `deqp-vk` `26d43d452e64` (release `opengl-cts-4.6.8.0-414-g43c65c132`), bundle on the box at `deqp-vk-bundle` | receipt `deqp` |
@@ -40,6 +41,10 @@ on the target).
 The workspace layout is identical on the workstation and the box; a
 merge to `main` is followed by `git pull --ff-only` on the box before any
 box-side run.
+
+The installed-ICD row describes loader and dEQP deployment. The latest
+target receipt below executes its statically linked attended runner from
+Mesa `42ff2b207c8` and records the installed ICD as unchanged.
 
 ## Active conformance partition
 
@@ -95,22 +100,48 @@ first real submission waits on a planning pass that lands transcripts,
 
 | Field | Value |
 |---|---|
-| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482` |
-| Finding | `src/re/r300/findings/active/2026-08-26-r3v-smoke-triangle-plan-replay-silicon-pass.md` |
-| Case | `dEQP-VK.api.smoke.triangle`, plan replay of one 231-dword triangle IB |
-| Verdict | `Pass`; qualification valid; `evidence_class` silicon; receipt seal `c68d24e2957a...` |
-| Source | Mesa `133f7703713910fed6b3f3c545dd1bf08a60395c`, clean tree; DSO sha256 `fc37a699222e13...6aa3`, BLAKE3 `9a155d81b9b9...ff94` |
-| Submission | digest `389cc2a228a1...51fb1`, retained IB and one `chain.log` entry, session `complete/admitted` |
-| Runtime | kernel `7.1.8-1-cachyos`, radeon srcversion `727CE89E79FB2D14663C381`, `radeon-rs482-policy 0.8.11-1`, boot `d217f017-...`, dmesg delta 0 |
-| Gate | `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED` unset; the bound plan is the authorization |
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-noperspective-production-route-receipt-rs482` |
+| Evidence class | silicon; attended semantic cell; this receipt makes no CTS qualification claim |
+| Cell | public NoPerspective two-draw (Smooth control, then the NoPerspective pipeline on `R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT` with every probe gate unset), two render passes, 472 IB dwords, four relocations; the streams differ in the one `GB_SELECT` dword (`0x401c`, `W_SELECT`) |
+| Verdict | control target perspective 882/882 judged pixels; NoPerspective target affine 882/882 (max deviation 1 UNORM8 quantum), perspective 0; carrier witness exact; sentinel exact over 3,008 exterior dwords |
+| Source | Mesa `ac20ebc8bdba2c21f548ba3d9f1e286ba06ce961`; statically linked runner sha256 `b2428e21cda0...d7b` |
+| Submission | cell BLAKE3 `32d547e9fb06...4afb`; `vkQueueSubmit` 0; one guarded `DRM_IOCTL_RADEON_CS` through fence completion; 116 us guarded interval |
+| Runtime | kernel `7.1.8-1-cachyos`; radeon srcversion `729892A3F3530EB12B8D842`; `radeon-unified-dkms 0.8.12-1`; unchanged boot; dmesg delta 0 lines |
+| Oracle | the probe census (`r300_rs_tex_adj_probe.h`): 882 judged interior pixels, tolerance 2, model separation 5 quanta; the affine model is the Vulkan NoPerspective value |
+| Integrity | retained by `steinmarder-r300` `7467cce8c`; every entry in `bundle_hashes.sha256` verifies there |
 
-The prediction was Fail on image comparison (reasoned from the noop-shim
-host-planning receipt); the observed dEQP status is Pass. The deviation is
-the finding: the `driver_defect_open` classification is a host-model
-artifact of the shim, and the RS482 render refutes it. The six-mutation
-plan ladder (order, runtime, digest, relocation, source, nonce) each
-refuses before any `DRM_IOCTL_RADEON_CS`, and the two render-shape
-receipts (offset arm, module-constant arm) close in the same bundle.
+The receipt proves end-to-end Vulkan `NoPerspective` interpolation for
+one full float vec4 varying at location 0 on the CPU triangle-list route
+with clipping class ACCEPT: the public pipeline selects the route itself,
+and the delivered stream is byte-identical to the gated `W_SELECT`
+candidate cell the classification bundle
+(`r3v-native-rs-tex-adj-probe-classification-rs482`) judged affine.
+Every other NoPerspective interface is created
+`R3V_INTERPOLATION_ROUTE_UNSUPPORTED` and refuses its draw at record time
+(Mesa `ad915232ef8`); the `(a * w, w)` reciprocal carrier for those shapes
+is the open mechanism.
+
+The preceding target receipt is
+`r3v-native-public-flat-color0-two-draw-first-delivery-rs482` (Mesa
+`42ff2b207c8dedb0a789639bd1c4cd6159b07690`, cell BLAKE3 `3646c222b6c5...605c`,
+452 IB dwords): end-to-end Vulkan `Flat` RGB and alpha through the RS482
+GA color-0 provoking-vertex selection, both targets byte-equal to their
+provoking-vertex images, later replayed byte-equal under
+`radeon-unified-dkms 0.8.12-1`
+(`r300-tcl-bypass-vtx-check-color0-width-transition-rs482`).
+
+The latest CTS qualification receipt remains
+`r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`: Mesa
+`133f7703713910fed6b3f3c545dd1bf08a60395c`, one 231-dword triangle IB,
+receipt seal `c68d24e2957a...`, valid `Pass`, and dmesg delta 0. The
+prediction for `dEQP-VK.api.smoke.triangle` was Fail on image comparison
+because the noop-shim host-planning pass rasterizes nothing; RS482
+produced Pass. That deviation refutes the `driver_defect_open` ledger
+instance for `dEQP-VK.api.smoke.triangle` alone. The other
+`driver_defect_open` rows remain open. The six plan mutations (order,
+runtime, digest, relocation, source, nonce) each refuse before any
+`DRM_IOCTL_RADEON_CS`, and the offset and module-constant render-shape
+receipts close in the same bundle.
 
 The preceding submission-slice receipt is
 `r3v-submission-slices-7-10-closed-gate-target-run-rs482` (Mesa
@@ -217,13 +248,13 @@ bit, the ledger claim, and the gate state disagree.
 
 ## Current tasks
 
-P0 (blocks the next target run):
+Delivered prerequisites:
 
 - the first dEQP transcript is delivered: `dEQP-VK.api.smoke.triangle`,
   the one-case bridge from dEQP semantics to the exact-plan hardware gate,
   produces a valid qualification pass on RS482 through the plan replay (see the
-  latest target receipt above); this row is closed and the next target
-  run is the expansion ladder rung 1.  It reached a nonempty IB after the
+  latest target receipt above); this prerequisite stays closed, and the open
+  target-run blockers start under P0 below. It reached a nonempty IB after the
   five render-family elements landed.  Those elements decompose into three
   evidence
   classes rather than five silicon receipts: the lane order, the extent
@@ -299,6 +330,9 @@ P0 (blocks the next target run):
   reference shape under the admitted module's `vec4(0, 1, 0, 1)` on RS482,
   oracle centroid `0xff00ff00`, in bundle
   `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`;
+
+P0 (blocks the next target run):
+
 - draw slice: a planning pass for `draw`, `synchronization`, and
   `transfer.0000-0001` that lands transcripts (rerun pending); a
   transcript-bearing shard needs compose, per-case plans, and the human
@@ -310,7 +344,8 @@ P0 (blocks the next target run):
 
 P1 (host-model rungs that move classified rows without a new gate):
 
-- the compute recognizer index-from-UBO shape (111 robustness cases; the host-planning pass proves no robustness case reaches an IB before it);
+- the compute recognizer index-from-UBO shape (111 robustness cases; the
+  host-planning pass proves no robustness case reaches an IB before it);
 - `pipeline_barrier_executing_route_gap`: the secondary replay, the
   nearest scaling blit, and the sampled-image admission moved the family
   4 -> 28 Pass under the shim and all three movements hold on RS482
@@ -330,13 +365,35 @@ P1 (host-model rungs that move classified rows without a new gate):
 A refuted rung stays refuted: the image usage family plus OPTIMAL-tiling
 color feature moved zero cases and its branch is discarded.
 
-## Expansion ladder
+## Expansion dependency graph
 
-Conformance expands by executed mechanism, and each rung opens only after
-the rung before it holds silicon evidence. The one-case plan/replay chain
-above is rung zero; the ladder after it runs in this order:
+Conformance expands by executed mechanism. The numbered rows provide stable
+navigation identities rather than a total order, and each row opens when its
+named dependencies hold silicon evidence. The one-case plan/replay chain above
+is rung zero.
 
-1. secondary command buffer execution -- closed: `r3v_CmdExecuteCommands`
+The source locators bind each status claim to the inspected tree. Each command
+records the exact `(rg --fixed-strings)` discovery technique required to
+reproduce the locator.
+
+| Symbol | Definition | Discovery command |
+|---|---|---|
+| `r3v_CmdExecuteCommands` | `src/amd/r300/vulkan/r3v_native_recording.c` | `rg -n --fixed-strings 'r3v_CmdExecuteCommands' src/amd/r300/vulkan/r3v_native_recording.c` |
+| `r3v_CmdBlitImage` | `src/amd/r300/vulkan/r3v_native_recording.c` | `rg -n --fixed-strings 'r3v_CmdBlitImage' src/amd/r300/vulkan/r3v_native_recording.c` |
+| `r3v_native_view_type_executes` | `src/amd/r300/vulkan/r3v_native.h` | `rg -n --fixed-strings 'r3v_native_view_type_executes' src/amd/r300/vulkan/r3v_native.h` |
+| `r3v_native_memory_type_policy` | `src/amd/r300/vulkan/r3v_native_memory.c` | `rg -n --fixed-strings 'r3v_native_memory_type_policy' src/amd/r300/vulkan/r3v_native_memory.c` |
+| `r300_texture_initial_domain` | `src/gallium/drivers/r300/r300_texture.c` | `rg -n --fixed-strings 'r300_texture_initial_domain' src/gallium/drivers/r300/r300_texture.c` |
+| `r300_emit_fb_state` | `src/gallium/drivers/r300/r300_emit.c` | `rg -n --fixed-strings 'r300_emit_fb_state' src/gallium/drivers/r300/r300_emit.c` |
+| `r300_tcl_bypass_triangle_msaa_resolve_emit` | `src/amd/r300/common/r300_tcl_bypass_triangle.c` | `rg -n --fixed-strings 'r300_tcl_bypass_triangle_msaa_resolve_emit' src/amd/r300/common/r300_tcl_bypass_triangle.c` |
+| `r300_tcl_bypass_triangle_composed_render_sample_emit` | `src/amd/r300/common/r300_tcl_bypass_triangle.c` | `rg -n --fixed-strings 'r300_tcl_bypass_triangle_composed_render_sample_emit' src/amd/r300/common/r300_tcl_bypass_triangle.c` |
+| `r300_tcl_bypass_triangle_bind_reloc_indices` | `src/amd/r300/common/r300_tcl_bypass_triangle.c` | `rg -n --fixed-strings 'r300_tcl_bypass_triangle_bind_reloc_indices' src/amd/r300/common/r300_tcl_bypass_triangle.c` |
+| `r300_tcl_bypass_triangle_multi_pass_emit` | `src/amd/r300/common/r300_tcl_bypass_triangle.c` | `rg -n --fixed-strings 'r300_tcl_bypass_triangle_multi_pass_emit' src/amd/r300/common/r300_tcl_bypass_triangle.c` |
+| `r3v_native_record_msaa_resolve` | `src/amd/r300/vulkan/r3v_native_cell.c` | `rg -n --fixed-strings 'r3v_native_record_msaa_resolve' src/amd/r300/vulkan/r3v_native_cell.c` |
+| `r3v_native_record_composed_render_sample` | `src/amd/r300/vulkan/r3v_native_cell.c` | `rg -n --fixed-strings 'r3v_native_record_composed_render_sample' src/amd/r300/vulkan/r3v_native_cell.c` |
+| `r3v_native_cmd_buffer_append_ib` | `src/amd/r300/vulkan/r3v_native_cmd.c` | `rg -n --fixed-strings 'r3v_native_cmd_buffer_append_ib' src/amd/r300/vulkan/r3v_native_cmd.c` |
+
+1. secondary command buffer execution -- depends on rung zero and is closed:
+   `r3v_CmdExecuteCommands`
    replays a secondary's recorded host-executed ops (deferred copies,
    event ops, query ops) into the primary in recorded order, and the
    moved `pipeline_barrier` subgroups meet the RS482 silicon qualification
@@ -345,15 +402,21 @@ above is rung zero; the ladder after it runs in this order:
    `r3v-native-secondary-replay-pipeline-barrier-first-silicon-pass-rs482`);
    the replay also closed an update-buffer aliasing double free by
    taking an owned copy of the replayed bytes;
-2. the bounded image-blit route -- closed: `r3v_CmdBlitImage` lowers
-   unequal-extent rectangles onto a nearest resample executor whose
-   sample point (d + 0.5) * src/dst matches the spec's nearest filter
-   (VK_FILTER_NEAREST, distinct images; flips keep refusing), and the
-   twelve moved subgroups produce valid qualification passes on RS482 silicon
+2. the bounded image-blit route -- depends on rung zero and is closed:
+   `r3v_CmdBlitImage` lowers unequal-extent rectangles onto a nearest
+   resample executor. The Vulkan 1.0 `vkCmdBlitImage`
+   [coordinate-transformation and filtering rule](https://registry.khronos.org/vulkan/specs/1.0-extensions/html/vkspec.html#vkCmdBlitImage)
+   derives each source coordinate from the destination texel center, the
+   source-to-destination extent ratio, and both region offsets, then samples
+   with the supplied filter. For positive, zero-origin rectangles, the source
+   coordinate reduces to `(d + 0.5) * srcExtent / dstExtent`; the executing
+   route supplies `VK_FILTER_NEAREST`, uses distinct images, and refuses flips.
+   The twelve moved subgroups produce valid qualification passes on RS482 silicon
    (12/12 Pass, dmesg delta 0, gates closed, seal `765a0687a232c2`,
    bundle steinmarder-r300
    `r3v-native-scaling-blit-pipeline-barrier-silicon-pass-rs482`);
-3. fragment sampling through a real descriptor-set binding -- closed:
+3. fragment sampling through a real descriptor-set binding -- depends on rung
+   zero and is closed:
    the sampled cell binds a uniform R8G8B8A8 texel through a
    combined-image-sampler descriptor set and a TCL-bypass triangle
    samples it on TX unit 0; the attended run on RS482 rendered the
@@ -367,17 +430,21 @@ above is rung zero; the ladder after it runs in this order:
    `pipeline_barrier` subgroups, 8 cases, taking the family to 28 Pass
    (host-model seal `209685514115`, bundle steinmarder-r300
    `r3v-sampled-rung-conformance-movement-host-model`);
-4. sampled-image shapes, admitted only as the executing routes in rungs 2
-   and 3 complete -- first shape closed: the B8G8R8A8_UNORM sampled lane
+4. sampled-image shapes -- depend on the executing routes in rows 2 and 3.
+   The first shape is closed: the B8G8R8A8_UNORM sampled lane
    order rides the swapped TX_FORMAT1 select set and rendered the
    predicted centroid on RS482 with the byte-X falsifier absent (cell
    blake3 `640c1336`, bundle steinmarder-r300
    `r3v-native-sampled-bgra-lane-order-silicon-pass-rs482`), and a
    split-row texture separates an addressed fetch from a constant one:
    two oracle pixels read the texels at texel rows 6 and 11 as predicted
-   on RS482, so the TX unit addresses rows from the varying and the T
-   axis runs in texture order (bundle steinmarder-r300
-   `r3v-native-sampled-split-row-addressing-silicon-pass-rs482`);
+   on RS482. This receipt proves varying-derived T-axis row addressing
+   alone (bundle steinmarder-r300
+   `r3v-native-sampled-split-row-addressing-silicon-pass-rs482`).
+   S-axis column-dependent addressing remains open. Its discriminator uses
+   distinct columns within one row, predicts the exact fetched dword for each
+   column, and names a constant-column fetch as the falsifier. Nearest filtering
+   and clamp-to-edge remain separate sampler-state mechanisms;
    the rung's conformance movement is zero: the `pipeline_barrier`
    family stands at 28 Pass before and after both shapes, so they widen
    the executed envelope and carry no case.  The `object_management`
@@ -385,10 +452,9 @@ above is rung zero; the ladder after it runs in this order:
    `img2D` shape requests `arraySize = 12` together with
    `SAMPLED_BIT | COLOR_ATTACHMENT_BIT`, so multi-layer arrays and the
    sampled-plus-color usage union each leave the other refusing; texture
-   extents past the reference geometry stay open, and the filter and
-   wrap modes outside nearest plus clamp-to-edge are sampler state
-   rather than an image shape and take their own rung position;
-5. image types, arrays, cube, depth, and larger render extents, each a
+   extents past the reference geometry stay open;
+5. image types, arrays, cube, depth, and larger render extents depend on the
+   executing sampled-descriptor route in row 3. Each is a
    separate mechanism with its own receipt.  The `object_management`
    population that needs this rung is creation-only -- the cases build
    the 12-layer `img2D` and destroy it without sampling a layer -- so
@@ -414,8 +480,8 @@ above is rung zero; the ladder after it runs in this order:
    `ef21bc535a06` and `48a5de9734a0`).  Eighteen array-view cases moved
    their refusal from `vkCreateImage` to `vkCreateImageView`, which the
    ledger row `layered_view_type_route_absent` carried until creation
-   admitted the array view types and the population measured Pass
-   (rung 5 below), retiring the row.  The layer count the render
+   admitted the array view types and the population measured Pass in this
+   row, retiring the ledger entry.  The layer count the render
    family admits answers to the cell's `RB3D_COLOROFFSET0` ceiling,
    which the creation admission and the format query both name, while
    the sampling family reaches the reported device limit because
@@ -482,15 +548,14 @@ above is rung zero; the ladder after it runs in this order:
    render family's own layer ceiling answers to the creation gate rather
    than to a run, and the `framebuffer` sub-population keeps its refusal,
    needing an attachment route no cell executes;
-6. the native 2x and 4x MSAA path before any sample-count limit rises.
-   The rung decomposes into three mechanisms, and the register and
-   kernel contracts are read.  The multisample color surface lives in
-   VRAM (`r300_texture_initial_domain`, r300_texture.c) over a
-   sample-expanded allocation (`layer_size *= nr_samples`,
-   r300_texture_desc.c), while the render family's load-op clear is a
-   host fill of a CPU-mapped type-0 allocation, so an MSAA target needs
-   a device-local render family and a clear the command stream emits
-   rather than the host.  `r100_cs_track_check` sizes the color buffer
+6. the native 2x and 4x MSAA path depends on rung zero's qualified render
+   cell and precedes any sample-count limit increase. The row decomposes into
+   three mechanisms, and the register and kernel contracts are read. The
+   multisample color surface uses a sample-expanded allocation
+   (`layer_size *= nr_samples`, `r300_texture_desc.c`), while the render
+   family's load-op clear is a host fill of a CPU-mapped allocation. The MSAA
+   target therefore uses the strict device-local recorder path and a
+   command-stream clear. `r100_cs_track_check` sizes the color buffer
    as `pitch * cpp * maxy` with no sample term, so the kernel validates
    nothing about the sample expansion and the footprint proof lives
    entirely in the driver.  That bounds what the rung can claim: while
@@ -498,14 +563,15 @@ above is rung zero; the ladder after it runs in this order:
    path stays an internal attended cell rather than an advertised
    Vulkan capability, and it rises to a public capability once the
    parser incorporates the multiplier or the driver-side bound is
-   established independently.  Placement takes the same care.
-   `r3v_native_memory_type_policy` (r3v_native_memory.c) gives type 1
-   `RADEON_GEM_DOMAIN_VRAM | RADEON_GEM_DOMAIN_GTT` under
-   `RADEON_GEM_NO_CPU_ACCESS`, so a host-unmapped allocation is not a
-   VRAM-resident allocation: GTT stands as a fallback domain.  The
-   recorder therefore either takes a strict internal VRAM path or
-   retains placement evidence proving the multisample buffer resides
-   where the cell claims.  The resolve is `RB3D_AARESOLVE_OFFSET`,
+   established independently. [R3V Vulkan memory model over Radeon
+   DRM](r3v-vulkan-memory-model-over-radeon-drm.md) owns the Vulkan memory-type
+   policy and the kernel's realized fallback-placement rules. This status row
+   retains the stricter recorder fact alone:
+   `r3v_native_record_msaa_resolve` requests
+   `RADEON_GEM_DOMAIN_VRAM` without a fallback domain under
+   `RADEON_GEM_NO_CPU_ACCESS`, and the host never maps the multisample surface.
+   A successful create satisfies that recorder's strict placement precondition.
+   The resolve is `RB3D_AARESOLVE_OFFSET`,
    which takes a relocation and carries a 32-byte-aligned destination
    offset, `RB3D_AARESOLVE_PITCH`, a pixel pitch in bits 1 through 13
    the kernel masks to `0x3ffe`, and
@@ -588,11 +654,9 @@ above is rung zero; the ladder after it runs in this order:
    the run.  A third destination content is named before the arm runs:
    a mixture, if the fragment write and the sample downsample both
    reach the destination order-dependently, which reads as a finding
-   rather than a defect.  The multisample surface is never CPU-read and
-   `r300_texture_initial_domain` places an `nr_samples > 1` resource in
-   `RADEON_DOMAIN_VRAM` alone, so it takes a device-local allocation
-   while the resolve destination stays host-visible for readback.  The
-   sample count multiplies the layer size and leaves the stride alone
+   rather than a defect. The strict recorder keeps the multisample surface
+   host-unmapped while the resolve destination stays host-visible for readback.
+   The sample count multiplies the layer size and leaves the stride alone
    (`r300_texture_desc.c`: `layer_size *= base->nr_samples`), so a 2x or
    4x surface at the reference extent is that multiple of the
    single-sample layer with its pitch unchanged.
@@ -624,11 +688,8 @@ above is rung zero; the ladder after it runs in this order:
    count no longer selects a single expected slot sequence and the
    validator admits either, with a five-site sequence matching neither
    still refused.  What remains is the recorder and the attended
-   runner, and both land.  `r3v_native_record_msaa_resolve` allocates the
-   multisample surface itself in `RADEON_GEM_DOMAIN_VRAM` with no
-   fallback domain under `RADEON_GEM_NO_CPU_ACCESS`, which the host
-   never maps, so a successful create is the placement rather than a
-   claim about it, and the recorder's five slots reach four buffer
+   runner, and both land. `r3v_native_record_msaa_resolve` uses the strict
+   allocation above, and the recorder's five slots reach four buffer
    objects with the surface's merged entry carrying a VRAM write alone.
    `r3v_native_attended_msaa_resolve` reads the destination through four
    passes of `r300_tcl_bypass_triangle_sample_set_oracle` over one
@@ -672,8 +733,8 @@ above is rung zero; the ladder after it runs in this order:
    path stays an internal attended cell rather than an advertised Vulkan
    capability;
 7. composed render and sampling surfaces before any core image or
-   framebuffer limit rises.  The rung depends on the usage union in
-   rung 5 rather than on rung 6, so it runs when its own mechanisms
+   framebuffer limit rises. The row depends on the usage union in row 5 and
+   bypasses row 6, so it runs when its own mechanisms
    land and does not wait behind the MSAA entry condition.  Two of its
    three mechanisms already execute: the cell's own prologue and
    epilogue carry the coherency edge, since the sampled cell opens with
@@ -816,34 +877,40 @@ above is rung zero; the ladder after it runs in this order:
    producer route, which composes one consumer stream over one carrier
    and judges one read-back, so a second pass beside it refuses by
    name.
+8. sampler-state expansion depends on the executing sampled-descriptor route
+   in row 3 and opens independently of the image-shape rows. The retained
+   sampled cells cover `VK_FILTER_NEAREST` with clamp-to-edge addressing.
+   Filters beyond nearest and address modes beyond clamp-to-edge remain open.
+   Each filter and address-mode mechanism requires its own attended silicon
+   receipt, an exact texel oracle that distinguishes neighbor selection,
+   interpolation, and out-of-range addressing, and a clean dmesg delta.
 
-A mandatory format feature the RS482 pixel pipe lacks stays classified as
-structural nonconformance; a software claim for it is fabricated
-capability and stays out.
+Ledger row `mandatory_format_feature_absent` owns the source-visible
+conformance defect. The Vulkan 1.0 Required Format Support table requires
+`VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT`,
+`VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT`, and the mandatory integer-format
+requirements exercised by `dEQP-VK.api.info.format_properties.*`, including
+`dEQP-VK.api.info.format_properties.r8_uint`. The inspected source contains no
+executing storage-image, storage-texel-buffer, or integer-format route, so the
+driver keeps those feature bits outside its advertised surface. Exact RS482
+structural silicon absence remains unproven until a named hardware authority or
+discriminating silicon receipt establishes it.
 
-Direct-source ownership moves after the first conformance replay is
-frozen: direct SPIR-V readers and the delivery-route selector move to
-`src/amd/r300/vulkan` (the selector as policy), while the neutral job IR,
-numeric-domain rules, R2VB producer plans, PM4 emitters, carrier
-contracts, and compiler admission stay in `common/`. The carrier-policy
-registry wires into the production selector only where a real adapter and
-route exist, with liveness rows and known-bad selector mutations beside
-it. A mechanism already expressed in common code keeps that one
-implementation; the Vulkan layer binds to it.
+Expansion follows one delivery graph and one ownership boundary. [R3V
+implementation boundaries](r3v-implementation-boundaries.md) owns source
+ownership and completion criteria; [RS482 native delivery route admission and
+oracle model](rs482-native-delivery-route-admission-and-oracle-model.md) owns
+route topology, admission, coherency, and oracle structure. This status
+document retains the expansion-order consequence: each route runs from source
+through its selected executor, canonical carrier, publication, VAP re-ingest,
+and raster tail, and a selected route runs to completion after an ioctl or
+device-visible side effect.
 
-Every vertex route is one execution graph: source, then the selected
-executor (direct VAP, CPU, R2VB single, R2VB split), then the canonical
-carrier, publication, common VAP re-ingest, and the common raster tail.
-The CPU route is the semantic oracle and the small-draw default. R2VB
-executes only when the producer is admitted, the numeric domain holds, the
-source is GPU-visible, the measured total route cost wins, and every
-required BO exists before submission; after an ioctl or any device-visible
-side effect the route runs to completion, since a fallback there splits
-the graph.
-
-WSI waits for a stable headless submission ladder. Its preconditions:
-steinmarder issue #237 closed; Xorg server, DDX, package, kernel, and
-runtime identities pinned; the native swapchain image route; acquire,
+WSI waits for a stable headless submission ladder. The active Xorg runners
+first migrate to source locks and stack-manifest v2, tracked by
+[steinmarder-r300 issue 237](https://github.com/Oichkatzelesfrettschen/steinmarder-r300/issues/237).
+The remaining preconditions pin the Xorg server, DDX, package, kernel, and
+runtime identities and deliver the native swapchain image route; acquire,
 render, present, release, and reuse proven; the DRM/DRI3 route separated
 from the opt-in software XCB route; WSI slices executing under
 display-class evidence only.
@@ -853,9 +920,9 @@ Diagnostic sidecars stay independent of the run they describe.
 `radeontop-gororoba` runs only inside an explicit performance or
 engine-discrimination campaign; either launches during a conformance run
 only when its sampling and access effects are part of the precommitted
-experiment. The radeontool packaging route is `_staging_upstream/PKGBUILD`
-alone (the pld-linux RPM spec, which packaged pristine upstream 1.6.3, is
-retired).
+experiment. The radeontool packaging route is
+`radeontool-gororoba/_staging_upstream/PKGBUILD` alone (the pld-linux RPM spec,
+which packaged pristine upstream 1.6.3, is retired).
 
 ## Superseded documents
 

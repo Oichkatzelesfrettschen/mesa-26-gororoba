@@ -259,6 +259,24 @@ layout_valid(const struct r300_r2vb_producer_layout *layout)
           layout->pitch_pixels == ((layout->count + 1u) & ~1u);
 }
 
+/* The producer rasterizes a TEX0 varying through the owned
+ * varying-passthrough program.  A structurally valid fragment stream can
+ * still carry a different US program, such as the constant-color triangle
+ * payload; accepting that stream would make the carrier contents depend on
+ * unrelated resident semantics.  Match the complete generated block and
+ * the two values emitted outside it before allowing the producer draw. */
+static bool
+producer_fragment_binary_valid(const struct r300_fragment_binary *fs)
+{
+   return fs != NULL && fs->validated &&
+          fs->cb_code != NULL &&
+          fs->cb_code_size == ARRAY_SIZE(r300_r2vb_producer_fs_block) &&
+          memcmp(fs->cb_code, r300_r2vb_producer_fs_block,
+                 sizeof(r300_r2vb_producer_fs_block)) == 0 &&
+          fs->fg_depth_src == R300_R2VB_PRODUCER_FS_FG_DEPTH_SRC &&
+          fs->us_out_w == R300_R2VB_PRODUCER_FS_US_OUT_W;
+}
+
 int
 r300_r2vb_producer_pass_emit_into(
    const struct r300_r2vb_producer_params *params, uint32_t *words,
@@ -270,7 +288,7 @@ r300_r2vb_producer_pass_emit_into(
    memset(out, 0, sizeof(*out));
    if (params->records == NULL || !layout_valid(layout))
       return -EINVAL;
-   if (fs == NULL || !fs->validated)
+   if (!producer_fragment_binary_valid(fs))
       return -EINVAL;
 
    /* All-or-nothing FP24 domain scan: the US datapath narrows every
@@ -411,7 +429,7 @@ r300_r2vb_producer_pass_emit(const struct r300_r2vb_producer_params *params,
    memset(out, 0, sizeof(*out));
    if (params->records == NULL || !layout_valid(&params->layout))
       return -EINVAL;
-   if (fs == NULL || !fs->validated)
+   if (!producer_fragment_binary_valid(fs))
       return -EINVAL;
 
    uint32_t capacity = R300_R2VB_PRODUCER_FIXED_MAX_DWORDS +

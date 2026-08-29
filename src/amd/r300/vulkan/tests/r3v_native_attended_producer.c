@@ -37,6 +37,7 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 enum outcome {
    OUTCOME_CARRIER_DELIVERED,
    OUTCOME_CARRIER_MISMATCH,
+   OUTCOME_CARRIER_PARTIAL_UNWRITTEN,
    OUTCOME_CARRIER_UNWRITTEN,
    OUTCOME_CONTAINMENT_FAILURE,
    OUTCOME_SUBMISSION_REFUSED,
@@ -47,6 +48,7 @@ enum outcome {
 static const char *const outcome_names[] = {
    [OUTCOME_CARRIER_DELIVERED] = "CARRIER_DELIVERED",
    [OUTCOME_CARRIER_MISMATCH] = "CARRIER_MISMATCH",
+   [OUTCOME_CARRIER_PARTIAL_UNWRITTEN] = "CARRIER_PARTIAL_UNWRITTEN",
    [OUTCOME_CARRIER_UNWRITTEN] = "CARRIER_UNWRITTEN",
    [OUTCOME_CONTAINMENT_FAILURE] = "CONTAINMENT_FAILURE",
    [OUTCOME_SUBMISSION_REFUSED] = "SUBMISSION_REFUSED",
@@ -308,6 +310,27 @@ main(int argc, char **argv)
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   /* The queue retains the exact submit object before the ioctl, while the
+    * attended producer runner owns the carrier and verdict files after
+    * readback.  Refuse a reused final name before submission so a stale carrier
+    * or verdict cannot
+    * consume the one-shot hazard authorization and leave a mixed evidence
+    * group when the post-submit writer encounters EEXIST.
+    */
+   static const char *const runner_artifacts[] = {
+      "carrier.bin",
+      "producer_outcome.json",
+   };
+   int freshness = r3v_native_evidence_require_fresh(
+      evidence_dir, runner_artifacts,
+      sizeof(runner_artifacts) / sizeof(runner_artifacts[0]));
+   if (freshness != 0) {
+      fprintf(stderr,
+              "runner evidence destination is not fresh: %s\n",
+              strerror(-freshness));
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+
    /* The hazard: a live DRM_RADEON_CS reaches the command processor here,
     * and the bounded completion wait follows it inside the queue.  The
     * submission is one-shot; whatever it returns, no resubmission follows.
@@ -369,10 +392,11 @@ main(int argc, char **argv)
 
    /* Classification order: a write past the delivered extent stops the
     * sequence whatever else passed; then the transport's own failures;
-    * then the carrier verdict.  An expected extent still holding poison
-    * throughout names an unwritten carrier; any dword written to a value
-    * other than its expectation names a delivered-but-wrong carrier, the
-    * class a boundary sweep exists to surface.
+    * then the carrier verdict.  Poison in every expected dword names an
+    * unwritten carrier.  Poison in only part of the expected extent proves
+    * a partial producer write, so the runner keeps that class separate from
+    * a carrier whose mismatches contain no poison and therefore describe
+    * delivered-but-wrong values.
     */
    enum outcome outcome;
    if (!verdict.tail_poison_pass)
@@ -387,6 +411,8 @@ main(int argc, char **argv)
       outcome = OUTCOME_CARRIER_DELIVERED;
    else if (verdict.poison_dwords == expected_dwords)
       outcome = OUTCOME_CARRIER_UNWRITTEN;
+   else if (verdict.poison_dwords != 0)
+      outcome = OUTCOME_CARRIER_PARTIAL_UNWRITTEN;
    else
       outcome = OUTCOME_CARRIER_MISMATCH;
 

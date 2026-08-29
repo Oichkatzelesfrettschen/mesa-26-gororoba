@@ -341,7 +341,7 @@ r3v_native_arming_collect_from(
        * truncation reads as an attempt already present and the gate stays
        * closed.
        */
-      char token_path[1024];
+      char token_path[R3V_NATIVE_ARMING_PATH_MAX];
       int token_length =
          snprintf(token_path, sizeof(token_path), "%s/%s", evidence_dir,
                   R3V_NATIVE_ATTEMPT_TOKEN);
@@ -379,7 +379,7 @@ r3v_native_arming_disarm(const char *evidence_dir,
    /* A truncated path would disarm a different location than the directory
     * the collection probes, so truncation refuses before any file exists.
     */
-   char token_path[1024];
+   char token_path[R3V_NATIVE_ARMING_PATH_MAX];
    int token_length = snprintf(token_path, sizeof(token_path), "%s/%s",
                                evidence_dir, R3V_NATIVE_ATTEMPT_TOKEN);
    if (token_length < 0 || (size_t)token_length >= sizeof(token_path))

@@ -7,22 +7,27 @@
 #ifndef R3V_DELIVERY_ROUTE_H
 #define R3V_DELIVERY_ROUTE_H
 
-/* The two delivery routes the deferred draw owns.  The CPU gather is
- * the default and the semantic oracle; its lane dispatch (portable
- * baseline or SSE2) is decided inside r300_cpu_vertex_gather by the
- * qualified K8 measurement, so the route selector carries no lane
- * choice.  The R2VB host model engages only by exact experimental
- * opt-in.  A production R2VB promotion is a measurement decision, and
- * the measurement it required has run: total draw latency -- producer
- * submission, cache publication, and the re-ingest stall included,
- * rather than gather time alone -- over the transport bracket of
- * DRM_RADEON_CS plus the bounded completion wait, on RS482 silicon
- * with live delivery.  Twelve alternating rounds put the CPU route at
- * a 95.3 us median against the GPU producer's 114.6 us, with all
- * twelve within-round paired differences agreeing in sign, so the CPU
- * route leads by 0.1077 of its own median.  The selector therefore
- * keeps the CPU default as the faster route rather than as the
- * incumbent one.
+/* The delivery routes share one coordinate-space contract.  The CPU gather
+ * and R2VB host-model routes select CLIP: the native draw expands host
+ * records through clipping and viewport setup before the TCL-bypass consumer.
+ * The immediate and fetched GPU-producer routes select WINDOW: the producer
+ * writes pretransformed slot records and the consumer binds them through the
+ * VTE passthrough form.
+ *
+ * AMD's R3xx 3D Registers define `VAP_VTE_CNTL` at MMReg 0x20b0 as the
+ * coordinate interpretation control.  The checked-in register identity is
+ * found with `(rg --fixed-strings R300_VAP_VTE_CNTL
+ * src/amd/r300/common/r300_reg.h)`.  The r300g implementation selects the
+ * two encodings at `(rg --fixed-strings r2vb_source_window
+ * src/gallium/drivers/r300/r300_render.c)`: window sources set
+ * `R300_VTX_XY_FMT | R300_VTX_Z_FMT | R300_VTX_W0_FMT`, while clip sources
+ * set `R300_VTX_W0_FMT` with the viewport enable bits.  The neutral re-ingest
+ * emitter carries the same distinction at `(rg --fixed-strings
+ * r300_r2vb_reingest_draw_emit src/amd/r300/common)`.  The native producer
+ * prologue is the producer-side authority at `(rg --fixed-strings
+ * r300_r2vb_producer_prologue_emit src/amd/r300/common)`, and the native
+ * admission path binds its recorded window consumer at `(rg --fixed-strings
+ * r3v_native_deferred_draw_admit_gpu_producer src/amd/r300/vulkan)`.
  *
  * The fetched producer -- the VAP reading the application's records
  * from the bound vertex BO instead of the CP reading them as packet
@@ -68,13 +73,11 @@ enum r3v_delivery_route {
    R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER_FETCHED = 3,
 };
 
-/* The coordinate space the selected route leaves in the carrier.  Both
- * present routes copy application values, so the carrier holds
- * clip-volume positions and the consumer owns the one viewport
- * transform.  A route whose producer transforms on the device declares
- * WINDOW, and the consumer then binds the carrier untransformed; the
- * declaration is what keeps the transform single when both kinds of
- * route exist.
+/* The coordinate-space selector names the consumer contract.  CLIP routes
+ * run the host clipping and viewport expansion before the clip-space cell
+ * emitter.  WINDOW routes carry producer-transformed records and use the
+ * untransformed consumer.  Keeping the declaration beside the route resolver
+ * prevents a producer's viewport result from receiving a second transform.
  */
 enum r300_carrier_position_space {
    R300_CARRIER_POSITION_CLIP = 0,

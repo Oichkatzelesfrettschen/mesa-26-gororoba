@@ -63,8 +63,19 @@ binary32 dynamic range; at that boundary, smaller weights round upward to
 carrier value zero. That positive-preserving rounding is host-model evidence,
 not an RS482 interpolation-accuracy claim.
 
-The admitted shader grammar exposes neither `Flat` nor `NoPerspective`, and
-the device exposes no user clip or cull distances. Pipeline admission also
+The admitted shader grammar exposes `Flat` (host provoking-value replication,
+or the direct GA color 0 route for one full vec4 at location 0) and
+`NoPerspective`, admitted on any float vec4 varying but implemented on the
+direct GB W_SELECT route alone (one full vec4 at location 0, CPU delivery, a
+triangle list, clipping class ACCEPT; the `GB_SELECT.W_SELECT = 1` word the
+RS482 census classified affine). A partially clipped triangle refuses on that
+route, and every other NoPerspective interface -- a Smooth or Flat location
+beside it, an open R2VB delivery gate, a narrower or non-float varying -- is
+created with the `UNSUPPORTED` route and refuses every draw at record time,
+because replication would interpolate the varying with perspective; the
+`(a * w, w)` reciprocal carrier that would serve those shapes is not built.
+The device exposes
+no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
 six planes cover the full exposed clip volume. Finite non-unit W and partial
 plane crossings must execute without device loss; a fully clipped triangle
@@ -985,10 +996,14 @@ mechanisms are:
   of the same BO cannot read stale vertex-cache content.  The emission
   refuses records outside the FP24 fixed-point domain with -EDOM.  The
   reference pass replays clean through the kernel CS-track model (accept,
-  one relocation; truncation, undersized `VAP_VTX_SIZE`, and an
-  undersized carrier each reject), and the TCL-bypass width predicate
-  declines its PRIM_WALK-3 draw by declared scope.  No-submit structural
-  evidence only.
+  one semantic-cell relocation; truncation, undersized `VAP_VTX_SIZE`, and an
+  undersized carrier each reject).  The producer-only submit replay binds the
+  final 64-byte carrier and four-byte completion relocation from
+  `submit_manifest.json` and rejects the same malformed controls against the
+  exact two-relocation object.  The TCL-bypass width predicate declines its
+  PRIM_WALK-3 draw by declared scope.  The producer-specific attended runner
+  and recovery procedure are present, but the current paired-index emission
+  requires a fresh RS482 qualification before a current-head silicon claim.
 
 Compute pipelines, descriptors, transfer images and copies beyond the
 bounded linear `B8G8R8A8_UNORM` family, native WSI presentation and

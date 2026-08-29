@@ -61,57 +61,6 @@ record_triangle_cell_tail(struct r3v_native_device *device,
                           struct r3v_native_memory *vertex_memory,
                           struct r3v_native_memory *color_memory);
 
-/* The gather writes the first three logical vertices as a packed 48-byte
- * carrier.  A caller may point records into the same mapped BO, so compute
- * the exact physical source range before the first destination write.  The
- * range arithmetic fails closed on overflow; the CPU gather remains the
- * authority for semantic bounds and format validation.
- */
-static bool
-stream_source_overlaps_carrier(
-   const struct r3v_native_vertex_stream_desc *stream,
-   const void *carrier, uint64_t carrier_bytes)
-{
-   const struct r300_vertex_format_semantics *format =
-      r300_vertex_format_semantics((enum r300_vertex_format_id)
-                                      stream->format_id);
-   if (format == NULL || stream->records == NULL)
-      return false;
-
-   const uint64_t vertex_count = R300_TRIANGLE_VERTEX_DWORDS / 4;
-   /* Zero stride is the Vulkan constant-binding form: all requested
-    * vertices read the one record at the stream base, so the source range
-    * below remains one record wide and still rejects an aliased carrier.
-    */
-   if (stream->stride != 0 &&
-       stream->stride < format->semantic_record_bytes)
-      return false;
-
-   const uint64_t first_offset =
-      (uint64_t)stream->first_vertex * stream->stride;
-   const uint64_t tail_offset = (vertex_count - 1) * stream->stride;
-   if (first_offset > UINT64_MAX - tail_offset)
-      return true;
-
-   const uint64_t source_offset = first_offset;
-   if (tail_offset > UINT64_MAX - format->semantic_record_bytes)
-      return true;
-   const uint64_t source_bytes =
-      tail_offset + format->semantic_record_bytes;
-
-   const uintptr_t source_base = (uintptr_t)stream->records;
-   const uintptr_t carrier_base = (uintptr_t)carrier;
-   if (source_offset > UINTPTR_MAX - source_base ||
-       source_bytes > UINTPTR_MAX - (source_base + source_offset) ||
-       carrier_bytes > UINTPTR_MAX - carrier_base)
-      return true;
-
-   const uintptr_t source_start = source_base + source_offset;
-   const uintptr_t source_end = source_start + source_bytes;
-   const uintptr_t carrier_end = carrier_base + carrier_bytes;
-   return source_start < carrier_end && carrier_base < source_end;
-}
-
 VkResult
 r3v_native_cell_vk_result_from_errno(int emit_result)
 {
@@ -1379,6 +1328,27 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                   &draw->post_vs, staged, source_triangle_count,
                   record_dwords);
             }
+            /* The direct GB W_SELECT route interpolates every
+             * varying linearly in window space; a vertex the clipper
+             * generates carries the clip-space linear value, which
+             * differs in general from the value the Vulkan
+             * specification assigns a clipped NoPerspective output
+             * (Clipping Shader Outputs), so the partial class refuses
+             * ahead of carrier publication. */
+            if (gathered == 0 && draw->direct_noperspective) {
+               for (uint32_t t = 0; t < source_triangle_count; t++) {
+                  if (r3v_interpolation_clip_class_of_triangle(
+                         &staged[(size_t)t * 3u * record_dwords],
+                         record_dwords) != R3V_INTERPOLATION_CLIP_ACCEPT) {
+                     result = vk_errorf(
+                        device, VK_ERROR_INITIALIZATION_FAILED,
+                        "r3v-native: the direct GB W_SELECT NoPerspective "
+                        "route admits the clipping class ACCEPT alone; "
+                        "source triangle %u is partially clipped", t);
+                     break;
+                  }
+               }
+            }
          }
       }
       if (result == VK_SUCCESS && gathered != 0) {
@@ -2180,10 +2150,12 @@ r3v_native_deferred_draw_verify_gpu_producer(
  * stream through the CPU vertex executor, byte-defined end to end, into
  * the mapped GTT carrier, then records the same fixed cell through the
  * shared tail.  The shared tail is established by
- * (rg --fixed-strings "record_triangle_cell_tail"
- * src/amd/r300/vulkan/r3v_native_cell.c).  A refused gather -- unknown
- * format, unproven bound, undersized carrier, or overlapping source and
- * carrier ranges -- reports before any BO write.
+ * (rg --fixed-strings "record_triangle_cell_tail" src/).  The gather
+ * snapshots its complete 48-byte result in private storage before copying
+ * to the carrier, so separate mappings of one source BO cannot corrupt a
+ * later record while the output overwrites the source.  A refused gather --
+ * unknown format, unproven bound, or undersized carrier -- reports before
+ * any BO write.
  */
 VkResult
 r3v_native_record_tcl_bypass_triangle_from_stream(
@@ -2239,16 +2211,11 @@ r3v_native_record_tcl_bypass_triangle_gathered(
                        "r3v-native: triangle vertex memory is not "
                        "CPU-mappable");
    }
-   if (stream_source_overlaps_carrier(stream, vertex_memory->map,
-                                      R3V_TRIANGLE_VERTEX_BYTES)) {
-      if (owns_map) {
-         radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
-                                vertex_memory->map);
-         vertex_memory->map = NULL;
-      }
-      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r3v-native: vertex source overlaps carrier");
-   }
+   /* The descriptor carries a host pointer rather than a GEM identity, so
+    * virtual-address range tests cannot detect a second mapping of the
+    * carrier BO.  Gather into a fixed local carrier first; the only write to
+    * the mapped BO follows a successful, complete source read. */
+   uint32_t gathered_vertices[R300_TRIANGLE_VERTEX_DWORDS];
    const struct r300_vertex_stream source = {
       .data = stream->records,
       .stride = stream->stride,
@@ -2256,7 +2223,7 @@ r3v_native_record_tcl_bypass_triangle_gathered(
    };
    int gathered = r300_cpu_vertex_gather(
       stream->format_id, &source, stream->first_vertex,
-      R300_TRIANGLE_VERTEX_DWORDS / 4, vertex_memory->map,
+      R300_TRIANGLE_VERTEX_DWORDS / 4, gathered_vertices,
       R300_TRIANGLE_VERTEX_DWORDS);
    if (gathered != 0) {
       if (owns_map) {
@@ -2267,6 +2234,8 @@ r3v_native_record_tcl_bypass_triangle_gathered(
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: vertex gather refused (%d)", gathered);
    }
+   memcpy(vertex_memory->map, gathered_vertices,
+          sizeof(gathered_vertices));
    radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
                                R3V_TRIANGLE_VERTEX_BYTES);
    if (owns_map) {
@@ -2653,10 +2622,11 @@ r3v_native_producer_fp24_bisect_cell_install(
 
 /* Records the producer-only cell: fills the carrier allocation with the
  * manifest poison, publishes it for the unsnooped GART, and installs the
- * reference producer pass against that one BO.  The poison is what makes
- * the read-back decidable -- a slot still holding it is a slot the pass
- * left unwritten -- so the prefill covers the whole allocation while the
- * expected extent covers the written slots alone.
+ * callback-selected reference, FP24 sweep, or FP24 bisection producer pass
+ * against that one BO.  The poison is what makes the read-back decidable --
+ * a slot still holding it is a slot the pass left unwritten -- so the
+ * prefill covers the whole allocation while the expected extent covers the
+ * written slots alone.
  */
 static VkResult
 record_r2vb_producer_stream(VkCommandBuffer commandBuffer,

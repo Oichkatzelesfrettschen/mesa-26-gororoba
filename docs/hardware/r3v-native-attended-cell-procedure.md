@@ -98,20 +98,23 @@ The run proceeds only when all of the following hold.
   build that the preflight suite qualified.
 - `r300-tcl-bypass-offline-replay` and
   `r3v-native-submit-object-replay` pass on the RS482 host itself. The
-  replay binary is a build output, not an operator-supplied binary:
-  `build-infra/r3v/build_kernel_replay.py` compiles
-  `replay_r300_cs_track` from the pinned kernel tree the running kernel
-  was built from, runs that tree's own
-  `r300_cs_grammar_correspondence` fidelity gate against
-  `r300_packet0_check`, and writes a provenance record binding the
-  output ELF to the exact kernel commit, per-file source hashes,
-  compiler identity, and compile argv.
+  single-IB runners use the build output
+  `scripts/replay_r300_tcl_bypass_ib` through `R3V_KERNEL_REPLAY_TOOL`;
+  the tool accepts one `ib.bin` and the `--set-vtx-size` control that
+  those runners exercise. The full CS-track runner uses the separate
+  `replay_r300_cs_track` build output through
+  `R3V_CS_TRACK_REPLAY_TOOL`. `build-infra/r3v/build_kernel_replay.py`
+  compiles that tool from the pinned kernel tree the running kernel was
+  built from, runs that tree's own `r300_cs_grammar_correspondence`
+  fidelity gate against `r300_packet0_check`, and writes a provenance
+  record binding the output ELF to the exact kernel commit, per-file
+  source hashes, compiler identity, and compile argv.
 - The four-suite preflight runs from that same release build without a
   rebuild, and its complete output becomes the recorded vector:
 
   ```sh
   R3V_SUITE_REPORT="$R3V_NATIVE_MANIFEST_DIR/preflight-suites.txt"
-  R3V_KERNEL_REPLAY_TOOL=<path to replay_r300_cs_track> \
+  R3V_KERNEL_REPLAY_TOOL=<path to scripts/replay_r300_tcl_bypass_ib> \
   env -u R3V_NATIVE_MANIFEST_DIR \
   meson test -C "$R3V_BUILD_DIR" --no-rebuild --print-errorlogs \
     --suite r300 --suite r3v --suite radeon-drm-vk --suite drm-shim \
@@ -119,11 +122,13 @@ The run proceeds only when all of the following hold.
   cat "$R3V_SUITE_REPORT"
   ```
 
-  The suites run with `R3V_NATIVE_MANIFEST_DIR` withheld: the drm-shim
-  harnesses retain manifests and write `attempt.token` into whatever
-  directory that variable names, so a suite run that inherits the
-  evidence directory fills it with host-model artifacts and the
-  harnesses' one-attempt and retention-order checks fail against each
+  The suite launcher withholds `R3V_NATIVE_MANIFEST_DIR`, except for
+  `r3v-native-float2-tuple-cell-external-manifest-ignored`, whose Meson
+  test definition intentionally sets it to the build directory. The
+  other drm-shim harnesses retain manifests and write `attempt.token`
+  into whatever directory that variable names, so a suite run that
+  inherits the evidence directory fills it with host-model artifacts and
+  the harnesses' one-attempt and retention-order checks fail against each
   other (ten such failures on a clean build when the variable leaks).
   The evidence directory receives the suite report alone.
 

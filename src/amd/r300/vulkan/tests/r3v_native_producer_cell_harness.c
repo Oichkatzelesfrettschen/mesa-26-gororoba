@@ -3,13 +3,18 @@
  *
  * Drives the R2VB producer-only cell through the native ICD on the radeon
  * noop drm-shim: instance, device, the one GEM-backed carrier, recording
- * through the exported producer recorder, and the gated queue submission.
- * The shim absorbs DRM_RADEON_CS and executes nothing, so an accepted
- * submission leaves the recorder's poison prefill standing across the whole
- * carrier; asserting transport acceptance and the unwritten-carrier verdict
- * side by side is what separates a delivered submission from a delivered
- * carrier.  The closed-gate mode proves the fail-closed verdict and the
- * byte-identity of the retained IB against the reference pass, and the
+ * through r3v_native_record_r2vb_producer (rg --fixed-strings
+ * r3v_native_record_r2vb_producer src/amd/r300/vulkan/), and the gated
+ * r3v_native_queue_submit transport (rg --fixed-strings
+ * r3v_native_queue_submit src/amd/r300/vulkan/).  The shim's
+ * radeon_ioctl_cs provider (rg --fixed-strings radeon_ioctl_cs
+ * src/amd/drm-shim/radeon_noop_drm_shim.c) absorbs DRM_RADEON_CS and
+ * executes nothing, so an accepted submission leaves the recorder's poison
+ * prefill standing across the whole carrier; r300_r2vb_producer_carrier_check
+ * (rg --fixed-strings r300_r2vb_producer_carrier_check
+ * src/amd/r300/common/) separates transport acceptance from the unwritten-
+ * carrier verdict.  The closed-gate mode proves the fail-closed verdict and
+ * the byte-identity of the retained IB against the reference pass, and the
  * geometry mode binds a wrong-size carrier so the producer kind's frozen
  * geometry is the only arming factor that fails.
  */
@@ -159,6 +164,23 @@ evidence_file_present(const char *dir, const char *name)
    return stat(path, &status) == 0;
 }
 
+static bool
+manifest_path_fits_writer(int template_length)
+{
+   const char *manifest_name = "submit_manifest.json";
+   const char *temporary_suffix = ".XXXXXX";
+   size_t path_length =
+      template_length < 0 ? SIZE_MAX : (size_t)template_length;
+   if (path_length > SIZE_MAX - strlen("/.") ||
+       path_length + strlen("/.") > SIZE_MAX - strlen(manifest_name))
+      return false;
+   path_length += strlen("/.") + strlen(manifest_name);
+   if (path_length > SIZE_MAX - strlen(temporary_suffix))
+      return false;
+   path_length += strlen(temporary_suffix);
+   return path_length < 1024;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -171,6 +193,13 @@ main(int argc, char **argv)
 
    const bool geometry_mode = strcmp(argv[1], "geometry") == 0;
    const bool open_gate = strcmp(argv[1], "open") == 0 || geometry_mode;
+
+   /* The producer harness has no fault-injection mode.  Clearing inherited
+    * shim controls keeps a caller's refusal or completion fixture from
+    * changing the normal transport verdicts.
+    */
+   unsetenv("R3V_NATIVE_SHIM_CS_REFUSE");
+   unsetenv("R3V_NATIVE_SHIM_COMPLETION_FAIL");
 
    if (attest_shim_provider() != 0)
       return 3;
@@ -190,7 +219,8 @@ main(int argc, char **argv)
          tmp_dir[tmp_dir_length - 1] == '/' ? "" : "/",
          "r3v-native-producer-XXXXXX");
       if (template_length < 0 ||
-          (size_t)template_length >= sizeof(manifest_template)) {
+          (size_t)template_length >= sizeof(manifest_template) ||
+          !manifest_path_fits_writer(template_length)) {
          fprintf(stderr, "manifest template path is too long\n");
          return 2;
       }
@@ -322,19 +352,24 @@ main(int argc, char **argv)
       .allocationSize = carrier_bytes,
       .memoryTypeIndex = 0,
    };
+   VkCommandPool pool = VK_NULL_HANDLE;
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
    VkDeviceMemory carrier_memory = VK_NULL_HANDLE;
+   VkDeviceMemory oversized_memory = VK_NULL_HANDLE;
    void *carrier_map = NULL;
    result = vkAllocateMemory(device, &alloc_info, NULL, &carrier_memory);
    CHECK(result == VK_SUCCESS, "carrier vkAllocateMemory: %d", result);
+   if (result != VK_SUCCESS || carrier_memory == VK_NULL_HANDLE)
+      goto done;
 
-   VkDeviceMemory oversized_memory = VK_NULL_HANDLE;
    if (geometry_mode) {
       alloc_info.allocationSize = carrier_bytes + R3V_NATIVE_MEMORY_ALIGNMENT;
       result = vkAllocateMemory(device, &alloc_info, NULL, &oversized_memory);
       CHECK(result == VK_SUCCESS, "oversized vkAllocateMemory: %d", result);
+      if (result != VK_SUCCESS || oversized_memory == VK_NULL_HANDLE)
+         goto done;
    }
 
-   VkCommandPool pool = VK_NULL_HANDLE;
    result = vkCreateCommandPool(
       device,
       &(VkCommandPoolCreateInfo){
@@ -345,7 +380,6 @@ main(int argc, char **argv)
       NULL, &pool);
    CHECK(result == VK_SUCCESS, "vkCreateCommandPool: %d", result);
 
-   VkCommandBuffer cmd = VK_NULL_HANDLE;
    result = vkAllocateCommandBuffers(
       device,
       &(VkCommandBufferAllocateInfo){
@@ -558,9 +592,11 @@ main(int argc, char **argv)
             r300_triangle_ib_serialize(reference.ib,
                                        reference.ib_size_dwords,
                                        reference_bytes);
-            CHECK(memcmp(ib_data, reference_bytes, ib_size) == 0,
-                  "ib.bin is byte-identical to the canonical serialization "
-                  "of the reference producer pass");
+            if (ib_size == reference.ib_size_dwords * sizeof(uint32_t)) {
+               CHECK(memcmp(ib_data, reference_bytes, ib_size) == 0,
+                     "ib.bin is byte-identical to the canonical "
+                     "serialization of the reference producer pass");
+            }
             free(reference_bytes);
          }
          free(ib_data);
@@ -588,11 +624,14 @@ main(int argc, char **argv)
 
 done:
    r300_r2vb_producer_pass_release(&reference);
-   vkDestroyCommandPool(device, pool, NULL);
+   if (pool != VK_NULL_HANDLE)
+      vkDestroyCommandPool(device, pool, NULL);
    if (carrier_map != NULL)
       vkUnmapMemory(device, carrier_memory);
-   vkFreeMemory(device, carrier_memory, NULL);
-   vkFreeMemory(device, oversized_memory, NULL);
+   if (carrier_memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, carrier_memory, NULL);
+   if (oversized_memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, oversized_memory, NULL);
    vkDestroyDevice(device, NULL);
    vkDestroyInstance(instance, NULL);
 

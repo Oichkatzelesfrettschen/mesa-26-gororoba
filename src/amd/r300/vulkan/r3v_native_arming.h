@@ -13,6 +13,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Collection and disarm share one bounded path capacity so token probes and
+ * exclusive token creation address identical names. */
+#define R3V_NATIVE_ARMING_PATH_MAX 1024u
+
 /* The submission ioctl opens only when every factor holds at once, so a
  * single stale environment value, a different chip, a rebuilt IB, a
  * replaced kernel module, or a second attempt in the same evidence

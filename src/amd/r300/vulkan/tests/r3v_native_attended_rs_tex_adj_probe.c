@@ -36,6 +36,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -44,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -196,10 +198,18 @@ main(int argc, char **argv)
    const char *candidate_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
    const char *other_gate = "R3V_NATIVE_RS_W_SELECT_PROBE";
    const char *candidate_word_name = "RS_INST_TEX_ADJ";
+   /* The production route: every probe gate closed, the NoPerspective
+    * interface selects R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT on
+    * its own, and the recorded stream is the gated W_SELECT candidate's
+    * byte for byte, so the census judges the public Vulkan NoPerspective
+    * route rather than a gated word. */
+   bool production = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0) {
          record_only = true;
+      } else if (strcmp(argv[i], "--production") == 0) {
+         production = true;
       } else if (strcmp(argv[i], "--waiver") == 0 && i + 1 < argc) {
          waiver_path = argv[++i];
       } else if (strcmp(argv[i], "--candidate") == 0 && i + 1 < argc) {
@@ -226,8 +236,15 @@ main(int argc, char **argv)
    if (usage_error) {
       fprintf(stderr,
               "usage: %s <evidence-directory> [--record-only] "
-              "[--waiver <path>] [--candidate tex-adj|w-select]\n",
+              "[--waiver <path>] [--candidate tex-adj|w-select] "
+              "[--production]\n",
               argv[0]);
+      return 2;
+   }
+   if (production && candidate != R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE) {
+      fprintf(stderr, "--production rides the w-select candidate: the "
+              "direct GB W_SELECT route is the one production "
+              "NoPerspective route\n");
       return 2;
    }
    const char *evidence_dir = argv[1];
@@ -237,13 +254,23 @@ main(int argc, char **argv)
     * the recorded stream is the one the authorization names and the
     * probe pipeline's candidate comes from the environment the
     * authorization declares. */
-   if (!gate_open(candidate_gate)) {
+   if (production) {
+      /* The production route opens on no gate: a present probe gate
+       * would hand the NoPerspective interface a candidate instead of
+       * the route under test. */
+      if (gate_present(candidate_gate) || gate_present(other_gate)) {
+         fprintf(stderr, "a probe gate is set; the production route runs "
+                 "with %s and %s unset\n",
+                 candidate_gate, other_gate);
+         return 2;
+      }
+   } else if (!gate_open(candidate_gate)) {
       fprintf(stderr,
               "%s=1 arms the %s candidate; export it before the run\n",
               candidate_gate, candidate_word_name);
       return 2;
    }
-   if (gate_present(other_gate)) {
+   if (!production && gate_present(other_gate)) {
       fprintf(stderr, "%s is set; one cell carries one candidate\n",
               other_gate);
       return 2;
@@ -365,10 +392,11 @@ main(int argc, char **argv)
          ? UINT32_MAX
          : register_at(armed.ib, ib_dwords, differing_index);
 
-   emit("[shape] rasterizer probe two-draw, control then %s, two varying "
+   emit("[shape] rasterizer probe two-draw, control then %s%s, two varying "
         "passes %ux%u pitch %u, binding (%u, %u), %u IB dwords, cell "
         "blake3 %.8s\n",
-        candidate_word_name, mp.pass[0].width, mp.pass[0].height,
+        candidate_word_name,
+        production ? " (production direct GB W_SELECT route, no gate)" : "", mp.pass[0].width, mp.pass[0].height,
         mp.pass[0].pitch_pixels, mp.second_vertex_index,
         mp.second_color_index, ib_dwords, digest);
    emit("[record] candidate-vs-control differing dwords=%u index=%u "
@@ -933,7 +961,7 @@ main(int argc, char **argv)
                                                      "w-select-one" };
       enum r3v_rs_probe_candidate recorded[2];
       const char *reason[2] = { NULL, NULL };
-      for (unsigned i = 0; i < 2; i++) {
+      for (unsigned i = 0; i < 2 && !production; i++) {
          VK_FROM_HANDLE(r3v_native_pipeline, native_pipeline, pipeline[i]);
          recorded[i] = native_pipeline->rs_probe_candidate;
          const struct r3v_rs_probe_query query = {
@@ -954,11 +982,64 @@ main(int argc, char **argv)
             return 1;
          }
       }
-      emit("[route] control=%s (%s) candidate=%s (%s)\n",
-           candidate_name[recorded[0]],
-           reason[0] != NULL ? reason[0] : "candidate selected",
-           candidate_name[recorded[1]],
-           reason[1] != NULL ? reason[1] : "candidate selected");
+      /* The production route: neither pipeline carries a probe
+       * candidate; the Smooth interface replicates and the NoPerspective
+       * interface selects the direct GB W_SELECT route, re-derived
+       * through the route selector.  The deferred draws then carry the
+       * W_SELECT_ONE control word from the route itself. */
+      if (production) {
+         static const char *const route_name[4] = {
+            "replicate", "direct-ga-color0", "direct-gb-w-select",
+            "unsupported"
+         };
+         enum r3v_interpolation_route route[2];
+         for (unsigned i = 0; i < 2; i++) {
+            VK_FROM_HANDLE(r3v_native_pipeline, native_pipeline,
+                           pipeline[i]);
+            recorded[i] = native_pipeline->rs_probe_candidate;
+            route[i] = native_pipeline->interpolation_route;
+            const struct r3v_interpolation_query query = {
+               .cpu_delivery = true,
+               .triangle_list = true,
+               .clip_class = R3V_INTERPOLATION_CLIP_ACCEPT,
+               .link = &native_pipeline->shader_interface,
+               .rs_destination_available = native_pipeline->varying,
+               .fragment_consumes_destination = native_pipeline->varying,
+               .provoking_first_representable = true,
+            };
+            const enum r3v_interpolation_route derived =
+               r3v_interpolation_route_select(&query, &reason[i]);
+            if (derived != route[i]) {
+               fprintf(stderr, "pipeline %u records route %u while the "
+                       "selector derives %u\n",
+                       i, (unsigned)route[i], (unsigned)derived);
+               return 1;
+            }
+         }
+         emit("[route] production control=%s (%s) noperspective=%s (%s) "
+              "probe candidates=%s/%s\n",
+              route_name[route[0]], reason[0], route_name[route[1]],
+              reason[1], candidate_name[recorded[0]],
+              candidate_name[recorded[1]]);
+         if (recorded[0] != R3V_RS_PROBE_NONE ||
+             recorded[1] != R3V_RS_PROBE_NONE ||
+             route[0] != R3V_INTERPOLATION_ROUTE_REPLICATE ||
+             route[1] != R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT) {
+            fprintf(stderr, "the production run needs the Smooth interface "
+                    "on replication and the NoPerspective interface on "
+                    "the direct GB W_SELECT route with no probe "
+                    "candidate\n");
+            if (!record_only)
+               r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+            return 2;
+         }
+      } else {
+         emit("[route] control=%s (%s) candidate=%s (%s)\n",
+              candidate_name[recorded[0]],
+              reason[0] != NULL ? reason[0] : "candidate selected",
+              candidate_name[recorded[1]],
+              reason[1] != NULL ? reason[1] : "candidate selected");
+      }
       {
          VK_FROM_HANDLE(r3v_native_pipeline, native_control, pipeline[0]);
          VK_FROM_HANDLE(r3v_native_pipeline, native_candidate, pipeline[1]);
@@ -969,8 +1050,8 @@ main(int argc, char **argv)
               native_control->shader_interface.varying_mask,
               native_candidate->shader_interface.varying_mask);
       }
-      if (recorded[0] != R3V_RS_PROBE_NONE ||
-          recorded[1] != route_candidate) {
+      if (!production && (recorded[0] != R3V_RS_PROBE_NONE ||
+                          recorded[1] != route_candidate)) {
          fprintf(stderr, "the smooth interface must take no candidate and "
                  "the NoPerspective interface the armed one\n");
          if (!record_only)
@@ -1108,6 +1189,76 @@ main(int argc, char **argv)
       return 2;
    }
 
+   /* The recorded stream and the reference list the winsys turns into
+    * the relocation entries, retained ahead of the ioctl under names
+    * the queue's own retention leaves alone: r3v_native_queue_submit
+    * publishes ib.bin, relocs.bin, and manifest.json through
+    * r3v_native_evidence_require_fresh, which refuses the submission
+    * ahead of the ioctl when any of the three already exists.  The
+    * attended run retains into the evidence directory the queue writes
+    * to; the record-only pass retains into a fresh scratch directory
+    * (publication is no-clobber link(), so a shared directory admits
+    * one retention) and removes it after the check, so the same
+    * freshness proof runs on the shim fixture. */
+   char retain_dir[PATH_MAX];
+   if (record_only) {
+      snprintf(retain_dir, sizeof(retain_dir), "%s/record-XXXXXX",
+               evidence_dir);
+      if (mkdtemp(retain_dir) == NULL) {
+         fprintf(stderr, "record scratch directory failed: %s\n",
+                 strerror(errno));
+         return 1;
+      }
+   } else {
+      snprintf(retain_dir, sizeof(retain_dir), "%s", evidence_dir);
+   }
+   static const char *const runner_retention_names[] = {
+      "recorded_ib.bin", "references.bin",
+   };
+   if (r3v_native_evidence_write_file(retain_dir, runner_retention_names[0],
+                                      native->ib,
+                                      native->ib_size_dwords * 4u) != 0 ||
+       r3v_native_evidence_write_file(
+          retain_dir, runner_retention_names[1], native->references,
+          native->reference_count *
+             (uint32_t)sizeof(native->references[0])) != 0) {
+      fprintf(stderr, "stream retention failed\n");
+      if (!record_only)
+         r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+      return 1;
+   }
+   static const char *const queue_retention_names[] = {
+      "ib.bin", "relocs.bin", "manifest.json",
+   };
+   for (unsigned n = 0; n < ARRAY_SIZE(queue_retention_names); n++) {
+      char path[PATH_MAX];
+      snprintf(path, sizeof(path), "%s/%s", retain_dir,
+               queue_retention_names[n]);
+      if (access(path, F_OK) == 0) {
+         fprintf(stderr,
+                 "%s already exists in the retention directory; the queue "
+                 "publishes it and refuses ahead of the ioctl\n",
+                 queue_retention_names[n]);
+         if (!record_only)
+            r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+         return 2;
+      }
+   }
+   emit("[retain] %s %s under %s; %s %s %s fresh\n",
+        runner_retention_names[0], runner_retention_names[1],
+        record_only ? "record scratch" : "the evidence directory",
+        queue_retention_names[0], queue_retention_names[1],
+        queue_retention_names[2]);
+   if (record_only) {
+      for (unsigned n = 0; n < ARRAY_SIZE(runner_retention_names); n++) {
+         char path[PATH_MAX];
+         snprintf(path, sizeof(path), "%s/%s", retain_dir,
+                  runner_retention_names[n]);
+         unlink(path);
+      }
+      rmdir(retain_dir);
+   }
+
    if (record_only) {
       emit("record: ACCEPTED\n");
       for (unsigned p = 0; p < 3; p++)
@@ -1129,18 +1280,6 @@ main(int argc, char **argv)
       vkDestroyDevice(device, NULL);
       vkDestroyInstance(instance, NULL);
       return 0;
-   }
-
-   /* The submitted stream and the reference list the winsys turns into
-    * the relocation entries, retained ahead of the ioctl. */
-   if (r3v_native_evidence_write_file(evidence_dir, "ib.bin", native->ib,
-                                      native->ib_size_dwords * 4u) != 0 ||
-       r3v_native_evidence_write_file(
-          evidence_dir, "references.bin", native->references,
-          native->reference_count *
-             (uint32_t)sizeof(native->references[0])) != 0) {
-      fprintf(stderr, "stream retention failed\n");
-      return 1;
    }
 
    VkQueue queue = VK_NULL_HANDLE;
@@ -1309,6 +1448,12 @@ main(int argc, char **argv)
            ? "the carriers do not hold the probe payload at proportional "
              "reciprocal W; the models were evaluated against records the "
              "device did not fetch"
+        : production
+           ? "the control cell interpolates perspective-correct and the "
+             "public NoPerspective pipeline's target carries the "
+             "classification printed above; affine is the Vulkan "
+             "NoPerspective value, so that classification is the receipt "
+             "of the direct GB W_SELECT route on RS482"
            : "the control cell interpolates perspective-correct and the "
              "candidate word's target carries the classification printed "
              "above; the statement is what that one bit does on RS482");
