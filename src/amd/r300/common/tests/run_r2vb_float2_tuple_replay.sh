@@ -4,10 +4,11 @@
 # Offline kernel replay of the R2VB FLOAT_4 + FLOAT_2 tuple pass.
 #
 # R3V_CS_TRACK_REPLAY_TOOL names replay_r300_cs_track, built from the
-# Linux radeon source tree; the known-good arm proves the parser admits
-# the tuple stream with its three relocations (carrier plus the two
-# LOAD_VBPNTR pointers), and the known-bad arms prove the acceptance is
-# decided by the stream.  R3V_KERNEL_REPLAY_TOOL adds the TCL-bypass
+# Linux radeon source tree; the metadata checker joins the generated
+# manifest, BO table, vertex bytes, and IB before the parser runs.  The
+# known-good arm proves the parser admits the tuple stream with its three
+# relocations (carrier plus the two LOAD_VBPNTR pointers), and the known-bad
+# arms prove the acceptance is decided by the stream.  R3V_KERNEL_REPLAY_TOOL adds the TCL-bypass
 # width predicate: the tuple's fetched vertex-list draw sits inside the
 # extended synthesized-lane scope, so its expected verdict is one PASS
 # -- the userspace and kernel validators agreeing on the
@@ -16,11 +17,12 @@
 # absent configuration and skips.
 #
 # Usage: run_r2vb_float2_tuple_replay.sh <r300_r2vb_float2_tuple_manifest>
+#        [manifest-checker]
 
 set -eu
 
-if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <r300_r2vb_float2_tuple_manifest-binary>" >&2
+if [ "$#" -ne 1 ] && [ "$#" -ne 2 ]; then
+    echo "usage: $0 <r300_r2vb_float2_tuple_manifest-binary> [manifest-checker]" >&2
     exit 1
 fi
 
@@ -38,6 +40,11 @@ if [ ! -x "${manifest_tool}" ]; then
     echo "manifest tool ${manifest_tool} is not executable" >&2
     exit 1
 fi
+manifest_checker="${2:-$(dirname "$0")/r300_r2vb_float2_tuple_manifest_check.py}"
+if [ ! -f "${manifest_checker}" ]; then
+    echo "manifest checker ${manifest_checker} is not a regular file" >&2
+    exit 1
+fi
 
 workdir=$(mktemp -d)
 trap 'rm -rf "${workdir}"' EXIT
@@ -53,13 +60,37 @@ for artifact in ib.bin vertex.bin bo_table.json manifest.json; do
     fi
 done
 
+# Join the generated metadata before constructing the parser bundle.  The
+# checker independently verifies the two BLAKE3 digests, exact vertex bytes,
+# relocation NOP payloads, BO roles/domains, and the complete VAP tuple.  The
+# replay therefore consumes the same carrier and vertex extents the manifest
+# publishes instead of a larger hand-written control surface.
+metadata_report=$(python3 "${manifest_checker}" --validate "${workdir}")
+echo "${metadata_report}"
+carrier_size=$(printf '%s\n' "${metadata_report}" |
+    sed -n 's/.*carrier_bytes=\([0-9][0-9]*\).*/\1/p')
+vertex_size=$(printf '%s\n' "${metadata_report}" |
+    sed -n 's/.*vertex_bytes=\([0-9][0-9]*\).*/\1/p')
+case "${carrier_size}" in
+    ''|*[!0-9]*)
+        echo "metadata checker returned no numeric carrier size" >&2
+        exit 1
+        ;;
+esac
+case "${vertex_size}" in
+    ''|*[!0-9]*)
+        echo "metadata checker returned no numeric vertex size" >&2
+        exit 1
+        ;;
+esac
+
 # Two buffer objects: the carrier written through the color backend, and
 # the vertex BO both fetch arrays read.  The replay's relocs= field
 # counts bundle entries, so the accepted verdict names two.
-cat > "${workdir}/bundle.txt" <<'BUNDLE'
+cat > "${workdir}/bundle.txt" <<BUNDLE
 family rs480
-bo 0 role=carrier size=4096 read_domains=0x2 write_domain=0x2
-bo 1 role=vertex size=72 read_domains=0x2 write_domain=0x0
+bo 0 role=carrier size=${carrier_size} read_domains=0x2 write_domain=0x2
+bo 1 role=vertex size=${vertex_size} read_domains=0x2 write_domain=0x0
 BUNDLE
 
 good=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
@@ -107,10 +138,10 @@ expect_reject "undersized VAP_VTX_SIZE" \
     "${workdir}/bundle.txt" "${workdir}/ib.bin"
 
 # Carrier below the color-buffer bound.
-cat > "${workdir}/bundle-small.txt" <<'BUNDLE'
+cat > "${workdir}/bundle-small.txt" <<BUNDLE
 family rs480
 bo 0 role=carrier size=32 read_domains=0x2 write_domain=0x2
-bo 1 role=vertex size=72 read_domains=0x2 write_domain=0x0
+bo 1 role=vertex size=${vertex_size} read_domains=0x2 write_domain=0x0
 BUNDLE
 expect_reject "carrier below the color-buffer bound" \
     "${workdir}/bundle-small.txt" "${workdir}/ib.bin"

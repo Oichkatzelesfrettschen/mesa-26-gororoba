@@ -15,6 +15,7 @@
 
 #include "drm-uapi/radeon_drm.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -44,6 +45,20 @@ write_file(const char *dir, const char *name, const void *data, size_t size)
       return 1;
    }
    return 0;
+}
+
+static void
+bytes_digest_hex(const void *data, size_t size,
+                 char out[2 * R300_TRIANGLE_DIGEST_SIZE + 1])
+{
+   uint8_t digest[R300_TRIANGLE_DIGEST_SIZE];
+   struct mesa_blake3 context;
+
+   _mesa_blake3_init(&context);
+   _mesa_blake3_update(&context, data, size);
+   _mesa_blake3_final(&context, digest);
+   for (unsigned i = 0; i < R300_TRIANGLE_DIGEST_SIZE; i++)
+      snprintf(&out[2 * i], 3, "%02x", digest[i]);
 }
 
 int
@@ -94,6 +109,9 @@ main(int argc, char **argv)
    }
    rc |= write_file(dir, "vertex.bin", vertex_bytes, sizeof(vertex_bytes));
 
+   char vertex_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   bytes_digest_hex(vertex_bytes, sizeof(vertex_bytes), vertex_blake3_hex);
+
    struct r300_r2vb_producer_layout layout;
    if (r300_r2vb_producer_layout_single_row(
           R300_R2VB_FLOAT2_TUPLE_REFERENCE_COUNT, &layout) != 0) {
@@ -119,6 +137,11 @@ main(int argc, char **argv)
       RADEON_GEM_DOMAIN_GTT, carrier_size_bytes,
       (unsigned)R300_R2VB_FLOAT2_TUPLE_SLOT_VERTEX, RADEON_GEM_DOMAIN_GTT,
       (unsigned)sizeof(vertex_bytes));
+   if (bo_table_len <= 0 || (size_t)bo_table_len >= sizeof(bo_table)) {
+      fprintf(stderr, "BO table serialization overflow\n");
+      r300_r2vb_float2_tuple_pass_release(&pass);
+      return 1;
+   }
    rc |= write_file(dir, "bo_table.json", bo_table, (size_t)bo_table_len);
 
    char ib_blake3_hex[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
@@ -160,6 +183,7 @@ main(int argc, char **argv)
       "  \"emitter\": \"r300_r2vb_float2_tuple_pass\",\n"
       "  \"ib_dwords\": %u,\n"
       "  \"ib_blake3\": \"%s\",\n"
+      "  \"vertex_blake3\": \"%s\",\n"
       "  \"reloc_sites\": [%s],\n"
       "  \"vertex_count\": %u,\n"
       "  \"vap_vtx_size_dwords\": %u,\n"
@@ -171,11 +195,17 @@ main(int argc, char **argv)
       "  \"carrier_poison_dword\": \"0x%08x\",\n"
       "  \"expected_carrier_dwords\": [%s]\n"
       "}\n",
-      pass.ib_size_dwords, ib_blake3_hex, sites, layout.count,
+      pass.ib_size_dwords, ib_blake3_hex, vertex_blake3_hex, sites,
+      layout.count,
       R300_R2VB_FLOAT2_TUPLE_VTX_SIZE_DWORDS,
       (unsigned)sizeof(vertex_bytes), layout.pitch_pixels, layout.height,
       R300_R2VB_PRODUCER_CPP_BYTES, carrier_size_bytes,
       R300_R2VB_PRODUCER_POISON_DWORD, carrier);
+   if (manifest_len <= 0 || (size_t)manifest_len >= sizeof(manifest)) {
+      fprintf(stderr, "manifest serialization overflow\n");
+      r300_r2vb_float2_tuple_pass_release(&pass);
+      return 1;
+   }
    rc |= write_file(dir, "manifest.json", manifest, (size_t)manifest_len);
 
    r300_r2vb_float2_tuple_pass_release(&pass);

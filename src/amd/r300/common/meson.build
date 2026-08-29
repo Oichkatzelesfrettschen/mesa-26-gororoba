@@ -635,7 +635,22 @@ r300_r2vb_float2_tuple_manifest = executable(
 test(
   'r300-r2vb-float2-tuple-replay',
   files('tests/run_r2vb_float2_tuple_replay.sh')[0],
-  args : [r300_r2vb_float2_tuple_manifest],
+  args : [r300_r2vb_float2_tuple_manifest,
+          files('tests/r300_r2vb_float2_tuple_manifest_check.py')[0]],
+  depends : [r300_r2vb_float2_tuple_manifest],
+  suite : ['r300'],
+)
+
+# The tuple writer's artifacts are checked against each other and against the
+# emitted VAP tuple before the replay accepts the stream.  Calibration mutants
+# keep a malformed retained vertex stream, metadata set, or command state from
+# becoming a green replay-only result.
+test(
+  'r300-r2vb-float2-tuple-manifest-integration',
+  prog_python,
+  args : [files('tests/r300_r2vb_float2_tuple_manifest_check.py'),
+          r300_r2vb_float2_tuple_manifest.full_path()],
+  depends : [r300_r2vb_float2_tuple_manifest],
   suite : ['r300'],
 )
 
