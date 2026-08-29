@@ -824,6 +824,49 @@ project_clip_vertex(const struct r3v_native_clip_vertex *vertex,
    return true;
 }
 
+/* The immediate producer embeds the vertex-job position records in its
+ * DRAW_IMMD_2 body, while the following consumer reads pretransformed
+ * window-space records with VTE passthrough.  A fixed three-record producer
+ * cannot represent a clipped polygon, so every source record must remain
+ * inside the homogeneous view volume before the viewport projection runs.
+ * The transformed records are staged separately, leaving the source oracle
+ * and the command buffer unchanged when validation refuses a record.
+ */
+static int
+transform_gpu_producer_records(const uint32_t *clip_records,
+                               uint32_t target_width, uint32_t target_height,
+                               uint32_t *window_records)
+{
+   if (clip_records == NULL || window_records == NULL || target_width == 0 ||
+       target_height == 0)
+      return -EINVAL;
+
+   for (uint32_t vertex_index = 0; vertex_index < 3; vertex_index++) {
+      struct r3v_native_clip_vertex vertex = {0};
+      for (uint32_t component = 0;
+           component < R300_VERTEX_JOB_POSITION_DWORDS; component++) {
+         float value;
+         memcpy(&value,
+                &clip_records[vertex_index * R300_VERTEX_JOB_POSITION_DWORDS +
+                              component],
+                sizeof(value));
+         if (!isfinite(value))
+            return -EDOM;
+         vertex.values[component] = value;
+      }
+
+      float projected[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS];
+      if (!project_clip_vertex(&vertex, R300_VERTEX_JOB_POSITION_DWORDS,
+                               target_width, target_height, 1.0,
+                               projected))
+         return -ERANGE;
+      memcpy(&window_records[vertex_index * R300_VERTEX_JOB_POSITION_DWORDS],
+             projected,
+             R300_VERTEX_JOB_POSITION_DWORDS * sizeof(window_records[0]));
+   }
+   return 0;
+}
+
 static int
 expand_clip_space_triangles(
    const uint32_t *source_records, uint32_t source_triangle_count,
@@ -1760,6 +1803,34 @@ admit_fetched_producer(struct r3v_native_device *device,
          .memory = memory,
       };
 
+   /* The poisoned carrier crosses to the device before the command buffer
+    * publishes the replacement stream.  A carrier-map refusal therefore
+    * releases every temporary allocation and leaves the recorded consumer,
+    * relocation list, and cell kind available for a clean retry. */
+   bool owns_carrier_map = carrier->map == NULL;
+   if (owns_carrier_map &&
+       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
+                            &carrier->map) != 0) {
+      free(references);
+      if (cmd_buffer->owned_slot == NULL) {
+         radeon_drm_vk_bo_free(&device->drm, &slot->bo);
+         vk_free(&cmd_buffer->vk.pool->alloc, slot);
+      }
+      r300_r2vb_fetched_route_release(&route);
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: carrier memory is not CPU-mappable "
+                       "at admission");
+   }
+   uint32_t *carrier_words = carrier->map;
+   for (uint32_t i = 0; i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
+      carrier_words[i] = R300_R2VB_PRODUCER_POISON_DWORD;
+   radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
+                               R3V_GPU_PRODUCER_CARRIER_DWORDS * 4);
+   if (owns_carrier_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
+      carrier->map = NULL;
+   }
+
    /* Every fallible step has completed: install the composed stream. */
    free(cmd_buffer->ib);
    free(cmd_buffer->window_space_ib);
@@ -1775,27 +1846,6 @@ admit_fetched_producer(struct r3v_native_device *device,
    draw->gpu_producer_dwords = route.consumer_start_dwords;
    draw->gpu_producer_delivery = true;
    route.ib = NULL;
-
-   /* The poisoned carrier crosses to the device now; the read-back judges
-    * every slot against the delivery identity plus the pad slot's poison.
-    */
-   bool owns_carrier_map = carrier->map == NULL;
-   if (owns_carrier_map &&
-       radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
-                            &carrier->map) != 0) {
-      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                       "r3v-native: carrier memory is not CPU-mappable "
-                       "at admission");
-   }
-   uint32_t *carrier_words = carrier->map;
-   for (uint32_t i = 0; i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
-      carrier_words[i] = R300_R2VB_PRODUCER_POISON_DWORD;
-   radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
-                               R3V_GPU_PRODUCER_CARRIER_DWORDS * 4);
-   if (owns_carrier_map) {
-      radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
-      carrier->map = NULL;
-   }
    memcpy(draw->gpu_expected_carrier, expected, sizeof(expected));
    for (uint32_t i = R300_TRIANGLE_VERTEX_DWORDS;
         i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
@@ -1925,12 +1975,31 @@ r3v_native_deferred_draw_admit_gpu_producer(
                        "GPU producer route", gathered);
    }
 
+   /* The identity job produces clip-space positions, but the producer's
+    * consumer is the fixed window-space triangle cell.  Project the
+    * validated three-record stream once and use that same byte stream for
+    * emission and read-back; a record outside the view volume would require
+    * polygon expansion that this fixed producer cannot carry. */
+   uint32_t window_oracle[R300_TRIANGLE_VERTEX_DWORDS];
+   int projected = transform_gpu_producer_records(
+      oracle, draw->target_width, draw->target_height, window_oracle);
+   if (projected != 0) {
+      return vk_errorf(
+         device, VK_ERROR_INITIALIZATION_FAILED,
+         "r3v-native: GPU producer position projection refused (%d)%s",
+         projected,
+         projected == -ERANGE
+            ? "; a position requires clipping outside the fixed three-record "
+              "window-space consumer"
+            : "");
+   }
+
    /* Numeric predicate: the emitter refuses a record outside the FP24
     * fixed-point domain with -EDOM, so an admitted emission is one the
     * delivery identity predicts byte-exact.
     */
    float records[R300_R2VB_PRODUCER_REFERENCE_COUNT][4];
-   memcpy(records, oracle, sizeof(records));
+   memcpy(records, window_oracle, sizeof(records));
    struct r300_r2vb_producer_ib producer;
    int emit_result = r300_r2vb_producer_records_emit(
       (const float(*)[4])records, &producer);
@@ -1976,16 +2045,17 @@ r3v_native_deferred_draw_admit_gpu_producer(
                        "window-space triangle consumer");
    }
 
-   /* Composition: producer ++ consumer in one IB.  The producer's
-    * carrier relocation payload and the consumer's vertex slot payload
-    * both name relocation entry zero, and the consumer's reference list
-    * already binds the carrier there, so the list only gains the write
-    * domain the color backend needs.
-    */
-   if (!draw->gpu_producer_delivery) {
-      const uint32_t combined_dwords =
+   /* Build the replacement stream before touching the command buffer.  The
+    * carrier map and poison are the final fallible admission step, so a map
+    * failure frees this temporary stream and leaves the recorded consumer
+    * and relocation list intact for a later retry. */
+   const bool composed_before = draw->gpu_producer_delivery;
+   uint32_t *combined = NULL;
+   uint32_t combined_dwords = 0;
+   if (!composed_before) {
+      combined_dwords =
          producer.ib_size_dwords + cmd_buffer->window_space_ib_size_dwords;
-      uint32_t *combined = malloc(combined_dwords * sizeof(uint32_t));
+      combined = malloc(combined_dwords * sizeof(uint32_t));
       if (combined == NULL) {
          r300_r2vb_producer_pass_release(&producer);
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1994,51 +2064,25 @@ r3v_native_deferred_draw_admit_gpu_producer(
              producer.ib_size_dwords * sizeof(uint32_t));
       memcpy(combined + producer.ib_size_dwords, cmd_buffer->window_space_ib,
              cmd_buffer->window_space_ib_size_dwords * sizeof(uint32_t));
-      free(cmd_buffer->ib);
-      free(cmd_buffer->window_space_ib);
-      cmd_buffer->ib = combined;
-      cmd_buffer->ib_size_dwords = combined_dwords;
-      cmd_buffer->window_space_ib = NULL;
-      cmd_buffer->window_space_ib_size_dwords = 0;
-      draw->gpu_producer_dwords = producer.ib_size_dwords;
-      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC;
-      cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX].write_domain =
-         RADEON_GEM_DOMAIN_GTT;
-   } else {
-      /* A resubmission re-reads the stream, so the producer prefix is
-       * re-emitted in place; the reference-shaped emission is
-       * fixed-length, so a size drift names a broken invariant.
-       */
-      if (producer.ib_size_dwords != draw->gpu_producer_dwords) {
-         r300_r2vb_producer_pass_release(&producer);
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r3v-native: recomposed producer size %u "
-                          "differs from the admitted %u",
-                          producer.ib_size_dwords,
-                          draw->gpu_producer_dwords);
-      }
-      memcpy(cmd_buffer->ib, producer.ib,
-             producer.ib_size_dwords * sizeof(uint32_t));
+   } else if (producer.ib_size_dwords != draw->gpu_producer_dwords) {
+      r300_r2vb_producer_pass_release(&producer);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: recomposed producer size %u differs "
+                       "from the admitted %u",
+                       producer.ib_size_dwords, draw->gpu_producer_dwords);
    }
-   r300_r2vb_producer_pass_release(&producer);
-   /* The flag names one fact: the recorded IB carries the producer prefix
-    * ahead of the consumer.  The composition above establishes it, so it is
-    * recorded here rather than at the successful tail; a failure in the
-    * carrier steps that follow leaves a composed IB, and a resubmission of
-    * this buffer re-emits the prefix in place instead of prepending a
-    * second one.
-    */
-   draw->gpu_producer_delivery = true;
 
-   /* The poisoned carrier crosses to the device now, so the read-back
-    * decides every slot: a record dword still holding the poison names
-    * a slot the pass left unwritten, and the pad slot must keep it.
-    */
+   /* The poisoned carrier crosses to the device after all other fallible
+    * preparation and before the composed IB becomes visible.  A read-back
+    * dword still holding the poison names a slot the pass left unwritten,
+    * and the pad slot must keep it. */
    struct r3v_native_memory *carrier = cmd_buffer->owned_carriers[0];
    bool owns_carrier_map = carrier->map == NULL;
    if (owns_carrier_map &&
        radeon_drm_vk_bo_map(&device->drm, &carrier->bo,
                             &carrier->map) != 0) {
+      free(combined);
+      r300_r2vb_producer_pass_release(&producer);
       return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
                        "r3v-native: carrier memory is not CPU-mappable "
                        "at admission");
@@ -2053,31 +2097,37 @@ r3v_native_deferred_draw_admit_gpu_producer(
       carrier->map = NULL;
    }
 
-   memcpy(draw->gpu_expected_carrier, oracle, sizeof(oracle));
+   /* Composition: producer ++ consumer in one IB.  The producer's
+    * carrier relocation payload and the consumer's vertex slot payload
+    * both name relocation entry zero, and the consumer's reference list
+    * already binds the carrier there, so the list only gains the write
+    * domain the color backend needs. */
+   if (!composed_before) {
+      free(cmd_buffer->ib);
+      free(cmd_buffer->window_space_ib);
+      cmd_buffer->ib = combined;
+      cmd_buffer->ib_size_dwords = combined_dwords;
+      cmd_buffer->window_space_ib = NULL;
+      cmd_buffer->window_space_ib_size_dwords = 0;
+      draw->gpu_producer_dwords = producer.ib_size_dwords;
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC;
+      cmd_buffer->references[R300_TRIANGLE_SLOT_VERTEX].write_domain =
+         RADEON_GEM_DOMAIN_GTT;
+   } else {
+      /* A resubmission re-reads the stream, so the fixed-length producer
+       * prefix is re-emitted in place. */
+      memcpy(cmd_buffer->ib, producer.ib,
+             producer.ib_size_dwords * sizeof(uint32_t));
+   }
+   r300_r2vb_producer_pass_release(&producer);
+   draw->gpu_producer_delivery = true;
+
+   memcpy(draw->gpu_expected_carrier, window_oracle,
+          sizeof(window_oracle));
    for (uint32_t i = R300_TRIANGLE_VERTEX_DWORDS;
         i < R3V_GPU_PRODUCER_CARRIER_DWORDS; i++)
       draw->gpu_expected_carrier[i] = R300_R2VB_PRODUCER_POISON_DWORD;
    return VK_SUCCESS;
-}
-
-/* Writes one carrier artifact into the evidence directory.  Retention
- * is best-effort: the read-back verdict is already decided, and a full
- * or read-only evidence directory changes the run's outcome through the
- * runner's own retention check rather than here.
- */
-static void
-retain_carrier_bytes(const char *manifest_dir, const char *name,
-                     const void *bytes, size_t size)
-{
-   char path[1024];
-   int length = snprintf(path, sizeof(path), "%s/%s", manifest_dir, name);
-   if (length <= 0 || (size_t)length >= sizeof(path))
-      return;
-   FILE *file = fopen(path, "wb");
-   if (file == NULL)
-      return;
-   fwrite(bytes, 1, size, file);
-   fclose(file);
 }
 
 VkResult
@@ -2132,19 +2182,35 @@ r3v_native_deferred_draw_verify_gpu_producer(
    /* The read-back bytes are the delivery's whole result, so a match
     * retains them beside the expectation exactly as a divergence does:
     * an attended run whose evidence holds only its failures leaves a
-    * success unauditable.
-    */
+    * success unauditable.  The final names are one-shot artifacts; a
+    * preflight keeps a stale directory from mixing two submissions. */
+   int retention_result = -EINVAL;
    if (device->manifest_dir != NULL) {
-      retain_carrier_bytes(device->manifest_dir, "gpu_carrier_observed.bin",
-                           carrier->map,
-                           sizeof(draw->gpu_expected_carrier));
-      retain_carrier_bytes(device->manifest_dir, "gpu_carrier_expected.bin",
-                           draw->gpu_expected_carrier,
-                           sizeof(draw->gpu_expected_carrier));
+      static const char *const retention_names[] = {
+         "gpu_carrier_observed.bin", "gpu_carrier_expected.bin",
+      };
+      retention_result = r3v_native_evidence_require_fresh(
+         device->manifest_dir, retention_names, ARRAY_SIZE(retention_names));
+      if (retention_result == 0)
+         retention_result = r3v_native_evidence_write_file(
+            device->manifest_dir, retention_names[0], carrier->map,
+            sizeof(draw->gpu_expected_carrier));
+      if (retention_result == 0)
+         retention_result = r3v_native_evidence_write_file(
+            device->manifest_dir, retention_names[1],
+            draw->gpu_expected_carrier,
+            sizeof(draw->gpu_expected_carrier));
    }
    if (owns_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
       carrier->map = NULL;
+   }
+   if (retention_result != 0) {
+      device->gpu_producer_quarantined = true;
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: GPU producer carrier evidence "
+                       "retention failed (%d); capability quarantined",
+                       retention_result);
    }
    if (!matches) {
       device->gpu_producer_quarantined = true;

@@ -115,9 +115,9 @@ main(int argc, char **argv)
     * and the hardware mode inherits a proven sequence.
     */
    /* --fetched selects the fetched GPU-producer cell: the same recording
-    * and the same records, with the submit-time admission composing the
-    * fetched producer (slot BO + the bound vertex BO through the
-    * two-array fetched body) under the third gate, and the authorization
+    * and the same window-space records, with the submit-time admission
+    * composing the fetched producer (slot BO + the bound vertex BO through
+    * the two-array fetched body) under the third gate, and the authorization
     * naming that composition's digest.  --fetched=f32_3 and
     * --fetched=f32_2 bind the same three positions as narrower records
     * -- the stride and the attribute format are the width's record size,
@@ -407,12 +407,12 @@ main(int argc, char **argv)
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 
-   /* The application's vertex records: the fixed triangle's own
-    * pretransformed positions, the payload the qualified producer pass
-    * embeds and the consumer cell fetches.  Writing them through the
-    * public map is what makes this run an application draw rather than
-    * a recorder's fixed stream.
-    */
+   /* The immediate producer receives Vulkan clip/NDC positions and applies
+    * the viewport before it emits the carrier records.  The fetched
+    * producer has no viewport stage in its VAP fetch path, so that route
+    * receives the explicitly pretransformed window-space positions.  The
+    * authorization remains the common window-space consumer shape for both
+    * routes. */
    stage("vertex stream");
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
    if (vkAllocateMemory(device,
@@ -446,13 +446,19 @@ main(int argc, char **argv)
       fprintf(stderr, "vertex map failed\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   /* Each record carries the leading components of its F32_4 position;
-    * the fetch swizzle restores z = 0 and w = 1 on the narrower widths,
-    * which is what the reference triangle carries there.
-    */
+   static const float ndc_triangle[12] = {
+      -0.75f, -0.75f, 0.0f, 1.0f,
+       0.75f, -0.75f, 0.0f, 1.0f,
+       0.00f,  0.75f, 0.0f, 1.0f,
+   };
+   const float *source_records =
+      fetched ? r300_tcl_bypass_triangle_vertices : ndc_triangle;
+   /* Each record carries the leading components of its selected position;
+    * the fetched route's swizzle restores z = 0 and w = 1 on narrower
+    * widths, which matches the window-space reference triangle. */
    for (unsigned v = 0; v < 3; v++)
       memcpy((uint8_t *)map + v * source_record_bytes,
-             &r300_tcl_bypass_triangle_vertices[v * 4], source_record_bytes);
+             &source_records[v * 4], source_record_bytes);
    vkUnmapMemory(device, vertex_memory);
 
    stage("pipeline");
