@@ -218,6 +218,32 @@ fail(const char *name, const char *detail)
    failures++;
 }
 
+static const char *
+sampler_mode_state(enum r3v_status_load_sampler_mode mode)
+{
+   switch (mode) {
+   case R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT:
+      return "SAMPLER_MODE_CENSUS_PRESENT";
+   case R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT:
+      return "SAMPLER_MODE_CENSUS_ABSENT";
+   case R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED:
+      break;
+   }
+   return NULL;
+}
+
+static void
+start_sampler(struct fake *fake, struct r3v_status_load_machine *machine,
+              enum r3v_status_load_sampler_mode mode)
+{
+   if (r3v_status_load_machine_set_expected_sampler_mode(machine, mode) != 0)
+      fail("sampler_start", "expected sampler mode could not be set");
+   sampler_event(fake, machine, "SAMPLER_OPEN", 0);
+   sampler_event(fake, machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(fake, machine, sampler_mode_state(mode), 0);
+   sampler_event(fake, machine, "SAMPLER_READY", 0);
+}
+
 /* Extracts the state name of transcript line n for the named sender;
  * NULL when the line is missing or belongs to the other sender.
  */
@@ -299,12 +325,12 @@ static void
 drive(struct fake *fake, struct r3v_status_load_machine *machine,
       uint32_t iterations, int stop_sampler_after, int call_finish)
 {
-   sampler_event(fake, machine, "SAMPLER_OPEN", 0);
-   sampler_event(fake, machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(fake, machine, "SAMPLER_READY", 0);
+   start_sampler(fake, machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
    for (uint32_t i = 0; i < iterations; i++) {
       if (r3v_status_load_machine_phase(machine) != R3V_STATUS_LOAD_RUNNING)
          return;
+      sampler_event(fake, machine, "SAMPLER_ENTER_WINDOW", i);
       sampler_event(fake, machine, "SAMPLER_ENTER_READ", i);
       if (r3v_status_load_machine_iterate(machine) != 0)
          return;
@@ -367,6 +393,20 @@ main(int argc, char **argv)
    if (r3v_status_load_machine_init(&machine, &ops, NONCE, 1) == 0)
       fail("init_missing_op", "missing submit accepted");
 
+   /* The expected mode is a one-shot configuration and rejects the
+    * initialization sentinel or a second selection.
+    */
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED) == 0)
+      fail("mode_bound", "undeclared sampler mode accepted");
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT) != 0 ||
+       r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT) == 0)
+      fail("mode_one_shot", "sampler mode selection was reusable");
+
    /* Happy path: two full iterations, sampler stop, COMPLETE. */
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
@@ -396,7 +436,7 @@ main(int argc, char **argv)
       }
       if (submitter_lines != count)
          fail("happy_path", "submitter line count mismatch");
-      if (sampler_lines != 3 + 2 + 1)
+      if (sampler_lines != 4 + 2 * 2 + 1)
          fail("happy_path", "sampler line count mismatch");
       if (argc > 1) {
          FILE *out = fopen(argv[1], "w");
@@ -441,6 +481,9 @@ main(int argc, char **argv)
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT) != 0)
+      fail("sampler_not_ready", "expected sampler mode could not be set");
    sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
    sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
    r3v_status_load_machine_iterate(&machine);
@@ -451,9 +494,9 @@ main(int argc, char **argv)
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 2);
-   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
-   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
    sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    r3v_status_load_machine_iterate(&machine);
    sampler_event(&fake, &machine, "SAMPLER_STOPPED", 0);
@@ -465,25 +508,25 @@ main(int argc, char **argv)
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 2);
-   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
-   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
    sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    r3v_status_load_machine_iterate(&machine);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 1);
    r3v_status_load_machine_iterate(&machine);
    expect_abort("sampler_token_reuse", &fake, &machine,
                 "ENTER_READ missing", 1, 3);
 
-   /* A token for a later iteration cannot open an earlier submission. */
+   /* A window for a later iteration cannot open an earlier submission. */
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
-   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
-   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
-   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 1);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 1);
    expect_abort("sampler_token_index", &fake, &machine,
-                "submission index differs", 0, 0);
+                "window submission index differs", 0, 0);
 
    /* Duplicate ENTER_READ events are protocol faults, even when the
     * duplicate carries the same index.
@@ -491,29 +534,82 @@ main(int argc, char **argv)
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
-   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
-   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
    sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    expect_abort("sampler_token_duplicate", &fake, &machine,
                 "duplicate ENTER_READ", 0, 0);
 
-   /* The census-absent control explicitly releases the token gate while
-    * retaining the sampler-ready and sampler-stopped barriers.
+   /* The census-absent control consumes the common window without a read
+    * token while retaining the sampler-ready and sampler-stopped barriers.
     */
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
-   if (r3v_status_load_machine_set_sampler_read_required(&machine, 0) != 0)
-      fail("census_absent_gate", "control gate could not be disabled");
-   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
-   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
    if (r3v_status_load_machine_iterate(&machine) != 0 ||
        r3v_status_load_machine_finish(&machine) != 0 ||
        r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_COMPLETE)
       fail("census_absent_gate", "control run did not complete");
+
+   /* A sampler mode must be declared after calibration and must agree
+    * with the submitter's selected census leg.
+    */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
+   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(&fake, &machine, "SAMPLER_MODE_CENSUS_PRESENT", 0);
+   expect_abort("mode_without_expectation", &fake, &machine,
+                "expectation missing", 0, 0);
+
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT) != 0)
+      fail("mode_mismatch", "expected sampler mode could not be set");
+   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
+   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
+   sampler_event(&fake, &machine, "SAMPLER_MODE_CENSUS_PRESENT", 0);
+   expect_abort("mode_mismatch", &fake, &machine, "differs", 0, 0);
+
+   /* The shared window is mandatory for an observed read and a read is
+    * forbidden for the census-absent control.
+    */
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
+   expect_abort("read_without_window", &fake, &machine,
+                "without ENTER_WINDOW", 0, 0);
+
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
+   expect_abort("read_in_absent_mode", &fake, &machine,
+                "census-absent mode", 0, 0);
+
+   memset(&fake, 0, sizeof(fake));
+   ops = fake_ops(&fake);
+   r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
+   expect_abort("window_duplicate", &fake, &machine,
+                "duplicate ENTER_WINDOW", 0, 0);
 
    /* Operation failures, each at its exact ladder position. */
    static const struct {
@@ -569,17 +665,23 @@ main(int argc, char **argv)
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT) != 0)
+      fail("sampler_out_of_order", "expected sampler mode could not be set");
    sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
    sampler_event(&fake, &machine, "SAMPLER_READY", 0);
    if (r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_ABORTED ||
        strstr(r3v_status_load_machine_abort_reason(&machine),
-              "out of order") == NULL)
+              "before sampler mode") == NULL)
       fail("sampler_out_of_order", "READY before CALIBRATED accepted");
 
    /* ENTER_READ before READY is equally out of order. */
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 1);
+   if (r3v_status_load_machine_set_expected_sampler_mode(
+          &machine, R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT) != 0)
+      fail("enter_read_early", "expected sampler mode could not be set");
    sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
    sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    if (r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_ABORTED)
@@ -591,9 +693,10 @@ main(int argc, char **argv)
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
    r3v_status_load_machine_init(&machine, &ops, NONCE, 2);
-   sampler_event(&fake, &machine, "SAMPLER_OPEN", 0);
-   sampler_event(&fake, &machine, "SAMPLER_CALIBRATED", 0);
-   sampler_event(&fake, &machine, "SAMPLER_READY", 0);
+   start_sampler(&fake, &machine,
+                 R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_WINDOW", 0);
+   sampler_event(&fake, &machine, "SAMPLER_ENTER_READ", 0);
    r3v_status_load_machine_iterate(&machine);
    if (r3v_status_load_machine_finish(&machine) == 0 ||
        r3v_status_load_machine_phase(&machine) != R3V_STATUS_LOAD_ABORTED)
@@ -656,6 +759,6 @@ main(int argc, char **argv)
       printf("status-load machine calibration: %d failures\n", failures);
       return 1;
    }
-   printf("status-load machine calibration: 25 cases pass\n");
+   printf("status-load machine calibration: 31 cases pass\n");
    return 0;
 }

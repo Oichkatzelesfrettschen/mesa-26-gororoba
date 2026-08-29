@@ -42,7 +42,10 @@ valid_state(const char *state)
       "ARMED",
       "SAMPLER_OPEN",
       "SAMPLER_CALIBRATED",
+      "SAMPLER_MODE_CENSUS_PRESENT",
+      "SAMPLER_MODE_CENSUS_ABSENT",
       "SAMPLER_READY",
+      "SAMPLER_ENTER_WINDOW",
       "SAMPLER_ENTER_READ",
       "QUEUE_SUBMIT_ENTER",
       "CS_IOCTL_ENTER",
@@ -190,21 +193,28 @@ r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
    memcpy(machine->nonce, nonce, R3V_STATUS_LOAD_NONCE_LENGTH + 1);
    machine->total_iterations = iterations;
    machine->sampler = R3V_STATUS_LOAD_SAMPLER_ABSENT;
-   machine->sampler_read_required = 1;
+   machine->sampler_mode = R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED;
+   machine->expected_sampler_mode =
+      R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED;
    machine->phase = R3V_STATUS_LOAD_RUNNING;
    machine->abort_reason = "";
    return 0;
 }
 
 int
-r3v_status_load_machine_set_sampler_read_required(
-   struct r3v_status_load_machine *machine, int required)
+r3v_status_load_machine_set_expected_sampler_mode(
+   struct r3v_status_load_machine *machine,
+   enum r3v_status_load_sampler_mode mode)
 {
    if (machine == NULL || machine->phase != R3V_STATUS_LOAD_RUNNING ||
        machine->next_iteration != 0 ||
-       machine->sampler != R3V_STATUS_LOAD_SAMPLER_ABSENT)
+       machine->sampler != R3V_STATUS_LOAD_SAMPLER_ABSENT ||
+       machine->expected_sampler_mode !=
+          R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED ||
+       (mode != R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT &&
+        mode != R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT))
       return -1;
-   machine->sampler_read_required = required != 0;
+   machine->expected_sampler_mode = mode;
    return 0;
 }
 
@@ -274,63 +284,120 @@ r3v_status_load_machine_sampler(struct r3v_status_load_machine *machine,
       return -1;
    }
 
-   enum r3v_status_load_sampler next;
-   if (strcmp(state_name, "SAMPLER_OPEN") == 0)
-      next = R3V_STATUS_LOAD_SAMPLER_OPEN;
-   else if (strcmp(state_name, "SAMPLER_CALIBRATED") == 0)
-      next = R3V_STATUS_LOAD_SAMPLER_CALIBRATED;
-   else if (strcmp(state_name, "SAMPLER_READY") == 0)
-      next = R3V_STATUS_LOAD_SAMPLER_READY;
-   else if (strcmp(state_name, "SAMPLER_ENTER_READ") == 0)
-      next = R3V_STATUS_LOAD_SAMPLER_READY;
-   else if (strcmp(state_name, "SAMPLER_STOPPED") == 0)
-      next = R3V_STATUS_LOAD_SAMPLER_STOPPED;
-   else if (strcmp(state_name, "ABORT") == 0) {
-      machine_abort(machine, "sampler requested abort");
-      return -1;
-   }
-   else {
-      machine_abort(machine, "sampler sent an unknown state");
-      return -1;
-   }
+   const int is_mode_present =
+      strcmp(state_name, "SAMPLER_MODE_CENSUS_PRESENT") == 0;
+   const int is_mode_absent =
+      strcmp(state_name, "SAMPLER_MODE_CENSUS_ABSENT") == 0;
+   const int is_window = strcmp(state_name, "SAMPLER_ENTER_WINDOW") == 0;
+   const int is_read = strcmp(state_name, "SAMPLER_ENTER_READ") == 0;
 
-   /* The sampler climbs OPEN, CALIBRATED, READY in order and may stop
-    * from any of them; ENTER_READ belongs to READY alone.  Anything else
-    * is a barrier fault the run stops on.
-    */
-   int valid;
-   if (next == R3V_STATUS_LOAD_SAMPLER_STOPPED)
-      valid = machine->sampler != R3V_STATUS_LOAD_SAMPLER_ABSENT &&
-              machine->sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED;
-   else if (strcmp(state_name, "SAMPLER_ENTER_READ") == 0) {
+   if (is_mode_present || is_mode_absent) {
+      const enum r3v_status_load_sampler_mode declared_mode =
+         is_mode_present ? R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT
+                         : R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT;
+      if (machine->sampler != R3V_STATUS_LOAD_SAMPLER_CALIBRATED ||
+          machine->sampler_mode !=
+             R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED) {
+         machine_abort(machine, "sampler mode declaration out of order");
+         return -1;
+      }
+      if (machine->expected_sampler_mode ==
+          R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED) {
+         machine_abort(machine, "sampler mode expectation missing");
+         return -1;
+      }
+      if (machine->expected_sampler_mode != declared_mode) {
+         machine_abort(machine, "sampler mode differs from expected census leg");
+         return -1;
+      }
+      machine->sampler_mode = declared_mode;
+   } else if (is_window) {
+      if (machine->sampler != R3V_STATUS_LOAD_SAMPLER_READY ||
+          machine->sampler_mode ==
+             R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED) {
+         machine_abort(machine, "sampler window before declared ready");
+         return -1;
+      }
+      if (machine->sampler_window_pending) {
+         machine_abort(machine, "sampler sent duplicate ENTER_WINDOW");
+         return -1;
+      }
+      if (submission_index != machine->next_iteration) {
+         machine_abort(machine, "sampler window submission index differs");
+         return -1;
+      }
+      machine->sampler_window_pending = 1;
+      machine->sampler_window_index = submission_index;
+   } else if (is_read) {
       if (machine->sampler != R3V_STATUS_LOAD_SAMPLER_READY) {
          machine_abort(machine, "sampler transition out of order");
+         return -1;
+      }
+      if (machine->sampler_mode ==
+          R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED) {
+         machine_abort(machine, "sampler mode missing before ENTER_READ");
+         return -1;
+      }
+      if (machine->sampler_mode ==
+          R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT) {
+         machine_abort(machine, "SAMPLER_ENTER_READ in census-absent mode");
+         return -1;
+      }
+      if (!machine->sampler_window_pending) {
+         machine_abort(machine, "SAMPLER_ENTER_READ without ENTER_WINDOW");
+         return -1;
+      }
+      if (machine->sampler_window_index != submission_index ||
+          submission_index != machine->next_iteration) {
+         machine_abort(machine, "sampler read submission index differs");
          return -1;
       }
       if (machine->sampler_read_pending) {
          machine_abort(machine, "sampler sent duplicate ENTER_READ");
          return -1;
       }
-      if (submission_index != machine->next_iteration) {
-         machine_abort(machine, "sampler submission index differs");
+      machine->sampler_read_pending = 1;
+      machine->sampler_read_index = submission_index;
+   } else if (strcmp(state_name, "SAMPLER_OPEN") == 0 ||
+              strcmp(state_name, "SAMPLER_CALIBRATED") == 0 ||
+              strcmp(state_name, "SAMPLER_READY") == 0 ||
+              strcmp(state_name, "SAMPLER_STOPPED") == 0) {
+      enum r3v_status_load_sampler next;
+      if (strcmp(state_name, "SAMPLER_OPEN") == 0)
+         next = R3V_STATUS_LOAD_SAMPLER_OPEN;
+      else if (strcmp(state_name, "SAMPLER_CALIBRATED") == 0)
+         next = R3V_STATUS_LOAD_SAMPLER_CALIBRATED;
+      else if (strcmp(state_name, "SAMPLER_READY") == 0)
+         next = R3V_STATUS_LOAD_SAMPLER_READY;
+      else
+         next = R3V_STATUS_LOAD_SAMPLER_STOPPED;
+
+      if (next == R3V_STATUS_LOAD_SAMPLER_READY &&
+          machine->sampler_mode ==
+             R3V_STATUS_LOAD_SAMPLER_MODE_UNDECLARED) {
+         machine_abort(machine, "SAMPLER_READY before sampler mode");
          return -1;
       }
-      valid = 1;
-   }
-   else
-      valid = (int)next == (int)machine->sampler + 1;
-   if (!valid) {
-      machine_abort(machine, "sampler transition out of order");
+      const int valid =
+         next == R3V_STATUS_LOAD_SAMPLER_STOPPED
+            ? machine->sampler != R3V_STATUS_LOAD_SAMPLER_ABSENT &&
+                 machine->sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED
+            : (int)next == (int)machine->sampler + 1;
+      if (!valid) {
+         machine_abort(machine, "sampler transition out of order");
+         return -1;
+      }
+      machine->sampler = next;
+   } else if (strcmp(state_name, "ABORT") == 0) {
+      machine_abort(machine, "sampler requested abort");
+      return -1;
+   } else {
+      machine_abort(machine, "sampler sent an unknown state");
       return -1;
    }
 
-   machine->sampler = next;
    machine->last_sampler_ns = timestamp_ns;
    machine->have_sampler_ns = 1;
-   if (strcmp(state_name, "SAMPLER_ENTER_READ") == 0) {
-      machine->sampler_read_pending = 1;
-      machine->sampler_read_index = submission_index;
-   }
    return 0;
 }
 
@@ -375,12 +442,25 @@ r3v_status_load_machine_iterate(struct r3v_status_load_machine *machine)
       machine_abort(machine, "sampler never reached ready");
       return -1;
    }
-   if (machine->sampler_read_required &&
+   if (!machine->sampler_window_pending ||
+       machine->sampler_window_index != i) {
+      machine_abort(machine, "sampler ENTER_WINDOW missing for submission");
+      return -1;
+   }
+   if (machine->sampler_mode ==
+          R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT &&
        (!machine->sampler_read_pending ||
         machine->sampler_read_index != i)) {
       machine_abort(machine, "sampler ENTER_READ missing for submission");
       return -1;
    }
+   if (machine->sampler_mode !=
+          R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_PRESENT &&
+       machine->sampler_mode != R3V_STATUS_LOAD_SAMPLER_MODE_CENSUS_ABSENT) {
+      machine_abort(machine, "sampler mode missing for submission");
+      return -1;
+   }
+   machine->sampler_window_pending = 0;
    machine->sampler_read_pending = 0;
 
    if (emit_submitter(machine, "QUEUE_SUBMIT_ENTER", i) != 0)
