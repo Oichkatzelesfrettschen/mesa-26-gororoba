@@ -73,7 +73,10 @@ Recorded before the run; deviation is the finding.
 `r300_tcl_bypass_triangle_oracle` judges the render; only
 `REINGEST_RENDERED` -- both verdicts passing under a completed fence --
 exits zero. The retained record adds `color.bin` and
-`reingest_outcome.json` beside the producer record's artifacts.
+`reingest_outcome.json` beside the producer record's artifacts. The outcome
+record retains `carrier_poison_dwords` with the carrier mismatch count, so a
+`CARRIER_MISMATCH` result preserves the poison evidence that distinguishes a
+partial producer write from a delivered-but-wrong carrier.
 
 ## Executed run
 
