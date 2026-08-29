@@ -1414,6 +1414,17 @@ test_source_read_model_boundaries(void)
    CHECK(f32_bits_of(r300_us_source_read_f32(0.0f, rs)) == 0,
          "model: positive zero is exact");
 
+   /* The generic FP24 storage model retains its upper exponent bin.  The
+    * R2VB identity route applies a narrower measured ceiling in its own
+    * admission predicate, so these checks stay independent of that route.
+    */
+   CHECK(r300_fp24_quantize_bits(R300_FP24_MAX_FINITE_F32_BITS) ==
+            R300_FP24_MAX_FINITE_F32_BITS,
+         "model: generic FP24 quantizer retains the upper exponent bin");
+   CHECK(r300_fp24_quantize_bits(0x60800000u) ==
+            R300_FP24_MAX_FINITE_F32_BITS,
+         "model: generic FP24 quantizer saturates above the upper bin");
+
    /* Max finite: positive passes; negative steps one lattice ULP. */
    const float max_finite = r300_bits_to_f32(R300_FP24_MAX_FINITE_F32_BITS);
    CHECK(f32_bits_of(r300_us_source_read_f32(max_finite, rs)) ==
@@ -1440,11 +1451,11 @@ test_source_read_model_boundaries(void)
 
 /* Exhaustive sweep of every positive normal FP24 lattice magnitude in its
  * FP32-expanded encoding: exponent bytes 0x42 (min normal 2^-61) through
- * 0xBF (max-finite binade; 0xC0 opens the 2^65 bin the silicon delivers
- * with a decremented exponent), mantissa steps of 0x80 (126 binades x
- * 65536 significands).  Proves mechanically that storage quantization is
- * idempotent on the lattice, the predecessor is strictly smaller and
- * borrows across every power-of-two binade boundary, pred(min normal)
+ * 0xC0 (the generic max-finite binade; the measured R2VB identity route
+ * ends at 0xBF), mantissa steps of 0x80 (127 binades x 65536
+ * significands).  Proves mechanically that storage quantization is
+ * idempotent on the generic lattice, the predecessor is strictly smaller
+ * and borrows across every power-of-two binade boundary, pred(min normal)
  * is zero, the source-read model is identity on positive magnitudes and
  * exactly one predecessor step on negative magnitudes, NEG after the
  * read recovers the exact negative, and IDENTITY preserves every bit
@@ -1458,7 +1469,7 @@ test_source_read_lattice_exhaustive(void)
    unsigned long checked = 0;
    uint32_t bad = 0;
 
-   for (uint32_t exponent_byte = 0x42; exponent_byte <= 0xBF && !bad;
+   for (uint32_t exponent_byte = 0x42; exponent_byte <= 0xC0 && !bad;
         exponent_byte++) {
       for (uint32_t mantissa = 0; mantissa <= 0x7FFF80u; mantissa += 0x80u) {
          const uint32_t magnitude = (exponent_byte << 23) | mantissa;
@@ -1505,7 +1516,7 @@ test_source_read_lattice_exhaustive(void)
          checked++;
       }
    }
-   CHECK(bad == 0 && checked == 126ul * 65536ul,
+   CHECK(bad == 0 && checked == 127ul * 65536ul,
          "lattice exhaustive: all positive normal FP24 magnitudes hold "
          "quantize/pred/source-read/NEG/IDENTITY invariants");
    if (bad)

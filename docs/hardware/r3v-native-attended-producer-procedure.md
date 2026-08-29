@@ -116,7 +116,8 @@ triangle's records: twelve components on the edges of the
 delivery-admission lattice (+0, the minimum normal magnitude and its
 first step, the 1.0 neighborhood's mantissa extremes and exponent-carry
 neighbor, a mid-range multi-bit mantissa, and the maximum-exponent
-magnitudes up to the largest finite value). The count equals the
+magnitudes up to the largest value admitted by the R2VB identity route).
+The generic FP24 storage model has a wider upper exponent bin; the count equals the
 reference count, so the cell kind, carrier geometry, poison contract,
 outcome classes, and every arming factor except the digest carry over.
 Both runners take the selector `fp24-sweep` as a second argument --
@@ -156,10 +157,12 @@ The `fp24-bisect` stream ran on RS482 on 2026-08-14 from main
 313 dwords) and returned `CARRIER_DELIVERED`: all twelve lanes through
 `0x5fffff80` byte-exact, tail poison intact, empty dmesg delta, fence
 retired. Combined with the sweep's halved `0x60000000` lane, the
-identity-delivery ceiling is `0x5fffff80` exactly: the US FP24 format
-resolves as s1e7m16 with bias 62 and the top exponent field reserved,
-so `R300_FP24_MAX_FINITE_F32_BITS` carries `0x5FFFFF80`, and the sweep
-table's maximum-exponent lanes sit at the corrected lattice edge. The
+identity-delivery ceiling is `0x5fffff80` exactly: the RS482 R2VB identity
+route resolves as s1e7m16 with bias 62 and the top exponent field reserved,
+so `R300_R2VB_FP24_IDENTITY_MAX_F32_BITS` carries `0x5FFFFF80` while the
+generic `R300_FP24_MAX_FINITE_F32_BITS` remains `0x607FFF80` for stored and
+temporary FP24 values. The sweep table's maximum-exponent lanes sit at the
+route-specific lattice edge. The
 retained record lives in the `steinmarder-r300` bundle
 `results/r3v-native-fp24-bisect-ceiling-rs482/`.
 
@@ -185,9 +188,10 @@ delivered byte-exact, and the three top-exponent lanes each delivered
 with the exponent field one below the expectation
 (`0x60000000 -> 0x5f800000`, `0x607fff00 -> 0x5fffff00`,
 `0x607fff80 -> 0x5fffff80`, mantissa preserved). Known: values in the
-top modeled exponent bin of `r300_r2vb_fp24_identity_admits` deliver
-halved, so `R300_FP24_MAX_FINITE_F32_BITS` overstates the
-identity-delivery ceiling by at least the top exponent bin.
+generic upper exponent bin remain representable in storage but values in
+that bin are outside `r300_r2vb_fp24_identity_admits` and deliver halved,
+so the generic `R300_FP24_MAX_FINITE_F32_BITS` must not stand in for the
+route-specific identity ceiling.
 Hypothesized: the US source-read exponent window ends one bin below
 the modeled bound; a bisection sweep between `0x4479c000` (999.0,
 delivered exact) and `0x60000000` locates the true ceiling. The run

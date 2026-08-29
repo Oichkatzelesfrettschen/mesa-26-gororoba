@@ -2612,7 +2612,8 @@ test_coverage_oracle_predicted_calibration(void)
    /* A cell whose fragment color arrives through the TX unit carries no
     * R300_PFS_PARAM_0 constant, so its color_bits sit wherever the
     * caller left them.  0x3e008081 is one ulp off the FP24 s1e7m16
-    * lattice -- r300_fp24_quantize_bits carries it to 0x3e008080 -- and
+    * generic FP24 storage lattice -- r300_fp24_quantize_bits carries it to
+    * 0x3e008080 -- and
     * the emitter's admission refuses it while the verdict, which reads
     * geometry and takes its interior values as arguments, still judges.
     */

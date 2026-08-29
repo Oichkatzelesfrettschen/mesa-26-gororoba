@@ -1213,7 +1213,8 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        * the CPU gather is the default and the semantic oracle, and the
        * R2VB identity delivery engages only on the exact opt-in value
        * and the formats it models.  Under the R2VB route the delivery
-       * holds the FP24 fixed-point domain and refuses outside it, and
+       * holds the R2VB identity fixed-point domain and refuses outside it,
+       * including values retained by the generic FP24 storage model, and
        * the CPU gather then re-derives the same carrier -- a byte
        * divergence falsifies the identity control and refuses the draw
        * rather than submitting bytes the two routes disagree on.

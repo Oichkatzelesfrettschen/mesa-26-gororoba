@@ -14,6 +14,7 @@
 #include "r300_r2vb_producer_pass.h"
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_tcl_bypass_triangle_fs_block.h"
+#include "r300_us_source_read.h"
 
 #include "r300_reg.h"
 #include "util/macros.h"
@@ -553,8 +554,8 @@ test_refusals(void)
    CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
    params.layout = layout;
 
-   /* A record outside the FP24 fixed-point domain refuses -EDOM before
-    * any write: 0.1 carries mantissa bits below the 16-bit window.
+   /* A record outside the R2VB identity fixed-point domain refuses -EDOM
+    * before any write: 0.1 carries mantissa bits below the 16-bit window.
     */
    float bad[3][4];
    memcpy(bad, records, sizeof(bad));
@@ -563,6 +564,20 @@ test_refusals(void)
    uint32_t canary[512];
    memset(canary, 0xc5, sizeof(canary));
    struct r300_r2vb_producer_ib into = { 0 };
+   CHECK(r300_r2vb_producer_pass_emit_into(&params, canary, 512, &into) ==
+         -EDOM);
+   for (unsigned i = 0; i < 512; i++)
+      CHECK(canary[i] == 0xc5c5c5c5u);
+   params.records = records;
+
+   /* The generic FP24 model retains its upper exponent bin, but the
+    * measured R2VB identity route rejects that bin before the producer
+    * allocates or emits an IB.
+    */
+   memcpy(bad, records, sizeof(bad));
+   bad[1][2] = r300_bits_to_f32(R300_FP24_MAX_FINITE_F32_BITS);
+   params.records = (const float(*)[4])bad;
+   memset(canary, 0xc5, sizeof(canary));
    CHECK(r300_r2vb_producer_pass_emit_into(&params, canary, 512, &into) ==
          -EDOM);
    for (unsigned i = 0; i < 512; i++)

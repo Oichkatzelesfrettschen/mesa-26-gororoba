@@ -27,10 +27,10 @@ struct r300_pm4_builder;
  *
  * The US datapath narrows every routed value to s1e7m16, so the pass
  * carries a record byte-exact only when each component is a fixed point
- * of the FP24 round trip; the emission refuses a record outside
- * r300_r2vb_fp24_identity_admits with -EDOM before writing any dword,
- * keeping the emitted stream inside the domain where delivery is the
- * identity.
+ * of the measured R2VB identity route; the emission refuses a record
+ * outside r300_r2vb_fp24_identity_admits with -EDOM before writing any
+ * dword, keeping the emitted stream inside the route-specific domain where
+ * delivery is the identity.
  */
 
 /* The one BO the pass references: the carrier, bound as the color target
@@ -167,8 +167,8 @@ void r300_r2vb_producer_tail_emit(struct r300_pm4_builder *b);
  * params' fragment binary supplies the US code that moves that register
  * to the color output.
  *
- * Returns 0 or a negative errno; -EDOM names a record outside the FP24
- * fixed-point domain.  The caller owns the returned IB allocation.
+ * Returns 0 or a negative errno; -EDOM names a record outside the R2VB
+ * identity fixed-point domain.  The caller owns the returned IB allocation.
  */
 int r300_r2vb_producer_pass_emit(
    const struct r300_r2vb_producer_params *params,
@@ -229,10 +229,11 @@ int r300_r2vb_producer_reference_expected(uint32_t *expected,
  * magnitude and its first step, the 1.0 neighborhood's smallest and
  * largest mantissa steps, the exponent-carry neighbor, a mid-range
  * multi-bit mantissa, and the maximum-exponent magnitudes up to the
- * largest finite lattice value.  Every component is a fixed point of
- * r300_fp24_quantize_bits with the sign bit clear, so the delivery
- * identity predicts the carrier byte-exact; a silicon mismatch on any
- * lane falsifies the admission window at that edge rather than the
+ * largest value admitted by the measured R2VB identity route.  Every
+ * component is inside the route-specific ceiling and is a fixed point of
+ * r300_fp24_quantize_bits with the sign bit clear, so the delivery identity
+ * predicts the carrier byte-exact; a silicon mismatch on any lane falsifies
+ * the admission window at that edge rather than the
  * transport.  The count equals the reference pass count, so the sweep
  * rides the producer cell's frozen carrier geometry and only the IB
  * digest separates the two streams.
@@ -261,8 +262,9 @@ int r300_r2vb_producer_fp24_sweep_expected(uint32_t *expected,
  * observed to deliver with a decremented exponent (0x60000000) -- wide
  * steps from 2^32 through 2^56, then every exponent from 2^58 through
  * 2^64 with the maximum mantissa at 2^63 and 2^64.  Every component is
- * a fixed point of r300_fp24_quantize_bits with the sign bit clear, so
- * the delivery identity predicts the carrier byte-exact; the highest
+ * inside the route-specific ceiling and is a fixed point of
+ * r300_fp24_quantize_bits with the sign bit clear, so the delivery identity
+ * predicts the carrier byte-exact; the highest
  * lane delivering exact and the lowest lane delivering wrong bracket
  * the silicon's identity-delivery ceiling.  The count equals the
  * reference pass count, so the bisection rides the producer cell's
@@ -291,8 +293,8 @@ int r300_r2vb_producer_fp24_bisect_expected(uint32_t *expected,
  * count, single-row layout, first-draw contract prefix, and reference
  * fragment binary, carrier offset zero -- the shape every silicon
  * qualification ran, with only the embedded record dwords varying.
- * Returns 0 or a negative errno; -EDOM names a record outside the FP24
- * fixed-point domain.  The caller owns the returned IB allocation.
+ * Returns 0 or a negative errno; -EDOM names a record outside the R2VB
+ * identity fixed-point domain.  The caller owns the returned IB allocation.
  */
 int r300_r2vb_producer_records_emit(const float (*records)[4],
                                     struct r300_r2vb_producer_ib *out);

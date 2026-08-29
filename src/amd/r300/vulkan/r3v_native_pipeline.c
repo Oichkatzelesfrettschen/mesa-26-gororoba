@@ -73,11 +73,11 @@ stage_words(const VkPipelineShaderStageCreateInfo *stage,
 /* The fragment binary carries its constant in four R300_PFS_PARAM_0
  * payloads, and the register encodes an FP24 value, so the admitted
  * constant is any RGBA whose four binary32 bit patterns already sit on
- * the FP24 lattice: r300_fp24_quantize_bits clears the low seven
- * mantissa bits, and a pattern it leaves unchanged reaches the register
- * exactly, so the color the target holds is the color the module
- * wrote.  An off-lattice pattern would round in the register and render
- * a value the program never named, so it refuses.
+ * the generic FP24 storage lattice: r300_fp24_quantize_bits clears the low
+ * seven mantissa bits, and a pattern it leaves unchanged reaches the
+ * generic constant model exactly, so the color the target holds is the
+ * color the module wrote.  An off-lattice pattern would round in the
+ * register and render a value the program never named, so it refuses.
  */
 static bool
 constant_color_on_fp24_lattice(const uint32_t color_bits[4])
