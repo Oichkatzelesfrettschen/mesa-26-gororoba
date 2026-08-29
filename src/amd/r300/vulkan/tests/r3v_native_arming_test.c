@@ -21,6 +21,27 @@
 static const char authorized_digest[] =
    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+/* Join a directory and a complete child suffix before any filesystem call.
+ * The capacity check includes the terminator, so a token path never names a
+ * truncated child. */
+static bool
+join_path(char *path, size_t capacity, const char *directory,
+          const char *suffix)
+{
+   if (path == NULL || directory == NULL || suffix == NULL || capacity == 0)
+      return false;
+
+   size_t directory_length = strlen(directory);
+   size_t suffix_length = strlen(suffix);
+   if (directory_length >= capacity ||
+       suffix_length > capacity - directory_length - 1)
+      return false;
+
+   memcpy(path, directory, directory_length);
+   memcpy(path + directory_length, suffix, suffix_length + 1);
+   return true;
+}
+
 static struct r3v_native_arming_facts
 armed_facts(void)
 {
@@ -171,10 +192,8 @@ test_disarm_is_one_shot(void)
    if (!temp_root || !temp_root[0])
       temp_root = ".";
 
-   char dir[1024];
-   int dir_length = snprintf(dir, sizeof(dir), "%s/r3v-arming-XXXXXX",
-                             temp_root);
-   assert(dir_length > 0 && (size_t)dir_length < sizeof(dir));
+   char dir[R3V_NATIVE_ARMING_PATH_MAX];
+   assert(join_path(dir, sizeof(dir), temp_root, "/r3v-arming-XXXXXX"));
    assert(mkdtemp(dir) != NULL);
 
    char kernel[128];
@@ -198,8 +217,9 @@ test_disarm_is_one_shot(void)
     * armed and when.
     */
    {
-      char token_path[1024];
-      snprintf(token_path, sizeof(token_path), "%s/attempt.token", dir);
+      char token_path[R3V_NATIVE_ARMING_PATH_MAX];
+      assert(join_path(token_path, sizeof(token_path), dir,
+                       "/attempt.token"));
       FILE *token_file = fopen(token_path, "r");
       assert(token_file != NULL);
       char contents[512] = "";
@@ -221,8 +241,8 @@ test_disarm_is_one_shot(void)
    assert(r3v_native_arming_disarm(NULL, "x") != 0);
    assert(r3v_native_arming_disarm("", "x") != 0);
 
-   char token[1024];
-   snprintf(token, sizeof(token), "%s/attempt.token", dir);
+   char token[R3V_NATIVE_ARMING_PATH_MAX];
+   assert(join_path(token, sizeof(token), dir, "/attempt.token"));
    remove(token);
    rmdir(dir);
 
@@ -233,6 +253,33 @@ test_disarm_is_one_shot(void)
                              authorized_digest, dir, kernel, sizeof(kernel),
                              module, sizeof(module));
    assert(!facts.evidence_dir_present);
+}
+
+/* The directory template and its token child share one capacity.  The
+ * boundary fixture admits the largest root that fits both names and rejects
+ * the next root byte before mkdtemp can create an unaddressable directory. */
+static void
+test_attempt_token_path_budget(void)
+{
+   char root[R3V_NATIVE_ARMING_PATH_MAX];
+   char directory[R3V_NATIVE_ARMING_PATH_MAX];
+   char token[R3V_NATIVE_ARMING_PATH_MAX];
+   const size_t directory_suffix_length = strlen("/r3v-arming-XXXXXX");
+   const size_t token_suffix_length = strlen("/attempt.token");
+   const size_t maximum_root_length =
+      sizeof(root) - 1 - directory_suffix_length - token_suffix_length;
+
+   memset(root, 'r', maximum_root_length);
+   root[maximum_root_length] = '\0';
+   assert(join_path(directory, sizeof(directory), root,
+                    "/r3v-arming-XXXXXX"));
+   assert(join_path(token, sizeof(token), directory, "/attempt.token"));
+
+   root[maximum_root_length] = 'r';
+   root[maximum_root_length + 1] = '\0';
+   assert(join_path(directory, sizeof(directory), root,
+                    "/r3v-arming-XXXXXX"));
+   assert(!join_path(token, sizeof(token), directory, "/attempt.token"));
 }
 
 /* The serial kind's predicate over the same fact set: the bound must be
@@ -396,6 +443,7 @@ main(void)
 {
    test_complete_fact_set_arms();
    test_each_factor_refuses();
+   test_attempt_token_path_budget();
    test_disarm_is_one_shot();
    test_serial_bound_predicate();
    test_serial_env_parse();
