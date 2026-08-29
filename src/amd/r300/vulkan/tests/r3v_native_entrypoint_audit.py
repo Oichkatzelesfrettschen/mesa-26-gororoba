@@ -10,6 +10,8 @@ call.  This audit models the final table from the linked symbol set, reads
 each common provider's dispatch dependencies from the vulkan runtime source,
 and walks the transitive closure: every dependency of a reachable
 Vulkan 1.0 device-scope slot must itself resolve to a populated slot.
+Guarded dispatch calls retain their `(guard_slot, called_slot)` edge, and the
+closure activates each optional edge only when its guard slot is populated.
 
 The unconditional BindImageMemory2 edge is in
 src/vulkan/runtime/vk_device.c: vk_common_BindImageMemory is at line 602 and
@@ -356,7 +358,7 @@ def linked_symbols(nm, library):
 DEF_RE = re.compile(r"^(\w+)\s*\(", re.MULTILINE)
 DEP_RE = re.compile(r"(?:dispatch_table\.|disp->)(\w+)\s*\(")
 CALL_RE = re.compile(r"\b(\w+)\s*\(")
-IF_BLOCK_RE = re.compile(r"\bif\s*\((?P<condition>[^{}]*)\)\s*\{")
+IF_TOKEN_RE = re.compile(r"\bif\s*\(")
 GUARD_RE = re.compile(r"(?:dispatch_table\.|disp->)(\w+)")
 
 
@@ -415,6 +417,34 @@ def strip_c_comments(text):
     return "".join(chars)
 
 
+def matching_parenthesis(text, opening):
+    """Return the closing parenthesis for comment-free C text."""
+    depth = 0
+    state = "code"
+    index = opening
+    while index < len(text):
+        char = text[index]
+        if state == "code":
+            if char == '"':
+                state = "string"
+            elif char == "'":
+                state = "character"
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return index
+        else:
+            if char == "\\":
+                index += 1
+            elif ((state == "string" and char == '"') or
+                  (state == "character" and char == "'")):
+                state = "code"
+        index += 1
+    return len(text)
+
+
 def matching_brace(text, opening):
     """Return the closing brace for an opening brace in comment-free C."""
     depth = 0
@@ -443,26 +473,46 @@ def matching_brace(text, opening):
     return len(text)
 
 
-def optional_ranges(text):
-    """Return ranges guarded by a dispatch-pointer condition."""
-    ranges = []
-    for match in IF_BLOCK_RE.finditer(text):
-        condition = match.group("condition")
-        if not GUARD_RE.search(condition):
-            continue
+def guarded_blocks(text):
+    """Return (guard slots, body start, body end) for guarded if blocks."""
+    blocks = []
+    for match in IF_TOKEN_RE.finditer(text):
         opening = match.end() - 1
-        closing = matching_brace(text, opening)
-        ranges.append((match.end(), closing))
-    return ranges
+        closing_paren = matching_parenthesis(text, opening)
+        condition = text[opening + 1:closing_paren]
+        after_condition = closing_paren + 1
+        while after_condition < len(text) and text[after_condition].isspace():
+            after_condition += 1
+        if after_condition >= len(text) or text[after_condition] != "{":
+            continue
+        guards = set(GUARD_RE.findall(condition))
+        if not guards:
+            continue
+        closing_brace = matching_brace(text, after_condition)
+        blocks.append((guards, after_condition + 1, closing_brace))
+    return blocks
 
 
-def matches_in_ranges(regex, text, ranges):
-    """Return call names whose matches fall inside guarded ranges."""
-    found = set()
-    for match in regex.finditer(text):
-        if any(start <= match.start() < end for start, end in ranges):
-            found.add(match.group(1))
-    return found
+def guarded_dispatch_edges(text):
+    """Return explicit (guard slot, called slot) dispatch edges."""
+    edges = set()
+    for guards, start, closing in guarded_blocks(text):
+        body = text[start:closing]
+        called = set(DEP_RE.findall(body))
+        edges.update((guard, dependency)
+                     for guard in guards for dependency in called)
+    return edges
+
+
+def guarded_call_edges(text):
+    """Return explicit (guard slot, local callee) call edges."""
+    edges = set()
+    for guards, start, closing in guarded_blocks(text):
+        body = text[start:closing]
+        called = set(CALL_RE.findall(body))
+        edges.update((guard, callee)
+                     for guard in guards for callee in called)
+    return edges
 
 
 def scan_common_deps(runtime_dir: Path):
@@ -472,9 +522,11 @@ def scan_common_deps(runtime_dir: Path):
     pass emulation's begin_subpass reaches CmdBeginRendering that way), so
     the scan builds a per-file call graph over every function defined at
     column zero and unions dispatch calls transitively through local calls.
+    Optional dispatch dependencies remain explicit `(guard_slot, called_slot)`
+    pairs so a populated guard with a missing called slot remains observable.
     """
     direct = {}
-    optional_direct = {}
+    optional_direct_edges = {}
     calls = {}
     optional_calls = {}
     for source in sorted(runtime_dir.glob("*.c")):
@@ -484,18 +536,20 @@ def scan_common_deps(runtime_dir: Path):
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             body = text[m.start():end]
             name = m.group(1)
-            guarded = optional_ranges(body)
             dispatches = set(DEP_RE.findall(body))
-            optional_dispatches = matches_in_ranges(DEP_RE, body, guarded)
+            optional_edges = guarded_dispatch_edges(body)
+            optional_dispatches = {dependency for _guard, dependency
+                                   in optional_edges}
             direct.setdefault(name, set()).update(dispatches -
                                                    optional_dispatches)
-            optional_direct.setdefault(name, set()).update(
-                optional_dispatches)
+            optional_direct_edges.setdefault(name, set()).update(
+                optional_edges)
             function_calls = set(CALL_RE.findall(body))
-            guarded_calls = matches_in_ranges(CALL_RE, body, guarded)
+            optional_call_edges = guarded_call_edges(body)
+            guarded_calls = {callee for _guard, callee in optional_call_edges}
             calls.setdefault(name, set()).update(function_calls -
                                                   guarded_calls)
-            optional_calls.setdefault(name, set()).update(guarded_calls)
+            optional_calls.setdefault(name, set()).update(optional_call_edges)
 
     resolved = {}
 
@@ -506,33 +560,37 @@ def scan_common_deps(runtime_dir: Path):
             return set(), set()
         next_trail = trail | {fn}
         found = set(direct.get(fn, ()))
-        optional_found = set(optional_direct.get(fn, ()))
+        optional_found = set(optional_direct_edges.get(fn, ()))
         for callee in calls.get(fn, ()):
             if callee != fn and callee in direct:
                 required, optional = resolve(callee, next_trail)
                 found |= required
                 optional_found |= optional
         for callee in optional_calls.get(fn, ()):
-            if callee != fn and callee in direct:
-                required, optional = resolve(callee, next_trail)
-                optional_found |= required | optional
+            guard, callee_name = callee
+            if callee_name != fn and callee_name in direct:
+                required, optional = resolve(callee_name, next_trail)
+                optional_found |= {(guard, dependency)
+                                   for dependency in required}
+                optional_found |= {(guard, dependency)
+                                   for _nested_guard, dependency in optional}
         resolved[fn] = found, optional_found - found
         return resolved[fn]
 
     deps = {}
-    optional_deps = {}
+    optional_edges = {}
     for fn in direct:
         if fn.startswith("vk_common_"):
             found, optional = resolve(fn, set())
             if found or optional:
                 deps[fn[10:]] = found
-                optional_deps[fn[10:]] = optional
+                optional_edges[fn[10:]] = optional
     for slot, extra in ANNOTATED_DEPS.items():
         deps.setdefault(slot, set()).update(extra)
-    return deps, optional_deps
+    return deps, optional_edges
 
 
-def canonical_dependencies(deps, optional_deps, alias):
+def canonical_dependencies(deps, optional_edges, alias):
     """Canonicalize provider keys and dependency names together."""
     canonical_required = {}
     canonical_optional = {}
@@ -540,13 +598,16 @@ def canonical_dependencies(deps, optional_deps, alias):
         canonical_provider = canonical(provider, alias)
         canonical_required.setdefault(canonical_provider, set()).update(
             canonical_set(dependencies, alias))
-    for provider, dependencies in optional_deps.items():
+    for provider, dependencies in optional_edges.items():
         canonical_provider = canonical(provider, alias)
         canonical_optional.setdefault(canonical_provider, set()).update(
-            canonical_set(dependencies, alias))
+            (canonical(guard, alias), canonical(dependency, alias))
+            for guard, dependency in dependencies)
     for provider in set(canonical_required) | set(canonical_optional):
+        required = canonical_required.get(provider, set())
         canonical_optional.setdefault(provider, set()).difference_update(
-            canonical_required.get(provider, set()))
+            {edge for edge in canonical_optional.get(provider, ())
+             if edge[1] in required})
     canonical_optional = {
         provider: dependencies
         for provider, dependencies in canonical_optional.items()
@@ -555,7 +616,7 @@ def canonical_dependencies(deps, optional_deps, alias):
     return canonical_required, canonical_optional
 
 
-def closure_audit(native, common, deps, optional_deps, reachable):
+def closure_audit(native, common, deps, optional_edges, reachable):
     """Return open edges [(slot, missing dep)] over the transitive closure."""
     def populated(slot):
         return slot in native or slot in common
@@ -576,8 +637,12 @@ def closure_audit(native, common, deps, optional_deps, reachable):
                     open_edges.append((slot, cdep))
                 elif cdep not in native and cdep in common:
                     stack.append(cdep)
-            for dep in sorted(optional_deps.get(provider, ())):
-                if populated(dep) and dep not in native and dep in common:
+            for guard, dep in sorted(optional_edges.get(provider, ())):
+                if not populated(guard):
+                    continue
+                if not populated(dep):
+                    open_edges.append((slot, dep))
+                elif dep not in native and dep in common:
                     stack.append(dep)
     return open_edges
 
@@ -654,13 +719,44 @@ def selftest():
                           {"Required"}):
         return 1
     if not selftest_check("guarded dispatch optional", scanned_optional.get(
-            "Test", set()), {"Optional"}):
+            "Test", set()), {("Optional", "Optional")}):
         return 1
-    optional_good = closure_audit(set(), {"A"}, {}, {"A": {"A2"}}, {"A"})
+    with tempfile.TemporaryDirectory() as temp_dir:
+        Path(temp_dir, "runtime.c").write_text(
+            "vk_common_Correlated(\n"
+            "{\n"
+            "   if (disp->Guard && (value > 0)) {\n"
+            "      disp->Required(...);\n"
+            "   }\n"
+            "}\n")
+        correlated, correlated_optional = scan_common_deps(Path(temp_dir))
+    if not selftest_check("correlated guard edge", correlated.get(
+            "Correlated", set()), set()):
+        return 1
+    if not selftest_check(
+            "correlated guard edge shape",
+            correlated_optional.get("Correlated", set()),
+            {("Guard", "Required")}):
+        return 1
+    correlated_closed = closure_audit(
+        set(), {"Correlated", "Guard"}, correlated,
+        correlated_optional, {"Correlated"})
+    if not selftest_check("populated guard missing call", correlated_closed,
+                          [("Correlated", "Required")]):
+        return 1
+    correlated_guard_absent = closure_audit(
+        set(), {"Correlated"}, correlated, correlated_optional,
+        {"Correlated"})
+    if not selftest_check("absent guard skips optional call",
+                          correlated_guard_absent, []):
+        return 1
+    optional_good = closure_audit(
+        set(), {"A"}, {}, {"A": {("A2", "A2")}}, {"A"})
     if not selftest_check("absent optional dependency", optional_good, []):
         return 1
     optional_nested = closure_audit(
-        set(), {"A", "A2"}, {"A2": {"B"}}, {"A": {"A2"}}, {"A"})
+        set(), {"A", "A2"}, {"A2": {"B"}},
+        {"A": {("A2", "A2")}}, {"A"})
     if not selftest_check("populated optional transitive dependency",
                           optional_nested, [("A", "B")]):
         return 1
@@ -861,7 +957,7 @@ def selftest():
         1,
     ))
     print("r3v_native_entrypoint_audit selftest: canonical-provider, "
-          "comment-strip, optional-guard, and exact-baseline legs OK; "
+          "comment-strip, guarded-edge, and exact-baseline legs OK; "
           "18 closure and result legs OK, "
           f"{model_calibration_leg_count} model-shape "
           "calibration legs OK, "
@@ -988,8 +1084,12 @@ def behavior_class(name, native, common):
     return NATIVE_BEHAVIOR.get(name, "UNCLASSIFIED")
 
 
-def emit_policy(reg, native, common, deps, optional_deps):
+def emit_policy(reg, native, common, deps, optional_edges):
     """Emit one TSV row per Vulkan 1.0 command across all four scopes."""
+    def format_optional_edges(edges):
+        return ",".join(f"{guard}->{dependency}"
+                        for guard, dependency in sorted(edges)) or "-"
+
     columns = ("command", "canonical", "scope", "owner", "returns",
                "provider", "behavior", "dispatch-dependencies",
                "optional-dispatch-dependencies")
@@ -1005,7 +1105,8 @@ def emit_policy(reg, native, common, deps, optional_deps):
             name, canon, scope, reg.owner.get(name, ""),
             reg.results.get(canon, ("void", ()))[0], provider, behavior,
             ",".join(sorted(deps.get(canon, ()))) or "-",
-            ",".join(sorted(optional_deps.get(canon, ()))) or "-")))
+            format_optional_edges(optional_edges.get(canon, ()))))
+        )
 
 
 SCOPE_ENUM = {"global": "R3V_SCOPE_GLOBAL",
@@ -1125,11 +1226,11 @@ def main():
         )
         print(f"refusal-result fixture denies {REFUSAL_RESULT} for {command}")
     raw_native, raw_common = linked_symbols(nm, library)
-    raw_deps, raw_optional_deps = scan_common_deps(Path(runtime_dir))
+    raw_deps, raw_optional_edges = scan_common_deps(Path(runtime_dir))
     native = canonical_set(raw_native, reg.alias)
     common = canonical_set(raw_common, reg.alias)
-    deps, optional_deps = canonical_dependencies(
-        raw_deps, raw_optional_deps, reg.alias)
+    deps, optional_edges = canonical_dependencies(
+        raw_deps, raw_optional_edges, reg.alias)
     # The known-bad fixtures remove one entrypoint from the parsed surface;
     # every verdict below must then fail, which is what makes a pass on the
     # real surface load-bearing.
@@ -1139,7 +1240,7 @@ def main():
 
     populated = {s for s in reg.device_level if s in native or s in common}
     reachable = populated & reg.core10
-    open_edges = closure_audit(native, common, deps, optional_deps, reachable)
+    open_edges = closure_audit(native, common, deps, optional_edges, reachable)
     open_slots = sorted({slot for slot, _ in open_edges})
     core_device = reg.core10_device()
     absent = sorted(core_device - populated)
@@ -1179,7 +1280,7 @@ def main():
         return 0
 
     if mode == "--policy":
-        emit_policy(reg, native, common, deps, optional_deps)
+        emit_policy(reg, native, common, deps, optional_edges)
         return 0
 
     # Every refusing command's registry result set must permit the refusal
