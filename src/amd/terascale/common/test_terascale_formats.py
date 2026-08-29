@@ -45,3 +45,9 @@ def test_number_type_info_is_equal_ignoring_sign_no_opposite():
     info = NumberTypeInfo("FLOAT")
     assert info.is_equal_ignoring_sign("FLOAT") is True
     assert info.is_equal_ignoring_sign("UNORM") is False
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(pytest.main([__file__]))
