@@ -13,8 +13,10 @@
 #include "r300_r2vb_producer_fs_block.h"
 #include "r300_r2vb_producer_pass.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_tcl_bypass_triangle_fs_block.h"
 
 #include "r300_reg.h"
+#include "util/macros.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -527,6 +529,22 @@ test_refusals(void)
    memset(&unvalidated, 0, sizeof(unvalidated));
    params.fragment_binary = &unvalidated;
    CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
+   params.fragment_binary = &fs;
+
+   /* A constant-color fragment binary is structurally valid, but it does
+    * not move the TEX0 varying into the color output.  The producer must
+    * reject the payload before emitting a stream whose carrier contents
+    * would be unrelated to the source records. */
+   struct r300_fragment_binary constant_color;
+   CHECK(r300_fragment_binary_init(
+            &constant_color, r300_tcl_bypass_triangle_fs_block,
+            ARRAY_SIZE(r300_tcl_bypass_triangle_fs_block),
+            R300_TCL_BYPASS_TRIANGLE_FS_FG_DEPTH_SRC,
+            R300_TCL_BYPASS_TRIANGLE_FS_US_OUT_W,
+            "r300-tcl-bypass-triangle") == 0);
+   params.fragment_binary = &constant_color;
+   CHECK(r300_r2vb_producer_pass_emit(&params, &pass) == -EINVAL);
+   r300_fragment_binary_finish(&constant_color);
    params.fragment_binary = &fs;
 
    /* A malformed layout refuses: odd pitch cannot encode. */
