@@ -364,17 +364,25 @@ static int exec_tracecmd_argv( const char *const argv[], bool background, const 
 
     /* Background launch (the slow "trace-cmd extract") double-forks: the worker
      * reparents to init and is reaped there, never lingering as a zombie in the
-     * embedding application.  That is the reaping the old system("... &") shell
-     * used to provide.  The intermediate child exits at once, so the caller
-     * reaps only it and never blocks on the worker. */
+     * embedding application.  The parent waits for one setup byte, which binds
+     * the public result to log-file setup without waiting for extraction. */
     if ( background )
     {
+        int status_pipe[ 2 ];
+        if ( pipe( status_pipe ) == -1 )
+            return -1;
+
         pid_t mid = fork();
         if ( mid == -1 )
+        {
+            close( status_pipe[ 0 ] );
+            close( status_pipe[ 1 ] );
             return -1;
+        }
 
         if ( mid == 0 )
         {
+            close( status_pipe[ 0 ] );
             pid_t worker = fork();
             if ( worker == 0 )
             {
@@ -382,23 +390,42 @@ static int exec_tracecmd_argv( const char *const argv[], bool background, const 
                 {
                     int fd = open( log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
                     if ( fd == -1 )
-                        _exit( 127 );
-                    dup2( fd, STDOUT_FILENO );
-                    dup2( fd, STDERR_FILENO );
+                        _exit( write( status_pipe[ 1 ], "0", 1 ) == 1 ? 127 : 1 );
+                    if ( dup2( fd, STDOUT_FILENO ) == -1 ||
+                         dup2( fd, STDERR_FILENO ) == -1 )
+                    {
+                        close( fd );
+                        _exit( write( status_pipe[ 1 ], "0", 1 ) == 1 ? 127 : 1 );
+                    }
                     close( fd );
                 }
 
+                if ( write( status_pipe[ 1 ], "1", 1 ) != 1 )
+                    _exit( 1 );
+                close( status_pipe[ 1 ] );
                 execvp( argv[ 0 ], ( char *const * )argv );
                 _exit( 127 );
             }
 
+            if ( worker == -1 )
+                write( status_pipe[ 1 ], "0", 1 );
+            close( status_pipe[ 1 ] );
             _exit( worker == -1 ? 1 : 0 );
         }
 
+        close( status_pipe[ 1 ] );
         while ( waitpid( mid, NULL, 0 ) == -1 && errno == EINTR )
             continue;
 
-        return 0;
+        char setup_status = 0;
+        ssize_t status_bytes;
+        do
+        {
+            status_bytes = read( status_pipe[ 0 ], &setup_status, 1 );
+        } while ( status_bytes == -1 && errno == EINTR );
+        close( status_pipe[ 0 ] );
+
+        return status_bytes == 1 && setup_status == '1' ? 0 : -1;
     }
 
     if ( !log_path )
