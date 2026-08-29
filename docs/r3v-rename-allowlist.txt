@@ -4,16 +4,18 @@
 # dual-backend lane identity (libvulkan_r3v_native, r3v_native_icd, the two
 # lane options, the two lane macros, the "r3v-native" driver identity) is one
 # row here.  src/amd/r300/vulkan/tests/r3v_rename_ratchet.py scans
-# meson.build, meson.options, src, build-infra, and docs for the token set
-# it defines, refuses a spelling outside this ledger, and refuses a row
-# whose spelling is gone, so the row count only falls.  Internal mechanism
-# names (r3v_native_* files and functions, R3V_NATIVE_* environment
-# variables, test names) are not product identity and are not tokens.
+# every tracked UTF-8 text file and repository path for the token set it
+# defines, refuses a spelling outside this ledger, and refuses a row whose
+# spelling is gone, so the row count only falls.  Each row also pins its
+# occurrence count and the SHA-256 digest of ordered path and line-column
+# locations.  Internal mechanism names (r3v_native_* files and functions,
+# R3V_NATIVE_* environment variables, test names) are not product identity
+# and are not tokens.
 #
-# Format: path<TAB>token<TAB>replacement<TAB>owner<TAB>removal_condition
-build-infra/docs/last-100-pr-review-comment-audit.md	r300vk	r3v	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
-build-infra/docs/last-100-pr-review-comment-audit.md	R300VK	R3V_	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths
-build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/action-frontier.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in
-build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/assessments.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in
-build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/pre-resolution-frontier.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in
-build-infra/docs/review-thread-clusters/unresolved-review-thread-corpus-4b965810d471/review-status.tsv	r3v-native-backend	retired lane option	review-thread disposition ledger	the 4b965810d471 disposition ledger is archived out of the tree or its work_group_id slugs stop naming the retired r3v-native-backend meson option
+# Format: path<TAB>token<TAB>replacement<TAB>owner<TAB>removal_condition<TAB>occurrence_count<TAB>location_sha256
+build-infra/docs/last-100-pr-review-comment-audit.md	r300vk	r3v	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths	354	5bdeff1b100a0bec5b4143012f036554788c545a9fc77677995a58580e685f04
+build-infra/docs/last-100-pr-review-comment-audit.md	R300VK	R3V_	review-audit corpus	the review-comment audit corpus is archived out of the tree or regenerated against current paths	4	6050c1fe0955c684a2f59b1f17a7e1419d5e10f53183a55d2e80e63a34a33635
+build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/action-frontier.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in	1	31f267f6a9555205ccfdfde137f8f99605813bba8ba8cf1ee6ee47ebcf38aa01
+build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/assessments.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in	1	16f42c266e2af8027f67d96b4434da7ead27e76c973e02ee31e2d5f01ce90c16
+build-infra/docs/review-thread-classifications/merged-thread-frontier-after-WhUFS/pre-resolution-frontier.tsv	R300VK	R3V_	review-thread classification corpus	the WhUFS classification corpus is archived out of the tree or its rows stop naming the retired R300VK_HYBRID_COMPUTE_EXPERIMENTAL opt-in	1	f7b3d9cfe08448bfd3cb903b7f1095df21103c124bff2e7cada123d582b2d34d
+build-infra/docs/review-thread-clusters/unresolved-review-thread-corpus-4b965810d471/review-status.tsv	r3v-native-backend	retired lane option	review-thread disposition ledger	the 4b965810d471 disposition ledger is archived out of the tree or its work_group_id slugs stop naming the retired r3v-native-backend meson option	1	05de763eed01c90cc0ff864262753ea149b69664ac1a95de91df5dcd792543c1
