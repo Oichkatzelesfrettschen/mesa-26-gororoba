@@ -181,7 +181,7 @@ test_bounds_reject(void)
    r300_pm4_builder_init(&b, ib, R300_R2VB_FETCH_PASS_DWORDS);
    assert(r300_r2vb_fetch_pass_emit(&b, &p, &relocs) == -ERANGE);
 
-   /* Zero vertices, a count past the 16-bit index registers, a stride
+   /* Zero vertices, a count past the 16-bit VAP_VF_CNTL field, a stride
     * below the fetch size, an oversized VBPNTR field, and a VTX_SIZE
     * that disagrees with the stream sum each refuse as -EINVAL.
     */
@@ -191,9 +191,23 @@ test_bounds_reject(void)
    assert(r300_r2vb_fetch_pass_emit(&b, &p, &relocs) == -EINVAL);
 
    p = reference_params();
-   p.vertex_count = 0x10001;
+   p.vertex_count = R300_PM4_VTX_COUNT_LIMIT + 1;
    r300_pm4_builder_init(&b, ib, R300_R2VB_FETCH_PASS_DWORDS);
    assert(r300_r2vb_fetch_pass_emit(&b, &p, &relocs) == -EINVAL);
+
+   /* The largest encodable count passes the count gate and reaches the
+    * fixed packet body; its vertex-index range still ends at count - 1. */
+   p = reference_params();
+   p.vertex_count = R300_PM4_VTX_COUNT_LIMIT;
+   p.stream[0].bo_size_bytes = (uint64_t)p.vertex_count * 16;
+   p.stream[1].bo_size_bytes = 64 + (uint64_t)p.vertex_count * 16;
+   r300_pm4_builder_init(&b, ib, R300_R2VB_FETCH_PASS_DWORDS);
+   assert(r300_r2vb_fetch_pass_emit(&b, &p, &relocs) == 0);
+   assert(ib[R300_R2VB_FETCH_PASS_DWORDS - 1] ==
+          ((R300_PM4_VTX_COUNT_LIMIT <<
+            R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
+           R300_VAP_VF_CNTL__PRIM_POINTS |
+           R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST));
 
    p = reference_params();
    p.stream[0].stride_dwords = 3;

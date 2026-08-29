@@ -1852,7 +1852,7 @@ static bool r300_r2vb_emit_producer(struct r300_context *r300,
     /* The emitter's own bounds, checked before the size arithmetic: the
      * PACKET3 count field caps the body at 0x3fff dwords, so the sums
      * below stay far from overflow. */
-    if (num_vertices == 0 || num_vertices > R300_PM4_VTX_INDX_LIMIT ||
+    if (num_vertices == 0 || num_vertices > R300_PM4_VTX_COUNT_LIMIT ||
         vtx_dwords == 0 ||
         (uint64_t)num_vertices * vtx_dwords > 0x3fffu)
         return false;
@@ -1927,13 +1927,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         viewport_state ? viewport_state->vte_control
                        : (R300_VTX_XY_FMT | R300_VTX_Z_FMT);
 
-    assert(num_vertices > 0 && num_vertices <= 65535);
+    assert(num_vertices > 0 && num_vertices <= R300_PM4_VTX_COUNT_LIMIT);
     assert(vertex_attrs != NULL);
     assert(r300->screen->caps.num_vert_fpus == 0);
     assert(!r300->screen->caps.has_tcl);
     assert(!stage3_color_bo || (stage3_width > 0 && stage3_height > 0));
 
-    if (num_vertices == 0 || num_vertices > 65535 || !vertex_attrs)
+    if (num_vertices == 0 || num_vertices > R300_PM4_VTX_COUNT_LIMIT ||
+        !vertex_attrs)
         return;
     if (r300->screen->caps.has_tcl || r300->screen->caps.num_vert_fpus != 0)
         return;
@@ -4723,7 +4724,7 @@ bool r300_r2vb_slot_layout_init_policy(uint32_t count,
                                        enum r300_r2vb_slot_layout_policy policy,
                                        struct r300_r2vb_slot_layout *out)
 {
-    /* The 16-bit VAP_VF_MAX_VTX_INDX bounds every re-ingest regardless of
+    /* The 16-bit VAP_VF_CNTL count field bounds every re-ingest regardless of
      * producer storage. */
     if (!out || count == 0 || count >= 65536)
         return false;
@@ -5979,7 +5980,8 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
         return R2VB_REJECT_INDEXED;
     if (info->instance_count != 1)
         return R2VB_REJECT_INSTANCED;
-    /* VAP_VF_MAX_VTX_INDX is 16-bit, so the re-ingest tops out below 2^16. */
+    /* VAP_VF_CNTL carries a 16-bit count, so the re-ingest tops out below
+     * 2^16 vertices. */
     if (draw->count == 0 || draw->count >= 65536 ||
         (info->index_size == 0 &&
          draw->start > UINT32_MAX - (draw->count - 1u)))

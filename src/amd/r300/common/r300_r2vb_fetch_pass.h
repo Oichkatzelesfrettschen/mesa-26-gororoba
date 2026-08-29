@@ -90,7 +90,7 @@ struct r300_r2vb_fetch_pass_relocs {
 
 /* Emits the fixed fetched-draw body.  Rejects, without writing any
  * dword: a null state or reloc destination, a zero vertex count, a
- * vertex count past the 16-bit index registers, a stream whose size or
+ * vertex count past the 16-bit VAP_VF_CNTL count field, a stream whose size or
  * stride exceeds the VBPNTR field width, a size or stride not covering
  * the declared fetch, and a stream whose last fetched byte
  * (offset + stride * (count - 1) + size, in 64-bit arithmetic) lies

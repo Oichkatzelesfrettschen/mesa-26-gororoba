@@ -114,8 +114,8 @@ uint32_t r300_r2vb_reingest_draw_dwords(
 
 /* Emits the re-ingest body in block order.  A null builder returns
  * -EINVAL.  Rejects, without writing any dword: a null params or
- * relocs destination, a vertex count of zero or past the 16-bit index
- * registers, a vertex stream whose last fetched byte (offset +
+ * relocs destination, a vertex count of zero or past the 16-bit
+ * VAP_VF_CNTL count field, a vertex stream whose last fetched byte (offset +
  * 16 * count in 64-bit arithmetic) lies past its BO, and an RS block
  * whose table_len is outside 1..8.  Returns 0, or a negative errno
  * matching the builder's first refusal.

@@ -30,7 +30,7 @@ struct r300_r2vb_target_const_write {
  */
 struct r300_r2vb_target_state_params {
    /* Scissor extent in pixels; the emitter applies the non-R500 1440
-    * coordinate bias.  Extents past 2656 have no biased encoding.
+    * coordinate bias. The 13-bit field accepts extents through 6752.
     */
    uint32_t width;
    uint32_t height;

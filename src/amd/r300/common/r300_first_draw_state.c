@@ -2,6 +2,7 @@
 
 #include "r300_first_draw_state.h"
 
+#include "r300_pm4_builder.h"
 #include "r300_reg.h"
 
 #include <errno.h>
@@ -9,12 +10,14 @@
 #include <string.h>
 
 /* Scissor and clip-rectangle coordinates on non-R500 silicon carry a 1440
- * offset in both axes; the packed word is x | (y << 13).
+ * offset in both axes; the packed word is x | (y << 13). The X and Y fields
+ * are thirteen bits wide, so the largest biased coordinate is 8191.
  */
-#define R300_FDS_SCISSOR_BIAS 1440
-#define R300_FDS_SCISSOR_MAX 4095
+#define R300_FDS_SCISSOR_BIAS 1440u
+#define R300_FDS_SCISSOR_FIELD_MAX \
+   (R300_SCISSORS_X_MASK >> R300_SCISSORS_X_SHIFT)
 #define R300_FDS_MAX_EXTENT \
-   (R300_FDS_SCISSOR_MAX - R300_FDS_SCISSOR_BIAS + 1)
+   (R300_FDS_SCISSOR_FIELD_MAX - R300_FDS_SCISSOR_BIAS + 1u)
 
 static uint32_t
 scissor_word(uint32_t x, uint32_t y)
@@ -195,11 +198,11 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
       return -EINVAL;
    }
 
-   /* The VAP_VF index registers hold 16-bit indices, and an inverted pair
+   /* The VAP_VF index registers carry 24-bit indices, and an inverted pair
     * would clamp every fetch into an empty range.
     */
    if (params->min_vtx_index > params->max_vtx_index ||
-       params->max_vtx_index > 0xffff) {
+       params->max_vtx_index > R300_PM4_VTX_INDX_LIMIT) {
       return -EINVAL;
    }
 

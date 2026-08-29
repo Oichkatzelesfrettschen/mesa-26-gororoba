@@ -140,8 +140,9 @@ struct r300_tcl_bypass_triangle_params {
 };
 
 /* The vertex-list draw names its count in VAP_VF_CNTL's 16-bit
- * NUM_VERTICES field and the contract's VAP_VF_MAX_VTX_INDX is a 16-bit
- * index, so 3 * triangle_count - 1 <= 0xffff.
+ * NUM_VERTICES field. Each segment stays within that count field, while
+ * VAP_VF_MAX_VTX_INDX carries a separate 24-bit index clamp; the segment
+ * ceiling therefore keeps 3 * triangle_count <= 0xffff.
  */
 #define R300_TRIANGLE_MAX_TRIANGLES 21845u
 

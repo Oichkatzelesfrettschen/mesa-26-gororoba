@@ -83,8 +83,12 @@ void r300_pm4_block(struct r300_pm4_builder *b, const uint32_t *words,
  */
 uint32_t r300_pm4_reloc_nop(struct r300_pm4_builder *b, uint32_t payload);
 
-/* The vertex-fetch index bound registers hold 16-bit indices. */
-#define R300_PM4_VTX_INDX_LIMIT 0xffffu
+/* VAP_VF_MAX_VTX_INDX and VAP_VF_MIN_VTX_INDX carry the 24-bit vertex
+ * index clamp used by the r300 draw path. The adjacent VAP_VF_CNTL count
+ * field has a separate 16-bit limit; keeping these domains distinct prevents
+ * a valid indexed draw from being rejected as an overlarge vertex count. */
+#define R300_PM4_VTX_INDX_LIMIT 0xffffffu
+#define R300_PM4_VTX_COUNT_LIMIT 0xffffu
 
 /* One PACKET0 run over the adjacent VAP_VF_MAX_VTX_INDX (0x2134) and
  * VAP_VF_MIN_VTX_INDX (0x2138) pair, maximum first.  Both registers clamp
@@ -104,7 +108,7 @@ void r300_pm4_emit_vertex_index_range(struct r300_pm4_builder *b,
  * of num_vertices points, then num_vertices * vtx_dwords payload words
  * copied verbatim.  The caller owns the vertex facts (slot coordinates,
  * attribute ordering); this helper owns the packet grammar and sizing.
- * num_vertices outside [1, R300_PM4_VTX_INDX_LIMIT], vtx_dwords of
+ * num_vertices outside [1, R300_PM4_VTX_COUNT_LIMIT], vtx_dwords of
  * zero, a body whose dword count overflows the PACKET3 14-bit field, or
  * a null payload is -EINVAL, recorded without writing any dword.
  */
