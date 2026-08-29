@@ -13,6 +13,7 @@
  */
 
 #include <dlfcn.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -124,7 +125,22 @@ main(void)
    if (attest_shim_provider() != 0)
       return 3;
 
-   char manifest_path[] = "/tmp/r3v-native-serial-cell-XXXXXX";
+   char manifest_path[PATH_MAX];
+   const char *temporary_root = getenv("TMPDIR");
+   if (temporary_root == NULL || temporary_root[0] == '\0')
+      temporary_root = getenv("MESON_BUILD_ROOT");
+   if (temporary_root == NULL || temporary_root[0] == '\0')
+      temporary_root = ".";
+   const size_t temporary_root_length = strlen(temporary_root);
+   const int manifest_length = snprintf(
+      manifest_path, sizeof(manifest_path), "%s%s%s", temporary_root,
+      temporary_root[temporary_root_length - 1] == '/' ? "" : "/",
+      "r3v-native-serial-cell-XXXXXX");
+   if (manifest_length < 0 ||
+       (size_t)manifest_length >= sizeof(manifest_path)) {
+      fprintf(stderr, "manifest directory template is too long\n");
+      return 2;
+   }
    if (mkdtemp(manifest_path) == NULL) {
       fprintf(stderr, "manifest directory creation failed\n");
       return 2;
@@ -239,6 +255,7 @@ main(void)
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
    VkCommandPool pool = VK_NULL_HANDLE;
    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+   VkCommandBuffer alternate_command_buffer = VK_NULL_HANDLE;
 
    result = vkAllocateMemory(device, &allocation, NULL, &carrier_memory);
    CHECK(result == VK_SUCCESS && carrier_memory != VK_NULL_HANDLE,
@@ -312,6 +329,42 @@ main(void)
        native_cmd->ib_size_dwords != reference.ib_size_dwords)
       goto done;
 
+   result = vkAllocateCommandBuffers(
+      device,
+      &(VkCommandBufferAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+         .commandPool = pool,
+         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+         .commandBufferCount = 1,
+      },
+      &alternate_command_buffer);
+   CHECK(result == VK_SUCCESS && alternate_command_buffer != VK_NULL_HANDLE,
+         "alternate vkAllocateCommandBuffers: %d", result);
+   if (result != VK_SUCCESS || alternate_command_buffer == VK_NULL_HANDLE)
+      goto done;
+   result = vkBeginCommandBuffer(
+      alternate_command_buffer,
+      &(VkCommandBufferBeginInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      });
+   CHECK(result == VK_SUCCESS, "alternate vkBeginCommandBuffer: %d", result);
+   if (result != VK_SUCCESS)
+      goto done;
+   result = r3v_native_record_r2vb_status_load_serial(
+      alternate_command_buffer, carrier_memory, vertex_memory);
+   CHECK(result == VK_SUCCESS, "alternate serial cell recording: %d", result);
+   if (result != VK_SUCCESS)
+      goto done;
+   result = vkEndCommandBuffer(alternate_command_buffer);
+   CHECK(result == VK_SUCCESS, "alternate vkEndCommandBuffer: %d", result);
+   if (result != VK_SUCCESS)
+      goto done;
+   CHECK(r3v_native_cmd_buffer_from_handle(alternate_command_buffer) !=
+            native_cmd,
+         "the alternate serial cell uses a distinct command-buffer object");
+   if (failures != 0)
+      goto done;
+
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
    CHECK(queue != VK_NULL_HANDLE, "the native device exposes queue family 0");
@@ -347,6 +400,49 @@ main(void)
       CHECK(evidence_file_present(manifest_dir, "ib.bin"),
             "the semantic cell stays retained through submission %u",
             submission);
+      if (submission == 0 && failures == 0) {
+         struct radeon_drm_vk_reloc_list serial_relocs;
+         radeon_drm_vk_reloc_list_init(&serial_relocs);
+         bool relocs_built = true;
+         for (uint32_t reference = 0;
+              reference < native_cmd->reference_count; reference++) {
+            const struct r3v_native_bo_reference *entry =
+               &native_cmd->references[reference];
+            uint32_t relocation_index;
+            if (radeon_drm_vk_reloc_list_add(
+                   &serial_relocs, entry->handle, entry->read_domains,
+                   entry->write_domain, 0, &relocation_index) != 0) {
+               relocs_built = false;
+               break;
+            }
+         }
+         char identity_digest[BLAKE3_OUT_LEN * 2 + 1];
+         r300_triangle_ib_digest_hex(native_cmd->ib,
+                                     native_cmd->ib_size_dwords,
+                                     identity_digest);
+         CHECK(relocs_built,
+               "the serial identity probe rebuilds the command relocations");
+         if (relocs_built) {
+            CHECK(r3v_native_serial_semantic_identity_matches(
+                     &native_device->serial_semantic_identity, native_cmd,
+                     identity_digest, &serial_relocs),
+                  "the first admission matches its semantic identity");
+            CHECK(!r3v_native_serial_semantic_identity_matches(
+                     &native_device->serial_semantic_identity,
+                     r3v_native_cmd_buffer_from_handle(
+                        alternate_command_buffer),
+                     identity_digest, &serial_relocs),
+                  "a distinct command-buffer object fails semantic identity");
+            if (serial_relocs.count != 0) {
+               serial_relocs.relocs[0].read_domains ^= 1u;
+               CHECK(!r3v_native_serial_semantic_identity_matches(
+                        &native_device->serial_semantic_identity, native_cmd,
+                        identity_digest, &serial_relocs),
+                     "a changed relocation identity fails semantic identity");
+            }
+         }
+         radeon_drm_vk_reloc_list_finish(&serial_relocs);
+      }
       if (failures != 0)
          goto done;
    }
@@ -367,6 +463,10 @@ main(void)
          "the exhausted bound reports a refusal: %s",
          r3v_native_queue_status_name(
             r3v_native_queue_submission_status(device)));
+   CHECK(!evidence_file_present(manifest_dir, "submit_manifest_03.json"),
+         "the exhausted bound leaves no admission manifest");
+   CHECK(!evidence_file_present(manifest_dir, "submit_relocs_03.bin"),
+         "the exhausted bound leaves no admission relocations");
 
 done:
    r300_r2vb_float2_tuple_pass_release(&reference);

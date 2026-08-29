@@ -330,7 +330,8 @@ sampler_wait(struct serial_run *run, enum r3v_status_load_sampler target,
 {
    const uint64_t deadline = run_now_ns(NULL) + (uint64_t)budget_ms * 1000000ull;
    while (run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
-          run->machine.sampler != target) {
+          run->machine.sampler != target &&
+          run->machine.sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED) {
       uint64_t now = run_now_ns(NULL);
       if (now >= deadline || run->sampler_closed)
          return false;
@@ -351,6 +352,7 @@ sampler_wait_for_enter_read(struct serial_run *run, uint32_t submission_index,
    const uint64_t deadline =
       run_now_ns(NULL) + (uint64_t)budget_ms * 1000000ull;
    while (run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
+          run->machine.sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED &&
           (!run->enter_read_seen ||
            run->enter_read_index != submission_index)) {
       uint64_t now = run_now_ns(NULL);
@@ -359,6 +361,7 @@ sampler_wait_for_enter_read(struct serial_run *run, uint32_t submission_index,
       sampler_pump(run, (int)((deadline - now) / 1000000ull) + 1);
    }
    return run->machine.phase == R3V_STATUS_LOAD_RUNNING &&
+          run->machine.sampler != R3V_STATUS_LOAD_SAMPLER_STOPPED &&
           run->enter_read_seen && run->enter_read_index == submission_index;
 }
 
@@ -417,12 +420,44 @@ op_submission_trace(void *ctx, enum r3v_native_submission_trace_event event)
 }
 
 static int
+sampler_gate_submission(struct serial_run *run, uint32_t iteration)
+{
+   /* Drain the barrier immediately before the queue call.  READY is a live
+    * admission fact: a STOPPED or aborted sampler invalidates the capture
+    * window even when preparation observed READY earlier. */
+   sampler_pump(run, 0);
+   if (run->machine.phase != R3V_STATUS_LOAD_RUNNING)
+      return -1;
+   if (run->machine.sampler == R3V_STATUS_LOAD_SAMPLER_STOPPED) {
+      r3v_status_load_machine_fault(&run->machine,
+                                    "sampler stopped before queue submission");
+      return -1;
+   }
+   if (run->machine.sampler != R3V_STATUS_LOAD_SAMPLER_READY) {
+      r3v_status_load_machine_fault(
+         &run->machine,
+         "sampler is not ready before queue submission");
+      return -1;
+   }
+   if (run->machine.sampler_read_required &&
+       (!run->enter_read_seen || run->enter_read_index != iteration)) {
+      r3v_status_load_machine_fault(
+         &run->machine,
+         "sampler ENTER_READ missing immediately before queue submission");
+      return -1;
+   }
+   return 0;
+}
+
+static int
 op_submit(void *ctx, struct r3v_status_load_machine *machine,
           uint32_t iteration)
 {
    struct serial_run *run = ctx;
    if (machine != &run->machine ||
        iteration != run->machine.transport_submission_index)
+      return -1;
+   if (sampler_gate_submission(run, iteration) != 0)
       return -1;
    run->last_submit_result =
       run->submit(run->queue, 1,

@@ -743,6 +743,29 @@ struct r3v_native_prepared_submission {
    uint32_t *reference_indices;
 };
 
+/* The semantic cell retained by a serial admission remains bound to the
+ * command-buffer object and the exact stream identity that produced
+ * ib.bin/relocs.bin.  A reset or re-record can reuse the object address, so
+ * the IB and relocation digests accompany the pointer and count checks. */
+struct r3v_native_serial_semantic_identity {
+   bool valid;
+   struct r3v_native_cmd_buffer *cmd_buffer;
+   uint32_t ib_size_dwords;
+   uint32_t reloc_count;
+   char ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
+   char relocs_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
+};
+
+/* Compares one serial continuation with the semantic cell captured by the
+ * first admission.  The queue uses the same predicate before retention and
+ * before the CS ioctl; the harness calls it against alternate command and
+ * relocation identities without poisoning the Vulkan queue with an expected
+ * device-loss result. */
+bool r3v_native_serial_semantic_identity_matches(
+   const struct r3v_native_serial_semantic_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   const struct radeon_drm_vk_reloc_list *relocs);
+
 /* Plan capture state: the entries recorded so far and the transcript
  * path they land in after every submission.
  */
@@ -883,9 +906,11 @@ struct r3v_native_device {
    /* Serial status-load admissions this instance has counted against the
     * declared bound; the instance that wrote the attempt token is the
     * only one whose count is nonzero, which is what lets a continuation
-    * run under its own token while every other process stays disarmed.
-    */
+    * run under its own token while every other process stays disarmed.  The
+    * retained semantic cell identity binds every continuation to the same
+    * command buffer, IB bytes, and relocation bytes. */
    uint32_t serial_submissions_consumed;
+   struct r3v_native_serial_semantic_identity serial_semantic_identity;
    /* The production path leaves this NULL and collects host facts.  The
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
