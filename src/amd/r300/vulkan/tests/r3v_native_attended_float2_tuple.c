@@ -308,6 +308,26 @@ main(int argc, char **argv)
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   /* The queue preflights the semantic and submit-object names, while this
+    * runner owns the three post-submit readback artifacts. Check every tuple
+    * final name before the hazardous boundary so an existing readback cannot
+    * leave a mixed group after the ioctl consumes the one-shot token.
+    */
+   static const char *const runner_artifacts[] = {
+      "carrier.bin",
+      "vertex.bin",
+      "float2_tuple_outcome.json",
+   };
+   int freshness = r3v_native_evidence_require_fresh(
+      evidence_dir, runner_artifacts,
+      sizeof(runner_artifacts) / sizeof(runner_artifacts[0]));
+   if (freshness != 0) {
+      fprintf(stderr,
+              "runner evidence destination is not fresh: %s\n",
+              strerror(-freshness));
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+
    /* The hazard: a live DRM_RADEON_CS reaches the command processor here,
     * and the bounded completion wait follows it inside the queue.  The
     * submission is one-shot; whatever it returns, no resubmission follows.

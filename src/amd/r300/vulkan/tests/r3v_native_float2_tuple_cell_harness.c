@@ -236,7 +236,22 @@ main(int argc, char **argv)
    if (attest_shim_provider() != 0)
       return 3;
 
-   char manifest_path[] = "/tmp/r3v-native-float2-tuple-XXXXXX";
+   char manifest_path[PATH_MAX];
+   const char *temporary_root = getenv("TMPDIR");
+   if (temporary_root == NULL || temporary_root[0] == '\0')
+      temporary_root = getenv("MESON_BUILD_ROOT");
+   if (temporary_root == NULL || temporary_root[0] == '\0')
+      temporary_root = ".";
+   const size_t temporary_root_length = strlen(temporary_root);
+   const int manifest_length = snprintf(
+      manifest_path, sizeof(manifest_path), "%s%s%s", temporary_root,
+      temporary_root[temporary_root_length - 1] == '/' ? "" : "/",
+      "r3v-native-float2-tuple-XXXXXX");
+   if (manifest_length < 0 ||
+       (size_t)manifest_length >= sizeof(manifest_path)) {
+      fprintf(stderr, "manifest directory template is too long\n");
+      return 2;
+   }
    if (mkdtemp(manifest_path) == NULL) {
       fprintf(stderr, "manifest directory creation failed\n");
       return 2;
