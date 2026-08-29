@@ -612,6 +612,7 @@ emit(char *out, size_t out_size, size_t *pos, const char *fmt, ...)
 static bool
 plan_in_schema(const struct r3v_native_plan *plan)
 {
+   uint64_t referenced_bytes = 0;
    if (plan->schema_version != R3V_NATIVE_PLAN_SCHEMA_VERSION ||
        !hex_ok(plan->source_sha, 40) ||
        !hex_ok(plan->dso_blake3, R3V_NATIVE_PLAN_HEX64) ||
@@ -655,6 +656,10 @@ plan_in_schema(const struct r3v_native_plan *plan)
              rl->size > R3V_NATIVE_PLAN_CUMULATIVE_BYTES_MAX ||
              direction_name(rl->direction) == NULL)
             return false;
+         if (rl->size > UINT64_MAX - referenced_bytes ||
+             referenced_bytes + rl->size > plan->max_cumulative_bytes)
+            return false;
+         referenced_bytes += rl->size;
       }
    }
    return true;

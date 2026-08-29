@@ -578,6 +578,9 @@ test_writer_refuses_out_of_schema(void)
    g = good_plan();
    g.submissions[0].relocs[0].read_domains = 0x8;
    assert(r3v_native_plan_write(&g, NULL, 0) == -1);
+   g = good_plan();
+   g.max_cumulative_bytes = 16384;
+   assert(r3v_native_plan_write(&g, NULL, 0) == -1);
    /* A buffer too small for the whole plan stays untouched. */
    g = good_plan();
    char tiny[64];
