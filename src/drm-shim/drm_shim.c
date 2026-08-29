@@ -270,7 +270,8 @@ REAL_FUNCTION_POINTER(fstat64);
 #define STRINGIZE2(x) #x
 #define STRINGIZE(x) STRINGIZE2(x)
 
-/* Attempts an openat2 resolution takes before EAGAIN reaches the caller. */
+/* Attempts a scoped, non-cache-only openat2 resolution takes before EAGAIN
+ * reaches the caller. */
 #define OPENAT2_RESOLVE_RETRIES 64
 
 static char render_node_dir[] = "/dev/dri/";
@@ -310,6 +311,8 @@ static thread_local int atfork_cancel_state;
 static int force_reaper_close_range_error;
 static bool force_reaper_getdents_eintr_once;
 static int force_absolute_path_error;
+static int force_path_base_error;
+static unsigned force_openat2_eagain_attempts;
 static int path_snapshot_barrier_armed;
 static int path_snapshot_ready_fd = -1;
 static int path_snapshot_release_fd = -1;
@@ -330,6 +333,18 @@ void
 drm_shim_test_force_absolute_path_error(int error)
 {
    force_absolute_path_error = error;
+}
+
+void
+drm_shim_test_force_path_base_error(int error)
+{
+   force_path_base_error = error;
+}
+
+void
+drm_shim_test_force_openat2_eagain(unsigned attempts)
+{
+   force_openat2_eagain_attempts = attempts;
 }
 
 void
@@ -744,6 +759,12 @@ readlink_alloc(const char *path)
 static char *
 path_base_at_alloc(int dirfd)
 {
+#ifdef DRM_SHIM_TEST
+   if (force_path_base_error) {
+      errno = force_path_base_error;
+      return NULL;
+   }
+#endif
    if (dirfd == AT_FDCWD)
       return getcwd(NULL, 0);
 
@@ -1712,14 +1733,25 @@ direct_synthetic_path_map_at(int dirfd, const char *path,
    *mapped_path = NULL;
    char *absolute = absolute_path_at_alloc(dirfd, path);
    if (!absolute) {
-      /* The classifier reads the path as written, since the absolute form it
-       * would prefer is what just failed. An absolute path inside a claimed
-       * root takes the error with the errno absolute_path_at_alloc set; every
-       * other path keeps the miss and reaches the real filesystem, which a
-       * relative path resolved through dirfd needs to stay openable.
+      int saved_errno = errno;
+      /* A failed absolute-path snapshot still has a bounded pathname from
+       * copy_path_argument. Normalize its components on the stack before
+       * checking the claimed roots, so a traversal through `..` cannot make
+      * an escaped host path look synthetic or hide a path that enters a
+      * claimed root. Relative paths keep the miss because their dirfd is the
+      * only authority that can resolve the base.
        */
-      if (path[0] == '/' && path_is_in_claimed_namespace(path))
+      char normalized[PATH_MAX];
+      bool normalized_available =
+         path[0] == '/' && normalize_absolute_path_at(
+                              AT_FDCWD, path, normalized);
+      if (normalized_available)
+         strip_proc_root_alias(normalized);
+      if (normalized_available && path_is_in_claimed_namespace(normalized)) {
+         errno = saved_errno;
          return SYNTHETIC_PATH_ERROR;
+      }
+      errno = saved_errno;
       return SYNTHETIC_PATH_MISS;
    }
    strip_proc_root_alias(absolute);
@@ -2057,7 +2089,14 @@ external_synthetic_transition_at_alloc(int dirfd, const char *path,
        */
       char *current_path = path_base_at_alloc(current_fd);
       if (!current_path) {
-         if (errno == ENAMETOOLONG)
+         /* /proc/thread-self/fd naming is an observation aid, not an
+          * authority for ordinary host paths. If procfs is hidden or denies
+          * the readback, leave the walk unclassified and let the real
+          * filesystem resolve the path. Length overflow remains a safe
+          * continuation because the resulting path cannot name a shorter
+          * claimed root. */
+         if (errno == ENAMETOOLONG || errno == ENOENT || errno == EACCES ||
+             errno == EPERM || errno == ENOSYS)
             continue;
          *synthetic_error = true;
          free(remaining);
@@ -4651,13 +4690,24 @@ copy_open_how_argument(const struct open_how *how, size_t how_size,
 static int
 bootstrap_openat2(int dirfd, const char *path, const struct open_how *how)
 {
-   /* The shim re-drives the caller's openat2 here, so a scoped resolve takes
-    * the same EAGAIN retry the synthetic resolver takes; the caller then sees
-    * the resolution the kernel reaches rather than a concurrent rename.
-    */
+   /* The shim re-drives the caller's openat2 here. Scoped BENEATH and IN_ROOT
+    * walks can report EAGAIN for a rename race, so they receive the same
+    * bounded retry as the synthetic resolver. RESOLVE_CACHED deliberately
+    * propagates EAGAIN because the kernel uses it for a cache miss, and an
+    * unscoped open has no rename-boundary guarantee to retry. */
+   bool retry_eagain =
+      (how->resolve & (RESOLVE_BENEATH | RESOLVE_IN_ROOT)) != 0 &&
+      (how->resolve & RESOLVE_CACHED) == 0;
    unsigned attempts = 0;
    int fd;
    do {
+#ifdef DRM_SHIM_TEST
+      if (force_openat2_eagain_attempts) {
+         force_openat2_eagain_attempts--;
+         errno = EAGAIN;
+         fd = -1;
+      } else
+#endif
       if (real_openat2)
          fd = real_openat2(dirfd, path, how, sizeof(*how));
       else
@@ -4669,7 +4719,8 @@ bootstrap_openat2(int dirfd, const char *path, const struct open_how *how)
          fd = -1;
       }
 #endif
-   } while (fd < 0 && errno == EAGAIN && ++attempts < OPENAT2_RESOLVE_RETRIES);
+   } while (retry_eagain && fd < 0 && errno == EAGAIN &&
+            ++attempts < OPENAT2_RESOLVE_RETRIES);
    return fd;
 }
 

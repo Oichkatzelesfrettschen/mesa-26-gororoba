@@ -5807,6 +5807,26 @@ test_synthetic_filesystem(int fd, uint16_t expected_device_id)
               "openat2 synthetic file failed with errno %d", errno);
    if (openat2_fd >= 0)
       close(openat2_fd);
+
+   /* Cache-only misses and unscoped EAGAIN results remain caller-visible;
+    * scoped walks retry the rename-race result before returning. */
+   how.resolve = RESOLVE_CACHED;
+   drm_shim_test_force_openat2_eagain(1);
+   errno = 0;
+   ret = test_openat2(AT_FDCWD, vendor_path, &how, sizeof(how));
+   TEST_CHECK(ret == -1 && errno == EAGAIN,
+              "openat2 RESOLVE_CACHED retried EAGAIN: returned %d errno %d",
+              ret, errno);
+
+   how.resolve = 0;
+   drm_shim_test_force_openat2_eagain(1);
+   errno = 0;
+   ret = test_openat2(AT_FDCWD, vendor_path, &how, sizeof(how));
+   TEST_CHECK(ret == -1 && errno == EAGAIN,
+              "openat2 unscoped retried EAGAIN: returned %d errno %d", ret,
+              errno);
+
+   drm_shim_test_force_openat2_eagain(0);
    errno = 0;
    ret = test_openat2(
       AT_FDCWD, vendor_path,
@@ -5900,6 +5920,16 @@ test_synthetic_filesystem(int fd, uint16_t expected_device_id)
                  errno);
       if (openat2_fd >= 0)
          close(openat2_fd);
+
+      drm_shim_test_force_openat2_eagain(1);
+      errno = 0;
+      openat2_fd =
+         test_openat2(synthetic_device_dirfd, "vendor", &how, sizeof(how));
+      TEST_CHECK(openat2_fd >= 0,
+                 "openat2 BENEATH did not retry EAGAIN: errno %d", errno);
+      if (openat2_fd >= 0)
+         close(openat2_fd);
+      drm_shim_test_force_openat2_eagain(0);
 
       openat2_fd =
          test_openat2(synthetic_device_dirfd, "drm/../vendor", &how,
@@ -6475,6 +6505,29 @@ test_claimed_namespace_map_miss(void)
       fclose(unclaimed);
 
    drm_shim_test_force_absolute_path_error(0);
+
+   drm_shim_test_force_absolute_path_error(ENOMEM);
+   errno = 0;
+   FILE *entered = fopen(
+      "/sys/dev/char/999/../../../dev/char/226:128/device/vendor", "r");
+   TEST_CHECK(entered == NULL && errno == ENOMEM,
+              "normalized claimed path escaped classification: file %p errno %d",
+              (void *)entered, errno);
+   if (entered)
+      fclose(entered);
+   drm_shim_test_force_absolute_path_error(0);
+
+   /* Procfs names open descriptors for the transition walker. Its absence
+    * leaves an ordinary host path unclassified and preserves passthrough. */
+   drm_shim_test_force_path_base_error(ENOENT);
+   errno = 0;
+   FILE *procfs_unavailable = fopen("/etc/passwd", "r");
+   TEST_CHECK(procfs_unavailable != NULL,
+              "procfs naming loss blocked host passthrough: errno %d", errno);
+   if (procfs_unavailable)
+      fclose(procfs_unavailable);
+   drm_shim_test_force_path_base_error(0);
+
    close(render_fd);
    return test_failures ? 1 : 0;
 }

@@ -193,6 +193,7 @@ void drm_shim_hide_path_component(const char *parent, const char *basename);
 bool drm_shim_test_path_is_hidden(const char *path);
 const char *drm_shim_test_synthetic_root_path(void);
 void drm_shim_test_force_openat2_resolver_enosys(bool force);
+void drm_shim_test_force_openat2_eagain(unsigned attempts);
 void drm_shim_test_force_process_vm_readv_error(int error);
 void drm_shim_test_force_process_vm_writev_error(int error);
 void drm_shim_test_force_proc_mem_error(int error);
@@ -203,6 +204,7 @@ void drm_shim_test_force_reaper_close_range_error(int error);
  * pressure. Zero restores resolution.
  */
 void drm_shim_test_force_absolute_path_error(int error);
+void drm_shim_test_force_path_base_error(int error);
 void drm_shim_test_force_reaper_getdents_eintr_once(bool force);
 void drm_shim_test_force_fd_identity_errors(int duplicate_query_error,
                                             int kcmp_error);
