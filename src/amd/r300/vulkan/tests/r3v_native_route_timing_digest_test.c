@@ -12,14 +12,14 @@
  * route's authorization from admitting another's stream.
  *
  * The runner also states one triangle in two spaces, because the two
- * routes admit different ones: the GPU producer route declares
- * R300_CARRIER_POSITION_WINDOW and takes the screen-space records
- * directly, while the CPU route declares R300_CARRIER_POSITION_CLIP,
- * validates the clip volume, and realizes the viewport transform as
- * (ndc + 1) * extent / 2.  The NDC the runner derives must return to
- * the screen-space record bit for bit, or the two legs would render
- * different triangles and the timing pair would compare two workloads,
- * so the round trip is pinned here in binary32.
+ * routes consume different position domains: the GPU producer route
+ * declares clip/NDC application input and realizes the viewport transform
+ * before emitting its window-space carrier records, while the CPU route
+ * declares R300_CARRIER_POSITION_CLIP, validates the clip volume, and
+ * realizes the same transform as (ndc + 1) * extent / 2.  The NDC the
+ * runner derives must return to the screen-space record bit for bit, or
+ * the two legs would render different triangles and the timing pair would
+ * compare two workloads, so the round trip is pinned here in binary32.
  *
  * All three digests, the composed lengths, and the consumer splits are
  * pinned to the retained RS482 route identities, so a composer or
@@ -130,10 +130,11 @@ main(int argc, char **argv)
 
    char gpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    char cpu_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   char consumer_slice_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    char window_consumer_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
    r300_triangle_ib_digest_hex(route.ib, route.ib_size_dwords, gpu_digest);
    r300_triangle_ib_digest_hex(route.ib + route.consumer_start_dwords,
-                               slice_dwords, cpu_digest);
+                               slice_dwords, consumer_slice_digest);
    r300_triangle_ib_digest_hex(clip_consumer.ib,
                                clip_consumer.ib_size_dwords, cpu_digest);
    r300_triangle_ib_digest_hex(window_consumer.ib,
@@ -151,6 +152,9 @@ main(int argc, char **argv)
                   "route");
    if (strcmp(cpu_digest, window_consumer_digest) == 0)
       return fail("cpu digest equals the window-space consumer digest");
+   if (strcmp(consumer_slice_digest, window_consumer_digest) != 0)
+      return fail("consumer slice digest differs from the window-space "
+                  "consumer digest");
    if (strcmp(window_consumer_digest,
               R300_RETAINED_CPU_ROUTE_IB_BLAKE3) != 0)
       return fail("window-space consumer digest differs from the retained "

@@ -43,12 +43,14 @@
 #include "util/u_math.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -80,6 +82,29 @@ static const float positive_triangle[12] = {
    0.25f, 0.5f,  0.0f, 1.0f,
    0.5f,  0.75f, 0.0f, 1.0f,
 };
+
+/* The producer route receives the application triangle in clip/NDC space,
+ * while the recorded consumer uses pretransformed window coordinates.  This
+ * independent oracle mirrors the Vulkan viewport for the fixed 64x64 target
+ * and keeps the test expectation separate from the driver's projection. */
+static void
+gpu_producer_window_oracle(const float ndc[12], float window[12])
+{
+   for (uint32_t vertex = 0; vertex < 3; vertex++) {
+      const float x = ndc[vertex * 4 + 0];
+      const float y = ndc[vertex * 4 + 1];
+      const float z = ndc[vertex * 4 + 2];
+      const float w = ndc[vertex * 4 + 3];
+      assert(isfinite(x) && isfinite(y) && isfinite(z) && isfinite(w));
+      assert(w > 0.0f);
+      window[vertex * 4 + 0] =
+         (x + 1.0f) * ((float)R3V_NATIVE_TARGET_WIDTH / 2.0f);
+      window[vertex * 4 + 1] =
+         (y + 1.0f) * ((float)R3V_NATIVE_TARGET_HEIGHT / 2.0f);
+      window[vertex * 4 + 2] = z / w;
+      window[vertex * 4 + 3] = 1.0f / w;
+   }
+}
 
 static VkDevice device;
 static VkCommandPool pool;
@@ -4468,18 +4493,28 @@ main(void)
    }
 
    /* The public GPU-producer route: under the exact double opt-in the
-    * queue-time admission composes the producer pass ahead of the
-    * recorded consumer, poisons the carrier, and retains the CPU
-    * oracle; the host fill stays out, the read-back verdict decides
-    * delivery, and a divergence quarantines the capability.  Every
-    * refusal shape -- single gate, off-domain record, quarantine --
-    * refuses by name.
+    * queue-time admission projects the NDC input through the viewport,
+    * composes the producer pass ahead of the recorded consumer, poisons
+    * the carrier, and retains the CPU oracle.  The host fill stays out,
+    * the read-back verdict decides delivery, and a divergence quarantines
+    * the capability.  Every refusal shape -- single gate, off-domain
+    * record, quarantine, and retention failure -- refuses by name.
     */
    {
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
-      memcpy(map, positive_triangle, sizeof(positive_triangle));
+      memcpy(map, ndc_triangle, sizeof(ndc_triangle));
       vkUnmapMemory(device, vertex_memory);
+
+      float window_triangle[12];
+      gpu_producer_window_oracle(ndc_triangle, window_triangle);
+      static const float expected_window_triangle[12] = {
+         8.0f,  8.0f, 0.0f, 1.0f,
+         56.0f, 8.0f, 0.0f, 1.0f,
+         32.0f, 56.0f, 0.0f, 1.0f,
+      };
+      assert(memcmp(window_triangle, expected_window_triangle,
+                    sizeof(window_triangle)) == 0);
 
       VkCommandBuffer gpu_cmd = fresh_cmd();
       vkCmdBeginRenderPass(gpu_cmd, &begin_pass,
@@ -4531,7 +4566,7 @@ main(void)
 
       struct r300_r2vb_producer_ib expected_producer;
       assert(r300_r2vb_producer_records_emit(
-                (const float(*)[4])positive_triangle,
+                (const float(*)[4])window_triangle,
                 &expected_producer) == 0);
       assert(native_gpu->deferred_draws[0].gpu_producer_dwords ==
              expected_producer.ib_size_dwords);
@@ -4558,7 +4593,7 @@ main(void)
        */
       struct r300_r2vb_public_route_ib authorized;
       assert(r300_r2vb_public_route_compose(
-                (const float(*)[4])positive_triangle,
+                (const float(*)[4])window_triangle,
                 R3V_NATIVE_TARGET_WIDTH, R3V_NATIVE_TARGET_HEIGHT,
                 &authorized) == 0);
       assert(r300_r2vb_public_route_validate_reloc_sites(&authorized) == 0);
@@ -4588,7 +4623,7 @@ main(void)
                              &native_gpu->owned_carriers[0]->bo, carrier_map);
       for (unsigned i = 0; i < 12; i++) {
          uint32_t bits;
-         memcpy(&bits, &positive_triangle[i], 4);
+         memcpy(&bits, &window_triangle[i], 4);
          assert(native_gpu->deferred_draws[0].gpu_expected_carrier[i] == bits);
       }
       for (unsigned i = 12; i < 16; i++)
@@ -4612,8 +4647,10 @@ main(void)
        * re-emits over the live bytes at the same fixed length.
        */
       float shifted[12];
-      memcpy(shifted, positive_triangle, sizeof(shifted));
-      shifted[0] = 2.0f;
+      memcpy(shifted, ndc_triangle, sizeof(shifted));
+      shifted[0] = -0.5f;
+      float shifted_window[12];
+      gpu_producer_window_oracle(shifted, shifted_window);
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                          &map) == VK_SUCCESS);
       memcpy(map, shifted, sizeof(shifted));
@@ -4621,18 +4658,38 @@ main(void)
       assert(r3v_native_deferred_draw_admit_gpu_producer(
                 native_device, native_gpu) == VK_SUCCESS);
       uint32_t shifted_bits;
-      memcpy(&shifted_bits, &shifted[0], 4);
+      memcpy(&shifted_bits, &shifted_window[0], 4);
       assert(native_gpu->deferred_draws[0].gpu_expected_carrier[0] ==
              shifted_bits);
 
       /* The read-back verdict: the unwritten carrier diverges from the
        * oracle, so the verify quarantines the capability and every
        * later admission refuses; a carrier holding the oracle bytes
-       * passes once the quarantine is lifted.
+       * passes once the quarantine is lifted.  The first verification
+       * also proves that both carrier artifacts land in a fresh evidence
+       * directory.
        */
+      char divergence_manifest_template[] =
+         "/tmp/r3v-public-gpu-producer-divergence-XXXXXX";
+      const char *divergence_manifest_dir =
+         mkdtemp(divergence_manifest_template);
+      assert(divergence_manifest_dir != NULL);
+      native_device->manifest_dir = divergence_manifest_dir;
       assert(r3v_native_deferred_draw_verify_gpu_producer(
                 native_device, native_gpu) == VK_ERROR_DEVICE_LOST);
       assert(native_device->gpu_producer_quarantined);
+      char divergence_observed_path[256];
+      char divergence_expected_path[256];
+      assert(snprintf(divergence_observed_path,
+                      sizeof(divergence_observed_path), "%s/%s",
+                      divergence_manifest_dir,
+                      "gpu_carrier_observed.bin") > 0);
+      assert(snprintf(divergence_expected_path,
+                      sizeof(divergence_expected_path), "%s/%s",
+                      divergence_manifest_dir,
+                      "gpu_carrier_expected.bin") > 0);
+      assert(access(divergence_observed_path, F_OK) == 0);
+      assert(access(divergence_expected_path, F_OK) == 0);
       assert(r3v_native_deferred_draw_admit_gpu_producer(
                 native_device, native_gpu) == VK_ERROR_DEVICE_LOST);
       native_device->gpu_producer_quarantined = false;
@@ -4652,6 +4709,11 @@ main(void)
        */
       const uint64_t readback_sync_before =
          native_device->drm.cache_sync_count;
+      char success_manifest_template[] =
+         "/tmp/r3v-public-gpu-producer-success-XXXXXX";
+      const char *success_manifest_dir = mkdtemp(success_manifest_template);
+      assert(success_manifest_dir != NULL);
+      native_device->manifest_dir = success_manifest_dir;
       assert(r3v_native_deferred_draw_verify_gpu_producer(
                 native_device, native_gpu) == VK_SUCCESS);
       assert(native_device->drm.cache_sync_count ==
@@ -4659,6 +4721,16 @@ main(void)
       assert(native_device->drm.cache_sync_last.bo_handle ==
              native_gpu->owned_carriers[0]->bo.handle);
       assert(!native_device->gpu_producer_quarantined);
+      char success_observed_path[256];
+      char success_expected_path[256];
+      assert(snprintf(success_observed_path, sizeof(success_observed_path),
+                      "%s/%s", success_manifest_dir,
+                      "gpu_carrier_observed.bin") > 0);
+      assert(snprintf(success_expected_path, sizeof(success_expected_path),
+                      "%s/%s", success_manifest_dir,
+                      "gpu_carrier_expected.bin") > 0);
+      assert(access(success_observed_path, F_OK) == 0);
+      assert(access(success_expected_path, F_OK) == 0);
 
       /* The closed hazard gate still refuses the composed submission
        * before any ioctl, after the queue-time admission ran.
@@ -4682,9 +4754,25 @@ main(void)
       assert(r3v_native_deferred_draw_admit_gpu_producer(
                 native_device, native_gpu) != VK_SUCCESS);
 
+      /* A missing evidence directory is a failed delivery contract even
+       * when the carrier bytes match.  The verifier quarantines the route
+       * instead of reporting an unaudited success. */
+      char missing_manifest_template[] =
+         "/tmp/r3v-public-gpu-producer-missing-XXXXXX";
+      const char *missing_manifest_dir = mkdtemp(missing_manifest_template);
+      assert(missing_manifest_dir != NULL);
+      assert(rmdir(missing_manifest_dir) == 0);
+      assert(access(missing_manifest_dir, F_OK) == -1 && errno == ENOENT);
+      native_device->manifest_dir = missing_manifest_dir;
+      native_device->gpu_producer_quarantined = false;
+      assert(r3v_native_deferred_draw_verify_gpu_producer(
+                native_device, native_gpu) == VK_ERROR_DEVICE_LOST);
+      assert(native_device->gpu_producer_quarantined);
+
       assert(unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL") == 0);
       assert(unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL") == 0);
       r3v_native_device_refresh_delivery_gates(native_device);
+      native_device->manifest_dir = NULL;
 
       /* Restore the reference stream for the legs below. */
       assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,

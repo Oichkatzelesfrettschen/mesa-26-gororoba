@@ -8,8 +8,12 @@ submission the driver composes the R2VB producer pass over those records
 ahead of the recorded consumer cell in one indirect buffer, so the
 producer rasterizes each record into the carrier through the color
 backend and the consumer fetches that same buffer object as its vertex
-array. Both stages ride one `DRM_RADEON_CS`, and the producer's
-publication tail is what orders the write before the fetch.
+array. The immediate producer accepts clip/NDC positions and applies the
+Vulkan viewport before emission. The fetched producer has no viewport
+stage in its VAP fetch path and therefore accepts explicitly
+pretransformed window-space positions. Both stages ride one
+`DRM_RADEON_CS`, and the producer's publication tail is what orders the
+write before the fetch.
 
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
 boundary statement, the host preconditions, the identity freeze, the
@@ -37,12 +41,15 @@ this document adds only what the public route changes.
   gate's geometry predicate for this kind requires the consumer's
   maximum public extent, two references, and the carrier relocation
   carrying the GTT domain for both read and write.
-- Payload scope: the records travel as literal `DRAW_IMMD_2` body
-  dwords, so one arming authorizes one payload. The reference records
-  are `r300_tcl_bypass_triangle_vertices` -- the pretransformed screen
-  positions (8, 8), (56, 8), (32, 56) -- which places the producer half
-  byte-identical to `r300_r2vb_producer_reference_emit` and the consumer
-  half byte-identical to the qualified cell.
+- Payload scope: the immediate records travel as literal `DRAW_IMMD_2`
+  body dwords after the viewport projection, so one arming authorizes one
+  payload. The reference NDC records are (-0.75, -0.75), (0.75, -0.75),
+  and (0, 0.75), each with z = 0 and w = 1; the 64x64 viewport projects
+  them to the pretransformed screen positions (8, 8), (56, 8), and
+  (32, 56). The fetched reference records use those window-space values
+  directly. Both forms therefore place the producer half byte-identical
+  to `r300_r2vb_producer_reference_emit` and the consumer half
+  byte-identical to the qualified cell.
 - Clear value: the recording admits one load-op clear, the 0xa5a5a5a5
   sentinel the target oracle reads as its exterior and canary value, so
   the run passes `(float)0xa5 / 255.0f` in all four channels and any
@@ -88,11 +95,11 @@ Recorded before the run; deviation is the finding.
    carrier below the producer's color-buffer bound, color target below
    the consumer's -- rejects. The fence retires and dmesg carries no
    radeon validation delta.
-2. The carrier holds the twelve record dwords the CPU gather predicts,
-   with the odd-count pad slot's four dwords still poisoned. The driver
-   decides this and returns `VK_SUCCESS`; the read-back bytes and the
-   expectation land beside the manifest as `gpu_carrier_observed.bin`
-   and `gpu_carrier_expected.bin`.
+2. The carrier holds the twelve transformed window-space record dwords
+   the CPU gather and viewport projection predict, with the odd-count pad
+   slot's four dwords still poisoned. The driver decides this and returns
+   `VK_SUCCESS`; the read-back bytes and the expectation land beside the
+   manifest as `gpu_carrier_observed.bin` and `gpu_carrier_expected.bin`.
 3. The color target matches `r300_tcl_bypass_triangle_extent_oracle` at
    the maximum extent: interior covered, exterior clear, canary row
    intact -- the same bytes the CPU-route triangle cell delivers.
