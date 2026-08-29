@@ -1496,6 +1496,37 @@ if with_tests
     ],
     suite : ['r3v'],
   )
+
+  # Non-submitting producer-cell arming runner: reports the reference
+  # producer pass's digest and every arming factor, then stops at the
+  # authorization boundary.  The check drives the refusal and deterministic
+  # ARMED calibration legs without requiring the optional drm-shim harness.
+  r3v_native_producer_arming_runner = executable(
+    'r3v_native_producer_arming_runner',
+    files('r3v_native_arming.c',
+          'tests/r3v_native_producer_arming_runner.c',
+          '../common/r300_first_draw_state.c',
+          '../common/r300_fragment_binary.c',
+          '../common/r300_pm4_builder.c',
+          '../common/r300_r2vb_carrier_delivery.c',
+          '../common/r300_r2vb_producer_pass.c',
+          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : [idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r3v-native-producer-arming-runner',
+    prog_python,
+    args : [
+      files('tests/r3v_native_producer_arming_runner_check.py'),
+      r3v_native_producer_arming_runner,
+      r3v_native_arming_runner,
+    ],
+    suite : ['r3v'],
+  )
+
   # The varying cell's two authorities -- the arming runner's --varying
   # emission and the manifest writer's --varying ib.bin -- are one byte
   # stream, so the digest the operator declares from either names the
@@ -3111,36 +3142,6 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     args : [
       files('tests/r3v_native_zb_depth_control_arming_runner_check.py'),
       r3v_native_zb_depth_control_arming_runner,
-      r3v_native_arming_runner,
-    ],
-    suite : ['r3v'],
-  )
-
-  # Non-submitting producer-cell arming runner: reports the reference
-  # producer pass's digest and every arming factor, then stops at the
-  # authorization boundary.  The check drives the refusal legs and the
-  # wrong-cell negative against the triangle runner's digest.
-  r3v_native_producer_arming_runner = executable(
-    'r3v_native_producer_arming_runner',
-    files('r3v_native_arming.c',
-          'tests/r3v_native_producer_arming_runner.c',
-          '../common/r300_first_draw_state.c',
-          '../common/r300_fragment_binary.c',
-          '../common/r300_pm4_builder.c',
-          '../common/r300_r2vb_carrier_delivery.c',
-          '../common/r300_r2vb_producer_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
-    include_directories : [r3v_native_inc, include_directories('.')],
-    dependencies : [idep_mesautil],
-    gnu_symbol_visibility : 'hidden',
-  )
-  test(
-    'r3v-native-producer-arming-runner',
-    prog_python,
-    args : [
-      files('tests/r3v_native_producer_arming_runner_check.py'),
-      r3v_native_producer_arming_runner,
       r3v_native_arming_runner,
     ],
     suite : ['r3v'],
