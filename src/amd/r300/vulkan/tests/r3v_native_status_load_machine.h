@@ -134,6 +134,9 @@ struct r3v_status_load_machine {
    const char *abort_reason;
 };
 
+/* Accepts the protocol's exact 32-character lowercase hexadecimal nonce. */
+int r3v_status_load_nonce_valid(const char *nonce);
+
 /* Formats one protocol message line (JSON object plus newline) with the
  * frozen field set.  Both sender roles use it, so the transcript carries
  * one spelling.  Returns the line length, or -1 when the buffer is short

@@ -12,8 +12,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static int
-valid_nonce(const char *nonce)
+int
+r3v_status_load_nonce_valid(const char *nonce)
 {
    if (nonce == NULL || strlen(nonce) != R3V_STATUS_LOAD_NONCE_LENGTH)
       return 0;
@@ -80,7 +80,7 @@ r3v_status_load_format_message(char *buffer, size_t capacity,
                                uint64_t timestamp_ns)
 {
    if (buffer == NULL || !valid_sender_role(sender_role) ||
-       !valid_state(state) || !valid_nonce(nonce))
+       !valid_state(state) || !r3v_status_load_nonce_valid(nonce))
       return -1;
    int length = snprintf(
       buffer, capacity,
@@ -185,7 +185,7 @@ r3v_status_load_machine_init(struct r3v_status_load_machine *machine,
       return -1;
    if (iterations < 1 || iterations > R3V_STATUS_LOAD_MAX_ITERATIONS)
       return -1;
-   if (!valid_nonce(nonce))
+   if (!r3v_status_load_nonce_valid(nonce))
       return -1;
 
    memset(machine, 0, sizeof(*machine));

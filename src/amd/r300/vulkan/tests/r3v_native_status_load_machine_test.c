@@ -424,6 +424,10 @@ main(int argc, char **argv)
    /* Init gates: iteration bound, nonce shape, missing operation. */
    memset(&fake, 0, sizeof(fake));
    ops = fake_ops(&fake);
+   if (!r3v_status_load_nonce_valid(NONCE) ||
+       r3v_status_load_nonce_valid(
+          "B1946AC92492D2347C6235B4D2611184"))
+      fail("nonce_validator", "nonce validator disagrees with the protocol");
    if (r3v_status_load_machine_init(&machine, &ops, NONCE, 0) == 0)
       fail("init_bound_low", "zero iterations accepted");
    if (r3v_status_load_machine_init(&machine, &ops, NONCE,
