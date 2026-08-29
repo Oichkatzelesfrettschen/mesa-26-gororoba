@@ -3813,7 +3813,9 @@ bool r300_r2vb_producer_interface_init_gated(
  * few selected fields is insufficient: a reserved or skip control bit and a
  * stale EXT swizzle preserve the visible destination fields while changing
  * the VAP fetch contract.  Compare every emitted pair against the
- * reconstructed interface before the transaction retains the live state. */
+ * reconstructed interface before the transaction retains the live state.
+ * Symbol discovery uses (rg --fixed-strings
+ * r300_r2vb_producer_psc_matches_interface src/). */
 static bool
 r300_r2vb_producer_psc_matches_interface(
     const struct r300_vertex_stream_state *state,
