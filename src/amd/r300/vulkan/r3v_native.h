@@ -1604,12 +1604,13 @@ struct r3v_native_vertex_stream_desc {
 };
 
 /* Carrier-delivery recorder: gathers the triangle's three vertices from
- * the caller's stream through the CPU vertex executor into the mapped
- * GTT carrier, then records the same fixed cell as
- * r3v_native_record_tcl_bypass_triangle -- the IB and its digest do not
- * depend on the delivery route, only the vertex BO contents do.  A
- * stream the gather refuses returns VK_ERROR_INITIALIZATION_FAILED
- * before any write.
+ * the caller's stream through the CPU vertex executor into private storage,
+ * copies the complete result to the mapped GTT carrier, then records the
+ * same fixed cell as r3v_native_record_tcl_bypass_triangle.  The private
+ * snapshot makes source and carrier aliases safe across separate mappings;
+ * the IB and its digest do not depend on the delivery route, only the vertex
+ * BO contents do.  A stream the gather refuses returns
+ * VK_ERROR_INITIALIZATION_FAILED before any carrier write.
  */
 VkResult r3v_native_record_tcl_bypass_triangle_from_stream(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
