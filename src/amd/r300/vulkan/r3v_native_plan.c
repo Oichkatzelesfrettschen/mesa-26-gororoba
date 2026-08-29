@@ -729,7 +729,10 @@ emit_body(const struct r3v_native_plan *plan, char *out, size_t out_size)
 size_t
 r3v_native_plan_seal(char *text, size_t text_size, size_t body_size)
 {
-   size_t total = body_size + 5 + R3V_NATIVE_PLAN_HEX64 + 1;
+   const size_t seal_size = 5 + R3V_NATIVE_PLAN_HEX64 + 1;
+   if (body_size > text_size || body_size > SIZE_MAX - seal_size)
+      return 0;
+   size_t total = body_size + seal_size;
    if (total > text_size)
       return 0;
    char seal[BLAKE3_OUT_LEN * 2 + 1];

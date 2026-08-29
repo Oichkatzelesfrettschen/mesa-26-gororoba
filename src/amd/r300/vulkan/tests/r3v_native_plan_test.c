@@ -571,6 +571,14 @@ test_writer_refuses_out_of_schema(void)
       assert(tiny[i] == '#');
 }
 
+static void
+test_seal_refuses_out_of_range_bodies(void)
+{
+   char text[128] = {0};
+   assert(r3v_native_plan_seal(text, sizeof(text), sizeof(text)) == 0);
+   assert(r3v_native_plan_seal(text, sizeof(text), SIZE_MAX) == 0);
+}
+
 /* The gate enumeration names any open gate: the hazard gate, an
  * authorization value, an R2VB route gate, the compute queue gate, and
  * a compute verb gate each open it; an empty value stays closed.
@@ -619,6 +627,7 @@ main(void)
    test_match_refusals();
    test_session();
    test_writer_refuses_out_of_schema();
+   test_seal_refuses_out_of_range_bodies();
    test_gates_open();
    printf("r3v-native-plan: round trip, seal, truncation, order, count, "
           "field, value, and ceiling refusals; sixteen identity binds; "
