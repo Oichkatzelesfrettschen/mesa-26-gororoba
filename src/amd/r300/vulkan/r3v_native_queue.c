@@ -603,6 +603,9 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
                                 const uint32_t *ib, uint32_t ib_size_dwords,
                                 const struct radeon_drm_vk_reloc_list *relocs)
 {
+   if (device->semantic_cell_retention_inject_errno != 0)
+      return device->semantic_cell_retention_inject_errno;
+
    static const char *const names[] = {
       "ib.bin", "relocs.bin", "manifest.json",
    };

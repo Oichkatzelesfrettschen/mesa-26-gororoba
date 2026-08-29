@@ -2725,7 +2725,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
 
   # Submit-order matrix: one public draw with a load-op clear per arm on a
   # fresh device; the armed arm executes and spends its token, every
-  # pre-commit failure (closed gate, unwritable evidence directory, refused
+  # pre-commit failure (closed gate, injected retention failure, refused
   # authorization, failed vertex mapping) leaves target and carrier
   # untouched with the authorization unspent, and the two transport
   # failures (refused CS ioctl, failed completion wait) come after the one
@@ -2740,7 +2740,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     c_args : [no_override_init_args],
     gnu_symbol_visibility : 'hidden',
   )
-  foreach submit_arm : ['armed', 'gate-closed', 'retention-unwritable',
+  foreach submit_arm : ['armed', 'gate-closed', 'retention-failure',
                         'authorization-refused', 'map-failure',
                         'ioctl-refused', 'completion-failure',
                         'robust-oob-enabled', 'robust-oob-w0-degenerate',

@@ -170,7 +170,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     # leave bytes untouched, two post-execution transport failures.
     "r3v-native-submit-order-armed",
     "r3v-native-submit-order-gate-closed",
-    "r3v-native-submit-order-retention-unwritable",
+    "r3v-native-submit-order-retention-failure",
     "r3v-native-submit-order-authorization-refused",
     "r3v-native-submit-order-map-failure",
     "r3v-native-submit-order-ioctl-refused",
