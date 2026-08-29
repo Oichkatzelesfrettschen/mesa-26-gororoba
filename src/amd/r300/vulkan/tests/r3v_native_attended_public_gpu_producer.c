@@ -171,8 +171,9 @@ main(int argc, char **argv)
    /* A silicon result binds to the real libc entry points.  A preloaded
     * interposer -- the drm-shim fixture or any other -- would let the
     * run report a silicon verdict it never earned, so any LD_PRELOAD
-    * refuses before the first Vulkan call.  The recording mode reaches
-    * no ioctl and reports no verdict, so it runs on the fixture.
+    * refuses before the first Vulkan call.  The recording mode does not
+    * submit DRM_RADEON_CS, while allocation or mapping can issue GEM ioctls
+    * and a validation failure can print a refusal verdict on the fixture.
     */
    const char *preload = getenv("LD_PRELOAD");
    if (!record_only && preload != NULL && preload[0] != '\0') {
@@ -338,17 +339,24 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkMapMemory);
    LOAD_DEVICE(vkUnmapMemory);
    LOAD_DEVICE(vkCreateBuffer);
+   LOAD_DEVICE(vkDestroyBuffer);
    LOAD_DEVICE(vkBindBufferMemory);
    LOAD_DEVICE(vkCreateImage);
+   LOAD_DEVICE(vkDestroyImage);
    LOAD_DEVICE(vkGetImageMemoryRequirements);
    LOAD_DEVICE(vkBindImageMemory);
    LOAD_DEVICE(vkCreateImageView);
+   LOAD_DEVICE(vkDestroyImageView);
    LOAD_DEVICE(vkCreateRenderPass);
+   LOAD_DEVICE(vkDestroyRenderPass);
    LOAD_DEVICE(vkCreateFramebuffer);
+   LOAD_DEVICE(vkDestroyFramebuffer);
    LOAD_DEVICE(vkCreateShaderModule);
    LOAD_DEVICE(vkDestroyShaderModule);
    LOAD_DEVICE(vkCreatePipelineLayout);
+   LOAD_DEVICE(vkDestroyPipelineLayout);
    LOAD_DEVICE(vkCreateGraphicsPipelines);
+   LOAD_DEVICE(vkDestroyPipeline);
    LOAD_DEVICE(vkCreateCommandPool);
    LOAD_DEVICE(vkDestroyCommandPool);
    LOAD_DEVICE(vkAllocateCommandBuffers);
@@ -675,7 +683,8 @@ main(int argc, char **argv)
    /* The cell realizes one load-op clear, the 0xa5a5a5a5 sentinel the
     * target oracle reads as its exterior and canary value, so the
     * recording admits that color alone (r3v_native_draw.c
-    * clear_is_sentinel).  Both sides evaluate the same expression, so
+    * clear_is_sentinel; rg --fixed-strings clear_is_sentinel src/).
+    * Both sides evaluate the same expression, so
     * the comparison lands on identical bits.
     */
    const float sentinel = (float)0xa5 / 255.0f;
@@ -712,6 +721,13 @@ main(int argc, char **argv)
       printf("record: ACCEPTED\n");
       fflush(stdout);
       vkDestroyCommandPool(device, pool, NULL);
+      vkDestroyPipeline(device, pipeline, NULL);
+      vkDestroyPipelineLayout(device, layout, NULL);
+      vkDestroyFramebuffer(device, framebuffer, NULL);
+      vkDestroyRenderPass(device, pass, NULL);
+      vkDestroyImageView(device, view, NULL);
+      vkDestroyBuffer(device, vertex_buffer, NULL);
+      vkDestroyImage(device, image, NULL);
       vkFreeMemory(device, vertex_memory, NULL);
       vkFreeMemory(device, color_memory, NULL);
       vkDestroyDevice(device, NULL);
@@ -784,10 +800,11 @@ main(int argc, char **argv)
       outcome = OUTCOME_CANARY_DISTURBED;
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE)
       outcome = OUTCOME_COMPLETION_FAILURE;
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED)
+      outcome = OUTCOME_SUBMISSION_REFUSED;
    else if (submit_result == VK_ERROR_DEVICE_LOST)
       outcome = OUTCOME_CARRIER_DIVERGED;
-   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED ||
-            submit_result != VK_SUCCESS)
+   else if (submit_result != VK_SUCCESS)
       outcome = OUTCOME_SUBMISSION_REFUSED;
    else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED &&
             verdict.executed && verdict.interior_pass &&
@@ -838,6 +855,13 @@ main(int argc, char **argv)
 
    stage("teardown");
    vkDestroyCommandPool(device, pool, NULL);
+   vkDestroyPipeline(device, pipeline, NULL);
+   vkDestroyPipelineLayout(device, layout, NULL);
+   vkDestroyFramebuffer(device, framebuffer, NULL);
+   vkDestroyRenderPass(device, pass, NULL);
+   vkDestroyImageView(device, view, NULL);
+   vkDestroyBuffer(device, vertex_buffer, NULL);
+   vkDestroyImage(device, image, NULL);
    vkFreeMemory(device, vertex_memory, NULL);
    vkFreeMemory(device, color_memory, NULL);
    vkDestroyDevice(device, NULL);

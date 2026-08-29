@@ -396,7 +396,7 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
            const char *route_scope, const char *layout,
            const struct r300_vertex_job *job,
            uint32_t stride, uint32_t base_offset, uint32_t vertex_count,
-           unsigned reps)
+           unsigned reps, bool sse3_available)
 {
    /* A zero stride reads one record for every vertex, so the stream
     * spans that record alone; any other stride spans the records the
@@ -414,6 +414,8 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
    unsigned present_count = 0;
    uint64_t best[LANE_COUNT];
    for (unsigned l = 0; l < LANE_COUNT; l++) {
+      if (strcmp(lanes[l].label, "sse3") == 0 && !sse3_available)
+         continue;
       if (calibrate_lane(lanes[l].label, shape, lanes[l].fn, job, &stream,
                          vertex_count))
          present[present_count++] = l;
@@ -458,26 +460,13 @@ bench_cell(const struct bench_lane *lanes, const char *shape,
 int
 main(int argc, char **argv)
 {
-   /* Rows decide one part's dispatch, and the same code elsewhere times
-    * that host's pipeline instead, so the executing CPU must identify as
-    * the qualified part or the rows mark as smoke output.  Both binaries
-    * run this check: the generic one is built unconditionally and its
-    * unmarked rows would otherwise read as qualification results to a recorder.  Family 0Fh alone is too wide: the K8 desktop,
-    * mobile, and server models differ in cache and timing, so the check
-    * reads the model too.  Model 0x68 is the Turion 64 X2 TL-66 the
-    * measurement frame names; the observed stepping rides in the stream
-    * rather than gating it, so a different revision of the same part
-    * stays visible in the rows it produced.  The SSE3 feature bit is a
-    * hard refusal: the whole binary compiles at -march=k8-sse3, so a
-    * host without SSE3 would fault mid-run instead of producing marked
-    * rows.
-    */
+   bool sse3_available = false;
+   bool tl66_qualified = false;
 #ifdef R300_CPU_VERTEX_BENCH_HAVE_CPUID
    {
       unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
-      int is_qualified = 0;
-      int has_sse3 = 0;
       unsigned family = 0, model = 0, stepping = 0;
+      char brand[49] = { 0 };
       if (__get_cpuid(0, &eax, &ebx, &ecx, &edx) &&
           ebx == 0x68747541u /* "Auth" */ &&
           edx == 0x69746e65u /* "enti" */ &&
@@ -486,27 +475,27 @@ main(int argc, char **argv)
          family = ((eax >> 8) & 0xf) + ((eax >> 20) & 0xff);
          model = ((eax >> 4) & 0xf) | (((eax >> 16) & 0xf) << 4);
          stepping = eax & 0xf;
-         is_qualified = family == 0xf && model == 0x68;
-         has_sse3 = (ecx & bit_SSE3) != 0;
+         sse3_available = (ecx & bit_SSE3) != 0;
+         if (__get_cpuid_max(0x80000000, NULL) >= 0x80000004) {
+            for (unsigned leaf = 0; leaf < 3; leaf++) {
+               __cpuid(0x80000002 + leaf, eax, ebx, ecx, edx);
+               memcpy(brand + leaf * 16, &eax, sizeof(eax));
+               memcpy(brand + leaf * 16 + 4, &ebx, sizeof(ebx));
+               memcpy(brand + leaf * 16 + 8, &ecx, sizeof(ecx));
+               memcpy(brand + leaf * 16 + 12, &edx, sizeof(edx));
+            }
+         }
+         tl66_qualified = family == 0xf && model == 0x68 && stepping == 2 &&
+                          strcmp(brand,
+                                 "AMD Turion(tm) 64 X2 Mobile Technology TL-66") == 0;
       }
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
-      /* This binary compiles wholly at -march=k8-sse3, so a host
-       * without SSE3 would fault mid-run instead of producing marked
-       * rows.  The generic binary carries no such instruction floor and
-       * runs anywhere, marked. */
-      if (!has_sse3) {
-         fprintf(stderr,
-                 "error: executing CPU lacks SSE3; this binary's "
-                 "k8-sse3 codegen would fault\n");
-         return 1;
-      }
-#endif
       printf("# cpuid family 0x%x model 0x%x stepping 0x%x sse3 %d\n",
-             family, model, stepping, has_sse3);
-      if (!is_qualified) {
+             family, model, stepping, sse3_available);
+      printf("# cpuid brand: %s\n", brand[0] != '\0' ? brand : "unknown");
+      if (!tl66_qualified) {
          fprintf(stderr,
                  "warning: executing CPU is not the qualified Turion 64 X2 "
-                 "TL-66 (family 0x0f model 0x68); rows are smoke output, "
+                 "TL-66 (AuthenticAMD family 0x0f model 0x68 stepping 2); rows are smoke output, "
                  "not dispatch evidence\n");
          printf("# unqualified host: rows are smoke output, not dispatch "
                 "evidence\n");
@@ -520,6 +509,13 @@ main(int argc, char **argv)
    printf("# unqualified host: rows are smoke output, not dispatch "
           "evidence\n");
 #endif
+   if (!sse3_available) {
+      fprintf(stderr,
+              "warning: executing CPU lacks SSE3; specialized rows are "
+              "smoke output and the baseline runner blocks entry\n");
+      printf("# no SSE3: specialized rows are smoke output; baseline runner "
+             "blocks entry\n");
+   }
 
    unsigned reps = 9;
    if (argc > 1) {
@@ -586,20 +582,11 @@ main(int argc, char **argv)
              "evidence\n");
    }
 
-   /* This bench and the native ICD link the same libr300_cpu object set.
-    * The K8 bench recompiles the same sources under
-    * an -march override, so its rows describe codegen the profile does
-    * not produce.  The filename separates the two streams, and a
-    * locator travels apart from its bytes, so the fact rides in the
-    * stream as well.
+   /* The K8 build links an SSE3-specialized library. The baseline runner
+    * checks CPUID before every specialized call, so a host lacking SSE3
+    * keeps its scalar measurements and never faults on the library entry.
     */
-#ifdef R300_CPU_VERTEX_BENCH_REQUIRE_K8
-   printf("# lane codegen: sources recompiled under an -march override; "
-          "a driver links libr300_cpu at the profile's flags instead\n");
-#else
-   printf("# lane codegen: libr300_cpu at the enclosing profile's "
-          "flags, shared with the native ICD\n");
-#endif
+   printf("# lane codegen: baseline runner with specialized K8/SSE3 library\n");
    printf("# evidence scope: executor microbenchmark; native dispatch "
           "requires command-buffer-owned mapped GTT carrier timing\n");
    printf("# carrier state: reused heap allocation\n");
@@ -607,11 +594,7 @@ main(int argc, char **argv)
     * the interpreter, so the ISA the profile grants it is the fact that
     * separates the two streams' arithmetic.
     */
-#ifdef __SSE3__
-   printf("# lane isa: sse2, sse3\n");
-#else
-   printf("# lane isa: sse2\n");
-#endif
+   printf("# lane isa: sse2%s\n", sse3_available ? ", sse3" : "");
 
    /* An absent ISA lane marks the stream: a kernel compiled out of this
     * build reports -ENOSYS, and the marker tells a collector the stream
@@ -631,7 +614,8 @@ main(int argc, char **argv)
          printf("# lane absent: sse2 (build carries no such instruction "
                 "set)\n");
       }
-      if (r300_cpu_vertex_job_execute_sse3(&probe, &probe_stream, 0, 3,
+      if (sse3_available &&
+          r300_cpu_vertex_job_execute_sse3(&probe, &probe_stream, 0, 3,
                                            carrier,
                                            MAX_VERTICES * 4) == -ENOSYS) {
          printf("# lane absent: sse3 (build carries no such instruction "
@@ -709,7 +693,7 @@ main(int argc, char **argv)
                bench_cell(lanes, shapes[j], route_scope, layouts[y].label,
                           &jobs[j],
                           layouts[y].stride, layouts[y].base_offset,
-                          counts[c], reps);
+                          counts[c], reps, sse3_available);
             }
          }
       }

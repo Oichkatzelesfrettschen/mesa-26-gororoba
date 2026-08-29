@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* Composes the route stream and returns its IB digest, the content an
  * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The
@@ -48,6 +49,97 @@ route_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords,
    return 0;
 }
 
+/* The fixture supplies an entirely local, declared arming environment for
+ * the positive calibration.  Production collection remains host-backed and
+ * therefore reads the running kernel and radeon module identity.
+ */
+struct fixture_provider {
+   const char *evidence_dir;
+   const char *digest;
+};
+
+static const char *
+fixture_read_env(void *ctx, const char *name)
+{
+   const struct fixture_provider *fixture = ctx;
+   if (strcmp(name, "R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED") == 0)
+      return "1";
+   if (strcmp(name, "R3V_NATIVE_AUTHORIZED_IB_BLAKE3") == 0)
+      return fixture->digest;
+   if (strcmp(name, "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE") == 0)
+      return "r3v-public-producer-arming-fixture-kernel";
+   if (strcmp(name, "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION") == 0)
+      return "R3V_PUBLIC_PRODUCER_ARMING_FIXTURE_MODULE";
+   return NULL;
+}
+
+static void
+fixture_read_kernel_release(void *ctx, char *out, size_t size)
+{
+   (void)ctx;
+   snprintf(out, size, "%s", "r3v-public-producer-arming-fixture-kernel");
+}
+
+static void
+fixture_read_module_srcversion(void *ctx, char *out, size_t size)
+{
+   (void)ctx;
+   snprintf(out, size, "%s", "R3V_PUBLIC_PRODUCER_ARMING_FIXTURE_MODULE");
+}
+
+static bool
+fixture_directory_present(void *ctx, const char *path)
+{
+   const struct fixture_provider *fixture = ctx;
+   struct stat status;
+   return strcmp(path, fixture->evidence_dir) == 0 &&
+          stat(path, &status) == 0 && S_ISDIR(status.st_mode);
+}
+
+static bool
+fixture_file_present(void *ctx, const char *path)
+{
+   const struct fixture_provider *fixture = ctx;
+   char token_path[R3V_NATIVE_ARMING_PATH_MAX];
+   const int length = snprintf(token_path, sizeof(token_path), "%s/%s",
+                               fixture->evidence_dir, "attempt.token");
+   struct stat status;
+   return length >= 0 && (size_t)length < sizeof(token_path) &&
+          strcmp(path, token_path) == 0 && stat(path, &status) == 0;
+}
+
+static void
+collect_facts(const char *evidence_dir, const char *digest, bool fixture,
+              uint32_t vendor_id, uint32_t device_id,
+              struct r3v_native_arming_facts *facts, char *kernel,
+              size_t kernel_size, char *module, size_t module_size)
+{
+   if (!fixture) {
+      r3v_native_arming_collect(
+         facts, vendor_id, device_id,
+         R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, digest, evidence_dir,
+         kernel, kernel_size, module, module_size);
+      return;
+   }
+
+   struct fixture_provider fixture_provider = {
+      .evidence_dir = evidence_dir,
+      .digest = digest,
+   };
+   const struct r3v_native_arming_provider provider = {
+      .read_env = fixture_read_env,
+      .read_kernel_release = fixture_read_kernel_release,
+      .read_module_srcversion = fixture_read_module_srcversion,
+      .directory_present = fixture_directory_present,
+      .file_present = fixture_file_present,
+      .ctx = &fixture_provider,
+   };
+   r3v_native_arming_collect_from(
+      &provider, facts, vendor_id, device_id,
+      R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, digest, evidence_dir,
+      kernel, kernel_size, module, module_size);
+}
+
 static void
 report(const char *factor, const char *declared, const char *observed)
 {
@@ -67,11 +159,19 @@ main(int argc, char **argv)
    /* The runner takes the evidence directory an attended run would use;
     * its freshness is itself an arming factor.
     */
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   if (argc != 2 && argc != 3) {
+      fprintf(stderr, "usage: %s <evidence-directory> [--fixture]\n", argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+   bool fixture = false;
+   if (argc == 3) {
+      if (strcmp(argv[2], "--fixture") != 0) {
+         fprintf(stderr, "unknown runner option %s\n", argv[2]);
+         return 2;
+      }
+      fixture = true;
+   }
 
    char digest[BLAKE3_OUT_LEN * 2 + 1];
    uint32_t ib_dwords = 0;
@@ -96,13 +196,12 @@ main(int argc, char **argv)
    char kernel[128];
    char module[128];
    struct r3v_native_arming_facts facts;
-   r3v_native_arming_collect(
-      &facts, vendor_id, device_id,
-      R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC, digest, evidence_dir,
-      kernel, sizeof(kernel), module, sizeof(module));
+   collect_facts(evidence_dir, digest, fixture, vendor_id, device_id, &facts,
+                 kernel, sizeof(kernel), module, sizeof(module));
 
    printf("r3v native r2vb-gpu-producer-public arming report\n");
    printf("cell_kind=r2vb-gpu-producer-public\n");
+   printf("provider=%s\n", fixture ? "fixture" : "host");
    printf("ib_dwords=%u\n", ib_dwords);
    printf("consumer_start_dwords=%u\n", consumer_start_dwords);
    printf("ib_blake3=%s\n", digest);

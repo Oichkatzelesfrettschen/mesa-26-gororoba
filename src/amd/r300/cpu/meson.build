@@ -115,25 +115,28 @@ if with_tests
     gnu_symbol_visibility : 'hidden',
   )
 
-  # The K8-target bench: the same bench with the gather compiled at the
-  # TL-66 CPUID ceiling, so all three lanes exist under the exact
-  # target codegen whatever the enclosing profile's -march is.  The
-  # tune override rides along because the enclosing profiles set
-  # -mtune=generic, and -mtune selects the scheduling model, so the
-  # measured gather assembly matches the K8 pipeline only with both
-  # flags pinned.  The gather compiles into this binary directly
-  # because the lanes live in r300_cpu_vertex.c, and the library copy
-  # keeps the profile's flags.
+  # The specialized library carries the K8/SSE3 candidates.  Its baseline
+  # runner stays at the enclosing ISA floor, checks CPUID, and invokes the
+  # specialized entry points only after it establishes SSE3 availability.
   if host_machine.cpu_family() == 'x86_64' and \
      cc.has_argument('-march=k8-sse3') and \
      cc.has_argument('-mtune=k8-sse3')
-    executable(
-      'r300_cpu_vertex_bench_k8',
-      [files('r300_cpu_vertex.c', 'tests/r300_cpu_vertex_bench.c'), sha1_h],
+    libr300_cpu_vertex_k8 = static_library(
+      'r300_cpu_vertex_k8',
+      files('r300_cpu_vertex.c'),
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
-      c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
-                '-DR300_CPU_VERTEX_BENCH_REQUIRE_K8=1'] + bench_release_args,
+      c_args : ['-march=k8-sse3', '-mtune=k8-sse3'],
+      dependencies : [dep_m],
+      gnu_symbol_visibility : 'hidden',
+    )
+    executable(
+      'r300_cpu_vertex_bench_k8',
+      [files('tests/r300_cpu_vertex_bench.c'), sha1_h],
+      include_directories : [inc_src, inc_include,
+                             include_directories('.')],
+      link_with : [libr300_cpu_vertex_k8],
+      c_args : bench_release_args,
       dependencies : [dep_clock],
       gnu_symbol_visibility : 'hidden',
     )
@@ -159,24 +162,28 @@ if with_tests
     gnu_symbol_visibility : 'hidden',
   )
 
-  # The K8-target job bench: both CPU sources compile at the TL-66 CPUID
-  # ceiling, so the SSE2 kernel exists under the exact target codegen
-  # whatever the enclosing profile's -march is, and -mtune selects the
-  # K8 scheduling model the measured assembly is read against.  The
-  # override reaches the interpreter too, so these rows read as the
-  # contrast: what the two lanes cost when the compiler may schedule
-  # for the target part, against the baseline ISA a driver ships.
+  # The K8-target job library holds the SSE3 candidates under the exact
+  # target scheduling model. The benchmark main remains baseline code so its
+  # CPUID refusal runs before it can enter a specialized function.
   if host_machine.cpu_family() == 'x86_64' and \
      cc.has_argument('-march=k8-sse3') and \
      cc.has_argument('-mtune=k8-sse3')
-    executable(
-      'r300_cpu_vertex_job_bench_k8',
-      [files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c',
-             'tests/r300_cpu_vertex_job_bench.c'), sha1_h],
+    libr300_cpu_vertex_job_k8 = static_library(
+      'r300_cpu_vertex_job_k8',
+      files('r300_cpu_vertex.c', 'r300_cpu_vertex_job.c'),
       include_directories : [inc_src, inc_include,
                              include_directories('.')],
-      c_args : ['-march=k8-sse3', '-mtune=k8-sse3',
-                '-DR300_CPU_VERTEX_BENCH_REQUIRE_K8=1'] + bench_release_args,
+      c_args : ['-march=k8-sse3', '-mtune=k8-sse3'],
+      dependencies : [dep_m],
+      gnu_symbol_visibility : 'hidden',
+    )
+    executable(
+      'r300_cpu_vertex_job_bench_k8',
+      [files('tests/r300_cpu_vertex_job_bench.c'), sha1_h],
+      include_directories : [inc_src, inc_include,
+                             include_directories('.')],
+      link_with : [libr300_cpu_vertex_job_k8],
+      c_args : bench_release_args,
       dependencies : [dep_clock, dep_m],
       gnu_symbol_visibility : 'hidden',
     )
