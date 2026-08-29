@@ -13,6 +13,7 @@
 
 struct r300_fragment_binary;
 struct r300_first_draw_contract;
+struct r300_noperspective_reciprocal_plan;
 struct r300_flat_color0_plan;
 struct r300_rs_tex_adj_probe_plan;
 
@@ -103,6 +104,15 @@ struct r300_tcl_bypass_triangle_params {
     * sampling): the RS block takes the plan's words and GB_SELECT the
     * plan's W_SELECT; NULL emits the control words. */
    const struct r300_rs_tex_adj_probe_plan *rs_tex_adj;
+   /* NoPerspective reciprocal carrier plan (requires varying, no
+    * flat_color0, no rs_tex_adj, no sampling): each record carries the
+    * plan's payload vectors and the shared carrier vector behind the
+    * position, the PSC lands them in the texture vectors from 6, the
+    * VAP declares every texture vector four components, the RS routes
+    * texture i to US input i for every vector, and the fragment binary
+    * is the reciprocal recovery (r300_tcl_bypass_triangle_noperspective_fs).
+    * GB_SELECT keeps W_SELECT at 0. */
+   const struct r300_noperspective_reciprocal_plan *noperspective_carrier;
    /* When set, the cell samples texture unit 0: the varying vertex path
     * carries the TEX0 coordinate, the TX block programs one enabled
     * unit -- nearest filters, clamp-to-edge wraps, W8Z8Y8X8 texels over
@@ -269,6 +279,7 @@ int r300_tcl_bypass_triangle_clip_space_sampled_emit(
  * negative errno; the caller owns the binary.
  */
 int r300_tcl_bypass_triangle_varying_fs(struct r300_fragment_binary *fs);
+int r300_tcl_bypass_triangle_noperspective_fs(struct r300_fragment_binary *fs);
 
 /* Resolves the first-draw contract for the cell's 64x64 target and three
  * vertices with the texture block disabled.  Every pre-hardware consumer
@@ -370,6 +381,14 @@ int r300_tcl_bypass_triangle_flat_color0_plan_emit(
 int r300_tcl_bypass_triangle_rs_tex_adj_family_emit(
    uint32_t width, uint32_t height, bool clip_space,
    uint32_t triangle_count, const struct r300_rs_tex_adj_probe_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+/* The NoPerspective reciprocal-carrier cell: the TC1 carrier record
+ * shape under a plan (r300_noperspective_reciprocal_plan.h); the family
+ * form validates the plan. */
+int r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count,
+   const struct r300_noperspective_reciprocal_plan *plan,
    struct r300_tcl_bypass_triangle_ib *out);
 int r300_tcl_bypass_triangle_rs_tex_adj_plan_emit(
    uint32_t width, uint32_t height, bool clip_space,
@@ -601,6 +620,12 @@ struct r300_triangle_render_shape {
     * GB_SELECT.W_SELECT; zero is the control, the legacy varying bytes.
     */
    uint8_t rs_tex_adj_candidate;
+   /* When set with varying, the pass carries the NoPerspective
+    * reciprocal carrier record shape under the TC1 plan
+    * (r300_noperspective_reciprocal_plan_tc1): twelve dwords per
+    * vertex, RS_IP_0/1 and RS_INST_0/1 routing, the reciprocal-recovery
+    * fragment binary. */
+   bool noperspective_carrier;
 };
 
 /* The composed render-then-sample cell: one stream renders the first
@@ -1114,6 +1139,8 @@ extern const float
  * colors.
  */
 #define R300_TRIANGLE_VARYING_VERTEX_DWORDS 24
+/* Three records of the NoPerspective TC1 carrier shape. */
+#define R300_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_DWORDS 36
 extern const float r300_tcl_bypass_triangle_varying_vertices
    [R300_TRIANGLE_VARYING_VERTEX_DWORDS];
 

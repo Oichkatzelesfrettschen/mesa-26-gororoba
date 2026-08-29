@@ -851,6 +851,12 @@ if with_tests
     args : ['--check=sampled'],
     suite : ['r300'],
   )
+  test(
+    'r300-noperspective-reciprocal-fs-block-regeneration',
+    r300_tcl_bypass_fs_tool,
+    args : ['--check=noperspective-reciprocal'],
+    suite : ['r300'],
+  )
 
   # Classic fragment-compiler register allocation: chain recycling and the
   # register-file boundary, fit and reject sides.
