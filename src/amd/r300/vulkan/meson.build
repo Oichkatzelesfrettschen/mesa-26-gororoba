@@ -87,7 +87,8 @@ if with_tests
     executable(
       'r3v_post_vs_lowering_test',
       files('tests/r3v_post_vs_lowering_test.c', 'r3v_post_vs_lowering.c',
-            'r3v_shader_interface.c'),
+            'r3v_shader_interface.c',
+            '../common/r300_noperspective_reciprocal_plan.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
       gnu_symbol_visibility : 'hidden',
@@ -1485,7 +1486,7 @@ if with_tests
           '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -1514,7 +1515,7 @@ if with_tests
           '../common/r300_r2vb_carrier_delivery.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -2582,6 +2583,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The forced reciprocal-carrier rung's recording boundary: under the
+  # exact force gate the NoPerspective pipeline selects the carrier route
+  # and pass 1 records the TC1 carrier cell.
+  test(
+    'r3v-native-noperspective-carrier-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'reciprocal-carrier'],
+    env : environment(r3v_native_cell_vars +
+                      {'R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE' : '1'}),
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding
@@ -3104,7 +3119,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3132,7 +3147,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',
           '../common/r300_tcl_bypass_triangle.c',
-            '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c',
+            '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c',
           '../common/r300_zb_depth_control_cell.c',
           '../common/r300_zb_depth_state.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
@@ -3166,7 +3181,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_r2vb_public_route.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3200,7 +3215,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3227,7 +3242,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_r2vb_reingest_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3254,7 +3269,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_float2_tuple_pass.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
@@ -3284,7 +3299,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
             '../common/r300_fragment_binary.c',
             '../common/r300_pm4_builder.c',
             '../common/r300_tcl_bypass_triangle.c',
-          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c'),
+          '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c'),
       include_directories : [r3v_native_inc, include_directories('.')],
       dependencies : [idep_mesautil],
       gnu_symbol_visibility : 'hidden',

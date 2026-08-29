@@ -288,6 +288,21 @@ test_noperspective_conjunction_opens_w_select(void)
    smooth.varyings[0].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
    f = direct_query(&smooth);
    expect_replicate(&f, "no Flat");
+
+   /* The forced-carrier gate moves the same conjunction onto the
+    * reciprocal carrier and leaves every refusal UNSUPPORTED. */
+   f = direct_query(&link);
+   f.carrier_forced = true;
+   reason = NULL;
+   CHECK(r3v_interpolation_route_select(&f, &reason) ==
+         R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
+   CHECK(reason != NULL && strstr(reason, "carrier") != NULL);
+   f = direct_query(&narrow);
+   f.carrier_forced = true;
+   expect_unsupported(&f, "full float vec4");
+   f = direct_query(&beside);
+   f.carrier_forced = true;
+   expect_unsupported(&f, "map completely");
 }
 
 static void

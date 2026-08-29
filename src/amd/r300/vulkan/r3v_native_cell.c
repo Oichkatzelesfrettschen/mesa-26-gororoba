@@ -9,6 +9,7 @@
 
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_fragment_binary.h"
+#include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 #include "amd/r300/common/r300_direct_write.h"
 #include "amd/r300/vulkan/r3v_delivery_route.h"
 #include "amd/r300/common/r300_r2vb_carrier_delivery.h"
@@ -49,6 +50,8 @@
    (R300_TRIANGLE_VERTEX_DWORDS * sizeof(float))
 #define R3V_TRIANGLE_VARYING_VERTEX_BYTES \
    (R300_TRIANGLE_VARYING_VERTEX_DWORDS * sizeof(float))
+#define R3V_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_BYTES \
+   (R300_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_DWORDS * sizeof(float))
 
 static VkResult
 fill_color(struct r3v_native_device *device,
@@ -279,11 +282,23 @@ fill_color(struct r3v_native_device *device,
 static int
 emit_triangle_cell_for_position_space(
    const struct r300_triangle_render_shape *shape, bool varying,
-   bool flat_color0, uint8_t rs_probe_candidate,
+   bool flat_color0, bool noperspective_carrier, uint8_t rs_probe_candidate,
    uint32_t source_triangle_count,
    const struct r3v_native_sampled_texture *sampled, bool clip_space,
    struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (noperspective_carrier) {
+      /* The reciprocal carrier cell: one plan, the TC1 shape, with
+       * every probe word at its control value. */
+      if (sampled != NULL || !varying || flat_color0 ||
+          rs_probe_candidate != R3V_RS_PROBE_NONE)
+         return -EINVAL;
+      struct r300_noperspective_reciprocal_plan plan;
+      r300_noperspective_reciprocal_plan_tc1(&plan);
+      return r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
+         shape->width, shape->height, clip_space, source_triangle_count,
+         &plan, cell);
+   }
    if (sampled == NULL && varying && !flat_color0 &&
        rs_probe_candidate != R3V_RS_PROBE_NONE) {
       /* The rasterizer probe candidate: the control varying cell's
@@ -349,6 +364,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                struct r3v_native_memory *color_memory,
                                const struct r300_triangle_render_shape *shape,
                                bool clip_space, bool varying, bool flat_color0,
+                               bool noperspective_carrier,
                                uint8_t rs_probe_candidate,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
@@ -405,8 +421,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    int emit_result = 0;
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
-         shape, varying, flat_color0, rs_probe_candidate, triangle_count,
-         sampled, false, &window_cell);
+         shape, varying, flat_color0, noperspective_carrier,
+         rs_probe_candidate, triangle_count, sampled, false, &window_cell);
       if (emit_result != 0)
          return vk_error(device,
                          r3v_native_cell_vk_result_from_errno(emit_result));
@@ -414,8 +430,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
 
    struct r300_tcl_bypass_triangle_ib cell = {0};
    emit_result = emit_triangle_cell_for_position_space(
-      shape, varying, flat_color0, rs_probe_candidate, triangle_count,
-      sampled, clip_space, &cell);
+      shape, varying, flat_color0, noperspective_carrier, rs_probe_candidate,
+      triangle_count, sampled, clip_space, &cell);
    if (emit_result != 0)
       r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
@@ -529,7 +545,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
-                                         false, 0, 1, NULL);
+                                         false, false, 0, 1, NULL);
 }
 
 VkResult
@@ -538,8 +554,9 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
-   bool varying, bool flat_color0, uint8_t rs_probe_candidate,
-   uint32_t triangle_count, const uint32_t color_bits[4],
+   bool varying, bool flat_color0, bool noperspective_carrier,
+   uint8_t rs_probe_candidate, uint32_t triangle_count,
+   const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -553,8 +570,9 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    const uint64_t carrier_bytes =
       (uint64_t)triangle_count *
       R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
-      (varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
-               : R3V_TRIANGLE_VERTEX_BYTES);
+      (noperspective_carrier ? R3V_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_BYTES
+       : varying             ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
+                             : R3V_TRIANGLE_VERTEX_BYTES);
    const uint64_t target_base =
       target_image->memory_offset + target_layer_offset;
    if (carrier_memory->bo.size < carrier_bytes ||
@@ -590,8 +608,9 @@ r3v_native_record_tcl_bypass_triangle_carrier(
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, true, varying,
-                                         flat_color0, rs_probe_candidate,
-                                         triangle_count, sampled);
+                                         flat_color0, noperspective_carrier,
+                                         rs_probe_candidate, triangle_count,
+                                         sampled);
 }
 
 /* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume
@@ -604,7 +623,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
 #define R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES \
    (3u + R3V_NATIVE_CLIP_PLANE_COUNT)
 #define R3V_NATIVE_CLIP_MAX_RECORD_DWORDS \
-   (R300_VERTEX_JOB_POSITION_DWORDS + R300_VERTEX_JOB_VARYING_DWORDS)
+   R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS
 
 struct r3v_native_clip_vertex {
    double values[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS];
@@ -875,6 +894,8 @@ expand_clip_space_triangles(
    uint32_t *output_records, uint32_t output_capacity_dwords)
 {
    if ((record_dwords != R300_VERTEX_JOB_POSITION_DWORDS &&
+        record_dwords != R300_VERTEX_JOB_POSITION_DWORDS +
+                            R300_VERTEX_JOB_VARYING_DWORDS &&
         record_dwords != R3V_NATIVE_CLIP_MAX_RECORD_DWORDS) ||
        source_triangle_count == 0 || source_records == NULL ||
        output_records == NULL)
@@ -1201,9 +1222,20 @@ execute_one_deferred_draw(struct r3v_native_device *device,
    const uint32_t record_count = draw->vertex_count * draw->instance_count;
    const uint32_t source_triangle_count = record_count / 3u;
    const uint32_t staged_dwords = record_count * record_dwords;
+   /* The reciprocal carrier route widens each staged record to the TC1
+    * carrier shape after the job and ahead of the clipper, so the
+    * staging capacity, the clipper's record width, and the published
+    * stream take the carrier width. */
+   const uint32_t published_record_dwords =
+      draw->post_vs.reciprocal_carrier
+         ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS
+         : record_dwords;
+   const uint32_t published_staged_dwords =
+      record_count * published_record_dwords;
    const uint64_t expanded_dwords_u64 =
       (uint64_t)source_triangle_count *
-      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u * record_dwords;
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u *
+      published_record_dwords;
    if (expanded_dwords_u64 > UINT32_MAX) {
       vk_free(&device->vk.alloc, vertex_ids_heap);
       for (uint32_t i = 0; i < owned_map_count; i++) {
@@ -1222,9 +1254,11 @@ execute_one_deferred_draw(struct r3v_native_device *device,
    uint32_t *expanded_heap = NULL;
    uint32_t *staged = staged_stack;
    uint32_t *expanded = expanded_stack;
-   if (staged_dwords > ARRAY_SIZE(staged_stack)) {
+   if (published_staged_dwords > ARRAY_SIZE(staged_stack)) {
       staged_heap = vk_alloc(&device->vk.alloc,
-                             (size_t)staged_dwords * sizeof(uint32_t), 8,
+                             (size_t)published_staged_dwords *
+                                sizeof(uint32_t),
+                             8,
                              VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
       if (staged_heap == NULL)
          result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1293,7 +1327,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       const bool r2vb_route =
          route_decision.route == R3V_DELIVERY_ROUTE_R2VB_HOST_MODEL &&
          draw->vertex_job_identity && draw->post_vs.flat_mask == 0 &&
-         !draw->indexed &&
+         !draw->post_vs.reciprocal_carrier && !draw->indexed &&
          draw->cull_mode == VK_CULL_MODE_NONE &&
          !draw->sample_mask_zero &&
          draw->instance_count == 1 && draw->vertex_count == 3 &&
@@ -1393,6 +1427,37 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                   }
                }
             }
+            /* The reciprocal carrier route packs each triangle into
+             * the TC1 shape in place; the forced-carrier rung admits
+             * the clipping class ACCEPT alone, so the recorded target
+             * judges TC1, the widened record, the second interpolator,
+             * and the US program apart from clipping. */
+            if (gathered == 0 && result == VK_SUCCESS &&
+                draw->post_vs.reciprocal_carrier) {
+               for (uint32_t t = 0; t < source_triangle_count; t++) {
+                  if (r3v_interpolation_clip_class_of_triangle(
+                         &staged[(size_t)t * 3u * record_dwords],
+                         record_dwords) != R3V_INTERPOLATION_CLIP_ACCEPT) {
+                     result = vk_errorf(
+                        device, VK_ERROR_INITIALIZATION_FAILED,
+                        "r3v-native: the reciprocal carrier NoPerspective "
+                        "route admits the clipping class ACCEPT alone; "
+                        "source triangle %u is partially clipped", t);
+                     break;
+                  }
+               }
+               if (result == VK_SUCCESS) {
+                  const int packed = r3v_post_vs_pack_noperspective_carrier(
+                     &draw->post_vs, staged, source_triangle_count,
+                     record_dwords, staged);
+                  if (packed != 0) {
+                     result = vk_errorf(
+                        device, VK_ERROR_INITIALIZATION_FAILED,
+                        "r3v-native: reciprocal carrier packing refused "
+                        "(%d): %s", packed, strerror(-packed));
+                  }
+               }
+            }
          }
       }
       if (result == VK_SUCCESS && gathered != 0) {
@@ -1417,7 +1482,8 @@ execute_one_deferred_draw(struct r3v_native_device *device,
           * viewport transform.
           */
          const int clipped = expand_clip_space_triangles(
-            staged, source_triangle_count, record_dwords, draw->target_width,
+            staged, source_triangle_count, published_record_dwords,
+            draw->target_width,
             draw->target_height, draw->cull_mode, draw->front_face,
             draw->sample_mask_zero, expanded, expanded_dwords);
          if (clipped != 0) {
@@ -1431,13 +1497,13 @@ execute_one_deferred_draw(struct r3v_native_device *device,
          }
       } else if (result == VK_SUCCESS) {
          memcpy(carrier->map, staged,
-                (size_t)staged_dwords * sizeof(uint32_t));
+                (size_t)published_staged_dwords * sizeof(uint32_t));
       }
       if (result == VK_SUCCESS) {
          const size_t publication_bytes =
             route_decision.position_space == R300_CARRIER_POSITION_CLIP
                ? (size_t)expanded_dwords * sizeof(uint32_t)
-               : (size_t)staged_dwords * sizeof(uint32_t);
+               : (size_t)published_staged_dwords * sizeof(uint32_t);
          radeon_drm_vk_bo_cache_sync(&device->drm, carrier->map,
                                      publication_bytes);
       }

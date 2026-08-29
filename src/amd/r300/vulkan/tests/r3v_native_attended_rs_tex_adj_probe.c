@@ -204,6 +204,13 @@ main(int argc, char **argv)
     * byte for byte, so the census judges the public Vulkan NoPerspective
     * route rather than a gated word. */
    bool production = false;
+   /* The forced reciprocal-carrier rung: every probe gate closed and
+    * R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1, the NoPerspective
+    * interface selects R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER, and
+    * the recorded pass 1 is the TC1 carrier cell
+    * (r300_noperspective_reciprocal_plan.h) over the same probe
+    * records; the same census judges the US recovery affine. */
+   bool carrier_route = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0) {
@@ -226,6 +233,13 @@ main(int argc, char **argv)
             candidate_gate = "R3V_NATIVE_RS_W_SELECT_PROBE";
             other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
             candidate_word_name = "GB_SELECT_W_SELECT";
+         } else if (strcmp(name, "reciprocal-carrier") == 0) {
+            carrier_route = true;
+            candidate = R300_RS_TEX_ADJ_PROBE_CONTROL;
+            route_candidate = R3V_RS_PROBE_NONE;
+            candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
+            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_word_name = "RECIPROCAL_CARRIER_TC1";
          } else {
             usage_error = true;
          }
@@ -236,12 +250,13 @@ main(int argc, char **argv)
    if (usage_error) {
       fprintf(stderr,
               "usage: %s <evidence-directory> [--record-only] "
-              "[--waiver <path>] [--candidate tex-adj|w-select] "
-              "[--production]\n",
+              "[--waiver <path>] [--candidate "
+              "tex-adj|w-select|reciprocal-carrier] [--production]\n",
               argv[0]);
       return 2;
    }
-   if (production && candidate != R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE) {
+   if (production && (carrier_route ||
+                      candidate != R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE)) {
       fprintf(stderr, "--production rides the w-select candidate: the "
               "direct GB W_SELECT route is the one production "
               "NoPerspective route\n");
@@ -270,6 +285,12 @@ main(int argc, char **argv)
               candidate_gate, candidate_word_name);
       return 2;
    }
+   if (carrier_route && gate_present("R3V_NATIVE_RS_W_SELECT_PROBE")) {
+      fprintf(stderr, "R3V_NATIVE_RS_W_SELECT_PROBE is set; the carrier "
+              "route runs with every probe gate unset\n");
+      return 2;
+   }
+   const bool route_based = production || carrier_route;
    if (!production && gate_present(other_gate)) {
       fprintf(stderr, "%s is set; one cell carries one candidate\n",
               other_gate);
@@ -312,7 +333,10 @@ main(int argc, char **argv)
     * reference shape, the second alone carrying the candidate word,
     * bound at merged indices 2 and 3. */
    struct r300_triangle_multi_pass mp;
-   r3v_native_multi_pass_public_rs_tex_adj_probe_reference(&mp, candidate);
+   if (carrier_route)
+      r3v_native_multi_pass_public_noperspective_carrier_reference(&mp);
+   else
+      r3v_native_multi_pass_public_rs_tex_adj_probe_reference(&mp, candidate);
    struct r300_triangle_multi_pass control_mp;
    r3v_native_multi_pass_public_rs_tex_adj_probe_reference(
       &control_mp, R300_RS_TEX_ADJ_PROBE_CONTROL);
@@ -374,13 +398,14 @@ main(int argc, char **argv)
     * dword writes. */
    uint32_t differing_index = UINT32_MAX;
    uint32_t differing_count = 0;
-   if (armed_control.ib_size_dwords != ib_dwords) {
+   if (!carrier_route && armed_control.ib_size_dwords != ib_dwords) {
       fprintf(stderr, "the candidate stream is %u dwords against the "
               "control's %u\n",
               ib_dwords, armed_control.ib_size_dwords);
       return 1;
    }
-   for (uint32_t i = 0; i < ib_dwords; i++) {
+   for (uint32_t i = 0; i < MIN2(ib_dwords, armed_control.ib_size_dwords);
+        i++) {
       if (armed.ib[i] != armed_control.ib[i]) {
          if (differing_count == 0)
             differing_index = i;
@@ -396,7 +421,10 @@ main(int argc, char **argv)
         "passes %ux%u pitch %u, binding (%u, %u), %u IB dwords, cell "
         "blake3 %.8s\n",
         candidate_word_name,
-        production ? " (production direct GB W_SELECT route, no gate)" : "", mp.pass[0].width, mp.pass[0].height,
+        production     ? " (production direct GB W_SELECT route, no gate)"
+        : carrier_route ? " (forced reciprocal carrier route, TC1 cell)"
+                        : "",
+        mp.pass[0].width, mp.pass[0].height,
         mp.pass[0].pitch_pixels, mp.second_vertex_index,
         mp.second_color_index, ib_dwords, digest);
    emit("[record] candidate-vs-control differing dwords=%u index=%u "
@@ -404,7 +432,11 @@ main(int argc, char **argv)
         differing_count, differing_index, differing_reg,
         differing_index == UINT32_MAX ? 0u : armed_control.ib[differing_index],
         differing_index == UINT32_MAX ? 0u : armed.ib[differing_index]);
-   if (differing_count != 1 || differing_reg == UINT32_MAX) {
+   /* The carrier cell is a record shape of its own -- PSC, VTX_SIZE,
+    * RS block, and US program all move -- so the one-dword invariant
+    * belongs to the probe words alone. */
+   if (!carrier_route &&
+       (differing_count != 1 || differing_reg == UINT32_MAX)) {
       fprintf(stderr, "the candidate stream does not differ from the "
               "control in exactly one register dword\n");
       return 1;
@@ -961,7 +993,7 @@ main(int argc, char **argv)
                                                      "w-select-one" };
       enum r3v_rs_probe_candidate recorded[2];
       const char *reason[2] = { NULL, NULL };
-      for (unsigned i = 0; i < 2 && !production; i++) {
+      for (unsigned i = 0; i < 2 && !route_based; i++) {
          VK_FROM_HANDLE(r3v_native_pipeline, native_pipeline, pipeline[i]);
          recorded[i] = native_pipeline->rs_probe_candidate;
          const struct r3v_rs_probe_query query = {
@@ -987,11 +1019,14 @@ main(int argc, char **argv)
        * interface selects the direct GB W_SELECT route, re-derived
        * through the route selector.  The deferred draws then carry the
        * W_SELECT_ONE control word from the route itself. */
-      if (production) {
-         static const char *const route_name[4] = {
+      if (route_based) {
+         static const char *const route_name[5] = {
             "replicate", "direct-ga-color0", "direct-gb-w-select",
-            "unsupported"
+            "unsupported", "reciprocal-carrier"
          };
+         const enum r3v_interpolation_route expected_route =
+            carrier_route ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER
+                          : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
          enum r3v_interpolation_route route[2];
          for (unsigned i = 0; i < 2; i++) {
             VK_FROM_HANDLE(r3v_native_pipeline, native_pipeline,
@@ -1006,6 +1041,7 @@ main(int argc, char **argv)
                .rs_destination_available = native_pipeline->varying,
                .fragment_consumes_destination = native_pipeline->varying,
                .provoking_first_representable = true,
+               .carrier_forced = carrier_route,
             };
             const enum r3v_interpolation_route derived =
                r3v_interpolation_route_select(&query, &reason[i]);
@@ -1016,19 +1052,20 @@ main(int argc, char **argv)
                return 1;
             }
          }
-         emit("[route] production control=%s (%s) noperspective=%s (%s) "
+         emit("[route] %s control=%s (%s) noperspective=%s (%s) "
               "probe candidates=%s/%s\n",
+              production ? "production" : "forced-carrier",
               route_name[route[0]], reason[0], route_name[route[1]],
               reason[1], candidate_name[recorded[0]],
               candidate_name[recorded[1]]);
          if (recorded[0] != R3V_RS_PROBE_NONE ||
              recorded[1] != R3V_RS_PROBE_NONE ||
              route[0] != R3V_INTERPOLATION_ROUTE_REPLICATE ||
-             route[1] != R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT) {
-            fprintf(stderr, "the production run needs the Smooth interface "
-                    "on replication and the NoPerspective interface on "
-                    "the direct GB W_SELECT route with no probe "
-                    "candidate\n");
+             route[1] != expected_route) {
+            fprintf(stderr, "the route-based run needs the Smooth "
+                    "interface on replication and the NoPerspective "
+                    "interface on the %s route with no probe candidate\n",
+                    route_name[expected_route]);
             if (!record_only)
                r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
             return 2;
@@ -1050,8 +1087,8 @@ main(int argc, char **argv)
               native_control->shader_interface.varying_mask,
               native_candidate->shader_interface.varying_mask);
       }
-      if (!production && (recorded[0] != R3V_RS_PROBE_NONE ||
-                          recorded[1] != route_candidate)) {
+      if (!route_based && (recorded[0] != R3V_RS_PROBE_NONE ||
+                           recorded[1] != route_candidate)) {
          fprintf(stderr, "the smooth interface must take no candidate and "
                  "the NoPerspective interface the armed one\n");
          if (!record_only)
@@ -1172,11 +1209,27 @@ main(int argc, char **argv)
    }
    const int control_draws = r300_rs_tex_adj_probe_plan_stream_check(
       &control_plan, gb_select_base, native->ib, draw_index[1]);
-   const int candidate_whole = r300_rs_tex_adj_probe_plan_stream_check(
-      &candidate_plan, gb_select_base, native->ib, native->ib_size_dwords);
-   const int candidate_draws = r300_rs_tex_adj_probe_plan_stream_check(
-      &candidate_plan, gb_select_base, native->ib + first_draw_end,
-      native->ib_size_dwords - first_draw_end);
+   /* The carrier pass is judged by the carrier plan's own stream
+    * check -- every widened-record, RS, and GB_SELECT word ahead of the
+    * second draw -- in place of the probe word check. */
+   struct r300_noperspective_reciprocal_plan carrier_plan;
+   r300_noperspective_reciprocal_plan_tc1(&carrier_plan);
+   const int candidate_whole =
+      carrier_route
+         ? r300_noperspective_reciprocal_plan_stream_check(
+              &carrier_plan, gb_select_base, native->ib,
+              native->ib_size_dwords)
+         : r300_rs_tex_adj_probe_plan_stream_check(
+              &candidate_plan, gb_select_base, native->ib,
+              native->ib_size_dwords);
+   const int candidate_draws =
+      carrier_route
+         ? r300_noperspective_reciprocal_plan_stream_check(
+              &carrier_plan, gb_select_base, native->ib + first_draw_end,
+              native->ib_size_dwords - first_draw_end)
+         : r300_rs_tex_adj_probe_plan_stream_check(
+              &candidate_plan, gb_select_base, native->ib + first_draw_end,
+              native->ib_size_dwords - first_draw_end);
    emit("[state] gb_select_base=0x%08x control-over-first-pass=%d "
         "candidate-over-stream=%d candidate-over-second-pass=%d\n",
         gb_select_base, control_draws, candidate_whole, candidate_draws);
@@ -1341,17 +1394,46 @@ main(int argc, char **argv)
             continue;
          }
          const float *carrier_records = carrier_map;
-         if (r3v_native_evidence_write_file(
-                evidence_dir, carrier_file[p], carrier_map,
-                R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS * 4u) != 0) {
+         /* The carrier pass publishes the TC1 shape: twelve dwords per
+          * record, the payload premultiplied by the carrier lane, so
+          * the witness judges payload / carrier against the probe's
+          * TEX0 and the carrier lanes as the normalized clip w
+          * (r300_noperspective_reciprocal_plan.h). */
+         const bool carrier_pass = carrier_route && p == 1;
+         const unsigned stride =
+            carrier_pass ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS : 8u;
+         if (r3v_native_evidence_write_file(evidence_dir, carrier_file[p],
+                                            carrier_map,
+                                            3u * stride * 4u) != 0) {
             fprintf(stderr, "carrier retention failed\n");
             return 1;
          }
          bool payload_exact = true;
-         for (unsigned v = 0; v < 3; v++)
-            payload_exact &= memcmp(&carrier_records[v * 8 + 4],
-                                    &r300_rs_tex_adj_probe_tex0[v * 4],
-                                    4 * sizeof(float)) == 0;
+         for (unsigned v = 0; v < 3; v++) {
+            if (!carrier_pass) {
+               payload_exact &= memcmp(&carrier_records[v * stride + 4],
+                                       &r300_rs_tex_adj_probe_tex0[v * 4],
+                                       4 * sizeof(float)) == 0;
+               continue;
+            }
+            const float lane = carrier_records[v * stride + 8];
+            const float w = 1.0f / r300_rs_tex_adj_probe_reciprocal_w[v];
+            float w_max = 0.0f;
+            for (unsigned b = 0; b < 3; b++)
+               w_max = fmaxf(w_max,
+                             1.0f / r300_rs_tex_adj_probe_reciprocal_w[b]);
+            payload_exact &= fabsf(lane - w / w_max) <= 1e-6f &&
+                             carrier_records[v * stride + 9] == 0.0f &&
+                             carrier_records[v * stride + 10] == 0.0f &&
+                             carrier_records[v * stride + 11] == 1.0f;
+            for (unsigned c = 0; c < 4; c++) {
+               const float expected =
+                  r300_rs_tex_adj_probe_tex0[v * 4 + c] * lane;
+               payload_exact &=
+                  fabsf(carrier_records[v * stride + 4 + c] - expected) <=
+                  1e-6f * fmaxf(1.0f, fabsf(expected));
+            }
+         }
          /* The projection scales every reciprocal W by one factor, so
           * the three ratios against the probe's lanes agree and the
           * lanes stay pairwise distinct. */
@@ -1362,16 +1444,19 @@ main(int argc, char **argv)
          for (unsigned v = 0; v < 3; v++) {
             const float expected_w =
                ratio * r300_rs_tex_adj_probe_reciprocal_w[v];
-            proportional &= fabsf(carrier_records[v * 8 + 3] - expected_w) <=
-                            1e-5f * fabsf(expected_w);
+            proportional &=
+               fabsf(carrier_records[v * stride + 3] - expected_w) <=
+               1e-5f * fabsf(expected_w);
             for (unsigned b = v + 1; b < 3; b++)
-               distinct &= carrier_records[v * 8 + 3] !=
-                           carrier_records[b * 8 + 3];
+               distinct &= carrier_records[v * stride + 3] !=
+                           carrier_records[b * stride + 3];
          }
-         emit("[witness] pass %u payload_exact=%d reciprocal_w=(%g, %g, %g) "
-              "ratio=%g proportional=%d distinct=%d\n",
-              p, (int)payload_exact, carrier_records[3],
-              carrier_records[11], carrier_records[19], ratio,
+         emit("[witness] pass %u stride=%u payload_exact=%d "
+              "reciprocal_w=(%g, %g, %g) ratio=%g proportional=%d "
+              "distinct=%d\n",
+              p, stride, (int)payload_exact, carrier_records[3],
+              carrier_records[stride + 3], carrier_records[2 * stride + 3],
+              ratio,
               (int)proportional, (int)distinct);
          carrier_witness &= payload_exact && proportional && distinct;
          radeon_drm_vk_bo_unmap(&native_device->drm, &carrier->bo,
@@ -1454,6 +1539,13 @@ main(int argc, char **argv)
              "classification printed above; affine is the Vulkan "
              "NoPerspective value, so that classification is the receipt "
              "of the direct GB W_SELECT route on RS482"
+        : carrier_route
+           ? "the control cell interpolates perspective-correct and the "
+             "forced reciprocal-carrier pipeline's target carries the "
+             "classification printed above; affine is the Vulkan "
+             "NoPerspective value, so that classification is the receipt "
+             "of the TC1 carrier cell -- widened record, second "
+             "interpolator, RCP+MUL US program -- on RS482"
            : "the control cell interpolates perspective-correct and the "
              "candidate word's target carries the classification printed "
              "above; the statement is what that one bit does on RS482");

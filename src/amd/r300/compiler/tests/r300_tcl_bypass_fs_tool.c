@@ -33,6 +33,7 @@
 #include "radeon_compiler.h"
 #include "radeon_regalloc.h"
 
+#include "amd/r300/common/r300_noperspective_reciprocal_fs_block.h"
 #include "amd/r300/common/r300_r2vb_producer_fs_block.h"
 #include "amd/r300/common/r300_tcl_bypass_sampled_fs_block.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle_fs_block.h"
@@ -241,6 +242,47 @@ compile_block(struct r300_fragment_shader_code *shader,
 /* One compiled cell program: the NIR builder that produces it, the header
  * it bakes into, and the golden block --check compares against.
  */
+/* The NoPerspective reciprocal-carrier cell: texture coordinate set 0
+ * carries the premultiplied payload a * w and set 1's x lane the shared
+ * carrier w (r300_noperspective_reciprocal_plan.h), both perspective
+ * interpolated, so the program recovers the window-linear value as
+ * payload * rcp(carrier.x) through interpolators 0 and 1.
+ */
+static nir_shader *
+build_noperspective_reciprocal_shader(void)
+{
+   static const nir_shader_compiler_options options = {
+      .float_mul_add32 =
+         nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+      .lower_flrp32 = true,
+   };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "noperspective_reciprocal_carrier");
+   nir_variable *payload = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "payload");
+   payload->data.location = VARYING_SLOT_TEX0;
+   payload->data.driver_location = 0;
+   payload->data.interpolation = INTERP_MODE_NONE;
+   nir_variable *carrier = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "carrier");
+   carrier->data.location = VARYING_SLOT_TEX1;
+   carrier->data.driver_location = 1;
+   carrier->data.interpolation = INTERP_MODE_NONE;
+   b.shader->info.inputs_read =
+      BITFIELD64_BIT(VARYING_SLOT_TEX0) | BITFIELD64_BIT(VARYING_SLOT_TEX1);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+   nir_def *reciprocal =
+      nir_frcp(&b, nir_channel(&b, nir_load_var(&b, carrier), 0));
+   nir_store_var(&b, out, nir_fmul(&b, nir_load_var(&b, payload),
+                                   reciprocal),
+                 0xf);
+   return b.shader;
+}
+
 struct fs_program {
    const char *option;
    const char *description;
@@ -293,6 +335,19 @@ static const struct fs_program fs_programs[] = {
       .golden_size = ARRAY_SIZE(r300_tcl_bypass_sampled_fs_block),
       .golden_fg_depth_src = R300_TCL_BYPASS_SAMPLED_FS_FG_DEPTH_SRC,
       .golden_us_out_w = R300_TCL_BYPASS_SAMPLED_FS_US_OUT_W,
+   },
+   {
+      .option = "noperspective-reciprocal",
+      .description = "Reciprocal-carrier US block for the NoPerspective "
+                     "carrier cell",
+      .guard = "R300_NOPERSPECTIVE_RECIPROCAL_FS_BLOCK_H",
+      .macro_prefix = "R300_NOPERSPECTIVE_RECIPROCAL_FS",
+      .symbol = "r300_noperspective_reciprocal_fs_block",
+      .build = build_noperspective_reciprocal_shader,
+      .golden = r300_noperspective_reciprocal_fs_block,
+      .golden_size = ARRAY_SIZE(r300_noperspective_reciprocal_fs_block),
+      .golden_fg_depth_src = R300_NOPERSPECTIVE_RECIPROCAL_FS_FG_DEPTH_SRC,
+      .golden_us_out_w = R300_NOPERSPECTIVE_RECIPROCAL_FS_US_OUT_W,
    },
 };
 

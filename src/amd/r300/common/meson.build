@@ -12,7 +12,7 @@ r300_common_contract_files = files(
   'r300_compute_verb.c',
   'r300_direct_write.c',
   'r300_first_draw_state.c',
-  'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+  'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
   'r300_fragment_binary.c',
   'r300_numeric_domain.c',
   'r300_pm4_builder.c',
@@ -26,7 +26,7 @@ r300_common_contract_files = files(
   'r300_r2vb_reingest_draw.c',
   'r300_r2vb_reingest_pass.c',
   'r300_r2vb_target_state.c',
-  'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+  'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
   'r300_zb_depth_control_cell.c',
   'r300_zb_depth_state.c',
 )
@@ -271,7 +271,7 @@ test(
 r300_zb_depth_control_cell_test = executable(
   'r300_zb_depth_control_cell_test',
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
-        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'r300_zb_depth_control_cell.c', 'r300_zb_depth_state.c',
         'tests/r300_zb_depth_control_cell_test.c'),
   c_args : r300_format_contract_test_c_args,
@@ -291,7 +291,7 @@ test(
 r300_zb_depth_control_manifest = executable(
   'r300_zb_depth_control_manifest',
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
-        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'r300_zb_depth_control_cell.c', 'r300_zb_depth_control_manifest.c',
         'r300_zb_depth_state.c'),
   c_args : r300_format_contract_test_c_args,
@@ -315,7 +315,7 @@ r300_r2vb_producer_pass_test = executable(
   'r300_r2vb_producer_pass_test',
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
-        'r300_r2vb_producer_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_r2vb_producer_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_r2vb_producer_pass_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -336,7 +336,7 @@ r300_r2vb_producer_manifest = executable(
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_producer_manifest.c', 'r300_r2vb_producer_pass.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -361,7 +361,7 @@ r300_r2vb_reingest_pass_test = executable(
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_producer_pass.c', 'r300_r2vb_reingest_pass.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_r2vb_reingest_pass_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -380,7 +380,7 @@ r300_r2vb_reingest_compose_parity_test = executable(
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_pm4_compose.c',
         'r300_r2vb_carrier_delivery.c', 'r300_r2vb_producer_pass.c',
-        'r300_r2vb_reingest_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_r2vb_reingest_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_r2vb_reingest_compose_parity_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -400,7 +400,7 @@ r300_r2vb_fetched_producer_test = executable(
         'r300_pm4_builder.c', 'r300_pm4_compose.c',
         'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
         'r300_r2vb_fetched_producer.c', 'r300_r2vb_producer_pass.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_r2vb_fetched_producer_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -419,7 +419,7 @@ r300_r2vb_public_route_test = executable(
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_producer_pass.c', 'r300_r2vb_public_route.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_r2vb_public_route_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -442,7 +442,7 @@ r300_r2vb_public_route_manifest = executable(
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_producer_pass.c', 'r300_r2vb_public_route.c',
         'r300_r2vb_public_route_manifest.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -467,7 +467,7 @@ r300_r2vb_fetched_route_manifest = executable(
         'r300_pm4_builder.c', 'r300_pm4_compose.c',
         'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
         'r300_r2vb_fetched_producer.c', 'r300_r2vb_fetched_route_manifest.c',
-        'r300_r2vb_producer_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_r2vb_producer_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -483,7 +483,7 @@ r300_compute_identity_carrier_sources = files(
   'r300_fragment_binary.c', 'r300_pm4_builder.c', 'r300_pm4_compose.c',
   'r300_r2vb_carrier_delivery.c', 'r300_r2vb_fetch_pass.c',
   'r300_r2vb_fetched_producer.c', 'r300_r2vb_producer_pass.c',
-  'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c')
+  'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c')
 r300_compute_identity_carrier_test = executable(
   'r300_compute_identity_carrier_test',
   [r300_compute_identity_carrier_sources,
@@ -545,7 +545,7 @@ r300_r2vb_reingest_manifest = executable(
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_producer_pass.c', 'r300_r2vb_reingest_manifest.c',
-        'r300_r2vb_reingest_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_r2vb_reingest_pass.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -598,7 +598,7 @@ r300_r2vb_float2_tuple_pass_test = executable(
   files('r300_first_draw_state.c', 'r300_fragment_binary.c',
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_float2_tuple_pass.c', 'r300_r2vb_producer_pass.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_r2vb_float2_tuple_pass_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -620,7 +620,7 @@ r300_r2vb_float2_tuple_manifest = executable(
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_float2_tuple_manifest.c',
         'r300_r2vb_float2_tuple_pass.c', 'r300_r2vb_producer_pass.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -662,7 +662,7 @@ r300_r2vb_tuple_width_burst_manifest = executable(
         'r300_pm4_builder.c', 'r300_r2vb_carrier_delivery.c',
         'r300_r2vb_tuple_width_burst_manifest.c',
         'r300_r2vb_float2_tuple_pass.c', 'r300_r2vb_producer_pass.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -725,7 +725,7 @@ test(
 r300_tcl_bypass_triangle_test = executable(
   'r300_tcl_bypass_triangle_test',
   files('r300_fragment_binary.c', 'r300_first_draw_state.c',
-        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_tcl_bypass_triangle_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -744,7 +744,7 @@ test(
 r300_triangle_manifest = executable(
   'r300_triangle_manifest',
   files('r300_fragment_binary.c', 'r300_first_draw_state.c',
-        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'r300_triangle_manifest.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -765,7 +765,7 @@ test(
 r300_staging_manifest_test = executable(
   'r300_staging_manifest_test',
   files('r300_fragment_binary.c', 'r300_first_draw_state.c',
-        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'tests/r300_staging_manifest_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -877,6 +877,21 @@ test(
   args : [r300_triangle_manifest],
   suite : ['r300'],
 )
+# The NoPerspective reciprocal-carrier two-pass cell through both
+# replays: the TC1 carrier draw PASSes the width check at VAP_VTX_SIZE 12
+# and REJECTs at 8, and ACCEPTs under CS tracking with every control.
+test(
+  'r300-noperspective-carrier-kernel-replay',
+  files('tests/run_noperspective_carrier_kernel_replay.sh')[0],
+  args : [r300_triangle_manifest],
+  suite : ['r300'],
+)
+test(
+  'r300-noperspective-carrier-cs-track-replay',
+  files('tests/run_noperspective_carrier_cs_track_replay.sh')[0],
+  args : [r300_triangle_manifest],
+  suite : ['r300'],
+)
 
 # The 2D solid-fill direct-write control cell: the emitter, its oracle,
 # the manifest writer, and the offline kernel-parser replay with the
@@ -885,7 +900,7 @@ r300_direct_write_test = executable(
   'r300_direct_write_test',
   files('r300_direct_write.c', 'r300_fragment_binary.c',
         'r300_first_draw_state.c', 'r300_pm4_builder.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'tests/r300_direct_write_test.c'),
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'tests/r300_direct_write_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -902,7 +917,7 @@ r300_direct_write_manifest = executable(
   'r300_direct_write_manifest',
   files('r300_direct_write.c', 'r300_direct_write_manifest.c',
         'r300_fragment_binary.c', 'r300_first_draw_state.c',
-        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c'),
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
                          include_directories('.')],
@@ -931,7 +946,7 @@ test(
 r300_first_draw_state_test = executable(
   'r300_first_draw_state_test',
   files('r300_fragment_binary.c', 'r300_pm4_builder.c',
-        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
         'r300_first_draw_state.c', 'tests/r300_first_draw_state_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -952,7 +967,7 @@ r300_flat_color0_plan_test = executable(
   'r300_flat_color0_plan_test',
   files('r300_fragment_binary.c', 'r300_pm4_builder.c',
         'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c',
-        'r300_rs_tex_adj_probe.c', 'r300_first_draw_state.c',
+        'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_first_draw_state.c',
         'tests/r300_flat_color0_plan_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -974,7 +989,7 @@ r300_rs_tex_adj_probe_test = executable(
   'r300_rs_tex_adj_probe_test',
   files('r300_fragment_binary.c', 'r300_pm4_builder.c',
         'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c',
-        'r300_rs_tex_adj_probe.c', 'r300_first_draw_state.c',
+        'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_first_draw_state.c',
         'tests/r300_rs_tex_adj_probe_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -985,6 +1000,27 @@ r300_rs_tex_adj_probe_test = executable(
 test(
   'r300-rs-tex-adj-probe',
   r300_rs_tex_adj_probe_test,
+  suite : ['r300'],
+)
+# The NoPerspective reciprocal carrier plan: register words, packing
+# identity and envelope, the recovery model, and the per-draw stream
+# check over the emitted carrier cell with each word mutated.
+r300_noperspective_reciprocal_plan_test = executable(
+  'r300_noperspective_reciprocal_plan_test',
+  files('r300_fragment_binary.c', 'r300_pm4_builder.c',
+        'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c',
+        'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c',
+        'r300_first_draw_state.c',
+        'tests/r300_noperspective_reciprocal_plan_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-noperspective-reciprocal-plan',
+  r300_noperspective_reciprocal_plan_test,
   suite : ['r300'],
 )
 endif

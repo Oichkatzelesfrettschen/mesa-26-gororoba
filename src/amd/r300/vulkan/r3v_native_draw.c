@@ -570,6 +570,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       cmd_buffer->pass_target_layer_offset, pipeline->varying,
       pipeline->interpolation_route ==
          R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
+      pipeline->interpolation_route ==
+         R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
       rs_control_word,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled);
@@ -611,6 +613,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
                      R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
       .direct_noperspective = pipeline->interpolation_route ==
                               R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT,
+      .noperspective_carrier = pipeline->interpolation_route ==
+                               R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
       .rs_probe_candidate = rs_control_word,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_offset = cmd_buffer->pass_target->memory_offset +

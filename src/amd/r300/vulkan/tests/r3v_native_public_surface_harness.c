@@ -33,6 +33,7 @@
 
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_flat_color0_plan.h"
+#include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_reg.h"
 
@@ -4178,6 +4179,95 @@ main(void)
          vkDestroyPipeline(device, gated_pipeline, NULL);
          vkDestroyPipeline(device, smooth_pipeline, NULL);
          vkDestroyPipeline(device, noperspective_pipeline, NULL);
+
+         /* The forced reciprocal carrier: under the exact gate the same
+          * interface selects the carrier route, records the TC1 carrier
+          * cell byte for byte, executes the ACCEPT triangle into a
+          * twelve-dword record stream whose carrier lane is the
+          * normalized w with the payload premultiplied, and refuses the
+          * partially clipped triangle ahead of publication. */
+         setenv("R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE", "1", 1);
+         r3v_native_device_refresh_delivery_gates(native_device);
+         VkPipeline carrier_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&noperspective_shape, pass, layout,
+                              &carrier_pipeline) == VK_SUCCESS);
+         unsetenv("R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE");
+         r3v_native_device_refresh_delivery_gates(native_device);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_carrier,
+                        carrier_pipeline);
+         assert(native_carrier->interpolation_route ==
+                R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
+         assert(native_carrier->rs_probe_candidate == R3V_RS_PROBE_NONE);
+         assert(native_carrier->post_vs.reciprocal_carrier &&
+                native_carrier->post_vs.noperspective_mask == 1u);
+         VkCommandBuffer carrier_partial_cmd = record_triangle_draw(
+            &begin_pass, carrier_pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_carrier_partial,
+                        carrier_partial_cmd);
+         assert(native_carrier_partial->deferred_draws[0]
+                   .noperspective_carrier &&
+                !native_carrier_partial->deferred_draws[0]
+                    .direct_noperspective &&
+                native_carrier_partial->deferred_draws[0].rs_probe_candidate ==
+                   (uint8_t)R3V_RS_PROBE_NONE);
+         {
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            struct r300_tcl_bypass_triangle_ib expected_cell;
+            assert(r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
+                      R300_TRIANGLE_TARGET_WIDTH,
+                      R300_TRIANGLE_TARGET_HEIGHT, true, 1u, &plan,
+                      &expected_cell) == 0);
+            assert(native_carrier_partial->ib_size_dwords ==
+                   expected_cell.ib_size_dwords);
+            assert(memcmp(native_carrier_partial->ib, expected_cell.ib,
+                          expected_cell.ib_size_dwords * 4u) == 0);
+            r300_tcl_bypass_triangle_release(&expected_cell);
+         }
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_carrier_partial) ==
+                VK_ERROR_INITIALIZATION_FAILED);
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, ndc_triangle, sizeof(ndc_triangle));
+         vkUnmapMemory(device, vertex_memory);
+         VkCommandBuffer carrier_accept_cmd = record_triangle_draw(
+            &begin_pass, carrier_pipeline, vertex_buffer, 3, 1, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_carrier_accept,
+                        carrier_accept_cmd);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_carrier_accept) == VK_SUCCESS);
+         {
+            /* The NDC triangle's clip w is 1 at every vertex, so the
+             * normalization scale is 1: the payload is the varying
+             * unchanged and every carrier vector is (1, 0, 0, 1).  The
+             * published stream is the clipper's fan of one triangle. */
+            void *carrier_map = NULL;
+            assert(radeon_drm_vk_bo_map(
+                      &native_device->drm,
+                      &native_carrier_accept->owned_carriers[0]->bo,
+                      &carrier_map) == 0);
+            const float *records = carrier_map;
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            assert(r300_noperspective_reciprocal_validate_stream(
+                      &plan, records, 1u) == 0);
+            for (unsigned vertex = 0; vertex < 3; vertex++) {
+               const float *record =
+                  &records[vertex * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+               assert(record[3] == 1.0f);
+               assert(record[8] == 1.0f && record[9] == 0.0f &&
+                      record[10] == 0.0f && record[11] == 1.0f);
+            }
+            radeon_drm_vk_bo_unmap(
+               &native_device->drm,
+               &native_carrier_accept->owned_carriers[0]->bo, carrier_map);
+         }
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &map) == VK_SUCCESS);
+         memcpy(map, varying_crossing, sizeof(varying_crossing));
+         vkUnmapMemory(device, vertex_memory);
+         vkDestroyPipeline(device, carrier_pipeline, NULL);
 
          /* An open R2VB delivery gate leaves the NoPerspective
           * interface without a route: the partial-clip refusal lives

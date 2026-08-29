@@ -509,6 +509,7 @@ create_pipeline(struct r3v_native_device *device,
       .rs_destination_available = varying && !sampled,
       .fragment_consumes_destination = varying && !sampled,
       .provoking_first_representable = true,
+      .carrier_forced = device->noperspective_carrier_force != NULL,
    };
    /* The Flat replication pin demotes the direct GA route alone: a
     * NoPerspective interface keeps its route, and an UNSUPPORTED mix
@@ -538,6 +539,9 @@ create_pipeline(struct r3v_native_device *device,
        pipeline->interpolation_route ==
           R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT)
       pipeline->interpolation_route = R3V_INTERPOLATION_ROUTE_REPLICATE;
+   pipeline->post_vs.reciprocal_carrier =
+      pipeline->interpolation_route ==
+      R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER;
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

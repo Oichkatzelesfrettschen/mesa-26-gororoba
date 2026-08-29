@@ -3,6 +3,8 @@
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_first_draw_state.h"
 #include "r300_flat_color0_plan.h"
+#include "r300_noperspective_reciprocal_fs_block.h"
+#include "r300_noperspective_reciprocal_plan.h"
 #include "r300_rs_tex_adj_probe.h"
 #include "r300_fragment_binary.h"
 #include "r300_pm4_builder.h"
@@ -187,7 +189,17 @@ emit_triangle_stream_into(
    if (flat_color0 && (!params->varying || params->sampled ||
                        params->first_draw_contract == NULL))
       return -EINVAL;
-   const uint32_t record_dwords = params->varying ? 8u : 4u;
+   const struct r300_noperspective_reciprocal_plan *carrier =
+      params->noperspective_carrier;
+   if (carrier != NULL &&
+       (!params->varying || flat_color0 || params->rs_tex_adj != NULL ||
+        params->sampled ||
+        r300_noperspective_reciprocal_plan_validate(carrier) != 0))
+      return -EINVAL;
+   const uint32_t record_dwords =
+      carrier != NULL
+         ? r300_noperspective_reciprocal_plan_record_dwords(carrier)
+         : params->varying ? 8u : 4u;
    const uint32_t record_bytes = record_dwords * 4u;
    const uint32_t first_segment_triangle_count =
       MIN2(triangle_count, R300_TRIANGLE_MAX_TRIANGLES);
@@ -256,7 +268,10 @@ emit_triangle_stream_into(
     */
    r300_pm4_reg(&b, R300_VAP_CNTL_STATUS, R300_VAP_TCL_BYPASS);
    r300_pm4_reg(&b, R300_VAP_PROG_STREAM_CNTL_0,
-                params->varying
+                carrier != NULL
+                   ? r300_noperspective_reciprocal_plan_prog_stream_cntl(
+                        carrier, 0)
+                   : params->varying
                    ? (R300_DATA_TYPE_FLOAT_4 |
                       (0 << R300_DST_VEC_LOC_SHIFT)) |
                         ((R300_DATA_TYPE_FLOAT_4 |
@@ -267,6 +282,13 @@ emit_triangle_stream_into(
                          << 16)
                    : R300_DATA_TYPE_FLOAT_4 | (0 << R300_DST_VEC_LOC_SHIFT) |
                         R300_LAST_VEC);
+   /* The carrier's third element rides the second PSC word; the
+    * kernel's vertex-output check reads every PSC word an element
+    * occupies. */
+   if (carrier != NULL)
+      r300_pm4_reg(&b, R300_VAP_PROG_STREAM_CNTL_1,
+                   r300_noperspective_reciprocal_plan_prog_stream_cntl(
+                      carrier, 1));
    static const uint32_t psc_ext_identity[8] = {
       R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
       R300_TRIANGLE_PSC_EXT_IDENTITY, R300_TRIANGLE_PSC_EXT_IDENTITY,
@@ -280,11 +302,31 @@ emit_triangle_stream_into(
                    (flat_color0 ? R300_VAP_OUTPUT_VTX_FMT_0__COLOR_0_PRESENT
                                 : 0));
    r300_pm4_reg(&b, R300_VAP_OUTPUT_VTX_FMT_1,
-                params->varying && !flat_color0
+                carrier != NULL
+                   ? r300_noperspective_reciprocal_plan_vtx_fmt_1(carrier)
+                   : params->varying && !flat_color0
                    ? R300_VAP_OUTPUT_VTX_FMT_1__4_COMPONENTS
                    : 0);
    r300_pm4_reg(&b, R300_VAP_VTX_SIZE, record_dwords);
-   if (params->varying && !flat_color0) {
+   if (carrier != NULL) {
+      /* Position plus every texture vector assembled; RS_COUNT declares
+       * four components per vector, RS_INST_COUNT runs one instruction
+       * per vector, RS_IP_i reads texture pointer 4i in order, and
+       * RS_INST_i writes texture i to US input i. */
+      const uint32_t vectors = carrier->payload_vectors + 1;
+      r300_pm4_reg(&b, R300_VAP_VSM_VTX_ASSM,
+                   r300_noperspective_reciprocal_plan_vsm_vtx_assm(carrier));
+      r300_pm4_reg(&b, R300_RS_COUNT,
+                   r300_noperspective_reciprocal_plan_rs_count(carrier));
+      r300_pm4_reg(&b, R300_RS_INST_COUNT,
+                   r300_noperspective_reciprocal_plan_rs_inst_count(carrier));
+      for (uint32_t i = 0; i < vectors; i++)
+         r300_pm4_reg(&b, R300_RS_IP_0 + 4 * i,
+                      r300_noperspective_reciprocal_plan_rs_ip(carrier, i));
+      for (uint32_t i = 0; i < vectors; i++)
+         r300_pm4_reg(&b, R300_RS_INST_0 + 4 * i,
+                      r300_noperspective_reciprocal_plan_rs_inst(carrier, i));
+   } else if (params->varying && !flat_color0) {
       /* The assembler admits position plus texture coordinate 0, and
        * the RS routes that varying: RS_COUNT declares four interpolated
        * components with no rasterized colors, RS_IP_0 reads texture
@@ -667,6 +709,19 @@ r300_tcl_bypass_triangle_varying_fs(struct r300_fragment_binary *fs)
       "r300-varying-passthrough-compiled");
 }
 
+int
+r300_tcl_bypass_triangle_noperspective_fs(struct r300_fragment_binary *fs)
+{
+   /* payload * rcp(carrier.x) over interpolators 0 and 1. */
+   return r300_fragment_binary_init(
+      fs, r300_noperspective_reciprocal_fs_block,
+      sizeof(r300_noperspective_reciprocal_fs_block) /
+         sizeof(r300_noperspective_reciprocal_fs_block[0]),
+      R300_NOPERSPECTIVE_RECIPROCAL_FS_FG_DEPTH_SRC,
+      R300_NOPERSPECTIVE_RECIPROCAL_FS_US_OUT_W,
+      "r300-noperspective-reciprocal-compiled");
+}
+
 /* The cell's target is little-endian B8G8R8A8, so the shader's four
  * 8-bit output components select blue, green, red, and alpha in that
  * order; r300_first_draw_contract_set_us_out_fmt_0 places the word.
@@ -703,15 +758,16 @@ r300_tcl_bypass_triangle_reference_contract(
 }
 
 static int
-family_emit_triangle_stream(
+family_emit_triangle_stream_plans(
    uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
    const struct r300_flat_color0_plan *flat_color0,
    const struct r300_rs_tex_adj_probe_plan *rs_tex_adj,
+   const struct r300_noperspective_reciprocal_plan *carrier,
    struct r300_tcl_bypass_triangle_ib *out)
 {
-   if (flat_color0 != NULL && rs_tex_adj != NULL)
+   if ((flat_color0 != NULL) + (rs_tex_adj != NULL) + (carrier != NULL) > 1)
       return -EINVAL;
-   if (flat_color0 != NULL || rs_tex_adj != NULL)
+   if (flat_color0 != NULL || rs_tex_adj != NULL || carrier != NULL)
       varying = true;
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
@@ -719,8 +775,9 @@ family_emit_triangle_stream(
       return -EINVAL;
 
    struct r300_fragment_binary fs;
-   int rc = varying ? r300_tcl_bypass_triangle_varying_fs(&fs)
-                    : r300_tcl_bypass_triangle_reference_fs(&fs);
+   int rc = carrier != NULL ? r300_tcl_bypass_triangle_noperspective_fs(&fs)
+            : varying       ? r300_tcl_bypass_triangle_varying_fs(&fs)
+                            : r300_tcl_bypass_triangle_reference_fs(&fs);
    if (rc != 0)
       return rc;
 
@@ -762,11 +819,50 @@ family_emit_triangle_stream(
       .varying = varying,
       .flat_color0 = flat_color0,
       .rs_tex_adj = rs_tex_adj,
+      .noperspective_carrier = carrier,
       .triangle_count = triangle_count,
    };
    rc = emit_triangle_stream(&params, triangle_count, out);
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+static int
+family_emit_triangle_stream(
+   uint32_t width, uint32_t height, bool varying, uint32_t triangle_count,
+   const struct r300_flat_color0_plan *flat_color0,
+   const struct r300_rs_tex_adj_probe_plan *rs_tex_adj,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   return family_emit_triangle_stream_plans(width, height, varying,
+                                            triangle_count, flat_color0,
+                                            rs_tex_adj, NULL, out);
+}
+
+int
+r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count,
+   const struct r300_noperspective_reciprocal_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (out != NULL)
+      memset(out, 0, sizeof(*out));
+   int rc = r300_noperspective_reciprocal_plan_validate(plan);
+   if (rc != 0)
+      return rc;
+   uint32_t output_triangle_count = triangle_count;
+   if (clip_space) {
+      rc = clip_output_triangle_count(triangle_count, &output_triangle_count);
+      if (rc != 0)
+         return rc;
+   } else if (triangle_count < 1u ||
+              triangle_count > R300_TRIANGLE_MAX_TRIANGLES) {
+      return -EINVAL;
+   }
+   return family_emit_triangle_stream_plans(width, height, true,
+                                            output_triangle_count, NULL,
+                                            NULL, plan, out);
 }
 
 static int
@@ -2402,6 +2498,12 @@ multi_pass_emit_one(const struct r300_triangle_render_shape *pass,
       struct r300_flat_color0_plan plan;
       r300_flat_color0_plan_direct_first(&plan);
       return r300_tcl_bypass_triangle_flat_color0_family_emit(
+         pass->width, pass->height, clip_space, 1u, &plan, out);
+   }
+   if (pass->varying && pass->noperspective_carrier) {
+      struct r300_noperspective_reciprocal_plan plan;
+      r300_noperspective_reciprocal_plan_tc1(&plan);
+      return r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
          pass->width, pass->height, clip_space, 1u, &plan, out);
    }
    if (pass->varying && pass->rs_tex_adj_candidate != 0) {
