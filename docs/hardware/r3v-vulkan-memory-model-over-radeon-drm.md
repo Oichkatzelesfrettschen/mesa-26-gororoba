@@ -14,17 +14,21 @@ pin for those rows lives in the kernel-contract pin test (see
 ## Domains and platform geometry
 
 RS480-family graphics memory is one physical pool with two windows: the
-BIOS carves a fixed shared-VRAM partition out of system DRAM (the
-northbridge TOM interval; kernel row `RS482_VRAM_CARVEOUT_ACCOUNTING`),
-and the internal GART translates a virtual aperture over ordinary system
-pages (rows `RS482_GTT_SIZE_REGISTER_ENCODING`,
-`RS482_GTT_ADDRESS_PLACEMENT`).  `r3v_memory_properties_contract.h`
-carries the platform ceilings (128 MiB carve-out, 1 GiB aperture) and the
-invariants any reported table satisfies; the reported heap size itself is
-the kernel's `DRM_RADEON_GEM_INFO` gart_size + vram_size, clamped to the
-ceiling (`r3v_GetPhysicalDeviceMemoryProperties2`,
-`r3v_native_memory_properties_fill`).  One DEVICE_LOCAL heap carries both
-kernel pools because they draw from the same DRAM.
+firmware selects the shared-VRAM interval from the northbridge TOM range
+(kernel row `RS482_VRAM_CARVEOUT_ACCOUNTING`), and the internal GART
+translates a virtual aperture over ordinary system pages (rows
+`RS482_GTT_SIZE_REGISTER_ENCODING`, `RS482_GTT_ADDRESS_PLACEMENT`).
+`r3v_memory_properties_contract.h` carries the Vulkan table invariants and
+uses the running kernel's `DRM_RADEON_GEM_INFO` `gart_size + vram_size` as
+the per-device capacity.  The report keeps that positive sum without a
+universal family ceiling (`r3v_GetPhysicalDeviceMemoryProperties2`,
+`r3v_native_memory_properties_fill`).  Linux accepts GART selectors from
+32 MiB through 2 GiB in `drivers/gpu/drm/radeon/rs400.c` (discover
+`rs400_gart_enable` with `rg --fixed-strings`), while
+`drivers/gpu/drm/radeon/r100.c:r100_vram_init_sizes` derives the IGP VRAM
+interval from NB_TOM (discover `r100_vram_init_sizes` with
+`rg --fixed-strings`).  One DEVICE_LOCAL heap carries both kernel pools
+because the native allocator submits both domains through the same device.
 
 ## Memory types and placement
 

@@ -1075,10 +1075,11 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
 {
    VkPhysicalDeviceMemoryProperties *const m = &pMemoryProperties->memoryProperties;
 
-   /* DRM_RADEON_GEM_INFO reports gart_size and vram_size, the two kernel
-    * pools every native GEM allocation lands in; their sum sizes the one
-    * native heap, and r3v_native_memory_properties_fill clamps it to the
-    * platform ceiling and lays out the types.
+   /* DRM_RADEON_GEM_INFO reports gart_size and vram_size, the two per-device
+    * kernel manager capacities used by native GEM allocation.  The memory
+    * contract helper preserves their positive sum; the kernel's
+    * radeon_gem_info_ioctl() values are the runtime capacity witness rather
+    * than a family-wide constant.
     */
    VK_FROM_HANDLE(r3v_physical_device, pdev, physicalDevice);
    uint64_t heap_bytes =
@@ -1086,8 +1087,12 @@ r3v_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    struct drm_radeon_gem_info gem_info = {0};
    if (drmCommandWriteRead(pdev->render_node_fd, DRM_RADEON_GEM_INFO,
                            &gem_info, sizeof(gem_info)) == 0 &&
-       gem_info.gart_size + gem_info.vram_size > 0)
-      heap_bytes = gem_info.gart_size + gem_info.vram_size;
+       gem_info.gart_size <= UINT64_MAX - gem_info.vram_size) {
+      const uint64_t reported_bytes =
+         gem_info.gart_size + gem_info.vram_size;
+      if (reported_bytes > 0)
+         heap_bytes = reported_bytes;
+   }
 
    r3v_native_memory_properties_fill(m, heap_bytes);
    return;
