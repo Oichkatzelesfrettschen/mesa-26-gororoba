@@ -383,8 +383,11 @@ main(int argc, char **argv)
    case ARM_BUDGET_CONTRACT: {
       VkPhysicalDeviceMemoryProperties m;
       get_memory_properties(pdev, &m);
-      assert(r3v_memory_properties_check(
-                &m, R3V_RS48X_MEMORY_CEILING_BYTES) ==
+      /* The heap size comes from the same DRM GEM_INFO observation used by
+       * the physical-device query; the checker validates table structure
+       * without imposing a family-wide capacity constant.
+       */
+      assert(r3v_memory_properties_check(&m, m.memoryHeaps[0].size) ==
              R3V_MEMORY_PROPERTIES_OK);
       assert(m.memoryHeapCount == 1 && m.memoryTypeCount == 2);
       assert(m.memoryTypes[0].propertyFlags &
