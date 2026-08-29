@@ -123,7 +123,10 @@ main(int argc, char **argv)
     * -- the stride and the attribute format are the width's record size,
     * the record holds the leading components, and the fetch swizzle
     * fills z and w -- so each width is its own cell with its own stream
-    * digest over the same target oracle.
+    * digest over the same target oracle.  Symbol discovery uses
+    * (rg --fixed-strings r300_r2vb_fetched_route_reference_compose
+    * src/amd/r300/common/; rg --fixed-strings
+    * R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL src/amd/r300/vulkan/).
     */
    bool record_only = false;
    bool fetched = false;
