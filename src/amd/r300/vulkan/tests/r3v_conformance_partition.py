@@ -346,6 +346,23 @@ def verify_manifest(path):
             executable != manifest.get("executable_case_count"):
         raise PartitionRefusal("slice counts do not sum to the covered and "
                                "executable counts")
+    if total + manifest.get("uncovered_case_count", -1) != \
+            manifest.get("corpus_case_count"):
+        raise PartitionRefusal("covered and uncovered counts do not sum to "
+                               "the corpus")
+    if manifest["kind"] == "pilot":
+        uncovered = p.parent / "uncovered.txt"
+        if manifest.get("exact_cover"):
+            raise PartitionRefusal("a pilot manifest cannot claim exact cover")
+        if manifest["uncovered_case_count"] == 0:
+            if uncovered.exists():
+                raise PartitionRefusal("a fully covered pilot has an "
+                                       "uncovered caselist")
+        elif not uncovered.is_file() or len([
+                line for line in uncovered.read_text().splitlines() if line
+        ]) != manifest["uncovered_case_count"]:
+            raise PartitionRefusal("uncovered caselist does not match its "
+                                   "recorded count")
     if manifest["kind"] == "exhaustive" and (
             not manifest["exact_cover"] or
             manifest["covered_case_count"] != manifest["corpus_case_count"] or
@@ -625,6 +642,14 @@ def selftest():
                 not (out / "pilot" / "uncovered.txt").is_file():
             raise SystemExit("selftest: pilot did not record the uncovered "
                              "case")
+        pilot_manifest = out / "pilot" / "partition_manifest.json"
+        pilot_body = json.loads(pilot_manifest.read_text())
+        pilot_body["uncovered_case_count"] = 0
+        pilot_body["corpus_case_count"] = pilot_body["covered_case_count"]
+        pilot_body["manifest_sha256"] = manifest_digest(pilot_body)
+        pilot_manifest.write_text(json.dumps(pilot_body))
+        expect(lambda: verify_manifest(pilot_manifest),
+               "fully covered pilot has an uncovered")
         # Double cover refuses in both kinds.
         write_table(good + [("5", "again", "dEQP-VK.api", "none",
                              "host-model")])
