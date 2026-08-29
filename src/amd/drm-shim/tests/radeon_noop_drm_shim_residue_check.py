@@ -20,7 +20,6 @@ import re
 import subprocess
 import sys
 
-
 # test_text_equals (radeon_noop_drm_shim.c) is the shim's only caller for
 # comparing a sysfs override's content -- vendor, device, subsystem_vendor,
 # modalias -- against the identity RADEON_GPU_ID selected. That comparison
@@ -34,7 +33,38 @@ import sys
 # offset -- and keeps the normalization that absorbs that variance.
 IDENTITY_MISMATCH = re.compile(
     r'^FAIL: override (?P<path>\S+) contains "(?P<observed>[^"]*)" '
-    r'instead of "(?P<expected>[^"]*)"$')
+    r'instead of "(?P<expected>[^"]*)"$'
+)
+
+
+def failure_records(text):
+    """Returns logical FAIL records, including multiline diagnostics."""
+    records = []
+    pending = None
+    quote_count = 0
+    for physical_line in text.splitlines(keepends=True):
+        if pending is None:
+            if not physical_line.startswith("FAIL:"):
+                continue
+            pending = physical_line
+            quote_count = physical_line.count('"')
+        elif quote_count % 2:
+            pending += physical_line
+            quote_count += physical_line.count('"')
+        else:
+            records.append(pending.rstrip("\r\n"))
+            pending = None
+            if physical_line.startswith("FAIL:"):
+                pending = physical_line
+                quote_count = physical_line.count('"')
+
+        if pending is not None and quote_count % 2 == 0:
+            records.append(pending.rstrip("\r\n"))
+            pending = None
+
+    if pending is not None:
+        records.append(pending.rstrip("\r\n"))
+    return records
 
 
 def normalize(line):
@@ -48,15 +78,20 @@ def normalize(line):
     if identity:
         return 'FAIL: override {} contains "{}" instead of "{}"'.format(
             re.sub(r"[0-9]+", "N", identity.group("path")),
-            identity.group("observed"), identity.group("expected"))
+            identity.group("observed"),
+            identity.group("expected"),
+        )
     return re.sub(r"[0-9]+", "N", stripped)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--signature", required=True)
-    parser.add_argument("--expect-abort", action="store_true",
-                        help="the run is expected to die on a signal")
+    parser.add_argument(
+        "--expect-abort",
+        action="store_true",
+        help="the run is expected to die on a signal",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -71,17 +106,13 @@ def main():
     # Multiset, not set: two failures that normalize to one line are two
     # distinct defects, and repairing one of them must not pass because
     # the other still emits the line.
-    observed = sorted(normalize(line)
-                      for line in result.stderr.splitlines()
-                      if line.startswith("FAIL:"))
+    observed = sorted(normalize(line) for line in failure_records(result.stderr))
 
     with open(args.signature, "r", encoding="utf-8") as handle:
-        expected = sorted(normalize(line) for line in handle
-                          if line.startswith("FAIL:"))
+        expected = sorted(normalize(line) for line in failure_records(handle.read()))
 
     if result.returncode < 0 and not args.expect_abort:
-        print("FAIL: run died on signal {}".format(-result.returncode),
-              file=sys.stderr)
+        print("FAIL: run died on signal {}".format(-result.returncode), file=sys.stderr)
         return 1
 
     remaining = list(observed)
@@ -94,17 +125,16 @@ def main():
     added = remaining
     if missing or added:
         for line in missing:
-            print("signature line no longer observed: {}".format(line),
-                  file=sys.stderr)
+            print("signature line no longer observed: {}".format(line), file=sys.stderr)
         for line in added:
-            print("failure outside the signature: {}".format(line),
-                  file=sys.stderr)
-        print("residue drifted; repair the class and update {}".format(
-            args.signature), file=sys.stderr)
+            print("failure outside the signature: {}".format(line), file=sys.stderr)
+        print(
+            "residue drifted; repair the class and update {}".format(args.signature),
+            file=sys.stderr,
+        )
         return 1
 
-    print("residue matches the recorded signature ({} lines)".format(
-        len(expected)))
+    print("residue matches the recorded signature ({} lines)".format(len(expected)))
     return 0
 
 
