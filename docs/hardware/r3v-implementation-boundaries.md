@@ -116,7 +116,11 @@ NoPerspective, Flat mixed in, a third location, a width mismatch, a
 component offset, an integer varying, the mixed interface under the
 pass-through program -- stays `UNSUPPORTED`, an open R2VB delivery gate
 withholds the route, and the plan refuses more than four RS vectors
-including the carrier or a US program past the R300 budget.
+including the carrier or a US program past the R300 budget. Silicon
+receipt on RS482: red and green perspective 882/882 beside blue and
+alpha affine 882/882, each at max deviation 1 with the competing model
+on no separated pixel
+(`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-mixed-carrier-receipt-rs482`).
 The device exposes
 no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
