@@ -254,7 +254,12 @@ harness at the fallback assertion. The concrete cells are byte-identical
 to the rung A and rung B cells, so their kernel replays stand. The silicon
 receipt is `r3v_native_attended_rs_tex_adj_probe --candidate
 reciprocal-carrier-partial --production`, the rung B geometry with no
-gate.
+gate, retained as
+`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-public-partial-clip-fallback-receipt-rs482`:
+the queue selected the carrier, the armed cell is rung B's bytes, the
+candidate classifies affine 1296/1296 against a perspective 1296/1296
+control, and the preflight record-only over the unclipped triangle
+selected the rung A direct cell.
 
 ## Cross-repository closure
 
