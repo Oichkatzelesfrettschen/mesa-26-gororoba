@@ -219,6 +219,43 @@ ahead of the ioctl against the mixed prediction (holds) and the pure
 perspective and affine predictions (fail). Flat beside the mixed pair
 stays a later shape.
 
+Public partial-clip fallback: the full-vec4 NoPerspective pipeline keeps
+both qualified cells. The pipeline is created with the clipping class
+deferred, so the selector returns
+`R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER` for the public
+conjunction (one float vec4 NoPerspective varying at location 0, CPU
+delivery, a triangle list, every probe and force gate closed); the draw
+record installs the direct GB W_SELECT cell in the command buffer's IB,
+retains the TC1 carrier cell with its relocations bound to the same
+reference indices, and sizes the carrier memory for the twelve-dword
+record. `r3v_native_cmd_buffer_select_deferred_routes` runs at submission
+after the semaphore waits and ahead of every digest, arming verdict, and
+retention: the CPU vertex executor runs the job over the live stream bytes
+into host scratch, every source triangle is judged against the clip
+volume, and `r3v_interpolation_route_resolve_clip` maps ACCEPT to the
+direct cell (the IB unchanged, `W_SELECT` one) and PARTIAL to the carrier
+cell (the carrier cell spliced over the direct cell's span, later spans
+moved, the draw flagged for the carrier packing with `W_SELECT` clear); a
+carrier envelope refusal at execution fails the draw ahead of publication,
+and an execution that meets an unresolved adaptive draw refuses. The
+attended probe resolves the same selection after recording, so its
+record-only pass reports the concrete route and the digest the submission
+arms. A probe gate demotes the adaptive route to replication as it demotes
+the direct route, the force gate selects the carrier in every class, and an
+open R2VB delivery gate withholds it. The host proof is the public-surface
+harness: the ACCEPT triangle keeps the IB byte-equal to the probe-gated
+W_SELECT cell; the crossing triangle's spliced IB is byte-equal to the
+carrier family emitter's cell, its published fan validates as six carrier
+records, and the unequal-w crossing reproduces rung B's fan, witness
+values, and carrier lane; the two-pass control-then-candidate shape
+splices the second span alone and is byte-equal to the same passes
+recorded under the force gate; a stripped PARTIAL branch fails the
+harness at the fallback assertion. The concrete cells are byte-identical
+to the rung A and rung B cells, so their kernel replays stand. The silicon
+receipt is `r3v_native_attended_rs_tex_adj_probe --candidate
+reciprocal-carrier-partial --production`, the rung B geometry with no
+gate.
+
 ## Cross-repository closure
 
 - `mesa-26-gororoba`: the four rungs, exact emitters, mutation suites,
@@ -229,7 +266,7 @@ stays a later shape.
   changes behavior.
 - `steinmarder-r300`: one receipt per rung -- forced TC1 carrier,
   partial-clip carrier, q-lane carrier, mixed Smooth/NoPerspective
-  carrier.
+  carrier, public partial-clip fallback.
 
 ## Validation ladder
 

@@ -101,12 +101,27 @@ enum r3v_interpolation_route {
     * clipping class is admitted and the expanded stream is validated
     * ahead of publication.  Every other mixed shape is UNSUPPORTED. */
    R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
+   /* The public full-vec4 NoPerspective conjunction ahead of the clip
+    * judgment: one float vec4 NoPerspective varying at location 0, CPU
+    * delivery, a triangle list, every probe and force gate closed.
+    * The record installs the direct GB W_SELECT cell and retains the
+    * TC1 reciprocal carrier cell beside it; at submission, after the
+    * CPU vertex execution, r3v_interpolation_route_resolve_clip judges
+    * the draw's triangles and selects the concrete route: every source
+    * triangle ACCEPT keeps the direct cell, any PARTIAL triangle
+    * splices the carrier cell in and packs the carrier stream, and a
+    * carrier envelope refusal fails the draw ahead of publication.
+    * The selection precedes the arming digest, so the armed bytes are
+    * the concrete cell's. */
+   R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER,
 };
 
 /* The per-vertex dword count the route publishes to the cell: the
  * reciprocal carrier widens the eight-dword varying record to twelve,
  * the mixed carrier the twelve-dword two-location record to sixteen,
- * and every other route publishes the vertex job's own record. */
+ * the adaptive route reserves the carrier's twelve so either concrete
+ * cell fits the carrier memory, and every other route publishes the
+ * vertex job's own record. */
 uint32_t r3v_interpolation_published_record_dwords(
    enum r3v_interpolation_route route, uint32_t job_record_dwords);
 
@@ -117,7 +132,20 @@ enum r3v_interpolation_clip_class {
    /* At least one vertex outside: the clipper emits a fan whose
     * vertices differ from the source's. */
    R3V_INTERPOLATION_CLIP_PARTIAL,
+   /* The record-time class: the draw's triangles are judged after the
+    * CPU vertex execution at submission, so the selector returns the
+    * route that holds both concrete cells where the class decides. */
+   R3V_INTERPOLATION_CLIP_DEFERRED,
 };
+
+/* Resolves the adaptive route against the judged class of a draw:
+ * ACCEPT (every source triangle) selects the direct GB W_SELECT cell,
+ * PARTIAL (any source triangle) the TC1 reciprocal carrier cell.  Every
+ * other route resolves to itself; the adaptive route against DEFERRED
+ * stays adaptive. */
+enum r3v_interpolation_route
+r3v_interpolation_route_resolve_clip(enum r3v_interpolation_route route,
+                                     enum r3v_interpolation_clip_class clip);
 
 struct r3v_interpolation_query {
    bool cpu_delivery;

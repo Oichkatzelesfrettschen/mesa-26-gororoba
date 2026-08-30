@@ -562,13 +562,26 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    /* The rasterizer control word: the gated probe candidate, or
     * W_SELECT_ONE when the direct NoPerspective route was selected
     * (the pipeline yields the route to an open probe gate). */
+   const bool adaptive_noperspective =
+      pipeline->interpolation_route ==
+      R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER;
+   const bool direct_noperspective =
+      pipeline->interpolation_route ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT ||
+      adaptive_noperspective;
    const uint8_t rs_control_word =
       pipeline->rs_probe_candidate != R3V_RS_PROBE_NONE
          ? (uint8_t)pipeline->rs_probe_candidate
-         : pipeline->interpolation_route ==
-                 R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT
-              ? (uint8_t)R3V_RS_PROBE_W_SELECT_ONE
-              : (uint8_t)R3V_RS_PROBE_NONE;
+         : direct_noperspective ? (uint8_t)R3V_RS_PROBE_W_SELECT_ONE
+                                : (uint8_t)R3V_RS_PROBE_NONE;
+   /* The adaptive route installs the direct cell and retains the TC1
+    * carrier cell; the span the direct cell occupies in the command
+    * buffer's IB is what the selection at submission replaces. */
+   const uint32_t ib_span_offset =
+      cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1
+         ? cmd_buffer->ib_size_dwords
+         : 0;
+   struct r300_tcl_bypass_triangle_ib alternate_cell = {0};
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
       cmd_buffer->pass_target_layer_offset, pipeline->varying,
@@ -582,12 +595,28 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
       rs_control_word,
       (args->vertex_count / 3) * args->instance_count,
-      pipeline->color_bits, sampled);
+      pipeline->color_bits, sampled,
+      adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
       poison(commandBuffer, result);
       return;
+   }
+   const uint32_t ib_span_dwords = cmd_buffer->ib_size_dwords - ib_span_offset;
+   uint32_t *alternate_ib = NULL;
+   uint32_t alternate_ib_dwords = 0;
+   if (adaptive_noperspective) {
+      if (!alternate_cell.owns_ib || alternate_cell.ib == NULL ||
+          alternate_cell.ib_size_dwords == 0) {
+         r300_tcl_bypass_triangle_release(&alternate_cell);
+         poison(commandBuffer, VK_ERROR_INITIALIZATION_FAILED);
+         return;
+      }
+      alternate_ib = alternate_cell.ib;
+      alternate_ib_dwords = alternate_cell.ib_size_dwords;
+      alternate_cell.ib = NULL;
+      r300_tcl_bypass_triangle_release(&alternate_cell);
    }
 
    cmd_buffer->owned_carriers[pass_slot] = carrier;
@@ -619,8 +648,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .post_vs = pipeline->post_vs,
       .direct_flat = pipeline->interpolation_route ==
                      R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
-      .direct_noperspective = pipeline->interpolation_route ==
-                              R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT,
+      .direct_noperspective = direct_noperspective,
       .noperspective_carrier = pipeline->interpolation_route ==
                                R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
       .noperspective_q_lane = pipeline->interpolation_route ==
@@ -629,6 +657,11 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          pipeline->interpolation_route ==
          R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
       .rs_probe_candidate = rs_control_word,
+      .adaptive_noperspective = adaptive_noperspective,
+      .ib_span_offset = ib_span_offset,
+      .ib_span_dwords = ib_span_dwords,
+      .alternate_ib = alternate_ib,
+      .alternate_ib_dwords = alternate_ib_dwords,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_offset = cmd_buffer->pass_target->memory_offset +
                             cmd_buffer->pass_target_layer_offset,

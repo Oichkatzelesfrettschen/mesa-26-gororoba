@@ -399,7 +399,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                uint8_t rs_probe_candidate,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
-                                  *sampled)
+                                  *sampled,
+                               struct r300_tcl_bypass_triangle_ib
+                                  *alternate_carrier_out)
 {
    VkResult role_result = validate_triangle_memory_roles(
       device, vertex_memory, color_memory);
@@ -465,6 +467,19 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       shape, varying, flat_color0, noperspective_carrier,
       noperspective_q_lane, noperspective_mixed_carrier, rs_probe_candidate,
       triangle_count, sampled, clip_space, &cell);
+   /* The adaptive NoPerspective route retains the TC1 reciprocal
+    * carrier cell beside the installed direct cell: the same shape and
+    * memories, the carrier record, and every probe word at its control
+    * value.  Its relocations bind beside the primary's below, so the
+    * selection at submission can replace the primary's span with it. */
+   if (emit_result == 0 && alternate_carrier_out != NULL) {
+      memset(alternate_carrier_out, 0, sizeof(*alternate_carrier_out));
+      emit_result = emit_triangle_cell_for_position_space(
+         shape, varying, false, true, false, false, (uint8_t)R3V_RS_PROBE_NONE,
+         triangle_count, sampled, clip_space, alternate_carrier_out);
+      if (emit_result != 0)
+         r300_tcl_bypass_triangle_release(&cell);
+   }
    if (emit_result != 0)
       r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
@@ -486,6 +501,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (references == NULL) {
       r300_tcl_bypass_triangle_release(&cell);
       r300_tcl_bypass_triangle_release(&window_cell);
+      if (alternate_carrier_out != NULL)
+         r300_tcl_bypass_triangle_release(alternate_carrier_out);
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
    references[R300_TRIANGLE_SLOT_VERTEX] = (struct r3v_native_bo_reference){
@@ -519,11 +536,14 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     */
    if (cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1) {
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
-         device, cmd_buffer, &cell, references, slot_count);
+         device, cmd_buffer, &cell, references, slot_count,
+         alternate_carrier_out);
       free(references);
       if (appended != VK_SUCCESS) {
          r300_tcl_bypass_triangle_release(&cell);
          r300_tcl_bypass_triangle_release(&window_cell);
+         if (alternate_carrier_out != NULL)
+            r300_tcl_bypass_triangle_release(alternate_carrier_out);
          return appended;
       }
       /* append_ib copied the appended dwords; the descriptor still owns
@@ -578,7 +598,8 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
-                                         false, false, false, false, 0, 1, NULL);
+                                         false, false, false, false, 0, 1, NULL,
+                                         NULL);
 }
 
 VkResult
@@ -591,7 +612,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    bool noperspective_q_lane, bool noperspective_mixed_carrier,
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
-   const struct r3v_native_sampled_texture *sampled)
+   const struct r3v_native_sampled_texture *sampled,
+   struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
    VkResult role_result = validate_triangle_memory_roles(
@@ -606,7 +628,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
       R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
       (noperspective_mixed_carrier
           ? R3V_TRIANGLE_NOPERSPECTIVE_MIXED_CARRIER_VERTEX_BYTES
-       : noperspective_carrier
+       : noperspective_carrier || alternate_carrier_cell != NULL
           ? R3V_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_BYTES
        : varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
                  : R3V_TRIANGLE_VERTEX_BYTES);
@@ -649,7 +671,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                          noperspective_q_lane,
                                          noperspective_mixed_carrier,
                                          rs_probe_candidate, triangle_count,
-                                         sampled);
+                                         sampled, alternate_carrier_cell);
 }
 
 /* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume
@@ -1064,6 +1086,268 @@ expand_clip_space_triangles(
  * memory untouched.  The pass carries its own carrier, so a command
  * buffer holding several passes calls this once per record.
  */
+/* Maps the bound vertex streams and, for an indexed draw, resolves the
+ * vertex numbers, for the CPU vertex execution at submission.  The
+ * caller owns the maps and the heap ids through
+ * unmap_deferred_draw_sources; on refusal nothing stays mapped. */
+static VkResult
+map_deferred_draw_sources(struct r3v_native_device *device,
+                          const struct r3v_native_deferred_draw *draw,
+                          struct r300_vertex_stream sources[],
+                          struct r3v_native_memory *owned_maps[],
+                          uint32_t *owned_map_count,
+                          uint32_t vertex_ids_stack[],
+                          uint32_t **vertex_ids_out,
+                          uint32_t **vertex_ids_heap_out)
+{
+   VkResult result = VK_SUCCESS;
+   *owned_map_count = 0;
+   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
+      if (!(draw->stream_mask & (1u << slot)))
+         continue;
+      const struct r3v_native_deferred_stream *stream_desc =
+         &draw->streams[slot];
+      struct r3v_native_memory *memory = stream_desc->buffer->memory;
+      if (memory->map == NULL) {
+         if (radeon_drm_vk_bo_map(&device->drm, &memory->bo,
+                                  &memory->map) != 0) {
+            result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                               "r3v-native: bound vertex memory is not "
+                               "CPU-mappable at submission");
+            break;
+         }
+         owned_maps[(*owned_map_count)++] = memory;
+      }
+      sources[slot] = (struct r300_vertex_stream){
+         .data = (const uint8_t *)memory->map + stream_desc->buffer->offset +
+                 stream_desc->stream_base,
+         .stride = stream_desc->stride,
+         .size_bytes = stream_desc->buffer->vk.size - stream_desc->stream_base,
+         .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
+         .instance_rate = stream_desc->instance_rate,
+         .instance_divisor = stream_desc->instance_divisor,
+      };
+   }
+   /* The indexed draw reads its three indices now, at execution, so an
+    * index written between record and submit is honored like a vertex
+    * write: each index sums with the base vertex in 32-bit wrapping
+    * arithmetic (a negative sum wraps past any bound and the robust
+    * rule judges it as an out-of-bounds record), and the vertex
+    * numbers drive the gather in place of the linear range. */
+   uint32_t *vertex_ids = vertex_ids_stack;
+   uint32_t *vertex_ids_heap = NULL;
+   if (result == VK_SUCCESS && draw->indexed &&
+       draw->vertex_count > R300_TRIANGLE_VERTEX_DWORDS / 4) {
+      vertex_ids_heap =
+         vk_alloc(&device->vk.alloc,
+                  (size_t)draw->vertex_count * sizeof(uint32_t), 8,
+                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (vertex_ids_heap == NULL)
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      vertex_ids = vertex_ids_heap;
+   }
+   if (result == VK_SUCCESS && draw->indexed) {
+      struct r3v_native_memory *memory = draw->index_buffer->memory;
+      if (memory->map == NULL) {
+         if (radeon_drm_vk_bo_map(&device->drm, &memory->bo,
+                                  &memory->map) != 0) {
+            result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                               "r3v-native: bound index memory is not "
+                               "CPU-mappable at submission");
+         } else {
+            owned_maps[(*owned_map_count)++] = memory;
+         }
+      }
+      if (result == VK_SUCCESS) {
+         const uint8_t *indices =
+            (const uint8_t *)memory->map + draw->index_buffer->offset +
+            draw->index_base +
+            (uint64_t)draw->first_index * draw->index_bytes;
+         for (uint32_t v = 0; v < draw->vertex_count; v++) {
+            uint32_t index;
+            if (draw->index_bytes == 2) {
+               uint16_t index16;
+               memcpy(&index16, indices + v * 2, sizeof(index16));
+               index = index16;
+            } else {
+               memcpy(&index, indices + v * 4, sizeof(index));
+            }
+            vertex_ids[v] = index + (uint32_t)draw->vertex_offset;
+         }
+      }
+   }
+   if (result != VK_SUCCESS) {
+      vk_free(&device->vk.alloc, vertex_ids_heap);
+      for (uint32_t i = 0; i < *owned_map_count; i++) {
+         radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
+                                owned_maps[i]->map);
+         owned_maps[i]->map = NULL;
+      }
+      *owned_map_count = 0;
+      return result;
+   }
+   *vertex_ids_out = vertex_ids;
+   *vertex_ids_heap_out = vertex_ids_heap;
+   return VK_SUCCESS;
+}
+
+static void
+unmap_deferred_draw_sources(struct r3v_native_device *device,
+                            struct r3v_native_memory *owned_maps[],
+                            uint32_t owned_map_count,
+                            uint32_t *vertex_ids_heap)
+{
+   vk_free(&device->vk.alloc, vertex_ids_heap);
+   for (uint32_t i = 0; i < owned_map_count; i++) {
+      radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
+                             owned_maps[i]->map);
+      owned_maps[i]->map = NULL;
+   }
+}
+
+/* Judges the adaptive draw's clipping class: the CPU vertex executor
+ * runs the job over the bound streams into host scratch and every
+ * source triangle is classified against the clip volume; the carrier
+ * memory and the target stay untouched. */
+static VkResult
+judge_deferred_draw_clip_class(struct r3v_native_device *device,
+                               const struct r3v_native_deferred_draw *draw,
+                               enum r3v_interpolation_clip_class *class_out)
+{
+   struct r300_vertex_stream sources[R300_VERTEX_JOB_MAX_INPUTS] = { 0 };
+   struct r3v_native_memory *owned_maps[R300_VERTEX_JOB_MAX_INPUTS + 1];
+   uint32_t owned_map_count = 0;
+   uint32_t vertex_ids_stack[R300_TRIANGLE_VERTEX_DWORDS / 4] = { 0 };
+   uint32_t *vertex_ids = vertex_ids_stack;
+   uint32_t *vertex_ids_heap = NULL;
+   VkResult result = map_deferred_draw_sources(
+      device, draw, sources, owned_maps, &owned_map_count, vertex_ids_stack,
+      &vertex_ids, &vertex_ids_heap);
+   if (result != VK_SUCCESS)
+      return result;
+
+   const uint32_t record_dwords =
+      r300_vertex_job_record_dwords(&draw->vertex_job);
+   const uint32_t record_count = draw->vertex_count * draw->instance_count;
+   const uint32_t source_triangle_count = record_count / 3u;
+   const uint32_t staged_dwords = record_count * record_dwords;
+   uint32_t *staged = vk_alloc(&device->vk.alloc,
+                               (size_t)staged_dwords * sizeof(uint32_t), 8,
+                               VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (staged == NULL) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   } else {
+      const struct r300_cpu_vertex_draw cpu_draw = {
+         .vertex_ids = draw->indexed ? vertex_ids : NULL,
+         .first_vertex = draw->first_vertex,
+         .vertex_count = draw->vertex_count,
+         .first_instance = draw->first_instance,
+         .instance_count = draw->instance_count,
+      };
+      const int gathered = r300_cpu_vertex_job_execute_draw(
+         &draw->vertex_job, sources, &cpu_draw, staged, staged_dwords);
+      if (gathered != 0) {
+         result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                            "r3v-native: CPU gather refused (%d) ahead of "
+                            "the clip judgment: %s",
+                            gathered,
+                            gathered < 0 ? strerror(-gathered)
+                                         : "non-errno refusal");
+      } else {
+         *class_out = R3V_INTERPOLATION_CLIP_ACCEPT;
+         for (uint32_t t = 0; t < source_triangle_count; t++) {
+            if (r3v_interpolation_clip_class_of_triangle(
+                   &staged[(size_t)t * 3u * record_dwords], record_dwords) !=
+                R3V_INTERPOLATION_CLIP_ACCEPT) {
+               *class_out = R3V_INTERPOLATION_CLIP_PARTIAL;
+               break;
+            }
+         }
+      }
+      vk_free(&device->vk.alloc, staged);
+   }
+   unmap_deferred_draw_sources(device, owned_maps, owned_map_count,
+                               vertex_ids_heap);
+   return result;
+}
+
+/* Replaces the draw's IB span with its retained carrier cell and moves
+ * every later span by the size difference.  A prepared submission of
+ * this command buffer described the previous bytes, so it is released
+ * as r3v_native_cmd_buffer_release_ib releases it. */
+static VkResult
+splice_alternate_cell(struct r3v_native_device *device,
+                      struct r3v_native_cmd_buffer *cmd_buffer,
+                      uint32_t draw_index)
+{
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   if (draw->alternate_ib == NULL || draw->alternate_ib_dwords == 0 ||
+       draw->ib_span_offset + draw->ib_span_dwords > cmd_buffer->ib_size_dwords)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   const uint32_t old_size = cmd_buffer->ib_size_dwords;
+   const uint32_t tail_offset = draw->ib_span_offset + draw->ib_span_dwords;
+   const uint32_t tail_dwords = old_size - tail_offset;
+   const uint32_t new_size =
+      old_size - draw->ib_span_dwords + draw->alternate_ib_dwords;
+   uint32_t *ib = malloc((size_t)new_size * sizeof(uint32_t));
+   if (ib == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   memcpy(ib, cmd_buffer->ib, (size_t)draw->ib_span_offset * sizeof(uint32_t));
+   memcpy(ib + draw->ib_span_offset, draw->alternate_ib,
+          (size_t)draw->alternate_ib_dwords * sizeof(uint32_t));
+   memcpy(ib + draw->ib_span_offset + draw->alternate_ib_dwords,
+          cmd_buffer->ib + tail_offset, (size_t)tail_dwords * sizeof(uint32_t));
+   if (device->prepared.valid && device->prepared.cmd_buffer == cmd_buffer)
+      r3v_native_prepared_release(device);
+   free(cmd_buffer->ib);
+   cmd_buffer->ib = ib;
+   cmd_buffer->ib_size_dwords = new_size;
+   const int32_t delta =
+      (int32_t)draw->alternate_ib_dwords - (int32_t)draw->ib_span_dwords;
+   for (uint32_t j = draw_index + 1; j < cmd_buffer->deferred_draw_count; j++)
+      cmd_buffer->deferred_draws[j].ib_span_offset =
+         (uint32_t)((int32_t)cmd_buffer->deferred_draws[j].ib_span_offset +
+                    delta);
+   draw->ib_span_dwords = draw->alternate_ib_dwords;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_select_deferred_routes(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   for (uint32_t i = 0; i < cmd_buffer->deferred_draw_count; i++) {
+      struct r3v_native_deferred_draw *draw = &cmd_buffer->deferred_draws[i];
+      if (!draw->pending || !draw->adaptive_noperspective)
+         continue;
+      enum r3v_interpolation_clip_class clip;
+      VkResult result = judge_deferred_draw_clip_class(device, draw, &clip);
+      if (result != VK_SUCCESS)
+         return result;
+      const enum r3v_interpolation_route concrete =
+         r3v_interpolation_route_resolve_clip(
+            R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER, clip);
+      if (concrete == R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER) {
+         result = splice_alternate_cell(device, cmd_buffer, i);
+         if (result != VK_SUCCESS)
+            return result;
+         draw->direct_noperspective = false;
+         draw->noperspective_carrier = true;
+         draw->rs_probe_candidate = (uint8_t)R3V_RS_PROBE_NONE;
+         draw->post_vs.reciprocal_carrier = true;
+      } else {
+         assert(concrete == R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+      }
+      free(draw->alternate_ib);
+      draw->alternate_ib = NULL;
+      draw->alternate_ib_dwords = 0;
+      draw->adaptive_noperspective = false;
+   }
+   return VK_SUCCESS;
+}
+
 static VkResult
 execute_one_deferred_draw(struct r3v_native_device *device,
                           struct r3v_native_deferred_draw *draw,
@@ -1127,95 +1411,27 @@ execute_one_deferred_draw(struct r3v_native_device *device,
     * enabled at device creation makes an out-of-bounds vertex record
     * read zeros; with the feature off the same record refuses the draw
     * before any write. */
+   /* The adaptive route resolves ahead of the arming digest
+    * (r3v_native_cmd_buffer_select_deferred_routes); a draw still
+    * adaptive here has no concrete cell and refuses. */
+   if (draw->adaptive_noperspective) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: the adaptive NoPerspective route is "
+                       "unresolved at execution");
+   }
+
    struct r300_vertex_stream sources[R300_VERTEX_JOB_MAX_INPUTS] = { 0 };
    /* One owned map per read slot plus the index buffer's. */
    struct r3v_native_memory *owned_maps[R300_VERTEX_JOB_MAX_INPUTS + 1];
    uint32_t owned_map_count = 0;
-   VkResult result = VK_SUCCESS;
-   for (uint32_t slot = 0; slot < R300_VERTEX_JOB_MAX_INPUTS; slot++) {
-      if (!(draw->stream_mask & (1u << slot)))
-         continue;
-      const struct r3v_native_deferred_stream *stream_desc =
-         &draw->streams[slot];
-      struct r3v_native_memory *memory = stream_desc->buffer->memory;
-      if (memory->map == NULL) {
-         if (radeon_drm_vk_bo_map(&device->drm, &memory->bo,
-                                  &memory->map) != 0) {
-            result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                               "r3v-native: bound vertex memory is not "
-                               "CPU-mappable at submission");
-            break;
-         }
-         owned_maps[owned_map_count++] = memory;
-      }
-      sources[slot] = (struct r300_vertex_stream){
-         .data = (const uint8_t *)memory->map + stream_desc->buffer->offset +
-                 stream_desc->stream_base,
-         .stride = stream_desc->stride,
-         .size_bytes = stream_desc->buffer->vk.size - stream_desc->stream_base,
-         .oob_reads_zero = device->vk.enabled_features.robustBufferAccess,
-         .instance_rate = stream_desc->instance_rate,
-         .instance_divisor = stream_desc->instance_divisor,
-      };
-   }
-   /* The indexed draw reads its three indices now, at execution, so an
-    * index written between record and submit is honored like a vertex
-    * write: each index sums with the base vertex in 32-bit wrapping
-    * arithmetic (a negative sum wraps past any bound and the robust
-    * rule judges it as an out-of-bounds record), and the vertex
-    * numbers drive the gather in place of the linear range. */
    uint32_t vertex_ids_stack[R300_TRIANGLE_VERTEX_DWORDS / 4] = { 0 };
    uint32_t *vertex_ids = vertex_ids_stack;
    uint32_t *vertex_ids_heap = NULL;
-   if (result == VK_SUCCESS && draw->indexed &&
-       draw->vertex_count > ARRAY_SIZE(vertex_ids_stack)) {
-      vertex_ids_heap =
-         vk_alloc(&device->vk.alloc,
-                  (size_t)draw->vertex_count * sizeof(uint32_t), 8,
-                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-      if (vertex_ids_heap == NULL)
-         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-      vertex_ids = vertex_ids_heap;
-   }
-   if (result == VK_SUCCESS && draw->indexed) {
-      struct r3v_native_memory *memory = draw->index_buffer->memory;
-      if (memory->map == NULL) {
-         if (radeon_drm_vk_bo_map(&device->drm, &memory->bo,
-                                  &memory->map) != 0) {
-            result = vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                               "r3v-native: bound index memory is not "
-                               "CPU-mappable at submission");
-         } else {
-            owned_maps[owned_map_count++] = memory;
-         }
-      }
-      if (result == VK_SUCCESS) {
-         const uint8_t *indices =
-            (const uint8_t *)memory->map + draw->index_buffer->offset +
-            draw->index_base +
-            (uint64_t)draw->first_index * draw->index_bytes;
-         for (uint32_t v = 0; v < draw->vertex_count; v++) {
-            uint32_t index;
-            if (draw->index_bytes == 2) {
-               uint16_t index16;
-               memcpy(&index16, indices + v * 2, sizeof(index16));
-               index = index16;
-            } else {
-               memcpy(&index, indices + v * 4, sizeof(index));
-            }
-            vertex_ids[v] = index + (uint32_t)draw->vertex_offset;
-         }
-      }
-   }
-   if (result != VK_SUCCESS) {
-      vk_free(&device->vk.alloc, vertex_ids_heap);
-      for (uint32_t i = 0; i < owned_map_count; i++) {
-         radeon_drm_vk_bo_unmap(&device->drm, &owned_maps[i]->bo,
-                                owned_maps[i]->map);
-         owned_maps[i]->map = NULL;
-      }
+   VkResult result = map_deferred_draw_sources(
+      device, draw, sources, owned_maps, &owned_map_count, vertex_ids_stack,
+      &vertex_ids, &vertex_ids_heap);
+   if (result != VK_SUCCESS)
       return result;
-   }
    /* Slot 0 is the position stream the delivery routes model: the
     * route resolves on its format, and the GPU and R2VB host-model
     * routes then admit the slot-0 identity job alone, so a job reading
@@ -3670,7 +3886,7 @@ r3v_native_record_multi_pass(VkCommandBuffer commandBuffer,
       }
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
          device, cmd_buffer, &cell, references,
-         R300_TRIANGLE_RENDER_SLOT_COUNT);
+         R300_TRIANGLE_RENDER_SLOT_COUNT, NULL);
       free(references);
       r300_tcl_bypass_triangle_release(&cell);
       if (appended != VK_SUCCESS)

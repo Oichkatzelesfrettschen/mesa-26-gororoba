@@ -2600,6 +2600,21 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The public partial-clip fallback's recording boundary: no gate, the
+  # NoPerspective pipeline created on the adaptive route, the selection
+  # after the CPU vertex execution resolving the TC1 carrier cell for
+  # the partially clipped triangle, and the recorded stream byte-equal to
+  # the carrier cell the forced rung armed.
+  test(
+    'r3v-native-noperspective-public-partial-clip-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'reciprocal-carrier-partial', '--production'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The partial-clip rung of the same runner: vertex 0 past x = -w, the
   # carrier fan validated and the census judged away from the border.
   test(

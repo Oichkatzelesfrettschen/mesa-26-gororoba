@@ -101,10 +101,15 @@ test_each_predicate_flipped_replicates(void)
    q.triangle_list = false;
    expect_replicate(&q, "triangle list");
 
-   /* The partially clipped primitive: the direct selector refuses it. */
+   /* The partially clipped primitive: the direct selector refuses it;
+    * the deferred class is judged per triangle at execution. */
    q = direct_query(&link);
    q.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
    expect_replicate(&q, "ACCEPT");
+   q = direct_query(&link);
+   q.clip_class = R3V_INTERPOLATION_CLIP_DEFERRED;
+   CHECK(r3v_interpolation_route_select(&q, NULL) ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0);
 
    q = direct_query(&link);
    q.rs_destination_available = false;
@@ -246,9 +251,51 @@ test_noperspective_conjunction_opens_w_select(void)
    f = direct_query(&link);
    f.triangle_list = false;
    expect_unsupported(&f, "triangle list");
+   /* The clip class selects the concrete cell: PARTIAL takes the
+    * reciprocal carrier, DEFERRED the route that holds both until the
+    * CPU vertex execution judges the draw. */
    f = direct_query(&link);
    f.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
-   expect_unsupported(&f, "ACCEPT");
+   reason = NULL;
+   CHECK(r3v_interpolation_route_select(&f, &reason) ==
+         R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
+   CHECK(reason != NULL && strstr(reason, "partial clip") != NULL);
+   f = direct_query(&link);
+   f.clip_class = R3V_INTERPOLATION_CLIP_DEFERRED;
+   reason = NULL;
+   CHECK(r3v_interpolation_route_select(&f, &reason) ==
+         R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER);
+   CHECK(reason != NULL && strstr(reason, "judged at submission") != NULL);
+   CHECK(r3v_interpolation_route_resolve_clip(
+            R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER,
+            R3V_INTERPOLATION_CLIP_ACCEPT) ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+   CHECK(r3v_interpolation_route_resolve_clip(
+            R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER,
+            R3V_INTERPOLATION_CLIP_PARTIAL) ==
+         R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
+   CHECK(r3v_interpolation_route_resolve_clip(
+            R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER,
+            R3V_INTERPOLATION_CLIP_DEFERRED) ==
+         R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER);
+   CHECK(r3v_interpolation_route_resolve_clip(
+            R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT,
+            R3V_INTERPOLATION_CLIP_PARTIAL) ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+   CHECK(r3v_interpolation_route_resolve_clip(
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
+            R3V_INTERPOLATION_CLIP_ACCEPT) ==
+         R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
+   CHECK(r3v_interpolation_published_record_dwords(
+            R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER, 8) == 12);
+   CHECK(r3v_interpolation_published_record_dwords(
+            R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT, 8) == 8);
+   /* Every other predicate refuses the deferred class as it refuses
+    * ACCEPT. */
+   f = direct_query(&link);
+   f.clip_class = R3V_INTERPOLATION_CLIP_DEFERRED;
+   f.cpu_delivery = false;
+   expect_unsupported(&f, "not CPU");
    f = direct_query(&link);
    f.rs_destination_available = false;
    expect_unsupported(&f, "RS destination");
@@ -290,13 +337,17 @@ test_noperspective_conjunction_opens_w_select(void)
    expect_replicate(&f, "no Flat");
 
    /* The forced-carrier gate moves the same conjunction onto the
-    * reciprocal carrier and leaves every refusal UNSUPPORTED. */
+    * reciprocal carrier in every clip class and leaves every refusal
+    * UNSUPPORTED. */
    f = direct_query(&link);
    f.carrier_forced = true;
    reason = NULL;
    CHECK(r3v_interpolation_route_select(&f, &reason) ==
          R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
-   CHECK(reason != NULL && strstr(reason, "carrier") != NULL);
+   CHECK(reason != NULL && strstr(reason, "forced") != NULL);
+   f.clip_class = R3V_INTERPOLATION_CLIP_DEFERRED;
+   CHECK(r3v_interpolation_route_select(&f, NULL) ==
+         R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER);
    f = direct_query(&narrow);
    f.carrier_forced = true;
    expect_unsupported(&f, "full float vec4");

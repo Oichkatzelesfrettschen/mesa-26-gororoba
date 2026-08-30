@@ -360,15 +360,24 @@ main(int argc, char **argv)
               "[--waiver <path>] [--candidate "
               "tex-adj|w-select|reciprocal-carrier|reciprocal-carrier-partial|"
               "reciprocal-q-lane|mixed-reciprocal-carrier] "
-              "[--production]\n",
+              "[--production]  (production: w-select on the unclipped "
+              "triangle or reciprocal-carrier-partial on the clipped one, "
+              "every gate unset)\n",
               argv[0]);
       return 2;
    }
-   if (production && (carrier_route ||
-                      candidate != R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE)) {
-      fprintf(stderr, "--production rides the w-select candidate: the "
-              "direct GB W_SELECT route is the one production "
-              "NoPerspective route\n");
+   /* The production forms: the w-select candidate on the unclipped
+    * triangle, where the public selector resolves the direct GB
+    * W_SELECT cell, and the reciprocal-carrier-partial candidate, where
+    * it resolves the TC1 carrier cell for the partially clipped
+    * triangle; both run with every gate unset. */
+   const bool public_partial = production && carrier_route && partial;
+   if (production && !public_partial &&
+       (carrier_route || candidate != R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE)) {
+      fprintf(stderr, "--production rides the w-select candidate or the "
+              "reciprocal-carrier-partial candidate: the public selector "
+              "resolves the direct GB W_SELECT cell on ACCEPT and the TC1 "
+              "carrier cell on PARTIAL\n");
       return 2;
    }
    const char *evidence_dir = argv[1];
@@ -545,7 +554,9 @@ main(int argc, char **argv)
         "passes %ux%u pitch %u, binding (%u, %u), %u IB dwords, cell "
         "blake3 %.8s\n",
         candidate_word_name,
-        production     ? " (production direct GB W_SELECT route, no gate)"
+        public_partial ? " (public partial-clip fallback, TC1 carrier cell "
+                          "selected at submission, no gate)"
+        : production    ? " (production direct GB W_SELECT route, no gate)"
         : q_lane_route  ? " (reciprocal q-lane route, vec3, no gate)"
         : mixed_route   ? " (mixed reciprocal carrier route, TC0 Smooth + "
                           "TC1 NoPerspective + TC2 carrier, no gate)"
@@ -1255,15 +1266,20 @@ main(int argc, char **argv)
        * through the route selector.  The deferred draws then carry the
        * W_SELECT_ONE control word from the route itself. */
       if (route_based) {
-         static const char *const route_name[7] = {
+         static const char *const route_name[8] = {
             "replicate", "direct-ga-color0", "direct-gb-w-select",
             "unsupported", "reciprocal-carrier", "reciprocal-q-lane",
-            "mixed-reciprocal-carrier"
+            "mixed-reciprocal-carrier", "w-select-or-reciprocal-carrier"
          };
+         /* The public NoPerspective pipeline is created on the adaptive
+          * route; the concrete cell is selected at submission and
+          * reported after the recording below. */
          const enum r3v_interpolation_route expected_route =
             q_lane_route  ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE
             : mixed_route
                ? R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER
+            : production
+               ? R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER
             : carrier_route ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER
                             : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
          enum r3v_interpolation_route route[2];
@@ -1275,12 +1291,12 @@ main(int argc, char **argv)
             const struct r3v_interpolation_query query = {
                .cpu_delivery = true,
                .triangle_list = true,
-               .clip_class = R3V_INTERPOLATION_CLIP_ACCEPT,
+               .clip_class = R3V_INTERPOLATION_CLIP_DEFERRED,
                .link = &native_pipeline->shader_interface,
                .rs_destination_available = native_pipeline->varying,
                .fragment_consumes_destination = native_pipeline->varying,
                .provoking_first_representable = true,
-               .carrier_forced = carrier_route,
+               .carrier_forced = carrier_route && !production,
                .narrow_passthrough_width = q_lane_route && i == 1 ? 3u : 0u,
                .mixed_carrier_fragment = mixed_route && i == 1,
             };
@@ -1295,7 +1311,8 @@ main(int argc, char **argv)
          }
          emit("[route] %s control=%s (%s) noperspective=%s (%s) "
               "probe candidates=%s/%s\n",
-              production ? "production" : q_lane_route ? "q-lane"
+              public_partial ? "public-partial-clip"
+              : production ? "production" : q_lane_route ? "q-lane"
               : mixed_route ? "mixed-carrier" : "forced-carrier",
               route_name[route[0]], reason[0], route_name[route[1]],
               reason[1], candidate_name[recorded[0]],
@@ -1388,6 +1405,57 @@ main(int argc, char **argv)
       vkCmdEndRenderPass(cmd);
    }
    CHECK(vkEndCommandBuffer(cmd));
+
+   /* The public pipeline's adaptive route resolves here, as the queue
+    * resolves it ahead of the arming digest: the CPU vertex execution
+    * judges the recorded triangle and the command buffer's IB becomes
+    * the concrete cell's, so the digest below is the one the
+    * submission arms and the [route] line names the cell the device
+    * executes. */
+   if (production) {
+      VK_FROM_HANDLE(r3v_native_device, select_device, device);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, select_cmd, cmd);
+      const bool adaptive_before =
+         select_cmd->deferred_draw_count == 2 &&
+         select_cmd->deferred_draws[1].adaptive_noperspective;
+      const VkResult selected =
+         r3v_native_cmd_buffer_select_deferred_routes(select_device,
+                                                      select_cmd);
+      const struct r3v_native_deferred_draw *selected_draw =
+         &select_cmd->deferred_draws[1];
+      const char *selected_name =
+         selected_draw->noperspective_carrier   ? "reciprocal-carrier"
+         : selected_draw->direct_noperspective  ? "direct-gb-w-select"
+                                                : "unresolved";
+      emit("[route] selected=%s (adaptive route judged %s at submission, "
+           "result %d)\n",
+           selected_name, public_partial ? "PARTIAL" : "ACCEPT",
+           (int)selected);
+      const bool expected_selection =
+         selected == VK_SUCCESS && adaptive_before &&
+         !selected_draw->adaptive_noperspective &&
+         selected_draw->alternate_ib == NULL &&
+         (public_partial
+             ? selected_draw->noperspective_carrier &&
+                  !selected_draw->direct_noperspective &&
+                  selected_draw->rs_probe_candidate ==
+                     (uint8_t)R3V_RS_PROBE_NONE &&
+                  selected_draw->post_vs.reciprocal_carrier
+             : selected_draw->direct_noperspective &&
+                  !selected_draw->noperspective_carrier &&
+                  selected_draw->rs_probe_candidate ==
+                     (uint8_t)R3V_RS_PROBE_W_SELECT_ONE &&
+                  !selected_draw->post_vs.reciprocal_carrier);
+      if (!expected_selection) {
+         fprintf(stderr, "the adaptive route did not resolve to the %s "
+                 "cell for the %s triangle\n",
+                 public_partial ? "TC1 carrier" : "direct GB W_SELECT",
+                 public_partial ? "partially clipped" : "unclipped");
+         if (!record_only)
+            r3v_native_watchdog_guard_close(&guard, VK_ERROR_UNKNOWN);
+         return 2;
+      }
+   }
 
    stage("recorded stream");
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native, cmd);
@@ -2068,6 +2136,14 @@ main(int argc, char **argv)
                  : "the q-lane oracle does not hold; the classification "
                    "printed above stands and the [q-lane] line names the "
                    "failed clause")
+        : public_partial
+           ? "the control cell interpolates perspective-correct over the "
+             "clipped fan and the public NoPerspective pipeline's target "
+             "carries the classification printed above under the TC1 "
+             "carrier cell the selector chose at submission with no gate; "
+             "affine is the Vulkan NoPerspective value, so that "
+             "classification is the receipt of the public partial-clip "
+             "fallback on RS482"
         : production
            ? "the control cell interpolates perspective-correct and the "
              "public NoPerspective pipeline's target carries the "

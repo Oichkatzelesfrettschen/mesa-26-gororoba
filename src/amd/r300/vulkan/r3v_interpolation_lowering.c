@@ -19,6 +19,7 @@ r3v_interpolation_published_record_dwords(enum r3v_interpolation_route route,
 {
    switch (route) {
    case R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER:
+   case R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER:
       return R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS;
    case R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER:
       return R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS;
@@ -35,6 +36,22 @@ r3v_interpolation_published_record_dwords(enum r3v_interpolation_route route,
  * and carrier vectors fit the RS budget of four and the baked US block
  * fits the R300 budget, both judged by the plan's validate; every other
  * mixed shape is UNSUPPORTED. */
+enum r3v_interpolation_route
+r3v_interpolation_route_resolve_clip(enum r3v_interpolation_route route,
+                                     enum r3v_interpolation_clip_class clip)
+{
+   if (route != R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER)
+      return route;
+   switch (clip) {
+   case R3V_INTERPOLATION_CLIP_ACCEPT:
+      return R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
+   case R3V_INTERPOLATION_CLIP_PARTIAL:
+      return R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER;
+   default:
+      return route;
+   }
+}
+
 static enum r3v_interpolation_route
 r3v_interpolation_route_select_mixed(
    const struct r3v_interpolation_query *query, const char **reason)
@@ -103,11 +120,6 @@ r3v_interpolation_route_select_noperspective(
       why = "delivery route is not CPU";
    } else if (!query->triangle_list) {
       why = "primitive is not a triangle list";
-   } else if (query->clip_class != R3V_INTERPOLATION_CLIP_ACCEPT &&
-              query->narrow_passthrough_width == 0) {
-      /* The direct W_SELECT route acts on the emitted fan; the q-lane
-       * route packs ahead of the clipper and admits every class. */
-      why = "clipping class is not ACCEPT";
    } else if (query->link->varying_mask != 1u ||
               query->link->noperspective_mask != 1u) {
       /* W_SELECT is one word for the whole draw: a Smooth location
@@ -165,9 +177,27 @@ r3v_interpolation_route_select_noperspective(
          *reason = "forced reciprocal carrier: TEX0 = a * w, TEX1.x = w";
       return R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER;
    }
-   if (reason != NULL)
-      *reason = "direct GB W_SELECT NoPerspective through TEX0";
-   return R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
+   /* The direct W_SELECT cell acts on the emitted fan, so it serves
+    * the ACCEPT class alone; the reciprocal carrier packs ahead of the
+    * clipper and serves PARTIAL.  A class judged at record time selects
+    * its cell here; the deferred class selects the route that holds
+    * both and resolves after the CPU vertex execution. */
+   switch (query->clip_class) {
+   case R3V_INTERPOLATION_CLIP_ACCEPT:
+      if (reason != NULL)
+         *reason = "direct GB W_SELECT NoPerspective through TEX0";
+      return R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
+   case R3V_INTERPOLATION_CLIP_PARTIAL:
+      if (reason != NULL)
+         *reason = "reciprocal carrier for the partial clip: TEX0 = a * w, "
+                   "TEX1.x = w";
+      return R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER;
+   default:
+      if (reason != NULL)
+         *reason = "direct GB W_SELECT on ACCEPT or the TC1 reciprocal "
+                   "carrier on PARTIAL, judged at submission";
+      return R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER;
+   }
 }
 
 enum r3v_interpolation_route
@@ -204,7 +234,10 @@ r3v_interpolation_route_select(const struct r3v_interpolation_query *query,
       why = "delivery route is not CPU";
    } else if (!query->triangle_list) {
       why = "primitive is not a triangle list";
-   } else if (query->clip_class != R3V_INTERPOLATION_CLIP_ACCEPT) {
+   } else if (query->clip_class == R3V_INTERPOLATION_CLIP_PARTIAL) {
+      /* The direct GA cell acts on the emitted fan; the deferred class
+       * is judged per triangle at execution, where a partial triangle
+       * demotes the draw to replication. */
       why = "clipping class is not ACCEPT";
    } else if (query->link->varying_mask != 1u ||
               query->link->flat_mask != 1u) {
