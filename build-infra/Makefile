@@ -732,6 +732,36 @@ naming-policy-test:
 	python3 $(CURDIR)/scripts/naming_policy.py --self-test
 	python3 $(CURDIR)/scripts/naming_policy.py --repo-root $(CURDIR)/..
 
+# Comment-hygiene gate: the repository-resident linter must exist and be
+# executable, calibrate on its own fixtures, and pass over every file the
+# branch changes against COMMENT_HYGIENE_BASE plus the staged set.  A missing
+# linter fails the gate; it never passes by absence.
+COMMENT_HYGIENE_LINT := $(CURDIR)/scripts/lint/comment_hygiene_lint.py
+COMMENT_HYGIENE_HOOK := $(CURDIR)/scripts/lint/pre-commit-comment-hygiene
+COMMENT_HYGIENE_BASE ?= origin/main
+.PHONY: comment-hygiene-check comment-hygiene-check-test
+comment-hygiene-check:
+	@[ -f "$(COMMENT_HYGIENE_LINT)" ] && [ -x "$(COMMENT_HYGIENE_LINT)" ] || { \
+		echo "FAIL  comment-hygiene linter missing or not executable: $(COMMENT_HYGIENE_LINT)" >&2; exit 1; }
+	@[ -f "$(COMMENT_HYGIENE_HOOK)" ] && [ -x "$(COMMENT_HYGIENE_HOOK)" ] || { \
+		echo "FAIL  comment-hygiene hook missing or not executable: $(COMMENT_HYGIENE_HOOK)" >&2; exit 1; }
+	python3 "$(COMMENT_HYGIENE_LINT)" --self-test
+	@cd "$(CURDIR)/.." && base=$$(git merge-base "$(COMMENT_HYGIENE_BASE)" HEAD 2>/dev/null) && \
+	files=$$( { git diff --name-only --diff-filter=ACMRT "$$base" HEAD; \
+	            git diff --cached --name-only --diff-filter=ACMRT; } | sort -u); \
+	if [ -z "$$files" ]; then echo "OK    comment hygiene: no files changed against $(COMMENT_HYGIENE_BASE)"; \
+	else python3 "$(COMMENT_HYGIENE_LINT)" --strict $$files; fi
+
+comment-hygiene-check-test:
+	@tmp=$$(mktemp -d); \
+	if COMMENT_HYGIENE_LINT="$$tmp/absent_lint.py" sh "$(COMMENT_HYGIENE_HOOK)" >/dev/null 2>&1; then \
+		echo "FAIL  comment-hygiene hook passed with the linter absent" >&2; rm -rf "$$tmp"; exit 1; fi; \
+	printf '#!/bin/sh\nexit 0\n' > "$$tmp/unexecutable_lint.py"; \
+	if COMMENT_HYGIENE_LINT="$$tmp/unexecutable_lint.py" sh "$(COMMENT_HYGIENE_HOOK)" >/dev/null 2>&1; then \
+		echo "FAIL  comment-hygiene hook passed with a non-executable linter" >&2; rm -rf "$$tmp"; exit 1; fi; \
+	rm -rf "$$tmp"; \
+	echo "OK    comment-hygiene hook refuses a missing or non-executable linter"
+
 # Driver-root gate: each AMD GPU family's Vulkan driver keeps its source root
 # at the family's vulkan/ directory, and the build graph enters it there.
 .PHONY: driver-root-audit
@@ -1235,7 +1265,8 @@ audit: source-root-check source-root-control-unit-test naming-policy-test \
        distcc-probe-directory-test \
        distcc-gcc-major-probe-test \
        vostro-prefix-check audit-werror profile-audit \
-       r300-release-profile-contract-test driver-root-audit
+       r300-release-profile-contract-test driver-root-audit \
+       comment-hygiene-check comment-hygiene-check-test
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \

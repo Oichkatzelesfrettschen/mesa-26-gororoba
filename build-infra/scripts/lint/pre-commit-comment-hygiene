@@ -1,0 +1,34 @@
+#!/bin/sh
+# pre-commit-comment-hygiene: git pre-commit hook that runs the repository's
+# comment-hygiene linter on staged changes.
+#
+# Install from the repository root:
+#   ln -sf ../../build-infra/scripts/lint/pre-commit-comment-hygiene .git/hooks/pre-commit
+#
+# The hook refuses the commit when the linter is absent: a missing gate is a
+# broken contract, and a commit that passes because nothing ran is the
+# failure this hook exists to prevent.  COMMENT_HYGIENE_LINT names an
+# alternate linter path for calibration.
+set -u
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -z "$repo_root" ]; then
+    echo "pre-commit-comment-hygiene: REFUSED: not inside a git repository" >&2
+    exit 1
+fi
+
+linter=${COMMENT_HYGIENE_LINT:-$repo_root/build-infra/scripts/lint/comment_hygiene_lint.py}
+if [ ! -f "$linter" ] || [ ! -x "$linter" ]; then
+    echo "pre-commit-comment-hygiene: REFUSED: linter missing or not executable: $linter" >&2
+    exit 1
+fi
+
+cd "$repo_root" || exit 1
+python3 "$linter" --staged --strict
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo >&2
+    echo "pre-commit-comment-hygiene: BLOCKED (exit $rc); fix the violations above" >&2
+    echo "or record the bypass reason in the commit message with --no-verify." >&2
+fi
+exit "$rc"
