@@ -125,9 +125,12 @@ triangles carries three source and three generated records, carrier lane
 3/4 at each generated vertex, and the FP24 recovery model lands within one
 UNORM8 quantum of the clipped-edge value. The PM4 stream is byte-identical
 to rung A's cell, so the kernel replay of rung A stands for rung B; the
-silicon receipt needs its own attended probe geometry (a partially clipped
-unequal-w triangle with a census over safe-interior pixels away from the
-clip edge and the fan diagonal) and stays open.
+silicon receipt (`r3v_native_attended_rs_tex_adj_probe --candidate
+reciprocal-carrier-partial`, vertex 0 at NDC x = -1.5, census 2 px inside
+the target border) is
+`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-partial-clip-carrier-receipt-rs482`:
+affine 1296/1296, control perspective 1296/1296, both fan witnesses live 6
+exact 6.
 
 Rung C, q-lane carrier: vec1 through vec3 place normalized w in the unused
 q lane, `rcp(input0.w)` then `input0.xyz * reciprocal`, keeping the
