@@ -98,7 +98,10 @@ the `xyz * rcp(w)` US program, and every clipping class is admitted
 (`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`, rung C).
 A component offset, a width mismatch between the varying and the narrow
 program, a vec4 under the narrow program, and the narrow program on a
-Smooth or Flat interface stay `UNSUPPORTED`.
+Smooth or Flat interface stay `UNSUPPORTED`. Silicon receipt on RS482 for
+the vec3 shape: affine 882/882 at max deviation 1, alpha 255 on every
+judged pixel
+(`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-q-lane-carrier-receipt-rs482`).
 The device exposes
 no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
