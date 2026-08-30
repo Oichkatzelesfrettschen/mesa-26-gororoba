@@ -99,7 +99,10 @@ enum r3v_interpolation_route {
     * The post-VS stage packs the twelve-dword two-location records
     * into sixteen-dword records ahead of the clipper, so every
     * clipping class is admitted and the expanded stream is validated
-    * ahead of publication.  Every other mixed shape is UNSUPPORTED. */
+    * ahead of publication.  Location 0 may be Flat instead of Smooth:
+    * the post-VS replication writes the provoking vertex's vector to
+    * every record of the triangle ahead of the packing, and the cell's
+    * bytes are unchanged.  Every other mixed shape is UNSUPPORTED. */
    R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
    /* The public full-vec4 NoPerspective conjunction ahead of the clip
     * judgment: one float vec4 NoPerspective varying at location 0, CPU

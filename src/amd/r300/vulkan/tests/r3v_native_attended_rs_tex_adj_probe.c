@@ -215,7 +215,7 @@ struct pass_target {
 static bool
 judge_mixed(const struct r300_triangle_render_shape *shape,
             const float *candidate_records, const uint32_t *pixels,
-            uint32_t size_bytes, uint32_t unchanged,
+            uint32_t size_bytes, uint32_t unchanged, bool flat_location0,
             struct r300_rs_tex_adj_probe_channel_census *ch, bool *clauses)
 {
    if (r300_rs_tex_adj_probe_channel_census(shape, candidate_records, pixels,
@@ -224,12 +224,22 @@ judge_mixed(const struct r300_triangle_render_shape *shape,
    bool separated = ch->judged != 0;
    bool smooth_exact = true, smooth_affine_zero = true;
    bool noperspective_exact = true, noperspective_perspective_zero = true;
-   for (unsigned c = 0; c < 4; c++)
+   /* A Flat location 0: the logical records replicate the provoking
+    * vertex's s, t, so red and green are one constant that both models
+    * reproduce and no pixel separates; the constant must match both
+    * models on every judged pixel. */
+   for (unsigned c = flat_location0 ? 2 : 0; c < 4; c++)
       separated &= ch->separated[c] != 0;
    for (unsigned c = 0; c < 2; c++) {
       smooth_exact &= ch->perspective_match[c] == ch->judged &&
                       ch->perspective_max_deviation[c] <= 1u;
-      smooth_affine_zero &= ch->affine_on_separated[c] == 0;
+      if (flat_location0) {
+         smooth_exact &= ch->affine_match[c] == ch->judged &&
+                         ch->affine_max_deviation[c] <= 1u;
+         smooth_affine_zero &= ch->separated[c] == 0;
+      } else {
+         smooth_affine_zero &= ch->affine_on_separated[c] == 0;
+      }
       noperspective_exact &= ch->affine_match[2 + c] == ch->judged &&
                              ch->affine_max_deviation[2 + c] <= 1u;
       noperspective_perspective_zero &=
@@ -296,6 +306,15 @@ main(int argc, char **argv)
     * and alpha, so the census judges the candidate against the logical
     * records (s, t, s, t) one channel at a time. */
    bool mixed_route = false;
+   /* Flat beside NoPerspective on the mixed cell: the interface a Flat
+    * vec4 at location 0 beside a NoPerspective vec4 at location 1
+    * under the same (loc0.xy, loc1.xy) program selects the mixed route
+    * with flat_mask 1, the post-VS stage replicates the provoking
+    * (first) vertex's vector across the triangle ahead of the packing,
+    * and pass 1 records rung D's cell byte for byte.  The target is
+    * the provoking vertex's (s, t) in red and green beside (s, t)
+    * affine in blue and alpha. */
+   bool flat_mixed_route = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0) {
@@ -339,6 +358,14 @@ main(int argc, char **argv)
             candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
             other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
             candidate_word_name = "MIXED_RECIPROCAL_CARRIER_TC2";
+         } else if (strcmp(name, "flat-mixed-reciprocal-carrier") == 0) {
+            mixed_route = true;
+            flat_mixed_route = true;
+            candidate = R300_RS_TEX_ADJ_PROBE_CONTROL;
+            route_candidate = R3V_RS_PROBE_NONE;
+            candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
+            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_word_name = "FLAT_MIXED_RECIPROCAL_CARRIER_TC2";
          } else if (strcmp(name, "reciprocal-carrier-partial") == 0) {
             carrier_route = true;
             partial = true;
@@ -359,7 +386,8 @@ main(int argc, char **argv)
               "usage: %s <evidence-directory> [--record-only] "
               "[--waiver <path>] [--candidate "
               "tex-adj|w-select|reciprocal-carrier|reciprocal-carrier-partial|"
-              "reciprocal-q-lane|mixed-reciprocal-carrier] "
+              "reciprocal-q-lane|mixed-reciprocal-carrier|"
+              "flat-mixed-reciprocal-carrier] "
               "[--production]  (production: w-select on the unclipped "
               "triangle or reciprocal-carrier-partial on the clipped one, "
               "every gate unset)\n",
@@ -558,6 +586,10 @@ main(int argc, char **argv)
                           "selected at submission, no gate)"
         : production    ? " (production direct GB W_SELECT route, no gate)"
         : q_lane_route  ? " (reciprocal q-lane route, vec3, no gate)"
+        : flat_mixed_route
+                        ? " (mixed reciprocal carrier route, TC0 Flat "
+                          "replicated on the host + TC1 NoPerspective + TC2 "
+                          "carrier, no gate)"
         : mixed_route   ? " (mixed reciprocal carrier route, TC0 Smooth + "
                           "TC1 NoPerspective + TC2 carrier, no gate)"
         : carrier_route ? " (forced reciprocal carrier route, TC1 cell)"
@@ -611,6 +643,16 @@ main(int argc, char **argv)
       for (unsigned v = 0; v < 3; v++) {
          candidate_records[v * 8 + 6] = records[v * 8 + 4];
          candidate_records[v * 8 + 7] = records[v * 8 + 5];
+      }
+   /* The Flat mixed program's location 0 is the provoking (first)
+    * vertex's s, t on every vertex: rung D's logical records with red
+    * and green replicated. */
+   float mixed_records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   memcpy(mixed_records, candidate_records, sizeof(mixed_records));
+   if (flat_mixed_route)
+      for (unsigned v = 1; v < 3; v++) {
+         candidate_records[v * 8 + 4] = candidate_records[4];
+         candidate_records[v * 8 + 5] = candidate_records[5];
       }
 
    emit("[models] registered outcomes: %s, %s, %s, %s (also reported as "
@@ -755,22 +797,60 @@ main(int argc, char **argv)
       struct r300_rs_tex_adj_probe_channel_census ch;
       bool clauses[6];
       const bool good = judge_mixed(&mp.pass[0], candidate_records,
-                                    expected_mixed, color_bytes, 0, &ch,
-                                    clauses);
+                                    expected_mixed, color_bytes, 0,
+                                    flat_mixed_route, &ch, clauses);
       const bool bad_perspective =
          judge_mixed(&mp.pass[0], candidate_records, perspective_logical,
-                     color_bytes, 0, &ch, clauses);
+                     color_bytes, 0, flat_mixed_route, &ch, clauses);
       const bool bad_affine = judge_mixed(&mp.pass[0], candidate_records,
-                                          expected[1], color_bytes, 0, &ch,
-                                          clauses);
-      emit("[calibration] mixed oracle over the predictions: mixed image "
-           "%s, pure perspective %s, pure affine %s; separated=(%u, %u, "
+                                          expected[1], color_bytes, 0,
+                                          flat_mixed_route, &ch, clauses);
+      /* Over the replicated records the pure affine image is the
+       * flat-mixed prediction itself (a constant in red and green,
+       * affine in blue and alpha), so under the Flat location it is an
+       * alias the oracle must hold on; its known-bad is instead rung
+       * D's own image, red and green interpolated from each vertex's
+       * s, t, which a dropped Flat qualifier would render. */
+      bool bad_interpolated = false;
+      if (flat_mixed_route) {
+         uint32_t *interpolated = calloc(1, color_bytes);
+         uint32_t *rung_d = calloc(1, color_bytes);
+         if (interpolated == NULL || rung_d == NULL ||
+             r300_rs_tex_adj_probe_expected(
+                &mp.pass[0], mixed_records,
+                R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE, interpolated,
+                color_bytes) != 0) {
+            fprintf(stderr, "the interpolated prediction refused to "
+                    "generate\n");
+            return 1;
+         }
+         for (uint32_t i = 0; i < color_bytes / 4u; i++)
+            rung_d[i] = (interpolated[i] & 0x00ffff00u) |
+                        (expected[1][i] & 0xff0000ffu);
+         bad_interpolated = judge_mixed(&mp.pass[0], candidate_records,
+                                        rung_d, color_bytes, 0, true, &ch,
+                                        clauses);
+         free(interpolated);
+         free(rung_d);
+      }
+      emit("[calibration] %s oracle over the predictions: %s image "
+           "%s, pure perspective %s, pure affine %s%s; separated=(%u, %u, "
            "%u, %u) over %u judged\n",
+           flat_mixed_route ? "flat-mixed" : "mixed",
+           flat_mixed_route ? "flat-mixed" : "mixed",
            good ? "holds" : "fails", bad_perspective ? "holds" : "fails",
-           bad_affine ? "holds" : "fails", ch.separated[0], ch.separated[1],
-           ch.separated[2], ch.separated[3], ch.judged);
+           bad_affine ? "holds" : "fails",
+           flat_mixed_route
+              ? (bad_interpolated ? " (an alias of the prediction), rung D "
+                                    "interpolated image holds"
+                                  : " (an alias of the prediction), rung D "
+                                    "interpolated image fails")
+              : "",
+           ch.separated[0], ch.separated[1], ch.separated[2],
+           ch.separated[3], ch.judged);
       free(perspective_logical);
-      if (!good || bad_perspective || bad_affine) {
+      if (!good || bad_perspective || bad_affine != flat_mixed_route ||
+          bad_interpolated) {
          fprintf(stderr, "the mixed oracle is not calibrated against its "
                  "own predictions; refusing ahead of the ioctl\n");
          return 1;
@@ -1104,12 +1184,15 @@ main(int argc, char **argv)
    const uint32_t *fragment_words[2] = {
       r3v_reference_fragment_varying_spirv,
       q_lane_route ? r3v_reference_fragment_noperspective_vec3_spirv
+      : flat_mixed_route ? r3v_reference_fragment_flat_mixed_carrier_spirv
       : mixed_route ? r3v_reference_fragment_mixed_carrier_spirv
                     : r3v_reference_fragment_noperspective_spirv,
    };
    const size_t fragment_bytes[2] = {
       sizeof(r3v_reference_fragment_varying_spirv),
       q_lane_route ? sizeof(r3v_reference_fragment_noperspective_vec3_spirv)
+      : flat_mixed_route
+         ? sizeof(r3v_reference_fragment_flat_mixed_carrier_spirv)
       : mixed_route ? sizeof(r3v_reference_fragment_mixed_carrier_spirv)
                     : sizeof(r3v_reference_fragment_noperspective_spirv),
    };
@@ -1313,6 +1396,7 @@ main(int argc, char **argv)
               "probe candidates=%s/%s\n",
               public_partial ? "public-partial-clip"
               : production ? "production" : q_lane_route ? "q-lane"
+              : flat_mixed_route ? "flat-mixed-carrier"
               : mixed_route ? "mixed-carrier" : "forced-carrier",
               route_name[route[0]], reason[0], route_name[route[1]],
               reason[1], candidate_name[recorded[0]],
@@ -1864,8 +1948,11 @@ main(int argc, char **argv)
                                 carrier_records[v * stride + 13] == 0.0f &&
                                 carrier_records[v * stride + 14] == 0.0f &&
                                 carrier_records[v * stride + 15] == 1.0f;
+               /* TC0: the vertex's own TEX0, or under the Flat
+                * location the provoking vertex's on every record. */
                payload_exact &= memcmp(&carrier_records[v * stride + 4],
-                                       &r300_rs_tex_adj_probe_tex0[v * 4],
+                                       &r300_rs_tex_adj_probe_tex0[
+                                          flat_mixed_route ? 0 : v * 4],
                                        4 * sizeof(float)) == 0;
                for (unsigned k = 0; k < 4; k++) {
                   const float expected =
@@ -2014,8 +2101,9 @@ main(int argc, char **argv)
       bool clauses[6] = { false };
       mixed_oracle = judge_mixed(&mp.pass[1], candidate_records,
                                  candidate_map, color_bytes,
-                                 candidate_census.unchanged, &ch, clauses);
-      emit("[mixed] judged=%u separated=(%u, %u, %u, %u) "
+                                 candidate_census.unchanged,
+                                 flat_mixed_route, &ch, clauses);
+      emit("[%s] judged=%u separated=(%u, %u, %u, %u) "
            "perspective_match=(%u, %u, %u, %u) "
            "affine_match=(%u, %u, %u, %u) "
            "perspective_max_dev=(%u, %u, %u, %u) "
@@ -2026,6 +2114,7 @@ main(int argc, char **argv)
            "smooth_affine_zero=%d noperspective_exact=%d "
            "noperspective_perspective_zero=%d unchanged_zero=%d "
            "oracle=%d\n",
+           flat_mixed_route ? "flat-mixed" : "mixed",
            ch.judged, ch.separated[0], ch.separated[1], ch.separated[2],
            ch.separated[3], ch.perspective_match[0], ch.perspective_match[1],
            ch.perspective_match[2], ch.perspective_match[3],
@@ -2112,6 +2201,18 @@ main(int argc, char **argv)
            ? "the carriers do not hold the probe payload at proportional "
              "reciprocal W; the models were evaluated against records the "
              "device did not fetch"
+        : flat_mixed_route
+           ? (mixed_oracle
+                 ? "the control cell interpolates perspective-correct and "
+                   "the Flat-beside-NoPerspective pipeline's target carries "
+                   "the provoking vertex's s, t as one constant in red and "
+                   "green beside the NoPerspective s, t affine in blue and "
+                   "alpha, each within one quantum on every judged pixel "
+                   "under rung D's cell with no gate: the receipt of Flat "
+                   "through host replication beside the mixed reciprocal "
+                   "carrier on RS482"
+                 : "the flat-mixed oracle does not hold; the [flat-mixed] "
+                   "line names the failed clause")
         : mixed_route
            ? (mixed_oracle
                  ? "the control cell interpolates perspective-correct and "

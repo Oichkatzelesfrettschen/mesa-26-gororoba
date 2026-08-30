@@ -602,34 +602,66 @@ test_mixed_carrier_conjunction(void)
    reordered.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
    f = direct_query(&reordered);
    f.mixed_carrier_fragment = true;
-   expect_unsupported(&f, "Smooth location 0");
+   expect_unsupported(&f, "Flat location 0");
    /* Both NoPerspective, both Smooth. */
    struct r3v_shader_interface_link both = link;
    both.noperspective_mask = 3u;
    both.varyings[0].interpolation = R3V_SHADER_INTERFACE_NOPERSPECTIVE;
    f = direct_query(&both);
    f.mixed_carrier_fragment = true;
-   expect_unsupported(&f, "Smooth location 0");
+   expect_unsupported(&f, "Flat location 0");
    both.noperspective_mask = 0u;
    both.varyings[0].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
    both.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
    f = direct_query(&both);
    f.mixed_carrier_fragment = true;
-   expect_unsupported(&f, "Smooth location 0");
-   /* Flat mixed in. */
+   expect_unsupported(&f, "Flat location 0");
+   /* Flat at location 0 rides the same cell replicated on the host;
+    * the reason names the replication. */
    struct r3v_shader_interface_link flat = link;
    flat.flat_mask = 1u;
    flat.varyings[0].interpolation = R3V_SHADER_INTERFACE_FLAT;
    f = direct_query(&flat);
    f.mixed_carrier_fragment = true;
-   expect_unsupported(&f, "Smooth location 0");
+   reason = NULL;
+   CHECK(r3v_interpolation_route_select(&f, &reason) ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+   CHECK(reason != NULL && strstr(reason, "Flat replicated") != NULL);
+   f.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
+   CHECK(r3v_interpolation_route_select(&f, NULL) ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+   /* The Flat interface under the vec4 pass-through program stays
+    * outside the mixed route. */
+   f = direct_query(&flat);
+   expect_unsupported(&f, "mixed");
+   /* Flat at location 1 beside the NoPerspective mask, and Flat at
+    * both, refuse: the carrier premultiplies location 1 alone. */
+   struct r3v_shader_interface_link flat1 = link;
+   flat1.flat_mask = 2u;
+   flat1.noperspective_mask = 0u;
+   flat1.varyings[1].interpolation = R3V_SHADER_INTERFACE_FLAT;
+   f = direct_query(&flat1);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "location 0");
+   struct r3v_shader_interface_link flat_both = flat;
+   flat_both.flat_mask = 3u;
+   f = direct_query(&flat_both);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "location 0");
+   /* A Flat mask that names location 0 while the varying reads Smooth
+    * is an inconsistent link and refuses. */
+   struct r3v_shader_interface_link flat_mismatch = link;
+   flat_mismatch.flat_mask = 1u;
+   f = direct_query(&flat_mismatch);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Flat mask");
    /* A third location. */
    struct r3v_shader_interface_link three = link;
    three.varying_mask = 7u;
    three.varyings[2] = link.varyings[0];
    f = direct_query(&three);
    f.mixed_carrier_fragment = true;
-   expect_unsupported(&f, "Smooth location 0");
+   expect_unsupported(&f, "Flat location 0");
    /* A width mismatch, a component offset, an integer varying. */
    struct r3v_shader_interface_link narrow = link;
    narrow.varyings[1].width = 3;
@@ -653,7 +685,7 @@ test_mixed_carrier_conjunction(void)
    noperspective_vec4_link(&one);
    f = direct_query(&one);
    f.mixed_carrier_fragment = true;
-   expect_unsupported(&f, "Smooth location 0");
+   expect_unsupported(&f, "Flat location 0");
 }
 
 int

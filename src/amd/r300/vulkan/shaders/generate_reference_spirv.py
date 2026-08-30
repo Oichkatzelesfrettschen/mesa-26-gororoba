@@ -78,6 +78,7 @@ STAGES = (
     ("r3v_reference_vertex_mixed_carrier_spirv", HERE / "r3v_reference_vertex_mixed_carrier.vert"),
     ("r3v_reference_fragment_mixed_carrier_spirv", HERE / "r3v_reference_fragment_mixed_carrier.frag"),
     ("r3v_reference_vertex_two_attributes_mixed_carrier_spirv", HERE / "r3v_reference_vertex_two_attributes_mixed_carrier.vert"),
+    ("r3v_reference_fragment_flat_mixed_carrier_spirv", HERE / "r3v_reference_fragment_flat_mixed_carrier.frag"),
 )
 
 
