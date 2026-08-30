@@ -511,8 +511,11 @@ create_pipeline(struct r3v_native_device *device,
     * pass-through fragment binary reads US input 0 -- the RS
     * destination color 0 lands in -- when the module pair carries the
     * varying without texture sampling, and RS480's GA_COLOR_CONTROL
-    * carries PROVOKING_VERTEX_FIRST.  The clipping class is judged per
-    * triangle at execution. */
+    * carries PROVOKING_VERTEX_FIRST.  The clipping class is deferred:
+    * the Flat route judges it per triangle at execution, and the
+    * NoPerspective vec4 conjunction takes the adaptive route whose
+    * concrete cell the submission selects after the CPU vertex
+    * execution (r3v_native_cmd_buffer_select_deferred_routes). */
    /* CPU delivery holds while every R2VB delivery gate stays closed;
     * a Flat interface executes on the CPU route regardless (the R2VB
     * host model's admission in r3v_native_cell.c requires
@@ -525,7 +528,7 @@ create_pipeline(struct r3v_native_device *device,
    const struct r3v_interpolation_query interpolation = {
       .cpu_delivery = cpu_delivery || admitted.shader_interface.flat_mask != 0,
       .triangle_list = true,
-      .clip_class = R3V_INTERPOLATION_CLIP_ACCEPT,
+      .clip_class = R3V_INTERPOLATION_CLIP_DEFERRED,
       .link = &pipeline->shader_interface,
       .rs_destination_available = varying && !sampled,
       .fragment_consumes_destination = varying && !sampled,
@@ -559,8 +562,10 @@ create_pipeline(struct r3v_native_device *device,
     * NoPerspective pass records the candidate word alone, so the
     * production W_SELECT route yields to it. */
    if (pipeline->rs_probe_candidate != R3V_RS_PROBE_NONE &&
-       pipeline->interpolation_route ==
-          R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT)
+       (pipeline->interpolation_route ==
+           R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT ||
+        pipeline->interpolation_route ==
+           R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER))
       pipeline->interpolation_route = R3V_INTERPOLATION_ROUTE_REPLICATE;
    pipeline->post_vs.reciprocal_carrier =
       pipeline->interpolation_route ==

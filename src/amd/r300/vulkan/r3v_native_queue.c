@@ -1395,6 +1395,25 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
+   /* The adaptive NoPerspective route resolves here, after the waits
+    * and ahead of every digest, arming verdict, and retention below:
+    * the CPU vertex execution judges each draw's triangles against the
+    * live stream bytes and the command buffer's IB becomes the concrete
+    * cell's, so the armed and retained bytes are the ones the device
+    * executes.  The carrier and the target stay untouched. */
+   for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+      struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
+      const VkResult selected =
+         r3v_native_cmd_buffer_select_deferred_routes(device, cmd_buffer);
+      if (selected != VK_SUCCESS) {
+         if (selected == VK_ERROR_MEMORY_MAP_FAILED ||
+             selected == VK_ERROR_OUT_OF_HOST_MEMORY)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      }
+   }
+
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);

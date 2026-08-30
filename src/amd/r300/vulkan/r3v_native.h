@@ -545,6 +545,21 @@ struct r3v_native_deferred_draw {
     * the direct NoPerspective route, or zero for the control varying
     * cell. */
    uint8_t rs_probe_candidate;
+   /* The adaptive NoPerspective route ahead of its clip judgment: the
+    * command buffer's IB holds the direct GB W_SELECT cell over
+    * [ib_span_offset, ib_span_offset + ib_span_dwords) and alternate_ib
+    * holds the TC1 reciprocal carrier cell with its relocations bound
+    * to the same reference indices.
+    * r3v_native_cmd_buffer_select_deferred_routes judges the draw after
+    * the CPU vertex execution, splices the carrier cell over the span
+    * when any source triangle is PARTIAL, rewrites the route flags
+    * above to the concrete route, and clears this flag; an execution
+    * that meets it still set refuses. */
+   bool adaptive_noperspective;
+   uint32_t ib_span_offset;
+   uint32_t ib_span_dwords;
+   uint32_t *alternate_ib;
+   uint32_t alternate_ib_dwords;
    /* Set when the GPU producer route is admitted for this submission:
     * the queue composed the producer pass ahead of the consumer IB, the
     * carrier is poisoned instead of host-filled, and the words below
@@ -1457,7 +1472,8 @@ VkResult r3v_native_cmd_buffer_append_ib(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r300_tcl_bypass_triangle_ib *cell,
    const struct r3v_native_bo_reference *references,
-   uint32_t reference_count);
+   uint32_t reference_count,
+   struct r300_tcl_bypass_triangle_ib *alternate_cell);
 
 void r3v_native_cmd_buffer_install_ib(
    struct r3v_native_cmd_buffer *cmd_buffer, enum r3v_native_cell_kind kind,
@@ -1723,7 +1739,21 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    bool noperspective_q_lane, bool noperspective_mixed_carrier,
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
-   const struct r3v_native_sampled_texture *sampled);
+   const struct r3v_native_sampled_texture *sampled,
+   struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell);
+
+/* Resolves every adaptive NoPerspective deferred draw of the command
+ * buffer to its concrete route ahead of the arming digest: the CPU
+ * vertex executor runs the draw's job over the bound streams into host
+ * scratch, every source triangle is judged against the clip volume,
+ * and the draw keeps the installed direct GB W_SELECT cell when every
+ * triangle is ACCEPT or takes the retained TC1 reciprocal carrier cell
+ * when any is PARTIAL.  The carrier memory and the target stay
+ * untouched; a second call finds no adaptive draw and returns
+ * VK_SUCCESS. */
+VkResult r3v_native_cmd_buffer_select_deferred_routes(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer);
 
 /* Executes the command buffer's deferred draw at submission: gathers the
  * bound stream through the CPU vertex executor into the owned carrier

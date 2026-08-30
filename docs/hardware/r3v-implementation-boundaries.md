@@ -65,29 +65,34 @@ not an RS482 interpolation-accuracy claim.
 
 The admitted shader grammar exposes `Flat` (host provoking-value replication,
 or the direct GA color 0 route for one full vec4 at location 0) and
-`NoPerspective`, admitted on any float vec4 varying but implemented on the
-direct GB W_SELECT route alone (one full vec4 at location 0, CPU delivery, a
-triangle list, clipping class ACCEPT; the `GB_SELECT.W_SELECT = 1` word the
-RS482 census classified affine). A partially clipped triangle refuses on that
-route, and every other NoPerspective interface -- a Smooth or Flat location
-beside it, an open R2VB delivery gate, a non-float varying, a narrower
-varying outside the q-lane shape below -- is
-created with the `UNSUPPORTED` route and refuses every draw at record time,
-because replication would interpolate the varying with perspective. The
-`(a * w, w)` reciprocal carrier that serves those shapes
-(`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`) exists as
+`NoPerspective`, admitted on any float vec4 varying and implemented for
+one full vec4 at location 0 on CPU delivery over a triangle list by two
+concrete cells the submission selects between: the direct GB W_SELECT cell
+(the `GB_SELECT.W_SELECT = 1` word the RS482 census classified affine) when
+every source triangle is ACCEPT, and the `(a * w, w)` TC1 reciprocal
+carrier cell when any source triangle is PARTIAL. The pipeline is created
+on the `W_SELECT_OR_RECIPROCAL_CARRIER` route, the draw record installs the
+direct cell and retains the carrier cell beside it, and
+`r3v_native_cmd_buffer_select_deferred_routes` judges the draw after the
+CPU vertex execution at submission, ahead of the arming digest, so the
+armed bytes are the concrete cell's; an execution that meets an unresolved
+adaptive draw refuses. Every other NoPerspective interface -- a Smooth or
+Flat location beside it, an open R2VB delivery gate, a non-float varying, a
+narrower varying outside the q-lane shape below -- is created with the
+`UNSUPPORTED` route and refuses every draw at record time, because
+replication would interpolate the varying with perspective. The carrier
+route (`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`) is
 the `RECIPROCAL_CARRIER` route -- the post-VS stage packs `a * w` into TEX0
 and the triangle-normalized `w` into TEX1.x, the TC1 cell fetches twelve
 dwords per vertex through two RS interpolators, and the US recovers the
 window-linear value as `TEX0 * rcp(TEX1.x)` with `W_SELECT` clear -- and the
-selector takes it for the W_SELECT conjunction alone under the exact gate
-`R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1` until each further shape's
-silicon receipt lands; the refused shapes stay `UNSUPPORTED` meanwhile.
-The carrier route admits every clipping class: packed ahead of the
-clipper, its linear blend of `(a * w, w)` yields the Vulkan clipped
-NoPerspective value at a generated vertex, and the expanded stream is
-validated ahead of publication (silicon receipt on RS482 over a
-one-plane fan: affine 1296/1296).
+exact gate `R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1` selects it for the
+conjunction in every clipping class. Packed ahead of the clipper, the
+carrier's linear blend of `(a * w, w)` yields the Vulkan clipped
+NoPerspective value at a generated vertex, a carrier envelope refusal fails
+the draw ahead of publication, and the expanded stream is validated ahead
+of publication (silicon receipt on RS482 over a one-plane fan: affine
+1296/1296).
 A float, vec2, or vec3 NoPerspective varying at location 0 whose
 components start at x and run contiguously rides the `RECIPROCAL_Q_LANE`
 route with no gate when the fragment module is the narrow pass-through of
@@ -263,7 +268,7 @@ R3V has two distinct boundaries:
    and conformance.
 
 The Gallium-backed Vulkan lane that preceded the implementation is retired;
-the retirement section below names the mechanism or fixture that carries each
+the section `Retired Gallium-backed lane` names the mechanism or fixture that carries each
 of its former capabilities.
 
 A result at one boundary never closes another. Source architecture, build and

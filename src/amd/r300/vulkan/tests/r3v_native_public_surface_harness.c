@@ -718,6 +718,88 @@ check_image_usage_surface(
    }
 }
 
+/* The unequal-w one-plane crossing under the TC1 carrier: the published
+ * fan carries three source records at carrier lane 1 and three generated
+ * records at carrier lane 3/4 whose payload / carrier is the clipped-edge
+ * value, and the FP24 recovery lands within one UNORM8 quantum of it. */
+static void
+check_unequal_w_carrier_fan(struct r3v_native_device *native_device,
+                            struct r3v_native_cmd_buffer *cmd,
+                            const float unequal_w_crossing[12])
+{
+      void *carrier_map = NULL;
+      assert(radeon_drm_vk_bo_map(
+                &native_device->drm,
+                &cmd->owned_carriers[0]->bo,
+                &carrier_map) == 0);
+      const float *records = carrier_map;
+      struct r300_noperspective_reciprocal_plan plan;
+      r300_noperspective_reciprocal_plan_tc1(&plan);
+      assert(r300_noperspective_reciprocal_validate_expanded(
+                &plan, records,
+                R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u) ==
+             6);
+      /* The smooth reference vertex module writes the varying
+       * fma(position, (0.5, 0.5, 0, 0), (0.5, 0.5, 0.25, 1)) from
+       * the clip-space input. */
+      float varying[3][4];
+      for (unsigned v = 0; v < 3; v++) {
+         varying[v][0] = unequal_w_crossing[v * 4] * 0.5f + 0.5f;
+         varying[v][1] = unequal_w_crossing[v * 4 + 1] * 0.5f + 0.5f;
+         varying[v][2] = 0.25f;
+         varying[v][3] = 1.0f;
+      }
+      unsigned source_records = 0, generated_records = 0;
+      for (unsigned r = 0; r < 6; r++) {
+         const float *record =
+            &records[r * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
+         const float c = record[8];
+         assert(record[9] == 0.0f && record[10] == 0.0f &&
+                record[11] == 1.0f);
+         if (c == 1.0f) {
+            /* A source vertex with w 2: payload is the varying. */
+            source_records++;
+            bool matched = false;
+            for (unsigned v = 1; v < 3 && !matched; v++) {
+               matched = true;
+               for (unsigned k = 0; k < 4; k++)
+                  matched &= fabsf(record[4 + k] - varying[v][k]) <=
+                             1e-6f;
+            }
+            assert(matched);
+            continue;
+         }
+         assert(c == 0.75f);
+         generated_records++;
+         /* The generated vertex sits on x = -w between vertex 0
+          * and vertex 1 or 2, window x 0 after projection; its
+          * recovered payload is the clipped-edge value. */
+         assert(record[0] == 0.0f);
+         bool matched = false;
+         for (unsigned v = 1; v < 3 && !matched; v++) {
+            matched = true;
+            for (unsigned k = 0; k < 4; k++) {
+               const double expected =
+                  r300_noperspective_reciprocal_clipped_edge_value(
+                     varying[0][k], unequal_w_crossing[3], varying[v][k],
+                     unequal_w_crossing[v * 4 + 3], 0.5);
+               matched &= fabs(record[4 + k] / c - expected) <= 1e-6;
+               matched &= fabsf(r300_noperspective_reciprocal_recover(
+                                   record[4 + k], c) -
+                                (float)expected) <= 1.0f / 255.0f;
+            }
+         }
+         assert(matched);
+      }
+      /* The clipper walks edges 0-1, 1-2, 2-0 against x = -w:
+       * polygon (I01, v1, v2, I20), fan (I01, v1, v2) and
+       * (I01, v2, I20) -- three source, three generated records. */
+      assert(source_records == 3 && generated_records == 3);
+      radeon_drm_vk_bo_unmap(
+         &native_device->drm,
+         &cmd->owned_carriers[0]->bo, carrier_map);
+}
+
 int
 main(void)
 {
@@ -4066,10 +4148,13 @@ main(void)
             assert(native_probe->rs_probe_candidate == arm[a].expected);
             /* The direct NoPerspective route yields to an open probe
              * gate and holds only when no gate names a candidate. */
+            /* The public NoPerspective pipeline is created on the
+             * adaptive route; the concrete cell is selected at
+             * submission. */
             assert(native_probe->interpolation_route ==
                    (arm[a].noperspective &&
                           arm[a].expected == R3V_RS_PROBE_NONE
-                       ? R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT
+                       ? R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER
                        : R3V_INTERPOLATION_ROUTE_REPLICATE));
             vkDestroyPipeline(device, probe_pipeline, NULL);
          }
@@ -4097,7 +4182,8 @@ main(void)
          VK_FROM_HANDLE(r3v_native_pipeline, native_noperspective,
                         noperspective_pipeline);
          assert(native_noperspective->interpolation_route ==
-                R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+                R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER);
+         assert(!native_noperspective->post_vs.reciprocal_carrier);
          assert(native_noperspective->rs_probe_candidate ==
                 R3V_RS_PROBE_NONE);
          VkPipeline smooth_pipeline = VK_NULL_HANDLE;
@@ -4133,8 +4219,20 @@ main(void)
                         noperspective_cmd);
          VK_FROM_HANDLE(r3v_native_cmd_buffer, native_smooth_cmd,
                         smooth_cmd);
+         /* The record installs the direct cell and retains the carrier
+          * cell beside it. */
          assert(native_noperspective_cmd->deferred_draws[0]
                    .direct_noperspective);
+         assert(native_noperspective_cmd->deferred_draws[0]
+                   .adaptive_noperspective);
+         assert(native_noperspective_cmd->deferred_draws[0].alternate_ib !=
+                   NULL &&
+                native_noperspective_cmd->deferred_draws[0]
+                      .alternate_ib_dwords != 0);
+         assert(native_noperspective_cmd->deferred_draws[0].ib_span_offset ==
+                   0 &&
+                native_noperspective_cmd->deferred_draws[0].ib_span_dwords ==
+                   native_noperspective_cmd->ib_size_dwords);
          assert(native_noperspective_cmd->deferred_draws[0]
                    .rs_probe_candidate == (uint8_t)R3V_RS_PROBE_W_SELECT_ONE);
          assert(native_noperspective_cmd->ib_size_dwords ==
@@ -4159,11 +4257,216 @@ main(void)
                     R300_GB_W_SELECT_1));
 
          /* The vertex buffer holds varying_crossing, the partially
-          * clipped triangle: the route refuses at execution. */
+          * clipped triangle.  An execution ahead of the selection meets
+          * the unresolved adaptive route and refuses. */
          assert(r3v_native_cmd_buffer_execute_deferred_draws(
                    native_device, native_noperspective_cmd) ==
                 VK_ERROR_INITIALIZATION_FAILED);
-         /* The ACCEPT triangle executes. */
+         /* The partial-clip fallback: the selection judges the crossing
+          * triangle PARTIAL, splices the TC1 carrier cell over the
+          * direct cell's span, and rewrites the route flags; the
+          * spliced IB is byte-equal to the carrier family emitter's
+          * cell, and the execution publishes the carrier fan. */
+         assert(r3v_native_cmd_buffer_select_deferred_routes(
+                   native_device, native_noperspective_cmd) == VK_SUCCESS);
+         {
+            const struct r3v_native_deferred_draw *selected =
+               &native_noperspective_cmd->deferred_draws[0];
+            assert(!selected->adaptive_noperspective &&
+                   selected->alternate_ib == NULL);
+            assert(selected->noperspective_carrier &&
+                   !selected->direct_noperspective &&
+                   selected->post_vs.reciprocal_carrier &&
+                   selected->rs_probe_candidate ==
+                      (uint8_t)R3V_RS_PROBE_NONE);
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            struct r300_tcl_bypass_triangle_ib expected_cell;
+            assert(r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
+                      R300_TRIANGLE_TARGET_WIDTH,
+                      R300_TRIANGLE_TARGET_HEIGHT, true, 1u, &plan,
+                      &expected_cell) == 0);
+            assert(native_noperspective_cmd->ib_size_dwords ==
+                      expected_cell.ib_size_dwords &&
+                   selected->ib_span_dwords == expected_cell.ib_size_dwords);
+            assert(memcmp(native_noperspective_cmd->ib, expected_cell.ib,
+                          expected_cell.ib_size_dwords * 4u) == 0);
+            r300_tcl_bypass_triangle_release(&expected_cell);
+            /* A second selection finds no adaptive draw and changes
+             * nothing. */
+            assert(r3v_native_cmd_buffer_select_deferred_routes(
+                      native_device, native_noperspective_cmd) == VK_SUCCESS);
+            assert(native_noperspective_cmd->ib_size_dwords ==
+                   selected->ib_span_dwords);
+         }
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   native_device, native_noperspective_cmd) == VK_SUCCESS);
+         {
+            void *carrier_map = NULL;
+            assert(radeon_drm_vk_bo_map(
+                      &native_device->drm,
+                      &native_noperspective_cmd->owned_carriers[0]->bo,
+                      &carrier_map) == 0);
+            struct r300_noperspective_reciprocal_plan plan;
+            r300_noperspective_reciprocal_plan_tc1(&plan);
+            assert(r300_noperspective_reciprocal_validate_expanded(
+                      &plan, carrier_map,
+                      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u) ==
+                   6);
+            radeon_drm_vk_bo_unmap(
+               &native_device->drm,
+               &native_noperspective_cmd->owned_carriers[0]->bo, carrier_map);
+         }
+         /* The unequal-w crossing on the public route reproduces the
+          * forced carrier's fan, witness values, and carrier lane. */
+         {
+            static const float public_unequal_w_crossing[12] = {
+               -3.0f,  0.0f, 0.5f, 1.0f,
+                0.0f, -1.0f, 1.0f, 2.0f,
+                0.0f,  1.0f, 1.0f, 2.0f,
+            };
+            assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                               &map) == VK_SUCCESS);
+            memcpy(map, public_unequal_w_crossing,
+                   sizeof(public_unequal_w_crossing));
+            vkUnmapMemory(device, vertex_memory);
+            VkCommandBuffer public_unequal_cmd = record_triangle_draw(
+               &begin_pass, noperspective_pipeline, vertex_buffer, 3, 1, 0);
+            VK_FROM_HANDLE(r3v_native_cmd_buffer, native_public_unequal,
+                           public_unequal_cmd);
+            assert(native_public_unequal->deferred_draws[0]
+                      .adaptive_noperspective);
+            assert(r3v_native_cmd_buffer_select_deferred_routes(
+                      native_device, native_public_unequal) == VK_SUCCESS);
+            assert(native_public_unequal->deferred_draws[0]
+                      .noperspective_carrier);
+            assert(native_public_unequal->ib_size_dwords ==
+                      native_noperspective_cmd->ib_size_dwords &&
+                   memcmp(native_public_unequal->ib,
+                          native_noperspective_cmd->ib,
+                          native_noperspective_cmd->ib_size_dwords * 4u) == 0);
+            assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                      native_device, native_public_unequal) == VK_SUCCESS);
+            check_unequal_w_carrier_fan(native_device, native_public_unequal,
+                                        public_unequal_w_crossing);
+            assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                               &map) == VK_SUCCESS);
+            memcpy(map, varying_crossing, sizeof(varying_crossing));
+            vkUnmapMemory(device, vertex_memory);
+         }
+         /* The two-pass shape the attended probe records: the Smooth
+          * control cell then the public NoPerspective cell.  The
+          * selection splices the second span alone, and the result is
+          * byte-equal to the same two passes recorded under the forced
+          * carrier gate. */
+         {
+            VkCommandBuffer public_two_pass = fresh_cmd();
+            vkCmdBeginRenderPass(public_two_pass, &begin_pass,
+                                 VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(public_two_pass,
+                              VK_PIPELINE_BIND_POINT_GRAPHICS, smooth_pipeline);
+            vkCmdBindVertexBuffers(public_two_pass, 0, 1, &vertex_buffer,
+                                   &(VkDeviceSize){ 0 });
+            vkCmdDraw(public_two_pass, 3, 1, 0, 0);
+            vkCmdEndRenderPass(public_two_pass);
+            vkCmdBeginRenderPass(public_two_pass, &begin_pass,
+                                 VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(public_two_pass,
+                              VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              noperspective_pipeline);
+            vkCmdBindVertexBuffers(public_two_pass, 0, 1, &vertex_buffer,
+                                   &(VkDeviceSize){ 0 });
+            vkCmdDraw(public_two_pass, 3, 1, 0, 0);
+            vkCmdEndRenderPass(public_two_pass);
+            assert(vkEndCommandBuffer(public_two_pass) == VK_SUCCESS);
+            VK_FROM_HANDLE(r3v_native_cmd_buffer, native_public_two_pass,
+                           public_two_pass);
+            assert(native_public_two_pass->deferred_draw_count == 2);
+            const uint32_t first_span =
+               native_public_two_pass->deferred_draws[1].ib_span_offset;
+            assert(first_span != 0 &&
+                   !native_public_two_pass->deferred_draws[0]
+                       .adaptive_noperspective &&
+                   native_public_two_pass->deferred_draws[1]
+                      .adaptive_noperspective);
+            assert(r3v_native_cmd_buffer_select_deferred_routes(
+                      native_device, native_public_two_pass) == VK_SUCCESS);
+            assert(native_public_two_pass->deferred_draws[1]
+                      .noperspective_carrier &&
+                   native_public_two_pass->deferred_draws[1].ib_span_offset ==
+                      first_span &&
+                   first_span +
+                         native_public_two_pass->deferred_draws[1]
+                            .ib_span_dwords ==
+                      native_public_two_pass->ib_size_dwords);
+            /* The Smooth span is untouched by the splice. */
+            assert(memcmp(native_public_two_pass->ib, native_smooth_cmd->ib,
+                          first_span * 4u) == 0);
+            setenv("R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE", "1", 1);
+            r3v_native_device_refresh_delivery_gates(native_device);
+            VkPipeline forced_pipeline = VK_NULL_HANDLE;
+            assert(make_pipeline(&noperspective_shape, pass, layout,
+                                 &forced_pipeline) == VK_SUCCESS);
+            unsetenv("R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE");
+            r3v_native_device_refresh_delivery_gates(native_device);
+            VkCommandBuffer forced_two_pass = fresh_cmd();
+            vkCmdBeginRenderPass(forced_two_pass, &begin_pass,
+                                 VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(forced_two_pass,
+                              VK_PIPELINE_BIND_POINT_GRAPHICS, smooth_pipeline);
+            vkCmdBindVertexBuffers(forced_two_pass, 0, 1, &vertex_buffer,
+                                   &(VkDeviceSize){ 0 });
+            vkCmdDraw(forced_two_pass, 3, 1, 0, 0);
+            vkCmdEndRenderPass(forced_two_pass);
+            vkCmdBeginRenderPass(forced_two_pass, &begin_pass,
+                                 VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(forced_two_pass,
+                              VK_PIPELINE_BIND_POINT_GRAPHICS, forced_pipeline);
+            vkCmdBindVertexBuffers(forced_two_pass, 0, 1, &vertex_buffer,
+                                   &(VkDeviceSize){ 0 });
+            vkCmdDraw(forced_two_pass, 3, 1, 0, 0);
+            vkCmdEndRenderPass(forced_two_pass);
+            assert(vkEndCommandBuffer(forced_two_pass) == VK_SUCCESS);
+            VK_FROM_HANDLE(r3v_native_cmd_buffer, native_forced_two_pass,
+                           forced_two_pass);
+            assert(native_forced_two_pass->ib_size_dwords ==
+                      native_public_two_pass->ib_size_dwords &&
+                   memcmp(native_forced_two_pass->ib,
+                          native_public_two_pass->ib,
+                          native_public_two_pass->ib_size_dwords * 4u) == 0);
+            assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                      native_device, native_public_two_pass) == VK_SUCCESS);
+            vkDestroyPipeline(device, forced_pipeline, NULL);
+         }
+         /* An open R2VB delivery gate withholds the adaptive route: the
+          * interface is UNSUPPORTED and refuses its draw at record. */
+         {
+            setenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL", "1", 1);
+            r3v_native_device_refresh_delivery_gates(native_device);
+            VkPipeline r2vb_noperspective = VK_NULL_HANDLE;
+            assert(make_pipeline(&noperspective_shape, pass, layout,
+                                 &r2vb_noperspective) == VK_SUCCESS);
+            VK_FROM_HANDLE(r3v_native_pipeline, native_r2vb_noperspective,
+                           r2vb_noperspective);
+            assert(native_r2vb_noperspective->interpolation_route ==
+                   R3V_INTERPOLATION_ROUTE_UNSUPPORTED);
+            VkCommandBuffer r2vb_cmd = fresh_cmd();
+            vkCmdBeginRenderPass(r2vb_cmd, &begin_pass,
+                                 VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(r2vb_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              r2vb_noperspective);
+            vkCmdBindVertexBuffers(r2vb_cmd, 0, 1, &vertex_buffer,
+                                   &(VkDeviceSize){ 0 });
+            vkCmdDraw(r2vb_cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(r2vb_cmd);
+            assert(vkEndCommandBuffer(r2vb_cmd) == R3V_NATIVE_REFUSAL_RESULT);
+            vkDestroyPipeline(device, r2vb_noperspective, NULL);
+            unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
+            r3v_native_device_refresh_delivery_gates(native_device);
+         }
+         /* The ACCEPT triangle keeps the direct cell: the selection
+          * leaves the IB byte-equal to the probe-gated W_SELECT cell and
+          * the execution publishes the eight-dword records. */
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                             &map) == VK_SUCCESS);
          memcpy(map, ndc_triangle, sizeof(ndc_triangle));
@@ -4172,6 +4475,21 @@ main(void)
             &begin_pass, noperspective_pipeline, vertex_buffer, 3, 1, 0);
          VK_FROM_HANDLE(r3v_native_cmd_buffer, native_accept_cmd,
                         accept_cmd);
+         assert(native_accept_cmd->deferred_draws[0].adaptive_noperspective);
+         assert(r3v_native_cmd_buffer_select_deferred_routes(
+                   native_device, native_accept_cmd) == VK_SUCCESS);
+         assert(!native_accept_cmd->deferred_draws[0].adaptive_noperspective &&
+                native_accept_cmd->deferred_draws[0].alternate_ib == NULL &&
+                native_accept_cmd->deferred_draws[0].direct_noperspective &&
+                !native_accept_cmd->deferred_draws[0].noperspective_carrier &&
+                !native_accept_cmd->deferred_draws[0]
+                    .post_vs.reciprocal_carrier &&
+                native_accept_cmd->deferred_draws[0].rs_probe_candidate ==
+                   (uint8_t)R3V_RS_PROBE_W_SELECT_ONE);
+         assert(native_accept_cmd->ib_size_dwords ==
+                   native_gated_cmd->ib_size_dwords &&
+                memcmp(native_accept_cmd->ib, native_gated_cmd->ib,
+                       native_gated_cmd->ib_size_dwords * 4u) == 0);
          assert(r3v_native_cmd_buffer_execute_deferred_draws(
                    native_device, native_accept_cmd) == VK_SUCCESS);
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
@@ -4275,79 +4593,8 @@ main(void)
                        native_carrier_partial->ib_size_dwords * 4u) == 0);
          assert(r3v_native_cmd_buffer_execute_deferred_draws(
                    native_device, native_carrier_unequal) == VK_SUCCESS);
-         {
-            void *carrier_map = NULL;
-            assert(radeon_drm_vk_bo_map(
-                      &native_device->drm,
-                      &native_carrier_unequal->owned_carriers[0]->bo,
-                      &carrier_map) == 0);
-            const float *records = carrier_map;
-            struct r300_noperspective_reciprocal_plan plan;
-            r300_noperspective_reciprocal_plan_tc1(&plan);
-            assert(r300_noperspective_reciprocal_validate_expanded(
-                      &plan, records,
-                      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u) ==
-                   6);
-            /* The smooth reference vertex module writes the varying
-             * fma(position, (0.5, 0.5, 0, 0), (0.5, 0.5, 0.25, 1)) from
-             * the clip-space input. */
-            float varying[3][4];
-            for (unsigned v = 0; v < 3; v++) {
-               varying[v][0] = unequal_w_crossing[v * 4] * 0.5f + 0.5f;
-               varying[v][1] = unequal_w_crossing[v * 4 + 1] * 0.5f + 0.5f;
-               varying[v][2] = 0.25f;
-               varying[v][3] = 1.0f;
-            }
-            unsigned source_records = 0, generated_records = 0;
-            for (unsigned r = 0; r < 6; r++) {
-               const float *record =
-                  &records[r * R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS];
-               const float c = record[8];
-               assert(record[9] == 0.0f && record[10] == 0.0f &&
-                      record[11] == 1.0f);
-               if (c == 1.0f) {
-                  /* A source vertex with w 2: payload is the varying. */
-                  source_records++;
-                  bool matched = false;
-                  for (unsigned v = 1; v < 3 && !matched; v++) {
-                     matched = true;
-                     for (unsigned k = 0; k < 4; k++)
-                        matched &= fabsf(record[4 + k] - varying[v][k]) <=
-                                   1e-6f;
-                  }
-                  assert(matched);
-                  continue;
-               }
-               assert(c == 0.75f);
-               generated_records++;
-               /* The generated vertex sits on x = -w between vertex 0
-                * and vertex 1 or 2, window x 0 after projection; its
-                * recovered payload is the clipped-edge value. */
-               assert(record[0] == 0.0f);
-               bool matched = false;
-               for (unsigned v = 1; v < 3 && !matched; v++) {
-                  matched = true;
-                  for (unsigned k = 0; k < 4; k++) {
-                     const double expected =
-                        r300_noperspective_reciprocal_clipped_edge_value(
-                           varying[0][k], unequal_w_crossing[3], varying[v][k],
-                           unequal_w_crossing[v * 4 + 3], 0.5);
-                     matched &= fabs(record[4 + k] / c - expected) <= 1e-6;
-                     matched &= fabsf(r300_noperspective_reciprocal_recover(
-                                         record[4 + k], c) -
-                                      (float)expected) <= 1.0f / 255.0f;
-                  }
-               }
-               assert(matched);
-            }
-            /* The clipper walks edges 0-1, 1-2, 2-0 against x = -w:
-             * polygon (I01, v1, v2, I20), fan (I01, v1, v2) and
-             * (I01, v2, I20) -- three source, three generated records. */
-            assert(source_records == 3 && generated_records == 3);
-            radeon_drm_vk_bo_unmap(
-               &native_device->drm,
-               &native_carrier_unequal->owned_carriers[0]->bo, carrier_map);
-         }
+         check_unequal_w_carrier_fan(native_device, native_carrier_unequal,
+                                     unequal_w_crossing);
          assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                             &map) == VK_SUCCESS);
          memcpy(map, ndc_triangle, sizeof(ndc_triangle));

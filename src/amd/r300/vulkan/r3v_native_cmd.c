@@ -102,6 +102,8 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->bound_index_offset = 0;
    cmd_buffer->bound_index_bytes = 0;
    cmd_buffer->draw_recorded = false;
+   for (uint32_t i = 0; i < R3V_NATIVE_DEFERRED_DRAW_MAX; i++)
+      free(cmd_buffer->deferred_draws[i].alternate_ib);
    memset(cmd_buffer->deferred_draws, 0,
           sizeof(cmd_buffer->deferred_draws));
    cmd_buffer->deferred_draw_count = 0;
@@ -120,7 +122,8 @@ r3v_native_cmd_buffer_append_ib(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r300_tcl_bypass_triangle_ib *cell,
    const struct r3v_native_bo_reference *references,
-   uint32_t reference_count)
+   uint32_t reference_count,
+   struct r300_tcl_bypass_triangle_ib *alternate_cell)
 {
    /* slot_index below holds one entry per relocation slot the triangle
     * cells declare, and the appended cell's payloads are bound through
@@ -167,8 +170,14 @@ r3v_native_cmd_buffer_append_ib(
       slot_index[slot] = found;
    }
 
-   const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+   /* An alternate cell shares the appended cell's references, so its
+    * relocations bind to the same merged indices and the cell can
+    * replace the appended span in place. */
+   int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
       cell, slot_index, reference_count);
+   if (bound == 0 && alternate_cell != NULL)
+      bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+         alternate_cell, slot_index, reference_count);
    if (bound != 0) {
       free(merged);
       return vk_error(device, r3v_native_cell_vk_result_from_errno(bound));
