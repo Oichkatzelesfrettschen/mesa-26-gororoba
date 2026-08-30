@@ -99,8 +99,12 @@ r3v_post_vs_pack_noperspective_mixed_carrier(
    const struct r3v_post_vs_lowering *lowering, const uint32_t *records,
    uint32_t triangle_count, uint32_t record_dwords, uint32_t *carrier)
 {
+   /* A Flat location 0 reaches the packing replicated by
+    * r3v_post_vs_lower_triangles, so the packing copies it verbatim
+    * like a Smooth vector. */
    if (lowering == NULL || !lowering->mixed_carrier ||
-       lowering->noperspective_mask != 0x2u || lowering->flat_mask != 0 ||
+       lowering->noperspective_mask != 0x2u ||
+       (lowering->flat_mask != 0 && lowering->flat_mask != 0x1u) ||
        record_dwords != R300_NOPERSPECTIVE_MIXED_CARRIER_SOURCE_DWORDS ||
        (triangle_count != 0 && (records == NULL || carrier == NULL)))
       return -EINVAL;

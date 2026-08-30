@@ -2655,6 +2655,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # Flat beside NoPerspective on the mixed cell: no gate, location 0
+  # Flat replicated on the host ahead of the packing, the same
+  # sixteen-dword cell, the flat-mixed oracle calibrated against its
+  # own prediction and against rung D's interpolated image.
+  test(
+    'r3v-native-noperspective-flat-mixed-carrier-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'flat-mixed-reciprocal-carrier'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding

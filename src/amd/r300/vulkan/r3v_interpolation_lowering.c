@@ -28,14 +28,19 @@ r3v_interpolation_published_record_dwords(enum r3v_interpolation_route route,
    }
 }
 
-/* The mixed reciprocal carrier route: exactly location 0 Smooth float
- * vec4 and location 1 NoPerspective float vec4, no Flat location, the
- * mixed carrier fragment program, CPU delivery over a triangle list,
- * and the RS destinations the program reads.  The stage packs ahead of
- * the clipper, so the clipping class is not judged.  The three payload
- * and carrier vectors fit the RS budget of four and the baked US block
- * fits the R300 budget, both judged by the plan's validate; every other
- * mixed shape is UNSUPPORTED. */
+/* The mixed reciprocal carrier route: exactly location 0 Smooth or Flat
+ * float vec4 and location 1 NoPerspective float vec4, the mixed carrier
+ * fragment program, CPU delivery over a triangle list, and the RS
+ * destinations the program reads.  A Flat location 0 rides the same
+ * cell: the post-VS stage replicates the provoking vertex's vector
+ * across the triangle ahead of the clipper and the packing, so TC0
+ * carries three equal records and the RS's perspective interpolation of
+ * equal endpoints is the flat value on every pixel, the clipper
+ * included.  The stage packs ahead of the clipper, so the clipping
+ * class is not judged.  The three payload and carrier vectors fit the
+ * RS budget of four and the baked US block fits the R300 budget, both
+ * judged by the plan's validate; every other mixed shape is
+ * UNSUPPORTED. */
 enum r3v_interpolation_route
 r3v_interpolation_route_resolve_clip(enum r3v_interpolation_route route,
                                      enum r3v_interpolation_clip_class clip)
@@ -65,14 +70,16 @@ r3v_interpolation_route_select_mixed(
       why = "delivery route is not CPU";
    } else if (!query->triangle_list) {
       why = "primitive is not a triangle list";
-   } else if (link->varying_mask != 0x3u || link->flat_mask != 0 ||
+   } else if (link->varying_mask != 0x3u ||
+              (link->flat_mask != 0 && link->flat_mask != 0x1u) ||
               link->noperspective_mask != 0x2u) {
-      why = "mixed carrier program outside the Smooth location 0 plus "
-            "NoPerspective location 1 interface";
+      why = "mixed carrier program outside the Smooth or Flat location 0 "
+            "plus NoPerspective location 1 interface";
    } else if (!smooth->present ||
               smooth->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
               smooth->width != 4 || smooth->component_mask != 0xf ||
-              smooth->interpolation != R3V_SHADER_INTERFACE_SMOOTH ||
+              (smooth->interpolation != R3V_SHADER_INTERFACE_SMOOTH &&
+               smooth->interpolation != R3V_SHADER_INTERFACE_FLAT) ||
               !noperspective->present ||
               noperspective->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
               noperspective->width != 4 ||
@@ -80,6 +87,10 @@ r3v_interpolation_route_select_mixed(
               noperspective->interpolation !=
                  R3V_SHADER_INTERFACE_NOPERSPECTIVE) {
       why = "mixed carrier locations are not full float vec4s";
+   } else if ((smooth->interpolation == R3V_SHADER_INTERFACE_FLAT) !=
+              (link->flat_mask == 0x1u)) {
+      why = "mixed carrier location 0 qualifier disagrees with the Flat "
+            "mask";
    } else if (!query->rs_destination_available) {
       why = "RS destination unavailable";
    } else if (!query->fragment_consumes_destination) {
@@ -96,8 +107,11 @@ r3v_interpolation_route_select_mixed(
       return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;
    }
    if (reason != NULL)
-      *reason = "mixed reciprocal carrier: TC0 Smooth, TC1 = a * c, "
-                "TC2.x = c";
+      *reason = link->flat_mask != 0
+                   ? "mixed reciprocal carrier: TC0 Flat replicated on the "
+                     "host, TC1 = a * c, TC2.x = c"
+                   : "mixed reciprocal carrier: TC0 Smooth, TC1 = a * c, "
+                     "TC2.x = c";
    return R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER;
 }
 
@@ -224,7 +238,9 @@ r3v_interpolation_route_select(const struct r3v_interpolation_query *query,
          return r3v_interpolation_route_select_noperspective(query, reason);
       /* One draw carries one W_SELECT word and one provoking
        * selection; the Flat route replicates the NoPerspective
-       * location with perspective, so the mix refuses. */
+       * location with perspective, so the mix refuses.  The mixed
+       * carrier program above is the one admitted Flat-beside-
+       * NoPerspective shape. */
       if (reason != NULL)
          *reason = "Flat and NoPerspective locations mixed in one interface";
       return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;

@@ -216,8 +216,39 @@ of their separated pixels, blue and alpha affine-exact with perspective
 matching none, every channel separated (501, 882, 501, 882 of 882 in the
 prediction), and no unchanged or sentinel pixel; the oracle is calibrated
 ahead of the ioctl against the mixed prediction (holds) and the pure
-perspective and affine predictions (fail). Flat beside the mixed pair
-stays a later shape.
+perspective and affine predictions (fail).
+
+Flat beside NoPerspective through host replication: the mixed route
+admits a Flat float vec4 at location 0 in place of the Smooth one under
+the same mixed lane program. The post-VS stage replicates the provoking
+(first) vertex's location 0 vector across the triangle
+(`r3v_post_vs_lower_triangles`) ahead of the clipper and ahead of the
+packing, so TC0 carries three equal records, the RS's perspective
+interpolation of equal endpoints is the flat value on every pixel of
+every fan triangle, and the packing copies the vector verbatim as it
+copies a Smooth one; the cell's bytes are rung D's. The selector
+(`r3v_interpolation_route_select_mixed`) admits `flat_mask` 0 or 1 with
+the location 0 qualifier agreeing with the mask; Flat at location 1, Flat
+at both, and the Flat interface under the pass-through program stay
+`UNSUPPORTED`. The host proof is the public-surface harness: the recorded
+stream byte-equal to the mixed family cell, the accepted triangle's TC0
+records all the provoking vector with TC1 / c each vertex's own value,
+every live record of the clipped fan carrying the provoking vector, and
+the same fragment module with its Flat decoration stripped building rung
+D's interface whose TC0 records differ per vertex; a stripped replication
+branch fails the harness at the TC0 assertion. The silicon discriminator
+(`r3v_native_attended_rs_tex_adj_probe --candidate flat-mixed-reciprocal-carrier`)
+judges the candidate against rung D's logical records with red and green
+replicated from vertex 0, so red and green must hold one constant that
+both models reproduce within one quantum and separate no pixel, while
+blue and alpha stay affine-exact with perspective matching none of their
+separated pixels; the oracle is calibrated ahead of the ioctl against the
+flat-mixed prediction (holds), the pure affine image (holds: over
+replicated records it is the prediction itself), the pure perspective
+image (fails), and rung D's interpolated image (fails), the last being
+what a dropped Flat qualifier would render. Flat beside Smooth and
+NoPerspective together needs a fourth RS vector and is the four-vector
+RS budget boundary (`docs/hardware/rs482-post-vap-interpolation-pipeline.md`).
 
 Public partial-clip fallback: the full-vec4 NoPerspective pipeline keeps
 both qualified cells. The pipeline is created with the clipping class

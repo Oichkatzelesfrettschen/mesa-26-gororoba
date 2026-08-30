@@ -5130,6 +5130,230 @@ main(void)
             vkDestroyPipeline(device, r2vb_mixed, NULL);
             unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
             r3v_native_device_refresh_delivery_gates(native_device);
+
+            /* Flat beside NoPerspective through host replication: the
+             * same two-location job under the Flat mixed lane program
+             * (location 0 Flat, location 1 NoPerspective) selects the
+             * mixed route with flat_mask 1, records the mixed cell byte
+             * for byte, and the post-VS stage writes the provoking
+             * (first) vertex's vector to every TC0 record ahead of the
+             * clipper and the packing, so the accepted triangle and
+             * every live record of the clipped fan carry one TC0 while
+             * TC1 / c keeps each vertex's own NoPerspective value.  The
+             * same module with its Flat decoration stripped is rung D's
+             * interface, whose TC0 records differ per vertex: the
+             * replication is what the qualifier buys, and the carrier
+             * bytes are the oracle. */
+            {
+               struct r300_tcl_bypass_triangle_ib flat_cell;
+               {
+                  struct r300_noperspective_mixed_carrier_plan plan;
+                  r300_noperspective_mixed_carrier_plan_first(&plan);
+                  assert(r300_tcl_bypass_triangle_noperspective_mixed_carrier_family_emit(
+                            R300_TRIANGLE_TARGET_WIDTH,
+                            R300_TRIANGLE_TARGET_HEIGHT, true, 1u, &plan,
+                            &flat_cell) == 0);
+               }
+               struct pipeline_shape flat_mixed_shape = mixed_shape;
+               flat_mixed_shape.fragment_words =
+                  r3v_reference_fragment_flat_mixed_carrier_spirv;
+               flat_mixed_shape.fragment_bytes =
+                  sizeof(r3v_reference_fragment_flat_mixed_carrier_spirv);
+               VkPipeline flat_mixed_pipeline = VK_NULL_HANDLE;
+               assert(make_pipeline(&flat_mixed_shape, pass, layout,
+                                    &flat_mixed_pipeline) == VK_SUCCESS);
+               VK_FROM_HANDLE(r3v_native_pipeline, native_flat_mixed,
+                              flat_mixed_pipeline);
+               assert(native_flat_mixed->shader_interface.varying_mask == 3u &&
+                      native_flat_mixed->shader_interface.noperspective_mask ==
+                         2u &&
+                      native_flat_mixed->shader_interface.flat_mask == 1u);
+               assert(native_flat_mixed->interpolation_route ==
+                      R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+               assert(native_flat_mixed->rs_probe_candidate ==
+                      R3V_RS_PROBE_NONE);
+               assert(native_flat_mixed->post_vs.mixed_carrier &&
+                      native_flat_mixed->post_vs.flat_mask == 1u &&
+                      native_flat_mixed->post_vs.provoking_vertex ==
+                         R3V_POST_VS_PROVOKING_VERTEX_FIRST);
+               float shade[3][4];
+               for (unsigned v = 0; v < 3; v++) {
+                  shade[v][0] = unequal_w_accept[v * 4] * 0.5f + 0.5f;
+                  shade[v][1] = unequal_w_accept[v * 4 + 1] * 0.5f + 0.5f;
+                  shade[v][2] = 0.25f;
+                  shade[v][3] = 1.0f;
+               }
+               assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                                  &map) == VK_SUCCESS);
+               memcpy(map, unequal_w_accept, sizeof(unequal_w_accept));
+               vkUnmapMemory(device, vertex_memory);
+               VkCommandBuffer flat_cmd = record_triangle_draw(
+                  &begin_pass, flat_mixed_pipeline, vertex_buffer, 3, 1, 0);
+               VK_FROM_HANDLE(r3v_native_cmd_buffer, native_flat_cmd,
+                              flat_cmd);
+               assert(native_flat_cmd->deferred_draws[0]
+                         .noperspective_mixed_carrier &&
+                      !native_flat_cmd->deferred_draws[0].direct_flat);
+               assert(native_flat_cmd->ib_size_dwords ==
+                      flat_cell.ib_size_dwords);
+               assert(memcmp(native_flat_cmd->ib, flat_cell.ib,
+                             flat_cell.ib_size_dwords * 4u) == 0);
+               assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                         native_device, native_flat_cmd) == VK_SUCCESS);
+               {
+                  void *carrier_map = NULL;
+                  assert(radeon_drm_vk_bo_map(
+                            &native_device->drm,
+                            &native_flat_cmd->owned_carriers[0]->bo,
+                            &carrier_map) == 0);
+                  const float *records = carrier_map;
+                  struct r300_noperspective_mixed_carrier_plan plan;
+                  r300_noperspective_mixed_carrier_plan_first(&plan);
+                  assert(r300_noperspective_mixed_carrier_validate_stream(
+                            &plan, records, 1u) == 0);
+                  for (unsigned v = 0; v < 3; v++) {
+                     const float *record = &records[v * 16u];
+                     assert(record[3] == 1.0f / unequal_w_accept[v * 4 + 3]);
+                     for (unsigned k = 0; k < 4; k++) {
+                        assert(record[4 + k] == shade[0][k]);
+                        assert(record[8 + k] == shade[v][k] * expected_c[v]);
+                     }
+                     assert(record[12] == expected_c[v] &&
+                            record[13] == 0.0f && record[14] == 0.0f &&
+                            record[15] == 1.0f);
+                  }
+                  radeon_drm_vk_bo_unmap(
+                     &native_device->drm,
+                     &native_flat_cmd->owned_carriers[0]->bo, carrier_map);
+               }
+
+               /* The clipped fan: every live record's TC0 is the
+                * provoking vector, the generated records' TC1 / c the
+                * clipped-edge NoPerspective value. */
+               assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                                  &map) == VK_SUCCESS);
+               memcpy(map, unequal_w_crossing, sizeof(unequal_w_crossing));
+               vkUnmapMemory(device, vertex_memory);
+               VkCommandBuffer flat_partial_cmd = record_triangle_draw(
+                  &begin_pass, flat_mixed_pipeline, vertex_buffer, 3, 1, 0);
+               VK_FROM_HANDLE(r3v_native_cmd_buffer, native_flat_partial,
+                              flat_partial_cmd);
+               assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                         native_device, native_flat_partial) == VK_SUCCESS);
+               {
+                  void *carrier_map = NULL;
+                  assert(radeon_drm_vk_bo_map(
+                            &native_device->drm,
+                            &native_flat_partial->owned_carriers[0]->bo,
+                            &carrier_map) == 0);
+                  const float *records = carrier_map;
+                  struct r300_noperspective_mixed_carrier_plan plan;
+                  r300_noperspective_mixed_carrier_plan_first(&plan);
+                  assert(r300_noperspective_mixed_carrier_validate_expanded(
+                            &plan, records,
+                            R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+                               3u) == 6);
+                  float cross[3][4];
+                  for (unsigned v = 0; v < 3; v++) {
+                     cross[v][0] = unequal_w_crossing[v * 4] * 0.5f + 0.5f;
+                     cross[v][1] = unequal_w_crossing[v * 4 + 1] * 0.5f + 0.5f;
+                     cross[v][2] = 0.25f;
+                     cross[v][3] = 1.0f;
+                  }
+                  unsigned generated = 0, source = 0;
+                  for (unsigned r = 0; r < 6; r++) {
+                     const float *record = &records[r * 16u];
+                     const float c = record[12];
+                     for (unsigned k = 0; k < 4; k++)
+                        assert(record[4 + k] == cross[0][k]);
+                     if (c == 1.0f) {
+                        source++;
+                        continue;
+                     }
+                     assert(c == 0.75f && record[0] == 0.0f);
+                     generated++;
+                     bool matched = false;
+                     for (unsigned v = 1; v < 3 && !matched; v++) {
+                        matched = true;
+                        for (unsigned k = 0; k < 4; k++) {
+                           const double expected =
+                              r300_noperspective_reciprocal_clipped_edge_value(
+                                 cross[0][k], unequal_w_crossing[3],
+                                 cross[v][k], unequal_w_crossing[v * 4 + 3],
+                                 0.5);
+                           matched &= fabs(record[8 + k] / c - expected) <= 1e-6;
+                        }
+                     }
+                     assert(matched);
+                  }
+                  assert(source == 3 && generated == 3);
+                  radeon_drm_vk_bo_unmap(
+                     &native_device->drm,
+                     &native_flat_partial->owned_carriers[0]->bo,
+                     carrier_map);
+               }
+
+               /* The known-bad: the same fragment module with its Flat
+                * decoration stripped reads Smooth, so rung D's interface
+                * is created (flat_mask 0) and the accepted triangle's
+                * TC0 records differ per vertex. */
+               {
+                  uint32_t stripped[256];
+                  const size_t words =
+                     sizeof(r3v_reference_fragment_flat_mixed_carrier_spirv) /
+                     4u;
+                  assert(words <= 256);
+                  const size_t stripped_words = strip_flat_decorations(
+                     r3v_reference_fragment_flat_mixed_carrier_spirv, words,
+                     stripped);
+                  assert(stripped_words < words);
+                  struct pipeline_shape stripped_shape = flat_mixed_shape;
+                  stripped_shape.fragment_words = stripped;
+                  stripped_shape.fragment_bytes = stripped_words * 4u;
+                  VkPipeline stripped_pipeline = VK_NULL_HANDLE;
+                  assert(make_pipeline(&stripped_shape, pass, layout,
+                                       &stripped_pipeline) == VK_SUCCESS);
+                  VK_FROM_HANDLE(r3v_native_pipeline, native_stripped,
+                                 stripped_pipeline);
+                  assert(native_stripped->shader_interface.flat_mask == 0 &&
+                         native_stripped->interpolation_route ==
+                            R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER &&
+                         native_stripped->post_vs.flat_mask == 0);
+                  assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE,
+                                     0, &map) == VK_SUCCESS);
+                  memcpy(map, unequal_w_accept, sizeof(unequal_w_accept));
+                  vkUnmapMemory(device, vertex_memory);
+                  VkCommandBuffer stripped_cmd = record_triangle_draw(
+                     &begin_pass, stripped_pipeline, vertex_buffer, 3, 1, 0);
+                  VK_FROM_HANDLE(r3v_native_cmd_buffer, native_stripped_cmd,
+                                 stripped_cmd);
+                  assert(native_stripped_cmd->ib_size_dwords ==
+                            flat_cell.ib_size_dwords &&
+                         memcmp(native_stripped_cmd->ib, flat_cell.ib,
+                                flat_cell.ib_size_dwords * 4u) == 0);
+                  assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                            native_device, native_stripped_cmd) ==
+                         VK_SUCCESS);
+                  void *carrier_map = NULL;
+                  assert(radeon_drm_vk_bo_map(
+                            &native_device->drm,
+                            &native_stripped_cmd->owned_carriers[0]->bo,
+                            &carrier_map) == 0);
+                  const float *records = carrier_map;
+                  unsigned differing = 0;
+                  for (unsigned v = 1; v < 3; v++)
+                     for (unsigned k = 0; k < 4; k++)
+                        differing += records[v * 16u + 4 + k] != shade[0][k];
+                  assert(differing != 0);
+                  radeon_drm_vk_bo_unmap(
+                     &native_device->drm,
+                     &native_stripped_cmd->owned_carriers[0]->bo, carrier_map);
+                  vkDestroyPipeline(device, stripped_pipeline, NULL);
+               }
+               vkDestroyPipeline(device, flat_mixed_pipeline, NULL);
+               r300_tcl_bypass_triangle_release(&flat_cell);
+            }
+
             vkDestroyPipeline(device, mixed_pipeline, NULL);
             assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
                                &map) == VK_SUCCESS);
