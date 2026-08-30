@@ -102,6 +102,21 @@ Smooth or Flat interface stay `UNSUPPORTED`. Silicon receipt on RS482 for
 the vec3 shape: affine 882/882 at max deviation 1, alpha 255 on every
 judged pixel
 (`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-q-lane-carrier-receipt-rs482`).
+A Smooth float vec4 at location 0 beside a NoPerspective float vec4 at
+location 1, with no Flat location, rides the `MIXED_RECIPROCAL_CARRIER`
+route with no gate when the fragment module is the mixed lane program
+`(loc0.xy, loc1.xy)`: the vertex job stores both locations, the post-VS
+stage packs the twelve-dword records into the sixteen-dword mixed shape
+(TC0 verbatim, TC1 premultiplied by `c = w / max(w)`, TC2 `(c, 0, 0, 1)`)
+ahead of the clipper, the cell fetches three RS vectors at VAP_VTX_SIZE 16
+under `W_SELECT` clear, and the US stores `(TC0.xy, (TC1 * rcp(TC2.x)).xy)`
+(`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`, rung D).
+Every other mixed shape -- reordered locations, both Smooth or both
+NoPerspective, Flat mixed in, a third location, a width mismatch, a
+component offset, an integer varying, the mixed interface under the
+pass-through program -- stays `UNSUPPORTED`, an open R2VB delivery gate
+withholds the route, and the plan refuses more than four RS vectors
+including the carrier or a US program past the R300 budget.
 The device exposes
 no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's
