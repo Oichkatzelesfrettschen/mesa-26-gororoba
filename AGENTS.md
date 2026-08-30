@@ -673,7 +673,12 @@ Treat `TODO`, `FIXME`, `XXX`, `HACK`, and existing `PLACEHOLDER` comments as evi
 
 Format finding documents with structured chronological metadata in frontmatter: include `last_verified`, `evidence_class`, dated filenames, and ordered predecessor links. Pair all PR and task references with durable mechanism identifiers.
 
-Reference durable identifiers first, accompanied by tracker links: cite `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for cross-link` and `see filed-finding 2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)`.
+Reference durable identifiers first, accompanied by tracker links:
+
+```text
+landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for cross-link
+see filed-finding 2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)
+```
 
 Structure agent-loaded Markdown documents with clean, predictable formatting:
 - Use exactly one top-level `#` title per document.
@@ -693,15 +698,13 @@ Maintain clean, ASCII-compatible text across all checked-in documentation:
 
 ### Comment-hygiene linter and Git hook
 
-Maintain independent repository hygiene so that Mesa checkouts remain fully self-sufficient without requiring sibling `steinmarder-r300/` trees.
-
-Enforce comment hygiene through native Mesa pre-commit hooks when the linter is mirrored or vendored within the repository. Treat external invocations against `steinmarder-r300/` as advisory tooling until a local mirror is established:
+The comment-hygiene linter lives in this repository at `build-infra/scripts/lint/comment_hygiene_lint.py`, mirrored from the steinmarder lint tree, so a Mesa checkout enforces the rule without a sibling `steinmarder-r300/` tree. The pre-commit hook `build-infra/scripts/lint/pre-commit-comment-hygiene` runs `--staged --strict` and refuses the commit when the linter is missing or not executable; install it from the repository root:
 
 ```bash
-../steinmarder-r300/src/re/scripts/lint/comment_hygiene_lint.py --staged
+ln -sf ../../build-infra/scripts/lint/pre-commit-comment-hygiene .git/hooks/pre-commit
 ```
 
-Direct blocking Git hooks exclusively to tools resident within the Mesa repository, ensuring that build and verification pipelines remain hermetic and environment-independent.
+`make -C build-infra comment-hygiene-check` is the repository-quality gate inside `make -C build-infra audit`: it fails when the linter or hook is absent, runs the linter's `--self-test`, and lints every file changed against `COMMENT_HYGIENE_BASE` (default `origin/main`) plus the staged set. `comment-hygiene-check-test` calibrates the hook's refusal on an absent and on a non-executable linter. A commit whose validation record says the lint was `not run` keeps that record; the gate applies from the commit that carries it onward.
 
 Apply comment-hygiene rules across all newly authored commits regardless of automated linter presence. Preserve breadcrumb comments in existing in-flight PRs to avoid unnecessary force-pushes, enforcing hygiene strictly across all new commits.
 
