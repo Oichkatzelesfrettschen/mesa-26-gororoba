@@ -29,6 +29,9 @@
 
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/r300_noperspective_q_lane_fs_block.h"
+#include "amd/r300/common/r300_noperspective_q_lane_plan.h"
+#include "amd/r300/common/r300_r2vb_producer_fs_block.h"
 #include "amd/r300/common/r300_rs_tex_adj_probe.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_bo.h"
@@ -100,6 +103,17 @@ gate_present(const char *name)
 {
    const char *value = getenv(name);
    return value != NULL && value[0] != '\0';
+}
+
+/* Whether a dword block occurs contiguously inside a stream. */
+static bool
+ib_contains_block(const uint32_t *ib, uint32_t ib_dwords,
+                  const uint32_t *block, uint32_t block_dwords)
+{
+   for (uint32_t i = 0; i + block_dwords <= ib_dwords; i++)
+      if (memcmp(&ib[i], block, block_dwords * sizeof(uint32_t)) == 0)
+         return true;
+   return false;
 }
 
 /* The census over one image, printed in full: the counts are the
@@ -218,6 +232,14 @@ main(int argc, char **argv)
     * visible part against the source-triangle models away from the
     * border the clip edge lies on. */
    bool partial = false;
+   /* The q-lane rung: every gate closed, the NoPerspective interface a
+    * vec3 (the probe attribute's s, t, r) under the narrow pass-through
+    * program selects R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE, and
+    * pass 1 records the q-lane cell (r300_noperspective_q_lane_plan.h)
+    * over the same probe records: the varying cell's register words
+    * under the xyz * rcp(w), alpha 1 US program.  The census judges the
+    * candidate against the logical records (s, t, r, 1). */
+   bool q_lane_route = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0) {
@@ -247,6 +269,13 @@ main(int argc, char **argv)
             candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
             other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
             candidate_word_name = "RECIPROCAL_CARRIER_TC1";
+         } else if (strcmp(name, "reciprocal-q-lane") == 0) {
+            q_lane_route = true;
+            candidate = R300_RS_TEX_ADJ_PROBE_CONTROL;
+            route_candidate = R3V_RS_PROBE_NONE;
+            candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
+            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_word_name = "RECIPROCAL_Q_LANE_VEC3";
          } else if (strcmp(name, "reciprocal-carrier-partial") == 0) {
             carrier_route = true;
             partial = true;
@@ -266,7 +295,8 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s <evidence-directory> [--record-only] "
               "[--waiver <path>] [--candidate "
-              "tex-adj|w-select|reciprocal-carrier|reciprocal-carrier-partial] "
+              "tex-adj|w-select|reciprocal-carrier|reciprocal-carrier-partial|"
+              "reciprocal-q-lane] "
               "[--production]\n",
               argv[0]);
       return 2;
@@ -285,13 +315,13 @@ main(int argc, char **argv)
     * the recorded stream is the one the authorization names and the
     * probe pipeline's candidate comes from the environment the
     * authorization declares. */
-   if (production) {
-      /* The production route opens on no gate: a present probe gate
-       * would hand the NoPerspective interface a candidate instead of
-       * the route under test. */
+   if (production || q_lane_route) {
+      /* The production and q-lane routes open on no gate: a present
+       * probe or force gate would hand the NoPerspective interface a
+       * candidate or the TC1 carrier instead of the route under test. */
       if (gate_present(candidate_gate) || gate_present(other_gate)) {
-         fprintf(stderr, "a probe gate is set; the production route runs "
-                 "with %s and %s unset\n",
+         fprintf(stderr, "a gate is set; the %s route runs with %s and %s "
+                 "unset\n", q_lane_route ? "q-lane" : "production",
                  candidate_gate, other_gate);
          return 2;
       }
@@ -301,13 +331,19 @@ main(int argc, char **argv)
               candidate_gate, candidate_word_name);
       return 2;
    }
-   if (carrier_route && gate_present("R3V_NATIVE_RS_W_SELECT_PROBE")) {
-      fprintf(stderr, "R3V_NATIVE_RS_W_SELECT_PROBE is set; the carrier "
-              "route runs with every probe gate unset\n");
+   if ((carrier_route || q_lane_route) &&
+       gate_present("R3V_NATIVE_RS_W_SELECT_PROBE")) {
+      fprintf(stderr, "R3V_NATIVE_RS_W_SELECT_PROBE is set; the %s "
+              "route runs with every probe gate unset\n",
+              q_lane_route ? "q-lane" : "carrier");
       return 2;
    }
-   const bool route_based = production || carrier_route;
-   if (!production && gate_present(other_gate)) {
+   const bool route_based = production || carrier_route || q_lane_route;
+   /* The q-lane and carrier cells differ from the control in the US
+    * program (and, for the carrier, the record shape), so the one-dword
+    * invariant belongs to the probe words alone. */
+   const bool one_word_candidate = !carrier_route && !q_lane_route;
+   if (!production && !q_lane_route && gate_present(other_gate)) {
       fprintf(stderr, "%s is set; one cell carries one candidate\n",
               other_gate);
       return 2;
@@ -349,7 +385,9 @@ main(int argc, char **argv)
     * reference shape, the second alone carrying the candidate word,
     * bound at merged indices 2 and 3. */
    struct r300_triangle_multi_pass mp;
-   if (carrier_route)
+   if (q_lane_route)
+      r3v_native_multi_pass_public_noperspective_q_lane_reference(&mp);
+   else if (carrier_route)
       r3v_native_multi_pass_public_noperspective_carrier_reference(&mp);
    else
       r3v_native_multi_pass_public_rs_tex_adj_probe_reference(&mp, candidate);
@@ -414,7 +452,7 @@ main(int argc, char **argv)
     * dword writes. */
    uint32_t differing_index = UINT32_MAX;
    uint32_t differing_count = 0;
-   if (!carrier_route && armed_control.ib_size_dwords != ib_dwords) {
+   if (one_word_candidate && armed_control.ib_size_dwords != ib_dwords) {
       fprintf(stderr, "the candidate stream is %u dwords against the "
               "control's %u\n",
               ib_dwords, armed_control.ib_size_dwords);
@@ -438,6 +476,7 @@ main(int argc, char **argv)
         "blake3 %.8s\n",
         candidate_word_name,
         production     ? " (production direct GB W_SELECT route, no gate)"
+        : q_lane_route  ? " (reciprocal q-lane route, vec3, no gate)"
         : carrier_route ? " (forced reciprocal carrier route, TC1 cell)"
                         : "",
         mp.pass[0].width, mp.pass[0].height,
@@ -451,7 +490,7 @@ main(int argc, char **argv)
    /* The carrier cell is a record shape of its own -- PSC, VTX_SIZE,
     * RS block, and US program all move -- so the one-dword invariant
     * belongs to the probe words alone. */
-   if (!carrier_route &&
+   if (one_word_candidate &&
        (differing_count != 1 || differing_reg == UINT32_MAX)) {
       fprintf(stderr, "the candidate stream does not differ from the "
               "control in exactly one register dword\n");
@@ -474,6 +513,14 @@ main(int argc, char **argv)
    emit("[geometry] %s: vertex 0 window x=%g (target width %u)\n",
         partial ? "partial clip, one plane x = -w" : "unclipped",
         records[0], mp.pass[0].width);
+   /* The candidate's logical records: the q-lane program writes alpha
+    * 1, so its models read (s, t, r, 1); every other candidate reads
+    * the probe records whole. */
+   float candidate_records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   memcpy(candidate_records, records, sizeof(candidate_records));
+   if (q_lane_route)
+      for (unsigned v = 0; v < 3; v++)
+         candidate_records[v * 8 + 7] = 1.0f;
 
    emit("[models] registered outcomes: %s, %s, %s, %s (also reported as "
         "%s), %s, %s\n",
@@ -504,11 +551,16 @@ main(int argc, char **argv)
       { R300_RS_TEX_ADJ_PROBE_MODEL_PROJECTIVE_Q,
         "expected_projective_q.bin" },
    };
+   /* The affine prediction is the candidate's expectation and reads
+    * its logical records; the perspective and projective ones are the
+    * control's. */
+   const float *prediction_records[3] = { records, candidate_records,
+                                          records };
    uint32_t *expected[3] = { NULL, NULL, NULL };
    for (unsigned p = 0; p < 3; p++) {
       expected[p] = calloc(1, color_bytes);
       if (expected[p] == NULL ||
-          r300_rs_tex_adj_probe_expected(&mp.pass[0], records,
+          r300_rs_tex_adj_probe_expected(&mp.pass[0], prediction_records[p],
                                          prediction[p].model, expected[p],
                                          color_bytes) != 0) {
          fprintf(stderr, "the %s prediction refused to generate\n",
@@ -531,8 +583,8 @@ main(int argc, char **argv)
     * the ioctl, where a collapsed separation refuses the run. */
    struct r300_rs_tex_adj_probe_census predicted[3];
    for (unsigned p = 0; p < 3; p++) {
-      if (r300_rs_tex_adj_probe_census(&mp.pass[0], records, expected[p],
-                                       NULL, color_bytes,
+      if (r300_rs_tex_adj_probe_census(&mp.pass[0], prediction_records[p],
+                                       expected[p], NULL, color_bytes,
                                        &predicted[p]) != 0) {
          fprintf(stderr, "the census refused the %s prediction\n",
                  prediction[p].file);
@@ -887,25 +939,40 @@ main(int argc, char **argv)
     * qualifier alone -- the smooth interface takes no candidate and the
     * NoPerspective interface takes the gated one -- which is what makes
     * the two recorded passes differ in one control word. */
-   VkShaderModule vs = VK_NULL_HANDLE;
-   CHECK(vkCreateShaderModule(
-      device,
-      &(VkShaderModuleCreateInfo){
-         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-         .codeSize = sizeof(r3v_reference_vertex_two_attributes_spirv),
-         .pCode = r3v_reference_vertex_two_attributes_spirv,
-      },
-      NULL, &vs));
+   /* The q-lane rung's candidate pipeline narrows the attribute to its
+    * xyz as a vec3 varying under the vec3 narrow pass-through; the
+    * control keeps the vec4 pair. */
+   const uint32_t *vertex_words[2] = {
+      r3v_reference_vertex_two_attributes_spirv,
+      q_lane_route ? r3v_reference_vertex_two_attributes_vec3_spirv
+                   : r3v_reference_vertex_two_attributes_spirv,
+   };
+   const size_t vertex_bytes[2] = {
+      sizeof(r3v_reference_vertex_two_attributes_spirv),
+      q_lane_route ? sizeof(r3v_reference_vertex_two_attributes_vec3_spirv)
+                   : sizeof(r3v_reference_vertex_two_attributes_spirv),
+   };
    const uint32_t *fragment_words[2] = {
       r3v_reference_fragment_varying_spirv,
-      r3v_reference_fragment_noperspective_spirv,
+      q_lane_route ? r3v_reference_fragment_noperspective_vec3_spirv
+                   : r3v_reference_fragment_noperspective_spirv,
    };
    const size_t fragment_bytes[2] = {
       sizeof(r3v_reference_fragment_varying_spirv),
-      sizeof(r3v_reference_fragment_noperspective_spirv),
+      q_lane_route ? sizeof(r3v_reference_fragment_noperspective_vec3_spirv)
+                   : sizeof(r3v_reference_fragment_noperspective_spirv),
    };
    VkPipeline pipeline[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
    for (unsigned i = 0; i < 2; i++) {
+      VkShaderModule vs = VK_NULL_HANDLE;
+      CHECK(vkCreateShaderModule(
+         device,
+         &(VkShaderModuleCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = vertex_bytes[i],
+            .pCode = vertex_words[i],
+         },
+         NULL, &vs));
       VkShaderModule fs = VK_NULL_HANDLE;
       CHECK(vkCreateShaderModule(
          device,
@@ -1008,8 +1075,8 @@ main(int argc, char **argv)
       CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
                                       &pipeline_info, NULL, &pipeline[i]));
       vkDestroyShaderModule(device, fs, NULL);
+      vkDestroyShaderModule(device, vs, NULL);
    }
-   vkDestroyShaderModule(device, vs, NULL);
 
    /* The route the two interfaces took, read off the pipelines and
     * re-derived through the selector so the reason is printed beside
@@ -1048,13 +1115,14 @@ main(int argc, char **argv)
        * through the route selector.  The deferred draws then carry the
        * W_SELECT_ONE control word from the route itself. */
       if (route_based) {
-         static const char *const route_name[5] = {
+         static const char *const route_name[6] = {
             "replicate", "direct-ga-color0", "direct-gb-w-select",
-            "unsupported", "reciprocal-carrier"
+            "unsupported", "reciprocal-carrier", "reciprocal-q-lane"
          };
          const enum r3v_interpolation_route expected_route =
-            carrier_route ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER
-                          : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
+            q_lane_route  ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE
+            : carrier_route ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER
+                            : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
          enum r3v_interpolation_route route[2];
          for (unsigned i = 0; i < 2; i++) {
             VK_FROM_HANDLE(r3v_native_pipeline, native_pipeline,
@@ -1070,6 +1138,7 @@ main(int argc, char **argv)
                .fragment_consumes_destination = native_pipeline->varying,
                .provoking_first_representable = true,
                .carrier_forced = carrier_route,
+               .narrow_passthrough_width = q_lane_route && i == 1 ? 3u : 0u,
             };
             const enum r3v_interpolation_route derived =
                r3v_interpolation_route_select(&query, &reason[i]);
@@ -1082,7 +1151,8 @@ main(int argc, char **argv)
          }
          emit("[route] %s control=%s (%s) noperspective=%s (%s) "
               "probe candidates=%s/%s\n",
-              production ? "production" : "forced-carrier",
+              production ? "production" : q_lane_route ? "q-lane"
+                                                       : "forced-carrier",
               route_name[route[0]], reason[0], route_name[route[1]],
               reason[1], candidate_name[recorded[0]],
               candidate_name[recorded[1]]);
@@ -1242,8 +1312,14 @@ main(int argc, char **argv)
     * second draw -- in place of the probe word check. */
    struct r300_noperspective_reciprocal_plan carrier_plan;
    r300_noperspective_reciprocal_plan_tc1(&carrier_plan);
+   struct r300_noperspective_q_lane_plan q_lane_plan;
+   r300_noperspective_q_lane_plan_init(&q_lane_plan, 3);
    const int candidate_whole =
-      carrier_route
+      q_lane_route
+         ? r300_noperspective_q_lane_plan_stream_check(
+              &q_lane_plan, gb_select_base, native->ib,
+              native->ib_size_dwords)
+      : carrier_route
          ? r300_noperspective_reciprocal_plan_stream_check(
               &carrier_plan, gb_select_base, native->ib,
               native->ib_size_dwords)
@@ -1251,17 +1327,45 @@ main(int argc, char **argv)
               &candidate_plan, gb_select_base, native->ib,
               native->ib_size_dwords);
    const int candidate_draws =
-      carrier_route
+      q_lane_route
+         ? r300_noperspective_q_lane_plan_stream_check(
+              &q_lane_plan, gb_select_base, native->ib + first_draw_end,
+              native->ib_size_dwords - first_draw_end)
+      : carrier_route
          ? r300_noperspective_reciprocal_plan_stream_check(
               &carrier_plan, gb_select_base, native->ib + first_draw_end,
               native->ib_size_dwords - first_draw_end)
          : r300_rs_tex_adj_probe_plan_stream_check(
               &candidate_plan, gb_select_base, native->ib + first_draw_end,
               native->ib_size_dwords - first_draw_end);
+   /* The q-lane cell shares the control's register words, so its
+    * register check passes both draws; the US program is what moves,
+    * and the two passes are told apart by the block each carries:
+    * the pass-through block ahead of the first draw and the q-lane
+    * block ahead of the second. */
+   const bool q_lane_blocks =
+      !q_lane_route ||
+      (ib_contains_block(native->ib, first_draw_end,
+                         r300_r2vb_producer_fs_block,
+                         sizeof(r300_r2vb_producer_fs_block) / 4u) &&
+       !ib_contains_block(native->ib, first_draw_end,
+                          r300_noperspective_q_lane_fs_block,
+                          sizeof(r300_noperspective_q_lane_fs_block) / 4u) &&
+       ib_contains_block(native->ib + first_draw_end,
+                         native->ib_size_dwords - first_draw_end,
+                         r300_noperspective_q_lane_fs_block,
+                         sizeof(r300_noperspective_q_lane_fs_block) / 4u) &&
+       !ib_contains_block(native->ib + first_draw_end,
+                          native->ib_size_dwords - first_draw_end,
+                          r300_r2vb_producer_fs_block,
+                          sizeof(r300_r2vb_producer_fs_block) / 4u));
    emit("[state] gb_select_base=0x%08x control-over-first-pass=%d "
-        "candidate-over-stream=%d candidate-over-second-pass=%d\n",
-        gb_select_base, control_draws, candidate_whole, candidate_draws);
-   if (control_draws != 1 || candidate_whole != -1 || candidate_draws != 1) {
+        "candidate-over-stream=%d candidate-over-second-pass=%d "
+        "q_lane_blocks=%d\n",
+        gb_select_base, control_draws, candidate_whole, candidate_draws,
+        (int)q_lane_blocks);
+   if (control_draws != 1 || candidate_whole != (q_lane_route ? 2 : -1) ||
+       candidate_draws != 1 || !q_lane_blocks) {
       fprintf(stderr, "the recorded stream does not establish the control "
               "plan ahead of the first draw and the candidate plan ahead "
               "of the second; refusing ahead of the ioctl\n");
@@ -1428,6 +1532,10 @@ main(int argc, char **argv)
           * TEX0 and the carrier lanes as the normalized clip w
           * (r300_noperspective_reciprocal_plan.h). */
          const bool carrier_pass = carrier_route && p == 1;
+         /* The q-lane pass keeps the eight-dword record: xyz the
+          * probe's s, t, r premultiplied by c and w the normalized
+          * clip w (r300_noperspective_q_lane_plan.h). */
+         const bool q_lane_pass = q_lane_route && p == 1;
          const unsigned stride =
             carrier_pass ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS : 8u;
          const unsigned fan_records =
@@ -1491,6 +1599,24 @@ main(int argc, char **argv)
          }
          bool payload_exact = true;
          for (unsigned v = 0; v < 3; v++) {
+            if (q_lane_pass) {
+               const float c = carrier_records[v * stride + 7];
+               const float w = 1.0f / r300_rs_tex_adj_probe_reciprocal_w[v];
+               float w_max = 0.0f;
+               for (unsigned b = 0; b < 3; b++)
+                  w_max = fmaxf(w_max,
+                                1.0f / r300_rs_tex_adj_probe_reciprocal_w[b]);
+               payload_exact &= fabsf(c - w / w_max) <= 1e-6f && c > 0.0f &&
+                                c <= 1.0f;
+               for (unsigned k = 0; k < 3; k++) {
+                  const float expected =
+                     r300_rs_tex_adj_probe_tex0[v * 4 + k] * c;
+                  payload_exact &=
+                     fabsf(carrier_records[v * stride + 4 + k] - expected) <=
+                     1e-6f * fmaxf(1.0f, fabsf(expected));
+               }
+               continue;
+            }
             if (!carrier_pass) {
                payload_exact &= memcmp(&carrier_records[v * stride + 4],
                                        &r300_rs_tex_adj_probe_tex0[v * 4],
@@ -1553,14 +1679,50 @@ main(int argc, char **argv)
    struct r300_rs_tex_adj_probe_census control_census, candidate_census;
    if (r300_rs_tex_adj_probe_census(&mp.pass[0], records, control_map, NULL,
                                     color_bytes, &control_census) != 0 ||
-       r300_rs_tex_adj_probe_census(&mp.pass[1], records, candidate_map,
-                                    control_map, color_bytes,
+       r300_rs_tex_adj_probe_census(&mp.pass[1], candidate_records,
+                                    candidate_map, control_map, color_bytes,
                                     &candidate_census) != 0) {
       fprintf(stderr, "the census refused a target\n");
       return 1;
    }
    report_census("control", &control_census);
    report_census("candidate", &candidate_census);
+   /* The q-lane oracle beyond the classification: each of the three
+    * payload channels separates the models on its own over some judged
+    * pixel, affine lands within one quantum on every judged pixel
+    * (max_deviation <= 1 with match == judged), perspective and the
+    * control match no pixel, and the observed alpha byte is exactly 255
+    * on every judged pixel. */
+   bool q_lane_oracle = true;
+   if (q_lane_route) {
+      struct r300_rs_tex_adj_probe_channel_census channels;
+      if (r300_rs_tex_adj_probe_channel_census(&mp.pass[1], candidate_records,
+                                               candidate_map, color_bytes,
+                                               &channels) != 0) {
+         fprintf(stderr, "the channel census refused the candidate\n");
+         return 1;
+      }
+      const bool separated = channels.separated[0] != 0 &&
+                             channels.separated[1] != 0 &&
+                             channels.separated[2] != 0;
+      const bool affine_exact =
+         candidate_census.judged != 0 &&
+         candidate_census.match[R300_RS_TEX_ADJ_PROBE_MODEL_AFFINE] ==
+            candidate_census.judged &&
+         candidate_census.max_deviation[R300_RS_TEX_ADJ_PROBE_MODEL_AFFINE] <=
+            1u;
+      const bool perspective_zero =
+         candidate_census.match[R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE] == 0 &&
+         candidate_census.unchanged == 0;
+      const bool alpha_one = channels.alpha_one == channels.judged;
+      q_lane_oracle = separated && affine_exact && perspective_zero &&
+                      alpha_one;
+      emit("[q-lane] judged=%u separated=(%u, %u, %u, %u) alpha_one=%u "
+           "affine_exact=%d perspective_zero=%d oracle=%d\n",
+           channels.judged, channels.separated[0], channels.separated[1],
+           channels.separated[2], channels.separated[3], channels.alpha_one,
+           (int)affine_exact, (int)perspective_zero, (int)q_lane_oracle);
+   }
 
    const enum r300_rs_tex_adj_probe_classification control_class =
       r300_rs_tex_adj_probe_classify(&control_census);
@@ -1614,6 +1776,17 @@ main(int argc, char **argv)
            ? "the carriers do not hold the probe payload at proportional "
              "reciprocal W; the models were evaluated against records the "
              "device did not fetch"
+        : q_lane_route
+           ? (q_lane_oracle
+                 ? "the control cell interpolates perspective-correct and "
+                   "the vec3 NoPerspective pipeline's target classifies "
+                   "affine within one quantum on every judged pixel in "
+                   "each of three separated channels with alpha exactly "
+                   "1: the receipt of the q-lane carrier -- the varying "
+                   "cell's words, xyz * rcp(w) US program -- on RS482"
+                 : "the q-lane oracle does not hold; the classification "
+                   "printed above stands and the [q-lane] line names the "
+                   "failed clause")
         : production
            ? "the control cell interpolates perspective-correct and the "
              "public NoPerspective pipeline's target carries the "
@@ -1645,5 +1818,5 @@ main(int argc, char **argv)
     * interpolates perspective-correct and the candidate census judged
     * pixels.  A carrier the witness refuses prints above and rides the
     * verdict line, where its caveat belongs. */
-   return (premise && judged) ? 0 : 1;
+   return (premise && judged && q_lane_oracle) ? 0 : 1;
 }

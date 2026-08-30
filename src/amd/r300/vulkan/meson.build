@@ -2610,6 +2610,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The q-lane rung's recording boundary: no gate, the vec3 NoPerspective
+  # pipeline on the q-lane route, pass 1 the q-lane cell, the per-channel
+  # oracle calibrated over the predictions.
+  test(
+    'r3v-native-noperspective-q-lane-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'reciprocal-q-lane'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding

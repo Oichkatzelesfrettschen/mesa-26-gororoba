@@ -540,6 +540,50 @@ test_partial_carrier_and_oracle(void)
    free(image);
 }
 
+/* The per-channel census over the q-lane records (the probe's s, t, r
+ * with alpha 1): each of the three payload channels separates the
+ * models on some judged pixel, the constant alpha separates none, and
+ * the affine prediction carries alpha 255 on every judged pixel while
+ * an alpha-cleared image carries it on none. */
+static void
+test_channel_census(void)
+{
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.varying = true;
+   float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS];
+   r300_rs_tex_adj_probe_vertices(&shape, records);
+   for (unsigned v = 0; v < 3; v++)
+      records[v * 8 + 7] = 1.0f;
+   const uint32_t size = r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
+   uint32_t *image = malloc(size);
+   CHECK(image != NULL);
+   if (image == NULL)
+      return;
+   CHECK(r300_rs_tex_adj_probe_expected(&shape, records,
+                                        R300_RS_TEX_ADJ_PROBE_MODEL_AFFINE,
+                                        image, size) == 0);
+   struct r300_rs_tex_adj_probe_census census;
+   CHECK(r300_rs_tex_adj_probe_census(&shape, records, image, NULL, size,
+                                      &census) == 0);
+   struct r300_rs_tex_adj_probe_channel_census channels;
+   CHECK(r300_rs_tex_adj_probe_channel_census(&shape, records, image, size,
+                                              &channels) == 0);
+   CHECK(channels.judged == census.judged && channels.judged != 0);
+   for (unsigned c = 0; c < 3; c++)
+      CHECK(channels.separated[c] != 0);
+   CHECK(channels.separated[3] == 0);
+   CHECK(channels.alpha_one == channels.judged);
+   for (uint32_t i = 0; i < size / 4u; i++)
+      image[i] &= 0x00ffffffu;
+   CHECK(r300_rs_tex_adj_probe_channel_census(&shape, records, image, size,
+                                              &channels) == 0);
+   CHECK(channels.alpha_one == 0);
+   CHECK(r300_rs_tex_adj_probe_channel_census(NULL, records, image, size,
+                                              &channels) == -EINVAL);
+   free(image);
+}
+
 int
 main(void)
 {
@@ -549,6 +593,7 @@ main(void)
    test_stream_mutations();
    test_carrier_and_oracle();
    test_partial_carrier_and_oracle();
+   test_channel_census();
    if (failures != 0) {
       fprintf(stderr, "%d failure(s)\n", failures);
       return EXIT_FAILURE;
