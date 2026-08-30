@@ -14,6 +14,7 @@
 struct r300_fragment_binary;
 struct r300_first_draw_contract;
 struct r300_noperspective_reciprocal_plan;
+struct r300_noperspective_q_lane_plan;
 struct r300_flat_color0_plan;
 struct r300_rs_tex_adj_probe_plan;
 
@@ -113,6 +114,13 @@ struct r300_tcl_bypass_triangle_params {
     * is the reciprocal recovery (r300_tcl_bypass_triangle_noperspective_fs).
     * GB_SELECT keeps W_SELECT at 0. */
    const struct r300_noperspective_reciprocal_plan *noperspective_carrier;
+   /* NoPerspective q-lane carrier plan (requires varying, no
+    * flat_color0, no rs_tex_adj, no noperspective_carrier, no
+    * sampling): the record and every register word are the varying
+    * cell's, and the fragment binary is the q-lane recovery
+    * (r300_tcl_bypass_triangle_noperspective_q_lane_fs), xyz * rcp(w)
+    * with alpha 1.  GB_SELECT keeps W_SELECT at 0. */
+   const struct r300_noperspective_q_lane_plan *noperspective_q_lane;
    /* When set, the cell samples texture unit 0: the varying vertex path
     * carries the TEX0 coordinate, the TX block programs one enabled
     * unit -- nearest filters, clamp-to-edge wraps, W8Z8Y8X8 texels over
@@ -280,6 +288,8 @@ int r300_tcl_bypass_triangle_clip_space_sampled_emit(
  */
 int r300_tcl_bypass_triangle_varying_fs(struct r300_fragment_binary *fs);
 int r300_tcl_bypass_triangle_noperspective_fs(struct r300_fragment_binary *fs);
+int r300_tcl_bypass_triangle_noperspective_q_lane_fs(
+   struct r300_fragment_binary *fs);
 
 /* Resolves the first-draw contract for the cell's 64x64 target and three
  * vertices with the texture block disabled.  Every pre-hardware consumer
@@ -389,6 +399,15 @@ int r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
    uint32_t width, uint32_t height, bool clip_space,
    uint32_t triangle_count,
    const struct r300_noperspective_reciprocal_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+/* The NoPerspective q-lane cell: the varying record shape under a
+ * q-lane plan (r300_noperspective_q_lane_plan.h), the PM4 the varying
+ * cell's with the q-lane fragment binary; the family form validates
+ * the plan. */
+int r300_tcl_bypass_triangle_noperspective_q_lane_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count,
+   const struct r300_noperspective_q_lane_plan *plan,
    struct r300_tcl_bypass_triangle_ib *out);
 int r300_tcl_bypass_triangle_rs_tex_adj_plan_emit(
    uint32_t width, uint32_t height, bool clip_space,
@@ -626,6 +645,11 @@ struct r300_triangle_render_shape {
     * vertex, RS_IP_0/1 and RS_INST_0/1 routing, the reciprocal-recovery
     * fragment binary. */
    bool noperspective_carrier;
+   /* When set with varying, the pass carries the NoPerspective q-lane
+    * carrier: the varying record shape and register words with the
+    * q-lane recovery fragment binary
+    * (r300_noperspective_q_lane_plan.h). */
+   bool noperspective_q_lane;
 };
 
 /* The composed render-then-sample cell: one stream renders the first

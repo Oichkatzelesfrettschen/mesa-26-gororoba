@@ -148,6 +148,12 @@ main(int argc, char **argv)
     * cell (r300_noperspective_reciprocal_plan.h), so the replays judge
     * the widened record through the kernel width check. */
    bool noperspective_carrier = false;
+   /* --noperspective-q-lane writes the q-lane two-pass stream: pass 0
+    * the control varying cell, pass 1 the q-lane cell
+    * (r300_noperspective_q_lane_plan.h), the same eight-dword record
+    * under the q-lane fragment binary, so the replays judge that the
+    * varying width admits both draws and VAP_VTX_SIZE 4 rejects them. */
+   bool noperspective_q_lane = false;
    /* --triangles N writes the cell family member of N triangles: the
     * host expansion of an N-instance draw, differing from the single
     * triangle in the vertex-index bound and the draw count alone. */
@@ -166,6 +172,8 @@ main(int argc, char **argv)
          rs_probe = R300_RS_TEX_ADJ_PROBE_W_SELECT_ONE;
       } else if (strcmp(argv[a], "--noperspective-carrier") == 0) {
          noperspective_carrier = true;
+      } else if (strcmp(argv[a], "--noperspective-q-lane") == 0) {
+         noperspective_q_lane = true;
       } else if (strcmp(argv[a], "--varying") == 0) {
          varying = true;
       } else if (strcmp(argv[a], "--triangles") == 0 && a + 1 < argc) {
@@ -186,7 +194,8 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s <output-directory> [--varying] [--triangles N] "
               "[--multi-pass] [--flat-color0] [--flat-replicate] "
-              "[--rs-tex-adj] [--rs-w-select] [--noperspective-carrier]\n",
+              "[--rs-tex-adj] [--rs-w-select] [--noperspective-carrier]\n"
+              "[--noperspective-q-lane]\n",
               argv[0]);
       return 2;
    }
@@ -218,6 +227,20 @@ main(int argc, char **argv)
       mp.second_color_index = 3;
       return write_multi_pass_cell(dir, &mp, true,
                                    "two-pass-noperspective-carrier");
+   }
+
+   if (noperspective_q_lane) {
+      struct r300_triangle_multi_pass mp;
+      memset(&mp, 0, sizeof(mp));
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[0]);
+      r300_tcl_bypass_triangle_render_shape_reference(&mp.pass[1]);
+      mp.pass[0].varying = true;
+      mp.pass[1].varying = true;
+      mp.pass[1].noperspective_q_lane = true;
+      mp.second_vertex_index = 2;
+      mp.second_color_index = 3;
+      return write_multi_pass_cell(dir, &mp, true,
+                                   "two-pass-noperspective-q-lane");
    }
 
    if (rs_probe != 0) {
