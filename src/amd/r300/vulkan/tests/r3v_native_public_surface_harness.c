@@ -33,6 +33,7 @@
 
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_flat_color0_plan.h"
+#include "amd/r300/common/r300_noperspective_q_lane_plan.h"
 #include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_reg.h"
@@ -4387,6 +4388,262 @@ main(void)
          memcpy(map, varying_crossing, sizeof(varying_crossing));
          vkUnmapMemory(device, vertex_memory);
          vkDestroyPipeline(device, carrier_pipeline, NULL);
+
+         /* The q-lane route: a NoPerspective float, vec2, or vec3 at
+          * location 0 under the narrow pass-through program selects
+          * R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE with no gate,
+          * records the q-lane cell byte for byte, packs each record in
+          * place -- payload lanes premultiplied by c = w / max(w),
+          * lanes past the width 0, c in w -- and clips a one-plane
+          * crossing into a validated fan whose generated vertices
+          * carry the clipped NoPerspective value. */
+         {
+            static const struct {
+               const uint32_t *vertex;
+               size_t vertex_bytes;
+               const uint32_t *fragment;
+               size_t fragment_bytes;
+               uint8_t width;
+            } narrow[3] = {
+               { r3v_reference_vertex_varying_vec3_spirv,
+                 sizeof(r3v_reference_vertex_varying_vec3_spirv),
+                 r3v_reference_fragment_noperspective_vec3_spirv,
+                 sizeof(r3v_reference_fragment_noperspective_vec3_spirv), 3 },
+               { r3v_reference_vertex_varying_vec2_spirv,
+                 sizeof(r3v_reference_vertex_varying_vec2_spirv),
+                 r3v_reference_fragment_noperspective_vec2_spirv,
+                 sizeof(r3v_reference_fragment_noperspective_vec2_spirv), 2 },
+               { r3v_reference_vertex_varying_float_spirv,
+                 sizeof(r3v_reference_vertex_varying_float_spirv),
+                 r3v_reference_fragment_noperspective_float_spirv,
+                 sizeof(r3v_reference_fragment_noperspective_float_spirv),
+                 1 },
+            };
+            /* An ACCEPT triangle with unequal w: clip positions x * w,
+             * y * w, 0, w over the reference NDC triangle, w 1, 2, 4,
+             * so c = 0.25, 0.5, 1 in vertex order. */
+            static const float unequal_w_accept[12] = {
+               -0.75f, -0.75f, 0.0f, 1.0f,
+                1.5f,  -1.5f,  0.0f, 2.0f,
+                0.0f,   3.0f,  0.0f, 4.0f,
+            };
+            static const float expected_c[3] = { 0.25f, 0.5f, 1.0f };
+            struct r300_tcl_bypass_triangle_ib q_lane_cell;
+            {
+               struct r300_noperspective_q_lane_plan plan;
+               r300_noperspective_q_lane_plan_init(
+                  &plan, R300_NOPERSPECTIVE_Q_LANE_WIDTH_MAX);
+               assert(r300_tcl_bypass_triangle_noperspective_q_lane_family_emit(
+                         R300_TRIANGLE_TARGET_WIDTH,
+                         R300_TRIANGLE_TARGET_HEIGHT, true, 1u, &plan,
+                         &q_lane_cell) == 0);
+            }
+            for (unsigned n = 0; n < 3; n++) {
+               struct pipeline_shape q_shape = varying_shape;
+               q_shape.vertex_words = narrow[n].vertex;
+               q_shape.vertex_bytes = narrow[n].vertex_bytes;
+               q_shape.fragment_words = narrow[n].fragment;
+               q_shape.fragment_bytes = narrow[n].fragment_bytes;
+               VkPipeline q_pipeline = VK_NULL_HANDLE;
+               assert(make_pipeline(&q_shape, pass, layout, &q_pipeline) ==
+                      VK_SUCCESS);
+               VK_FROM_HANDLE(r3v_native_pipeline, native_q, q_pipeline);
+               assert(native_q->varying && !native_q->sampled);
+               assert(native_q->shader_interface.noperspective_mask == 1u &&
+                      native_q->shader_interface.varyings[0].width ==
+                         narrow[n].width &&
+                      native_q->shader_interface.varyings[0].component_mask ==
+                         ((1u << narrow[n].width) - 1u));
+               assert(native_q->interpolation_route ==
+                      R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE);
+               assert(native_q->rs_probe_candidate == R3V_RS_PROBE_NONE);
+               assert(native_q->post_vs.q_lane_width == narrow[n].width &&
+                      !native_q->post_vs.reciprocal_carrier);
+
+               assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                                  &map) == VK_SUCCESS);
+               memcpy(map, unequal_w_accept, sizeof(unequal_w_accept));
+               vkUnmapMemory(device, vertex_memory);
+               VkCommandBuffer q_cmd = record_triangle_draw(
+                  &begin_pass, q_pipeline, vertex_buffer, 3, 1, 0);
+               VK_FROM_HANDLE(r3v_native_cmd_buffer, native_q_cmd, q_cmd);
+               assert(native_q_cmd->deferred_draws[0].noperspective_q_lane &&
+                      !native_q_cmd->deferred_draws[0].noperspective_carrier &&
+                      !native_q_cmd->deferred_draws[0].direct_noperspective &&
+                      native_q_cmd->deferred_draws[0].rs_probe_candidate ==
+                         (uint8_t)R3V_RS_PROBE_NONE);
+               assert(native_q_cmd->ib_size_dwords ==
+                      q_lane_cell.ib_size_dwords);
+               assert(memcmp(native_q_cmd->ib, q_lane_cell.ib,
+                             q_lane_cell.ib_size_dwords * 4u) == 0);
+               assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                         native_device, native_q_cmd) == VK_SUCCESS);
+               {
+                  void *carrier_map = NULL;
+                  assert(radeon_drm_vk_bo_map(
+                            &native_device->drm,
+                            &native_q_cmd->owned_carriers[0]->bo,
+                            &carrier_map) == 0);
+                  const float *records = carrier_map;
+                  struct r300_noperspective_q_lane_plan plan;
+                  r300_noperspective_q_lane_plan_init(&plan, narrow[n].width);
+                  assert(r300_noperspective_q_lane_validate_stream(
+                            &plan, records, 1u) == 0);
+                  for (unsigned v = 0; v < 3; v++) {
+                     const float *record = &records[v * 8u];
+                     const float w = unequal_w_accept[v * 4 + 3];
+                     const float tint[3] = {
+                        unequal_w_accept[v * 4] * 0.5f + 0.5f,
+                        unequal_w_accept[v * 4 + 1] * 0.5f + 0.5f,
+                        0.25f,
+                     };
+                     assert(record[3] == 1.0f / w);
+                     assert(record[7] == expected_c[v]);
+                     for (unsigned k = 0; k < 3; k++) {
+                        const float expected =
+                           k < narrow[n].width ? tint[k] * expected_c[v]
+                                               : 0.0f;
+                        assert(record[4 + k] == expected);
+                     }
+                  }
+                  radeon_drm_vk_bo_unmap(
+                     &native_device->drm,
+                     &native_q_cmd->owned_carriers[0]->bo, carrier_map);
+               }
+
+               /* One plane, unequal w (the TC1 fixture): a quad of two
+                * fan triangles, three source and three generated
+                * records; each generated record's lane / c is the
+                * Vulkan clipped NoPerspective value and its zero lanes
+                * stay zero. */
+               assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                                  &map) == VK_SUCCESS);
+               memcpy(map, unequal_w_crossing, sizeof(unequal_w_crossing));
+               vkUnmapMemory(device, vertex_memory);
+               VkCommandBuffer q_partial_cmd = record_triangle_draw(
+                  &begin_pass, q_pipeline, vertex_buffer, 3, 1, 0);
+               VK_FROM_HANDLE(r3v_native_cmd_buffer, native_q_partial,
+                              q_partial_cmd);
+               assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                         native_device, native_q_partial) == VK_SUCCESS);
+               {
+                  void *carrier_map = NULL;
+                  assert(radeon_drm_vk_bo_map(
+                            &native_device->drm,
+                            &native_q_partial->owned_carriers[0]->bo,
+                            &carrier_map) == 0);
+                  const float *records = carrier_map;
+                  struct r300_noperspective_q_lane_plan plan;
+                  r300_noperspective_q_lane_plan_init(&plan, narrow[n].width);
+                  assert(r300_noperspective_q_lane_validate_expanded(
+                            &plan, records,
+                            R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
+                               3u) == 6);
+                  float tint[3][3];
+                  for (unsigned v = 0; v < 3; v++) {
+                     tint[v][0] = unequal_w_crossing[v * 4] * 0.5f + 0.5f;
+                     tint[v][1] = unequal_w_crossing[v * 4 + 1] * 0.5f + 0.5f;
+                     tint[v][2] = 0.25f;
+                  }
+                  unsigned generated = 0, source = 0;
+                  for (unsigned r = 0; r < 6; r++) {
+                     const float *record = &records[r * 8u];
+                     const float c = record[7];
+                     assert(record[0] == 0.0f || c == 1.0f);
+                     if (c == 1.0f) {
+                        source++;
+                        continue;
+                     }
+                     assert(c == 0.75f && record[0] == 0.0f);
+                     generated++;
+                     for (unsigned k = narrow[n].width; k < 3; k++)
+                        assert(record[4 + k] == 0.0f);
+                     /* The generated vertex lies on x = -w between
+                      * vertex 0 and vertex 1 or 2. */
+                     bool matched = false;
+                     for (unsigned v = 1; v < 3 && !matched; v++) {
+                        matched = true;
+                        for (unsigned k = 0; k < narrow[n].width; k++) {
+                           const double expected =
+                              r300_noperspective_reciprocal_clipped_edge_value(
+                                 tint[0][k], unequal_w_crossing[3],
+                                 tint[v][k], unequal_w_crossing[v * 4 + 3],
+                                 0.5);
+                           matched &= fabs(record[4 + k] / c - expected) <=
+                                      1e-6;
+                           matched &= fabsf(r300_noperspective_q_lane_recover(
+                                               record[4 + k], c) -
+                                            (float)expected) <= 1.0f / 255.0f;
+                        }
+                     }
+                     assert(matched);
+                  }
+                  assert(source == 3 && generated == 3);
+                  radeon_drm_vk_bo_unmap(
+                     &native_device->drm,
+                     &native_q_partial->owned_carriers[0]->bo, carrier_map);
+               }
+               vkDestroyPipeline(device, q_pipeline, NULL);
+            }
+            r300_tcl_bypass_triangle_release(&q_lane_cell);
+
+            /* The refused neighbors: a Smooth vec3 under the narrow
+             * program has no route (the q-lane binary would write
+             * alpha 1 over a perspective varying), so its pipeline is
+             * created UNSUPPORTED and its draw refuses at record time;
+             * a vec2 at component 1 keeps the q lane's neighbor lanes
+             * outside the shape and refuses the same way; a vec4
+             * varying under the vec3 program refuses at the link. */
+            struct pipeline_shape smooth3 = varying_shape;
+            smooth3.vertex_words = r3v_reference_vertex_varying_vec3_spirv;
+            smooth3.vertex_bytes = sizeof(r3v_reference_vertex_varying_vec3_spirv);
+            smooth3.fragment_words = r3v_reference_fragment_smooth_vec3_spirv;
+            smooth3.fragment_bytes =
+               sizeof(r3v_reference_fragment_smooth_vec3_spirv);
+            struct pipeline_shape component1 = varying_shape;
+            component1.vertex_words =
+               r3v_reference_vertex_varying_vec2_component1_spirv;
+            component1.vertex_bytes =
+               sizeof(r3v_reference_vertex_varying_vec2_component1_spirv);
+            component1.fragment_words =
+               r3v_reference_fragment_noperspective_vec2_component1_spirv;
+            component1.fragment_bytes =
+               sizeof(r3v_reference_fragment_noperspective_vec2_component1_spirv);
+            const struct pipeline_shape *refused[2] = { &smooth3, &component1 };
+            for (unsigned n = 0; n < 2; n++) {
+               VkPipeline refused_pipeline = VK_NULL_HANDLE;
+               assert(make_pipeline(refused[n], pass, layout,
+                                    &refused_pipeline) == VK_SUCCESS);
+               VK_FROM_HANDLE(r3v_native_pipeline, native_refused,
+                              refused_pipeline);
+               assert(native_refused->interpolation_route ==
+                      R3V_INTERPOLATION_ROUTE_UNSUPPORTED);
+               assert(native_refused->post_vs.q_lane_width == 0);
+               VkCommandBuffer refused_cmd = fresh_cmd();
+               vkCmdBeginRenderPass(refused_cmd, &begin_pass,
+                                    VK_SUBPASS_CONTENTS_INLINE);
+               vkCmdBindPipeline(refused_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 refused_pipeline);
+               vkCmdBindVertexBuffers(refused_cmd, 0, 1, &vertex_buffer,
+                                      &(VkDeviceSize){ 0 });
+               vkCmdDraw(refused_cmd, 3, 1, 0, 0);
+               vkCmdEndRenderPass(refused_cmd);
+               assert(vkEndCommandBuffer(refused_cmd) ==
+                      R3V_NATIVE_REFUSAL_RESULT);
+               vkDestroyPipeline(device, refused_pipeline, NULL);
+            }
+            struct pipeline_shape wide = varying_shape;
+            wide.fragment_words = r3v_reference_fragment_noperspective_vec3_spirv;
+            wide.fragment_bytes =
+               sizeof(r3v_reference_fragment_noperspective_vec3_spirv);
+            VkPipeline wide_pipeline = VK_NULL_HANDLE;
+            assert(make_pipeline(&wide, pass, layout, &wide_pipeline) ==
+                   R3V_NATIVE_REFUSAL_RESULT);
+            assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                               &map) == VK_SUCCESS);
+            memcpy(map, varying_crossing, sizeof(varying_crossing));
+            vkUnmapMemory(device, vertex_memory);
+         }
 
          /* An open R2VB delivery gate leaves the NoPerspective
           * interface without a route: the partial-clip refusal lives

@@ -367,6 +367,114 @@ test_probe_candidate_conjunction(void)
                                        NULL) == R3V_RS_PROBE_NONE);
 }
 
+/* The q-lane route opens on a NoPerspective float, vec2, or vec3 at
+ * location 0 with a contiguous mask from x under the narrow
+ * pass-through fragment program of the same width, admits every
+ * clipping class, and refuses UNSUPPORTED on each flipped predicate:
+ * width 4 under the narrow program, a narrow program on a Smooth or
+ * Flat interface, a component offset, a mismatched width, a Smooth
+ * or Flat location beside it, and every route predicate. */
+static void
+test_noperspective_q_lane_conjunction(void)
+{
+   for (uint8_t width = 1; width <= 3; width++) {
+      struct r3v_shader_interface_link link;
+      noperspective_vec4_link(&link);
+      link.varyings[0].width = width;
+      link.varyings[0].component_mask = (uint8_t)((1u << width) - 1u);
+      struct r3v_interpolation_query q = direct_query(&link);
+      q.narrow_passthrough_width = width;
+      const char *reason = NULL;
+      CHECK(r3v_interpolation_route_select(&q, &reason) ==
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE);
+      CHECK(reason != NULL && strstr(reason, "q-lane") != NULL);
+      /* The stage packs ahead of the clipper. */
+      q.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
+      CHECK(r3v_interpolation_route_select(&q, NULL) ==
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE);
+      /* The force gate leaves the q-lane shape alone. */
+      q.carrier_forced = true;
+      CHECK(r3v_interpolation_route_select(&q, NULL) ==
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE);
+
+      struct r3v_interpolation_query f = direct_query(&link);
+      f.narrow_passthrough_width = width;
+      f.cpu_delivery = false;
+      expect_unsupported(&f, "not CPU");
+      f = direct_query(&link);
+      f.narrow_passthrough_width = width;
+      f.triangle_list = false;
+      expect_unsupported(&f, "triangle list");
+      f = direct_query(&link);
+      f.narrow_passthrough_width = width;
+      f.rs_destination_available = false;
+      expect_unsupported(&f, "RS destination");
+      f = direct_query(&link);
+      f.narrow_passthrough_width = width;
+      f.fragment_consumes_destination = false;
+      expect_unsupported(&f, "consume");
+      /* The vec4 pass-through program on a narrow varying. */
+      f = direct_query(&link);
+      expect_unsupported(&f, "q-lane shape");
+      /* A narrow program of another width. */
+      f = direct_query(&link);
+      f.narrow_passthrough_width = (uint32_t)(width % 3) + 1u;
+      expect_unsupported(&f, "q-lane shape");
+      /* A component offset: the mask does not start at x. */
+      if (width < 4) {
+         struct r3v_shader_interface_link offset = link;
+         offset.varyings[0].component_mask =
+            (uint8_t)(((1u << width) - 1u) << 1);
+         f = direct_query(&offset);
+         f.narrow_passthrough_width = width;
+         expect_unsupported(&f, "q-lane shape");
+      }
+      /* A Smooth location beside the narrow one. */
+      struct r3v_shader_interface_link beside = link;
+      beside.varying_mask = 3u;
+      beside.varyings[1] = link.varyings[0];
+      beside.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+      f = direct_query(&beside);
+      f.narrow_passthrough_width = width;
+      expect_unsupported(&f, "map completely");
+      /* A Flat location beside it. */
+      struct r3v_shader_interface_link mixed = link;
+      mixed.varying_mask = 3u;
+      mixed.flat_mask = 2u;
+      mixed.varyings[1] = link.varyings[0];
+      mixed.varyings[1].interpolation = R3V_SHADER_INTERFACE_FLAT;
+      f = direct_query(&mixed);
+      f.narrow_passthrough_width = width;
+      expect_unsupported(&f, "mixed");
+      /* The narrow program on a Smooth interface of the same width:
+       * the q-lane binary would write alpha 1 over a perspective
+       * varying, so the draw refuses. */
+      struct r3v_shader_interface_link smooth = link;
+      smooth.noperspective_mask = 0;
+      smooth.varyings[0].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+      f = direct_query(&smooth);
+      f.narrow_passthrough_width = width;
+      expect_unsupported(&f, "narrow pass-through");
+      /* On a Flat interface. */
+      struct r3v_shader_interface_link flat = smooth;
+      flat.flat_mask = 1u;
+      flat.varyings[0].interpolation = R3V_SHADER_INTERFACE_FLAT;
+      f = direct_query(&flat);
+      f.narrow_passthrough_width = width;
+      expect_unsupported(&f, "narrow pass-through");
+   }
+   /* Width 4 occupies the q lane: the narrow program cannot serve it,
+    * and the vec4 conjunction keeps W_SELECT. */
+   struct r3v_shader_interface_link vec4;
+   noperspective_vec4_link(&vec4);
+   struct r3v_interpolation_query f = direct_query(&vec4);
+   f.narrow_passthrough_width = 3;
+   expect_unsupported(&f, "narrow pass-through fragment program on a vec4");
+   f = direct_query(&vec4);
+   CHECK(r3v_interpolation_route_select(&f, NULL) ==
+         R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
+}
+
 int
 main(void)
 {
@@ -375,6 +483,7 @@ main(void)
    test_clip_class();
    test_probe_candidate_conjunction();
    test_noperspective_conjunction_opens_w_select();
+   test_noperspective_q_lane_conjunction();
    if (failures != 0) {
       fprintf(stderr, "%d failure(s)\n", failures);
       return EXIT_FAILURE;

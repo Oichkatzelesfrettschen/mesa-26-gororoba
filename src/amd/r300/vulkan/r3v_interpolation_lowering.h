@@ -75,6 +75,19 @@ enum r3v_interpolation_route {
     * takes it for the W_SELECT conjunction alone under the exact gate
     * R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE=1, the forced-carrier rung. */
    R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
+   /* NoPerspective through the q lane of the varying's own vector
+    * (r300_noperspective_q_lane_plan.h): a float, vec2, or vec3
+    * NoPerspective varying at location 0 whose components start at x
+    * and run contiguously leaves TEX0.w free, so the post-VS stage
+    * packs a.xyz * c into the leading lanes, 0 into the lanes past the
+    * width, and c = w / max(w) into w, and the US recovers xyz *
+    * rcp(w) with alpha 1.0 under GB_SELECT.W_SELECT 0.  The record and
+    * every register word stay the varying cell's.  The fragment
+    * program must be the narrow pass-through (the varying's lanes,
+    * zero fill, alpha 1), the shape that binary executes.  The stage
+    * packs ahead of the clipper, so every clipping class is admitted
+    * and the expanded stream is validated ahead of publication. */
+   R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE,
 };
 
 enum r3v_interpolation_clip_class {
@@ -101,6 +114,12 @@ struct r3v_interpolation_query {
    /* The forced-carrier gate is open: the W_SELECT conjunction selects
     * the reciprocal carrier instead. */
    bool carrier_forced;
+   /* The fragment module is the narrow pass-through of this width
+    * (1..3, r3v_fragment_narrow_passthrough_from_spirv); 0 for every
+    * other fragment shape.  The q-lane fragment binary executes that
+    * program alone, so a narrow pass-through outside the q-lane
+    * conjunction is UNSUPPORTED. */
+   uint32_t narrow_passthrough_width;
 };
 
 /* The record-time form of the query: everything but the clipping class,

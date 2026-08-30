@@ -282,11 +282,24 @@ fill_color(struct r3v_native_device *device,
 static int
 emit_triangle_cell_for_position_space(
    const struct r300_triangle_render_shape *shape, bool varying,
-   bool flat_color0, bool noperspective_carrier, uint8_t rs_probe_candidate,
-   uint32_t source_triangle_count,
+   bool flat_color0, bool noperspective_carrier, bool noperspective_q_lane,
+   uint8_t rs_probe_candidate, uint32_t source_triangle_count,
    const struct r3v_native_sampled_texture *sampled, bool clip_space,
    struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (noperspective_q_lane) {
+      /* The q-lane cell: the varying cell's words under the q-lane
+       * fragment binary, every probe word at its control value. */
+      if (sampled != NULL || !varying || flat_color0 ||
+          noperspective_carrier || rs_probe_candidate != R3V_RS_PROBE_NONE)
+         return -EINVAL;
+      struct r300_noperspective_q_lane_plan plan;
+      r300_noperspective_q_lane_plan_init(&plan,
+                                          R300_NOPERSPECTIVE_Q_LANE_WIDTH_MAX);
+      return r300_tcl_bypass_triangle_noperspective_q_lane_family_emit(
+         shape->width, shape->height, clip_space, source_triangle_count,
+         &plan, cell);
+   }
    if (noperspective_carrier) {
       /* The reciprocal carrier cell: one plan, the TC1 shape, with
        * every probe word at its control value. */
@@ -365,6 +378,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                const struct r300_triangle_render_shape *shape,
                                bool clip_space, bool varying, bool flat_color0,
                                bool noperspective_carrier,
+                               bool noperspective_q_lane,
                                uint8_t rs_probe_candidate,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
@@ -422,7 +436,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
          shape, varying, flat_color0, noperspective_carrier,
-         rs_probe_candidate, triangle_count, sampled, false, &window_cell);
+         noperspective_q_lane, rs_probe_candidate, triangle_count, sampled,
+         false, &window_cell);
       if (emit_result != 0)
          return vk_error(device,
                          r3v_native_cell_vk_result_from_errno(emit_result));
@@ -430,8 +445,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
 
    struct r300_tcl_bypass_triangle_ib cell = {0};
    emit_result = emit_triangle_cell_for_position_space(
-      shape, varying, flat_color0, noperspective_carrier, rs_probe_candidate,
-      triangle_count, sampled, clip_space, &cell);
+      shape, varying, flat_color0, noperspective_carrier,
+      noperspective_q_lane, rs_probe_candidate, triangle_count, sampled,
+      clip_space, &cell);
    if (emit_result != 0)
       r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
@@ -545,7 +561,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
-                                         false, false, 0, 1, NULL);
+                                         false, false, false, 0, 1, NULL);
 }
 
 VkResult
@@ -555,8 +571,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
    bool varying, bool flat_color0, bool noperspective_carrier,
-   uint8_t rs_probe_candidate, uint32_t triangle_count,
-   const uint32_t color_bits[4],
+   bool noperspective_q_lane, uint8_t rs_probe_candidate,
+   uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -609,6 +625,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, true, varying,
                                          flat_color0, noperspective_carrier,
+                                         noperspective_q_lane,
                                          rs_probe_candidate, triangle_count,
                                          sampled);
 }
@@ -1435,6 +1452,23 @@ execute_one_deferred_draw(struct r3v_native_device *device,
              * clipped NoPerspective output (Clipping Shader Outputs),
              * and every clipping class is admitted; the expanded stream
              * is validated below ahead of publication. */
+            /* The q-lane route packs each triangle in place ahead of
+             * the clipper under the same argument: one clip-space
+             * parameter blends the premultiplied lanes and the q lane
+             * together, so a generated vertex's xyz / w is the clipped
+             * NoPerspective value; the record width is unchanged. */
+            if (gathered == 0 && result == VK_SUCCESS &&
+                draw->post_vs.q_lane_width != 0) {
+               const int packed = r3v_post_vs_pack_noperspective_q_lane(
+                  &draw->post_vs, staged, source_triangle_count,
+                  record_dwords);
+               if (packed != 0) {
+                  result = vk_errorf(
+                     device, VK_ERROR_INITIALIZATION_FAILED,
+                     "r3v-native: q-lane carrier packing refused "
+                     "(%d): %s", packed, strerror(-packed));
+               }
+            }
             if (gathered == 0 && result == VK_SUCCESS &&
                 draw->post_vs.reciprocal_carrier) {
                const int packed = r3v_post_vs_pack_noperspective_carrier(
@@ -1476,6 +1510,14 @@ execute_one_deferred_draw(struct r3v_native_device *device,
             draw->target_height, draw->cull_mode, draw->front_face,
             draw->sample_mask_zero, expanded, expanded_dwords);
          int expanded_carrier = 0;
+         if (clipped == 0 && draw->post_vs.q_lane_width != 0) {
+            struct r300_noperspective_q_lane_plan plan;
+            r300_noperspective_q_lane_plan_init(&plan,
+                                                draw->post_vs.q_lane_width);
+            expanded_carrier = r300_noperspective_q_lane_validate_expanded(
+               &plan, (const float *)expanded,
+               expanded_dwords / published_record_dwords);
+         }
          if (clipped == 0 && draw->post_vs.reciprocal_carrier) {
             /* A clipped carrier vertex is a convex combination of
              * source records, so its carrier lane stays inside (0, 1]

@@ -196,7 +196,8 @@ vertex_input_admit(const VkPipelineVertexInputStateCreateInfo *vi,
 static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
-                        bool *sampled, uint32_t color_bits[4],
+                        bool *sampled, uint32_t *narrow_width,
+                        uint32_t color_bits[4],
                         struct r3v_shader_interface_link *interface)
 {
    if (info->stageCount != 2)
@@ -244,10 +245,18 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
       return false;
    *varying = r300_vertex_job_has_varying(job);
    *sampled = false;
+   *narrow_width = 0;
    if (*varying) {
       if (r3v_fragment_varying_passthrough_from_spirv(
              fs_data, fs_words, fragment->pName, &reason))
          return true;
+      /* The narrow pass-through: the varying's lanes zero-filled with
+       * alpha 1, the q-lane cell's fragment program; its width must be
+       * the linked varying's. */
+      if (r3v_fragment_narrow_passthrough_from_spirv(
+             fs_data, fs_words, fragment->pName, narrow_width, &reason))
+         return interface->varyings[0].present &&
+                interface->varyings[0].width == *narrow_width;
       /* The varying job's other fragment shape samples the set-0
        * binding-0 combined image sampler at the varying's xy. */
       *sampled = r3v_fragment_sampled_texture_from_spirv(
@@ -420,11 +429,13 @@ create_pipeline(struct r3v_native_device *device,
    struct r300_vertex_job job;
    bool varying = false;
    bool sampled = false;
+   uint32_t narrow_width = 0;
    uint32_t color_bits[4] = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
        !stages_build_vertex_job(info, &job, &varying, &sampled,
-                                color_bits, &admitted.shader_interface) ||
+                                &narrow_width, color_bits,
+                                &admitted.shader_interface) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
@@ -510,6 +521,7 @@ create_pipeline(struct r3v_native_device *device,
       .fragment_consumes_destination = varying && !sampled,
       .provoking_first_representable = true,
       .carrier_forced = device->noperspective_carrier_force != NULL,
+      .narrow_passthrough_width = narrow_width,
    };
    /* The Flat replication pin demotes the direct GA route alone: a
     * NoPerspective interface keeps its route, and an UNSUPPORTED mix
@@ -542,6 +554,11 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->post_vs.reciprocal_carrier =
       pipeline->interpolation_route ==
       R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER;
+   pipeline->post_vs.q_lane_width =
+      pipeline->interpolation_route ==
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE
+         ? (uint8_t)narrow_width
+         : 0;
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

@@ -135,7 +135,6 @@ unrecognized module
 variable initializer outside the grammar
 variable type outside a matching pointer
 vec4 construction outside a broadcast scalar
-vector type outside float vec4 or vec2
 vector type outside the uint3 builtin
 vertex input location beyond the attribute slots
 vertex input outside a located vec4
@@ -188,6 +187,17 @@ module outside the SPIR-V header
 module without the requested entry point
 two interface objects claim one component
 two scalar kinds share one interface location
-varying outside the float vec4 the vertex carrier executes
 vertex output and fragment input shapes differ
 vertex output without a fragment consumer
+extraction outside a lane of the loaded narrow varying
+extraction outside lane x of a vec4 temp
+extraction outside one float lane
+fragment program outside the narrow pass-through with alpha 1
+malformed composite extraction
+narrow varying store outside the leading lanes of a vec4 temp
+shuffle outside the leading lanes of a vec4 temp
+varying loaded outside its own type
+varying outside the float lanes the vertex carrier executes
+vec4 construction outside the narrow varying zero-filled with alpha 1
+vector type outside float vec2..vec4
+fragment input outside varying 0 as float, vec2, or vec3

@@ -660,9 +660,11 @@ bool r3v_shader_interface_link(const struct r3v_shader_interface *vertex,
          *reason = "integer varying without Flat";
          return false;
       }
-      if (vs->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
-          vs->component_mask != 0xf) {
-         *reason = "varying outside the float vec4 the vertex carrier "
+      /* The vertex carrier executes float lanes: a vec4 whole, a
+       * narrower varying through its leading lanes with the route
+       * selector judging the mask (r3v_interpolation_lowering.h). */
+      if (vs->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32) {
+         *reason = "varying outside the float lanes the vertex carrier "
                    "executes";
          return false;
       }

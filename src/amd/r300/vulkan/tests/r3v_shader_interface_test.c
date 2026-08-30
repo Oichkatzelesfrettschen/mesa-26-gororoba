@@ -419,9 +419,17 @@ static void test_link_refusals(void)
       R3V_SHADER_INTERFACE_STAGE_FRAGMENT);
    assert(one(scalar_vs.outputs, 0)->width == 1 &&
           one(scalar_vs.outputs, 0)->component_mask == 0x1);
-   expect_reason(link_refusal(&scalar_vs, &scalar_fs),
-                 "varying outside the float vec4 the vertex carrier "
-                 "executes");
+   /* A float scalar links: the vertex carrier executes float lanes of
+    * any width, and the route selector judges the mask. */
+   {
+      struct r3v_shader_interface_link scalar_link;
+      const char *scalar_reason = NULL;
+      assert(r3v_shader_interface_link(&scalar_vs, &scalar_fs, &scalar_link,
+                                       &scalar_reason));
+      assert(scalar_link.varyings[0].present &&
+             scalar_link.varyings[0].width == 1 &&
+             scalar_link.varyings[0].component_mask == 0x1);
+   }
    expect_reason(link_refusal(&scalar_vs, &flat_fs),
                  "vertex output and fragment input shapes differ");
 
@@ -436,7 +444,7 @@ static void test_link_refusals(void)
    /* Both stages declare Flat, so the integer pair refuses on
     * execution alone. */
    expect_reason(link_refusal(&int_vs, &int_fs),
-                 "varying outside the float vec4 the vertex carrier "
+                 "varying outside the float lanes the vertex carrier "
                  "executes");
    /* With the fragment's Flat stripped and the vertex's absent the
     * integer pair refuses on the missing Flat first. */
