@@ -13,10 +13,10 @@ alone and is updated in place when a receipt or task changes.
 |---|---|---|
 | Document revision | `git log -1 -- docs/hardware/r3v-current-program-status.md` | the commit that carries this table |
 | Mesa reconciliation base | `0c288cc2654cc763abb3376731b0d57395b8c3e6` | source state inspected for this reconciliation; `git rev-parse HEAD` names the live checkout |
-| Latest target receipt source | `39956c9e60e8823f42ca40c47cce40ac98819dce` | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
-| Latest target receipt retention | `steinmarder-r300` `999ab5b3f` | commit that adds the sealed mixed reciprocal-carrier receipt |
-| Evidence verification checkout | `steinmarder-r300` `999ab5b3f` | checkout in which `sha256sum -c bundle_hashes.sha256` passes |
-| Installed ICD source | `39956c9e60e` | `mesa-gororoba-debug-optimized 2:26.2.0-27`, build-id `5364f3447b5ca358b69b01558feb1e638efd4cde` across builddir, package, and installed DSO; the latest attended runner is statically linked at the same commit |
+| Latest target receipt source | `3384c3d1aad2ac5983193913e7734f2eaa41404e` | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
+| Latest target receipt retention | `steinmarder-r300` `834d87d14` | commit that adds the sealed public partial-clip fallback receipt |
+| Evidence verification checkout | `steinmarder-r300` `834d87d14` | checkout in which `sha256sum -c bundle_hashes.sha256` passes |
+| Installed ICD source | `3384c3d1aad` | `mesa-gororoba-debug-optimized 2:26.2.0-28`, build-id `83721633007d7920c7be4afbde3afd00067315d0` across builddir, package, and installed DSO; the latest attended runner is statically linked at the same commit |
 | Deployed kernel source checkpoint | `0104ede3f19` | `radeon-unified-dkms 0.8.12-1`, srcversion `729892A3F3530EB12B8D842`; kernel deployment reconciliation |
 | dEQP source | `43c65c132` | installed `deqp-vk` release identity and corpus pin |
 
@@ -100,27 +100,29 @@ first real submission waits on a planning pass that lands transcripts,
 
 | Field | Value |
 |---|---|
-| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-noperspective-mixed-carrier-receipt-rs482` |
-| Evidence class | silicon; attended semantic cell of the public Smooth-vec4-plus-NoPerspective-vec4 pipeline with every probe gate and the force gate unset; this receipt makes no CTS qualification claim |
-| Cell | mixed two-draw over the unclipped probe triangle: Smooth vec4 control varying cell, then the mixed pipeline on `R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER`; the sixteen-dword three-vector record (TC0 Smooth verbatim, TC1 NoPerspective times `c = w / max(w)`, TC2 `(c, 0, 0, 1)`; VAP_VTX_SIZE 16, RS_IP/RS_INST 0..2, `W_SELECT` 0) under the `(TC0.xy, (TC1 * rcp(TC2.x)).xy)` US program (494 IB dwords, four relocations; pass 1 differs from the control in 67 dwords, VAP_PROG_STREAM_CNTL_0 first) |
-| Verdict | control target perspective 882/882 judged pixels; mixed target against the logical records (s, t, s, t): red and green perspective 882/882 (max deviation 1) with affine on 0 of their 501 and 882 separated pixels, blue and alpha affine 882/882 (max deviation 1) with perspective on 0 of their 501 and 882 separated pixels, unchanged 0, sentinel 0, dword-exact against the mixed prediction on 1073 of 1152 predicted interior pixels; witness payload exact in both passes with TC0 verbatim, TC1 = tex0 * c, TC2 = (c, 0, 0, 1), c = (1, 0.25, 0.5) |
-| Source | Mesa `39956c9e60e8823f42ca40c47cce40ac98819dce`; statically linked runner sha256 `8a618620d69b...fb5c` |
-| Submission | cell BLAKE3 `522066cd89ba...7c2a`; `vkQueueSubmit` 0; one guarded `DRM_IOCTL_RADEON_CS` through fence completion (89 us) |
-| Runtime | kernel `7.1.8-1-cachyos`; radeon srcversion `729892A3F3530EB12B8D842`; `radeon-unified-dkms 0.8.12-1` unchanged (the width check sums the declared texture components: PASS at 16, REJECT at 12); dmesg delta 0; boot id unchanged |
-| Oracle | the probe census (`r300_rs_tex_adj_probe.h`) and the per-channel census (`r300_rs_tex_adj_probe_channel_census` with per-channel model matches and competitor matches on separated pixels): 882 judged interior pixels, tolerance 2, model separation 5 quanta; the oracle was calibrated ahead of the ioctl against the mixed, perspective, and affine predictions |
-| Integrity | retained by `steinmarder-r300` `999ab5b3f`; every entry in `bundle_hashes.sha256` verifies there |
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-noperspective-public-partial-clip-fallback-receipt-rs482` |
+| Evidence class | silicon; attended semantic cell of the public full-vec4 NoPerspective pipeline on the adaptive route with every probe gate, the force gate, and the R2VB gates unset; this receipt makes no CTS qualification claim |
+| Cell | two-draw over the probe triangle crossing `x = -w`: Smooth vec4 control varying cell, then the NoPerspective pipeline created on `R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER` with the clipping class deferred; `r3v_native_cmd_buffer_select_deferred_routes` judged the draw PARTIAL at `vkQueueSubmit` and spliced the TC1 reciprocal-carrier cell over the direct cell's span ahead of the arming digest (486 IB dwords, byte-identical to the forced rung B cell; VAP_VTX_SIZE 8 then 12; pass 1 differs from the control in 65 dwords, VAP_PROG_STREAM_CNTL_0 first) |
+| Verdict | control target perspective 1296/1296 judged pixels of the clipped fan; candidate target affine 1296/1296 (max deviation 1), perspective 0, unchanged 0; witness fans live 6, exact 6 in both passes with `c = (1, 0.25, 0.5)`; the preflight record-only of the same production pipeline over the unclipped triangle selected the direct GB W_SELECT cell (BLAKE3 `32d547e9`, 472 dwords, the rung A public cell) |
+| Source | Mesa `3384c3d1aad2ac5983193913e7734f2eaa41404e`; statically linked runner sha256 `4720bbb6e2f5...b3c1` |
+| Submission | cell BLAKE3 `6b6026ea718e...421c`; `[route] selected=reciprocal-carrier`; `vkQueueSubmit` 0; one guarded `DRM_IOCTL_RADEON_CS` through fence completion (112 us) |
+| Runtime | kernel `7.1.8-1-cachyos`; radeon srcversion `729892A3F3530EB12B8D842`; `radeon-unified-dkms 0.8.12-1` unchanged (PASS at VAP_VTX_SIZE 8 and 12, 8 REJECTs the carrier draw); dmesg delta 0; boot id unchanged |
+| Oracle | the probe census (`r300_rs_tex_adj_probe.h`): 1296 judged interior pixels, tolerance 2, model separation 5 quanta; the predictions self-classify ahead of the ioctl; four known-bads refuse with exit 2 in preflight (force gate, W_SELECT probe gate, R2VB gate, `--production` on the unclipped carrier candidate) |
+| Integrity | retained by `steinmarder-r300` `834d87d14`; every entry in `bundle_hashes.sha256` verifies there |
 
-The receipt proves the mixed carrier on RS482: one draw carries a Smooth
-vec4 under ordinary perspective interpolation beside a NoPerspective
-vec4 recovered affine through a shared `c = w / max(w)` vector, three of
-the four RS vectors, with `GB_SELECT.W_SELECT` clear
-(`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`, rung
-D).  The route opens with no gate on exactly that two-location
-interface under the mixed lane program `(loc0.xy, loc1.xy)`; every
-other mixed shape stays UNSUPPORTED.  The q-lane receipt
-(`r3v-native-noperspective-q-lane-carrier-receipt-rs482`) and the
-direct GB W_SELECT route stand beside it; Flat beside the mixed pair and
-the public partial-clip fallback carry no claim until their own
+The receipt proves the public partial-clip fallback on RS482: the
+NoPerspective pipeline retains both qualified cells and the clipping
+class is decided at submission after the CPU vertex execution, so a
+triangle the clipper accepts whole runs the direct GB W_SELECT cell and
+a triangle a clip plane cuts runs the TC1 reciprocal carrier, each
+byte-identical to its rung's retained stream
+(`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`).  The
+mixed receipt (`r3v-native-noperspective-mixed-carrier-receipt-rs482`,
+Mesa `39956c9e60e`, cell BLAKE3 `522066cd`, red/green perspective and
+blue/alpha affine 882/882) and the q-lane receipt
+(`r3v-native-noperspective-q-lane-carrier-receipt-rs482`) stand beside
+it; Flat beside Smooth and NoPerspective, the four-vector RS budget
+boundary, and wider mixed interfaces carry no claim until their own
 receipts land.
 
 The preceding target receipts are
