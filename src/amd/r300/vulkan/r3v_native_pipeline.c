@@ -197,7 +197,7 @@ static bool
 stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
                         bool *sampled, uint32_t *narrow_width,
-                        uint32_t color_bits[4],
+                        bool *mixed_fragment, uint32_t color_bits[4],
                         struct r3v_shader_interface_link *interface)
 {
    if (info->stageCount != 2)
@@ -246,6 +246,15 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    *varying = r300_vertex_job_has_varying(job);
    *sampled = false;
    *narrow_width = 0;
+   *mixed_fragment = false;
+   if (r300_vertex_job_varying_count(job) == 2) {
+      /* The two-location job's one fragment shape is the mixed
+       * carrier lane program over locations 0 and 1; the route
+       * selector judges the qualifiers. */
+      *mixed_fragment = r3v_fragment_mixed_carrier_from_spirv(
+         fs_data, fs_words, fragment->pName, &reason);
+      return *mixed_fragment;
+   }
    if (*varying) {
       if (r3v_fragment_varying_passthrough_from_spirv(
              fs_data, fs_words, fragment->pName, &reason))
@@ -430,11 +439,12 @@ create_pipeline(struct r3v_native_device *device,
    bool varying = false;
    bool sampled = false;
    uint32_t narrow_width = 0;
+   bool mixed_fragment = false;
    uint32_t color_bits[4] = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
        !stages_build_vertex_job(info, &job, &varying, &sampled,
-                                &narrow_width, color_bits,
+                                &narrow_width, &mixed_fragment, color_bits,
                                 &admitted.shader_interface) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
@@ -522,6 +532,7 @@ create_pipeline(struct r3v_native_device *device,
       .provoking_first_representable = true,
       .carrier_forced = device->noperspective_carrier_force != NULL,
       .narrow_passthrough_width = narrow_width,
+      .mixed_carrier_fragment = mixed_fragment,
    };
    /* The Flat replication pin demotes the direct GA route alone: a
     * NoPerspective interface keeps its route, and an UNSUPPORTED mix
@@ -559,6 +570,9 @@ create_pipeline(struct r3v_native_device *device,
             R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE
          ? (uint8_t)narrow_width
          : 0;
+   pipeline->post_vs.mixed_carrier =
+      pipeline->interpolation_route ==
+      R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER;
    pipeline->varying = varying;
    pipeline->sampled = sampled;
    memcpy(pipeline->color_bits, color_bits, sizeof(pipeline->color_bits));

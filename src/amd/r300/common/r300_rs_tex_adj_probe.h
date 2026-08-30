@@ -231,6 +231,21 @@ struct r300_rs_tex_adj_probe_channel_census {
    uint32_t judged;
    uint32_t separated[4];
    uint32_t alpha_one;
+   /* Per channel, the judged pixels whose observed byte lies within
+    * R300_RS_TEX_ADJ_PROBE_TOLERANCE of each model's byte, and the
+    * largest deviation from each model; a mixed-interpolation target
+    * is judged one channel at a time against its own model. */
+   uint32_t perspective_match[4];
+   uint32_t affine_match[4];
+   uint32_t perspective_max_deviation[4];
+   uint32_t affine_max_deviation[4];
+   /* Per channel, the separated pixels the competing model still
+    * matches: zero when the channel's interpolation is decided. */
+   uint32_t perspective_on_separated[4];
+   uint32_t affine_on_separated[4];
+   /* Judged pixels still holding the pre-submission sentinel dword
+    * (R300_TRIANGLE_COLOR_SENTINEL), unwritten by the draw. */
+   uint32_t sentinel;
 };
 int r300_rs_tex_adj_probe_channel_census(
    const struct r300_triangle_render_shape *shape,

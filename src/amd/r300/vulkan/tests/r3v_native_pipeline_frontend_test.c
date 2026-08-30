@@ -336,6 +336,68 @@ static void test_varying_module_known_bads(void)
    assert(strcmp(reason, "second varying store") == 0);
 }
 
+/* The mixed carrier module pair: the vertex module stores one temp to
+ * locations 0 and 1 (a twelve-dword record, the location-1 vector
+ * behind the location-0 one whatever the store order), and the
+ * fragment module is the (smooth.xy, noperspective.xy) lane program
+ * and no other admitter's shape.  Known-bads: the fragment module under
+ * the pass-through and narrow admitters refuses, and the location-1
+ * vertex output stored twice refuses. */
+static void test_reference_mixed_carrier_modules(void)
+{
+   struct r300_vertex_job job;
+   const char *reason = NULL;
+   const uint32_t *vm = r3v_reference_vertex_mixed_carrier_spirv;
+   const size_t vn = WORDS(r3v_reference_vertex_mixed_carrier_spirv);
+   bool admitted = r3v_vertex_job_from_spirv(vm, vn, "main", &job, &reason);
+   if (!admitted)
+      fprintf(stderr, "mixed carrier vertex refusal: %s\n", reason);
+   assert(admitted);
+   assert(r300_vertex_job_varying_mask(&job) == 0x3u);
+   assert(r300_vertex_job_record_dwords(&job) == 12);
+   job.input_format_ids[0] = R300_VERTEX_FORMAT_F32_4;
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+   const float ndc[12] = { -0.75f, -0.75f, 0.0f, 1.0f, 0.75f, -0.75f,
+                           0.0f,   1.0f,   0.0f, 0.75f, 0.0f, 1.0f };
+   const struct r300_vertex_stream stream = {
+      .data = (const uint8_t *)ndc, .stride = 16, .size_bytes = sizeof(ndc),
+   };
+   uint32_t carrier[36];
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 36) ==
+          0);
+   for (unsigned v = 0; v < 3; v++) {
+      assert(memcmp(&carrier[v * 12], &ndc[v * 4], 16) == 0);
+      /* Both locations carry fma(position, (.5,.5,0,0), (.5,.5,.25,1)). */
+      assert(memcmp(&carrier[v * 12 + 4], &carrier[v * 12 + 8], 16) == 0);
+      float shade[4];
+      memcpy(shade, &carrier[v * 12 + 4], sizeof(shade));
+      assert(shade[0] == ndc[v * 4] * 0.5f + 0.5f);
+      assert(shade[1] == ndc[v * 4 + 1] * 0.5f + 0.5f);
+      assert(shade[2] == 0.25f && shade[3] == 1.0f);
+   }
+
+   const uint32_t *fm = r3v_reference_fragment_mixed_carrier_spirv;
+   const size_t fn = WORDS(r3v_reference_fragment_mixed_carrier_spirv);
+   admitted = r3v_fragment_mixed_carrier_from_spirv(fm, fn, "main", &reason);
+   if (!admitted)
+      fprintf(stderr, "mixed carrier fragment refusal: %s\n", reason);
+   assert(admitted);
+   uint32_t width = 0;
+   assert(!r3v_fragment_varying_passthrough_from_spirv(fm, fn, "main",
+                                                       &reason));
+   assert(!r3v_fragment_narrow_passthrough_from_spirv(fm, fn, "main", &width,
+                                                      &reason));
+   assert(!r3v_fragment_sampled_texture_from_spirv(fm, fn, "main", &reason));
+   /* The other fragment shapes refuse under the mixed admitter. */
+   assert(!r3v_fragment_mixed_carrier_from_spirv(
+      r3v_reference_fragment_varying_spirv,
+      WORDS(r3v_reference_fragment_varying_spirv), "main", &reason));
+   assert(!r3v_fragment_mixed_carrier_from_spirv(
+      r3v_reference_fragment_noperspective_vec3_spirv,
+      WORDS(r3v_reference_fragment_noperspective_vec3_spirv), "main",
+      &reason));
+}
+
 /* The two-attribute module: location 0 feeds the position, location 1
  * the varying, so the job reads slots 0 and 1 and executes over one
  * stream per slot; the color stream at its own stride reaches the
@@ -719,6 +781,7 @@ int main(void)
    test_reference_varying_modules();
    test_varying_module_known_bads();
    test_reference_two_attribute_module();
+   test_reference_mixed_carrier_modules();
    test_reference_instance_modules();
    test_module_refusals();
    test_malformed_streams();

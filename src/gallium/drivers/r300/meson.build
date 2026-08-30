@@ -863,6 +863,12 @@ if with_tests
     args : ['--check=noperspective-q-lane'],
     suite : ['r300'],
   )
+  test(
+    'r300-noperspective-mixed-carrier-fs-block-regeneration',
+    r300_tcl_bypass_fs_tool,
+    args : ['--check=noperspective-mixed-carrier'],
+    suite : ['r300'],
+  )
 
   # Classic fragment-compiler register allocation: chain recycling and the
   # register-file boundary, fit and reject sides.

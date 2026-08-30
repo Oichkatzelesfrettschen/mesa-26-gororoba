@@ -102,7 +102,7 @@ more than one sampler variable
 more than one shader output
 more than one storage load
 more than one storage store
-more than one vertex varying output
+two vertex varyings at one location
 opcode outside the elementwise-map subset
 opcode outside the vec4 straight line
 operand outside the admitted straight line
@@ -143,7 +143,7 @@ vertex program exceeds the 16-temp file
 vertex program exceeds the constant file
 vertex program exceeds the instruction budget
 vertex varying output left unwritten
-vertex varying outside location 0
+vertex varying outside locations 0 and 1
 workgroup shared memory
 Centroid or Sample interpolation outside the admitted grammar
 ClipDistance or CullDistance outside a vertex float array output
@@ -201,3 +201,9 @@ varying outside the float lanes the vertex carrier executes
 vec4 construction outside the narrow varying zero-filled with alpha 1
 vector type outside float vec2..vec4
 fragment input outside varying 0 as float, vec2, or vec3
+vertex varying at location 1 without location 0
+extraction outside a lane of a varying's xy
+fragment input outside varyings 0 and 1 as vec4
+fragment program outside the mixed carrier (smooth.xy, noperspective.xy)
+two fragment inputs at one location
+vec4 construction outside (smooth.xy, noperspective.xy)

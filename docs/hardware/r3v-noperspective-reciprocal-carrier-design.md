@@ -165,11 +165,59 @@ receipt: their PM4 and US program are byte-identical to the vec3 cell's
 (the plan's words are width-independent) and they differ only in the
 lanes the packer zero-fills, which the harness proves per width.
 
-Rung D, mixed interfaces: Smooth stays ordinary perspective TEX input,
-NoPerspective takes premultiplied input plus the shared w vector, Flat
-replicates (direct GA stays an independent optimization), and
-`GB_SELECT.W_SELECT` is zero for the whole draw. An interface past the RS
-or US capacity refuses.
+Rung D, mixed Smooth/NoPerspective carrier: the first admitted mixed
+shape is a Smooth float vec4 at location 0 beside a NoPerspective float
+vec4 at location 1 with no Flat location. The vertex job stores both
+locations (`R300_VERTEX_JOB_OP_STORE_VARYING` takes the location in
+`dst`, so the record is twelve dwords), and the post-VS stage packs each
+triangle into the sixteen-dword mixed shape ahead of the clipper: TC0 the
+Smooth vector verbatim, TC1 the NoPerspective vector premultiplied by
+`c = w / max(w)`, TC2 `(c, 0, 0, 1)`
+(`r300_noperspective_mixed_carrier_plan.h`). The register contract is
+the reciprocal plan at two payload vectors plus the carrier -- VAP_VTX_SIZE
+16, RS_IP/RS_INST 0..2, RS_COUNT twelve components -- with
+`GB_SELECT.W_SELECT` 0 for the whole draw, and the US block stores
+`(TC0.x, TC0.y, r.x, r.y)` with `r = TC1 * rcp(TC2.x)` (four ALU
+instructions, three temporaries;
+`r300_noperspective_mixed_carrier_fs_block.h`), so one target exposes two
+Smooth lanes that stay perspective beside two NoPerspective lanes that
+become affine. The plan refuses more than four RS vectors including the
+carrier, a carrier aliasing a payload vector, a premultiplied set other
+than vector 1, and a US program past the R300 budget of 64 ALU
+instructions or 32 temporaries; the stream check names VTX_SIZE 12,
+W_SELECT 1, and a wrong RS_IP or RS_INST of any vector. The kernel width
+check judges the widened record without a kernel change: control PASS at
+8, mixed cell PASS at 16, VTX_SIZE 12 REJECTs the mixed draw, CS tracking
+ACCEPT with every control. The route
+`R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER` opens with no gate on
+exactly that interface under the mixed lane program `(loc0.xy, loc1.xy)`
+on CPU delivery over a triangle list with the RS destinations consumed;
+reordered locations, both locations Smooth or both NoPerspective, Flat
+mixed in, a third location, a width mismatch, a component offset, an
+integer varying, and the mixed interface under the pass-through program
+are UNSUPPORTED, and an open R2VB delivery gate withholds the CPU post-VS
+mechanism. The published record width is route-derived
+(`r3v_interpolation_published_record_dwords`), so the carrier
+allocation, the staging capacity, and the clipper -- widened to sixteen
+dwords, admitting 4, 8, 12, and 16 -- take the route's width. The host
+proof is the public-surface harness: the recorded stream byte-equal to the
+mixed family cell, the unequal-w ACCEPT triangle packed to c = 0.25, 0.5,
+1 with TC0 verbatim and TC1 premultiplied, and the one-plane crossing
+clipped into three source and three generated records whose TC0 is the
+clip-space blend and whose TC1 / c is the Vulkan clipped NoPerspective
+value. The silicon discriminator
+(`r3v_native_attended_rs_tex_adj_probe --candidate mixed-reciprocal-carrier`)
+stores the probe attribute to both locations, so red and green carry
+(s, t) perspective and blue and alpha carry (s, t) affine over the same
+source values; the census judges the candidate against the logical
+records (s, t, s, t) one channel at a time, and the oracle requires red
+and green perspective-exact within one quantum with affine matching none
+of their separated pixels, blue and alpha affine-exact with perspective
+matching none, every channel separated (501, 882, 501, 882 of 882 in the
+prediction), and no unchanged or sentinel pixel; the oracle is calibrated
+ahead of the ioctl against the mixed prediction (holds) and the pure
+perspective and affine predictions (fail). Flat beside the mixed pair
+stays a later shape.
 
 ## Cross-repository closure
 

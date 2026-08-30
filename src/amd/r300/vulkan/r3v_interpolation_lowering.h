@@ -88,7 +88,27 @@ enum r3v_interpolation_route {
     * packs ahead of the clipper, so every clipping class is admitted
     * and the expanded stream is validated ahead of publication. */
    R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE,
+   /* Mixed Smooth and NoPerspective through the shared reciprocal
+    * carrier (r300_noperspective_mixed_carrier_plan.h): location 0 a
+    * Smooth float vec4 riding TC0 verbatim, location 1 a NoPerspective
+    * float vec4 riding TC1 premultiplied by c = w / max(w), and c in
+    * TC2.x, three of the four RS vectors at VAP_VTX_SIZE 16 under
+    * GB_SELECT.W_SELECT 0.  The fragment program must be the mixed
+    * carrier lane program (loc0.x, loc0.y, loc1.x, loc1.y), the shape
+    * the cell's binary executes as (TC0.xy, (TC1 * rcp(TC2.x)).xy).
+    * The post-VS stage packs the twelve-dword two-location records
+    * into sixteen-dword records ahead of the clipper, so every
+    * clipping class is admitted and the expanded stream is validated
+    * ahead of publication.  Every other mixed shape is UNSUPPORTED. */
+   R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
 };
+
+/* The per-vertex dword count the route publishes to the cell: the
+ * reciprocal carrier widens the eight-dword varying record to twelve,
+ * the mixed carrier the twelve-dword two-location record to sixteen,
+ * and every other route publishes the vertex job's own record. */
+uint32_t r3v_interpolation_published_record_dwords(
+   enum r3v_interpolation_route route, uint32_t job_record_dwords);
 
 enum r3v_interpolation_clip_class {
    /* Every vertex inside the clip volume: the clipper emits the
@@ -120,6 +140,11 @@ struct r3v_interpolation_query {
     * program alone, so a narrow pass-through outside the q-lane
     * conjunction is UNSUPPORTED. */
    uint32_t narrow_passthrough_width;
+   /* The fragment module is the mixed carrier lane program
+    * (r3v_fragment_mixed_carrier_from_spirv).  The mixed carrier
+    * binary executes that program alone, so the program outside the
+    * mixed conjunction is UNSUPPORTED. */
+   bool mixed_carrier_fragment;
 };
 
 /* The record-time form of the query: everything but the clipping class,

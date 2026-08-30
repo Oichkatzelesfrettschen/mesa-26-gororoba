@@ -282,6 +282,27 @@ static void test_mixed_and_noperspective(void)
                       
       "98e4ad923b37a26d1ad67e5da801cbc8f56467d8c590a43d16337c7ff6c20086");
 
+   /* The mixed carrier pair: Smooth at location 0 beside NoPerspective
+    * at location 1, both float vec4, links with the NoPerspective mask
+    * naming location 1 alone. */
+   struct r3v_shader_interface mc_vs = read(
+      r3v_reference_vertex_mixed_carrier_spirv,
+      WORDS(r3v_reference_vertex_mixed_carrier_spirv),
+      R3V_SHADER_INTERFACE_STAGE_VERTEX);
+   struct r3v_shader_interface mc_fs = read(
+      r3v_reference_fragment_mixed_carrier_spirv,
+      WORDS(r3v_reference_fragment_mixed_carrier_spirv),
+      R3V_SHADER_INTERFACE_STAGE_FRAGMENT);
+   assert(r3v_shader_interface_link(&mc_vs, &mc_fs, &link, &reason));
+   assert(link.varying_mask == 3 && link.flat_mask == 0 &&
+          link.noperspective_mask == 2);
+   assert(link.varyings[0].interpolation == R3V_SHADER_INTERFACE_SMOOTH &&
+          link.varyings[1].interpolation ==
+             R3V_SHADER_INTERFACE_NOPERSPECTIVE &&
+          link.varyings[0].width == 4 && link.varyings[1].width == 4 &&
+          link.varyings[0].component_mask == 0xf &&
+          link.varyings[1].component_mask == 0xf);
+
    /* Conflicts: the Flat vertex output against the NoPerspective
     * fragment input, and both qualifiers on one fragment input. */
    struct r3v_shader_interface flat_vs = read(

@@ -428,6 +428,8 @@ static void test_validation_refusals(void)
       },
    };
    expect_refusal(&varying_last, -EINVAL);
+   /* One store per location; the stored set runs contiguously from
+    * location 0 and stays below R300_VERTEX_JOB_MAX_VARYINGS. */
    struct r300_vertex_job two_varyings = {
       .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 4,
@@ -439,6 +441,22 @@ static void test_validation_refusals(void)
       },
    };
    expect_refusal(&two_varyings, -EINVAL);
+   two_varyings.instructions[2].dst = 1;
+   assert(r300_cpu_vertex_job_validate(&two_varyings) == 0);
+   assert(r300_vertex_job_varying_mask(&two_varyings) == 0x3u);
+   assert(r300_vertex_job_record_dwords(&two_varyings) == 12);
+   two_varyings.instructions[2].dst = R300_VERTEX_JOB_MAX_VARYINGS;
+   expect_refusal(&two_varyings, -EINVAL);
+   struct r300_vertex_job location_1_alone = {
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
+      .instruction_count = 3,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 1, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   expect_refusal(&location_1_alone, -EINVAL);
    struct r300_vertex_job varying_unwritten = {
       .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
       .instruction_count = 3,
@@ -507,6 +525,57 @@ static void test_varying_store_records(void)
           -ENOSPC);
    for (uint32_t i = 0; i < CARRIER_DWORDS; i++)
       assert(carrier[i] == CANARY);
+}
+
+/* A job storing locations 0 and 1 writes twelve-dword records: position,
+ * location 0, location 1 per vertex, the placement the mixed carrier
+ * consumer's three-FLOAT_4 fetch reads; the store order in the job does
+ * not move the vectors.
+ */
+static void test_two_varying_store_records(void)
+{
+   struct r300_vertex_job job = {
+      .input_format_ids = { R300_VERTEX_FORMAT_F32_4 },
+      .constant_count = 1,
+      .instruction_count = 6,
+      .instructions = {
+         { R300_VERTEX_JOB_OP_LOAD_INPUT, 0, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_LOAD_CONSTANT, 1, 0, 0, 0 },
+         { R300_VERTEX_JOB_OP_FADD, 2, 0, 1, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 1, 2, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_VARYING, 0, 1, 0, 0 },
+         { R300_VERTEX_JOB_OP_STORE_POSITION, 0, 0, 0, 0 },
+      },
+   };
+   for (uint32_t lane = 0; lane < 4; lane++)
+      job.constants[0][lane] = f_bits(0.5f);
+   assert(r300_vertex_job_varying_count(&job) == 2);
+   assert(r300_vertex_job_record_dwords(&job) == 12);
+   assert(r300_cpu_vertex_job_validate(&job) == 0);
+
+   const uint32_t records[3][4] = {
+      { f_bits(1.0f), f_bits(2.0f), f_bits(3.0f), f_bits(4.0f) },
+      { f_bits(-1.0f), f_bits(0.0f), f_bits(0.25f), f_bits(1.0f) },
+      { f_bits(0.5f), f_bits(-2.0f), f_bits(8.0f), f_bits(1.0f) },
+   };
+   struct r300_vertex_stream stream = stream_of(records, 16, sizeof(records));
+   uint32_t carrier[CARRIER_DWORDS];
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 36) == 0);
+   for (uint32_t v = 0; v < 3; v++) {
+      assert(memcmp(&carrier[v * 12], records[v], 16) == 0);
+      for (uint32_t lane = 0; lane < 4; lane++) {
+         assert(carrier[v * 12 + 4 + lane] == f_bits(0.5f));
+         float in;
+         memcpy(&in, &records[v][lane], sizeof(in));
+         assert(carrier[v * 12 + 8 + lane] == f_bits(in + 0.5f));
+      }
+   }
+   for (uint32_t i = 36; i < CARRIER_DWORDS; i++)
+      assert(carrier[i] == CANARY);
+   fill_canary(carrier);
+   assert(r300_cpu_vertex_job_execute(&job, &stream, 0, 3, carrier, 35) ==
+          -ENOSPC);
 }
 
 /* Two attribute slots: slot 0 (F32_4) feeds the position, slot 1
@@ -1095,6 +1164,7 @@ int main(void)
    test_mov_preserves_nan_payload();
    test_validation_refusals();
    test_varying_store_records();
+   test_two_varying_store_records();
    test_multi_attribute_slots();
    test_indexed_execution();
    test_instanced_execution();

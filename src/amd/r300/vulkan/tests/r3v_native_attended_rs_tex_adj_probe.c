@@ -29,6 +29,9 @@
 
 #include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/r300_noperspective_mixed_carrier_fs_block.h"
+#include "amd/r300/common/r300_noperspective_reciprocal_fs_block.h"
+#include "amd/r300/common/r300_noperspective_mixed_carrier_plan.h"
 #include "amd/r300/common/r300_noperspective_q_lane_fs_block.h"
 #include "amd/r300/common/r300_noperspective_q_lane_plan.h"
 #include "amd/r300/common/r300_r2vb_producer_fs_block.h"
@@ -201,6 +204,49 @@ struct pass_target {
    VkFramebuffer framebuffer;
 };
 
+/* The mixed oracle over one target: red and green (the Smooth s, t)
+ * match perspective within one quantum on every judged pixel with
+ * affine matching none of their separated pixels; blue and alpha (the
+ * NoPerspective s, t) match affine within one quantum on every judged
+ * pixel with perspective matching none of their separated pixels; each
+ * of the four channels separates the models on some judged pixel; no
+ * judged pixel holds the sentinel, and (when the caller supplies the
+ * count) none equals the control. */
+static bool
+judge_mixed(const struct r300_triangle_render_shape *shape,
+            const float *candidate_records, const uint32_t *pixels,
+            uint32_t size_bytes, uint32_t unchanged,
+            struct r300_rs_tex_adj_probe_channel_census *ch, bool *clauses)
+{
+   if (r300_rs_tex_adj_probe_channel_census(shape, candidate_records, pixels,
+                                            size_bytes, ch) != 0)
+      return false;
+   bool separated = ch->judged != 0;
+   bool smooth_exact = true, smooth_affine_zero = true;
+   bool noperspective_exact = true, noperspective_perspective_zero = true;
+   for (unsigned c = 0; c < 4; c++)
+      separated &= ch->separated[c] != 0;
+   for (unsigned c = 0; c < 2; c++) {
+      smooth_exact &= ch->perspective_match[c] == ch->judged &&
+                      ch->perspective_max_deviation[c] <= 1u;
+      smooth_affine_zero &= ch->affine_on_separated[c] == 0;
+      noperspective_exact &= ch->affine_match[2 + c] == ch->judged &&
+                             ch->affine_max_deviation[2 + c] <= 1u;
+      noperspective_perspective_zero &=
+         ch->perspective_on_separated[2 + c] == 0;
+   }
+   const bool unchanged_zero = unchanged == 0 && ch->sentinel == 0;
+   clauses[0] = separated;
+   clauses[1] = smooth_exact;
+   clauses[2] = smooth_affine_zero;
+   clauses[3] = noperspective_exact;
+   clauses[4] = noperspective_perspective_zero;
+   clauses[5] = unchanged_zero;
+   return separated && smooth_exact && smooth_affine_zero &&
+          noperspective_exact && noperspective_perspective_zero &&
+          unchanged_zero;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -240,6 +286,16 @@ main(int argc, char **argv)
     * under the xyz * rcp(w), alpha 1 US program.  The census judges the
     * candidate against the logical records (s, t, r, 1). */
    bool q_lane_route = false;
+   /* The mixed carrier rung: every gate closed, the interface a Smooth
+    * vec4 at location 0 beside a NoPerspective vec4 at location 1 (both
+    * the probe attribute) under the (loc0.xy, loc1.xy) program selects
+    * R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER, and pass 1
+    * records the sixteen-dword three-vector cell
+    * (r300_noperspective_mixed_carrier_plan.h).  The target is
+    * (s, t) perspective in red and green beside (s, t) affine in blue
+    * and alpha, so the census judges the candidate against the logical
+    * records (s, t, s, t) one channel at a time. */
+   bool mixed_route = false;
    bool usage_error = argc < 2;
    for (int i = 2; i < argc && !usage_error; i++) {
       if (strcmp(argv[i], "--record-only") == 0) {
@@ -276,6 +332,13 @@ main(int argc, char **argv)
             candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
             other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
             candidate_word_name = "RECIPROCAL_Q_LANE_VEC3";
+         } else if (strcmp(name, "mixed-reciprocal-carrier") == 0) {
+            mixed_route = true;
+            candidate = R300_RS_TEX_ADJ_PROBE_CONTROL;
+            route_candidate = R3V_RS_PROBE_NONE;
+            candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
+            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_word_name = "MIXED_RECIPROCAL_CARRIER_TC2";
          } else if (strcmp(name, "reciprocal-carrier-partial") == 0) {
             carrier_route = true;
             partial = true;
@@ -296,7 +359,7 @@ main(int argc, char **argv)
               "usage: %s <evidence-directory> [--record-only] "
               "[--waiver <path>] [--candidate "
               "tex-adj|w-select|reciprocal-carrier|reciprocal-carrier-partial|"
-              "reciprocal-q-lane] "
+              "reciprocal-q-lane|mixed-reciprocal-carrier] "
               "[--production]\n",
               argv[0]);
       return 2;
@@ -315,13 +378,15 @@ main(int argc, char **argv)
     * the recorded stream is the one the authorization names and the
     * probe pipeline's candidate comes from the environment the
     * authorization declares. */
-   if (production || q_lane_route) {
-      /* The production and q-lane routes open on no gate: a present
-       * probe or force gate would hand the NoPerspective interface a
-       * candidate or the TC1 carrier instead of the route under test. */
+   if (production || q_lane_route || mixed_route) {
+      /* The production, q-lane, and mixed routes open on no gate: a
+       * present probe or force gate would hand the NoPerspective
+       * interface a candidate or the TC1 carrier instead of the route
+       * under test. */
       if (gate_present(candidate_gate) || gate_present(other_gate)) {
          fprintf(stderr, "a gate is set; the %s route runs with %s and %s "
-                 "unset\n", q_lane_route ? "q-lane" : "production",
+                 "unset\n",
+                 q_lane_route ? "q-lane" : mixed_route ? "mixed" : "production",
                  candidate_gate, other_gate);
          return 2;
       }
@@ -331,19 +396,22 @@ main(int argc, char **argv)
               candidate_gate, candidate_word_name);
       return 2;
    }
-   if ((carrier_route || q_lane_route) &&
+   if ((carrier_route || q_lane_route || mixed_route) &&
        gate_present("R3V_NATIVE_RS_W_SELECT_PROBE")) {
       fprintf(stderr, "R3V_NATIVE_RS_W_SELECT_PROBE is set; the %s "
               "route runs with every probe gate unset\n",
-              q_lane_route ? "q-lane" : "carrier");
+              q_lane_route ? "q-lane" : mixed_route ? "mixed" : "carrier");
       return 2;
    }
-   const bool route_based = production || carrier_route || q_lane_route;
-   /* The q-lane and carrier cells differ from the control in the US
-    * program (and, for the carrier, the record shape), so the one-dword
-    * invariant belongs to the probe words alone. */
-   const bool one_word_candidate = !carrier_route && !q_lane_route;
-   if (!production && !q_lane_route && gate_present(other_gate)) {
+   const bool route_based =
+      production || carrier_route || q_lane_route || mixed_route;
+   /* The q-lane, carrier, and mixed cells differ from the control in
+    * the US program (and, for the carriers, the record shape), so the
+    * one-dword invariant belongs to the probe words alone. */
+   const bool one_word_candidate =
+      !carrier_route && !q_lane_route && !mixed_route;
+   if (!production && !q_lane_route && !mixed_route &&
+       gate_present(other_gate)) {
       fprintf(stderr, "%s is set; one cell carries one candidate\n",
               other_gate);
       return 2;
@@ -387,6 +455,8 @@ main(int argc, char **argv)
    struct r300_triangle_multi_pass mp;
    if (q_lane_route)
       r3v_native_multi_pass_public_noperspective_q_lane_reference(&mp);
+   else if (mixed_route)
+      r3v_native_multi_pass_public_noperspective_mixed_carrier_reference(&mp);
    else if (carrier_route)
       r3v_native_multi_pass_public_noperspective_carrier_reference(&mp);
    else
@@ -477,6 +547,8 @@ main(int argc, char **argv)
         candidate_word_name,
         production     ? " (production direct GB W_SELECT route, no gate)"
         : q_lane_route  ? " (reciprocal q-lane route, vec3, no gate)"
+        : mixed_route   ? " (mixed reciprocal carrier route, TC0 Smooth + "
+                          "TC1 NoPerspective + TC2 carrier, no gate)"
         : carrier_route ? " (forced reciprocal carrier route, TC1 cell)"
                         : "",
         mp.pass[0].width, mp.pass[0].height,
@@ -521,6 +593,14 @@ main(int argc, char **argv)
    if (q_lane_route)
       for (unsigned v = 0; v < 3; v++)
          candidate_records[v * 8 + 7] = 1.0f;
+   /* The mixed program stores (smooth.s, smooth.t, noperspective.s,
+    * noperspective.t): the logical records are (s, t, s, t), judged
+    * perspective in red and green and affine in blue and alpha. */
+   if (mixed_route)
+      for (unsigned v = 0; v < 3; v++) {
+         candidate_records[v * 8 + 6] = records[v * 8 + 4];
+         candidate_records[v * 8 + 7] = records[v * 8 + 5];
+      }
 
    emit("[models] registered outcomes: %s, %s, %s, %s (also reported as "
         "%s), %s, %s\n",
@@ -636,6 +716,58 @@ main(int argc, char **argv)
       if (!calibrated) {
          fprintf(stderr, "the census is not calibrated against its own "
                  "predictions; refusing ahead of the ioctl\n");
+         return 1;
+      }
+   }
+   /* The mixed rung's prediction: red and green from the perspective
+    * image, blue and alpha from the affine image, both over the
+    * logical records (s, t, s, t); the mixed oracle holds on it and
+    * fails on each pure image, the known-good and known-bad
+    * calibration of the per-channel verdict. */
+   uint32_t *expected_mixed = NULL;
+   if (mixed_route) {
+      expected_mixed = calloc(1, color_bytes);
+      uint32_t *perspective_logical = calloc(1, color_bytes);
+      if (expected_mixed == NULL || perspective_logical == NULL ||
+          r300_rs_tex_adj_probe_expected(
+             &mp.pass[0], candidate_records,
+             R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE, perspective_logical,
+             color_bytes) != 0) {
+         fprintf(stderr, "the mixed prediction refused to generate\n");
+         return 1;
+      }
+      /* B8G8R8A8: red and green at bits 8..23, blue and alpha at bits
+       * 0..7 and 24..31. */
+      for (uint32_t i = 0; i < color_bytes / 4u; i++)
+         expected_mixed[i] = (perspective_logical[i] & 0x00ffff00u) |
+                             (expected[1][i] & 0xff0000ffu);
+      struct r300_rs_tex_adj_probe_channel_census ch;
+      bool clauses[6];
+      const bool good = judge_mixed(&mp.pass[0], candidate_records,
+                                    expected_mixed, color_bytes, 0, &ch,
+                                    clauses);
+      const bool bad_perspective =
+         judge_mixed(&mp.pass[0], candidate_records, perspective_logical,
+                     color_bytes, 0, &ch, clauses);
+      const bool bad_affine = judge_mixed(&mp.pass[0], candidate_records,
+                                          expected[1], color_bytes, 0, &ch,
+                                          clauses);
+      emit("[calibration] mixed oracle over the predictions: mixed image "
+           "%s, pure perspective %s, pure affine %s; separated=(%u, %u, "
+           "%u, %u) over %u judged\n",
+           good ? "holds" : "fails", bad_perspective ? "holds" : "fails",
+           bad_affine ? "holds" : "fails", ch.separated[0], ch.separated[1],
+           ch.separated[2], ch.separated[3], ch.judged);
+      free(perspective_logical);
+      if (!good || bad_perspective || bad_affine) {
+         fprintf(stderr, "the mixed oracle is not calibrated against its "
+                 "own predictions; refusing ahead of the ioctl\n");
+         return 1;
+      }
+      if (!record_only &&
+          r3v_native_evidence_write_file(evidence_dir, "expected_mixed.bin",
+                                         expected_mixed, color_bytes) != 0) {
+         fprintf(stderr, "prediction retention failed\n");
          return 1;
       }
    }
@@ -942,25 +1074,33 @@ main(int argc, char **argv)
    /* The q-lane rung's candidate pipeline narrows the attribute to its
     * xyz as a vec3 varying under the vec3 narrow pass-through; the
     * control keeps the vec4 pair. */
+   /* The mixed rung's candidate pipeline stores the attribute to both
+    * locations under the (loc0.xy, loc1.xy) program. */
    const uint32_t *vertex_words[2] = {
       r3v_reference_vertex_two_attributes_spirv,
       q_lane_route ? r3v_reference_vertex_two_attributes_vec3_spirv
-                   : r3v_reference_vertex_two_attributes_spirv,
+      : mixed_route
+         ? r3v_reference_vertex_two_attributes_mixed_carrier_spirv
+         : r3v_reference_vertex_two_attributes_spirv,
    };
    const size_t vertex_bytes[2] = {
       sizeof(r3v_reference_vertex_two_attributes_spirv),
       q_lane_route ? sizeof(r3v_reference_vertex_two_attributes_vec3_spirv)
-                   : sizeof(r3v_reference_vertex_two_attributes_spirv),
+      : mixed_route
+         ? sizeof(r3v_reference_vertex_two_attributes_mixed_carrier_spirv)
+         : sizeof(r3v_reference_vertex_two_attributes_spirv),
    };
    const uint32_t *fragment_words[2] = {
       r3v_reference_fragment_varying_spirv,
       q_lane_route ? r3v_reference_fragment_noperspective_vec3_spirv
-                   : r3v_reference_fragment_noperspective_spirv,
+      : mixed_route ? r3v_reference_fragment_mixed_carrier_spirv
+                    : r3v_reference_fragment_noperspective_spirv,
    };
    const size_t fragment_bytes[2] = {
       sizeof(r3v_reference_fragment_varying_spirv),
       q_lane_route ? sizeof(r3v_reference_fragment_noperspective_vec3_spirv)
-                   : sizeof(r3v_reference_fragment_noperspective_spirv),
+      : mixed_route ? sizeof(r3v_reference_fragment_mixed_carrier_spirv)
+                    : sizeof(r3v_reference_fragment_noperspective_spirv),
    };
    VkPipeline pipeline[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
    for (unsigned i = 0; i < 2; i++) {
@@ -1115,12 +1255,15 @@ main(int argc, char **argv)
        * through the route selector.  The deferred draws then carry the
        * W_SELECT_ONE control word from the route itself. */
       if (route_based) {
-         static const char *const route_name[6] = {
+         static const char *const route_name[7] = {
             "replicate", "direct-ga-color0", "direct-gb-w-select",
-            "unsupported", "reciprocal-carrier", "reciprocal-q-lane"
+            "unsupported", "reciprocal-carrier", "reciprocal-q-lane",
+            "mixed-reciprocal-carrier"
          };
          const enum r3v_interpolation_route expected_route =
             q_lane_route  ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE
+            : mixed_route
+               ? R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER
             : carrier_route ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER
                             : R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT;
          enum r3v_interpolation_route route[2];
@@ -1139,6 +1282,7 @@ main(int argc, char **argv)
                .provoking_first_representable = true,
                .carrier_forced = carrier_route,
                .narrow_passthrough_width = q_lane_route && i == 1 ? 3u : 0u,
+               .mixed_carrier_fragment = mixed_route && i == 1,
             };
             const enum r3v_interpolation_route derived =
                r3v_interpolation_route_select(&query, &reason[i]);
@@ -1152,7 +1296,7 @@ main(int argc, char **argv)
          emit("[route] %s control=%s (%s) noperspective=%s (%s) "
               "probe candidates=%s/%s\n",
               production ? "production" : q_lane_route ? "q-lane"
-                                                       : "forced-carrier",
+              : mixed_route ? "mixed-carrier" : "forced-carrier",
               route_name[route[0]], reason[0], route_name[route[1]],
               reason[1], candidate_name[recorded[0]],
               candidate_name[recorded[1]]);
@@ -1314,10 +1458,16 @@ main(int argc, char **argv)
    r300_noperspective_reciprocal_plan_tc1(&carrier_plan);
    struct r300_noperspective_q_lane_plan q_lane_plan;
    r300_noperspective_q_lane_plan_init(&q_lane_plan, 3);
+   struct r300_noperspective_mixed_carrier_plan mixed_plan;
+   r300_noperspective_mixed_carrier_plan_first(&mixed_plan);
    const int candidate_whole =
       q_lane_route
          ? r300_noperspective_q_lane_plan_stream_check(
               &q_lane_plan, gb_select_base, native->ib,
+              native->ib_size_dwords)
+      : mixed_route
+         ? r300_noperspective_mixed_carrier_plan_stream_check(
+              &mixed_plan, gb_select_base, native->ib,
               native->ib_size_dwords)
       : carrier_route
          ? r300_noperspective_reciprocal_plan_stream_check(
@@ -1330,6 +1480,10 @@ main(int argc, char **argv)
       q_lane_route
          ? r300_noperspective_q_lane_plan_stream_check(
               &q_lane_plan, gb_select_base, native->ib + first_draw_end,
+              native->ib_size_dwords - first_draw_end)
+      : mixed_route
+         ? r300_noperspective_mixed_carrier_plan_stream_check(
+              &mixed_plan, gb_select_base, native->ib + first_draw_end,
               native->ib_size_dwords - first_draw_end)
       : carrier_route
          ? r300_noperspective_reciprocal_plan_stream_check(
@@ -1359,13 +1513,38 @@ main(int argc, char **argv)
                           native->ib_size_dwords - first_draw_end,
                           r300_r2vb_producer_fs_block,
                           sizeof(r300_r2vb_producer_fs_block) / 4u));
+   /* The mixed cell: the pass-through block ahead of the first draw,
+    * the mixed block alone ahead of the second. */
+   const bool mixed_blocks =
+      !mixed_route ||
+      (ib_contains_block(native->ib, first_draw_end,
+                         r300_r2vb_producer_fs_block,
+                         sizeof(r300_r2vb_producer_fs_block) / 4u) &&
+       !ib_contains_block(native->ib, first_draw_end,
+                          r300_noperspective_mixed_carrier_fs_block,
+                          sizeof(r300_noperspective_mixed_carrier_fs_block) /
+                             4u) &&
+       ib_contains_block(native->ib + first_draw_end,
+                         native->ib_size_dwords - first_draw_end,
+                         r300_noperspective_mixed_carrier_fs_block,
+                         sizeof(r300_noperspective_mixed_carrier_fs_block) /
+                            4u) &&
+       !ib_contains_block(native->ib + first_draw_end,
+                          native->ib_size_dwords - first_draw_end,
+                          r300_r2vb_producer_fs_block,
+                          sizeof(r300_r2vb_producer_fs_block) / 4u) &&
+       !ib_contains_block(native->ib + first_draw_end,
+                          native->ib_size_dwords - first_draw_end,
+                          r300_noperspective_reciprocal_fs_block,
+                          sizeof(r300_noperspective_reciprocal_fs_block) /
+                             4u));
    emit("[state] gb_select_base=0x%08x control-over-first-pass=%d "
         "candidate-over-stream=%d candidate-over-second-pass=%d "
-        "q_lane_blocks=%d\n",
+        "q_lane_blocks=%d mixed_blocks=%d\n",
         gb_select_base, control_draws, candidate_whole, candidate_draws,
-        (int)q_lane_blocks);
+        (int)q_lane_blocks, (int)mixed_blocks);
    if (control_draws != 1 || candidate_whole != (q_lane_route ? 2 : -1) ||
-       candidate_draws != 1 || !q_lane_blocks) {
+       candidate_draws != 1 || !q_lane_blocks || !mixed_blocks) {
       fprintf(stderr, "the recorded stream does not establish the control "
               "plan ahead of the first draw and the candidate plan ahead "
               "of the second; refusing ahead of the ioctl\n");
@@ -1536,8 +1715,14 @@ main(int argc, char **argv)
           * probe's s, t, r premultiplied by c and w the normalized
           * clip w (r300_noperspective_q_lane_plan.h). */
          const bool q_lane_pass = q_lane_route && p == 1;
+         /* The mixed pass publishes sixteen dwords: TC0 the probe's
+          * TEX0 verbatim, TC1 TEX0 premultiplied by c, TC2 (c, 0, 0,
+          * 1) (r300_noperspective_mixed_carrier_plan.h). */
+         const bool mixed_pass = mixed_route && p == 1;
          const unsigned stride =
-            carrier_pass ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS : 8u;
+            mixed_pass    ? R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS
+            : carrier_pass ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS
+                           : 8u;
          const unsigned fan_records =
             partial ? R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT * 3u
                     : 3u;
@@ -1599,6 +1784,30 @@ main(int argc, char **argv)
          }
          bool payload_exact = true;
          for (unsigned v = 0; v < 3; v++) {
+            if (mixed_pass) {
+               const float c = carrier_records[v * stride + 12];
+               const float w = 1.0f / r300_rs_tex_adj_probe_reciprocal_w[v];
+               float w_max = 0.0f;
+               for (unsigned b = 0; b < 3; b++)
+                  w_max = fmaxf(w_max,
+                                1.0f / r300_rs_tex_adj_probe_reciprocal_w[b]);
+               payload_exact &= fabsf(c - w / w_max) <= 1e-6f && c > 0.0f &&
+                                c <= 1.0f &&
+                                carrier_records[v * stride + 13] == 0.0f &&
+                                carrier_records[v * stride + 14] == 0.0f &&
+                                carrier_records[v * stride + 15] == 1.0f;
+               payload_exact &= memcmp(&carrier_records[v * stride + 4],
+                                       &r300_rs_tex_adj_probe_tex0[v * 4],
+                                       4 * sizeof(float)) == 0;
+               for (unsigned k = 0; k < 4; k++) {
+                  const float expected =
+                     r300_rs_tex_adj_probe_tex0[v * 4 + k] * c;
+                  payload_exact &=
+                     fabsf(carrier_records[v * stride + 8 + k] - expected) <=
+                     1e-6f * fmaxf(1.0f, fabsf(expected));
+               }
+               continue;
+            }
             if (q_lane_pass) {
                const float c = carrier_records[v * stride + 7];
                const float w = 1.0f / r300_rs_tex_adj_probe_reciprocal_w[v];
@@ -1724,6 +1933,65 @@ main(int argc, char **argv)
            (int)affine_exact, (int)perspective_zero, (int)q_lane_oracle);
    }
 
+   /* The mixed oracle: red and green (the Smooth s, t) match
+    * perspective within one quantum on every judged pixel with affine
+    * matching none of their separated pixels; blue and alpha (the
+    * NoPerspective s, t) match affine within one quantum on every
+    * judged pixel with perspective matching none of their separated
+    * pixels; each of the four channels separates the models on some
+    * judged pixel; no judged pixel equals the control or the sentinel. */
+   bool mixed_oracle = true;
+   if (mixed_route) {
+      struct r300_rs_tex_adj_probe_channel_census ch;
+      bool clauses[6] = { false };
+      mixed_oracle = judge_mixed(&mp.pass[1], candidate_records,
+                                 candidate_map, color_bytes,
+                                 candidate_census.unchanged, &ch, clauses);
+      emit("[mixed] judged=%u separated=(%u, %u, %u, %u) "
+           "perspective_match=(%u, %u, %u, %u) "
+           "affine_match=(%u, %u, %u, %u) "
+           "perspective_max_dev=(%u, %u, %u, %u) "
+           "affine_max_dev=(%u, %u, %u, %u) "
+           "affine_on_separated=(%u, %u, %u, %u) "
+           "perspective_on_separated=(%u, %u, %u, %u) unchanged=%u "
+           "sentinel=%u separated_all=%d smooth_exact=%d "
+           "smooth_affine_zero=%d noperspective_exact=%d "
+           "noperspective_perspective_zero=%d unchanged_zero=%d "
+           "oracle=%d\n",
+           ch.judged, ch.separated[0], ch.separated[1], ch.separated[2],
+           ch.separated[3], ch.perspective_match[0], ch.perspective_match[1],
+           ch.perspective_match[2], ch.perspective_match[3],
+           ch.affine_match[0], ch.affine_match[1], ch.affine_match[2],
+           ch.affine_match[3], ch.perspective_max_deviation[0],
+           ch.perspective_max_deviation[1], ch.perspective_max_deviation[2],
+           ch.perspective_max_deviation[3], ch.affine_max_deviation[0],
+           ch.affine_max_deviation[1], ch.affine_max_deviation[2],
+           ch.affine_max_deviation[3], ch.affine_on_separated[0],
+           ch.affine_on_separated[1], ch.affine_on_separated[2],
+           ch.affine_on_separated[3], ch.perspective_on_separated[0],
+           ch.perspective_on_separated[1], ch.perspective_on_separated[2],
+           ch.perspective_on_separated[3], candidate_census.unchanged,
+           ch.sentinel, (int)clauses[0], (int)clauses[1], (int)clauses[2],
+           (int)clauses[3], (int)clauses[4], (int)clauses[5],
+           (int)mixed_oracle);
+      /* The retained candidate image against the mixed prediction:
+       * the dword-exact count is the receipt's tightest number. */
+      uint32_t exact = 0, judged_pixels = 0;
+      for (uint32_t y = 0; y < mp.pass[1].height; y++)
+         for (uint32_t x = 0; x < mp.pass[1].width; x++) {
+            const uint32_t i = mp.pass[1].target_offset / 4u +
+                               y * mp.pass[1].pitch_pixels + x;
+            if (expected_mixed[i] == R300_TRIANGLE_COLOR_SENTINEL)
+               continue;
+            judged_pixels++;
+            exact += ((const uint32_t *)candidate_map)[i] ==
+                     expected_mixed[i];
+         }
+      emit("[mixed] dword-exact against expected_mixed.bin: %u of %u "
+           "predicted interior pixels\n", exact, judged_pixels);
+   }
+   free(expected_mixed);
+
    const enum r300_rs_tex_adj_probe_classification control_class =
       r300_rs_tex_adj_probe_classify(&control_census);
    const enum r300_rs_tex_adj_probe_classification candidate_class =
@@ -1776,6 +2044,19 @@ main(int argc, char **argv)
            ? "the carriers do not hold the probe payload at proportional "
              "reciprocal W; the models were evaluated against records the "
              "device did not fetch"
+        : mixed_route
+           ? (mixed_oracle
+                 ? "the control cell interpolates perspective-correct and "
+                   "the mixed pipeline's target carries the Smooth s, t "
+                   "perspective-correct in red and green beside the "
+                   "NoPerspective s, t affine in blue and alpha, each "
+                   "within one quantum on every judged pixel with the "
+                   "competing model matching no separated pixel: the "
+                   "receipt of the mixed reciprocal carrier -- TC0 "
+                   "Smooth, TC1 premultiplied, TC2 carrier, three RS "
+                   "vectors at VAP_VTX_SIZE 16 -- on RS482"
+                 : "the mixed oracle does not hold; the [mixed] line "
+                   "names the failed clause")
         : q_lane_route
            ? (q_lane_oracle
                  ? "the control cell interpolates perspective-correct and "
@@ -1818,5 +2099,5 @@ main(int argc, char **argv)
     * interpolates perspective-correct and the candidate census judged
     * pixels.  A carrier the witness refuses prints above and rides the
     * verdict line, where its caveat belongs. */
-   return (premise && judged && q_lane_oracle) ? 0 : 1;
+   return (premise && judged && q_lane_oracle && mixed_oracle) ? 0 : 1;
 }

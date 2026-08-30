@@ -33,6 +33,7 @@
 #include "radeon_compiler.h"
 #include "radeon_regalloc.h"
 
+#include "amd/r300/common/r300_noperspective_mixed_carrier_fs_block.h"
 #include "amd/r300/common/r300_noperspective_q_lane_fs_block.h"
 #include "amd/r300/common/r300_noperspective_reciprocal_fs_block.h"
 #include "amd/r300/common/r300_r2vb_producer_fs_block.h"
@@ -322,6 +323,61 @@ build_noperspective_q_lane_shader(void)
    return b.shader;
 }
 
+/* The mixed carrier cell: texture coordinate set 0 carries the Smooth
+ * vec4, set 1 the NoPerspective vec4 premultiplied by the normalized
+ * carrier c, and set 2's x lane c itself
+ * (r300_noperspective_mixed_carrier_plan.h), all perspective
+ * interpolated, so the program stores (set0.x, set0.y, r.x, r.y) with
+ * r = set1 * rcp(set2.x): two lanes that stay perspective beside two
+ * recovered window-linear lanes of one draw.
+ */
+static nir_shader *
+build_noperspective_mixed_carrier_shader(void)
+{
+   static const nir_shader_compiler_options options = {
+      .float_mul_add32 =
+         nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+      .lower_flrp32 = true,
+   };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "noperspective_mixed_carrier");
+   nir_variable *smooth = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "smooth");
+   smooth->data.location = VARYING_SLOT_TEX0;
+   smooth->data.driver_location = 0;
+   smooth->data.interpolation = INTERP_MODE_NONE;
+   nir_variable *payload = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "payload");
+   payload->data.location = VARYING_SLOT_TEX1;
+   payload->data.driver_location = 1;
+   payload->data.interpolation = INTERP_MODE_NONE;
+   nir_variable *carrier = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "carrier");
+   carrier->data.location = VARYING_SLOT_TEX2;
+   carrier->data.driver_location = 2;
+   carrier->data.interpolation = INTERP_MODE_NONE;
+   b.shader->info.inputs_read = BITFIELD64_BIT(VARYING_SLOT_TEX0) |
+                                BITFIELD64_BIT(VARYING_SLOT_TEX1) |
+                                BITFIELD64_BIT(VARYING_SLOT_TEX2);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+   nir_def *s = nir_load_var(&b, smooth);
+   nir_def *reciprocal =
+      nir_frcp(&b, nir_channel(&b, nir_load_var(&b, carrier), 0));
+   nir_def *recovered =
+      nir_fmul(&b, nir_trim_vector(&b, nir_load_var(&b, payload), 2),
+               reciprocal);
+   nir_store_var(&b, out,
+                 nir_vec4(&b, nir_channel(&b, s, 0), nir_channel(&b, s, 1),
+                          nir_channel(&b, recovered, 0),
+                          nir_channel(&b, recovered, 1)),
+                 0xf);
+   return b.shader;
+}
+
 struct fs_program {
    const char *option;
    const char *description;
@@ -333,6 +389,12 @@ struct fs_program {
    unsigned golden_size;
    uint32_t golden_fg_depth_src;
    uint32_t golden_us_out_w;
+   /* When set the header also carries the program's ALU instruction
+    * and temporary counts, the values a plan judges against its US
+    * budget. */
+   bool emit_us_budget;
+   uint32_t golden_us_alu_instructions;
+   uint32_t golden_us_temporaries;
 };
 
 static const struct fs_program fs_programs[] = {
@@ -401,6 +463,25 @@ static const struct fs_program fs_programs[] = {
       .golden_fg_depth_src = R300_NOPERSPECTIVE_Q_LANE_FS_FG_DEPTH_SRC,
       .golden_us_out_w = R300_NOPERSPECTIVE_Q_LANE_FS_US_OUT_W,
    },
+   {
+      .option = "noperspective-mixed-carrier",
+      .description = "Mixed Smooth/NoPerspective carrier US block for the "
+                     "mixed reciprocal carrier cell",
+      .guard = "R300_NOPERSPECTIVE_MIXED_CARRIER_FS_BLOCK_H",
+      .macro_prefix = "R300_NOPERSPECTIVE_MIXED_CARRIER_FS",
+      .symbol = "r300_noperspective_mixed_carrier_fs_block",
+      .build = build_noperspective_mixed_carrier_shader,
+      .golden = r300_noperspective_mixed_carrier_fs_block,
+      .golden_size = ARRAY_SIZE(r300_noperspective_mixed_carrier_fs_block),
+      .golden_fg_depth_src =
+         R300_NOPERSPECTIVE_MIXED_CARRIER_FS_FG_DEPTH_SRC,
+      .golden_us_out_w = R300_NOPERSPECTIVE_MIXED_CARRIER_FS_US_OUT_W,
+      .emit_us_budget = true,
+      .golden_us_alu_instructions =
+         R300_NOPERSPECTIVE_MIXED_CARRIER_FS_US_ALU_INSTRUCTIONS,
+      .golden_us_temporaries =
+         R300_NOPERSPECTIVE_MIXED_CARRIER_FS_US_TEMPORARIES,
+   },
 };
 
 static void
@@ -421,8 +502,17 @@ emit_header(const struct fs_program *program,
    printf("#include <stdint.h>\n\n");
    printf("#define %s_FG_DEPTH_SRC 0x%08xu\n", program->macro_prefix,
           shader->fg_depth_src);
-   printf("#define %s_US_OUT_W 0x%08xu\n\n", program->macro_prefix,
+   printf("#define %s_US_OUT_W 0x%08xu\n", program->macro_prefix,
           shader->us_out_w);
+   if (program->emit_us_budget) {
+      /* alu.length is the emitted ALU instruction count and pixsize the
+       * highest temporary index (r300_fragprog_emit.c). */
+      printf("#define %s_US_ALU_INSTRUCTIONS %uu\n", program->macro_prefix,
+             shader->code.code.r300.alu.length);
+      printf("#define %s_US_TEMPORARIES %uu\n", program->macro_prefix,
+             shader->code.code.r300.pixsize + 1);
+   }
+   printf("\n");
    printf("static const uint32_t %s[] = {\n", program->symbol);
    for (unsigned i = 0; i < shader->cb_code_size; i++) {
       printf("%s0x%08x,%s", i % 4 == 0 ? "   " : " ",
@@ -497,7 +587,12 @@ main(int argc, char **argv)
       return 1;
    }
    if (shader.fg_depth_src != program->golden_fg_depth_src ||
-       shader.us_out_w != program->golden_us_out_w) {
+       shader.us_out_w != program->golden_us_out_w ||
+       (program->emit_us_budget &&
+        (shader.code.code.r300.alu.length !=
+            program->golden_us_alu_instructions ||
+         shader.code.code.r300.pixsize + 1 !=
+            program->golden_us_temporaries))) {
       fprintf(stderr, "FAIL: %s depth-output metadata differs\n",
               program->option);
       return 1;
