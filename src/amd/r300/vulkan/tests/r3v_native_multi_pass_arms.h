@@ -146,4 +146,17 @@ r3v_native_multi_pass_public_noperspective_q_lane_reference(
    out->pass[1].noperspective_q_lane = true;
 }
 
+/* The mixed carrier two-draw form: pass 0 the control varying cell,
+ * pass 1 the sixteen-dword three-vector cell a Smooth-plus-
+ * NoPerspective interface records
+ * (r300_noperspective_mixed_carrier_plan.h).  The binding stays
+ * (2, 3). */
+static inline void
+r3v_native_multi_pass_public_noperspective_mixed_carrier_reference(
+   struct r300_triangle_multi_pass *out)
+{
+   r3v_native_multi_pass_public_flat_reference(out);
+   out->pass[1].noperspective_mixed_carrier = true;
+}
+
 #endif /* R3V_NATIVE_MULTI_PASS_ARMS_H */

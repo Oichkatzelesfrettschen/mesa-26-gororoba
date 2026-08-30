@@ -475,6 +475,136 @@ test_noperspective_q_lane_conjunction(void)
          R3V_INTERPOLATION_ROUTE_DIRECT_GB_W_SELECT);
 }
 
+
+/* The mixed carrier conjunction: Smooth vec4 at location 0 beside
+ * NoPerspective vec4 at location 1 under the mixed fragment program
+ * selects the mixed reciprocal carrier with no gate and in every
+ * clipping class; each predicate flipped on its own -- and every other
+ * mixed shape -- is UNSUPPORTED, and the mixed interface without the
+ * mixed program is UNSUPPORTED. */
+static void
+mixed_carrier_link(struct r3v_shader_interface_link *link)
+{
+   memset(link, 0, sizeof(*link));
+   link->varying_mask = 3u;
+   link->noperspective_mask = 2u;
+   link->varyings[0] = (struct r3v_shader_interface_varying){
+      .present = true,
+      .scalar = R3V_SHADER_INTERFACE_SCALAR_FLOAT32,
+      .width = 4,
+      .component_mask = 0xf,
+      .interpolation = R3V_SHADER_INTERFACE_SMOOTH,
+   };
+   link->varyings[1] = link->varyings[0];
+   link->varyings[1].interpolation = R3V_SHADER_INTERFACE_NOPERSPECTIVE;
+}
+
+static void
+test_mixed_carrier_conjunction(void)
+{
+   struct r3v_shader_interface_link link;
+   mixed_carrier_link(&link);
+   struct r3v_interpolation_query q = direct_query(&link);
+   q.mixed_carrier_fragment = true;
+   const char *reason = NULL;
+   CHECK(r3v_interpolation_route_select(&q, &reason) ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+   CHECK(reason != NULL && strstr(reason, "mixed") != NULL);
+   q.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
+   CHECK(r3v_interpolation_route_select(&q, NULL) ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+   q.carrier_forced = true;
+   CHECK(r3v_interpolation_route_select(&q, NULL) ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+   CHECK(r3v_interpolation_published_record_dwords(
+            R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER, 12) == 16);
+   CHECK(r3v_interpolation_published_record_dwords(
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER, 8) == 12);
+   CHECK(r3v_interpolation_published_record_dwords(
+            R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE, 8) == 8);
+   CHECK(r3v_interpolation_published_record_dwords(
+            R3V_INTERPOLATION_ROUTE_REPLICATE, 4) == 4);
+
+   struct r3v_interpolation_query f = direct_query(&link);
+   f.mixed_carrier_fragment = true;
+   f.cpu_delivery = false;
+   expect_unsupported(&f, "not CPU");
+   f = direct_query(&link);
+   f.mixed_carrier_fragment = true;
+   f.triangle_list = false;
+   expect_unsupported(&f, "triangle list");
+   f = direct_query(&link);
+   f.mixed_carrier_fragment = true;
+   f.rs_destination_available = false;
+   expect_unsupported(&f, "RS destination");
+   f = direct_query(&link);
+   f.mixed_carrier_fragment = true;
+   f.fragment_consumes_destination = false;
+   expect_unsupported(&f, "consume");
+   /* The mixed interface under the vec4 pass-through program. */
+   f = direct_query(&link);
+   expect_unsupported(&f, "map completely");
+   /* Reordered locations: NoPerspective at 0, Smooth at 1. */
+   struct r3v_shader_interface_link reordered = link;
+   reordered.noperspective_mask = 1u;
+   reordered.varyings[0].interpolation = R3V_SHADER_INTERFACE_NOPERSPECTIVE;
+   reordered.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+   f = direct_query(&reordered);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Smooth location 0");
+   /* Both NoPerspective, both Smooth. */
+   struct r3v_shader_interface_link both = link;
+   both.noperspective_mask = 3u;
+   both.varyings[0].interpolation = R3V_SHADER_INTERFACE_NOPERSPECTIVE;
+   f = direct_query(&both);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Smooth location 0");
+   both.noperspective_mask = 0u;
+   both.varyings[0].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+   both.varyings[1].interpolation = R3V_SHADER_INTERFACE_SMOOTH;
+   f = direct_query(&both);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Smooth location 0");
+   /* Flat mixed in. */
+   struct r3v_shader_interface_link flat = link;
+   flat.flat_mask = 1u;
+   flat.varyings[0].interpolation = R3V_SHADER_INTERFACE_FLAT;
+   f = direct_query(&flat);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Smooth location 0");
+   /* A third location. */
+   struct r3v_shader_interface_link three = link;
+   three.varying_mask = 7u;
+   three.varyings[2] = link.varyings[0];
+   f = direct_query(&three);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Smooth location 0");
+   /* A width mismatch, a component offset, an integer varying. */
+   struct r3v_shader_interface_link narrow = link;
+   narrow.varyings[1].width = 3;
+   narrow.varyings[1].component_mask = 0x7;
+   f = direct_query(&narrow);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "full float vec4");
+   narrow = link;
+   narrow.varyings[0].width = 2;
+   narrow.varyings[0].component_mask = 0x6;
+   f = direct_query(&narrow);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "full float vec4");
+   narrow = link;
+   narrow.varyings[1].scalar = R3V_SHADER_INTERFACE_SCALAR_INT32;
+   f = direct_query(&narrow);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "full float vec4");
+   /* The mixed program over a one-location interface. */
+   struct r3v_shader_interface_link one;
+   noperspective_vec4_link(&one);
+   f = direct_query(&one);
+   f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "Smooth location 0");
+}
+
 int
 main(void)
 {
@@ -484,6 +614,7 @@ main(void)
    test_probe_candidate_conjunction();
    test_noperspective_conjunction_opens_w_select();
    test_noperspective_q_lane_conjunction();
+   test_mixed_carrier_conjunction();
    if (failures != 0) {
       fprintf(stderr, "%d failure(s)\n", failures);
       return EXIT_FAILURE;

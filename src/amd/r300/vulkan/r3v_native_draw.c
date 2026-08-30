@@ -474,8 +474,12 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       poison(commandBuffer, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
    }
+   /* The route may widen the job's record ahead of the clipper, so
+    * the carrier holds the published width. */
    const uint64_t carrier_record_bytes =
-      4 * r300_vertex_job_record_dwords(&pipeline->vertex_job);
+      4 * r3v_interpolation_published_record_dwords(
+             pipeline->interpolation_route,
+             r300_vertex_job_record_dwords(&pipeline->vertex_job));
    const uint64_t source_triangle_count =
       ((uint64_t)args->vertex_count / 3u) * args->instance_count;
    const uint64_t carrier_payload_bytes =
@@ -574,6 +578,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
       pipeline->interpolation_route ==
          R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE,
+      pipeline->interpolation_route ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
       rs_control_word,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled);
@@ -619,6 +625,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
                                R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER,
       .noperspective_q_lane = pipeline->interpolation_route ==
                               R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE,
+      .noperspective_mixed_carrier =
+         pipeline->interpolation_route ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER,
       .rs_probe_candidate = rs_control_word,
       .target_memory = cmd_buffer->pass_target->memory,
       .target_fill_offset = cmd_buffer->pass_target->memory_offset +

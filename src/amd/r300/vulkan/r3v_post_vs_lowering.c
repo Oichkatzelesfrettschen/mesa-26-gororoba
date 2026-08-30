@@ -94,6 +94,43 @@ r3v_post_vs_pack_noperspective_q_lane(
    return 0;
 }
 
+int
+r3v_post_vs_pack_noperspective_mixed_carrier(
+   const struct r3v_post_vs_lowering *lowering, const uint32_t *records,
+   uint32_t triangle_count, uint32_t record_dwords, uint32_t *carrier)
+{
+   if (lowering == NULL || !lowering->mixed_carrier ||
+       lowering->noperspective_mask != 0x2u || lowering->flat_mask != 0 ||
+       record_dwords != R300_NOPERSPECTIVE_MIXED_CARRIER_SOURCE_DWORDS ||
+       (triangle_count != 0 && (records == NULL || carrier == NULL)))
+      return -EINVAL;
+   struct r300_noperspective_mixed_carrier_plan plan;
+   r300_noperspective_mixed_carrier_plan_first(&plan);
+   const uint32_t carrier_dwords =
+      R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS;
+   for (uint32_t triangle = 0; triangle < triangle_count; triangle++) {
+      float probe[3 * R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS];
+      const int rc = r300_noperspective_mixed_carrier_pack_triangle(
+         &plan,
+         (const float *)&records[(size_t)triangle * 3u * record_dwords],
+         probe);
+      if (rc != 0)
+         return rc;
+   }
+   for (uint32_t triangle = triangle_count; triangle-- > 0;) {
+      float packed[3 * R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS];
+      const int rc = r300_noperspective_mixed_carrier_pack_triangle(
+         &plan,
+         (const float *)&records[(size_t)triangle * 3u * record_dwords],
+         packed);
+      if (rc != 0)
+         return rc;
+      memcpy(&carrier[(size_t)triangle * 3u * carrier_dwords], packed,
+             sizeof(packed));
+   }
+   return 0;
+}
+
 int r3v_post_vs_lower_triangles(const struct r3v_post_vs_lowering *lowering,
                                 uint32_t *records, uint32_t triangle_count,
                                 uint32_t record_dwords)

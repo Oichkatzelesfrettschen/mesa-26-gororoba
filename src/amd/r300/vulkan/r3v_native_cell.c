@@ -52,6 +52,8 @@
    (R300_TRIANGLE_VARYING_VERTEX_DWORDS * sizeof(float))
 #define R3V_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_BYTES \
    (R300_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_DWORDS * sizeof(float))
+#define R3V_TRIANGLE_NOPERSPECTIVE_MIXED_CARRIER_VERTEX_BYTES \
+   (R300_TRIANGLE_NOPERSPECTIVE_MIXED_CARRIER_VERTEX_DWORDS * sizeof(float))
 
 static VkResult
 fill_color(struct r3v_native_device *device,
@@ -283,10 +285,24 @@ static int
 emit_triangle_cell_for_position_space(
    const struct r300_triangle_render_shape *shape, bool varying,
    bool flat_color0, bool noperspective_carrier, bool noperspective_q_lane,
-   uint8_t rs_probe_candidate, uint32_t source_triangle_count,
+   bool noperspective_mixed_carrier, uint8_t rs_probe_candidate,
+   uint32_t source_triangle_count,
    const struct r3v_native_sampled_texture *sampled, bool clip_space,
    struct r300_tcl_bypass_triangle_ib *cell)
 {
+   if (noperspective_mixed_carrier) {
+      /* The mixed carrier cell: the first shape's plan, every probe
+       * word at its control value. */
+      if (sampled != NULL || !varying || flat_color0 ||
+          noperspective_carrier || noperspective_q_lane ||
+          rs_probe_candidate != R3V_RS_PROBE_NONE)
+         return -EINVAL;
+      struct r300_noperspective_mixed_carrier_plan plan;
+      r300_noperspective_mixed_carrier_plan_first(&plan);
+      return r300_tcl_bypass_triangle_noperspective_mixed_carrier_family_emit(
+         shape->width, shape->height, clip_space, source_triangle_count,
+         &plan, cell);
+   }
    if (noperspective_q_lane) {
       /* The q-lane cell: the varying cell's words under the q-lane
        * fragment binary, every probe word at its control value. */
@@ -379,6 +395,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                bool clip_space, bool varying, bool flat_color0,
                                bool noperspective_carrier,
                                bool noperspective_q_lane,
+                               bool noperspective_mixed_carrier,
                                uint8_t rs_probe_candidate,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
@@ -436,8 +453,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
          shape, varying, flat_color0, noperspective_carrier,
-         noperspective_q_lane, rs_probe_candidate, triangle_count, sampled,
-         false, &window_cell);
+         noperspective_q_lane, noperspective_mixed_carrier,
+         rs_probe_candidate, triangle_count, sampled, false, &window_cell);
       if (emit_result != 0)
          return vk_error(device,
                          r3v_native_cell_vk_result_from_errno(emit_result));
@@ -446,8 +463,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    struct r300_tcl_bypass_triangle_ib cell = {0};
    emit_result = emit_triangle_cell_for_position_space(
       shape, varying, flat_color0, noperspective_carrier,
-      noperspective_q_lane, rs_probe_candidate, triangle_count, sampled,
-      clip_space, &cell);
+      noperspective_q_lane, noperspective_mixed_carrier, rs_probe_candidate,
+      triangle_count, sampled, clip_space, &cell);
    if (emit_result != 0)
       r300_tcl_bypass_triangle_release(&window_cell);
    if (emit_result != 0)
@@ -561,7 +578,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
-                                         false, false, false, 0, 1, NULL);
+                                         false, false, false, false, 0, 1, NULL);
 }
 
 VkResult
@@ -571,7 +588,8 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
    bool varying, bool flat_color0, bool noperspective_carrier,
-   bool noperspective_q_lane, uint8_t rs_probe_candidate,
+   bool noperspective_q_lane, bool noperspective_mixed_carrier,
+   uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled)
 {
@@ -586,9 +604,12 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    const uint64_t carrier_bytes =
       (uint64_t)triangle_count *
       R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT *
-      (noperspective_carrier ? R3V_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_BYTES
-       : varying             ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
-                             : R3V_TRIANGLE_VERTEX_BYTES);
+      (noperspective_mixed_carrier
+          ? R3V_TRIANGLE_NOPERSPECTIVE_MIXED_CARRIER_VERTEX_BYTES
+       : noperspective_carrier
+          ? R3V_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_BYTES
+       : varying ? R3V_TRIANGLE_VARYING_VERTEX_BYTES
+                 : R3V_TRIANGLE_VERTEX_BYTES);
    const uint64_t target_base =
       target_image->memory_offset + target_layer_offset;
    if (carrier_memory->bo.size < carrier_bytes ||
@@ -626,6 +647,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                          color_memory, &shape, true, varying,
                                          flat_color0, noperspective_carrier,
                                          noperspective_q_lane,
+                                         noperspective_mixed_carrier,
                                          rs_probe_candidate, triangle_count,
                                          sampled);
 }
@@ -640,7 +662,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
 #define R3V_NATIVE_CLIP_MAX_POLYGON_VERTICES \
    (3u + R3V_NATIVE_CLIP_PLANE_COUNT)
 #define R3V_NATIVE_CLIP_MAX_RECORD_DWORDS \
-   R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS
+   R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS
 
 struct r3v_native_clip_vertex {
    double values[R3V_NATIVE_CLIP_MAX_RECORD_DWORDS];
@@ -910,10 +932,11 @@ expand_clip_space_triangles(
    VkCullModeFlags cull_mode, VkFrontFace front_face, bool sample_mask_zero,
    uint32_t *output_records, uint32_t output_capacity_dwords)
 {
-   if ((record_dwords != R300_VERTEX_JOB_POSITION_DWORDS &&
-        record_dwords != R300_VERTEX_JOB_POSITION_DWORDS +
-                            R300_VERTEX_JOB_VARYING_DWORDS &&
-        record_dwords != R3V_NATIVE_CLIP_MAX_RECORD_DWORDS) ||
+   /* The position, then whole vec4 vectors up to the mixed carrier's
+    * three: 4, 8, 12, or 16 dwords. */
+   if (record_dwords < R300_VERTEX_JOB_POSITION_DWORDS ||
+       record_dwords > R3V_NATIVE_CLIP_MAX_RECORD_DWORDS ||
+       record_dwords % R300_VERTEX_JOB_VARYING_DWORDS != 0 ||
        source_triangle_count == 0 || source_records == NULL ||
        output_records == NULL)
       return -EINVAL;
@@ -1239,14 +1262,19 @@ execute_one_deferred_draw(struct r3v_native_device *device,
    const uint32_t record_count = draw->vertex_count * draw->instance_count;
    const uint32_t source_triangle_count = record_count / 3u;
    const uint32_t staged_dwords = record_count * record_dwords;
-   /* The reciprocal carrier route widens each staged record to the TC1
-    * carrier shape after the job and ahead of the clipper, so the
+   /* The reciprocal carrier routes widen each staged record after the
+    * job and ahead of the clipper -- the varying record to the TC1
+    * shape, the two-location record to the mixed shape -- so the
     * staging capacity, the clipper's record width, and the published
-    * stream take the carrier width. */
+    * stream take the route's width. */
    const uint32_t published_record_dwords =
-      draw->post_vs.reciprocal_carrier
-         ? R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS
-         : record_dwords;
+      r3v_interpolation_published_record_dwords(
+         draw->post_vs.mixed_carrier
+            ? R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER
+         : draw->post_vs.reciprocal_carrier
+            ? R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER
+            : R3V_INTERPOLATION_ROUTE_REPLICATE,
+         record_dwords);
    const uint32_t published_staged_dwords =
       record_count * published_record_dwords;
    const uint64_t expanded_dwords_u64 =
@@ -1481,6 +1509,23 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                      "(%d): %s", packed, strerror(-packed));
                }
             }
+            /* The mixed carrier route packs the twelve-dword
+             * two-location records into the sixteen-dword shape in
+             * place from the last triangle backward, every triangle
+             * judged ahead of the first write. */
+            if (gathered == 0 && result == VK_SUCCESS &&
+                draw->post_vs.mixed_carrier) {
+               const int packed =
+                  r3v_post_vs_pack_noperspective_mixed_carrier(
+                     &draw->post_vs, staged, source_triangle_count,
+                     record_dwords, staged);
+               if (packed != 0) {
+                  result = vk_errorf(
+                     device, VK_ERROR_INITIALIZATION_FAILED,
+                     "r3v-native: mixed carrier packing refused "
+                     "(%d): %s", packed, strerror(-packed));
+               }
+            }
          }
       }
       if (result == VK_SUCCESS && gathered != 0) {
@@ -1517,6 +1562,14 @@ execute_one_deferred_draw(struct r3v_native_device *device,
             expanded_carrier = r300_noperspective_q_lane_validate_expanded(
                &plan, (const float *)expanded,
                expanded_dwords / published_record_dwords);
+         }
+         if (clipped == 0 && draw->post_vs.mixed_carrier) {
+            struct r300_noperspective_mixed_carrier_plan plan;
+            r300_noperspective_mixed_carrier_plan_first(&plan);
+            expanded_carrier =
+               r300_noperspective_mixed_carrier_validate_expanded(
+                  &plan, (const float *)expanded,
+                  expanded_dwords / published_record_dwords);
          }
          if (clipped == 0 && draw->post_vs.reciprocal_carrier) {
             /* A clipped carrier vertex is a convex combination of

@@ -8,7 +8,81 @@
 
 #include "r3v_shader_interface.h"
 
+#include "amd/r300/common/r300_noperspective_mixed_carrier_plan.h"
+#include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
+
 #include <string.h>
+
+uint32_t
+r3v_interpolation_published_record_dwords(enum r3v_interpolation_route route,
+                                          uint32_t job_record_dwords)
+{
+   switch (route) {
+   case R3V_INTERPOLATION_ROUTE_RECIPROCAL_CARRIER:
+      return R300_NOPERSPECTIVE_CARRIER_RECORD_DWORDS;
+   case R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER:
+      return R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS;
+   default:
+      return job_record_dwords;
+   }
+}
+
+/* The mixed reciprocal carrier route: exactly location 0 Smooth float
+ * vec4 and location 1 NoPerspective float vec4, no Flat location, the
+ * mixed carrier fragment program, CPU delivery over a triangle list,
+ * and the RS destinations the program reads.  The stage packs ahead of
+ * the clipper, so the clipping class is not judged.  The three payload
+ * and carrier vectors fit the RS budget of four and the baked US block
+ * fits the R300 budget, both judged by the plan's validate; every other
+ * mixed shape is UNSUPPORTED. */
+static enum r3v_interpolation_route
+r3v_interpolation_route_select_mixed(
+   const struct r3v_interpolation_query *query, const char **reason)
+{
+   const struct r3v_shader_interface_link *link = query->link;
+   const struct r3v_shader_interface_varying *smooth = &link->varyings[0];
+   const struct r3v_shader_interface_varying *noperspective =
+      &link->varyings[1];
+   const char *why = NULL;
+   if (!query->cpu_delivery) {
+      why = "delivery route is not CPU";
+   } else if (!query->triangle_list) {
+      why = "primitive is not a triangle list";
+   } else if (link->varying_mask != 0x3u || link->flat_mask != 0 ||
+              link->noperspective_mask != 0x2u) {
+      why = "mixed carrier program outside the Smooth location 0 plus "
+            "NoPerspective location 1 interface";
+   } else if (!smooth->present ||
+              smooth->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
+              smooth->width != 4 || smooth->component_mask != 0xf ||
+              smooth->interpolation != R3V_SHADER_INTERFACE_SMOOTH ||
+              !noperspective->present ||
+              noperspective->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
+              noperspective->width != 4 ||
+              noperspective->component_mask != 0xf ||
+              noperspective->interpolation !=
+                 R3V_SHADER_INTERFACE_NOPERSPECTIVE) {
+      why = "mixed carrier locations are not full float vec4s";
+   } else if (!query->rs_destination_available) {
+      why = "RS destination unavailable";
+   } else if (!query->fragment_consumes_destination) {
+      why = "fragment program does not consume the RS destination";
+   } else {
+      struct r300_noperspective_mixed_carrier_plan plan;
+      r300_noperspective_mixed_carrier_plan_first(&plan);
+      if (r300_noperspective_mixed_carrier_plan_validate(&plan) != 0)
+         why = "mixed carrier plan outside the RS vector or US budget";
+   }
+   if (why != NULL) {
+      if (reason != NULL)
+         *reason = why;
+      return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;
+   }
+   if (reason != NULL)
+      *reason = "mixed reciprocal carrier: TC0 Smooth, TC1 = a * c, "
+                "TC2.x = c";
+   return R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER;
+}
 
 /* The direct GB W_SELECT route: one full float vec4 NoPerspective
  * varying at location 0 rides TEX0 under GB_SELECT.W_SELECT = 1 on the
@@ -103,6 +177,10 @@ r3v_interpolation_route_select(const struct r3v_interpolation_query *query,
    const char *why = NULL;
    if (query == NULL || query->link == NULL) {
       why = "no linked interface";
+   } else if (query->mixed_carrier_fragment) {
+      /* The mixed carrier binary is the (TC0.xy, TC1.xy * rcp(TC2.x))
+       * recovery, which only the mixed interface feeds. */
+      return r3v_interpolation_route_select_mixed(query, reason);
    } else if (query->link->noperspective_mask == 0 &&
               query->narrow_passthrough_width != 0) {
       /* The narrow pass-through fragment binary is the q-lane

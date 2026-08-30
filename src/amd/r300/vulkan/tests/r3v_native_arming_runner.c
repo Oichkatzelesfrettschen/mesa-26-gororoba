@@ -110,6 +110,11 @@ static bool cell_multi_pass_noperspective_carrier = false;
  * interface with no gate.
  */
 static bool cell_multi_pass_noperspective_q_lane = false;
+/* --multi-pass-noperspective-mixed-carrier selects the mixed carrier
+ * two-pass cell: pass 0 the control varying cell, pass 1 the
+ * sixteen-dword three-vector cell
+ * (r300_noperspective_mixed_carrier_plan.h). */
+static bool cell_multi_pass_noperspective_mixed_carrier = false;
 static enum r300_rs_tex_adj_probe_candidate cell_multi_pass_rs_candidate =
    R300_RS_TEX_ADJ_PROBE_CONTROL;
 
@@ -145,6 +150,9 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
          r3v_native_multi_pass_public_noperspective_carrier_reference(&mp);
       else if (cell_multi_pass_noperspective_q_lane)
          r3v_native_multi_pass_public_noperspective_q_lane_reference(&mp);
+      else if (cell_multi_pass_noperspective_mixed_carrier)
+         r3v_native_multi_pass_public_noperspective_mixed_carrier_reference(
+            &mp);
       else if (cell_multi_pass_public_flat_color0)
          r3v_native_multi_pass_public_flat_color0_reference(&mp);
       else if (cell_multi_pass_public_flat)
@@ -371,6 +379,13 @@ main(int argc, char **argv)
       cell_multi_pass_noperspective_carrier = true;
       argi += 1;
    } else if (argc >= argi + 1 &&
+              strcmp(argv[argi],
+                     "--multi-pass-noperspective-mixed-carrier") == 0) {
+      cell_multi_pass = true;
+      cell_multi_pass_public = true;
+      cell_multi_pass_noperspective_mixed_carrier = true;
+      argi += 1;
+   } else if (argc >= argi + 1 &&
               strcmp(argv[argi], "--multi-pass-noperspective-q-lane") == 0) {
       cell_multi_pass = true;
       cell_multi_pass_public = true;
@@ -476,6 +491,7 @@ main(int argc, char **argv)
               "--multi-pass-rs-w-select-probe|"
               "--multi-pass-noperspective-carrier|"
               "--multi-pass-noperspective-q-lane|"
+              "--multi-pass-noperspective-mixed-carrier|"
               "--shape <w> <h> | --clip-space-shape <w> <h> "
               "<pitch> <bgra|rgba> <r> <g> <b> <a> [--offset <bytes>]] "
               "[--extent <w> <h>] "

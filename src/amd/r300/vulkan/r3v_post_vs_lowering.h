@@ -19,6 +19,7 @@
 
 #include "r3v_shader_interface.h"
 
+#include "amd/r300/common/r300_noperspective_mixed_carrier_plan.h"
 #include "amd/r300/common/r300_noperspective_q_lane_plan.h"
 #include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 
@@ -50,6 +51,12 @@ struct r3v_post_vs_lowering {
     * clipping the stage packs each triangle in place
     * (r3v_post_vs_pack_noperspective_q_lane). */
    uint8_t q_lane_width;
+   /* Set when the pipeline routes the Smooth location 0 plus
+    * NoPerspective location 1 interface through the mixed carrier:
+    * ahead of clipping the stage packs each twelve-dword triangle into
+    * the sixteen-dword mixed shape
+    * (r3v_post_vs_pack_noperspective_mixed_carrier). */
+   bool mixed_carrier;
 };
 
 /* Derives the lowering from a linked interface: flat_mask is the
@@ -99,5 +106,23 @@ int r3v_post_vs_pack_noperspective_carrier(
 int r3v_post_vs_pack_noperspective_q_lane(
    const struct r3v_post_vs_lowering *lowering, uint32_t *records,
    uint32_t triangle_count, uint32_t record_dwords);
+
+/* Packs a triangle list into the mixed carrier shape: source records
+ * of R300_NOPERSPECTIVE_MIXED_CARRIER_SOURCE_DWORDS (position, location
+ * 0, location 1), carrier records of
+ * R300_NOPERSPECTIVE_MIXED_CARRIER_RECORD_DWORDS each, per
+ * r300_noperspective_mixed_carrier_pack_triangle.  The carrier buffer
+ * may be the source buffer: the stage walks triangles from the last to
+ * the first, each triangle's three records are read whole before its
+ * wider output is written, and no later triangle's source lies inside
+ * an earlier triangle's output.  Every triangle is judged against the
+ * envelope ahead of the first write, so a refusal leaves the source
+ * list intact.  Refuses with -EINVAL when the lowering does not select
+ * the mixed carrier, the noperspective mask is not exactly location 1,
+ * the flat mask is not empty, or record_dwords is not twelve; -EDOM is
+ * the packer's envelope refusal. */
+int r3v_post_vs_pack_noperspective_mixed_carrier(
+   const struct r3v_post_vs_lowering *lowering, const uint32_t *records,
+   uint32_t triangle_count, uint32_t record_dwords, uint32_t *carrier);
 
 #endif /* R3V_POST_VS_LOWERING_H */
