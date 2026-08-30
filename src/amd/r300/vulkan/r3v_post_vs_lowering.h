@@ -19,6 +19,7 @@
 
 #include "r3v_shader_interface.h"
 
+#include "amd/r300/common/r300_noperspective_q_lane_plan.h"
 #include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 
 #include <stdbool.h>
@@ -44,6 +45,11 @@ struct r3v_post_vs_lowering {
     * each triangle into the TC1 carrier shape
     * (r3v_post_vs_pack_noperspective_carrier). */
    bool reciprocal_carrier;
+   /* Nonzero (1..3) when the pipeline routes NoPerspective through the
+    * q lane of the location-0 vector: after replication and ahead of
+    * clipping the stage packs each triangle in place
+    * (r3v_post_vs_pack_noperspective_q_lane). */
+   uint8_t q_lane_width;
 };
 
 /* Derives the lowering from a linked interface: flat_mask is the
@@ -82,5 +88,16 @@ int r3v_post_vs_lower_triangles(const struct r3v_post_vs_lowering *lowering,
 int r3v_post_vs_pack_noperspective_carrier(
    const struct r3v_post_vs_lowering *lowering, const uint32_t *records,
    uint32_t triangle_count, uint32_t record_dwords, uint32_t *carrier);
+
+/* Packs a triangle list in place into the q-lane shape: eight-dword
+ * records whose location-0 vector becomes (a.xyz * c, 0 past the
+ * width, c) per r300_noperspective_q_lane_pack_triangle.  Refuses with
+ * -EINVAL when the lowering selects no q-lane width, the noperspective
+ * mask is not exactly location 0, or record_dwords is not eight; -EDOM
+ * is the packer's envelope refusal, judged over every triangle ahead
+ * of the first write. */
+int r3v_post_vs_pack_noperspective_q_lane(
+   const struct r3v_post_vs_lowering *lowering, uint32_t *records,
+   uint32_t triangle_count, uint32_t record_dwords);
 
 #endif /* R3V_POST_VS_LOWERING_H */

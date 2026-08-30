@@ -221,6 +221,23 @@ int r300_rs_tex_adj_probe_census(
    const uint32_t *pixels, const uint32_t *control, uint32_t size_bytes,
    struct r300_rs_tex_adj_probe_census *out);
 
+/* Per-channel view of the judged footprint: separated[c] counts the
+ * judged pixels where channel c alone parts the perspective and affine
+ * predictions by R300_RS_TEX_ADJ_PROBE_SEPARATION, and alpha_one the
+ * judged pixels whose observed alpha byte is exactly 255.  A
+ * multi-channel receipt names each channel's own separation count and
+ * a constant-alpha program its exact alpha. */
+struct r300_rs_tex_adj_probe_channel_census {
+   uint32_t judged;
+   uint32_t separated[4];
+   uint32_t alpha_one;
+};
+int r300_rs_tex_adj_probe_channel_census(
+   const struct r300_triangle_render_shape *shape,
+   const float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS],
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_rs_tex_adj_probe_channel_census *out);
+
 /* The classification a census supports.  A model is named only when
  * it matches every judged pixel and no other model does; UNCHANGED is
  * named when the candidate image equals the control at every judged

@@ -506,6 +506,44 @@ matches(uint32_t observed, uint32_t predicted, uint32_t *max_deviation)
 }
 
 int
+r300_rs_tex_adj_probe_channel_census(
+   const struct r300_triangle_render_shape *shape,
+   const float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS],
+   const uint32_t *pixels, uint32_t size_bytes,
+   struct r300_rs_tex_adj_probe_channel_census *out)
+{
+   if (shape == NULL || records == NULL || pixels == NULL || out == NULL)
+      return -EINVAL;
+   uint32_t footprint_bytes;
+   if (!footprint(shape, size_bytes, &footprint_bytes))
+      return -EINVAL;
+   memset(out, 0, sizeof(*out));
+   const uint32_t *rows = pixels + shape->target_offset / 4u;
+   for (uint32_t y = 0; y < shape->height; y++) {
+      for (uint32_t x = 0; x < shape->width; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         if (signed_margin(records, px, py) <= 0.0)
+            continue;
+         uint32_t perspective_dword, affine_dword;
+         if (!judged_pixel(records, shape->width, shape->height, x, y,
+                           &perspective_dword, &affine_dword))
+            continue;
+         out->judged++;
+         for (unsigned c = 0; c < 4; c++) {
+            const uint32_t pb = channel_byte(perspective_dword, c);
+            const uint32_t ab = channel_byte(affine_dword, c);
+            const uint32_t d = pb > ab ? pb - ab : ab - pb;
+            if (d >= R300_RS_TEX_ADJ_PROBE_SEPARATION)
+               out->separated[c]++;
+         }
+         if (channel_byte(rows[y * shape->pitch_pixels + x], 3) == 255u)
+            out->alpha_one++;
+      }
+   }
+   return 0;
+}
+
+int
 r300_rs_tex_adj_probe_census(
    const struct r300_triangle_render_shape *shape,
    const float records[R300_RS_TEX_ADJ_PROBE_VERTEX_DWORDS],

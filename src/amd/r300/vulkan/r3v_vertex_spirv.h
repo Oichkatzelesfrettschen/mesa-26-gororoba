@@ -64,6 +64,20 @@ bool r3v_fragment_varying_passthrough_from_spirv(const uint32_t *words,
                                                   const char *entry_name,
                                                   const char **reason);
 
+/* Reads an admitted SPIR-V fragment module as the narrow pass-through:
+ * a straight-line Fragment entry function whose single store writes
+ * the loaded location-0 float, vec2, or vec3 input into the leading
+ * lanes of the location-0 vec4 output with the remaining color lanes
+ * literal 0.0 and alpha literal 1.0, the program the NoPerspective
+ * q-lane cell's fragment binary executes.  width receives the
+ * varying's lane count, 1..3.
+ */
+bool r3v_fragment_narrow_passthrough_from_spirv(const uint32_t *words,
+                                                 size_t word_count,
+                                                 const char *entry_name,
+                                                 uint32_t *width,
+                                                 const char **reason);
+
 /* Reads an admitted SPIR-V fragment module as the sampled texture: a
  * straight-line Fragment entry function loading the set-0 binding-0
  * combined image sampler, sampling it at the location-0 varying's xy,

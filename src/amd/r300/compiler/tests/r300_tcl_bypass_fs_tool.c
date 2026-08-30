@@ -33,6 +33,7 @@
 #include "radeon_compiler.h"
 #include "radeon_regalloc.h"
 
+#include "amd/r300/common/r300_noperspective_q_lane_fs_block.h"
 #include "amd/r300/common/r300_noperspective_reciprocal_fs_block.h"
 #include "amd/r300/common/r300_r2vb_producer_fs_block.h"
 #include "amd/r300/common/r300_tcl_bypass_sampled_fs_block.h"
@@ -283,6 +284,44 @@ build_noperspective_reciprocal_shader(void)
    return b.shader;
 }
 
+/* The NoPerspective q-lane cell: texture coordinate set 0 carries the
+ * premultiplied payload a * c in xyz and the normalized carrier c in
+ * w (r300_noperspective_q_lane_plan.h), perspective interpolated as
+ * one vector, so the program recovers the window-linear value as
+ * xyz * rcp(w) through interpolator 0 alone and writes alpha 1.0.
+ */
+static nir_shader *
+build_noperspective_q_lane_shader(void)
+{
+   static const nir_shader_compiler_options options = {
+      .float_mul_add32 =
+         nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+      .lower_flrp32 = true,
+   };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "noperspective_q_lane_carrier");
+   nir_variable *payload = nir_variable_create(
+      b.shader, nir_var_shader_in, glsl_vec4_type(), "payload");
+   payload->data.location = VARYING_SLOT_TEX0;
+   payload->data.driver_location = 0;
+   payload->data.interpolation = INTERP_MODE_NONE;
+   b.shader->info.inputs_read = BITFIELD64_BIT(VARYING_SLOT_TEX0);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+   nir_def *loaded = nir_load_var(&b, payload);
+   nir_def *reciprocal = nir_frcp(&b, nir_channel(&b, loaded, 3));
+   nir_def *xyz = nir_fmul(&b, nir_trim_vector(&b, loaded, 3), reciprocal);
+   nir_store_var(&b, out,
+                 nir_vec4(&b, nir_channel(&b, xyz, 0),
+                          nir_channel(&b, xyz, 1), nir_channel(&b, xyz, 2),
+                          nir_imm_float(&b, 1.0f)),
+                 0xf);
+   return b.shader;
+}
+
 struct fs_program {
    const char *option;
    const char *description;
@@ -348,6 +387,19 @@ static const struct fs_program fs_programs[] = {
       .golden_size = ARRAY_SIZE(r300_noperspective_reciprocal_fs_block),
       .golden_fg_depth_src = R300_NOPERSPECTIVE_RECIPROCAL_FS_FG_DEPTH_SRC,
       .golden_us_out_w = R300_NOPERSPECTIVE_RECIPROCAL_FS_US_OUT_W,
+   },
+   {
+      .option = "noperspective-q-lane",
+      .description = "Q-lane carrier US block for the NoPerspective q-lane "
+                     "cell",
+      .guard = "R300_NOPERSPECTIVE_Q_LANE_FS_BLOCK_H",
+      .macro_prefix = "R300_NOPERSPECTIVE_Q_LANE_FS",
+      .symbol = "r300_noperspective_q_lane_fs_block",
+      .build = build_noperspective_q_lane_shader,
+      .golden = r300_noperspective_q_lane_fs_block,
+      .golden_size = ARRAY_SIZE(r300_noperspective_q_lane_fs_block),
+      .golden_fg_depth_src = R300_NOPERSPECTIVE_Q_LANE_FS_FG_DEPTH_SRC,
+      .golden_us_out_w = R300_NOPERSPECTIVE_Q_LANE_FS_US_OUT_W,
    },
 };
 

@@ -70,7 +70,8 @@ direct GB W_SELECT route alone (one full vec4 at location 0, CPU delivery, a
 triangle list, clipping class ACCEPT; the `GB_SELECT.W_SELECT = 1` word the
 RS482 census classified affine). A partially clipped triangle refuses on that
 route, and every other NoPerspective interface -- a Smooth or Flat location
-beside it, an open R2VB delivery gate, a narrower or non-float varying -- is
+beside it, an open R2VB delivery gate, a non-float varying, a narrower
+varying outside the q-lane shape below -- is
 created with the `UNSUPPORTED` route and refuses every draw at record time,
 because replication would interpolate the varying with perspective. The
 `(a * w, w)` reciprocal carrier that serves those shapes
@@ -87,6 +88,17 @@ clipper, its linear blend of `(a * w, w)` yields the Vulkan clipped
 NoPerspective value at a generated vertex, and the expanded stream is
 validated ahead of publication (silicon receipt on RS482 over a
 one-plane fan: affine 1296/1296).
+A float, vec2, or vec3 NoPerspective varying at location 0 whose
+components start at x and run contiguously rides the `RECIPROCAL_Q_LANE`
+route with no gate when the fragment module is the narrow pass-through of
+the same width (the varying's lanes zero-filled with alpha 1): the post-VS
+stage packs `a.xyz * c` and `c = w / max(w)` into the varying's own
+vector, the cell keeps the varying cell's record and register words under
+the `xyz * rcp(w)` US program, and every clipping class is admitted
+(`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`, rung C).
+A component offset, a width mismatch between the varying and the narrow
+program, a vec4 under the narrow program, and the narrow program on a
+Smooth or Flat interface stay `UNSUPPORTED`.
 The device exposes
 no user clip or cull distances. Pipeline admission also
 requires default depth clipping and rejects depth clamp, so this mechanism's

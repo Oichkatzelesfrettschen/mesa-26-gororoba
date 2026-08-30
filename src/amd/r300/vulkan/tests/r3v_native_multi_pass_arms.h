@@ -133,4 +133,17 @@ r3v_native_multi_pass_public_noperspective_carrier_reference(
    out->pass[1].noperspective_carrier = true;
 }
 
+/* The q-lane two-draw form: pass 0 the control varying cell, pass 1
+ * the q-lane cell a narrow NoPerspective interface records
+ * (r300_noperspective_q_lane_plan.h): the same eight-dword record and
+ * register words under the q-lane fragment binary.  The binding stays
+ * (2, 3). */
+static inline void
+r3v_native_multi_pass_public_noperspective_q_lane_reference(
+   struct r300_triangle_multi_pass *out)
+{
+   r3v_native_multi_pass_public_flat_reference(out);
+   out->pass[1].noperspective_q_lane = true;
+}
+
 #endif /* R3V_NATIVE_MULTI_PASS_ARMS_H */

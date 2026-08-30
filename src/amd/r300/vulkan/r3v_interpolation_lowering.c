@@ -29,7 +29,10 @@ r3v_interpolation_route_select_noperspective(
       why = "delivery route is not CPU";
    } else if (!query->triangle_list) {
       why = "primitive is not a triangle list";
-   } else if (query->clip_class != R3V_INTERPOLATION_CLIP_ACCEPT) {
+   } else if (query->clip_class != R3V_INTERPOLATION_CLIP_ACCEPT &&
+              query->narrow_passthrough_width == 0) {
+      /* The direct W_SELECT route acts on the emitted fan; the q-lane
+       * route packs ahead of the clipper and admits every class. */
       why = "clipping class is not ACCEPT";
    } else if (query->link->varying_mask != 1u ||
               query->link->noperspective_mask != 1u) {
@@ -39,10 +42,39 @@ r3v_interpolation_route_select_noperspective(
    } else {
       const struct r3v_shader_interface_varying *v =
          &query->link->varyings[0];
-      if (!v->present || v->scalar != R3V_SHADER_INTERFACE_SCALAR_FLOAT32 ||
-          v->width != 4 || v->component_mask != 0xf ||
-          v->interpolation != R3V_SHADER_INTERFACE_NOPERSPECTIVE) {
-         why = "NoPerspective location is not a full float vec4";
+      const bool float_noperspective =
+         v->present && v->scalar == R3V_SHADER_INTERFACE_SCALAR_FLOAT32 &&
+         v->interpolation == R3V_SHADER_INTERFACE_NOPERSPECTIVE;
+      /* The q-lane conjunction: width 1..3 with the components
+       * starting at x and contiguous (the mask is the width's low
+       * bits), under the narrow pass-through fragment program of the
+       * same width. */
+      const bool q_lane_shape =
+         float_noperspective && v->width >= 1 && v->width <= 3 &&
+         v->component_mask == ((1u << v->width) - 1u) &&
+         query->narrow_passthrough_width == v->width;
+      if (q_lane_shape) {
+         if (!query->rs_destination_available)
+            why = "RS destination unavailable";
+         else if (!query->fragment_consumes_destination)
+            why = "fragment program does not consume the RS destination";
+         if (why != NULL) {
+            if (reason != NULL)
+               *reason = why;
+            return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;
+         }
+         if (reason != NULL)
+            *reason = "reciprocal q-lane carrier: TEX0.xyz = a * c, "
+                      "TEX0.w = c";
+         return R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE;
+      }
+      if (!float_noperspective || v->width != 4 || v->component_mask != 0xf) {
+         why = v->width < 4
+                  ? "NoPerspective location is not a full float vec4 and "
+                    "lies outside the q-lane shape"
+                  : "NoPerspective location is not a full float vec4";
+      } else if (query->narrow_passthrough_width != 0) {
+         why = "narrow pass-through fragment program on a vec4 varying";
       } else if (!query->rs_destination_available) {
          why = "RS destination unavailable";
       } else if (!query->fragment_consumes_destination) {
@@ -71,6 +103,14 @@ r3v_interpolation_route_select(const struct r3v_interpolation_query *query,
    const char *why = NULL;
    if (query == NULL || query->link == NULL) {
       why = "no linked interface";
+   } else if (query->link->noperspective_mask == 0 &&
+              query->narrow_passthrough_width != 0) {
+      /* The narrow pass-through fragment binary is the q-lane
+       * recovery, which only a NoPerspective q-lane varying feeds. */
+      if (reason != NULL)
+         *reason = "narrow pass-through fragment program outside a "
+                   "NoPerspective q-lane varying";
+      return R3V_INTERPOLATION_ROUTE_UNSUPPORTED;
    } else if (query->link->noperspective_mask != 0) {
       if (query->link->flat_mask == 0)
          return r3v_interpolation_route_select_noperspective(query, reason);

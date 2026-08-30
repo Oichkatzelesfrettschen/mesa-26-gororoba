@@ -132,9 +132,38 @@ the target border) is
 affine 1296/1296, control perspective 1296/1296, both fan witnesses live 6
 exact 6.
 
-Rung C, q-lane carrier: vec1 through vec3 place normalized w in the unused
-q lane, `rcp(input0.w)` then `input0.xyz * reciprocal`, keeping the
-eight-dword position + TEX0 record and one interpolator.
+Rung C, q-lane carrier: a float, vec2, or vec3 NoPerspective varying at
+location 0 with a contiguous mask from x leaves TEX0.w free, so the
+post-VS stage packs `a.xyz * c` into the leading lanes, 0 into the lanes
+past the width, and `c = w / max(w)` into w, and the US recovers
+`xyz * rcp(w)` with alpha 1.0 (`r300_noperspective_q_lane_plan.h`,
+`r300_noperspective_q_lane_fs_block.h`). The record and every register
+word are the varying cell's, so the cell differs from the control in its
+US program alone and the kernel width check judges VAP_VTX_SIZE 8 on both
+draws (PASS at 8, REJECT at 4; CS tracking ACCEPT with every control). The
+route `R3V_INTERPOLATION_ROUTE_RECIPROCAL_Q_LANE` opens with no gate when
+the fragment module is the narrow pass-through of the same width -- the
+varying's lanes zero-filled with alpha 1, the program that binary
+executes -- on CPU delivery over a triangle list with the RS destination
+consumed; a component offset, a width mismatch, a vec4 under the narrow
+program, and the narrow program on a Smooth or Flat interface are
+UNSUPPORTED. The packing precedes the clipper, so every clipping class is
+admitted under rung B's argument and
+`r300_noperspective_q_lane_validate_expanded` asserts the fan. The host
+proof is the public-surface harness over the three widths: the recorded
+stream byte-equal to the q-lane family cell, an unequal-w ACCEPT triangle
+packed to c = 0.25, 0.5, 1 with zero-filled lanes, and the one-plane
+unequal-w crossing clipped into a six-record fan at the clipped-edge
+values. The silicon discriminator is the vec3 case
+(`r3v_native_attended_rs_tex_adj_probe --candidate reciprocal-q-lane`):
+the probe attribute's s, t, r ride the varying, the census judges the
+candidate against the logical records (s, t, r, 1), and the oracle
+requires affine within one quantum on every judged pixel, each of the
+three channels separating the models on its own, perspective and
+unchanged at zero, and alpha exactly 255. Vec1 and vec2 share that
+receipt: their PM4 and US program are byte-identical to the vec3 cell's
+(the plan's words are width-independent) and they differ only in the
+lanes the packer zero-fills, which the harness proves per width.
 
 Rung D, mixed interfaces: Smooth stays ordinary perspective TEX input,
 NoPerspective takes premultiplied input plus the shared w vector, Flat

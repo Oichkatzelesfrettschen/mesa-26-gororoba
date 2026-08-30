@@ -59,6 +59,41 @@ r3v_post_vs_pack_noperspective_carrier(
    return 0;
 }
 
+int
+r3v_post_vs_pack_noperspective_q_lane(
+   const struct r3v_post_vs_lowering *lowering, uint32_t *records,
+   uint32_t triangle_count, uint32_t record_dwords)
+{
+   if (lowering == NULL || lowering->q_lane_width == 0 ||
+       lowering->noperspective_mask != 1u ||
+       record_dwords != R300_NOPERSPECTIVE_Q_LANE_RECORD_DWORDS ||
+       (triangle_count != 0 && records == NULL))
+      return -EINVAL;
+   struct r300_noperspective_q_lane_plan plan;
+   r300_noperspective_q_lane_plan_init(&plan, lowering->q_lane_width);
+   const int valid = r300_noperspective_q_lane_plan_validate(&plan);
+   if (valid != 0)
+      return valid;
+   for (uint32_t triangle = 0; triangle < triangle_count; triangle++) {
+      float probe[3 * R300_NOPERSPECTIVE_Q_LANE_RECORD_DWORDS];
+      const int rc = r300_noperspective_q_lane_pack_triangle(
+         &plan,
+         (const float *)&records[(size_t)triangle * 3u * record_dwords],
+         probe);
+      if (rc != 0)
+         return rc;
+   }
+   for (uint32_t triangle = 0; triangle < triangle_count; triangle++) {
+      float *triangle_records =
+         (float *)&records[(size_t)triangle * 3u * record_dwords];
+      const int rc = r300_noperspective_q_lane_pack_triangle(
+         &plan, triangle_records, triangle_records);
+      if (rc != 0)
+         return rc;
+   }
+   return 0;
+}
+
 int r3v_post_vs_lower_triangles(const struct r3v_post_vs_lowering *lowering,
                                 uint32_t *records, uint32_t triangle_count,
                                 uint32_t record_dwords)

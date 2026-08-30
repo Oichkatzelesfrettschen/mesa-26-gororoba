@@ -530,6 +530,11 @@ struct r3v_native_deferred_draw {
     * expanded stream is validated ahead of publication
     * (r3v_interpolation_lowering.h). */
    bool noperspective_carrier;
+   /* Set when the pipeline selected the q-lane route: the post-VS
+    * stage packs each eight-dword record in place ahead of the clipper
+    * and the recorded cell is the q-lane cell
+    * (r3v_interpolation_lowering.h). */
+   bool noperspective_q_lane;
    /* The rasterizer control word the recorded cell carries (enum
     * r3v_rs_probe_candidate): a gated probe candidate, W_SELECT_ONE on
     * the direct NoPerspective route, or zero for the control varying
@@ -1710,6 +1715,7 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    struct r3v_native_memory *carrier_memory,
    struct r3v_native_image *target_image, uint32_t target_layer_offset,
    bool varying, bool flat_color0, bool noperspective_carrier,
+   bool noperspective_q_lane,
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled);
