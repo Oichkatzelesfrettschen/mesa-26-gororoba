@@ -125,8 +125,9 @@ enum id_kind {
    ID_VAR_INPUT_ATTRIBUTE,
    ID_VAR_OUTPUT_PERVERTEX,
    ID_VAR_OUTPUT_POS_DIRECT,
-   /* The vertex module's location-0 vec4 output, the one varying the
-    * carrier record carries beside the position. */
+   /* A vertex module's located float output at location 0 or 1 (a =
+    * width, b = location), the varyings the carrier record carries
+    * beside the position. */
    ID_VAR_OUTPUT_VARYING,
    ID_VAR_OUTPUT_COLOR,
    /* The fragment module's location-0 vec4 input, the interpolated
@@ -151,6 +152,14 @@ enum id_kind {
     * value, width (b). */
    ID_VAL_VARYING_LANE,
    ID_VAL_VARYING_ALPHA_ONE,
+   /* The mixed carrier shape's values: a loaded varying's xy shuffle
+    * (a = location), one lane (a = lane, b = location) extracted from
+    * it, and the vec4 (loc0.x, loc0.y, loc1.x, loc1.y) built from
+    * those lanes, the program the mixed carrier cell's fragment binary
+    * executes. */
+   ID_VAL_VARYING_XY,
+   ID_VAL_VARYING_XY_LANE,
+   ID_VAL_MIXED_CARRIER,
    /* A vertex input variable carrying the VertexIndex or InstanceIndex
     * builtin as a 32-bit int (a = enum r300_vertex_job_system_value),
     * and the int broadcast its load leaves in a job temp (a), which
@@ -189,6 +198,11 @@ enum fragment_shape {
     * cell's fragment binary executes
     * (r300_noperspective_q_lane_plan.h). */
    FRAGMENT_SHAPE_NARROW_PASSTHROUGH,
+   /* The location-0 Smooth vec4's xy beside the location-1
+    * NoPerspective vec4's xy in the location-0 output: the shape the
+    * mixed reciprocal carrier cell's fragment binary executes
+    * (r300_noperspective_mixed_carrier_plan.h). */
+   FRAGMENT_SHAPE_MIXED_CARRIER,
 };
 
 struct id_info {
@@ -392,9 +406,12 @@ admit_module(const uint32_t *words, size_t word_count,
     * location. */
    uint32_t input_mask = 0;
    uint32_t output_var = 0;
-   /* The vertex varying output and the fragment varying input; a
-    * module declares each at most once. */
+   /* The fragment varying input, declared at most once. */
    uint32_t varying_var = 0;
+   /* Bit l set for each vertex varying output declared at location l,
+    * and for each one stored. */
+   uint32_t varying_declared_mask = 0;
+   uint32_t varying_stored_mask = 0;
 
    /* Body state: the entry function's straight-line walk.  The
     * position store is recorded and emitted after the walk, so the job
@@ -405,7 +422,6 @@ admit_module(const uint32_t *words, size_t word_count,
    bool label_seen = false;
    bool returned = false;
    bool stored = false;
-   bool varying_stored = false;
    uint8_t position_src = 0;
 
    size_t at = 5;
@@ -427,7 +443,7 @@ admit_module(const uint32_t *words, size_t word_count,
        * declares a varying has two output stores, and the later of the
        * two is the final one. */
       const bool final_stored =
-         stored && (fragment || varying_var == 0 || varying_stored);
+         stored && (fragment || varying_stored_mask == varying_declared_mask);
       if (final_stored && opcode != OP_RETURN && opcode != OP_FUNCTION_END &&
           opcode != OP_LINE && opcode != OP_NO_LINE)
          return refuse(r, "instruction after the final output store");
@@ -769,9 +785,25 @@ admit_module(const uint32_t *words, size_t word_count,
                return refuse(r, "fragment shader reads an input");
             if (fragment) {
                /* The narrow pass-through reads a varying of width one
-                * to three; every other fragment shape reads the vec4. */
+                * to three; the mixed carrier reads the vec4 at
+                * locations 0 and 1; every other fragment shape reads
+                * the location-0 vec4. */
                const uint32_t width = vector_type_width(r, ptr->b);
                const bool narrow = shape == FRAGMENT_SHAPE_NARROW_PASSTHROUGH;
+               const bool mixed = shape == FRAGMENT_SHAPE_MIXED_CARRIER;
+               if (mixed) {
+                  if (!entry->has_location || entry->location > 1 ||
+                      width != 4)
+                     return refuse(r, "fragment input outside varyings 0 "
+                                      "and 1 as vec4");
+                  if (varying_declared_mask & (1u << entry->location))
+                     return refuse(r, "two fragment inputs at one location");
+                  entry->kind = ID_VAR_INPUT_VARYING;
+                  entry->a = width;
+                  entry->b = entry->location;
+                  varying_declared_mask |= 1u << entry->location;
+                  break;
+               }
                if (!entry->has_location || entry->location != 0 ||
                    width == 0 || (narrow && width > 3))
                   return refuse(r, "fragment input outside varying 0 as "
@@ -782,6 +814,7 @@ admit_module(const uint32_t *words, size_t word_count,
                   return refuse(r, "more than one fragment input");
                entry->kind = ID_VAR_INPUT_VARYING;
                entry->a = width;
+               entry->b = 0;
                varying_var = w[2];
                break;
             }
@@ -819,15 +852,18 @@ admit_module(const uint32_t *words, size_t word_count,
          case SC_OUTPUT:
             if (!fragment && vector_type_width(r, ptr->b) != 0 &&
                 !entry->has_builtin && entry->has_location) {
-               /* The one varying: location 0, a float scalar or
-                * vector (a = width), beside the position output. */
-               if (entry->location != 0)
-                  return refuse(r, "vertex varying outside location 0");
-               if (varying_var != 0)
-                  return refuse(r, "more than one vertex varying output");
+               /* The varyings: locations 0 and 1, each a float scalar
+                * or vector (a = width, b = location), beside the
+                * position output. */
+               if (entry->location >= R300_VERTEX_JOB_MAX_VARYINGS)
+                  return refuse(r, "vertex varying outside locations 0 "
+                                   "and 1");
+               if (varying_declared_mask & (1u << entry->location))
+                  return refuse(r, "two vertex varyings at one location");
                entry->kind = ID_VAR_OUTPUT_VARYING;
                entry->a = vector_type_width(r, ptr->b);
-               varying_var = w[2];
+               entry->b = entry->location;
+               varying_declared_mask |= 1u << entry->location;
                break;
             }
             if (output_var != 0)
@@ -964,6 +1000,7 @@ admit_module(const uint32_t *words, size_t word_count,
             if (vector_type_width(r, w[1]) != ptr->a)
                return refuse(r, "varying loaded outside its own type");
             entry->kind = ID_VAL_VARYING;
+            entry->a = ptr->b;
             entry->b = ptr->a;
          } else if (ptr->kind == ID_VAR_SAMPLER) {
             if (!id_is(r, w[1], ID_TYPE_SAMPLED_IMAGE))
@@ -1013,7 +1050,7 @@ admit_module(const uint32_t *words, size_t word_count,
                return false;
             stored = true;
          } else if (!fragment && ptr->kind == ID_VAR_OUTPUT_VARYING) {
-            if (varying_stored)
+            if (varying_stored_mask & (1u << ptr->b))
                return refuse(r, "second varying store");
             /* A vec4 output takes a vec4 temp; a narrower output takes
              * its leading lanes narrowed from a vec4 temp.  The job
@@ -1031,9 +1068,10 @@ admit_module(const uint32_t *words, size_t word_count,
                              "narrow varying store outside the leading "
                              "lanes of a vec4 temp");
             }
-            if (!emit(r, R300_VERTEX_JOB_OP_STORE_VARYING, 0, src, 0, 0))
+            if (!emit(r, R300_VERTEX_JOB_OP_STORE_VARYING, (uint8_t)ptr->b,
+                      src, 0, 0))
                return false;
-            varying_stored = true;
+            varying_stored_mask |= 1u << ptr->b;
          } else if (fragment && ptr->kind == ID_VAR_OUTPUT_COLOR) {
             if (stored)
                return refuse(r, "second color store");
@@ -1042,6 +1080,12 @@ admit_module(const uint32_t *words, size_t word_count,
                   return refuse(r,
                                 "fragment program outside the varying "
                                 "pass-through");
+            } else if (shape == FRAGMENT_SHAPE_MIXED_CARRIER) {
+               if (value->kind != ID_VAL_MIXED_CARRIER ||
+                   varying_declared_mask != 0x3u)
+                  return refuse(r,
+                                "fragment program outside the mixed "
+                                "carrier (smooth.xy, noperspective.xy)");
             } else if (shape == FRAGMENT_SHAPE_NARROW_PASSTHROUGH) {
                if (value->kind != ID_VAL_VARYING_ALPHA_ONE)
                   return refuse(r,
@@ -1185,14 +1229,22 @@ admit_module(const uint32_t *words, size_t word_count,
             entry->b = width;
             break;
          }
-         /* The one admitted fragment shuffle takes the loaded varying's
-          * x and y as the vec2 sampling coordinate. */
-         if (len != 7 || shape != FRAGMENT_SHAPE_SAMPLED_TEXTURE ||
+         /* The admitted fragment shuffle takes a loaded varying's x
+          * and y: the vec2 sampling coordinate, or the mixed carrier's
+          * two lanes of each location. */
+         if (len != 7 ||
+             (shape != FRAGMENT_SHAPE_SAMPLED_TEXTURE &&
+              shape != FRAGMENT_SHAPE_MIXED_CARRIER) ||
              !id_is(r, w[1], ID_TYPE_VEC2) || src == NULL ||
              src->kind != ID_VAL_VARYING || w[4] != w[3] || w[5] != 0 ||
              w[6] != 1)
             return refuse(r,
                           "shuffle outside the varying's xy coordinate");
+         if (shape == FRAGMENT_SHAPE_MIXED_CARRIER) {
+            entry->kind = ID_VAL_VARYING_XY;
+            entry->a = src->a;
+            break;
+         }
          entry->kind = ID_VAL_COORD_VEC2;
          break;
       }
@@ -1235,6 +1287,15 @@ admit_module(const uint32_t *words, size_t word_count,
             entry->b = 1;
             break;
          }
+         if (shape == FRAGMENT_SHAPE_MIXED_CARRIER) {
+            if (composite->kind != ID_VAL_VARYING_XY || w[4] > 1)
+               return refuse(r,
+                             "extraction outside a lane of a varying's xy");
+            entry->kind = ID_VAL_VARYING_XY_LANE;
+            entry->a = w[4];
+            entry->b = composite->a;
+            break;
+         }
          if (shape != FRAGMENT_SHAPE_NARROW_PASSTHROUGH ||
              composite->kind != ID_VAL_VARYING || w[4] >= composite->b)
             return refuse(r,
@@ -1252,6 +1313,22 @@ admit_module(const uint32_t *words, size_t word_count,
          struct id_info *entry = define(r, w[2]);
          if (entry == NULL)
             return refuse(r, "malformed composite construction");
+         if (fragment && shape == FRAGMENT_SHAPE_MIXED_CARRIER) {
+            /* (loc0.x, loc0.y, loc1.x, loc1.y), each lane extracted
+             * from its location's xy shuffle. */
+            bool shaped = id_is(r, w[1], ID_TYPE_VEC4);
+            for (uint32_t c = 0; c < 4 && shaped; c++) {
+               const struct id_info *lane = info(r, w[3 + c]);
+               shaped = lane != NULL && lane->kind == ID_VAL_VARYING_XY_LANE &&
+                        lane->a == (c & 1u) && lane->b == (c >> 1);
+            }
+            if (!shaped)
+               return refuse(r,
+                             "vec4 construction outside (smooth.xy, "
+                             "noperspective.xy)");
+            entry->kind = ID_VAL_MIXED_CARRIER;
+            break;
+         }
          if (fragment && shape == FRAGMENT_SHAPE_NARROW_PASSTHROUGH) {
             /* The narrow varying's lanes in order, then literal 0.0 up
              * to lane 2, then literal 1.0 in lane 3. */
@@ -1326,8 +1403,12 @@ admit_module(const uint32_t *words, size_t word_count,
    /* A declared varying the program never writes would reach the
     * interpolator undefined, so the shape refuses instead of lowering
     * to a record with an unwritten vector. */
-   if (!fragment && varying_var != 0 && !varying_stored)
+   if (!fragment && varying_stored_mask != varying_declared_mask)
       return refuse(r, "vertex varying output left unwritten");
+   /* A location-1 varying alone would leave record vector 1
+    * unwritten; the executor's validator refuses the same set. */
+   if (!fragment && (varying_declared_mask & (varying_declared_mask + 1u)))
+      return refuse(r, "vertex varying at location 1 without location 0");
    if (!fragment &&
        !emit(r, R300_VERTEX_JOB_OP_STORE_POSITION, 0, position_src, 0, 0))
       return false;
@@ -1423,6 +1504,19 @@ bool r3v_fragment_sampled_texture_from_spirv(const uint32_t *words,
    return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
                       FRAGMENT_SHAPE_SAMPLED_TEXTURE, entry_name,
                       &scratch, unused_color, NULL, reason);
+}
+
+bool r3v_fragment_mixed_carrier_from_spirv(const uint32_t *words,
+                                            size_t word_count,
+                                            const char *entry_name,
+                                            const char **reason)
+{
+   struct r300_vertex_job scratch;
+   uint32_t unused_color[4];
+   memset(&scratch, 0, sizeof(scratch));
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
+                      FRAGMENT_SHAPE_MIXED_CARRIER, entry_name, &scratch,
+                      unused_color, NULL, reason);
 }
 
 bool r3v_fragment_narrow_passthrough_from_spirv(const uint32_t *words,

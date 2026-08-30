@@ -99,7 +99,7 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
       return -EINVAL;
 
    uint32_t written = 0;
-   bool varying_stored = false;
+   uint32_t varying_mask = 0;
    for (uint32_t i = 0; i < job->instruction_count; i++) {
       const struct r300_vertex_job_instruction *inst = &job->instructions[i];
       const bool last = i + 1 == job->instruction_count;
@@ -140,14 +140,15 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
             return -EINVAL;
          continue;
       case R300_VERTEX_JOB_OP_STORE_VARYING:
-         /* One varying at most, stored from a written register ahead
-          * of the final position store; the record layout derives from
-          * its presence alone. */
-         if (last || varying_stored ||
+         /* One store per location, from a written register ahead of
+          * the final position store; the record layout derives from
+          * the stored location set, judged contiguous after the walk. */
+         if (last || inst->dst >= R300_VERTEX_JOB_MAX_VARYINGS ||
+             (varying_mask & (1u << inst->dst)) ||
              inst->src0 >= R300_VERTEX_JOB_MAX_TEMPS ||
              !(written & (1u << inst->src0)))
             return -EINVAL;
-         varying_stored = true;
+         varying_mask |= 1u << inst->dst;
          continue;
       default:
          return -EINVAL;
@@ -164,6 +165,10 @@ int r300_cpu_vertex_job_validate(const struct r300_vertex_job *job)
       }
       written |= 1u << inst->dst;
    }
+   /* A stored location 1 without location 0 would leave record vector
+    * 1 unwritten. */
+   if ((varying_mask & (varying_mask + 1u)) != 0)
+      return -EINVAL;
    return 0;
 }
 
@@ -464,7 +469,8 @@ static int execute_scalar(const struct r300_vertex_job *job,
             memcpy(record, temps[inst->src0], 4 * sizeof(uint32_t));
             break;
          case R300_VERTEX_JOB_OP_STORE_VARYING:
-            memcpy(&record[R300_VERTEX_JOB_POSITION_DWORDS],
+            memcpy(&record[R300_VERTEX_JOB_POSITION_DWORDS +
+                           inst->dst * R300_VERTEX_JOB_VARYING_DWORDS],
                    temps[inst->src0], 4 * sizeof(uint32_t));
             break;
          }
@@ -682,7 +688,8 @@ execute_simd(const struct r300_vertex_job *job,
             break;
          case R300_VERTEX_JOB_OP_STORE_VARYING:
             _mm_storeu_si128(
-               (__m128i *)&record[R300_VERTEX_JOB_POSITION_DWORDS],
+               (__m128i *)&record[R300_VERTEX_JOB_POSITION_DWORDS +
+                                  inst->dst * R300_VERTEX_JOB_VARYING_DWORDS],
                temps[inst->src0]);
             break;
          }

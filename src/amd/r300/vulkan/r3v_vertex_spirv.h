@@ -78,6 +78,20 @@ bool r3v_fragment_narrow_passthrough_from_spirv(const uint32_t *words,
                                                  uint32_t *width,
                                                  const char **reason);
 
+/* Reads an admitted SPIR-V fragment module as the mixed carrier: a
+ * straight-line Fragment entry function whose single store writes
+ * (loc0.x, loc0.y, loc1.x, loc1.y) from the loaded location-0 and
+ * location-1 vec4 inputs to the location-0 output, the program the
+ * mixed reciprocal carrier cell's fragment binary executes
+ * (r300_noperspective_mixed_carrier_plan.h).  The interpolation
+ * qualifiers ride the shader-interface link, so this admitter names the
+ * lane program alone.
+ */
+bool r3v_fragment_mixed_carrier_from_spirv(const uint32_t *words,
+                                            size_t word_count,
+                                            const char *entry_name,
+                                            const char **reason);
+
 /* Reads an admitted SPIR-V fragment module as the sampled texture: a
  * straight-line Fragment entry function loading the set-0 binding-0
  * combined image sampler, sampling it at the location-0 varying's xy,

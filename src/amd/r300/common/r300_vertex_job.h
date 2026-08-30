@@ -57,10 +57,12 @@ enum r300_vertex_job_opcode {
    /* carrier vec4 of the current vertex = temp[src0].  Exactly one
     * per job, as its final instruction. */
    R300_VERTEX_JOB_OP_STORE_POSITION,
-   /* varying vec4 of the current vertex = temp[src0]: the second
-    * record vector, the TEX0 varying the consumer's RS routes to US
-    * input 0.  At most one per job, before the position store; a job
-    * that carries it writes eight-dword records. */
+   /* varying vec4 at location dst of the current vertex = temp[src0]:
+    * record vector 1 + dst, the TEX(dst) varying the consumer's RS
+    * routes to US input dst.  At most one store per location, every
+    * store before the position store, and the stored locations run
+    * contiguously from 0; a job storing n locations writes records of
+    * 4 + 4n dwords. */
    R300_VERTEX_JOB_OP_STORE_VARYING,
    /* dst lanes = the draw system value src0 names (enum
     * r300_vertex_job_system_value), the 32-bit two's-complement pattern
@@ -108,21 +110,41 @@ struct r300_vertex_job {
 };
 
 /* The carrier record the job writes per vertex: the position vec4, then
- * the varying vec4 when the job stores one.  The VAP fetch of the same
- * stream declares the record as one FLOAT_4 element per vector, so the
- * dword count here is the VAP_VTX_SIZE the consumer programs.
+ * one vec4 per stored varying location in location order.  The VAP
+ * fetch of the same stream declares the record as one FLOAT_4 element
+ * per vector, so the dword count here is the VAP_VTX_SIZE the consumer
+ * programs.
  */
 #define R300_VERTEX_JOB_POSITION_DWORDS 4u
 #define R300_VERTEX_JOB_VARYING_DWORDS 4u
+/* Locations 0 and 1: the varying cell's TEX0 and the mixed carrier
+ * cell's TEX0/TEX1 payload pair. */
+#define R300_VERTEX_JOB_MAX_VARYINGS 2u
+
+/* Bit l set for each location a STORE_VARYING writes. */
+static inline uint32_t
+r300_vertex_job_varying_mask(const struct r300_vertex_job *job)
+{
+   uint32_t mask = 0;
+   for (uint32_t i = 0; i < job->instruction_count; i++) {
+      if (job->instructions[i].opcode == R300_VERTEX_JOB_OP_STORE_VARYING &&
+          job->instructions[i].dst < R300_VERTEX_JOB_MAX_VARYINGS)
+         mask |= 1u << job->instructions[i].dst;
+   }
+   return mask;
+}
+
+static inline uint32_t
+r300_vertex_job_varying_count(const struct r300_vertex_job *job)
+{
+   const uint32_t mask = r300_vertex_job_varying_mask(job);
+   return (mask & 1u) + ((mask >> 1) & 1u);
+}
 
 static inline bool
 r300_vertex_job_has_varying(const struct r300_vertex_job *job)
 {
-   for (uint32_t i = 0; i < job->instruction_count; i++) {
-      if (job->instructions[i].opcode == R300_VERTEX_JOB_OP_STORE_VARYING)
-         return true;
-   }
-   return false;
+   return r300_vertex_job_varying_mask(job) != 0;
 }
 
 /* The attribute slots the job's LOAD_INPUT instructions read, one bit
@@ -157,8 +179,7 @@ static inline uint32_t
 r300_vertex_job_record_dwords(const struct r300_vertex_job *job)
 {
    return R300_VERTEX_JOB_POSITION_DWORDS +
-          (r300_vertex_job_has_varying(job) ? R300_VERTEX_JOB_VARYING_DWORDS
-                                             : 0u);
+          r300_vertex_job_varying_count(job) * R300_VERTEX_JOB_VARYING_DWORDS;
 }
 
 #endif /* R300_VERTEX_JOB_H */
