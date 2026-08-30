@@ -4,6 +4,8 @@
 #include "r300_first_draw_state.h"
 #include "r300_flat_color0_plan.h"
 #include "r300_noperspective_reciprocal_fs_block.h"
+#include "r300_noperspective_mixed_carrier_fs_block.h"
+#include "r300_noperspective_mixed_carrier_plan.h"
 #include "r300_noperspective_q_lane_fs_block.h"
 #include "r300_noperspective_q_lane_plan.h"
 #include "r300_noperspective_reciprocal_plan.h"
@@ -191,9 +193,20 @@ emit_triangle_stream_into(
    if (flat_color0 && (!params->varying || params->sampled ||
                        params->first_draw_contract == NULL))
       return -EINVAL;
+   const struct r300_noperspective_mixed_carrier_plan *mixed =
+      params->noperspective_mixed_carrier;
+   if (mixed != NULL &&
+       (!params->varying || flat_color0 || params->rs_tex_adj != NULL ||
+        params->sampled || params->noperspective_carrier != NULL ||
+        params->noperspective_q_lane != NULL ||
+        r300_noperspective_mixed_carrier_plan_validate(mixed) != 0))
+      return -EINVAL;
+   /* The register words of every reciprocal carrier shape come from
+    * one reciprocal plan: the TC1 plan itself, or the mixed plan's
+    * three-vector contract. */
    const struct r300_noperspective_reciprocal_plan *carrier =
-      params->noperspective_carrier;
-   if (carrier != NULL &&
+      mixed != NULL ? &mixed->carrier : params->noperspective_carrier;
+   if (params->noperspective_carrier != NULL &&
        (!params->varying || flat_color0 || params->rs_tex_adj != NULL ||
         params->sampled ||
         r300_noperspective_reciprocal_plan_validate(carrier) != 0))
@@ -732,6 +745,21 @@ r300_tcl_bypass_triangle_noperspective_fs(struct r300_fragment_binary *fs)
 }
 
 int
+r300_tcl_bypass_triangle_noperspective_mixed_carrier_fs(
+   struct r300_fragment_binary *fs)
+{
+   /* (TEX0.x, TEX0.y, (TEX1 * rcp(TEX2.x)).xy) over interpolators 0
+    * to 2. */
+   return r300_fragment_binary_init(
+      fs, r300_noperspective_mixed_carrier_fs_block,
+      sizeof(r300_noperspective_mixed_carrier_fs_block) /
+         sizeof(r300_noperspective_mixed_carrier_fs_block[0]),
+      R300_NOPERSPECTIVE_MIXED_CARRIER_FS_FG_DEPTH_SRC,
+      R300_NOPERSPECTIVE_MIXED_CARRIER_FS_US_OUT_W,
+      "r300-noperspective-mixed-carrier-compiled");
+}
+
+int
 r300_tcl_bypass_triangle_noperspective_q_lane_fs(
    struct r300_fragment_binary *fs)
 {
@@ -787,13 +815,14 @@ family_emit_triangle_stream_plans(
    const struct r300_rs_tex_adj_probe_plan *rs_tex_adj,
    const struct r300_noperspective_reciprocal_plan *carrier,
    const struct r300_noperspective_q_lane_plan *q_lane,
+   const struct r300_noperspective_mixed_carrier_plan *mixed,
    struct r300_tcl_bypass_triangle_ib *out)
 {
    if ((flat_color0 != NULL) + (rs_tex_adj != NULL) + (carrier != NULL) +
-          (q_lane != NULL) > 1)
+          (q_lane != NULL) + (mixed != NULL) > 1)
       return -EINVAL;
    if (flat_color0 != NULL || rs_tex_adj != NULL || carrier != NULL ||
-       q_lane != NULL)
+       q_lane != NULL || mixed != NULL)
       varying = true;
    if (width < 1 || width > R300_TRIANGLE_TARGET_WIDTH || height < 1 ||
        height > R300_TRIANGLE_TARGET_HEIGHT || triangle_count < 1 ||
@@ -804,6 +833,8 @@ family_emit_triangle_stream_plans(
    int rc = carrier != NULL ? r300_tcl_bypass_triangle_noperspective_fs(&fs)
             : q_lane != NULL
                ? r300_tcl_bypass_triangle_noperspective_q_lane_fs(&fs)
+            : mixed != NULL
+               ? r300_tcl_bypass_triangle_noperspective_mixed_carrier_fs(&fs)
             : varying       ? r300_tcl_bypass_triangle_varying_fs(&fs)
                             : r300_tcl_bypass_triangle_reference_fs(&fs);
    if (rc != 0)
@@ -849,6 +880,7 @@ family_emit_triangle_stream_plans(
       .rs_tex_adj = rs_tex_adj,
       .noperspective_carrier = carrier,
       .noperspective_q_lane = q_lane,
+      .noperspective_mixed_carrier = mixed,
       .triangle_count = triangle_count,
    };
    rc = emit_triangle_stream(&params, triangle_count, out);
@@ -865,7 +897,8 @@ family_emit_triangle_stream(
 {
    return family_emit_triangle_stream_plans(width, height, varying,
                                             triangle_count, flat_color0,
-                                            rs_tex_adj, NULL, NULL, out);
+                                            rs_tex_adj, NULL, NULL, NULL,
+                                            out);
 }
 
 int
@@ -891,7 +924,7 @@ r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
    }
    return family_emit_triangle_stream_plans(width, height, true,
                                             output_triangle_count, NULL,
-                                            NULL, plan, NULL, out);
+                                            NULL, plan, NULL, NULL, out);
 }
 
 int
@@ -917,7 +950,33 @@ r300_tcl_bypass_triangle_noperspective_q_lane_family_emit(
    }
    return family_emit_triangle_stream_plans(width, height, true,
                                             output_triangle_count, NULL,
-                                            NULL, NULL, plan, out);
+                                            NULL, NULL, plan, NULL, out);
+}
+
+int
+r300_tcl_bypass_triangle_noperspective_mixed_carrier_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count,
+   const struct r300_noperspective_mixed_carrier_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out)
+{
+   if (out != NULL)
+      memset(out, 0, sizeof(*out));
+   int rc = r300_noperspective_mixed_carrier_plan_validate(plan);
+   if (rc != 0)
+      return rc;
+   uint32_t output_triangle_count = triangle_count;
+   if (clip_space) {
+      rc = clip_output_triangle_count(triangle_count, &output_triangle_count);
+      if (rc != 0)
+         return rc;
+   } else if (triangle_count < 1u ||
+              triangle_count > R300_TRIANGLE_MAX_TRIANGLES) {
+      return -EINVAL;
+   }
+   return family_emit_triangle_stream_plans(width, height, true,
+                                            output_triangle_count, NULL,
+                                            NULL, NULL, NULL, plan, out);
 }
 
 static int
@@ -2559,6 +2618,12 @@ multi_pass_emit_one(const struct r300_triangle_render_shape *pass,
       struct r300_noperspective_reciprocal_plan plan;
       r300_noperspective_reciprocal_plan_tc1(&plan);
       return r300_tcl_bypass_triangle_noperspective_carrier_family_emit(
+         pass->width, pass->height, clip_space, 1u, &plan, out);
+   }
+   if (pass->varying && pass->noperspective_mixed_carrier) {
+      struct r300_noperspective_mixed_carrier_plan plan;
+      r300_noperspective_mixed_carrier_plan_first(&plan);
+      return r300_tcl_bypass_triangle_noperspective_mixed_carrier_family_emit(
          pass->width, pass->height, clip_space, 1u, &plan, out);
    }
    if (pass->varying && pass->noperspective_q_lane) {

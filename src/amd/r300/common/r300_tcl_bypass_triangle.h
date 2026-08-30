@@ -15,6 +15,7 @@ struct r300_fragment_binary;
 struct r300_first_draw_contract;
 struct r300_noperspective_reciprocal_plan;
 struct r300_noperspective_q_lane_plan;
+struct r300_noperspective_mixed_carrier_plan;
 struct r300_flat_color0_plan;
 struct r300_rs_tex_adj_probe_plan;
 
@@ -121,6 +122,15 @@ struct r300_tcl_bypass_triangle_params {
     * (r300_tcl_bypass_triangle_noperspective_q_lane_fs), xyz * rcp(w)
     * with alpha 1.  GB_SELECT keeps W_SELECT at 0. */
    const struct r300_noperspective_q_lane_plan *noperspective_q_lane;
+   /* Mixed Smooth/NoPerspective carrier plan (requires varying, no
+    * other plan, no sampling): the record carries TC0 Smooth, TC1
+    * NoPerspective * c, TC2 (c, 0, 0, 1) at VAP_VTX_SIZE 16; the
+    * register words are the plan's three-vector reciprocal contract
+    * and the fragment binary the mixed recovery
+    * (r300_tcl_bypass_triangle_noperspective_mixed_carrier_fs).
+    * GB_SELECT keeps W_SELECT at 0. */
+   const struct r300_noperspective_mixed_carrier_plan
+      *noperspective_mixed_carrier;
    /* When set, the cell samples texture unit 0: the varying vertex path
     * carries the TEX0 coordinate, the TX block programs one enabled
     * unit -- nearest filters, clamp-to-edge wraps, W8Z8Y8X8 texels over
@@ -290,6 +300,8 @@ int r300_tcl_bypass_triangle_varying_fs(struct r300_fragment_binary *fs);
 int r300_tcl_bypass_triangle_noperspective_fs(struct r300_fragment_binary *fs);
 int r300_tcl_bypass_triangle_noperspective_q_lane_fs(
    struct r300_fragment_binary *fs);
+int r300_tcl_bypass_triangle_noperspective_mixed_carrier_fs(
+   struct r300_fragment_binary *fs);
 
 /* Resolves the first-draw contract for the cell's 64x64 target and three
  * vertices with the texture block disabled.  Every pre-hardware consumer
@@ -408,6 +420,15 @@ int r300_tcl_bypass_triangle_noperspective_q_lane_family_emit(
    uint32_t width, uint32_t height, bool clip_space,
    uint32_t triangle_count,
    const struct r300_noperspective_q_lane_plan *plan,
+   struct r300_tcl_bypass_triangle_ib *out);
+/* The mixed Smooth/NoPerspective carrier cell: the sixteen-dword
+ * three-vector record under a mixed plan
+ * (r300_noperspective_mixed_carrier_plan.h); the family form validates
+ * the plan. */
+int r300_tcl_bypass_triangle_noperspective_mixed_carrier_family_emit(
+   uint32_t width, uint32_t height, bool clip_space,
+   uint32_t triangle_count,
+   const struct r300_noperspective_mixed_carrier_plan *plan,
    struct r300_tcl_bypass_triangle_ib *out);
 int r300_tcl_bypass_triangle_rs_tex_adj_plan_emit(
    uint32_t width, uint32_t height, bool clip_space,
@@ -650,6 +671,11 @@ struct r300_triangle_render_shape {
     * q-lane recovery fragment binary
     * (r300_noperspective_q_lane_plan.h). */
    bool noperspective_q_lane;
+   /* When set with varying, the pass carries the mixed
+    * Smooth/NoPerspective carrier: sixteen dwords per vertex, RS
+    * vectors 0..2, the mixed recovery fragment binary
+    * (r300_noperspective_mixed_carrier_plan.h). */
+   bool noperspective_mixed_carrier;
 };
 
 /* The composed render-then-sample cell: one stream renders the first
@@ -1165,6 +1191,8 @@ extern const float
 #define R300_TRIANGLE_VARYING_VERTEX_DWORDS 24
 /* Three records of the NoPerspective TC1 carrier shape. */
 #define R300_TRIANGLE_NOPERSPECTIVE_CARRIER_VERTEX_DWORDS 36
+/* Three records of the mixed Smooth/NoPerspective carrier shape. */
+#define R300_TRIANGLE_NOPERSPECTIVE_MIXED_CARRIER_VERTEX_DWORDS 48
 extern const float r300_tcl_bypass_triangle_varying_vertices
    [R300_TRIANGLE_VARYING_VERTEX_DWORDS];
 
