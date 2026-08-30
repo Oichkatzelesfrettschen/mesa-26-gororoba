@@ -574,6 +574,71 @@ test_channel_census(void)
       CHECK(channels.separated[c] != 0);
    CHECK(channels.separated[3] == 0);
    CHECK(channels.alpha_one == channels.judged);
+   CHECK(channels.sentinel == 0);
+   /* The affine image: every channel matches affine on every judged
+    * pixel and perspective on none of its separated pixels. */
+   for (unsigned c = 0; c < 4; c++) {
+      CHECK(channels.affine_match[c] == channels.judged);
+      CHECK(channels.affine_max_deviation[c] == 0);
+      CHECK(channels.perspective_on_separated[c] == 0);
+      CHECK(channels.affine_on_separated[c] == channels.separated[c]);
+   }
+   for (unsigned c = 0; c < 3; c++)
+      CHECK(channels.perspective_match[c] < channels.judged);
+   /* A mixed image, channels 0 and 1 perspective and 2 and 3 affine,
+    * is judged one channel at a time: the two model families each
+    * decide their own channels. */
+   uint32_t *perspective = malloc(size);
+   CHECK(perspective != NULL);
+   if (perspective != NULL) {
+      CHECK(r300_rs_tex_adj_probe_expected(
+               &shape, records, R300_RS_TEX_ADJ_PROBE_MODEL_PERSPECTIVE,
+               perspective, size) == 0);
+      uint32_t *mixed = malloc(size);
+      CHECK(mixed != NULL);
+      if (mixed != NULL) {
+         /* Channels 0 and 1 (red, green) sit at bits 16..23 and 8..15
+          * of the B8G8R8A8 dword; channels 2 and 3 (blue, alpha) at
+          * bits 0..7 and 24..31. */
+         for (uint32_t i = 0; i < size / 4u; i++)
+            mixed[i] = (perspective[i] & 0x00ffff00u) |
+                       (image[i] & 0xff0000ffu);
+         struct r300_rs_tex_adj_probe_channel_census mixed_channels;
+         CHECK(r300_rs_tex_adj_probe_channel_census(
+                  &shape, records, mixed, size, &mixed_channels) == 0);
+         for (unsigned c = 0; c < 2; c++) {
+            CHECK(mixed_channels.perspective_match[c] ==
+                  mixed_channels.judged);
+            CHECK(mixed_channels.perspective_max_deviation[c] == 0);
+            CHECK(mixed_channels.affine_on_separated[c] == 0);
+            CHECK(mixed_channels.separated[c] != 0);
+         }
+         for (unsigned c = 2; c < 4; c++) {
+            CHECK(mixed_channels.affine_match[c] == mixed_channels.judged);
+            CHECK(mixed_channels.perspective_on_separated[c] == 0);
+         }
+         CHECK(mixed_channels.separated[2] != 0);
+         /* Channel 3 carries q = 1 at every vertex, so both models
+          * agree and neither decides it. */
+         CHECK(mixed_channels.separated[3] == 0);
+         free(mixed);
+      }
+      free(perspective);
+   }
+   /* The sentinel counts as unwritten. */
+   {
+      uint32_t *unwritten = malloc(size);
+      CHECK(unwritten != NULL);
+      if (unwritten != NULL) {
+         for (uint32_t i = 0; i < size / 4u; i++)
+            unwritten[i] = R300_TRIANGLE_COLOR_SENTINEL;
+         struct r300_rs_tex_adj_probe_channel_census sentinel_channels;
+         CHECK(r300_rs_tex_adj_probe_channel_census(
+                  &shape, records, unwritten, size, &sentinel_channels) == 0);
+         CHECK(sentinel_channels.sentinel == sentinel_channels.judged);
+         free(unwritten);
+      }
+   }
    for (uint32_t i = 0; i < size / 4u; i++)
       image[i] &= 0x00ffffffu;
    CHECK(r300_rs_tex_adj_probe_channel_census(&shape, records, image, size,

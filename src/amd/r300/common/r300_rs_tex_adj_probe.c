@@ -529,14 +529,33 @@ r300_rs_tex_adj_probe_channel_census(
                            &perspective_dword, &affine_dword))
             continue;
          out->judged++;
+         const uint32_t observed = rows[y * shape->pitch_pixels + x];
+         if (observed == R300_TRIANGLE_COLOR_SENTINEL)
+            out->sentinel++;
          for (unsigned c = 0; c < 4; c++) {
             const uint32_t pb = channel_byte(perspective_dword, c);
             const uint32_t ab = channel_byte(affine_dword, c);
+            const uint32_t ob = channel_byte(observed, c);
             const uint32_t d = pb > ab ? pb - ab : ab - pb;
-            if (d >= R300_RS_TEX_ADJ_PROBE_SEPARATION)
+            const uint32_t dp = pb > ob ? pb - ob : ob - pb;
+            const uint32_t da = ab > ob ? ab - ob : ob - ab;
+            const bool separated = d >= R300_RS_TEX_ADJ_PROBE_SEPARATION;
+            const bool p_match = dp <= R300_RS_TEX_ADJ_PROBE_TOLERANCE;
+            const bool a_match = da <= R300_RS_TEX_ADJ_PROBE_TOLERANCE;
+            if (separated)
                out->separated[c]++;
+            out->perspective_match[c] += p_match;
+            out->affine_match[c] += a_match;
+            if (dp > out->perspective_max_deviation[c])
+               out->perspective_max_deviation[c] = dp;
+            if (da > out->affine_max_deviation[c])
+               out->affine_max_deviation[c] = da;
+            if (separated) {
+               out->perspective_on_separated[c] += p_match;
+               out->affine_on_separated[c] += a_match;
+            }
          }
-         if (channel_byte(rows[y * shape->pitch_pixels + x], 3) == 255u)
+         if (channel_byte(observed, 3) == 255u)
             out->alpha_one++;
       }
    }

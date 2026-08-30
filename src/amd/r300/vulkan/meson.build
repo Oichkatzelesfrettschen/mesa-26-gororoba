@@ -2626,6 +2626,20 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  # The mixed carrier rung's recording boundary: no gate, the Smooth
+  # plus NoPerspective pipeline on the mixed route, pass 1 the
+  # sixteen-dword three-vector cell, the per-channel oracle calibrated
+  # over the predictions.
+  test(
+    'r3v-native-noperspective-mixed-carrier-route-record',
+    r3v_native_attended_rs_tex_adj_probe,
+    args : [meson.current_build_dir(), '--record-only',
+            '--candidate', 'mixed-reciprocal-carrier'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
   # The multisample resolve runner's recording boundary on the fixture:
   # the device-local surface allocation, both vertex layouts, and the
   # merged binding, at each subsample set, so an argument or seeding
