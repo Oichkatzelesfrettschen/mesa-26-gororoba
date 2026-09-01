@@ -304,7 +304,7 @@ When `open_gororoba/proofs/` is available, use proof names as review checks.
 
 ## R300/R3V and RS480/RS482/RS485 evidence lane
 
-Target hardware context: Vostro 1000 / AMD Athlon 64 / K8 + Radeon Xpress 200M/1100/1150 (RS480 / RS482 `1002:5974` / RS485 `1002:5975` + SB600). Contrast with discrete R300 (`CHIP_R300`), R350, RV350/RV380, and R420/R500 ASICs.
+Target hardware context: Vostro 1000 / AMD Athlon 64 / K8 + Radeon Xpress 200M/1100/1150 (RS480 `1002:5954`, RS482/RS485 `1002:5974`, RS482M `1002:5975`; the Vostro 1000 carries `1002:5974` with subsystem `1028:022a`, the Radeon Xpress 1150 / RS485M product) + SB600. Contrast with discrete R300 (`CHIP_R300`), R350, RV350/RV380, and R420/R500 ASICs.
 
 Distinguish RS480-family IGP architecture from discrete R300:
 - Geometry execution: RS480/RS482/RS485 lacks hardware vertex processing / TCL engines (`num_vert_fpus = 0`). Geometry routes through host SW-TCL or Render-to-Vertex-Buffer (R2VB) carrier textures re-ingested into VAP (`R300_VAP_CNTL`).

@@ -35,6 +35,17 @@ RETIRED_QUALIFICATION_TERM = re.compile(
     r"\bdecision[-_\s]+grade\b",
     re.IGNORECASE,
 )
+# PCI 1002:5974 is shared by RS482 and RS485 and 1002:5975 is RS482M (the
+# PCI ID repository), so a constant naming 5974 as RS482 alone or 5975 as
+# RS485, and prose asserting either, misattribute the die; the current
+# spellings are R300_PCI_DEVICE_RS48X_5974 and R300_PCI_DEVICE_RS482M_5975
+# with the product resolved by r300_platform_identity_lookup.
+RETIRED_CHIP_IDENTITY = re.compile(
+    r"(?:\bR300_PCI_DEVICE_RS48[25]\b|\bR3V_PCI_DEVICE_ID_RS48[25]\b|"
+    r"\b(?:0x)?5975\b[^\n]{0,24}?\bRS485(?!M)\b|"
+    r"\bRS485(?!M)\b[^\n]{0,24}?\b(?:0x)?5975\b|"
+    r"\b(?:0x)?5974\b[^\n]{0,40}?\b(?:alone|only|exclusively)\b[^\n]{0,40}?\bRS482\b)",
+)
 HISTORICAL_LOG_NAMES = frozenset(
     (
         "mesa_gororoba_no_rusticl_build_20260426T010131Z",
@@ -370,6 +381,12 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
                 f"{path}:{line_number}: retired qualification wording: "
                 f"{retired_match.group(0)!r}"
             )
+    for identity_match in RETIRED_CHIP_IDENTITY.finditer(text):
+        line_number = starting_line_number + text.count("\n", 0, identity_match.start())
+        findings.append(
+            f"{path}:{line_number}: retired chip identity claim: "
+            f"{identity_match.group(0)!r}"
+        )
     for artifact_match in RETIRED_INTERNAL_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, artifact_match.start()) + 1
         line_end = text.find("\n", artifact_match.end())
@@ -661,6 +678,13 @@ def self_test() -> int:
             f"extern void (* const {retired_identifier})(void);\n",
             True,
         ),
+        ("src/example.h", "#define R300_PCI_DEVICE_RS48" "5 0x5975\n", True),
+        ("src/example.h", "#define R300_PCI_DEVICE_RS48X_5974 0x5974\n", False),
+        ("docs/example.md", "0x5975 is RS48" "5 (Radeon Xpress 1150).\n", True),
+        ("docs/example.md", "1002:5975 is RS482M; 1002:5974 is RS482/RS485.\n", False),
+        ("docs/example.md", "RS48" "5-marketed 1002:5975 refuses.\n", True),
+        ("docs/example.md", "1002:5974 alone proves RS48" "2 here.\n", True),
+        ("docs/example.md", "the Vostro 1000 (1002:5974, RS485M) target.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba-* worktrees.\n", False),
         ("build-infra/example.md", "Install mesa-gororoba-debug-optimized.\n", False),

@@ -49,8 +49,8 @@ silicon has no documented native compute-dispatch packet.
 | Field | Value | Primary source |
 |---|---|---|
 | Vendor | ATI / AMD | PCI vendor ID `0x1002` |
-| RS482 device | `0x5974` | `include/pci_ids/r300_pci_ids.h` |
-| RS485-marketed device | `0x5975` | `include/pci_ids/r300_pci_ids.h` |
+| RS482/RS485 device | `0x5974` | `include/pci_ids/r300_pci_ids.h`; the Vostro 1000 specimen (subsystem `1028:022a`) is the Radeon Xpress 1150 / RS485M product |
+| RS482M device | `0x5975` | `include/pci_ids/r300_pci_ids.h` |
 | Mesa family | `CHIP_RS480` | `r300_parse_chipset()` |
 | Generation | R3xx | AMD R3xx Register Reference Guide |
 | Mesa-classified vertex FPUs | 0 | `r300_parse_chipset()` |

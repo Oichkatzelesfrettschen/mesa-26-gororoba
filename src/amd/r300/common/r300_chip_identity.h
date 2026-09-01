@@ -14,16 +14,45 @@
 
 #define R300_PCI_VENDOR_ATI 0x1002
 
-/* RS482 (Radeon Xpress 200M, 1002:5974): the RS480-family IGP the native
- * Vulkan implementation targets.  include/pci_ids/r300_pci_ids.h is the id
- * source; this spelling exists so identity comparisons bind to one constant.
+/* 1002:5974 is one PCI device id shared by RS482 and RS485 (the PCI ID
+ * repository names it "RS482/RS485 [Radeon Xpress 1100/1150]"), so the id
+ * names the RS48x die class and never one of the two products.
+ * include/pci_ids/r300_pci_ids.h is the id source; this spelling exists so
+ * identity comparisons bind to one constant.
  */
-#define R300_PCI_DEVICE_RS482 0x5974
+#define R300_PCI_DEVICE_RS48X_5974 0x5974
 
-/* RS485 (Radeon Xpress 1100/1150 mobile IGP), the RS482 sibling in the same
- * RS480 family row set.
+/* 1002:5975 is RS482M (Mobility Radeon Xpress 200) in the same RS480
+ * family row set.
  */
-#define R300_PCI_DEVICE_RS485 0x5975
+#define R300_PCI_DEVICE_RS482M_5975 0x5975
+
+/* The product a 1002:5974 specimen carries resolves through the platform:
+ * the board's PCI subsystem id and DMI product name select the row.  The
+ * attended target is the Dell Vostro 1000 (subsystem 1028:022a, DMI
+ * "Vostro 1000"), whose IGP is marketed as Radeon Xpress 1150, the RS485M
+ * product; the kernel enumerates it as CHIP_RS480 and the GL renderer
+ * string is "ATI RS480".  Retained evidence sealed under the historical
+ * alias keeps that spelling.
+ */
+struct r300_platform_identity {
+   uint16_t pci_vendor;
+   uint16_t pci_device;
+   uint16_t subsystem_vendor;
+   uint16_t subsystem_device;
+   /* DMI product name as the firmware spells it, trailing blanks
+    * excluded. */
+   const char *dmi_product_name;
+   /* The die-class product the platform carries (RS485 for the Vostro
+    * 1000 IGP). */
+   const char *canonical_target;
+   /* The marketing product name (Radeon Xpress 1150 / RS485M). */
+   const char *product_name;
+   /* The token retained evidence was sealed under. */
+   const char *historical_alias;
+};
+
+extern const struct r300_platform_identity r300_platform_vostro1000;
 
 /* Die classes group families by the silicon blocks capability decisions
  * key on.  The RS400-class IGPs (RS400, RC410, RS480/RS482/RS485) share an
@@ -106,9 +135,10 @@ struct r300_die_facts {
     */
    bool video_decode_engine_absent;
 
-   /* The attended RS482 specimen: PCI revision and subsystem read from
-    * the target (lspci/setpci on 1002:5974, revision 0x00, subsystem
-    * 1028:022a).  Specimen identity, not a die-class key.
+   /* The attended 1002:5974 specimen: PCI revision and subsystem read
+    * from the target (lspci/setpci, revision 0x00, subsystem 1028:022a).
+    * Specimen identity, not a die-class key; r300_platform_identity
+    * resolves the product.
     */
    uint8_t specimen_pci_revision;
    uint16_t specimen_subsystem_vendor;
@@ -125,7 +155,8 @@ struct r300_chip_identity {
    const struct r300_die_facts *die_facts;
 };
 
-/* The RS480-class facts record, exact-RS482 measured. */
+/* The RS480-class facts record, measured on the 1002:5974 Vostro 1000
+ * specimen. */
 extern const struct r300_die_facts r300_rs480_die_facts;
 
 /* Resolve a PCI vendor/device pair against the r300_pci_ids table.  An id
@@ -134,5 +165,16 @@ extern const struct r300_die_facts r300_rs480_die_facts;
  */
 bool r300_chip_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
                                struct r300_chip_identity *identity);
+
+/* Resolve a platform row from the PCI tuple and the DMI product name.
+ * Every field must match its row; a tuple outside the table, a null
+ * name, or a null output refuses, so an unmatched board names no
+ * product.
+ */
+bool r300_platform_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
+                                   uint16_t subsystem_vendor,
+                                   uint16_t subsystem_device,
+                                   const char *dmi_product_name,
+                                   const struct r300_platform_identity **out);
 
 #endif /* R300_CHIP_IDENTITY_H */

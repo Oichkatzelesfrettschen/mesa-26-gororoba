@@ -202,7 +202,7 @@ struct r3v_native_arming_facts {
  * silicon behavior the cell's falsifiers were written against.
  */
 #define R3V_NATIVE_ARMING_PCI_VENDOR ((uint32_t)R300_PCI_VENDOR_ATI)
-#define R3V_NATIVE_ARMING_PCI_DEVICE ((uint32_t)R300_PCI_DEVICE_RS482)
+#define R3V_NATIVE_ARMING_PCI_DEVICE ((uint32_t)R300_PCI_DEVICE_RS48X_5974)
 
 /* Pure decision over the collected facts. */
 enum r3v_native_arming_verdict

@@ -541,9 +541,10 @@ Reaching the ioctl writes `attempt.token` into the evidence directory by
 exclusive creation, so the directory admits one attempt. A second run
 needs a new directory and a fresh authorization decision.
 
-The chip factor admits PCI `1002:5974` alone. RS485-marketed `1002:5975`
-is a supported r3v identity but not an authorized attended-run chip,
-because the falsifiers below were written against RS482 behavior.
+The chip factor admits PCI `1002:5974` alone. `1002:5975` (RS482M) is
+a supported r3v identity but not an authorized attended-run chip,
+because the falsifiers below were written against the Vostro 1000
+specimen's behavior.
 
 ## Predictions
 
