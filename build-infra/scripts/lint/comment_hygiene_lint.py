@@ -483,7 +483,21 @@ def lint_file(path: Path) -> list[Violation]:
     if is_src:
         return lint_source_text(path, text, patterns)
     in_fenced_block = False
+    in_html_comment = False
     for line_no, line in enumerate(text.splitlines(), start=1):
+        # Markdown: an HTML comment (the SPDX header block) opens with
+        # <!-- and closes with -->; the closing token is comment syntax,
+        # not a decorative arrow, so the block's lines carry no rule.
+        if is_md:
+            stripped = line.strip()
+            if in_html_comment:
+                if "-->" in stripped:
+                    in_html_comment = False
+                continue
+            if stripped.startswith("<!--"):
+                if "-->" not in stripped[4:]:
+                    in_html_comment = True
+                continue
         # Markdown: track fenced code blocks so we don't flag fixture
         # content (example snippets, sample outputs).  Only opening fences
         # need a language tag; closing fences are plain ``` by markdown syntax.

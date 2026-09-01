@@ -22,8 +22,8 @@ struct r3v_instance;
 struct r3v_physical_device {
    struct vk_physical_device vk;
 
-   /* Identity from the DRM probe.  pci_device_id is R3V_PCI_DEVICE_ID_RS482
-    * or R3V_PCI_DEVICE_ID_RS485. */
+   /* Identity from the DRM probe.  pci_device_id is R3V_PCI_DEVICE_ID_RS48X
+    * or R3V_PCI_DEVICE_ID_RS482M. */
    uint32_t pci_device_id;
    uint32_t pci_vendor_id;
 

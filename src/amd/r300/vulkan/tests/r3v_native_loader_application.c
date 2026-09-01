@@ -101,7 +101,7 @@ main(void)
    VkPhysicalDeviceProperties props;
    vkGetPhysicalDeviceProperties(pdev, &props);
    assert(props.vendorID == R300_PCI_VENDOR_ATI &&
-          props.deviceID == R300_PCI_DEVICE_RS482);
+          props.deviceID == R300_PCI_DEVICE_RS48X_5974);
 
    const float priority = 1.0f;
    VkDevice device = VK_NULL_HANDLE;

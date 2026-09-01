@@ -57,7 +57,7 @@ test_rs482_target_row(void)
 {
    struct r300_chip_identity identity;
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
-                                    R300_PCI_DEVICE_RS482, &identity));
+                                    R300_PCI_DEVICE_RS48X_5974, &identity));
    assert(identity.family == CHIP_RS480);
    assert(identity.die_class == R300_DIE_CLASS_RS400_IGP);
 }
@@ -67,14 +67,14 @@ test_unknown_identity_refuses(void)
 {
    struct r300_chip_identity identity;
    /* A vendor other than ATI refuses even with a known device id. */
-   assert(!r300_chip_identity_lookup(0x10de, R300_PCI_DEVICE_RS482,
+   assert(!r300_chip_identity_lookup(0x10de, R300_PCI_DEVICE_RS48X_5974,
                                      &identity));
    /* A device outside the table refuses. */
    assert(!r300_chip_identity_lookup(R300_PCI_VENDOR_ATI, 0x9999,
                                      &identity));
    /* A null output cannot receive an identity, so the lookup refuses. */
    assert(!r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
-                                     R300_PCI_DEVICE_RS482, NULL));
+                                     R300_PCI_DEVICE_RS48X_5974, NULL));
 }
 
 static void
@@ -112,7 +112,7 @@ test_rs482_parse_chipset_caps(void)
     */
    struct r300_capabilities caps;
    memset(&caps, 0xa5, sizeof(caps));
-   r300_parse_chipset(R300_PCI_DEVICE_RS482, &caps);
+   r300_parse_chipset(R300_PCI_DEVICE_RS48X_5974, &caps);
    assert(caps.family == CHIP_RS480);
    assert(caps.num_vert_fpus == 0);
    assert(!caps.has_hardware_tcl);
@@ -134,10 +134,10 @@ test_rs480_die_facts(void)
     */
    struct r300_chip_identity identity;
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
-                                    R300_PCI_DEVICE_RS482, &identity));
+                                    R300_PCI_DEVICE_RS48X_5974, &identity));
    assert(identity.die_facts == &r300_rs480_die_facts);
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
-                                    R300_PCI_DEVICE_RS485, &identity));
+                                    R300_PCI_DEVICE_RS482M_5975, &identity));
    assert(identity.die_facts == &r300_rs480_die_facts);
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI, 0x4144,
                                     &identity));
@@ -153,13 +153,48 @@ test_rs480_die_facts(void)
    assert(facts->render_span_max == 2560);
    /* The vertex-engine absence agrees with the capability row. */
    struct r300_capabilities caps;
-   r300_parse_chipset(R300_PCI_DEVICE_RS482, &caps);
+   r300_parse_chipset(R300_PCI_DEVICE_RS48X_5974, &caps);
    assert(facts->vertex_engine_absent == (caps.num_vert_fpus == 0));
+}
+
+static void
+test_platform_identity(void)
+{
+   /* The Vostro 1000 tuple resolves the RS485 product through the
+    * board, with the firmware's padded DMI spelling; the die id alone,
+    * another subsystem, or another board name resolves nothing.
+    */
+   const struct r300_platform_identity *row = NULL;
+   assert(r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                        R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                        0x022a, "Vostro   1000 ", &row));
+   assert(row == &r300_platform_vostro1000);
+   assert(strcmp(row->canonical_target, "RS485") == 0);
+   assert(strcmp(row->historical_alias, "rs482") == 0);
+   assert(row->subsystem_vendor ==
+          r300_rs480_die_facts.specimen_subsystem_vendor);
+   assert(row->subsystem_device ==
+          r300_rs480_die_facts.specimen_subsystem_device);
+   row = NULL;
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x0000, "Vostro 1000", &row));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x022a, "Latitude D531", &row));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS482M_5975, 0x1028,
+                                         0x022a, "Vostro 1000", &row));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x022a, NULL, &row));
+   assert(row == NULL);
 }
 
 int
 main(void)
 {
+   test_platform_identity();
    test_full_table_resolves();
    test_rs482_target_row();
    test_unknown_identity_refuses();

@@ -133,7 +133,7 @@ test_each_factor_refuses(void)
    assert(r3v_native_arming_evaluate(&facts) ==
           R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND);
 
-   /* RS485-marketed 0x5975 is a supported r3v identity but not the
+   /* 1002:5975 (RS482M) is a supported r3v identity but not the
     * authorized attended-run chip.
     */
    facts = armed_facts();

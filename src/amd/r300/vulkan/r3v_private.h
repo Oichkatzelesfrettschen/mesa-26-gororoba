@@ -19,13 +19,13 @@ extern "C" {
 
 #define R3V_VENDOR_ID_ATI R300_PCI_VENDOR_ATI
 
-/* RS482 (Radeon Xpress 200M, IGP) and RS485 (Radeon Xpress 1100/1150,
- * mobile IGP).  The common chip identity table maps 0x5974 to RS482_5974
- * and 0x5975 to RS482_5975 in the RS480 family; both report
+/* The RS48x IGPs: 1002:5974 is RS482/RS485 (Radeon Xpress 1100/1150) and
+ * 1002:5975 is RS482M (Mobility Radeon Xpress 200).  The common chip
+ * identity table maps both into the RS480 family; both report
  * GL_RENDERER="ATI RS480", and the RS480-class vertex transform engine is
  * absent, so every vertex route is TCL bypass over produced records. */
-#define R3V_PCI_DEVICE_ID_RS482 R300_PCI_DEVICE_RS482
-#define R3V_PCI_DEVICE_ID_RS485 R300_PCI_DEVICE_RS485
+#define R3V_PCI_DEVICE_ID_RS48X R300_PCI_DEVICE_RS48X_5974
+#define R3V_PCI_DEVICE_ID_RS482M R300_PCI_DEVICE_RS482M_5975
 
 #define R3V_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
 
@@ -94,8 +94,8 @@ static inline bool
 r3v_pci_device_id_is_supported(uint32_t pci_device_id)
 {
    switch (pci_device_id) {
-   case R3V_PCI_DEVICE_ID_RS482:
-   case R3V_PCI_DEVICE_ID_RS485:
+   case R3V_PCI_DEVICE_ID_RS48X:
+   case R3V_PCI_DEVICE_ID_RS482M:
       return true;
    default:
       return false;

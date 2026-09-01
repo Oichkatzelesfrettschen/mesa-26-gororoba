@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <string.h>
 
 /* One row per r300_pci_ids entry; the CHIPSET expansion keeps this table
  * and the id header in lockstep, so a new PCI id lands here without a
@@ -68,6 +69,72 @@ r300_die_class_from_family(enum radeon_family family,
    default:
       return false;
    }
+}
+
+const struct r300_platform_identity r300_platform_vostro1000 = {
+   .pci_vendor = R300_PCI_VENDOR_ATI,
+   .pci_device = R300_PCI_DEVICE_RS48X_5974,
+   .subsystem_vendor = 0x1028,
+   .subsystem_device = 0x022a,
+   .dmi_product_name = "Vostro 1000",
+   .canonical_target = "RS485",
+   .product_name = "Radeon Xpress 1150 (RS485M)",
+   .historical_alias = "rs482",
+};
+
+static const struct r300_platform_identity *const r300_platform_rows[] = {
+   &r300_platform_vostro1000,
+};
+
+/* DMI product names carry firmware padding ("Vostro   1000 "), so the
+ * comparison folds every blank run to one and ignores the edges. */
+static bool
+dmi_product_name_matches(const char *expected, const char *actual)
+{
+   const char *e = expected;
+   const char *a = actual;
+   while (*a == ' ')
+      a++;
+   while (*e != '\0') {
+      if (*e == ' ') {
+         if (*a != ' ')
+            return false;
+         while (*e == ' ')
+            e++;
+         while (*a == ' ')
+            a++;
+         continue;
+      }
+      if (*e != *a)
+         return false;
+      e++;
+      a++;
+   }
+   while (*a == ' ')
+      a++;
+   return *a == '\0';
+}
+
+bool
+r300_platform_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
+                              uint16_t subsystem_vendor,
+                              uint16_t subsystem_device,
+                              const char *dmi_product_name,
+                              const struct r300_platform_identity **out)
+{
+   if (dmi_product_name == NULL || out == NULL)
+      return false;
+   for (size_t i = 0; i < ARRAY_SIZE(r300_platform_rows); i++) {
+      const struct r300_platform_identity *row = r300_platform_rows[i];
+      if (row->pci_vendor == pci_vendor && row->pci_device == pci_device &&
+          row->subsystem_vendor == subsystem_vendor &&
+          row->subsystem_device == subsystem_device &&
+          dmi_product_name_matches(row->dmi_product_name, dmi_product_name)) {
+         *out = row;
+         return true;
+      }
+   }
+   return false;
 }
 
 /* Field values cross-checked against their macro homes by the
