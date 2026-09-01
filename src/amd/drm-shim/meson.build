@@ -110,6 +110,34 @@ if with_tests
     suite: ['amd', 'drm-shim'],
   )
   test(
+    'radeon-noop-drm-shim-fd-identity-publication',
+    radeon_noop_drm_shim_test,
+    args: ['fd-identity-publication'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
+  test(
+    'radeon-noop-drm-shim-fork-child-witness-release',
+    radeon_noop_drm_shim_test,
+    args: ['fork-child-witness-release'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
+  test(
+    'radeon-noop-drm-shim-fork-child-identity-repair',
+    radeon_noop_drm_shim_test,
+    args: ['fork-child-identity-repair'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
+  test(
+    'radeon-noop-drm-shim-witness-fd-reuse',
+    radeon_noop_drm_shim_test,
+    args: ['witness-fd-reuse'],
+    timeout: 30,
+    suite: ['amd', 'drm-shim'],
+  )
+  test(
     'radeon-noop-drm-shim-claimed-namespace-map-miss',
     radeon_noop_drm_shim_test,
     args: ['claimed-namespace-map-miss'],

@@ -71,11 +71,21 @@ struct shim_device {
    /* Mapping from int fd to struct shim_fd *. */
    struct hash_table *fd_map;
    struct hash_table *non_cloexec_fd_map;
+   /* Objects remain here while their private identity fd is open. */
+   struct shim_fd *identity_witness_objects;
    struct shim_fd *diverged_fd_objects;
    struct drm_shim_scm_pin *scm_pins;
    bool fd_tables_diverged;
    unsigned non_cloexec_aliases;
    int lock_backing_fd;
+   /* F_DUPFD_CLOEXEC hint for the next identity vault socket.  The floor
+    * holds the vault descriptors clear of stdin, stdout, and stderr; the
+    * hint rises as vaults open and falls back to the lowest freed vault
+    * number as they close, so the range stays bounded by the live vault
+    * count rather than climbing to RLIMIT_NOFILE.
+    */
+#define DRM_SHIM_IDENTITY_VAULT_FD_FLOOR 3
+   int next_identity_vault_fd;
    dev_t lock_backing_dev;
    ino_t lock_backing_ino;
    pid_t render_owner_pid;
@@ -126,7 +136,8 @@ extern struct shim_device shim_device;
 
 struct shim_fd {
    int fd;
-   int identity_fd;
+   int identity_vault_fd;
+   int identity_witness_fd;
    int lock_proxy_fd;
    int lock_proxy_anchor_fd;
    int refcount;
@@ -140,8 +151,11 @@ struct shim_fd {
    off64_t identity_lock_offset;
    dev_t backing_dev;
    ino_t backing_ino;
+   dev_t identity_vault_dev;
+   ino_t identity_vault_ino;
    mtx_t handle_lock;
    bool diverged_pinned;
+   struct shim_fd *next_identity_witness;
    struct shim_fd *next_diverged;
    /* mapping from int gem handle to struct shim_bo *. */
    struct hash_table *handles;
@@ -161,6 +175,7 @@ struct shim_bo {
 extern const int render_node_minor;
 bool drm_shim_inited(void);
 bool drm_shim_fd_is_internal(int fd);
+bool drm_shim_fd_is_reserved(int fd);
 bool drm_shim_fd_reports_selected_device(int fd);
 bool drm_shim_fd_names_render_backing(int fd);
 int drm_shim_render_node_open(int flags);
@@ -224,6 +239,7 @@ void drm_shim_test_arm_path_snapshot_barrier(int ready_fd,
  */
 int drm_shim_test_live_bo_backing_files(void);
 int drm_shim_test_live_bos(void);
+int drm_shim_test_live_identity_files(void);
 int drm_shim_fd_register(int fd, struct shim_fd *shim_fd);
 void drm_shim_fd_unregister(int fd);
 void drm_shim_fd_unregister_range(unsigned first_fd, unsigned last_fd);

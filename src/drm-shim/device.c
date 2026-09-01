@@ -40,6 +40,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/xattr.h>
@@ -110,6 +111,7 @@ drm_shim_file_release_posix_locks(struct shim_fd *shim_fd);
  */
 static int live_bo_backing_files;
 static int live_bos;
+static int live_identity_files;
 
 PUBLIC int
 drm_shim_test_live_bo_backing_files(void)
@@ -126,6 +128,12 @@ PUBLIC int
 drm_shim_test_live_bos(void)
 {
    return p_atomic_read(&live_bos);
+}
+
+PUBLIC int
+drm_shim_test_live_identity_files(void)
+{
+   return p_atomic_read(&live_identity_files);
 }
 
 #ifdef DRM_SHIM_TEST
@@ -1265,6 +1273,8 @@ drm_shim_device_init(void)
    shim_device.offset_map = _mesa_hash_table_u64_create(NULL);
 
    mtx_init(&shim_device.lock, mtx_plain);
+   shim_device.next_identity_vault_fd =
+      DRM_SHIM_IDENTITY_VAULT_FD_FLOOR;
 
    /* The man page for mmap() says
     *
@@ -1496,7 +1506,7 @@ drm_shim_collect_placeholder_aliases(int fd, int **aliases_out,
 }
 
 static struct shim_fd *
-drm_shim_file_create(int fd, bool enable_state)
+drm_shim_file_prepare(int fd, bool enable_state)
 {
    struct drm_shim_render_identity render_identity;
    if (!drm_shim_render_identity_parse(fd, &render_identity)) {
@@ -1531,7 +1541,8 @@ drm_shim_file_create(int fd, bool enable_state)
    shim_fd->state_available =
       enable_state && render_identity.current_instance &&
       !shim_fd->path_only;
-   shim_fd->identity_fd = -1;
+   shim_fd->identity_vault_fd = -1;
+   shim_fd->identity_witness_fd = -1;
    shim_fd->lock_proxy_fd = -1;
    shim_fd->lock_proxy_anchor_fd = -1;
    p_atomic_set(&shim_fd->refcount, 1);
@@ -1547,22 +1558,238 @@ drm_shim_file_create(int fd, bool enable_state)
    return shim_fd;
 }
 
+static int
+drm_shim_file_open_identity_locked(struct shim_fd *shim_fd, int fd)
+{
+   if (shim_fd->identity_vault_fd >= 0 ||
+       shim_fd->identity_witness_fd >= 0 ||
+       shim_fd->next_identity_witness)
+      abort();
+
+   int vault_sockets[2];
+   if (syscall(SYS_socketpair, AF_UNIX,
+               SOCK_DGRAM | SOCK_CLOEXEC, 0,
+               vault_sockets) < 0)
+      return errno ? -errno : -EBADF;
+
+   char payload = 1;
+   union {
+      struct cmsghdr alignment;
+      char bytes[CMSG_SPACE(sizeof(fd))];
+   } control;
+   memset(&control, 0, sizeof(control));
+   struct iovec iov = {
+      .iov_base = &payload,
+      .iov_len = sizeof(payload),
+   };
+   struct msghdr message = {
+      .msg_iov = &iov,
+      .msg_iovlen = 1,
+      .msg_control = control.bytes,
+      .msg_controllen = sizeof(control.bytes),
+   };
+   struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+   header->cmsg_level = SOL_SOCKET;
+   header->cmsg_type = SCM_RIGHTS;
+   header->cmsg_len = CMSG_LEN(sizeof(fd));
+   memcpy(CMSG_DATA(header), &fd, sizeof(fd));
+
+   int identity_error = 0;
+   ssize_t sent =
+      syscall(SYS_sendmsg, vault_sockets[0], &message, 0);
+   if (sent != sizeof(payload))
+      identity_error = errno ? errno : EIO;
+
+   syscall(SYS_close, vault_sockets[0]);
+
+   int identity_vault_fd = -1;
+   if (!identity_error) {
+      identity_vault_fd =
+         syscall(SYS_fcntl, vault_sockets[1],
+                 F_DUPFD_CLOEXEC,
+                 shim_device.next_identity_vault_fd);
+      if (identity_vault_fd < 0)
+         identity_error = errno ? errno : EBADF;
+   }
+
+   struct stat vault_status;
+   if (!identity_error &&
+       syscall(SYS_fstat, identity_vault_fd, &vault_status) < 0)
+      identity_error = errno ? errno : EBADF;
+   else if (!identity_error && !S_ISSOCK(vault_status.st_mode))
+      identity_error = ENOTSOCK;
+   syscall(SYS_close, vault_sockets[1]);
+   if (identity_error) {
+      if (identity_vault_fd >= 0)
+         syscall(SYS_close, identity_vault_fd);
+      return -identity_error;
+   }
+
+   if (identity_vault_fd < INT_MAX)
+      shim_device.next_identity_vault_fd = identity_vault_fd + 1;
+   else
+      shim_device.next_identity_vault_fd = INT_MAX;
+
+   /* The queued SCM_RIGHTS entry retains the exact struct file without
+    * exposing that reference through a persistent descriptor number.  A
+    * raw close can invalidate the socket number, but finalization verifies
+    * the socket's unique inode before closing it and the kernel releases
+    * the queued file reference when the socket itself disappears.
+    */
+   shim_fd->identity_vault_fd = identity_vault_fd;
+   shim_fd->identity_vault_dev = vault_status.st_dev;
+   shim_fd->identity_vault_ino = vault_status.st_ino;
+   shim_fd->next_identity_witness =
+      shim_device.identity_witness_objects;
+   shim_device.identity_witness_objects = shim_fd;
+   p_atomic_inc(&live_identity_files);
+   return 0;
+}
+
+static bool
+drm_shim_file_identity_vault_matches(const struct shim_fd *shim_fd,
+                                     int fd)
+{
+   struct stat status;
+   return fd >= 0 && syscall(SYS_fstat, fd, &status) == 0 &&
+          S_ISSOCK(status.st_mode) &&
+          status.st_dev == shim_fd->identity_vault_dev &&
+          status.st_ino == shim_fd->identity_vault_ino;
+}
+
+static int
+drm_shim_file_peek_identity_locked(struct shim_fd *shim_fd)
+{
+   if (shim_fd->identity_witness_fd >= 0)
+      abort();
+   if (!drm_shim_file_identity_vault_matches(
+          shim_fd, shim_fd->identity_vault_fd))
+      return -EBADF;
+
+   char payload;
+   union {
+      struct cmsghdr alignment;
+      char bytes[CMSG_SPACE(sizeof(int))];
+   } control;
+   memset(&control, 0, sizeof(control));
+   struct iovec iov = {
+      .iov_base = &payload,
+      .iov_len = sizeof(payload),
+   };
+   struct msghdr message = {
+      .msg_iov = &iov,
+      .msg_iovlen = 1,
+      .msg_control = control.bytes,
+      .msg_controllen = sizeof(control.bytes),
+   };
+   ssize_t received =
+      syscall(SYS_recvmsg, shim_fd->identity_vault_fd, &message,
+              MSG_PEEK | MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+   struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+   if (received != sizeof(payload) ||
+       (message.msg_flags & MSG_CTRUNC) || !header ||
+       header->cmsg_level != SOL_SOCKET ||
+       header->cmsg_type != SCM_RIGHTS ||
+       header->cmsg_len != CMSG_LEN(sizeof(int))) {
+      return -EBADF;
+   }
+
+   int identity_witness_fd = -1;
+   memcpy(&identity_witness_fd, CMSG_DATA(header),
+          sizeof(identity_witness_fd));
+   if (identity_witness_fd < 0)
+      return -EBADF;
+   shim_fd->identity_witness_fd = identity_witness_fd;
+   return identity_witness_fd;
+}
+
+static void
+drm_shim_file_close_identity_witness_locked(struct shim_fd *shim_fd)
+{
+   int identity_witness_fd = shim_fd->identity_witness_fd;
+   if (identity_witness_fd < 0)
+      return;
+   shim_fd->identity_witness_fd = -1;
+   /* MSG_CMSG_CLOEXEC installed this descriptor into the shim's own table,
+    * so the shim owns it whatever the backing metadata now reports; a
+    * metadata-gated close leaks the descriptor on every mismatch.
+    */
+   syscall(SYS_close, identity_witness_fd);
+}
+
+static void
+drm_shim_file_close_identity_locked(struct shim_fd *shim_fd)
+{
+   if (shim_fd->identity_vault_fd < 0)
+      return;
+   if (shim_fd->identity_witness_fd >= 0)
+      abort();
+
+   struct shim_fd **link = &shim_device.identity_witness_objects;
+   while (*link && *link != shim_fd)
+      link = &(*link)->next_identity_witness;
+   if (*link != shim_fd)
+      abort();
+
+   *link = shim_fd->next_identity_witness;
+   shim_fd->next_identity_witness = NULL;
+   int identity_vault_fd = shim_fd->identity_vault_fd;
+   bool vault_matches =
+      drm_shim_file_identity_vault_matches(shim_fd,
+                                           identity_vault_fd);
+   shim_fd->identity_vault_fd = -1;
+   if (vault_matches) {
+      syscall(SYS_close, identity_vault_fd);
+      /* F_DUPFD_CLOEXEC takes the hint as a floor and returns the lowest
+       * free descriptor at or above it, so a monotone hint walks the
+       * descriptor space upward until it hits RLIMIT_NOFILE.  Releasing the
+       * hint back to the freed number keeps the vault range bounded by the
+       * live vault count, and the floor holds the vaults clear of the
+       * standard descriptors.
+       */
+      if (identity_vault_fd >= DRM_SHIM_IDENTITY_VAULT_FD_FLOOR &&
+          identity_vault_fd < shim_device.next_identity_vault_fd)
+         shim_device.next_identity_vault_fd = identity_vault_fd;
+   }
+   p_atomic_dec(&live_identity_files);
+}
+
 static void drm_shim_bo_put_handle(struct shim_bo *bo);
 static void handle_delete_fxn(struct hash_entry *entry);
 
 static void
 drm_shim_file_destroy(struct shim_fd *shim_fd)
 {
+   if (shim_fd->identity_vault_fd >= 0 ||
+       shim_fd->identity_witness_fd >= 0 ||
+       shim_fd->next_identity_witness)
+      abort();
    _mesa_hash_table_destroy(shim_fd->handles, handle_delete_fxn);
    mtx_destroy(&shim_fd->handle_lock);
    free(shim_fd);
 }
 
+/* Takes shim_device.lock to retire the identity vault on the last
+ * reference, so every caller releases the lock first; mtx_plain is
+ * non-recursive and a put under the lock deadlocks.
+ */
 void
 drm_shim_fd_put(struct shim_fd *shim_fd)
 {
-   if (shim_fd && p_atomic_dec_zero(&shim_fd->refcount) &&
-       shim_fd->owner_pid == getpid())
+   if (!shim_fd)
+      return;
+
+   bool destroy = false;
+   mtx_lock(&shim_device.lock);
+   if (p_atomic_read(&shim_fd->refcount) <= 0)
+      abort();
+   if (p_atomic_dec_zero(&shim_fd->refcount)) {
+      drm_shim_file_close_identity_locked(shim_fd);
+      destroy = shim_fd->owner_pid == getpid();
+   }
+   mtx_unlock(&shim_device.lock);
+
+   if (destroy)
       drm_shim_file_destroy(shim_fd);
 }
 
@@ -1923,14 +2150,24 @@ drm_shim_fd_register(int fd, struct shim_fd *shim_fd)
    if (fd < 0)
       return -EBADF;
 
-   if (!shim_fd)
-      shim_fd = drm_shim_file_create(fd, true);
+   bool needs_identity = !shim_fd;
+   if (needs_identity)
+      shim_fd = drm_shim_file_prepare(fd, true);
    else
       p_atomic_inc(&shim_fd->refcount);
    if (!shim_fd)
       return errno ? -errno : -ENOMEM;
 
    mtx_lock(&shim_device.lock);
+   if (needs_identity) {
+      int identity_error =
+         drm_shim_file_open_identity_locked(shim_fd, fd);
+      if (identity_error) {
+         mtx_unlock(&shim_device.lock);
+         drm_shim_fd_put(shim_fd);
+         return identity_error;
+      }
+   }
    struct hash_entry *old_entry =
       _mesa_hash_table_search(shim_device.fd_map,
                               (void *)(uintptr_t)(fd + 1));
@@ -1941,6 +2178,8 @@ drm_shim_fd_register(int fd, struct shim_fd *shim_fd)
    if (new_entry) {
       shim_fd->fd = fd;
       drm_shim_record_descriptor_flags_locked(fd, shim_fd);
+   } else if (needs_identity) {
+      drm_shim_file_close_identity_locked(shim_fd);
    }
    mtx_unlock(&shim_device.lock);
 
@@ -2085,28 +2324,9 @@ drm_shim_fd_collect_internal(int **fds, size_t *count)
 
    mtx_lock(&shim_device.lock);
    size_t identity_count = 1;
-   hash_table_foreach(shim_device.fd_map, entry) {
-      const struct shim_fd *shim_fd = entry->data;
-      identity_count++;
-      if (shim_fd->lock_proxy_fd >= 0)
-         identity_count++;
-      if (shim_fd->owns_lock_proxy_anchor &&
-          shim_fd->lock_proxy_anchor_fd >= 0)
-         identity_count++;
-   }
    for (const struct shim_fd *shim_fd =
-           shim_device.diverged_fd_objects;
-        shim_fd; shim_fd = shim_fd->next_diverged) {
-      identity_count++;
-      if (shim_fd->lock_proxy_fd >= 0)
-         identity_count++;
-      if (shim_fd->owns_lock_proxy_anchor &&
-          shim_fd->lock_proxy_anchor_fd >= 0)
-         identity_count++;
-   }
-   for (const struct drm_shim_scm_pin *pin = shim_device.scm_pins;
-        pin; pin = pin->next) {
-      const struct shim_fd *shim_fd = pin->shim_fd;
+           shim_device.identity_witness_objects;
+        shim_fd; shim_fd = shim_fd->next_identity_witness) {
       identity_count++;
       if (shim_fd->lock_proxy_fd >= 0)
          identity_count++;
@@ -2130,54 +2350,12 @@ drm_shim_fd_collect_internal(int **fds, size_t *count)
        lock_status.st_dev == shim_device.lock_backing_dev &&
        lock_status.st_ino == shim_device.lock_backing_ino)
       identity_fds[index++] = shim_device.lock_backing_fd;
-   hash_table_foreach(shim_device.fd_map, entry) {
-      const struct shim_fd *shim_fd = entry->data;
-      if (shim_fd->identity_fd >= 0 &&
-          drm_shim_fd_metadata_matches(
-             shim_fd, shim_fd->identity_fd))
-         identity_fds[index++] = shim_fd->identity_fd;
-      if (shim_fd->lock_proxy_fd >= 0 &&
-          syscall(SYS_fstat, shim_fd->lock_proxy_fd,
-                  &lock_status) == 0 &&
-          lock_status.st_dev == shim_device.lock_backing_dev &&
-          lock_status.st_ino == shim_device.lock_backing_ino)
-         identity_fds[index++] = shim_fd->lock_proxy_fd;
-      if (shim_fd->owns_lock_proxy_anchor &&
-          shim_fd->lock_proxy_anchor_fd >= 0 &&
-          syscall(SYS_fstat, shim_fd->lock_proxy_anchor_fd,
-                  &lock_status) == 0 &&
-          lock_status.st_dev == shim_device.lock_backing_dev &&
-          lock_status.st_ino == shim_device.lock_backing_ino)
-         identity_fds[index++] = shim_fd->lock_proxy_anchor_fd;
-   }
-   for (const struct drm_shim_scm_pin *pin = shim_device.scm_pins;
-        pin; pin = pin->next) {
-      const struct shim_fd *shim_fd = pin->shim_fd;
-      if (shim_fd->identity_fd >= 0 &&
-          drm_shim_fd_metadata_matches(
-             shim_fd, shim_fd->identity_fd))
-         identity_fds[index++] = shim_fd->identity_fd;
-      if (shim_fd->lock_proxy_fd >= 0 &&
-          syscall(SYS_fstat, shim_fd->lock_proxy_fd,
-                  &lock_status) == 0 &&
-          lock_status.st_dev == shim_device.lock_backing_dev &&
-          lock_status.st_ino == shim_device.lock_backing_ino)
-         identity_fds[index++] = shim_fd->lock_proxy_fd;
-      if (shim_fd->owns_lock_proxy_anchor &&
-          shim_fd->lock_proxy_anchor_fd >= 0 &&
-          syscall(SYS_fstat, shim_fd->lock_proxy_anchor_fd,
-                  &lock_status) == 0 &&
-          lock_status.st_dev == shim_device.lock_backing_dev &&
-          lock_status.st_ino == shim_device.lock_backing_ino)
-         identity_fds[index++] = shim_fd->lock_proxy_anchor_fd;
-   }
    for (const struct shim_fd *shim_fd =
-           shim_device.diverged_fd_objects;
-        shim_fd; shim_fd = shim_fd->next_diverged) {
-      if (shim_fd->identity_fd >= 0 &&
-          drm_shim_fd_metadata_matches(
-             shim_fd, shim_fd->identity_fd))
-         identity_fds[index++] = shim_fd->identity_fd;
+           shim_device.identity_witness_objects;
+        shim_fd; shim_fd = shim_fd->next_identity_witness) {
+      if (drm_shim_file_identity_vault_matches(
+             shim_fd, shim_fd->identity_vault_fd))
+         identity_fds[index++] = shim_fd->identity_vault_fd;
       if (shim_fd->lock_proxy_fd >= 0 &&
           syscall(SYS_fstat, shim_fd->lock_proxy_fd,
                   &lock_status) == 0 &&
@@ -2344,7 +2522,7 @@ enum drm_shim_fd_match {
 };
 
 static enum drm_shim_fd_match
-drm_shim_fd_matches(const struct shim_fd *shim_fd, int fd)
+drm_shim_fd_matches(struct shim_fd *shim_fd, int fd)
 {
    /* open(2) creates a new open file description even when a
     * /proc/thread-self/fd/N path resolves to the same inode, while dup(2)
@@ -2355,11 +2533,25 @@ drm_shim_fd_matches(const struct shim_fd *shim_fd, int fd)
    if (!drm_shim_fd_metadata_matches(shim_fd, fd))
       return DRM_SHIM_FD_MATCH_NO;
 
-   if (shim_fd->fd < 0)
+   int identity_witness_fd =
+      drm_shim_file_peek_identity_locked(shim_fd);
+   if (identity_witness_fd < 0)
       return DRM_SHIM_FD_MATCH_UNKNOWN;
 
-   if (!drm_shim_fd_metadata_matches(shim_fd, shim_fd->fd))
-      return DRM_SHIM_FD_MATCH_NO;
+   enum drm_shim_fd_match match = DRM_SHIM_FD_MATCH_UNKNOWN;
+   if (identity_witness_fd == fd) {
+      match = DRM_SHIM_FD_MATCH_NO;
+      goto out;
+   }
+
+   struct stat witness_status;
+   if (syscall(SYS_fstat, identity_witness_fd,
+               &witness_status) < 0 ||
+       witness_status.st_dev != shim_fd->backing_dev ||
+       witness_status.st_ino != shim_fd->backing_ino) {
+      match = DRM_SHIM_FD_MATCH_UNKNOWN;
+      goto out;
+   }
 
 #ifdef F_DUPFD_QUERY
    int query;
@@ -2370,13 +2562,18 @@ drm_shim_fd_matches(const struct shim_fd *shim_fd, int fd)
    } else
 #endif
       query =
-         syscall(SYS_fcntl, shim_fd->fd, F_DUPFD_QUERY, fd);
-   if (query >= 0)
-      return query == 1 ? DRM_SHIM_FD_MATCH_YES
-                        : DRM_SHIM_FD_MATCH_NO;
+         syscall(SYS_fcntl, identity_witness_fd,
+                 F_DUPFD_QUERY, fd);
+   if (query >= 0) {
+      match = query == 1 ? DRM_SHIM_FD_MATCH_YES
+                         : DRM_SHIM_FD_MATCH_NO;
+      goto out;
+   }
    if (errno != EINVAL && errno != ENOTTY && errno != ENOSYS &&
-       errno != EPERM && errno != EACCES)
-      return DRM_SHIM_FD_MATCH_NO;
+       errno != EPERM && errno != EACCES) {
+      match = DRM_SHIM_FD_MATCH_NO;
+      goto out;
+   }
 #endif
 
 #ifdef SYS_kcmp
@@ -2392,20 +2589,25 @@ drm_shim_fd_matches(const struct shim_fd *shim_fd, int fd)
       pid_t caller_tid = syscall(SYS_gettid);
       result =
          syscall(SYS_kcmp, caller_tid, caller_tid, KCMP_FILE,
-                 shim_fd->fd, fd);
+                 identity_witness_fd, fd);
 #ifdef DRM_SHIM_TEST
    }
 #endif
    if (result == 0)
-      return DRM_SHIM_FD_MATCH_YES;
-   if (result > 0)
-      return DRM_SHIM_FD_MATCH_NO;
-   if (errno == ENOSYS || errno == EPERM || errno == EACCES)
-      return DRM_SHIM_FD_MATCH_UNKNOWN;
-   return DRM_SHIM_FD_MATCH_NO;
+      match = DRM_SHIM_FD_MATCH_YES;
+   else if (result > 0)
+      match = DRM_SHIM_FD_MATCH_NO;
+   else if (errno == ENOSYS || errno == EPERM || errno == EACCES)
+      match = DRM_SHIM_FD_MATCH_UNKNOWN;
+   else
+      match = DRM_SHIM_FD_MATCH_NO;
 #else
-   return DRM_SHIM_FD_MATCH_UNKNOWN;
+   match = DRM_SHIM_FD_MATCH_UNKNOWN;
 #endif
+
+out:
+   drm_shim_file_close_identity_witness_locked(shim_fd);
+   return match;
 }
 
 static bool
@@ -2417,74 +2619,82 @@ drm_shim_fd_metadata_matches(const struct shim_fd *shim_fd, int fd)
           status.st_ino == shim_fd->backing_ino;
 }
 
+static bool
+drm_shim_fd_is_internal_locked(int fd, bool include_identity_vault)
+{
+   struct stat status;
+   if (fd == shim_device.lock_backing_fd &&
+       syscall(SYS_fstat, fd, &status) == 0 &&
+       status.st_dev == shim_device.lock_backing_dev &&
+       status.st_ino == shim_device.lock_backing_ino)
+      return true;
+
+   for (const struct shim_fd *shim_fd =
+           shim_device.identity_witness_objects;
+        shim_fd; shim_fd = shim_fd->next_identity_witness) {
+      if ((include_identity_vault &&
+           shim_fd->identity_vault_fd == fd &&
+           drm_shim_file_identity_vault_matches(shim_fd, fd)) ||
+          (shim_fd->identity_witness_fd == fd &&
+           drm_shim_fd_metadata_matches(shim_fd, fd)) ||
+          ((shim_fd->lock_proxy_fd == fd ||
+            (shim_fd->owns_lock_proxy_anchor &&
+             shim_fd->lock_proxy_anchor_fd == fd)) &&
+           syscall(SYS_fstat, fd, &status) == 0 &&
+              status.st_dev == shim_device.lock_backing_dev &&
+              status.st_ino == shim_device.lock_backing_ino)) {
+         return true;
+      }
+   }
+   return false;
+}
+
+/* Reports every descriptor number the shim itself holds, the identity
+ * vault sockets included, so descriptor censuses and raw-alias adoption
+ * skip the shim's own table.
+ */
 bool
 drm_shim_fd_is_internal(int fd)
 {
    if (!device_initialized || fd < 0)
       return false;
 
-   bool internal = false;
    mtx_lock(&shim_device.lock);
-   struct stat status;
-   if (fd == shim_device.lock_backing_fd &&
-       syscall(SYS_fstat, fd, &status) == 0 &&
-       status.st_dev == shim_device.lock_backing_dev &&
-       status.st_ino == shim_device.lock_backing_ino)
-      internal = true;
-   hash_table_foreach(shim_device.fd_map, entry) {
-      const struct shim_fd *shim_fd = entry->data;
-      if ((shim_fd->identity_fd == fd &&
-           drm_shim_fd_metadata_matches(shim_fd, fd)) ||
-          ((shim_fd->lock_proxy_fd == fd ||
-            (shim_fd->owns_lock_proxy_anchor &&
-             shim_fd->lock_proxy_anchor_fd == fd)) &&
-           syscall(SYS_fstat, fd, &status) == 0 &&
-           status.st_dev == shim_device.lock_backing_dev &&
-           status.st_ino == shim_device.lock_backing_ino)) {
-         internal = true;
-         break;
-      }
-   }
-   if (!internal) {
-      for (const struct shim_fd *shim_fd =
-              shim_device.diverged_fd_objects;
-           shim_fd; shim_fd = shim_fd->next_diverged) {
-         if ((shim_fd->identity_fd == fd &&
-              drm_shim_fd_metadata_matches(shim_fd, fd)) ||
-             ((shim_fd->lock_proxy_fd == fd ||
-               (shim_fd->owns_lock_proxy_anchor &&
-                shim_fd->lock_proxy_anchor_fd == fd)) &&
-              syscall(SYS_fstat, fd, &status) == 0 &&
-              status.st_dev == shim_device.lock_backing_dev &&
-              status.st_ino == shim_device.lock_backing_ino)) {
-            internal = true;
-            break;
-         }
-      }
-   }
-   if (!internal) {
-      for (const struct drm_shim_scm_pin *pin = shim_device.scm_pins;
-           pin; pin = pin->next) {
-         const struct shim_fd *shim_fd = pin->shim_fd;
-         if ((shim_fd->identity_fd == fd &&
-              drm_shim_fd_metadata_matches(shim_fd, fd)) ||
-             ((shim_fd->lock_proxy_fd == fd ||
-               (shim_fd->owns_lock_proxy_anchor &&
-                shim_fd->lock_proxy_anchor_fd == fd)) &&
-              syscall(SYS_fstat, fd, &status) == 0 &&
-              status.st_dev == shim_device.lock_backing_dev &&
-              status.st_ino == shim_device.lock_backing_ino)) {
-            internal = true;
-            break;
-         }
-      }
-   }
+   bool internal = drm_shim_fd_is_internal_locked(fd, true);
    mtx_unlock(&shim_device.lock);
    return internal;
 }
 
+/* Reports the descriptor numbers the shim refuses to yield to the
+ * application.  A vault socket is absent from that set: the application
+ * names arbitrary numbers through dup2, close, and fcntl, and
+ * drm_shim_file_identity_vault_matches rejects a stolen vault number by
+ * its socket type, device, and inode, so a lookup through a stolen vault
+ * degrades to DRM_SHIM_FD_MATCH_UNKNOWN and refuses the ioctl instead of
+ * misreporting it.  The lock backing file, the lock proxies, and the
+ * witness descriptor carry no such recovery, so they keep the refusal.
+ */
+bool
+drm_shim_fd_is_reserved(int fd)
+{
+   if (!device_initialized || fd < 0)
+      return false;
+
+   mtx_lock(&shim_device.lock);
+   bool reserved = drm_shim_fd_is_internal_locked(fd, false);
+   mtx_unlock(&shim_device.lock);
+   return reserved;
+}
+
+/* Reports the shim_fd that owns one open file description, or NULL with
+ * *error_out set to EOPNOTSUPP when no identity mechanism can decide.  The
+ * lookup calls recvmsg, fstat, fcntl, and close on the identity vault, so
+ * errno carries the last of those syscalls rather than the verdict; the
+ * caller reads the verdict from *error_out.
+ */
 static struct shim_fd *
-drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
+drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out,
+                        int *error_out)
 {
    struct hash_entry *direct =
       _mesa_hash_table_search(shim_device.fd_map,
@@ -2496,7 +2706,7 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
       if (direct_match == DRM_SHIM_FD_MATCH_YES)
          return direct_shim_fd;
       if (direct_match == DRM_SHIM_FD_MATCH_UNKNOWN) {
-         errno = EOPNOTSUPP;
+         *error_out = EOPNOTSUPP;
          return NULL;
       }
    }
@@ -2505,8 +2715,9 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
 
    struct shim_fd *result = NULL;
    bool identity_unknown = false;
-   hash_table_foreach(shim_device.fd_map, entry) {
-      struct shim_fd *candidate = entry->data;
+   for (struct shim_fd *candidate =
+           shim_device.identity_witness_objects;
+        candidate; candidate = candidate->next_identity_witness) {
       if (candidate == direct_shim_fd)
          continue;
       enum drm_shim_fd_match candidate_match =
@@ -2519,40 +2730,8 @@ drm_shim_fd_find_locked(int fd, struct shim_fd **replaced_out)
          identity_unknown = true;
    }
    if (!result) {
-      for (struct shim_fd *candidate =
-              shim_device.diverged_fd_objects;
-           candidate; candidate = candidate->next_diverged) {
-         if (candidate == direct_shim_fd)
-            continue;
-         enum drm_shim_fd_match candidate_match =
-            drm_shim_fd_matches(candidate, fd);
-         if (candidate_match == DRM_SHIM_FD_MATCH_YES) {
-            result = candidate;
-            break;
-         }
-         if (candidate_match == DRM_SHIM_FD_MATCH_UNKNOWN)
-            identity_unknown = true;
-      }
-   }
-   if (!result) {
-      for (struct drm_shim_scm_pin *pin = shim_device.scm_pins;
-           pin; pin = pin->next) {
-         struct shim_fd *candidate = pin->shim_fd;
-         if (candidate == direct_shim_fd)
-            continue;
-         enum drm_shim_fd_match candidate_match =
-            drm_shim_fd_matches(candidate, fd);
-         if (candidate_match == DRM_SHIM_FD_MATCH_YES) {
-            result = candidate;
-            break;
-         }
-         if (candidate_match == DRM_SHIM_FD_MATCH_UNKNOWN)
-            identity_unknown = true;
-      }
-   }
-   if (!result) {
       if (identity_unknown) {
-         errno = EOPNOTSUPP;
+         *error_out = EOPNOTSUPP;
          return NULL;
       }
       if (direct_is_stale) {
@@ -2600,7 +2779,7 @@ static int
 drm_shim_fd_register_detected(int fd, bool enable_state)
 {
    struct shim_fd *new_shim_fd =
-      drm_shim_file_create(fd, enable_state);
+      drm_shim_file_prepare(fd, enable_state);
    if (!new_shim_fd)
       return errno ? -errno : -ENOMEM;
 
@@ -2627,11 +2806,10 @@ drm_shim_fd_register_detected(int fd, bool enable_state)
 #endif
 
    struct shim_fd *replaced = NULL;
+   int find_error = 0;
    mtx_lock(&shim_device.lock);
-   errno = 0;
    struct shim_fd *existing =
-      drm_shim_fd_find_locked(fd, &replaced);
-   int find_error = errno;
+      drm_shim_fd_find_locked(fd, &replaced, &find_error);
    if (existing) {
       mtx_unlock(&shim_device.lock);
       drm_shim_fd_put(replaced);
@@ -2646,10 +2824,14 @@ drm_shim_fd_register_detected(int fd, bool enable_state)
       return -find_error;
    }
 
-   struct hash_entry *old_entry =
-      _mesa_hash_table_search(shim_device.fd_map,
-                              (void *)(uintptr_t)(fd + 1));
-   struct shim_fd *old_shim_fd = old_entry ? old_entry->data : NULL;
+   int identity_error =
+      drm_shim_file_open_identity_locked(new_shim_fd, fd);
+   if (identity_error) {
+      mtx_unlock(&shim_device.lock);
+      drm_shim_fd_put(replaced);
+      drm_shim_fd_put(new_shim_fd);
+      return identity_error;
+   }
    struct hash_entry *new_entry =
       _mesa_hash_table_insert(shim_device.fd_map,
                               (void *)(uintptr_t)(fd + 1),
@@ -2657,16 +2839,17 @@ drm_shim_fd_register_detected(int fd, bool enable_state)
    if (new_entry) {
       new_shim_fd->fd = fd;
       drm_shim_record_descriptor_flags_locked(fd, new_shim_fd);
+   } else {
+      drm_shim_file_close_identity_locked(new_shim_fd);
    }
    mtx_unlock(&shim_device.lock);
 
    if (!new_entry) {
+      drm_shim_fd_put(replaced);
       drm_shim_fd_put(new_shim_fd);
       return -ENOMEM;
    }
-   if (old_shim_fd && old_shim_fd != new_shim_fd)
-      drm_shim_file_release_posix_locks(old_shim_fd);
-   drm_shim_fd_put(old_shim_fd);
+   drm_shim_fd_put(replaced);
    return 0;
 }
 
@@ -2845,21 +3028,25 @@ drm_shim_fd_adopt_raw_aliases(int fd)
              candidate_value < 0 || candidate_value > INT_MAX)
             continue;
          int candidate = (int)candidate_value;
-         if (candidate == fd || candidate == directory_fd ||
-             candidate == source->identity_fd ||
-             candidate == source->lock_proxy_fd ||
-             candidate == source->lock_proxy_anchor_fd ||
-             candidate == shim_device.lock_backing_fd ||
-             drm_shim_fd_is_internal(candidate))
+         if (candidate == fd || candidate == directory_fd)
             continue;
 
          mtx_lock(&shim_device.lock);
+         if (drm_shim_fd_is_internal_locked(candidate, true)) {
+            mtx_unlock(&shim_device.lock);
+            continue;
+         }
          struct hash_entry *existing =
             _mesa_hash_table_search(
                shim_device.fd_map,
                (void *)(uintptr_t)(candidate + 1));
          enum drm_shim_fd_match candidate_match =
             drm_shim_fd_matches(source, candidate);
+         /* Raw aliases enter shim state only after a non-mutating
+          * open-file-description identity check.  Equal device and inode
+          * metadata also describes an independent proc-fd reopen, while
+          * offset, status-flag, and OFD-lock probes change application state.
+          */
          bool still_same =
             candidate_match == DRM_SHIM_FD_MATCH_YES;
          if (!existing && still_same) {
@@ -2935,11 +3122,10 @@ drm_shim_fd_get(int fd)
 
 retry:
    mtx_lock(&shim_device.lock);
-   errno = 0;
    struct shim_fd *replaced = NULL;
+   int discovery_error = 0;
    struct shim_fd *result =
-      drm_shim_fd_find_locked(fd, &replaced);
-   int discovery_error = errno;
+      drm_shim_fd_find_locked(fd, &replaced, &discovery_error);
    if (result)
       p_atomic_inc(&result->refcount);
    mtx_unlock(&shim_device.lock);
