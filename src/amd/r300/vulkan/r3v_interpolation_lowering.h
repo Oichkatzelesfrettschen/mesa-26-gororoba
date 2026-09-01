@@ -165,6 +165,12 @@ struct r3v_interpolation_query {
    /* The forced-carrier gate is open: the W_SELECT conjunction selects
     * the reciprocal carrier instead. */
    bool carrier_forced;
+   /* The Flat-mixed probe gate is open: the Flat location 0 beside
+    * NoPerspective location 1 interface selects the mixed reciprocal
+    * carrier.  Closed, that interface is UNSUPPORTED: the route is
+    * implemented and host-qualified, and its attended silicon receipt
+    * is what promotes it to the gate-free public surface. */
+   bool flat_mixed_probe;
    /* The fragment module is the narrow pass-through of this width
     * (1..3, r3v_fragment_narrow_passthrough_from_spirv); 0 for every
     * other fragment shape.  The q-lane fragment binary executes that

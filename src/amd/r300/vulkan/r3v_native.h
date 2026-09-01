@@ -975,6 +975,11 @@ struct r3v_native_device {
     * W_SELECT conjunction selects the reciprocal carrier route
     * (r3v_interpolation_lowering.h), the forced-carrier rung. */
    const char *noperspective_carrier_force;
+   /* R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE at the exact value 1: the Flat
+    * location 0 beside NoPerspective location 1 interface selects the
+    * mixed reciprocal carrier; closed, that interface is UNSUPPORTED
+    * until its attended receipt promotes the route. */
+   const char *flat_mixed_carrier_probe;
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;

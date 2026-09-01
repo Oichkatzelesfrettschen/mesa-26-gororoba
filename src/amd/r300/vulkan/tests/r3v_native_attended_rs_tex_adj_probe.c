@@ -363,8 +363,8 @@ main(int argc, char **argv)
             flat_mixed_route = true;
             candidate = R300_RS_TEX_ADJ_PROBE_CONTROL;
             route_candidate = R3V_RS_PROBE_NONE;
-            candidate_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
-            other_gate = "R3V_NATIVE_RS_TEX_ADJ_PROBE";
+            candidate_gate = "R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE";
+            other_gate = "R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE";
             candidate_word_name = "FLAT_MIXED_RECIPROCAL_CARRIER_TC2";
          } else if (strcmp(name, "reciprocal-carrier-partial") == 0) {
             carrier_route = true;
@@ -415,7 +415,24 @@ main(int argc, char **argv)
     * the recorded stream is the one the authorization names and the
     * probe pipeline's candidate comes from the environment the
     * authorization declares. */
-   if (production || q_lane_route || mixed_route) {
+   if (flat_mixed_route) {
+      /* The Flat-mixed route is implemented and receipt-pending: the
+       * exact probe gate selects it (closed, the interface refuses at
+       * record time), and every force and probe gate stays unset so the
+       * cell is the route's own. */
+      if (!gate_open(candidate_gate)) {
+         fprintf(stderr,
+                 "%s=1 opens the receipt-pending Flat-mixed route; export "
+                 "it before the run\n", candidate_gate);
+         return 2;
+      }
+      if (gate_present(other_gate) ||
+          gate_present("R3V_NATIVE_RS_TEX_ADJ_PROBE")) {
+         fprintf(stderr, "a gate is set; the flat-mixed route runs with %s "
+                 "and R3V_NATIVE_RS_TEX_ADJ_PROBE unset\n", other_gate);
+         return 2;
+      }
+   } else if (production || q_lane_route || mixed_route) {
       /* The production, q-lane, and mixed routes open on no gate: a
        * present probe or force gate would hand the NoPerspective
        * interface a candidate or the TC1 carrier instead of the route
@@ -1380,6 +1397,7 @@ main(int argc, char **argv)
                .fragment_consumes_destination = native_pipeline->varying,
                .provoking_first_representable = true,
                .carrier_forced = carrier_route && !production,
+               .flat_mixed_probe = flat_mixed_route && i == 1,
                .narrow_passthrough_width = q_lane_route && i == 1 ? 3u : 0u,
                .mixed_carrier_fragment = mixed_route && i == 1,
             };

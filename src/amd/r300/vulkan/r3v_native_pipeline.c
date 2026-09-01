@@ -534,6 +534,7 @@ create_pipeline(struct r3v_native_device *device,
       .fragment_consumes_destination = varying && !sampled,
       .provoking_first_representable = true,
       .carrier_forced = device->noperspective_carrier_force != NULL,
+      .flat_mixed_probe = device->flat_mixed_carrier_probe != NULL,
       .narrow_passthrough_width = narrow_width,
       .mixed_carrier_fragment = mixed_fragment,
    };
