@@ -33,7 +33,10 @@
 
 struct r3v_post_vs_lowering {
    /* Bit l set for each varying location the fragment stage reads
-    * Flat; the record carries location l at dwords 4 + 4l .. 7 + 4l. */
+    * Flat; the record carries location l at dwords 4 + 4l .. 7 + 4l.
+    * The mixed carrier packing admits flat_mask 0 (Smooth at location
+    * 0) or 0x1 (Flat at location 0, replicated ahead of the packing);
+    * every other mask refuses at r3v_post_vs_pack_noperspective_mixed_carrier. */
    uint32_t flat_mask;
    /* The vertex (0..2) of each triangle whose varyings the Flat
     * locations replicate. */

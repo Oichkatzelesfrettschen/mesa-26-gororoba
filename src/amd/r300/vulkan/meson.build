@@ -348,6 +348,24 @@ if with_tests
             '--source', files('r3v_physical_device.c')],
     suite : ['r3v'],
   )
+  # Every integer in a blocking non-pass ledger row carries a source
+  # query, a receipt, or a prose authority, and a source query's value
+  # equals the ledger's number, so the frontier never cites a hand-typed
+  # limit.
+  test(
+    'r3v-conformance-ledger-audit-selftest',
+    prog_python,
+    args : [files('tests/r3v_conformance_ledger_audit.py'), '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-conformance-ledger-audit',
+    prog_python,
+    args : [files('tests/r3v_conformance_ledger_audit.py'),
+            '--ledger', files('tests/r3v_conformance_nonpass_ledger.tsv'),
+            '--source-root', meson.project_source_root()],
+    suite : ['r3v'],
+  )
   # docs/hardware/r3v-wsi-denominator.md "Retained checks that pin the
   # denominator": the device extension table, the advertised-surface
   # binding ledger, and the built ICD's own symbol table must agree

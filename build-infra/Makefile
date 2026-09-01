@@ -732,6 +732,16 @@ naming-policy-test:
 	python3 $(CURDIR)/scripts/naming_policy.py --self-test
 	python3 $(CURDIR)/scripts/naming_policy.py --repo-root $(CURDIR)/..
 
+# A receipt identifier in docs/hardware names a sealed steinmarder-r300
+# bundle; a name that resolves to none is a claim ahead of its evidence.
+# Ordinary builds report `not run` without the sibling checkout; a
+# reproducible run requires it.
+receipt-identifier-check:
+	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py --self-test
+	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py \
+	  --repo-root $(CURDIR)/.. \
+	  $(if $(filter 1,$(REPRODUCIBLE_RUN)),--require-evidence,)
+
 # Comment-hygiene gate: the repository-resident linter must exist and be
 # executable, calibrate on its own fixtures, and pass over every file the
 # branch changes against COMMENT_HYGIENE_BASE plus the staged set.  A missing
@@ -924,6 +934,7 @@ help:
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
 	@echo "  remove-identity-v7-build-root remove an exact verified schema-7 build root"
 	@echo "  naming-policy-test reject retired build controls and unclear qualification wording"
+	@echo "  receipt-identifier-check resolve every docs/hardware receipt identifier to a retained bundle"
 	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
@@ -1257,6 +1268,7 @@ distcc-gcc-major-probe-test:
 	echo "OK    missing GCC identity fails closed"
 
 audit: source-root-check source-root-control-unit-test naming-policy-test \
+       receipt-identifier-check \
        headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
        review-thread-corpus-check review-thread-corpus-unit-test \
