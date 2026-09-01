@@ -7,44 +7,51 @@ receipt, the DSO and queue-claim modes, the open tasks, and the documents
 it supersedes. Other documents point here; the status table lives here
 alone and is updated in place when a receipt or task changes.
 
-## Revision and evidence boundaries
+## Deployment epoch
 
-| Boundary | Revision | Authority |
+One epoch table carries every identity a claim in this document binds to.
+Each row is one field with one authority; a row moves only when its
+authority moves, so a receipt's source, the installed binary, and the
+repository head are never collapsed into one "current" revision. The
+values below are the freeze for the Flat-beside-NoPerspective receipt
+cycle (repository heads read on 2026-09-01).
+
+| Field | Value | Authority |
 |---|---|---|
 | Document revision | `git log -1 -- docs/hardware/r3v-current-program-status.md` | the commit that carries this table |
-| Mesa reconciliation base | `0c288cc2654cc763abb3376731b0d57395b8c3e6` | source state inspected for this reconciliation; `git rev-parse HEAD` names the live checkout |
-| Latest target receipt source | `3384c3d1aad2ac5983193913e7734f2eaa41404e` | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
-| Latest target receipt retention | `steinmarder-r300` `834d87d14` | commit that adds the sealed public partial-clip fallback receipt |
-| Evidence verification checkout | `steinmarder-r300` `834d87d14` | checkout in which `sha256sum -c bundle_hashes.sha256` passes |
-| Installed ICD source | `3384c3d1aad` | `mesa-gororoba-debug-optimized 2:26.2.0-28`, build-id `83721633007d7920c7be4afbde3afd00067315d0` across builddir, package, and installed DSO; the latest attended runner is statically linked at the same commit |
-| Deployed kernel source checkpoint | `0104ede3f19` | `radeon-unified-dkms 0.8.12-1`, srcversion `729892A3F3530EB12B8D842`; kernel deployment reconciliation |
-| dEQP source | `43c65c132` | installed `deqp-vk` release identity and corpus pin |
+| Repository head: mesa-26-gororoba | `3aa3ad02c6903dc2d8e2819c1a4a54c7fbd094a2` plus this cycle's authority PRs | `git rev-parse HEAD` in the live checkout |
+| Repository head: steinmarder-r300 | `834d87d14704e1f20885afa0a1439301a6407d70` | `git rev-parse HEAD` |
+| Repository head: linux-radeon-gororoba | `2be21eaa892723f1c9cd826b7331c7d234e2c1ce` (offline replay authority: `r300_tcl_bypass_vtx_check` and the CS-track controls replay from this head and from the deployed checkpoint) | `git rev-parse HEAD` |
+| Repository head: radeon-custom | `75ae53afaa8b053d7bd6091c73ce54ef19b987b` | `git rev-parse HEAD` |
+| Repository head: vostro1000-re | `1d621a0f51a7c7fb343f0702f9481390b8240b94` | `git rev-parse HEAD` |
+| Route-admission source | `3aa3ad02c690` (branch `r3v/flat_beside_mixed_reciprocal_carrier_replication`): Flat location 0 beside NoPerspective location 1 on the mixed reciprocal carrier, quarantined behind `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1` until its receipt (`implemented_unreceipted`) | `r3v_interpolation_lowering.c`, `docs/hardware/rs482-post-vap-interpolation-pipeline.md` |
+| Receipt source | `3384c3d1aad2ac5983193913e7734f2eaa41404e` (public partial-clip fallback) | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
+| Installed ICD source and build-id | profile 3 diagnostic: `3aa3ad02c690`, `mesa-gororoba-debug-optimized 2:26.2.0-29`, build-id `c0903e8ac82bc949660c2e7ef5fff747dd607a6d`; profile 4 release (`mesa-gororoba`, prefix `/usr`): the receipt build, recorded by the receipt's phase A identity file | `pacman -Q`, `readelf -n` build-id across builddir, package, and installed DSO |
+| Attended-runner source and digest | the runner is statically linked at the receipt's source; its sha256 is the arming report's `runner_sha256.txt` | arming report per receipt |
+| Deployed kernel source checkpoint | `0104ede3f1964cc844f9f1839cb6953e2639c4e6` (linux-radeon-gororoba branch `radeon/r300_tcl_bypass_color0_width`, COLOR0 width admission) | `radeon-custom` PKGBUILD `_source_commit` |
+| Package version | `radeon-unified-dkms 0.8.12-1` (radeon-custom `75ae53afaa8b` PKGBUILD); policy package as `pacman -Q radeon-rs482-policy` reports on the box | `pacman -Q` on the target |
+| Loaded module srcversion | `729892A3F3530EB12B8D842` | `/sys/module/radeon/srcversion` on the target |
+| Retained-evidence commit | `steinmarder-r300` `834d87d14704` (the checkout in which `sha256sum -c bundle_hashes.sha256` passes for the latest receipt) | evidence verification checkout |
+| dEQP source | `43c65c132` (`deqp-vk` `26d43d452e64`, release `opengl-cts-4.6.8.0-414-g43c65c132`) | installed `deqp-vk` release identity and corpus pin |
 
-The boundaries assign one role to each revision. The document revision
-tracks prose, the reconciliation base tracks inspected source, each target
-receipt binds its own Mesa source, and the evidence checkout verifies the
-immutable retained bytes. A moving repository head never substitutes for a
-receipt source or a deployed binary identity.
+Evidence binds to profile 4: the installed ICD, the attended runner, and
+every receipt come from the `4_r300_full_release` build through
+`make -C build-infra`; profile 3 is the asserts-live diagnostic build and
+profile 5 (GCC) the wider-warning diagnostic when common R300 code changes.
 
 ## Target deployment
 
 | Field | Value | Authority |
 |---|---|---|
 | Host | `cachyos-vostro1000` (Dell Vostro 1000, AMD K8) | `docs/hardware/vostro1000-kernel-modules.md` |
-| GPU | RS482, PCI `1002:5974`, `CHIP_RS480`, renderer `ATI RS480` | `include/pci_ids/r300_pci_ids.h` |
-| Kernel | `7.1.8-1-cachyos`, radeon module srcversion `56B9C4000387BDA35C4CAAF` | latest target receipt `identity.txt` |
-| Policy package | `radeon-rs482-policy 0.8.11-1` | `radeon-custom` |
-| Installed ICD | `libvulkan_r3v.so`, built from Mesa `00e3c5dd25d`, sha256 `c0348c6341de4f74f679e8ccdec887096e4b876448633ec2b223a86d8beb6314` | receipt `icd.dso_sha256` |
-| dEQP | `deqp-vk` `26d43d452e64` (release `opengl-cts-4.6.8.0-414-g43c65c132`), bundle on the box at `deqp-vk-bundle` | receipt `deqp` |
+| GPU | PCI `1002:5974` (RS482/RS485 die id), subsystem `1028:022a`, DMI `Vostro 1000`: the Radeon Xpress 1150 / RS485M product; `CHIP_RS480`, renderer `ATI RS480`; retained evidence sealed under the historical alias `rs482` | `r300_platform_identity_lookup`, `include/pci_ids/r300_pci_ids.h` |
+| Kernel | `7.1.8-1-cachyos`, module and package per the epoch table | epoch table |
+| dEQP | per the epoch table; bundle on the box at `deqp-vk-bundle` | receipt `deqp` |
 | Corpus | pinned by `src/amd/r300/vulkan/tests/r3v_conformance_corpus.pin`; the bundle's own mustpass directory is the pinned corpus | runner `wrong_caselist` refusal |
 
 The workspace layout is identical on the workstation and the box; a
 merge to `main` is followed by `git pull --ff-only` on the box before any
 box-side run.
-
-The installed-ICD row describes loader and dEQP deployment. The latest
-target receipt below executes its statically linked attended runner from
-Mesa `42ff2b207c8` and records the installed ICD as unchanged.
 
 ## Active conformance partition
 
@@ -75,15 +82,15 @@ hazard:
 | 11 | wsi | display | silicon | open |
 
 Counts read Pass/NotSupported/Fail. Every Fail is classified against
-`r3v_conformance_nonpass_ledger.tsv` (20 rows); an unclassified row
+`r3v_conformance_nonpass_ledger.tsv` (row count and every numeric claim
+audited by `r3v_conformance_ledger_audit.py`); an unclassified row
 marks the result invalid for qualification. The machine-readable frontier
-over the 19 slices -- counts, hazard, evidence status, blocking non-pass classes
+over the 21 slices -- counts, hazard, evidence status, blocking non-pass classes
 joined to their ledger rows, and the next admitting mechanism -- is
 `steinmarder-r300/src/re/r300/corpora/rs482_r3v_conformance_frontier_v1/frontier.jsonl`,
-regenerated from this partition, the ledger, and the retained bundles;
-the frontier's 19-slice shape predates the `api-query-surface` and
-`memory-query-surface` split and regenerates to 21 rows on its next
-run. The ten slices after the eleventh (`api-unclassified`,
+regenerated from this partition, the ledger, and the retained bundles by
+`build_rs482_r3v_conformance_frontier.py`; the counts in this document
+cite that corpus rather than restating it. The ten slices after the eleventh (`api-unclassified`,
 `api-query-surface`, `feature-extensions`, `memory-unclassified`,
 `memory-query-surface`, `pipeline-monolithic`, `pipeline-variants`,
 `robustness-extended`, `shader-execution`, `wsi-presentation`) carry no

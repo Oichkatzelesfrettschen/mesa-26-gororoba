@@ -23,11 +23,22 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
   size).
 - `VAP_OUTPUT_VTX_FMT_0` (0x2090): `POS_PRESENT` bit 0, `COLOR_n_PRESENT`
   bits 1..4, `PT_SIZE_PRESENT` bit 16.  `VAP_OUTPUT_VTX_FMT_1` (0x2094):
-  one 3-bit component count per texture unit 0..7 (manual).  The checker
-  does not read either word; the 0.8.12 checker declines a
-  `COLOR_0_PRESENT` stream at `r300_tcl_bypass_vtx_check`, so the direct
-  GA Flat cell is admitted through `r100_cs_track_check` alone (silicon:
-  `r3v-native-public-flat-color0-two-draw-first-delivery-rs482`).
+  one 3-bit component count per texture unit 0..7 (manual).  The
+  deployed 0.8.12 checker (`r300_tcl_bypass_vtx_check`, kernel source
+  checkpoint `0104ede3f196`) reads both words and admits a draw whose
+  stream satisfies its modeled predicate: `POS_PRESENT` set and no FMT0
+  bit beyond `COLOR_0_PRESENT`, the FMT1 texture component counts
+  decoded into the required width (4 for position, 4 more for COLOR0,
+  the declared components per texture unit), complete PSC stream words,
+  identity or XY01 selectors, one destination per element, and a
+  terminating `LAST_VEC`; `VAP_VTX_SIZE` at or above that width passes
+  and a narrower record rejects.  COLOR1..3, point size, an unknown
+  selector, a duplicate destination, a skipped dword, or incomplete
+  state declines the draw to `r100_cs_track_check` alone.  The direct
+  GA Flat cell (`POS|COLOR0`, width 8) passes under that predicate
+  (silicon: `r3v-native-public-flat-color0-two-draw-first-delivery-rs482`,
+  replayed byte-equal under 0.8.12 as
+  `r300-tcl-bypass-vtx-check-color0-width-transition-rs482`).
 - `VAP_PROG_STREAM_CNTL_n` / `_EXT_n` (0x2150.., 0x21e0..): per-element
   data type, skip, destination vector, last-vector flag, swizzle, and
   write enable (manual).  The carrier cells differ from the varying cell
@@ -79,7 +90,7 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
 | Flat, any location | its texture interpolator | host replication of the provoking record ahead of the clipper; equal endpoints interpolate to the constant | `r3v-native-public-flat-two-draw-first-delivery-rs482` |
 | NoPerspective, alone | texture interpolator, `W_SELECT` 1 | window-linear interpolation of every lane | rung A |
 | NoPerspective beside Smooth | `TC1 = a * c`, `TC2.x = c`, `W_SELECT` 0 | US recovers `interp(a c) * rcp(interp(c))` | rung D |
-| Flat beside NoPerspective | rung D's cell with TC0 replicated on the host | replication precedes the packing | `r3v-native-noperspective-flat-mixed-carrier-receipt-rs482` |
+| Flat beside NoPerspective | rung D's cell with TC0 replicated on the host | replication precedes the packing | implemented_unreceipted: host-model and kernel-replay qualified behind `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1`; the attended receipt promotes the route |
 | Flat beside Smooth and NoPerspective | four interpolators: Flat, Smooth, `a * c`, `c` | the four-vector RS budget boundary | none |
 
 Replication composes with every texture-path route because it rewrites
