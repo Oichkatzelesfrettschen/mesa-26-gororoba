@@ -73,6 +73,53 @@ Vulkan NoPerspective route on RS482, retained apart from the word-classification
 recording boundary is calibrated on the drm-shim under
 `r3v-native-noperspective-production-route-record`.
 
+## Flat-beside-NoPerspective mixed-carrier arm
+
+`--candidate flat-mixed-reciprocal-carrier` runs the two-pass cell with the Flat float vec4 at
+location 0 beside the NoPerspective float vec4 at location 1 under the mixed lane program. The
+route is quarantined until its receipt: the selector returns UNSUPPORTED ("implemented, silicon
+receipt pending") unless `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE` carries the exact value 1, the
+runner requires that gate for this candidate and refuses when the force, tex-adj, W_SELECT,
+pin, or R2VB gates are also set, and the closed-gate pipeline is the known-bad of
+`r3v-native-public-surface`. The post-VS stage replicates vertex 0's location-0 vector to every
+record ahead of the clipper and the packing, so pass 1 is rung D's sixteen-dword cell byte for
+byte (cell blake3 `522066cd`, 494 IB dwords, arming digest from
+`--multi-pass-noperspective-mixed-carrier`); the recording boundary is calibrated under
+`r3v-native-noperspective-flat-mixed-carrier-route-record`.
+
+The run binds to the profile-4 release build (`buildtype` release, `b_ndebug` true), the
+installed `mesa-gororoba` package, and the deployed `radeon-unified-dkms 0.8.12-1` (kernel
+checkpoint `0104ede3f196`); the replay verdicts are stated per draw on both the deployed
+checker and the linux-radeon head: control draw required 8 at `VAP_VTX_SIZE` 8 PASS; candidate
+draw required 16 at `VAP_VTX_SIZE` 16 PASS; candidate-only underfeed at 12 REJECT with the
+control PASS; full stream 2 draws pass 2 reject 0 decline 0; CS tracking ACCEPT with every BO,
+relocation, pitch, and extent control held.
+
+Predictions, recorded before arming:
+
+1. The control pass classifies as `perspective` on every judged pixel (882).
+2. The candidate's red and green hold one constant, vertex 0's (s, t) = (0.25, 0.75), bytes
+   (64, 191) within one quantum on every judged pixel, separating none: the Flat lanes.
+3. The candidate's blue and alpha classify as `affine` on every judged pixel (882) at maximum
+   deviation 1 with perspective matching none of the separated pixels (501, 882): the
+   NoPerspective lanes through the carrier.
+4. Rung D's interpolated image (red and green interpolating per vertex) is the decisive
+   falsifier: it refutes the replication reaching the published records. The pure-affine image
+   is an alias of the prediction under replicated inputs and carries no verdict.
+5. The witness reads every pass-1 record with TC0 equal to vertex 0's TEX0 and
+   c = (1, 0.25, 0.5); this clause is required, because the target alone cannot say where the
+   replication happened.
+6. `vkQueueSubmit` returns 0, the dmesg delta is empty, the watchdog returns to `inactive`, and
+   the boot id is unchanged.
+
+Blue or alpha classifying `perspective` refutes the byte-identity claim (the mixed cell was not
+executed); a witness TC0 differing across records places the replication after the packing on
+the box build; a dmesg CS rejection is a divergence between the offline replay and the installed
+checker. Each is a finding, never a retry: a deviation after the ioctl opens an RCA, and another
+attempt takes a new token with the first transcript retained. The receipt bundle is
+`r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974`, and the promotion
+commit that removes the gate lands only after that bundle is sealed.
+
 ## Registered models
 
 Each model is a function of the record triple at a pixel center, evaluated in binary64 and
