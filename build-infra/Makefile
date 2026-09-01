@@ -736,6 +736,11 @@ naming-policy-test:
 # bundle; a name that resolves to none is a claim ahead of its evidence.
 # Ordinary builds report `not run` without the sibling checkout; a
 # reproducible run requires it.
+# A packaging recipe's local source files carry sha256sums equal to the
+# checked-in bytes; a stale sum fails makepkg on the target after the build.
+packaging-source-checksum-test:
+	sh $(CURDIR)/packaging/test-local-source-checksums.sh
+
 receipt-identifier-check:
 	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py --self-test
 	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py \
@@ -935,6 +940,7 @@ help:
 	@echo "  remove-identity-v7-build-root remove an exact verified schema-7 build root"
 	@echo "  naming-policy-test reject retired build controls and unclear qualification wording"
 	@echo "  receipt-identifier-check resolve every docs/hardware receipt identifier to a retained bundle"
+	@echo "  packaging-source-checksum-test hold packaging sha256sums to the checked-in local sources"
 	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
@@ -1268,7 +1274,7 @@ distcc-gcc-major-probe-test:
 	echo "OK    missing GCC identity fails closed"
 
 audit: source-root-check source-root-control-unit-test naming-policy-test \
-       receipt-identifier-check \
+       receipt-identifier-check packaging-source-checksum-test \
        headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
        review-thread-corpus-check review-thread-corpus-unit-test \

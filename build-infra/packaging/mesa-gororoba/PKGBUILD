@@ -97,7 +97,7 @@ source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goror
         'radeon_icd.i686.json'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            'e6cba7981c52f007ea70aa23c7f1f848ad77205160b5ab6fabcb1cb960c348d5'
+            '33477b0a196f978fadb27301ad3405c975226e9814bce8ba75437f9029b0d173'
             'a45c1892aa28f8bcc732aed982127c2b655b8652ff22122a86632db6207d6ebe'
             '20b9fcbdd020fc7ccfcca3dfc46165f2a40649a16303d9f89be6168e2b1595dc'
             '1d13d57d3acf8e7a7ef05dba363d3415a648a971c36447e5dcec259337668fd9'
