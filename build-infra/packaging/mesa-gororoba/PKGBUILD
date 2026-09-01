@@ -49,7 +49,7 @@ if [[ -v GOROROBA_DISTCC_JOBS ]]; then
   exit 2
 fi
 pkgver=26.2.0
-pkgrel=19
+pkgrel=20
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,

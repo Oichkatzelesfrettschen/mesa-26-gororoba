@@ -616,18 +616,30 @@ test_mixed_carrier_conjunction(void)
    f = direct_query(&both);
    f.mixed_carrier_fragment = true;
    expect_unsupported(&f, "Flat location 0");
-   /* Flat at location 0 rides the same cell replicated on the host;
-    * the reason names the replication. */
+   /* Flat at location 0 rides the same cell replicated on the host
+    * under the exact probe gate; the reason names the replication.
+    * With the gate closed the interface is UNSUPPORTED and the reason
+    * names the pending receipt, so no ordinary build exposes the
+    * route ahead of its silicon evidence. */
    struct r3v_shader_interface_link flat = link;
    flat.flat_mask = 1u;
    flat.varyings[0].interpolation = R3V_SHADER_INTERFACE_FLAT;
    f = direct_query(&flat);
    f.mixed_carrier_fragment = true;
+   expect_unsupported(&f, "receipt pending");
+   f.flat_mixed_probe = true;
    reason = NULL;
    CHECK(r3v_interpolation_route_select(&f, &reason) ==
          R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
    CHECK(reason != NULL && strstr(reason, "Flat replicated") != NULL);
    f.clip_class = R3V_INTERPOLATION_CLIP_PARTIAL;
+   CHECK(r3v_interpolation_route_select(&f, NULL) ==
+         R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
+   /* The gate opens the Flat shape alone: the Smooth-plus-NoPerspective
+    * interface keeps its gate-free route either way. */
+   f = direct_query(&link);
+   f.mixed_carrier_fragment = true;
+   f.flat_mixed_probe = true;
    CHECK(r3v_interpolation_route_select(&f, NULL) ==
          R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER);
    /* The Flat interface under the vec4 pass-through program stays

@@ -91,6 +91,10 @@ r3v_interpolation_route_select_mixed(
               (link->flat_mask == 0x1u)) {
       why = "mixed carrier location 0 qualifier disagrees with the Flat "
             "mask";
+   } else if (link->flat_mask == 0x1u && !query->flat_mixed_probe) {
+      why = "Flat beside NoPerspective on the mixed carrier: implemented, "
+            "silicon receipt pending; R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1 "
+            "opens the probe";
    } else if (!query->rs_destination_available) {
       why = "RS destination unavailable";
    } else if (!query->fragment_consumes_destination) {
