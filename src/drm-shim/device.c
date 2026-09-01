@@ -585,7 +585,8 @@ drm_shim_state_token_name_parse(int fd,
  * and the same descriptor survives exec with only its name reachable.
  * The name is shim-authored and carries every field the header does:
  * accepting it requires the version prefix, three well-formed
- * identifiers, this process's render marker, and this driver's name, so
+ * identifiers, the shim's own render marker, and the shim's driver name,
+ * so
  * the descriptor is the same class of artifact the two-sided parse
  * admits.  State operations stay closed on a path-only descriptor
  * through shim_fd->state_available, so this recovers identity alone.
@@ -703,7 +704,7 @@ drm_shim_render_identity_parse(int fd,
    /* drm_shim_render_node_open hands out per-open state-token memfds, so a
     * render fd normally reaches here with an inode distinct from the
     * identity anchor.  The token header carries the instance identifier;
-    * a header that parses under this driver's marker is a render fd, and
+    * a header that parses under the shim's driver marker is a render fd, and
     * an instance match makes it current.
     */
    struct drm_shim_state_token_header header;
