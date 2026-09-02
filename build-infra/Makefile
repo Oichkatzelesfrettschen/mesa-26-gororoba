@@ -747,6 +747,12 @@ packaging-source-checksum-test:
 packaging-source-commit-pin-test:
 	sh $(CURDIR)/packaging/test-source-commit-pin.sh
 
+# The repository entry names the package the recipe just produced; a glob over
+# the repository directory hands repo-add every package built there and leaves
+# the database on whichever version sorts last.
+packaging-built-package-selection-test:
+	sh $(CURDIR)/packaging/test-built-package-selection.sh
+
 receipt-identifier-check:
 	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py --self-test
 	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py \
@@ -948,6 +954,7 @@ help:
 	@echo "  receipt-identifier-check resolve every docs/hardware receipt identifier to a retained bundle"
 	@echo "  packaging-source-checksum-test hold packaging sha256sums to the checked-in local sources"
 	@echo "  packaging-source-commit-pin-test calibrate the MESA_COMMIT source pin and its refusals"
+	@echo "  packaging-built-package-selection-test calibrate the repository entry against the recipe's own package list"
 	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
@@ -1283,6 +1290,7 @@ distcc-gcc-major-probe-test:
 audit: source-root-check source-root-control-unit-test naming-policy-test \
        receipt-identifier-check packaging-source-checksum-test \
        packaging-source-commit-pin-test \
+       packaging-built-package-selection-test \
        headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
        review-thread-corpus-check review-thread-corpus-unit-test \
@@ -4049,13 +4057,14 @@ rebuild-all-tiers:
 	@echo "rebuilt the four r300 driver tiers (prime + debug-o0 + debug-optimized + release) from the current tree."
 	@echo "package: for p in mesa-gororoba-debug-asan mesa-gororoba-debug-o0 mesa-gororoba-debug-optimized mesa-gororoba umr-gororoba mesa-gororoba-debug-tools; do (cd packaging/\$$p && makepkg -f --noconfirm); done"
 
-# mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
-# ati_r300/r3v Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
-# package-mesa runs makepkg and repo-adds the artifact to a local
-# The pacman repository named by MESA_REPO_NAME contains the release package;
-# deploy-mesa ships it to TARGET_HOST and asks pacman
-# to execute the package-declared replacement transaction.  Build
-# on a fast x86-64 host whose llvm major matches the target's llvm-libs.
+# mesa-gororoba CachyOS-style /usr drop-in package (r300 GL, zink, and the
+# ati_r300/r3v Vulkan ICD; the recipe builds no LLVM and no llvmpipe), built
+# -march=x86-64 so it runs on the K8 Vostro.  package-mesa runs makepkg and
+# adds the one package the recipe named to the pacman repository
+# MESA_REPO_NAME, whose directory accumulates every package built there;
+# deploy-mesa ships the newest artifact to TARGET_HOST and asks pacman to
+# execute the package-declared replacement transaction.  Build on a fast
+# x86-64 host whose llvm major matches the target's llvm-libs.
 # The recipe tracks the branch tip through its source fragment; MESA_COMMIT=<sha>
 # rewrites that fragment to one object name through packaging/pin-source-commit.sh,
 # which refuses a recipe it cannot pin so a build never carries a commit name it
@@ -4073,8 +4082,10 @@ package-mesa:
 	find "$(MESA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(MESA_PKG_DIR)/" {} +
 	[ -z "$(MESA_COMMIT)" ] || sh $(CURDIR)/packaging/pin-source-commit.sh "$(MESA_PKG_DIR)/PKGBUILD" "$(MESA_COMMIT)"
 	cd "$(MESA_PKG_DIR)" && TMPDIR="$(MESA_PKG_DIR)/tmp" SRCDEST="$(MESA_PKG_DIR)" BUILDDIR="$(MESA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
-	cp "$(MESA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst "$(MESA_REPO_DIR)/"
-	repo-add "$(MESA_REPO_DIR)/$(MESA_REPO_NAME).db.tar.zst" "$(MESA_REPO_DIR)"/mesa-gororoba-*.pkg.tar.zst
+	built=$$(sh $(CURDIR)/packaging/select-built-package.sh "$(MESA_PKG_DIR)") && \
+	  cp "$$built" "$(MESA_REPO_DIR)/" && \
+	  repo-add "$(MESA_REPO_DIR)/$(MESA_REPO_NAME).db.tar.zst" \
+	    "$(MESA_REPO_DIR)/$$(basename "$$built")"
 	@echo "packaged + repo-added under $(MESA_REPO_DIR); deploy: make deploy-mesa TARGET_HOST=<host>"
 
 deploy-mesa:
