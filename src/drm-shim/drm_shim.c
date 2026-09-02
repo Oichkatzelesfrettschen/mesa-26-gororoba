@@ -78,6 +78,18 @@
 
 #define REAL_FUNCTION_POINTER(x) __typeof__(x) *real_##x
 
+/* glibc declares open and open64 nonnull on the path and lseek, lseek64,
+ * and dup2 nothrow and leaf, so the shim's definitions carry those
+ * attributes and GCC's -Wmissing-attributes requires each double-underscore
+ * alias to declare them as well; clang has no leaf attribute.
+ */
+#if defined(__clang__)
+#define DRM_SHIM_ALIAS_NOTHROW __attribute__((nothrow))
+#else
+#define DRM_SHIM_ALIAS_NOTHROW __attribute__((nothrow, leaf))
+#endif
+#define DRM_SHIM_ALIAS_NONNULL_PATH __attribute__((nonnull(1)))
+
 static simple_mtx_t shim_lock = SIMPLE_MTX_INITIALIZER;
 static simple_mtx_t fd_operation_lock = SIMPLE_MTX_INITIALIZER;
 static thread_local unsigned fd_operation_depth;
@@ -4504,8 +4516,10 @@ PUBLIC int open(const char *path, int flags, ...)
    return -1;
 }
 PUBLIC int open64(const char*, int, ...) __attribute__((alias("open")));
-PUBLIC int __open(const char *, int, ...) __attribute__((alias("open")));
-PUBLIC int __open64(const char *, int, ...) __attribute__((alias("open")));
+PUBLIC int __open(const char *, int, ...)
+   DRM_SHIM_ALIAS_NONNULL_PATH __attribute__((alias("open")));
+PUBLIC int __open64(const char *, int, ...)
+   DRM_SHIM_ALIAS_NONNULL_PATH __attribute__((alias("open")));
 
 /* Fortified open entry points are not declared unless _FORTIFY_SOURCE is set. */
 static void
@@ -8228,9 +8242,9 @@ lseek(int fd, off_t offset, int whence)
 }
 
 PUBLIC off_t __lseek(int, off_t, int)
-   __attribute__((alias("lseek")));
+   DRM_SHIM_ALIAS_NOTHROW __attribute__((alias("lseek")));
 PUBLIC off64_t __lseek64(int, off64_t, int)
-   __attribute__((alias("lseek64")));
+   DRM_SHIM_ALIAS_NOTHROW __attribute__((alias("lseek64")));
 
 PUBLIC int
 flock(int fd, int operation)
@@ -8719,7 +8733,7 @@ dup2(int old_fd, int new_fd)
    errno = saved_errno;
    return ret;
 }
-PUBLIC int __dup2(int, int) __attribute__((alias("dup2")));
+PUBLIC int __dup2(int, int) DRM_SHIM_ALIAS_NOTHROW __attribute__((alias("dup2")));
 
 PUBLIC int
 dup3(int old_fd, int new_fd, int flags)
