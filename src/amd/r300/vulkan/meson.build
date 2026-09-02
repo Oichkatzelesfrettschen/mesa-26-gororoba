@@ -364,6 +364,18 @@ if with_tests
     args : [files('tests/r3v_planning_census.py'), '--selftest'],
     suite : ['r3v'],
   )
+  # A planning pass names its captures `<case>.plan` beside a
+  # `<case>.plan.no_nonempty_ib` marker per refused case, while the
+  # shard composer reads `<case>.transcript`; staging records both
+  # digests so the rename between them is evidence, and refuses a
+  # marker, a second shard's copy of one case, and a capture count the
+  # caller did not expect.
+  test(
+    'r3v-native-plan-stage-captures-selftest',
+    prog_python,
+    args : [files('tests/r3v_native_plan_stage_captures.py'), 'selftest'],
+    suite : ['r3v'],
+  )
   test(
     'r3v-conformance-ledger-audit-selftest',
     prog_python,
@@ -559,6 +571,7 @@ if with_tests
                     'tests/r3v_deqp_provision.py',
                     'tests/r3v_native_plan_compose_check.py',
                     'tests/r3v_native_plan_compose_shard.py',
+                    'tests/r3v_native_plan_stage_captures.py',
                     'tests/r3v_planning_census.py')],
       suite : ['r3v'],
     )
