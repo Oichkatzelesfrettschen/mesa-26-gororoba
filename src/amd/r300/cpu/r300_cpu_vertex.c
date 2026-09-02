@@ -122,23 +122,34 @@ r300_cpu_vertex_gather_baseline(
                         (uint64_t)(first_vertex + v) * stream->stride
                    : NULL;
       for (unsigned lane = 0; lane < 4; lane++) {
-         const uint8_t *src;
+         uint32_t bits;
          switch (format->select[lane]) {
          case R300_VERTEX_SELECT_ZERO:
-            src = lane_zero_bytes;
+            memcpy(&bits, lane_zero_bytes, sizeof(bits));
             break;
          case R300_VERTEX_SELECT_ONE:
-            src = lane_one_bytes;
+            memcpy(&bits, lane_one_bytes, sizeof(bits));
             break;
-         default:
+         default: {
             /* X..W name physical components; the vocabulary orders the
-             * selector values so the component index is the selector.
+             * selector values so the component index is the selector,
+             * and the component's own width strides it.  The numeric
+             * class decodes the component to the binary32 lane the
+             * carrier holds, which is the identity for the F32 family.
+             * An out-of-bounds record decodes zero bytes, and every
+             * class carries zero to +0.0.
              */
-            src = in_bounds ? record + (unsigned)format->select[lane] * 4
-                            : lane_zero_bytes;
+            static const uint8_t zero_component[4] = { 0, 0, 0, 0 };
+            const uint8_t *src =
+               in_bounds ? record + (unsigned)format->select[lane] *
+                                       format->component_bytes
+                         : zero_component;
+            bits = r300_vertex_format_decode_component(
+               format->numeric_class, format->component_bytes, src);
             break;
          }
-         memcpy(out + lane * 4, src, 4);
+         }
+         memcpy(out + lane * 4, &bits, sizeof(bits));
       }
       out += 16;
    }

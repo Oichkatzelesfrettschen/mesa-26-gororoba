@@ -183,6 +183,102 @@ check_zero_stride(void)
                                  0, 1, output, 4) == -EINVAL);
 }
 
+
+/* One lane of a one-vertex gather, as a float. */
+static float
+gathered_lane(int format_id, const uint8_t *record, size_t record_bytes,
+              unsigned lane)
+{
+   struct r300_vertex_stream stream = { .data = record,
+                                        .stride = (uint32_t)record_bytes,
+                                        .size_bytes = record_bytes };
+   uint32_t out[4];
+   assert(r300_cpu_vertex_gather_baseline(format_id, &stream, 0, 1, out, 4) ==
+          0);
+   uint32_t dispatch[4];
+   assert(r300_cpu_vertex_gather(format_id, &stream, 0, 1, dispatch, 4) == 0);
+   /* The dispatched implementation reproduces the baseline byte for
+    * byte, so a SIMD kernel cannot diverge on a decoded class. */
+   assert(memcmp(out, dispatch, sizeof(out)) == 0);
+   float value;
+   memcpy(&value, &out[lane], sizeof(value));
+   return value;
+}
+
+static void
+check_decoded_classes(void)
+{
+   /* UNORM8: 0 and 255 are the exact endpoints, and an interior code
+    * divides by the unsigned maximum. */
+   const uint8_t unorm8[4] = { 0, 255, 128, 64 };
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4, unorm8, 4, 0) == 0.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4, unorm8, 4, 1) == 1.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4, unorm8, 4, 2) ==
+          128.0f / 255.0f);
+
+   /* B8G8R8A8 reads the same bytes and reorders through the selectors:
+    * lane 0 takes component 2 and lane 2 takes component 0. */
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4_BGRA, unorm8, 4, 0) ==
+          128.0f / 255.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4_BGRA, unorm8, 4, 2) ==
+          0.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4_BGRA, unorm8, 4, 1) ==
+          1.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM8_4_BGRA, unorm8, 4, 3) ==
+          64.0f / 255.0f);
+
+   /* SNORM8 divides by the positive maximum, and the one extra
+    * negative code clamps to -1 rather than reaching -128/127. */
+   const int8_t snorm8_signed[2] = { -128, 127 };
+   uint8_t snorm8[2];
+   memcpy(snorm8, snorm8_signed, sizeof(snorm8));
+   assert(gathered_lane(R300_VERTEX_FORMAT_SNORM8_2, snorm8, 2, 0) == -1.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_SNORM8_2, snorm8, 2, 1) == 1.0f);
+   /* The absent components stay the class-independent 0, 0, 1 tail. */
+   assert(gathered_lane(R300_VERTEX_FORMAT_SNORM8_2, snorm8, 2, 2) == 0.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_SNORM8_2, snorm8, 2, 3) == 1.0f);
+
+   /* UNORM16 and SNORM16 stride two bytes per component. */
+   const uint16_t unorm16[2] = { 0xffff, 0x0000 };
+   uint8_t unorm16_bytes[4];
+   memcpy(unorm16_bytes, unorm16, sizeof(unorm16_bytes));
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM16_2, unorm16_bytes, 4, 0) ==
+          1.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_UNORM16_2, unorm16_bytes, 4, 1) ==
+          0.0f);
+   const int16_t snorm16[2] = { -32768, 32767 };
+   uint8_t snorm16_bytes[4];
+   memcpy(snorm16_bytes, snorm16, sizeof(snorm16_bytes));
+   assert(gathered_lane(R300_VERTEX_FORMAT_SNORM16_2, snorm16_bytes, 4, 0) ==
+          -1.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_SNORM16_2, snorm16_bytes, 4, 1) ==
+          1.0f);
+
+   /* SFLOAT16 expands binary16: a normal, a negative, the minimum
+    * subnormal, and the maximum normal. */
+   const uint16_t halves[4] = { 0x3c00, 0xc000, 0x0001, 0x7bff };
+   uint8_t half_bytes[8];
+   memcpy(half_bytes, halves, sizeof(half_bytes));
+   assert(gathered_lane(R300_VERTEX_FORMAT_SFLOAT16_4, half_bytes, 8, 0) ==
+          1.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_SFLOAT16_4, half_bytes, 8, 1) ==
+          -2.0f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_SFLOAT16_4, half_bytes, 8, 2) ==
+          5.9604644775390625e-08f);
+   assert(gathered_lane(R300_VERTEX_FORMAT_SFLOAT16_4, half_bytes, 8, 3) ==
+          65504.0f);
+
+   /* Every decoded class carries a record's semantic bytes, so a
+    * stream one byte short of one record admits no gather. */
+   const uint8_t short_record[3] = { 0, 0, 0 };
+   struct r300_vertex_stream short_stream = { .data = short_record,
+                                              .stride = 4,
+                                              .size_bytes = 3 };
+   uint32_t out[4];
+   assert(r300_cpu_vertex_gather_baseline(R300_VERTEX_FORMAT_UNORM8_4,
+                                          &short_stream, 0, 1, out, 4) != 0);
+}
+
 int
 main(void)
 {
@@ -277,6 +373,15 @@ main(void)
    const uint8_t *w_bytes = (const uint8_t *)one_lane + 12;
    assert(w_bytes[0] == 0x00 && w_bytes[1] == 0x00 && w_bytes[2] == 0x80 &&
           w_bytes[3] == 0x3f);
+
+   /* The normalized and half-precision classes decode their source
+    * components into the same four-float carrier, so a gather's lanes
+    * are the Vulkan fixed-point and binary16 conversions of the record
+    * bytes.  The ONE lane stays the float one every class synthesizes,
+    * and the BGRA order reaches the carrier through the selectors
+    * alone.
+    */
+   check_decoded_classes();
 
    printf("r300_cpu_vertex: %s implementation matches the byte-defined reference "
           "bit-exactly\n",
