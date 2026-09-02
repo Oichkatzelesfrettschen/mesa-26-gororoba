@@ -127,5 +127,7 @@ if with_tests and prog_nm_r300_liveness.found()
             '--compiler-archive', libr300_compiler.full_path()],
     depends : [libr300_common, libr300_compiler],
     suite : ['r300'],
+    # Same source-tree walk as the census; the K8 exceeds meson's 30 s.
+    timeout : 180,
   )
 endif
