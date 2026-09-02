@@ -354,6 +354,16 @@ if with_tests
   # query, a receipt, or a prose authority, and a source query's value
   # equals the ledger's number, so the frontier never cites a hand-typed
   # limit.
+  # A planning pass answers per case whether the driver built an IB and,
+  # when it did not, which predicate refused; the census joins the QPA
+  # result, the plan transcript, and the capture marker into that table and
+  # ranks the refusal sites by case population.
+  test(
+    'r3v-planning-census-selftest',
+    prog_python,
+    args : [files('tests/r3v_planning_census.py'), '--selftest'],
+    suite : ['r3v'],
+  )
   test(
     'r3v-conformance-ledger-audit-selftest',
     prog_python,
@@ -548,7 +558,8 @@ if with_tests
                     'tests/r3v_conformance_partition.py',
                     'tests/r3v_deqp_provision.py',
                     'tests/r3v_native_plan_compose_check.py',
-                    'tests/r3v_native_plan_compose_shard.py')],
+                    'tests/r3v_native_plan_compose_shard.py',
+                    'tests/r3v_planning_census.py')],
       suite : ['r3v'],
     )
   endif
