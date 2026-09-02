@@ -39,6 +39,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+CAPTURE_FIELDS = (
+    "submission_count",
+    "ib_dwords",
+    "cell_kind",
+    "emitter",
+    "reloc_count",
+    "bo_roles",
+)
+
 CASE_TABLE_HEADER = (
     "slice",
     "shard",
@@ -46,6 +55,7 @@ CASE_TABLE_HEADER = (
     "deqp_status",
     "refusal_site",
     "refusal_predicate",
+    "refusal_key",
     "planning_outcome",
     "transcript_sha256",
     "submission_count",
@@ -58,6 +68,7 @@ CASE_TABLE_HEADER = (
 )
 
 FIRST_REFUSAL_HEADER = (
+    "refusal_key",
     "refusal_site",
     "deqp_status",
     "cases",
@@ -104,6 +115,21 @@ def refusal_site(message):
     return match.group(1) if match else "unreported"
 
 
+def refusal_key(site, message):
+    """The address a first-refusal census groups by.
+
+    A CTS predicate that names a `file:line` groups by that site, since one
+    site is one predicate and the message around it carries case-specific
+    values.  A predicate that names no site -- a feature check that reports
+    only its own sentence -- groups by that sentence: collapsing every
+    siteless refusal into one row merges unrelated mechanisms under whichever
+    example landed first, which reads as a single large family that no one
+    change could move."""
+    if site != "unreported":
+        return site
+    return message.strip() if message and message.strip() else "unreported"
+
+
 def parse_transcript(path):
     """Read the plan a capture wrote: submissions, cells, and BO roles."""
     fields = {
@@ -146,7 +172,7 @@ def capture_state(capture_dir, case):
     so a name that does not match exactly is searched for by prefix."""
     outcome = "unresolved"
     digest = ""
-    fields = {key: "" for key in CASE_TABLE_HEADER[8:14]}
+    fields = {key: "" for key in CAPTURE_FIELDS}
     if capture_dir is None:
         return outcome, digest, fields
     exact = capture_dir / f"{case}{TRANSCRIPT_SUFFIX}"
@@ -221,6 +247,7 @@ def shard_rows(out_dir, capture_root):
             "deqp_status": status or "absent",
             "refusal_site": refusal_site(message),
             "refusal_predicate": message or "",
+            "refusal_key": refusal_key(refusal_site(message), message),
             "planning_outcome": outcome,
             "transcript_sha256": digest,
             "cs_ioctls": strace_ioctls(case_dir),
@@ -249,23 +276,24 @@ def census(out_dirs, capture_root, prefix):
     for row in rows:
         if row["planning_outcome"] == "transcript":
             continue
-        entry = refusals[(row["refusal_site"], row["deqp_status"])]
+        entry = refusals[(row["refusal_key"], row["deqp_status"])]
         entry["cases"] += 1
         entry["slices"].add(row["slice"])
         if entry["example"] is None:
             entry["example"] = row
     refusal_rows = [
         {
-            "refusal_site": site,
+            "refusal_key": key,
+            "refusal_site": entry["example"]["refusal_site"],
             "deqp_status": status,
             "cases": entry["cases"],
             "slices": " ".join(sorted(entry["slices"])),
             "example_case": entry["example"]["case"],
             "example_predicate": entry["example"]["refusal_predicate"],
         }
-        for (site, status), entry in refusals.items()
+        for (key, status), entry in refusals.items()
     ]
-    refusal_rows.sort(key=lambda row: (-row["cases"], row["refusal_site"]))
+    refusal_rows.sort(key=lambda row: (-row["cases"], row["refusal_key"]))
     write_table(f"{prefix}-first-refusal.tsv", FIRST_REFUSAL_HEADER, refusal_rows)
 
     outcomes = collections.defaultdict(
@@ -304,6 +332,9 @@ def selftest():
             "dEQP-VK.fake.declined": "NotSupported",
             "dEQP-VK.fake.declined_too": "NotSupported",
             "dEQP-VK.fake.refused": "Fail",
+            "dEQP-VK.fake.siteless_a": "NotSupported",
+            "dEQP-VK.fake.siteless_b": "NotSupported",
+            "dEQP-VK.fake.siteless_b_too": "NotSupported",
             "dEQP-VK.fake.silent": None,
         }
         messages = {
@@ -317,6 +348,11 @@ def selftest():
             "dEQP-VK.fake.refused": (
                 "vk.createImage(...): VK_ERROR_UNKNOWN at vkRefUtilImpl.inl:1"
             ),
+            # Two mechanisms whose predicates name no site: a census keyed on
+            # the site alone merges them into one row.
+            "dEQP-VK.fake.siteless_a": "Large points not supported",
+            "dEQP-VK.fake.siteless_b": "Tessellation shader not supported",
+            "dEQP-VK.fake.siteless_b_too": "Tessellation shader not supported",
         }
         for case, status in names.items():
             case_dir = cases / case
@@ -340,6 +376,9 @@ def selftest():
             "dEQP-VK.fake.declined",
             "dEQP-VK.fake.declined_too",
             "dEQP-VK.fake.refused",
+            "dEQP-VK.fake.siteless_a",
+            "dEQP-VK.fake.siteless_b",
+            "dEQP-VK.fake.siteless_b_too",
         ):
             (capture / f"{case}.plan.no_nonempty_ib").write_text("")
         (out / "receipt.json").write_text(
@@ -382,16 +421,37 @@ def selftest():
         # first-refusal census untouched.
         sites = {row["refusal_site"] for row in refusals}
         assert "vktTestCase.cpp:1389" in sites and len(sites) == 3, sites
-        assert sum(row["cases"] for row in refusals) == 4
+        assert sum(row["cases"] for row in refusals) == 7
+
+        # A siteless predicate is its own address: the two mechanisms here
+        # rank apart, and the one carrying two cases outranks the one
+        # carrying one, which a site-keyed census could not express.
+        siteless = {
+            row["refusal_key"]: row["cases"]
+            for row in refusals
+            if row["refusal_site"] == "unreported"
+        }
+        assert siteless == {
+            "Large points not supported": 1,
+            "Tessellation shader not supported": 2,
+            # The case whose QPA carries no result element names no
+            # predicate either, so `unreported` stays its own address.
+            "unreported": 1,
+        }, siteless
 
         counts = {row["planning_outcome"]: row["cases"] for row in outcomes}
-        assert counts == {"no_nonempty_ib": 3, "transcript": 1, "unresolved": 1}
+        assert counts == {"no_nonempty_ib": 6, "transcript": 1, "unresolved": 1}
         # The census ranks by population, so the family worth implementing
         # next reads off the first row: two cases share one site here and the
         # other two sites carry one case apiece.
-        assert refusals[0]["refusal_site"] == "vktTestCase.cpp:1389"
-        assert refusals[0]["cases"] == 2
-        assert [row["cases"] for row in refusals] == [2, 1, 1]
+        assert [row["cases"] for row in refusals] == [2, 2, 1, 1, 1]
+        # Population decides the order and the key breaks a tie, so the two
+        # two-case families lead and the site-keyed one is not privileged
+        # over the predicate-keyed one.
+        assert [row["refusal_key"] for row in refusals[:2]] == [
+            "Tessellation shader not supported",
+            "vktTestCase.cpp:1389",
+        ], refusals[:2]
     print("OK    planning census: transcript, refusal, absent-result, and ranking")
     return 0
 
