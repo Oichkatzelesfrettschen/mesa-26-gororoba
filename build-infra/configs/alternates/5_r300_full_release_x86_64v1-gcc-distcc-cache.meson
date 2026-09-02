@@ -78,8 +78,10 @@ gallium-xa = true
 
 # In-tree tools and the unit-test executables.  A compiler gate that builds no
 # tests proves the library compiles and nothing about the checks; build-tests
-# puts the r300, NIR, and vl suites under the same warnings-as-errors reading.
-tools = ['nir', 'glsl', 'dlclose-skip']
+# puts the r300, NIR, and vl suites under the same warnings-as-errors reading;
+# drm-shim registers the r3v host-model suites that the qualification
+# inventory requires, the same tool set the release profile builds.
+tools = ['drm-shim', 'nir', 'glsl', 'dlclose-skip']
 build-tests = true
 vulkan-layers = ['anti-lag', 'device-select', 'overlay']
 
