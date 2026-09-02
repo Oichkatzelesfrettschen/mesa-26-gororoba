@@ -1108,6 +1108,30 @@ class QpaMarkerReader:
         return begun, closed, self.counts[b"#endSession"] > 0
 
 
+def reap_finished_children():
+    """Collect every child that has already exited, and report how many.
+
+    A per-case sequence starts one traced process and one preload probe for
+    each case.  Each caller waits on the child it owns, yet entries still
+    accumulate in the process table across a shard, and at twenty thousand
+    cases they reach the per-user process limit: the next `fork` raises
+    `BlockingIOError: [Errno 11] Resource temporarily unavailable` and the
+    shard ends mid-sequence with no receipt, so the cases behind it are lost
+    and the ones ahead of it were paid for.  Collecting between cases keeps
+    the table flat.  The sweep runs where no child is in flight -- every
+    caller has already waited on its own -- so it takes no result another
+    caller needs."""
+    collected = 0
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            return collected
+        if pid == 0:
+            return collected
+        collected += 1
+
+
 def supervise(
     argv,
     cwd,
@@ -1542,6 +1566,9 @@ def run_cases(
                 stderr_text,
             )
         records[case] = record
+        reaped = reap_finished_children()
+        if reaped:
+            record["reaped_children"] = reaped
         # A kernel hazard ends the sequence where it appeared: the cases
         # behind it would run on a wedged or reset GPU, so their results
         # would describe the hazard rather than themselves.
@@ -3481,6 +3508,28 @@ def selftest(fixture_qpa):
             manifest_json=str(wrong_cts_dir / "partition_manifest.json"),
         )
         assert "argv" not in r
+        # A shard collects the children its cases leave behind, because a
+        # process table that grows with the case count reaches the per-user
+        # limit and ends a long shard mid-sequence.
+        import subprocess as _subprocess
+
+        abandoned = _subprocess.Popen(
+            ["/bin/sh", "-c", "exit 7"],
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+        )
+        abandoned_pid = abandoned.pid
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if Path(f"/proc/{abandoned_pid}/stat").read_text().split()[2] == "Z":
+                break
+            time.sleep(0.05)
+        assert reap_finished_children() >= 1
+        assert not Path(f"/proc/{abandoned_pid}").exists()
+        # A sweep with nothing to collect reports nothing and refuses to
+        # block; a sweep that waited here would stall every shard.
+        assert reap_finished_children() == 0
+        abandoned.returncode = 7
         # A provisioned bundle carries no worktree, so its sealed
         # provenance is the CTS-revision authority.  The document holds
         # only for the binary it names and only while its seal recomputes.
