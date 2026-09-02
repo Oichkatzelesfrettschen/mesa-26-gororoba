@@ -417,6 +417,152 @@ test_read_bytes(int fd, void *buffer, size_t count)
    return (ssize_t)total;
 }
 
+#define TEST_FDINFO_LOCK_MAX_RECORDS 16
+#define TEST_FDINFO_LOCK_RECORD_CAPACITY 256
+
+struct test_fdinfo_lock_snapshot {
+   size_t record_count;
+   char records[TEST_FDINFO_LOCK_MAX_RECORDS]
+               [TEST_FDINFO_LOCK_RECORD_CAPACITY];
+};
+
+static int
+test_fdinfo_lock_record_compare(const void *left, const void *right)
+{
+   return strcmp(left, right);
+}
+
+static bool
+test_fdinfo_lock_snapshot(int fd,
+                          struct test_fdinfo_lock_snapshot *snapshot)
+{
+   memset(snapshot, 0, sizeof(*snapshot));
+
+   char path[64];
+   int path_length =
+      snprintf(path, sizeof(path), "/proc/thread-self/fdinfo/%d", fd);
+   if (path_length < 0 || path_length >= (int)sizeof(path)) {
+      errno = ENAMETOOLONG;
+      return false;
+   }
+
+   int fdinfo_fd =
+      syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+   if (fdinfo_fd < 0)
+      return false;
+
+   char contents[8192];
+   size_t used = 0;
+   bool complete = false;
+   int read_error = 0;
+   while (used + 1 < sizeof(contents)) {
+      ssize_t length =
+         syscall(SYS_read, fdinfo_fd, contents + used,
+                 sizeof(contents) - used - 1);
+      if (length < 0 && errno == EINTR)
+         continue;
+      if (length < 0) {
+         read_error = errno;
+         break;
+      }
+      if (!length) {
+         complete = true;
+         break;
+      }
+      used += (size_t)length;
+   }
+   int close_result = syscall(SYS_close, fdinfo_fd);
+   if (!complete || close_result < 0) {
+      errno = complete ? errno : (read_error ? read_error : EOVERFLOW);
+      return false;
+   }
+   contents[used] = '\0';
+
+   for (char *line = contents; line && *line;) {
+      char *next = strchr(line, '\n');
+      if (next)
+         *next = '\0';
+      if (strncmp(line, "lock:", 5) == 0) {
+         char *record = line + 5;
+         while (*record == ' ' || *record == '\t')
+            record++;
+         errno = 0;
+         char *ordinal_end;
+         (void)strtoul(record, &ordinal_end, 10);
+         if (errno || ordinal_end == record || *ordinal_end != ':') {
+            errno = EPROTO;
+            return false;
+         }
+         record = ordinal_end + 1;
+         while (*record == ' ' || *record == '\t')
+            record++;
+         if (strncmp(record, "OFDLCK ", 7) == 0) {
+            size_t record_length = strlen(record);
+            if (snapshot->record_count >=
+                   TEST_FDINFO_LOCK_MAX_RECORDS ||
+                record_length >= TEST_FDINFO_LOCK_RECORD_CAPACITY) {
+               errno = EOVERFLOW;
+               return false;
+            }
+            memcpy(snapshot->records[snapshot->record_count], record,
+                   record_length + 1);
+            snapshot->record_count++;
+         }
+      }
+      line = next ? next + 1 : NULL;
+   }
+
+   qsort(snapshot->records, snapshot->record_count,
+         sizeof(snapshot->records[0]),
+         test_fdinfo_lock_record_compare);
+   return true;
+}
+
+static bool
+test_fdinfo_lock_snapshot_has_write_to_eof(
+   const struct test_fdinfo_lock_snapshot *snapshot, off64_t start)
+{
+   char suffix[64];
+   int suffix_length =
+      snprintf(suffix, sizeof(suffix), " %lld EOF", (long long)start);
+   if (suffix_length < 0 || suffix_length >= (int)sizeof(suffix))
+      return false;
+
+   for (size_t index = 0; index < snapshot->record_count; index++) {
+      const char *record = snapshot->records[index];
+      size_t record_length = strlen(record);
+      if (strncmp(record, "OFDLCK ", 7) == 0 &&
+          strstr(record, " WRITE ") &&
+          record_length >= (size_t)suffix_length &&
+          strcmp(record + record_length - suffix_length, suffix) == 0)
+         return true;
+   }
+   return false;
+}
+
+static bool
+test_fdinfo_lock_snapshots_equal(
+   const struct test_fdinfo_lock_snapshot *left,
+   const struct test_fdinfo_lock_snapshot *right)
+{
+   if (left->record_count != right->record_count)
+      return false;
+   for (size_t index = 0; index < left->record_count; index++) {
+      if (strcmp(left->records[index], right->records[index]) != 0)
+         return false;
+   }
+   return true;
+}
+
+static void
+test_fdinfo_lock_snapshot_print(
+   const char *label, const struct test_fdinfo_lock_snapshot *snapshot)
+{
+   for (size_t index = 0; index < snapshot->record_count; index++)
+      fprintf(stderr, "fd identity %s lock %zu: %s\n", label, index,
+              snapshot->records[index]);
+}
+
 static void
 test_proc_fd_readlink(const char *path, bool expected_tracked)
 {
@@ -446,7 +592,7 @@ struct test_unshared_fd_context {
    bool direct_unshare;
    pid_t worker_tid;
    int worker_render_fd;
-   int worker_identity_fd;
+   int worker_identity_vault_fd;
    int result;
 };
 
@@ -462,6 +608,8 @@ struct test_blocking_lock_context {
 struct test_fd_discovery_context {
    int fd;
    int start_fd;
+   int completion_fd;
+   int worker_index;
    int result;
    struct stat status;
 };
@@ -513,6 +661,14 @@ test_fd_discovery_worker(void *data)
       return NULL;
    }
    context->result = fstat(context->fd, &context->status);
+   ssize_t written;
+   do {
+      written =
+         write(context->completion_fd, &context->worker_index,
+               sizeof(context->worker_index));
+   } while (written < 0 && errno == EINTR);
+   if (written != sizeof(context->worker_index))
+      context->result = -1;
    return NULL;
 }
 
@@ -541,9 +697,10 @@ test_unshared_fd_table_worker(void *data)
    struct shim_fd *worker_shim_fd = drm_shim_fd_get(worker_fd);
    if (!worker_shim_fd)
       goto notify;
-   context->worker_identity_fd = worker_shim_fd->identity_fd;
+   context->worker_identity_vault_fd =
+      worker_shim_fd->identity_vault_fd;
    drm_shim_fd_put(worker_shim_fd);
-   if (context->worker_identity_fd < 0)
+   if (context->worker_identity_vault_fd < 0)
       goto notify;
    struct drm_radeon_gem_create create = {
       .size = 4096,
@@ -2486,11 +2643,31 @@ test_fork_child_close_preserves_parent_bo(int fd)
               "fork-close mmap-offset query returned %d offset 0x%llx",
               ret, (unsigned long long)mmap_bo.addr_ptr);
    if (ret == 0) {
-      pid_t child = fork();
+      struct shim_fd *fork_shim_fd = drm_shim_fd_get(fd);
+      int identity_vault_fd =
+         fork_shim_fd ? fork_shim_fd->identity_vault_fd : -1;
+      TEST_CHECK(identity_vault_fd >= 0,
+                 "fork-close identity vault is %d",
+                 identity_vault_fd);
+      drm_shim_fd_put(fork_shim_fd);
+
+      pid_t child = identity_vault_fd >= 0 ? fork() : -1;
       TEST_CHECK(child >= 0, "fork-close fork failed with errno %d", errno);
       if (child == 0) {
-         int close_result = close(fd);
-         _exit(close_result == 0 ? 0 : 1);
+         int alias_fd = dup(fd);
+         int first_close_result = close(fd);
+         int retained_result =
+            syscall(SYS_fcntl, identity_vault_fd, F_GETFD);
+         int final_close_result = alias_fd >= 0 ? close(alias_fd) : -1;
+         errno = 0;
+         int released_result =
+            syscall(SYS_fcntl, identity_vault_fd, F_GETFD);
+         int released_error = errno;
+         _exit(alias_fd >= 0 && first_close_result == 0 &&
+                     retained_result >= 0 && final_close_result == 0 &&
+                     released_result == -1 && released_error == EBADF
+                  ? 0
+                  : 1);
       }
       if (child > 0) {
          int child_status;
@@ -2502,6 +2679,14 @@ test_fork_child_close_preserves_parent_bo(int fd)
                        WEXITSTATUS(child_status) == 0,
                     "fork-close child status is 0x%x",
                     waited == child ? child_status : -1);
+
+         errno = 0;
+         int parent_identity_result =
+            syscall(SYS_fcntl, identity_vault_fd, F_GETFD);
+         TEST_CHECK(parent_identity_result >= 0,
+                    "fork-close removed parent identity descriptor %d "
+                    "with errno %d",
+                    identity_vault_fd, errno);
 
          void *mapping =
             mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
@@ -2522,6 +2707,174 @@ test_fork_child_close_preserves_parent_bo(int fd)
    ret = ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
    TEST_CHECK(ret == 0, "fork-close GEM close returned %d errno %d",
               ret, errno);
+}
+
+static void
+test_identity_witness_reuse_preserves_replacement(void)
+{
+   int render_fd =
+      open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   TEST_CHECK(render_fd >= 0,
+              "witness-reuse render open failed with errno %d", errno);
+   if (render_fd < 0)
+      return;
+
+   int initialized_identity_files =
+      drm_shim_test_live_identity_files();
+   struct shim_fd *shim_fd = drm_shim_fd_get(render_fd);
+   int identity_vault_fd =
+      shim_fd ? shim_fd->identity_vault_fd : -1;
+   TEST_CHECK(identity_vault_fd >= 0,
+              "witness-reuse identity vault is %d",
+              identity_vault_fd);
+   drm_shim_fd_put(shim_fd);
+   if (identity_vault_fd < 0) {
+      close(render_fd);
+      return;
+   }
+
+   char render_proc_path[64];
+   int path_length =
+      snprintf(render_proc_path, sizeof(render_proc_path),
+               "/proc/thread-self/fd/%d", render_fd);
+   TEST_CHECK(path_length > 0 &&
+                 path_length < (int)sizeof(render_proc_path),
+              "witness-reuse proc path length is %d", path_length);
+   if (path_length <= 0 ||
+       path_length >= (int)sizeof(render_proc_path)) {
+      close(render_fd);
+      return;
+   }
+
+   int raw_close_result =
+      syscall(SYS_close, identity_vault_fd);
+   TEST_CHECK(raw_close_result == 0,
+              "witness-reuse raw identity close returned %d errno %d",
+              raw_close_result, errno);
+   int replacement_fd =
+      syscall(SYS_openat, AT_FDCWD, render_proc_path,
+              O_RDWR | O_CLOEXEC, 0);
+   TEST_CHECK(replacement_fd >= 0,
+              "witness-reuse independent reopen failed with errno %d",
+              errno);
+   if (replacement_fd >= 0 &&
+       replacement_fd != identity_vault_fd) {
+      int duplicate_result =
+         syscall(SYS_dup3, replacement_fd, identity_vault_fd,
+                 O_CLOEXEC);
+      TEST_CHECK(duplicate_result == identity_vault_fd,
+                 "witness-reuse replacement dup3 returned %d errno %d",
+                 duplicate_result, errno);
+      syscall(SYS_close, replacement_fd);
+      replacement_fd = duplicate_result;
+   }
+
+   struct stat render_status;
+   struct stat replacement_status;
+   int render_stat_result =
+      syscall(SYS_fstat, render_fd, &render_status);
+   int replacement_stat_result =
+      replacement_fd >= 0
+         ? syscall(SYS_fstat, replacement_fd, &replacement_status)
+         : -1;
+   TEST_CHECK(render_stat_result == 0 &&
+                 replacement_stat_result == 0 &&
+                 render_status.st_dev == replacement_status.st_dev &&
+                 render_status.st_ino == replacement_status.st_ino,
+              "witness-reuse same-inode calibration returned %d/%d",
+              render_stat_result, replacement_stat_result);
+#ifdef F_DUPFD_QUERY
+   if (replacement_fd >= 0) {
+      int identity_query =
+         syscall(SYS_fcntl, render_fd, F_DUPFD_QUERY,
+                 replacement_fd);
+      TEST_CHECK(identity_query == 0,
+                 "witness-reuse independent-open query returned %d "
+                 "errno %d",
+                 identity_query, errno);
+   }
+#endif
+
+   int close_result = close(render_fd);
+   TEST_CHECK(close_result == 0,
+              "witness-reuse render close returned %d errno %d",
+              close_result, errno);
+   errno = 0;
+   int replacement_flags =
+      replacement_fd >= 0
+         ? syscall(SYS_fcntl, replacement_fd, F_GETFD)
+         : -1;
+   int replacement_error = errno;
+   TEST_CHECK(replacement_flags >= 0,
+              "witness-reuse finalization closed replacement %d "
+              "with errno %d",
+              replacement_fd, replacement_error);
+   if (replacement_fd >= 0)
+      syscall(SYS_close, replacement_fd);
+   TEST_CHECK(drm_shim_test_live_identity_files() ==
+                 initialized_identity_files - 1,
+              "witness-reuse identity files did not release from %d",
+              initialized_identity_files);
+}
+
+/* A raw dup3 over a registered render descriptor leaves the descriptor
+ * number in fd_map while the open file description behind it is gone.
+ * drm_shim_fd_matches gates on the queried descriptor's own device and
+ * inode, so the stale entry resolves to DRM_SHIM_FD_MATCH_NO rather than
+ * to the fail-closed DRM_SHIM_FD_MATCH_UNKNOWN, and drm_shim_fd_find_locked
+ * takes the direct_is_stale branch: it calls
+ * drm_shim_forget_non_cloexec_fd_locked and removes the map entry.  The
+ * refusal alone does not prove that removal, so the check reads
+ * drm_shim_test_fd_is_registered afterward.
+ */
+static void
+test_stale_render_alias_releases_map_entry(void)
+{
+   int render_fd =
+      open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   TEST_CHECK(render_fd >= 0,
+              "stale-alias render open failed with errno %d", errno);
+   if (render_fd < 0)
+      return;
+
+   struct shim_fd *shim_fd = drm_shim_fd_get(render_fd);
+   TEST_CHECK(shim_fd != NULL,
+              "stale-alias render descriptor did not register");
+   drm_shim_fd_put(shim_fd);
+   TEST_CHECK(drm_shim_test_fd_is_registered(render_fd),
+              "stale-alias calibration lost fd %d from the map",
+              render_fd);
+
+   int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+   TEST_CHECK(null_fd >= 0,
+              "stale-alias /dev/null open failed with errno %d", errno);
+   if (null_fd < 0) {
+      close(render_fd);
+      return;
+   }
+   int replaced = syscall(SYS_dup3, null_fd, render_fd, O_CLOEXEC);
+   TEST_CHECK(replaced == render_fd,
+              "stale-alias raw replacement returned %d errno %d",
+              replaced, errno);
+   syscall(SYS_close, null_fd);
+
+   uint32_t device_id = UINT32_MAX;
+   struct drm_radeon_info info = {
+      .request = RADEON_INFO_DEVICE_ID,
+      .value = (uintptr_t)&device_id,
+   };
+   errno = 0;
+   int ret = ioctl(render_fd, DRM_IOCTL_RADEON_INFO, &info);
+   int stale_errno = errno;
+   TEST_CHECK(ret == -1 && stale_errno == ENOTTY &&
+                 device_id == UINT32_MAX,
+              "stale-alias replacement routed ioctl: %d errno %d "
+              "device 0x%x",
+              ret, stale_errno, device_id);
+   TEST_CHECK(!drm_shim_test_fd_is_registered(render_fd),
+              "stale-alias fd %d survived in the map after the refusal",
+              render_fd);
+   close(render_fd);
 }
 
 static void
@@ -3549,8 +3902,9 @@ test_delayed_raw_duplicate_discovery(void)
 }
 
 static void
-test_fd_identity_first_discovery(void)
+test_fd_identity_first_discovery(bool test_stateful_ioctls)
 {
+   int identity_baseline = drm_shim_test_live_identity_files();
    const char *synthetic_root = drm_shim_test_synthetic_root_path();
    char render_path[PATH_MAX];
    int length =
@@ -3582,19 +3936,33 @@ test_fd_identity_first_discovery(void)
    int start_pipe[2];
    int ready_pipe[2];
    int release_pipe[2];
+   int completion_pipe[2];
    int start_result = pipe2(start_pipe, O_CLOEXEC);
    int ready_result = pipe2(ready_pipe, O_CLOEXEC);
    int release_result = pipe2(release_pipe, O_CLOEXEC);
+   int completion_result = pipe2(completion_pipe, O_CLOEXEC);
    TEST_CHECK(start_result == 0 && ready_result == 0 &&
-                 release_result == 0,
+                 release_result == 0 && completion_result == 0,
               "first-discovery pipes failed with errno %d", errno);
    if (start_result != 0 || ready_result != 0 ||
-       release_result != 0)
+       release_result != 0 || completion_result != 0)
       goto cleanup_pipes;
 
    struct test_fd_discovery_context contexts[2] = {
-      {.fd = aliases[0], .start_fd = start_pipe[0], .result = -2},
-      {.fd = aliases[1], .start_fd = start_pipe[0], .result = -2},
+      {
+         .fd = aliases[0],
+         .start_fd = start_pipe[0],
+         .completion_fd = completion_pipe[1],
+         .worker_index = 0,
+         .result = -2,
+      },
+      {
+         .fd = aliases[1],
+         .start_fd = start_pipe[0],
+         .completion_fd = completion_pipe[1],
+         .worker_index = 1,
+         .result = -2,
+      },
    };
    pthread_t workers[2];
    int created = 0;
@@ -3620,9 +3988,45 @@ test_fd_identity_first_discovery(void)
          test_read_bytes(ready_pipe[0], bytes, sizeof(bytes));
       TEST_CHECK(transferred == sizeof(bytes),
                  "first-discovery readiness returned %zd", transferred);
-      transferred = write(release_pipe[1], bytes, sizeof(bytes));
-      TEST_CHECK(transferred == sizeof(bytes),
-                 "first-discovery release returned %zd", transferred);
+      transferred = write(release_pipe[1], bytes, 1);
+      TEST_CHECK(transferred == 1,
+                 "first-discovery first release returned %zd",
+                 transferred);
+      int completed_worker = -1;
+      transferred =
+         test_read_bytes(completion_pipe[0], &completed_worker,
+                         sizeof(completed_worker));
+      TEST_CHECK(transferred == sizeof(completed_worker) &&
+                    completed_worker >= 0 && completed_worker < 2,
+                 "first-discovery first completion returned %zd "
+                 "worker %d",
+                 transferred, completed_worker);
+      if (completed_worker >= 0 && completed_worker < 2)
+         drm_shim_fd_adopt_raw_aliases(aliases[completed_worker]);
+      int live_identity_files = drm_shim_test_live_identity_files();
+      TEST_CHECK(live_identity_files == identity_baseline + 1,
+                 "first-discovery published %d identity files from "
+                 "baseline %d while one worker remained paused",
+                 live_identity_files, identity_baseline);
+
+      transferred = write(release_pipe[1], bytes + 1, 1);
+      TEST_CHECK(transferred == 1,
+                 "first-discovery second release returned %zd",
+                 transferred);
+      completed_worker = -1;
+      transferred =
+         test_read_bytes(completion_pipe[0], &completed_worker,
+                         sizeof(completed_worker));
+      TEST_CHECK(transferred == sizeof(completed_worker) &&
+                    completed_worker >= 0 && completed_worker < 2,
+                 "first-discovery second completion returned %zd "
+                 "worker %d",
+                 transferred, completed_worker);
+      live_identity_files = drm_shim_test_live_identity_files();
+      TEST_CHECK(live_identity_files == identity_baseline + 1,
+                 "first-discovery retained %d identity files from "
+                 "baseline %d after both workers completed",
+                 live_identity_files, identity_baseline);
    } else {
       char bytes[2] = {1, 1};
       (void)write(start_pipe[1], bytes, sizeof(bytes));
@@ -3638,6 +4042,24 @@ test_fd_identity_first_discovery(void)
    }
 
    if (created == 2) {
+      struct shim_fd *first_shim_fd = drm_shim_fd_get(aliases[0]);
+      struct shim_fd *second_shim_fd = drm_shim_fd_get(aliases[1]);
+      TEST_CHECK(first_shim_fd && first_shim_fd == second_shim_fd,
+                 "first-discovery aliases selected different shim files: "
+                 "%p and %p",
+                 (void *)first_shim_fd, (void *)second_shim_fd);
+      TEST_CHECK(first_shim_fd &&
+                    first_shim_fd->identity_vault_fd >= 0 &&
+                    drm_shim_fd_is_internal(
+                       first_shim_fd->identity_vault_fd),
+                 "first-discovery identity vault is not registered "
+                 "as internal");
+      drm_shim_fd_put(first_shim_fd);
+      drm_shim_fd_put(second_shim_fd);
+
+      if (!test_stateful_ioctls)
+         goto cleanup_pipes;
+
       struct drm_radeon_gem_create create = {
          .size = 4096,
          .alignment = 4096,
@@ -3684,12 +4106,20 @@ cleanup_pipes:
       close(release_pipe[0]);
       close(release_pipe[1]);
    }
+   if (completion_result == 0) {
+      close(completion_pipe[0]);
+      close(completion_pipe[1]);
+   }
 
 cleanup_aliases:
    if (aliases[0] >= 0)
       close(aliases[0]);
    if (aliases[1] >= 0)
       close(aliases[1]);
+   TEST_CHECK(drm_shim_test_live_identity_files() == identity_baseline,
+              "first-discovery identity files did not return to "
+              "baseline %d",
+              identity_baseline);
 }
 
 static void
@@ -3722,7 +4152,7 @@ test_close_range_unshared_fd_table(int fd)
          .direct_unshare = false,
          .worker_tid = -1,
          .worker_render_fd = -1,
-         .worker_identity_fd = -1,
+         .worker_identity_vault_fd = -1,
          .result = 1,
       };
       pthread_t worker;
@@ -3750,12 +4180,12 @@ test_close_range_unshared_fd_table(int fd)
 
             TEST_CHECK(context.worker_tid > 0 &&
                           context.worker_render_fd >= 0 &&
-                          context.worker_identity_fd >= 0,
+                          context.worker_identity_vault_fd >= 0,
                        "UNSHARE worker identity is tid %ld render %d "
                        "identity %d",
                        (long)context.worker_tid,
                        context.worker_render_fd,
-                       context.worker_identity_fd);
+                       context.worker_identity_vault_fd);
             if (context.worker_tid > 0 &&
                 context.worker_render_fd >= 0) {
                char worker_proc_path[128];
@@ -3766,7 +4196,7 @@ test_close_range_unshared_fd_table(int fd)
                test_proc_fd_readlink(worker_proc_path, true);
             }
 
-            if (context.worker_identity_fd >= 0) {
+            if (context.worker_identity_vault_fd >= 0) {
                int unrelated_fd =
                   open("/dev/null", O_RDONLY | O_CLOEXEC);
                TEST_CHECK(unrelated_fd >= 0,
@@ -3774,7 +4204,8 @@ test_close_range_unshared_fd_table(int fd)
                           "errno %d",
                           errno);
                if (unrelated_fd >= 0) {
-                  int collision_fd = context.worker_identity_fd;
+                  int collision_fd =
+                     context.worker_identity_vault_fd;
                   if (unrelated_fd != collision_fd) {
                      int duplicate_result =
                         syscall(SYS_dup3, unrelated_fd, collision_fd,
@@ -3796,7 +4227,8 @@ test_close_range_unshared_fd_table(int fd)
                unrelated_fd =
                   open("/dev/null", O_RDONLY | O_CLOEXEC);
                if (unrelated_fd >= 0) {
-                  int collision_fd = context.worker_identity_fd;
+                  int collision_fd =
+                     context.worker_identity_vault_fd;
                   if (unrelated_fd != collision_fd) {
                      int duplicate_result =
                         syscall(SYS_dup3, unrelated_fd, collision_fd,
@@ -3929,7 +4361,7 @@ test_direct_unshared_fd_table(int fd)
          .direct_unshare = true,
          .worker_tid = -1,
          .worker_render_fd = -1,
-         .worker_identity_fd = -1,
+         .worker_identity_vault_fd = -1,
          .result = 1,
       };
       pthread_t worker;
@@ -4778,6 +5210,67 @@ test_fd_identity_contract(int fd, uint16_t expected_device_id)
    }
 
    test_fd_identity_exact_or_refuse(fd, expected_device_id);
+
+   int canonical_fd =
+      open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   TEST_CHECK(canonical_fd >= 0,
+              "fd identity canonical open failed with errno %d", errno);
+   if (canonical_fd >= 0) {
+      struct drm_radeon_gem_create canonical_create = {
+         .size = 4096,
+         .alignment = 4096,
+         .initial_domain = RADEON_GEM_DOMAIN_VRAM,
+      };
+      ret =
+         ioctl(canonical_fd, DRM_IOCTL_RADEON_GEM_CREATE,
+               &canonical_create);
+      TEST_CHECK(ret == 0 && canonical_create.handle,
+                 "fd identity canonical GEM create returned %d handle %u "
+                 "errno %d",
+                 ret, canonical_create.handle, errno);
+
+      char canonical_path[64];
+      int canonical_path_length =
+         snprintf(canonical_path, sizeof(canonical_path),
+                  "/proc/thread-self/fd/%d", canonical_fd);
+      TEST_CHECK(canonical_path_length > 0 &&
+                    canonical_path_length < (int)sizeof(canonical_path),
+                 "fd identity canonical path length is %d",
+                 canonical_path_length);
+      int independent_fd =
+         syscall(SYS_openat, AT_FDCWD, canonical_path,
+                 O_RDWR | O_CLOEXEC, 0);
+      TEST_CHECK(independent_fd >= 0,
+                 "fd identity canonical raw open failed with errno %d",
+                 errno);
+      if (ret == 0 && independent_fd >= 0) {
+         ret =
+            syscall(SYS_dup3, independent_fd, canonical_fd,
+                    O_CLOEXEC);
+         TEST_CHECK(ret == canonical_fd,
+                    "fd identity canonical replacement returned %d "
+                    "errno %d",
+                    ret, errno);
+         syscall(SYS_close, independent_fd);
+
+         struct drm_radeon_gem_busy busy = {
+            .handle = canonical_create.handle,
+            .domain = UINT32_MAX,
+         };
+         errno = 0;
+         ret =
+            ioctl(canonical_fd, DRM_IOCTL_RADEON_GEM_BUSY, &busy);
+         int canonical_errno = errno;
+         TEST_CHECK(ret == -1 && canonical_errno == EOPNOTSUPP &&
+                       busy.domain == UINT32_MAX,
+                    "fd identity canonical replacement exposed handle: "
+                    "%d errno %d domain 0x%x",
+                    ret, canonical_errno, busy.domain);
+      } else if (independent_fd >= 0) {
+         syscall(SYS_close, independent_fd);
+      }
+      close(canonical_fd);
+   }
 
    int backing_baseline = drm_shim_test_live_bo_backing_files();
    int abandoned_fd =
@@ -6264,7 +6757,7 @@ test_synthetic_filesystem(int fd, uint16_t expected_device_id)
    test_fd_identity_contract(fd, expected_device_id);
    test_sealed_identity_exactness(fd);
    test_descriptor_lock_contracts();
-   test_fd_identity_first_discovery();
+   test_fd_identity_first_discovery(true);
    test_bo_fd_limit(fd);
    test_mem_addr_lifetime(fd);
    test_shared_drm_file_description(fd);
@@ -6560,6 +7053,78 @@ main(int argc, char **argv)
    if (argc == 2 &&
        strcmp(argv[1], "fd-exact-identity-or-refuse") == 0)
       return test_fd_exact_identity_or_refuse();
+   if (argc == 2 && strcmp(argv[1], "witness-fd-reuse") == 0) {
+      if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+         return 1;
+      test_identity_witness_reuse_preserves_replacement();
+      test_stale_render_alias_releases_map_entry();
+      return test_failures ? 1 : 0;
+   }
+   if (argc == 2 &&
+       strcmp(argv[1], "fd-identity-publication") == 0) {
+      if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+         return 1;
+      int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+      TEST_CHECK(fd >= 0,
+                 "first-discovery isolated render open failed with "
+                 "errno %d",
+                 errno);
+      int initialized_identity_files =
+         drm_shim_test_live_identity_files();
+      if (fd >= 0) {
+         test_fd_identity_first_discovery(false);
+         close(fd);
+      }
+      TEST_CHECK(drm_shim_test_live_identity_files() ==
+                    initialized_identity_files - 1,
+                 "first-discovery isolated identity files did not "
+                 "release from initialized count %d",
+                 initialized_identity_files);
+      return test_failures ? 1 : 0;
+   }
+   if (argc == 2 &&
+      strcmp(argv[1], "fork-child-witness-release") == 0) {
+      if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+         return 1;
+      int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+      TEST_CHECK(fd >= 0,
+                 "fork-close isolated render open failed with errno %d",
+                 errno);
+      int initialized_identity_files =
+         drm_shim_test_live_identity_files();
+      if (fd >= 0) {
+         test_fork_child_close_preserves_parent_bo(fd);
+         close(fd);
+      }
+      TEST_CHECK(drm_shim_test_live_identity_files() ==
+                    initialized_identity_files - 1,
+                 "fork-close isolated identity files did not return "
+                 "from initialized count %d",
+                 initialized_identity_files);
+      return test_failures ? 1 : 0;
+   }
+   if (argc == 2 &&
+       strcmp(argv[1], "fork-child-identity-repair") == 0) {
+      if (setenv("RADEON_GPU_ID", "0x5974", 1) < 0)
+         return 1;
+      int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+      TEST_CHECK(fd >= 0,
+                 "fork-identity isolated render open failed with "
+                 "errno %d",
+                 errno);
+      int initialized_identity_files =
+         drm_shim_test_live_identity_files();
+      if (fd >= 0) {
+         test_fork_child_identity_repair_preserves_parent_bo(fd);
+         close(fd);
+      }
+      TEST_CHECK(drm_shim_test_live_identity_files() ==
+                    initialized_identity_files - 1,
+                 "fork-identity isolated identity files did not "
+                 "return from initialized count %d",
+                 initialized_identity_files);
+      return test_failures ? 1 : 0;
+   }
    if (argc == 2 && strcmp(argv[1], "claimed-namespace-map-miss") == 0)
       return test_claimed_namespace_map_miss();
    if (argc == 2 && strcmp(argv[1], "fork-parent-exit-first") == 0)

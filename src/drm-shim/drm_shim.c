@@ -2888,7 +2888,7 @@ synthetic_fd_is_internal(int fd)
 {
    return fd >= 0 &&
           (fd == synthetic_root_fd || fd == synthetic_lease_fd ||
-           drm_shim_fd_is_internal(fd));
+           drm_shim_fd_is_reserved(fd));
 }
 
 static bool
