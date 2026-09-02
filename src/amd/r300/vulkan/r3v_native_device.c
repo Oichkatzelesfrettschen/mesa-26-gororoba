@@ -90,8 +90,6 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_RS_W_SELECT_PROBE");
    device->noperspective_carrier_force =
       exact_gate("R3V_NATIVE_NOPERSPECTIVE_CARRIER_FORCE");
-   device->flat_mixed_carrier_probe =
-      exact_gate("R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE");
    device->r2vb_delivery_gate =
       exact_gate("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
    device->r2vb_gpu_delivery_gate =

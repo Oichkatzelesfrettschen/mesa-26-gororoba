@@ -43,7 +43,7 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
   data type, skip, destination vector, last-vector flag, swizzle, and
   write enable (manual).  The carrier cells differ from the varying cell
   first at `VAP_PROG_STREAM_CNTL_0` (silicon: rungs B, D, and the
-  flat-mixed record, index 399, `0x26030003 -> 0x06030003`).
+  flat-mixed receipt, index 399, `0x26030003 -> 0x06030003`).
 
 ## Interpolation (RS)
 
@@ -90,7 +90,7 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
 | Flat, any location | its texture interpolator | host replication of the provoking record ahead of the clipper; equal endpoints interpolate to the constant | `r3v-native-public-flat-two-draw-first-delivery-rs482` |
 | NoPerspective, alone | texture interpolator, `W_SELECT` 1 | window-linear interpolation of every lane | rung A |
 | NoPerspective beside Smooth | `TC1 = a * c`, `TC2.x = c`, `W_SELECT` 0 | US recovers `interp(a c) * rcp(interp(c))` | rung D |
-| Flat beside NoPerspective | rung D's cell with TC0 replicated on the host | replication precedes the packing | implemented_unreceipted: host-model and kernel-replay qualified behind `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1`; the attended receipt promotes the route |
+| Flat beside NoPerspective | rung D's cell with TC0 replicated on the host | replication precedes the packing | `r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974` |
 | Flat beside Smooth and NoPerspective | four interpolators: Flat, Smooth, `a * c`, `c` | the four-vector RS budget boundary | none |
 
 Replication composes with every texture-path route because it rewrites

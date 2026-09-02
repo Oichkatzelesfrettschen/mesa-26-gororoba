@@ -19,19 +19,19 @@ cycle (repository heads read on 2026-09-01).
 | Field | Value | Authority |
 |---|---|---|
 | Document revision | `git log -1 -- docs/hardware/r3v-current-program-status.md` | the commit that carries this table |
-| Repository head: mesa-26-gororoba | `3aa3ad02c6903dc2d8e2819c1a4a54c7fbd094a2` plus this cycle's authority PRs | `git rev-parse HEAD` in the live checkout |
-| Repository head: steinmarder-r300 | `834d87d14704e1f20885afa0a1439301a6407d70` | `git rev-parse HEAD` |
+| Repository head: mesa-26-gororoba | the commit carrying this table (`git log -1 -- docs/hardware/r3v-current-program-status.md`); the receipt's own source is the row below | `git rev-parse HEAD` in the live checkout |
+| Repository head: steinmarder-r300 | `915c000fe` (the merge that retains the Flat-beside-NoPerspective receipt) | `git rev-parse HEAD` |
 | Repository head: linux-radeon-gororoba | `2be21eaa892723f1c9cd826b7331c7d234e2c1ce` (offline replay authority: `r300_tcl_bypass_vtx_check` and the CS-track controls replay from this head and from the deployed checkpoint) | `git rev-parse HEAD` |
 | Repository head: radeon-custom | `75ae53afaa8b053d7bd6091c73ce54ef19b987b` | `git rev-parse HEAD` |
 | Repository head: vostro1000-re | `1d621a0f51a7c7fb343f0702f9481390b8240b94` | `git rev-parse HEAD` |
-| Route-admission source | `3aa3ad02c690` (branch `r3v/flat_beside_mixed_reciprocal_carrier_replication`): Flat location 0 beside NoPerspective location 1 on the mixed reciprocal carrier, quarantined behind `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1` until its receipt (`implemented_unreceipted`) | `r3v_interpolation_lowering.c`, `docs/hardware/rs482-post-vap-interpolation-pipeline.md` |
-| Receipt source | `3384c3d1aad2ac5983193913e7734f2eaa41404e` (public partial-clip fallback) | retained bundle `identity.txt` and delivered arm `mesa_head.txt` |
-| Installed ICD source and build-id | profile 3 diagnostic: `3aa3ad02c690`, `mesa-gororoba-debug-optimized 2:26.2.0-29`, build-id `c0903e8ac82bc949660c2e7ef5fff747dd607a6d`; profile 4 release (`mesa-gororoba`, prefix `/usr`): the receipt build, recorded by the receipt's phase A identity file | `pacman -Q`, `readelf -n` build-id across builddir, package, and installed DSO |
-| Attended-runner source and digest | the runner is statically linked at the receipt's source; its sha256 is the arming report's `runner_sha256.txt` | arming report per receipt |
+| Route-admission source | the commit carrying this table: Flat location 0 beside NoPerspective location 1 on the mixed reciprocal carrier opens on the interface alone (the probe gate that quarantined it at `3aa3ad02c690` is removed by the receipt's promotion) | `r3v_interpolation_lowering.c`, `docs/hardware/rs482-post-vap-interpolation-pipeline.md` |
+| Receipt source | `6089c5b5bb9a9cc5d197c43c386dc38e5a53bb14` (Flat beside NoPerspective on the mixed carrier through host replication; the route under `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1` at that commit) | retained bundle `r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974/identity.txt` and its `flat-mixed-carrier-receipt/mesa_head.txt` |
+| Installed ICD source and build-id | profile 4 release: `6089c5b5bb9`, `mesa-gororoba 2:26.2.0-20` at prefix `/usr`, build-id `c3ba996b9fc75c04cfad2d2a3638c79cdfbb5092` (package and installed DSO identical); the statically linked runners come from the reproducible profile-4 qualification builddir at the same commit, build-id `68dc7a2cf42d76a5bda1a0233c0ac21d7c8b9f76` | `pacman -Q`, `readelf -n` build-id across package and installed DSO; the receipt's `icd-pkgrel20/` leg |
+| Attended-runner source and digest | `6089c5b5bb9`; `r3v_native_attended_rs_tex_adj_probe` sha256 `71e664ed6221eb0805e1f5ba19caeab67f4e4292a817dc039035afe3726f6047`, `r3v_native_arming_runner` sha256 `d41751f350e647565d2537b1778a2af2a4fd716c3a34c48163dd84ee65c8f075` | the receipt's `flat-mixed-carrier-receipt/runner_sha256.txt` |
 | Deployed kernel source checkpoint | `0104ede3f1964cc844f9f1839cb6953e2639c4e6` (linux-radeon-gororoba branch `radeon/r300_tcl_bypass_color0_width`, COLOR0 width admission) | `radeon-custom` PKGBUILD `_source_commit` |
 | Package version | `radeon-unified-dkms 0.8.12-1` (radeon-custom `75ae53afaa8b` PKGBUILD); policy package as `pacman -Q radeon-rs482-policy` reports on the box | `pacman -Q` on the target |
 | Loaded module srcversion | `729892A3F3530EB12B8D842` | `/sys/module/radeon/srcversion` on the target |
-| Retained-evidence commit | `steinmarder-r300` `834d87d14704` (the checkout in which `sha256sum -c bundle_hashes.sha256` passes for the latest receipt) | evidence verification checkout |
+| Retained-evidence commit | `steinmarder-r300` `915c000fe` (the checkout in which `sha256sum -c bundle_hashes.sha256` passes for `r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974`) | evidence verification checkout |
 | dEQP source | `43c65c132` (`deqp-vk` `26d43d452e64`, release `opengl-cts-4.6.8.0-414-g43c65c132`) | installed `deqp-vk` release identity and corpus pin |
 
 Evidence binds to profile 4: the installed ICD, the attended runner, and

@@ -77,11 +77,11 @@ recording boundary is calibrated on the drm-shim under
 
 `--candidate flat-mixed-reciprocal-carrier` runs the two-pass cell with the Flat float vec4 at
 location 0 beside the NoPerspective float vec4 at location 1 under the mixed lane program. The
-route is quarantined until its receipt: the selector returns UNSUPPORTED ("implemented, silicon
-receipt pending") unless `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE` carries the exact value 1, the
-runner requires that gate for this candidate and refuses when the force, tex-adj, W_SELECT,
-pin, or R2VB gates are also set, and the closed-gate pipeline is the known-bad of
-`r3v-native-public-surface`. The post-VS stage replicates vertex 0's location-0 vector to every
+route opens on the interface alone, as the mixed rung's does; the runner refuses when the
+force, tex-adj, W_SELECT, pin, or R2VB gates are set, so the cell is the route's own. Its
+receipt is `r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974`
+(Mesa `6089c5b5bb9`, where the route still sat behind `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1`;
+the receipt removed that gate). The post-VS stage replicates vertex 0's location-0 vector to every
 record ahead of the clipper and the packing, so pass 1 is rung D's sixteen-dword cell byte for
 byte (cell blake3 `522066cd`, 494 IB dwords, arming digest from
 `--multi-pass-noperspective-mixed-carrier`); the recording boundary is calibrated under
