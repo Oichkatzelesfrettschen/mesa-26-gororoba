@@ -105,6 +105,48 @@ attribute_format_id(VkFormat format)
       return R300_VERTEX_FORMAT_F32_3;
    case VK_FORMAT_R32G32B32A32_SFLOAT:
       return R300_VERTEX_FORMAT_F32_4;
+   /* The normalized and half-precision members of the Vulkan 1.0
+    * mandatory vertex-buffer table.  The host gathers each into the
+    * same four-float carrier the F32 family produces, so the VAP fetch
+    * and the vertex program are unchanged and the widening carries no
+    * new hardware word.  The integer members of that table stay out:
+    * an integer vertex input variable reaches no value kind in
+    * r3v_vertex_spirv.c, whose OpConvertSToF admits a loaded system
+    * value alone, so advertising them would name a format no program
+    * can consume.
+    */
+   case VK_FORMAT_R8_UNORM:
+      return R300_VERTEX_FORMAT_UNORM8_1;
+   case VK_FORMAT_R8G8_UNORM:
+      return R300_VERTEX_FORMAT_UNORM8_2;
+   case VK_FORMAT_R8G8B8A8_UNORM:
+      return R300_VERTEX_FORMAT_UNORM8_4;
+   case VK_FORMAT_B8G8R8A8_UNORM:
+      return R300_VERTEX_FORMAT_UNORM8_4_BGRA;
+   case VK_FORMAT_R8_SNORM:
+      return R300_VERTEX_FORMAT_SNORM8_1;
+   case VK_FORMAT_R8G8_SNORM:
+      return R300_VERTEX_FORMAT_SNORM8_2;
+   case VK_FORMAT_R8G8B8A8_SNORM:
+      return R300_VERTEX_FORMAT_SNORM8_4;
+   case VK_FORMAT_R16_UNORM:
+      return R300_VERTEX_FORMAT_UNORM16_1;
+   case VK_FORMAT_R16G16_UNORM:
+      return R300_VERTEX_FORMAT_UNORM16_2;
+   case VK_FORMAT_R16G16B16A16_UNORM:
+      return R300_VERTEX_FORMAT_UNORM16_4;
+   case VK_FORMAT_R16_SNORM:
+      return R300_VERTEX_FORMAT_SNORM16_1;
+   case VK_FORMAT_R16G16_SNORM:
+      return R300_VERTEX_FORMAT_SNORM16_2;
+   case VK_FORMAT_R16G16B16A16_SNORM:
+      return R300_VERTEX_FORMAT_SNORM16_4;
+   case VK_FORMAT_R16_SFLOAT:
+      return R300_VERTEX_FORMAT_SFLOAT16_1;
+   case VK_FORMAT_R16G16_SFLOAT:
+      return R300_VERTEX_FORMAT_SFLOAT16_2;
+   case VK_FORMAT_R16G16B16A16_SFLOAT:
+      return R300_VERTEX_FORMAT_SFLOAT16_4;
    default:
       return R300_VERTEX_FORMAT_INVALID;
    }

@@ -230,19 +230,23 @@ main(int argc, char **argv)
        * an exact bufferFeatures match here on every admitted texel
        * format observes that gate rather than the transfer-bit
        * agreement above alone: each of these six formats grants
-       * VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT and nothing else --
-       * the storage-texel-buffer bit stays withheld on every format
-       * (tests/r3v_conformance_nonpass_ledger.tsv row
-       * mandatory_format_feature_absent).
+       * VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT, and the two render
+       * lane orders grant the vertex-buffer bit beside it, since
+       * attribute_format_id maps each to an r300_vertex_format_id the
+       * host gather decodes.  The storage-texel-buffer bit stays
+       * withheld on every format (tests/r3v_conformance_nonpass_ledger.tsv
+       * row mandatory_format_feature_absent).
        */
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_B8G8R8A8_UNORM,
-                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
-                            "B8G8R8A8_UNORM texel buffer");
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
+                               VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
+                            "B8G8R8A8_UNORM texel buffer and vertex fetch");
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_R8G8B8A8_UNORM,
-                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
-                            "R8G8B8A8_UNORM texel buffer");
+                            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
+                               VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
+                            "R8G8B8A8_UNORM texel buffer and vertex fetch");
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_R8G8B8A8_UINT,
                             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -286,9 +290,15 @@ main(int argc, char **argv)
                (unsigned)render_formats[i], legacy.linearTilingFeatures,
                legacy.optimalTilingFeatures);
       }
+      /* R8_UNORM joins the vertex-buffer grant: it is a mandatory
+       * vertex format whose UNORM8 gather decodes one component per
+       * record.  It carries no texel-buffer bit, so the two grants
+       * stay separable.
+       */
       check_format_features(physical_device, legacy_query, properties2_query,
-                            VK_FORMAT_R8_UNORM, 0,
-                            "R8_UNORM non-fetchable buffer");
+                            VK_FORMAT_R8_UNORM,
+                            VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
+                            "R8_UNORM vertex fetch");
       check_format_features(physical_device, legacy_query, properties2_query,
                             VK_FORMAT_D16_UNORM, 0,
                             "D16_UNORM depth buffer");

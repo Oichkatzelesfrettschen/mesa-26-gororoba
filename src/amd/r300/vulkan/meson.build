@@ -350,6 +350,26 @@ if with_tests
             '--source', files('r3v_physical_device.c')],
     suite : ['r3v'],
   )
+  # attribute_format_id decides which vertex formats a pipeline
+  # admits and r3v_get_format_properties decides which an application
+  # may bind; the two are written apart, so an advertised format with
+  # no mapping promises a pipeline the driver refuses and a mapped
+  # format left unadvertised hides a route that works.
+  test(
+    'r3v-vertex-buffer-format-agreement',
+    prog_python,
+    args : [files('tests/r3v_vertex_buffer_format_agreement.py'),
+            '--pipeline', files('r3v_native_pipeline.c'),
+            '--physical-device', files('r3v_physical_device.c')],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-vertex-buffer-format-agreement-selftest',
+    prog_python,
+    args : [files('tests/r3v_vertex_buffer_format_agreement.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
   # Every integer in a blocking non-pass ledger row carries a source
   # query, a receipt, or a prose authority, and a source query's value
   # equals the ledger's number, so the frontier never cites a hand-typed
@@ -572,7 +592,8 @@ if with_tests
                     'tests/r3v_native_plan_compose_check.py',
                     'tests/r3v_native_plan_compose_shard.py',
                     'tests/r3v_native_plan_stage_captures.py',
-                    'tests/r3v_planning_census.py')],
+                    'tests/r3v_planning_census.py',
+                    'tests/r3v_vertex_buffer_format_agreement.py')],
       suite : ['r3v'],
     )
   endif
