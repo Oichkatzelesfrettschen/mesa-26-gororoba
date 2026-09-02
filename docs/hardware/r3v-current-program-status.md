@@ -243,6 +243,79 @@ drm-shim mutation ladder, and one-attempt silicon replay are done, and
 the case passes on RS482 (bundle
 `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`).
 
+## Draw, synchronization, and transfer host-planning pass
+
+| Field | Value |
+|---|---|
+| Cases | 144,837 over eight shards: draw.0000-0001, synchronization.0000-0003, transfer.0000-0001 |
+| Binding | `shard` on all eight; declared and observed case counts agree per shard, 0 duplicates, 0 `not_run`, 0 unresolved |
+| Driver source | `41e03d256e4b`, profile 4 release under `REPRODUCIBLE_RUN=1`, DSO BLAKE3 `d7e7f38e58d2aeef...`, SHA-256 `c6d972310d49dcf4...` |
+| Runner source | `53be67210832`, whose `reap_finished_children` is what lets a long shard finish |
+| Verdict | `unclassified_nonpass` on all eight; the runner exits 0 only for `pass` or `pass_with_accepted_nonpass`, so exit 1 is the non-pass convention |
+| Results | NotSupported 143,898, Fail 693, Pass 246 |
+| Outcomes | `no_nonempty_ib` 144,836, `transcript` 1 |
+| CS witness | 0 `DRM_IOCTL_RADEON_CS` in every one of 144,837 per-case straces |
+
+One case in the corpus reaches a nonempty submission:
+`dEQP-VK.synchronization.smoke.fences`, one submission of 231 dwords, cell
+kind `triangle`, emitter `r3v`, three relocations (vertex read 4096,
+color write 263168, completion write 4). Its plan composes, checks, and
+replays on the target under the radeon noop drm-shim with every
+live-submission gate closed: the case passes, the session records the
+submission admitted, and the retained IB is 924 bytes whose BLAKE3
+recomputes to the plan's submission digest. Hardware authorization stays
+open.
+
+A plan binds one running identity, so a plan replay needs a host carrying
+a loaded radeon module: `r3v_native_plan_replay_bind` reads the module
+srcversion through the arming provider, and a host with no radeon module
+refuses at `R3V_NATIVE_PLAN_BIND_MODULE` before any submission.
+
+Four plan fields are declarations rather than bindings. The bind takes
+`deqp_sha256`, `deqp_release`, `partition_sha256`, and `caselist_sha256`
+from the plan itself, since the driver cannot observe them, and a
+mutation ladder confirms a plan carrying any of the four wrong still
+binds and passes. The receipt verifies those four outside the driver.
+
+### Ranked first refusals
+
+The census keys a refusal on the `file:line` the CTS names, and on the
+predicate itself when the CTS names none. The families below are the
+sited addresses, each one predicate:
+
+| Cases | Family |
+|---|---|
+| 60,034 | `VK_ANDROID_external_format_resolve`, an extension this platform does not carry |
+| 31,306 | external semaphore and memory capabilities, which radeon backs with no `DRIVER_SYNCOBJ` |
+| 24,873 | format coverage over ten addresses, blit source and destination and image formats |
+| 5,888 | queue-family count |
+| 5,500 | timeline semaphore |
+| 4,643 | `shaderFloat16` |
+| 2,452 | `geometryShader` |
+
+Beside them, 4,490 cases refuse on a vertex-input format across eighty
+distinct `VkFormat` values; those predicates name no `file:line`, so they
+rank by predicate rather than by address.
+
+The first two families are parked outside the implementation frontier:
+one names an Android-only extension, the other a kernel capability the
+radeon UAPI does not expose. Format coverage is the largest family a
+Mesa change moves, and the vertex-input row inside it is the sharpest,
+since the vertex path executes on the CPU.
+
+### R8G8B8A8_UNORM
+
+`r3v_native_render_lane_order` grants both render lane orders, so source
+admission is closed. Of the 11,902 cases in this pass whose names carry
+`r8g8b8a8`, none refuses at `vkCreateImage`: every one stops at an
+earlier CTS predicate, 4,680 at Android external format resolve, 3,520
+at external semaphore capabilities, 715 at a blit source format, 640 at
+a queue-family count, 546 at image-format support, and 300 at a timeline
+semaphore. Widening the image format set moves none of them, and a
+separately authorized public-loader receipt at a receipt-pinned extent is
+a different objective from moving these dEQP cases, which never reach
+that route.
+
 ## Kernel deployment reconciliation
 
 | Field | Value |
