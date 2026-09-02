@@ -384,6 +384,52 @@ def icd_identity(manifest):
     }
 
 
+def bundle_cts_describe(binary, digest):
+    """Read the CTS revision a provisioned bundle carries.
+
+    `r3v_deqp_provision.py bundle` writes a standalone directory -- binary,
+    data, mustpass -- with no git worktree, and records the source checkout's
+    `git describe` in `provenance.json` after refusing a checkout whose
+    describe differs from the corpus pin.  The document seals itself with the
+    SHA-256 the provisioner computed over its body and names the digest of the
+    binary it describes, so the revision it reports holds for that executable
+    alone.  A document that is absent, unparseable, unsealed, resealed over
+    edited bytes, or describing another binary yields nothing, and the caller's
+    comparison against the pin refuses the run.
+    """
+    document = Path(binary).resolve().parent / "provenance.json"
+    if not document.is_file():
+        return None
+    try:
+        provenance = json.loads(document.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(provenance, dict):
+        return None
+    seal = provenance.pop("provenance_sha256", None)
+    body = json.dumps(provenance, sort_keys=True, separators=(",", ":")).encode()
+    if not isinstance(seal, str) or hashlib.sha256(body).hexdigest() != seal:
+        return None
+    described = provenance.get("binary")
+    if not isinstance(described, dict) or described.get("sha256") != digest:
+        return None
+    source = provenance.get("source")
+    if not isinstance(source, dict):
+        return None
+    describe = source.get("describe")
+    return describe if isinstance(describe, str) and describe else None
+
+
+def cts_revision(deqp):
+    """The observed CTS revision, worktree first.
+
+    A binary inside its own checkout answers from the checkout, which also
+    reports a dirty tree; a provisioned bundle answers from its sealed
+    provenance.  Both authorities name the same `git describe` string the
+    corpus pin carries."""
+    return deqp.get("cts_worktree_describe") or deqp.get("cts_bundle_describe")
+
+
 def deqp_identity(binary):
     b = Path(binary)
     if not b.is_file():
@@ -398,6 +444,14 @@ def deqp_identity(binary):
             )
             ident["cts_worktree_describe"] = desc if rc == 0 else None
             break
+    ident["cts_bundle_describe"] = bundle_cts_describe(b, ident["sha256"])
+    ident["cts_identity_authority"] = (
+        "worktree"
+        if ident.get("cts_worktree_describe")
+        else "bundle_provenance"
+        if ident["cts_bundle_describe"]
+        else None
+    )
     return ident
 
 
@@ -1682,7 +1736,7 @@ def execute(args):
     if preload["declared"] and not preload["shim_loaded"]:
         refusal = refusal or "preload_unverified"
     pinned_cts = partition.get("cts_describe")
-    if pinned_cts and deqp.get("cts_worktree_describe") != pinned_cts:
+    if pinned_cts and cts_revision(deqp) != pinned_cts:
         refusal = refusal or "wrong_cts_revision"
     if refusal is None and contaminating:
         refusal = "gate_contamination"
@@ -2118,9 +2172,9 @@ def expected_receipt_refusal(receipt):
         return "blocked_slice"
     if preload.get("declared") and not preload.get("shim_loaded"):
         return "preload_unverified"
-    if partition.get("cts_describe") and deqp.get(
-        "cts_worktree_describe"
-    ) != partition.get("cts_describe"):
+    if partition.get("cts_describe") and cts_revision(deqp) != partition.get(
+        "cts_describe"
+    ):
         return "wrong_cts_revision"
 
     contaminating_gates = sorted(
@@ -3427,6 +3481,64 @@ def selftest(fixture_qpa):
             manifest_json=str(wrong_cts_dir / "partition_manifest.json"),
         )
         assert "argv" not in r
+        # A provisioned bundle carries no worktree, so its sealed
+        # provenance is the CTS-revision authority.  The document holds
+        # only for the binary it names and only while its seal recomputes.
+        bundle = d / "bundle"
+        bundle.mkdir()
+        bundle_binary = bundle / "deqp-vk"
+        bundle_binary.write_bytes(b"bundled dEQP\n")
+        bundle_digest = sha256_file(bundle_binary)
+        other_binary = bundle / "other-deqp-vk"
+        other_binary.write_bytes(b"another dEQP\n")
+
+        def seal_provenance(document):
+            body = json.dumps(
+                document, sort_keys=True, separators=(",", ":")
+            ).encode()
+            sealed = dict(document)
+            sealed["provenance_sha256"] = hashlib.sha256(body).hexdigest()
+            (bundle / "provenance.json").write_text(json.dumps(sealed, indent=1))
+            return sealed
+
+        good = {
+            "source": {"describe": "fixture"},
+            "binary": {"sha256": bundle_digest},
+        }
+        seal_provenance(good)
+        assert bundle_cts_describe(bundle_binary, bundle_digest) == "fixture"
+        assert deqp_identity(str(bundle_binary))["cts_identity_authority"] == (
+            "bundle_provenance"
+        )
+        assert cts_revision({"cts_bundle_describe": "fixture"}) == "fixture"
+        # The worktree answers ahead of a bundle document.
+        assert (
+            cts_revision(
+                {
+                    "cts_worktree_describe": "worktree",
+                    "cts_bundle_describe": "fixture",
+                }
+            )
+            == "worktree"
+        )
+        # A document describing another binary names no revision for this one.
+        assert bundle_cts_describe(other_binary, sha256_file(other_binary)) is None
+        # An edited document whose seal was not recomputed names nothing.
+        tampered = seal_provenance(good)
+        tampered["source"]["describe"] = "edited-after-seal"
+        (bundle / "provenance.json").write_text(json.dumps(tampered, indent=1))
+        assert bundle_cts_describe(bundle_binary, bundle_digest) is None
+        # An unsealed document names nothing.
+        (bundle / "provenance.json").write_text(json.dumps(good, indent=1))
+        assert bundle_cts_describe(bundle_binary, bundle_digest) is None
+        # An unparseable document names nothing.
+        (bundle / "provenance.json").write_text("{ not json")
+        assert bundle_cts_describe(bundle_binary, bundle_digest) is None
+        # An absent document names nothing, which is the state every
+        # non-bundle binary is in.
+        (bundle / "provenance.json").unlink()
+        assert bundle_cts_describe(bundle_binary, bundle_digest) is None
+        assert deqp_identity(str(bundle_binary))["cts_identity_authority"] is None
         # A queue-report digest remains mandatory for qualification even
         # when every other source, binary, caselist, and partition
         # identity matches.  Declaring the report digest closes the last
