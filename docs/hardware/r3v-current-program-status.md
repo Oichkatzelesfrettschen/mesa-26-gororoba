@@ -300,8 +300,32 @@ rank by predicate rather than by address.
 The first two families are parked outside the implementation frontier:
 one names an Android-only extension, the other a kernel capability the
 radeon UAPI does not expose. Format coverage is the largest family a
-Mesa change moves, and the vertex-input row inside it is the sharpest,
-since the vertex path executes on the CPU.
+Mesa change moves.
+
+### The vertex-input row is gated by pipeline admission
+
+The vertex path executes on the host, so a normalized or half-precision
+vertex format costs a decode rather than a hardware capability, and
+r300_vertex_format_semantics carries sixteen such formats through the
+gather. That decode is not the gate. Granting those formats
+VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT and running the 341 cases whose
+recorded first refusal names one of them measures the difference:
+
+| Driver | Pass | Fail | NotSupported |
+|---|---|---|---|
+| granting the sixteen | 0 | 213 | 128 |
+| withholding them | 0 | 0 | 341 |
+
+Every one of the 213 refuses at vkCreateGraphicsPipelines. Pipeline
+admission separately weighs the shader stages, the vertex-input shape,
+the fixed state, the descriptor layout, and the render-pass cell, so a
+format the gather decodes still refuses there, and advertising ahead of
+that gate turns a withheld feature into a blocking failure. The grant
+therefore covers the four F32 formats a draw executes, and the row's
+binding constraint is the pipeline admission gate rather than the format
+table. The integer members carry a second constraint: an integer vertex
+input variable reaches no value kind in r3v_vertex_spirv.c, whose
+OpConvertSToF admits a loaded system value alone.
 
 ### R8G8B8A8_UNORM
 
