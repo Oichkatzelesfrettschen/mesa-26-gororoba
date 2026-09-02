@@ -2797,7 +2797,7 @@ test_varying_tex0_is_the_window_position_fraction(void)
 static void
 test_msaa_resolve_cell(void)
 {
-   struct r300_triangle_msaa_resolve msaa;
+   struct r300_triangle_msaa_resolve msaa = {0};
    r300_tcl_bypass_triangle_render_shape_reference(&msaa.render);
    r300_tcl_bypass_triangle_render_shape_reference(&msaa.destination);
    msaa.destination.target_offset = 0;
@@ -3035,7 +3035,7 @@ test_msaa_resolve_cell(void)
 static void
 test_msaa_clear_cell(void)
 {
-   struct r300_triangle_msaa_resolve msaa;
+   struct r300_triangle_msaa_resolve msaa = {0};
    memset(&msaa, 0, sizeof(msaa));
    r300_tcl_bypass_triangle_render_shape_reference(&msaa.render);
    r300_tcl_bypass_triangle_render_shape_reference(&msaa.destination);
