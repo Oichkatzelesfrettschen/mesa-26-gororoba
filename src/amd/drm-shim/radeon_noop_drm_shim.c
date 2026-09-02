@@ -4029,7 +4029,10 @@ test_fd_identity_first_discovery(bool test_stateful_ioctls)
                  live_identity_files, identity_baseline);
    } else {
       char bytes[2] = {1, 1};
-      (void)write(start_pipe[1], bytes, sizeof(bytes));
+      ssize_t transferred = write(start_pipe[1], bytes, sizeof(bytes));
+      TEST_CHECK(transferred == sizeof(bytes),
+                 "first-discovery fallback start returned %zd",
+                 transferred);
    }
    for (int i = 0; i < created; i++) {
       int thread_result = pthread_join(workers[i], NULL);
@@ -5904,14 +5907,19 @@ test_synthetic_filesystem(int fd, uint16_t expected_device_id)
    }
 
    char link_buffer[256];
+   /* The volatile read carries the unmapped address through an opaque
+    * value, so object-size and restrict analysis treat readlink(2)'s
+    * destination as unknown while the EFAULT path still runs.
+    */
+   volatile uintptr_t invalid_buffer_address = 1;
+   char *invalid_buffer = (char *)invalid_buffer_address;
    errno = 0;
    ssize_t link_length = readlink(char_path, link_buffer, 0);
    TEST_CHECK(link_length == -1 && errno == EINVAL,
               "zero-size readlink returned %zd errno %d",
               link_length, errno);
    errno = 0;
-   link_length =
-      readlink(char_path, (char *)(uintptr_t)1, 1);
+   link_length = readlink(char_path, invalid_buffer, 1);
    TEST_CHECK(link_length == -1 && errno == EFAULT,
               "invalid-buffer readlink returned %zd errno %d",
               link_length, errno);
@@ -6079,8 +6087,7 @@ test_synthetic_filesystem(int fd, uint16_t expected_device_id)
                  link_length);
       errno = 0;
       link_length =
-         readlink(proc_fd_path, (char *)(uintptr_t)1,
-                  sizeof(link_buffer));
+         readlink(proc_fd_path, invalid_buffer, sizeof(link_buffer));
       TEST_CHECK(link_length == -1 && errno == EFAULT,
                  "pipe readlink fallback invalid buffer returned %zd "
                  "errno %d",
@@ -6892,9 +6899,9 @@ test_fork_parent_exit_first(void)
             ;
          close(lifetime_pipe[0]);
          byte = test_fork_survivor_paths() ? 'P' : 'F';
-         (void)write(result_pipe[1], &byte, 1);
+         ssize_t reported = write(result_pipe[1], &byte, 1);
          close(result_pipe[1]);
-         exit(byte == 'P' ? 0 : 1);
+         exit(byte == 'P' && reported == 1 ? 0 : 1);
       }
 
       (void)syscall(SYS_close, lifetime_pipe[0]);
