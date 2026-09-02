@@ -741,6 +741,12 @@ naming-policy-test:
 packaging-source-checksum-test:
 	sh $(CURDIR)/packaging/test-local-source-checksums.sh
 
+# MESA_COMMIT names the object a package build fetches; the pin applies only
+# when the recipe still carries the source fragment it rewrites, so this
+# calibrates the accept arm and the four refusals against the live recipe.
+packaging-source-commit-pin-test:
+	sh $(CURDIR)/packaging/test-source-commit-pin.sh
+
 receipt-identifier-check:
 	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py --self-test
 	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py \
@@ -941,6 +947,7 @@ help:
 	@echo "  naming-policy-test reject retired build controls and unclear qualification wording"
 	@echo "  receipt-identifier-check resolve every docs/hardware receipt identifier to a retained bundle"
 	@echo "  packaging-source-checksum-test hold packaging sha256sums to the checked-in local sources"
+	@echo "  packaging-source-commit-pin-test calibrate the MESA_COMMIT source pin and its refusals"
 	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
@@ -1275,6 +1282,7 @@ distcc-gcc-major-probe-test:
 
 audit: source-root-check source-root-control-unit-test naming-policy-test \
        receipt-identifier-check packaging-source-checksum-test \
+       packaging-source-commit-pin-test \
        headless-hardware-gl-runner-test \
        review-thread-frontier-check review-thread-frontier-unit-test \
        review-thread-corpus-check review-thread-corpus-unit-test \
@@ -4048,8 +4056,11 @@ rebuild-all-tiers:
 # deploy-mesa ships it to TARGET_HOST and asks pacman
 # to execute the package-declared replacement transaction.  Build
 # on a fast x86-64 host whose llvm major matches the target's llvm-libs.
-# Override the pinned source commit with MESA_COMMIT=<sha>.  Artifacts live
-# under ../build/ (the sanctioned build area), not as workspace siblings.
+# The recipe tracks the branch tip through its source fragment; MESA_COMMIT=<sha>
+# rewrites that fragment to one object name through packaging/pin-source-commit.sh,
+# which refuses a recipe it cannot pin so a build never carries a commit name it
+# did not fetch.  Artifacts live under ../build/ (the sanctioned build area),
+# not as workspace siblings.
 MESA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
 MESA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-package)
 MESA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-package-repository)
@@ -4060,7 +4071,7 @@ MESA_DEPLOY_ACCEPTED ?= 0
 package-mesa:
 	mkdir -p "$(MESA_PKG_DIR)/tmp" "$(MESA_REPO_DIR)"
 	find "$(MESA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(MESA_PKG_DIR)/" {} +
-	[ -z "$(MESA_COMMIT)" ] || sed -i 's/^_commit=.*/_commit=$(MESA_COMMIT)/' "$(MESA_PKG_DIR)/PKGBUILD"
+	[ -z "$(MESA_COMMIT)" ] || sh $(CURDIR)/packaging/pin-source-commit.sh "$(MESA_PKG_DIR)/PKGBUILD" "$(MESA_COMMIT)"
 	cd "$(MESA_PKG_DIR)" && TMPDIR="$(MESA_PKG_DIR)/tmp" SRCDEST="$(MESA_PKG_DIR)" BUILDDIR="$(MESA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
 	cp "$(MESA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst "$(MESA_REPO_DIR)/"
 	repo-add "$(MESA_REPO_DIR)/$(MESA_REPO_NAME).db.tar.zst" "$(MESA_REPO_DIR)"/mesa-gororoba-*.pkg.tar.zst
