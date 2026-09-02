@@ -74,6 +74,9 @@ test(
   prog_python,
   args : [r300_common_liveness_census, meson.project_source_root()],
   suite : ['r300'],
+  # The census walks the source tree; the Vostro 1000's K8 needs about
+  # three times the workstation's nine seconds, past meson's 30 s default.
+  timeout : 180,
 )
 
 r300_grid_fold_test = executable(
