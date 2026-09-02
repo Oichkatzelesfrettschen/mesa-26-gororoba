@@ -107,6 +107,33 @@ first real submission waits on a planning pass that lands transcripts,
 
 | Field | Value |
 |---|---|
+| Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974` |
+| Evidence class | silicon; attended semantic cell of the public Flat-beside-NoPerspective interface on the mixed reciprocal carrier, the route quarantined behind `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1` at the receipt source and public at the promotion commit; this receipt makes no CTS qualification claim |
+| Cell | two-draw over the unclipped probe triangle: Smooth vec4 control varying cell, then the candidate on `R3V_INTERPOLATION_ROUTE_MIXED_RECIPROCAL_CARRIER` with `flat_mask` `0x1` -- TC0 carries vertex 0's `(s, t, r, q)` replicated to every record by the post-VS stage, TC1 carries each vertex's own `(s, t, r, q) * c`, TC2 carries `(c, 0, 0, 1)` with `c = w / max w = (1, 0.25, 0.5)`; 494 IB dwords, byte-identical to rung D; pass 1 differs from the control in 67 dwords, first at index 399 register `0x2150` `VAP_PROG_STREAM_CNTL_0` (`0x26030003` -> `0x06030003`); `VAP_VTX_SIZE` 8 on draw 0 and 16 on draw 1 |
+| Verdict | control target perspective 882/882 judged interior pixels (max deviation 1); candidate target affine 882/882 (max deviation 1), perspective 0, unchanged 0; per-channel separation over the judged set 0 / 0 / 501 / 882, red and green constant by construction because the provoking record's Flat value reaches every fragment; carrier witness exact on both passes |
+| Source | Mesa `6089c5b5bb9a9cc5d197c43c386dc38e5a53bb14`, one commit for the attended runner, the arming runner, and the installed ICD; `r3v_native_attended_rs_tex_adj_probe` sha256 `71e664ed6221eb08...6047`, `r3v_native_arming_runner` sha256 `d41751f350e64756...f075` |
+| Submission | cell BLAKE3 `522066cd89ba60ea...7c2a`, recorded and emitted digests equal; `vkQueueSubmit` 0; one guarded `DRM_IOCTL_RADEON_CS` through fence completion (90 us) inside an armed SP5100 TCO bracket, disarm verified |
+| Runtime | installed `mesa-gororoba 2:26.2.0-20` at prefix `/usr`, build-id `c3ba996b9fc75c04cfad2d2a3638c79cdfbb5092`; kernel `7.1.8-1-cachyos`; radeon srcversion `729892A3F3530EB12B8D842`; `radeon-unified-dkms 0.8.12-1` unchanged, checker checkpoint `0104ede3f196` replayed in preflight beside the linux-radeon head; dmesg delta 0; boot id unchanged; Xorg concurrent on tty7 is the recorded deviation |
+| Oracle | the probe census (`r300_rs_tex_adj_probe.h`): 882 judged interior pixels, tolerance 2, model separation 5 UNORM8 quanta per channel; the predictions self-classify ahead of the ioctl, and rung D's interpolated image is the decisive falsifier because a pure-affine image aliases the prediction under replicated Flat inputs; six known-bads refuse with exit 2 in preflight, the absent probe gate among them |
+| Integrity | retained by `steinmarder-r300` `915c000fe`; every entry in `bundle_hashes.sha256` verifies there |
+
+The receipt proves Flat at location 0 beside NoPerspective at location 1
+on RS485M through host replication: the post-VS stage rewrites the
+provoking record's varying onto every record ahead of the clipper and
+the reciprocal packing, so a clipped edge between two equal records
+yields the same record and the US divides the carrier back out.
+Replication composes with the texture-path routes for that reason,
+while `GB_SELECT.W_SELECT` and `GA_COLOR_CONTROL` are whole-draw and
+per-primitive words a second varying kind cannot share
+(`docs/hardware/rs482-post-vap-interpolation-pipeline.md`).  The
+promotion commit removes the probe gate; the four-vector RS budget
+boundary and wider mixed interfaces carry no claim until their own
+receipts land.
+
+The preceding target receipt is the public partial-clip fallback:
+
+| Field | Value |
+|---|---|
 | Bundle | `steinmarder-r300/src/re/r300/results/r3v-native-noperspective-public-partial-clip-fallback-receipt-rs482` |
 | Evidence class | silicon; attended semantic cell of the public full-vec4 NoPerspective pipeline on the adaptive route with every probe gate, the force gate, and the R2VB gates unset; this receipt makes no CTS qualification claim |
 | Cell | two-draw over the probe triangle crossing `x = -w`: Smooth vec4 control varying cell, then the NoPerspective pipeline created on `R3V_INTERPOLATION_ROUTE_W_SELECT_OR_RECIPROCAL_CARRIER` with the clipping class deferred; `r3v_native_cmd_buffer_select_deferred_routes` judged the draw PARTIAL at `vkQueueSubmit` and spliced the TC1 reciprocal-carrier cell over the direct cell's span ahead of the arming digest (486 IB dwords, byte-identical to the forced rung B cell; VAP_VTX_SIZE 8 then 12; pass 1 differs from the control in 65 dwords, VAP_PROG_STREAM_CNTL_0 first) |
