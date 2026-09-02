@@ -2672,6 +2672,12 @@ deqp_crash\tCrash\tdEQP-VK\\..*\t-\tblocks\tdEQP-terminated case\tdEQP-VK.fake.c
 
 
 def selftest(fixture_qpa):
+    # The fixture repository's cleanliness is judged by the runner's git
+    # status call, so the host's global and system git configuration
+    # (a core.excludesFile listing *.so hides the relative shim below)
+    # stays out of every git invocation the selftest makes.
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
     if fixture_qpa:
         fixture_qpa = str(Path(fixture_qpa).resolve())
     with tempfile.TemporaryDirectory() as d:
@@ -2679,6 +2685,10 @@ def selftest(fixture_qpa):
         cts_repo = d / "cts"
         cts_repo.mkdir()
         fake = cts_repo / "deqp-vk"
+        # The relative-preload case copies the shim beside deqp-vk, and
+        # the source-clean verdict has to survive that copy on a host
+        # whose git configuration ignores nothing.
+        (cts_repo / ".gitignore").write_text(RADEON_DRM_SHIM_BASENAME + "\n")
         fake.write_text(FAKE_DEQP)
         fake.chmod(0o755)
         subprocess.run(["git", "init", "-q", str(cts_repo)], check=True)
@@ -2693,6 +2703,7 @@ def selftest(fixture_qpa):
                 "user.email=r3v-runner-selftest.invalid",
                 "add",
                 "deqp-vk",
+                ".gitignore",
             ],
             check=True,
         )
