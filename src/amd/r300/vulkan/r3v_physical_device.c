@@ -738,13 +738,8 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
          VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->optimalTilingFeatures = properties->linearTilingFeatures;
-      /* The vertex-buffer grant joins the texel-buffer one:
-       * attribute_format_id names R300_VERTEX_FORMAT_UNORM8_4, whose
-       * gather decodes the four components in memory order.
-       */
       properties->bufferFeatures =
-         VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT |
-         VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+         VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
       break;
    case VK_FORMAT_B8G8R8A8_UNORM:
       /* The render family's color-attachment grant plus the transfer
@@ -768,14 +763,9 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
        * mandatory_format_feature_absent names the RS480 die's absent
        * storage-image and integer-format routes; the same silicon gap
        * withholds VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT, so the
-       * grant is the uniform texel-buffer bit alone.  The vertex-buffer
-       * bit joins it: attribute_format_id names
-       * R300_VERTEX_FORMAT_UNORM8_4_BGRA, whose selectors carry the
-       * BGRA component order into the RGBA carrier.
+       * grant is the uniform texel-buffer bit alone.
        */
-      properties->bufferFeatures =
-         VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT |
-         VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+      properties->bufferFeatures = VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
       break;
    case VK_FORMAT_R8G8B8A8_UINT:
    case VK_FORMAT_R16G16B16A16_UINT:
@@ -803,28 +793,6 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    case VK_FORMAT_R32G32_SFLOAT:
    case VK_FORMAT_R32G32B32_SFLOAT:
    case VK_FORMAT_R32G32B32A32_SFLOAT:
-   /* The normalized and half-precision members of the Vulkan 1.0
-    * mandatory vertex-buffer table: attribute_format_id in
-    * r3v_native_pipeline.c names one r300_vertex_format_id apiece and
-    * the host gather decodes each to the four-float carrier, so the
-    * grant covers exactly what a draw executes.  The integer members
-    * stay withheld while an integer vertex input variable reaches no
-    * value kind in the SPIR-V vertex front end.
-    */
-   case VK_FORMAT_R8_UNORM:
-   case VK_FORMAT_R8G8_UNORM:
-   case VK_FORMAT_R8_SNORM:
-   case VK_FORMAT_R8G8_SNORM:
-   case VK_FORMAT_R8G8B8A8_SNORM:
-   case VK_FORMAT_R16_UNORM:
-   case VK_FORMAT_R16G16_UNORM:
-   case VK_FORMAT_R16G16B16A16_UNORM:
-   case VK_FORMAT_R16_SNORM:
-   case VK_FORMAT_R16G16_SNORM:
-   case VK_FORMAT_R16G16B16A16_SNORM:
-   case VK_FORMAT_R16_SFLOAT:
-   case VK_FORMAT_R16G16_SFLOAT:
-   case VK_FORMAT_R16G16B16A16_SFLOAT:
       properties->bufferFeatures = VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
       break;
    default:

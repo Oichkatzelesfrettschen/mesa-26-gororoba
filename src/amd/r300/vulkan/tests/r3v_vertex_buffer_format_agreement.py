@@ -4,16 +4,21 @@
 
 Two tables decide whether a vertex format works.  `attribute_format_id`
 in r3v_native_pipeline.c maps a VkFormat to the r300_vertex_format_id
-the host gather decodes, and a format missing from it refuses at
-vkCreateGraphicsPipelines.  The VERTEX_BUFFER_BIT arms of
+the host gather decodes.  The VERTEX_BUFFER_BIT arms of
 r3v_get_format_properties in r3v_physical_device.c tell an application
-which formats it may bind.  The two are written apart, so they drift
-apart: a format advertised and not mapped promises a pipeline the driver
-refuses, and a format mapped and not advertised hides a route that
-works.
+which formats it may bind.
 
-This audit reads both switch statements and refuses unless the two sets
-are equal.
+Advertising is the stronger claim, so the containment runs one way:
+every advertised format carries a mapping, and a format advertised
+without one promises a pipeline the driver refuses.  A mapped format
+left unadvertised stages a decode ahead of its grant, since a decode
+reaching the gather is not yet a draw the pipeline admits: the
+admission gate weighs the shader stages, the vertex-input shape, the
+fixed state, and the render-pass cell, and a format the gather decodes
+still refuses there.  Advertising ahead of that gate turns a withheld
+feature into a blocking failure, which a measured run of the vertex
+input group showed as 213 cases moving from NotSupported to Fail at
+vkCreateGraphicsPipelines.
 
 Usage:
   r3v_vertex_buffer_format_agreement.py --pipeline PATH \\
@@ -107,18 +112,12 @@ def audit(pipeline_text, device_text):
     admitted = admitted_formats(pipeline_text)
     advertised = advertised_formats(device_text)
     promised = sorted(advertised - admitted)
-    hidden = sorted(admitted - advertised)
     if promised:
         raise AuditRefusal(
             f"{len(promised)} format(s) carry {VERTEX_BUFFER_BIT} and reach no "
             f"r300_vertex_format_id, so a pipeline binding one refuses: "
             f"{', '.join(promised)}")
-    if hidden:
-        raise AuditRefusal(
-            f"{len(hidden)} format(s) map to an r300_vertex_format_id and are "
-            f"not advertised, so an application cannot reach a route that "
-            f"executes: {', '.join(hidden)}")
-    return sorted(admitted)
+    return sorted(advertised)
 
 
 PIPELINE_FIXTURE = """
@@ -182,11 +181,12 @@ def selftest():
     refuses("reach no r300_vertex_format_id",
             lambda: audit(PIPELINE_FIXTURE, over))
 
-    # A format the pipeline maps and the query withholds.
+    # A format the pipeline maps and the query withholds is the
+    # staging case: the decode is ready and the grant waits for a
+    # pipeline that admits it, so the audit stays quiet.
     under = DEVICE_FIXTURE.replace("   case VK_FORMAT_R8G8_UNORM:\n", "")
-    refuses("VK_FORMAT_R8G8_UNORM", lambda: audit(PIPELINE_FIXTURE, under))
-    refuses("cannot reach a route that executes",
-            lambda: audit(PIPELINE_FIXTURE, under))
+    assert audit(PIPELINE_FIXTURE, under) == ["VK_FORMAT_R32_SFLOAT",
+                                              "VK_FORMAT_R8_UNORM"]
 
     # A label whose only path is the INVALID return is not admitted, so
     # advertising it promises a pipeline the driver refuses.
