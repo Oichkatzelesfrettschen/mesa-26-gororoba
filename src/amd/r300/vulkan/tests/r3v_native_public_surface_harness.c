@@ -811,7 +811,6 @@ main(void)
     * assertions, so an ambient value cannot reroute a leg.
     */
    unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
-   unsetenv("R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE");
    unsetenv("R3V_NATIVE_R2VB_DELIVERY_EXPERIMENTAL");
    unsetenv("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
 
@@ -5160,23 +5159,6 @@ main(void)
                   r3v_reference_fragment_flat_mixed_carrier_spirv;
                flat_mixed_shape.fragment_bytes =
                   sizeof(r3v_reference_fragment_flat_mixed_carrier_spirv);
-               /* Closed gate: the interface creates and its route is
-                * UNSUPPORTED, so a draw on it refuses at record time
-                * ahead of any silicon exposure. */
-               VkPipeline flat_mixed_closed = VK_NULL_HANDLE;
-               assert(make_pipeline(&flat_mixed_shape, pass, layout,
-                                    &flat_mixed_closed) == VK_SUCCESS);
-               {
-                  VK_FROM_HANDLE(r3v_native_pipeline, native_closed,
-                                 flat_mixed_closed);
-                  assert(native_closed->shader_interface.flat_mask == 1u);
-                  assert(native_closed->interpolation_route ==
-                         R3V_INTERPOLATION_ROUTE_UNSUPPORTED);
-               }
-               vkDestroyPipeline(device, flat_mixed_closed, NULL);
-               assert(setenv("R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE", "1",
-                             1) == 0);
-               r3v_native_device_refresh_delivery_gates(native_device);
                VkPipeline flat_mixed_pipeline = VK_NULL_HANDLE;
                assert(make_pipeline(&flat_mixed_shape, pass, layout,
                                     &flat_mixed_pipeline) == VK_SUCCESS);
@@ -5369,8 +5351,6 @@ main(void)
                   vkDestroyPipeline(device, stripped_pipeline, NULL);
                }
                vkDestroyPipeline(device, flat_mixed_pipeline, NULL);
-               assert(unsetenv("R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE") == 0);
-               r3v_native_device_refresh_delivery_gates(native_device);
                r300_tcl_bypass_triangle_release(&flat_cell);
             }
 
