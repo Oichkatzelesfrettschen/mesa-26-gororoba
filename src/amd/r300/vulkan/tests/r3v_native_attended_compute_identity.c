@@ -20,6 +20,7 @@
 
 #include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_operation_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
 #include <limits.h>
@@ -151,7 +152,7 @@ main(int argc, char **argv)
     * mode runs under whatever gates the fixture sets.
     */
    const char *verb_gate =
-      r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate;
+      r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP)->gate;
    if (!gate_open("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL")) {
       fprintf(stderr, "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL=1 opens the compute "
                       "surface the cell dispatches through\n");

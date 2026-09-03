@@ -12,6 +12,7 @@
 
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_operation_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "r3v_interpolation_lowering.h"
@@ -978,12 +979,13 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
-   /* The compute verb gate table, one entry per ledger row read from
-    * that row's gpu_gate the same way (the literal "1" or NULL): with
-    * the compute gate, a verb's open gate selects its GPU route when the
-    * row's route executes, and an open gate on a row without an
-    * executing route selects nothing. */
-   const char *compute_verb_gates[R300_COMPUTE_VERB_COUNT];
+   /* The compute route gate table, one entry per route identity read from
+    * that route's own gate the same way (the literal "1" or NULL).  A gate
+    * belongs to one route, so an open gate never makes a second route for
+    * the same operation eligible, and an open gate on a candidate route
+    * selects nothing.  Indexed by enum r300_operation_route_id, whose NONE
+    * slot stays NULL. */
+   const char *compute_route_gates[R300_OPERATION_ROUTE_COUNT];
    /* Failure injection at the fetched route's composition boundary: a
     * nonzero negative errno makes the admission treat the composed route
     * as refused with that errno, after the emitters ran and before any

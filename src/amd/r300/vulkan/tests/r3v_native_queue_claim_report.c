@@ -9,6 +9,7 @@
 #undef NDEBUG
 
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_operation_route.h"
 #include "util/mesa-blake3.h"
 
 #include <assert.h>
@@ -31,24 +32,39 @@ static void
 ledger_digest(char out[BLAKE3_OUT_LEN * 2 + 1])
 {
    uint32_t count = 0;
-   const struct r300_compute_verb_row *rows = r300_compute_verb_rows(&count);
+   const struct r300_compute_verb_row *verbs = r300_compute_verb_rows(&count);
    struct mesa_blake3 ctx;
    _mesa_blake3_init(&ctx);
+   /* The semantic verbs first, then every route: the claim rests on both
+    * tables, so an edit to either moves the digest. */
    for (uint32_t i = 0; i < count; i++) {
-      const struct r300_compute_verb_row *r = &rows[i];
+      char line[512];
+      int n = snprintf(line, sizeof(line), "v\t%u\t%s\t%u\n",
+                       (unsigned)verbs[i].verb, verbs[i].name,
+                       (unsigned)verbs[i].operation_id);
+      assert(n > 0 && (size_t)n < sizeof(line));
+      _mesa_blake3_update(&ctx, line, (size_t)n);
+   }
+   uint32_t route_count = 0;
+   const struct r300_operation_route_row *routes =
+      r300_operation_route_rows(&route_count);
+   for (uint32_t i = 0; i < route_count; i++) {
+      const struct r300_operation_route_row *r = &routes[i];
       uint32_t tolerance_bits;
       memcpy(&tolerance_bits, &r->tolerance, sizeof(tolerance_bits));
       char line[512];
       int n = snprintf(line, sizeof(line),
-                       "%u\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%08x\t%u\t%u\t%u\t%u\t%s\n",
-                       (unsigned)r->verb, r->name, (unsigned)r->operation_id,
+                       "r\t%u\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t"
+                       "%08x\t%u\t%u\t%s\n",
+                       (unsigned)r->route_id, r->name,
+                       (unsigned)r->operation_id, (unsigned)r->executor,
+                       (unsigned)r->state, (unsigned)r->unit,
                        (unsigned)r->implementation_id,
                        (unsigned)r->gpu_route_contract_id,
-                       (unsigned)r->index_class, (unsigned)r->unit,
-                       (unsigned)r->exactness, tolerance_bits,
-                       (unsigned)r->cpu_route, (unsigned)r->gpu_route,
-                       (unsigned)r->evidence, (unsigned)r->evidence_scope,
-                       r->gpu_gate);
+                       (unsigned)r->admission_id, (unsigned)r->index_class,
+                       tolerance_bits, (unsigned)r->evidence,
+                       (unsigned)r->evidence_scope,
+                       r->gate != NULL ? r->gate : "-");
       assert(n > 0 && (size_t)n < sizeof(line));
       _mesa_blake3_update(&ctx, line, (size_t)n);
    }

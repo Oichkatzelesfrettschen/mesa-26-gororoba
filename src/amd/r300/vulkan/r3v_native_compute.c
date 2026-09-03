@@ -17,6 +17,7 @@
 #include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/vulkan/r3v_compute_spirv.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_operation_route.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/cpu/r300_cpu_compute_job.h"
 
@@ -535,7 +536,9 @@ create_compute_pipeline(struct r3v_native_device *device,
     * realizes a ledger row whose CPU route executes, or the pipeline
     * refuses (R300_COMPUTE_FAILURE_REFUSE_AT_ADMISSION). */
    const struct r300_compute_verb_row *verb = r300_compute_verb_for_job(&job);
-   if (verb == NULL || verb->cpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING) {
+   if (verb == NULL ||
+       !r300_operation_has_executing_route(
+          verb->operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST)) {
       return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
                        "r3v-native: compute verb %s has no executing route",
                        verb ? verb->name : "outside the ledger");
@@ -826,22 +829,38 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
       &cmd_buffer->deferred_dispatch;
    if (!dispatch->pending || dispatch->gpu_carrier_delivery)
       return VK_SUCCESS;
-   /* The job's own verb row selects the route: its gate open and its
-    * GPU route executing; the identity map is the one such row, and
-    * every other verb's gate selects nothing for this job. */
+   /* The job resolves to a verb, the verb to an operation, and the
+    * operation to at most one eligible executing GPU route.  Selection
+    * reads each route's own gate, so an open gate on one route never makes
+    * another eligible and an open gate on a candidate selects nothing; two
+    * eligible routes refuse rather than letting table order decide. */
    const struct r300_compute_verb_row *verb =
       r300_compute_verb_for_job(&dispatch->job);
+   if (verb == NULL)
+      return VK_SUCCESS;
+
+   bool gate_open[R300_OPERATION_ROUTE_COUNT] = { false };
+   for (uint32_t r = 0; r < R300_OPERATION_ROUTE_COUNT; r++)
+      gate_open[r] = device->compute_route_gates[r] != NULL;
+
+   const struct r300_operation_route_row *route =
+      r300_operation_select_route(verb->operation_id,
+                                  R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                  gate_open, NULL);
+   if (route == NULL)
+      return VK_SUCCESS;
+
+   /* The selected route's own contracts must be the carrier's, so the
+    * identity-carrier plan is compared against that exact row rather than
+    * against the semantic verb, which no longer carries contracts. */
    const struct r300_compute_identity_carrier_contract *contract =
       &r300_compute_identity_carrier_contract;
    const enum r3v_native_cell_kind cell_kind =
-      verb != NULL
-         ? r3v_native_compute_cell_kind(verb->gpu_route_contract_id)
-         : R3V_NATIVE_CELL_KIND_UNDECLARED;
-   if (verb == NULL || verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
-       device->compute_verb_gates[verb->verb] == NULL ||
-       verb->operation_id != contract->operation_id ||
-       verb->implementation_id != contract->implementation_id ||
-       verb->gpu_route_contract_id != contract->gpu_route_contract_id ||
+      r3v_native_compute_cell_kind(route->gpu_route_contract_id);
+   if (route->operation_id != contract->operation_id ||
+       route->implementation_id != contract->implementation_id ||
+       route->gpu_route_contract_id != contract->gpu_route_contract_id ||
+       route->admission_id != contract->admission_id ||
        contract->admission_id != R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY ||
        cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED)
       return VK_SUCCESS;

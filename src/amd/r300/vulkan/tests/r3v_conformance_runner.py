@@ -150,7 +150,11 @@ SUBMISSION_GATE_PREFIXES = (
     "R3V_NATIVE_MANIFEST_DIR",
 )
 SUBMISSION_GATE_PATTERN = re.compile(r"^R3V_NATIVE_COMPUTE_.*_GPU_EXPERIMENTAL$")
+# Per-route compute gates live in the route ledger; the verb table carries
+# the queue-claim gate alone.  Both are scanned so a gate cannot be moved
+# into either file unnoticed.
 COMPUTE_VERB_SOURCE = "src/amd/r300/common/r300_compute_verb.c"
+COMPUTE_ROUTE_SOURCE = "src/amd/r300/common/r300_operation_route.c"
 # A shard is a recovery unit: one process over this many cases at most.
 MAX_SHARD_CASES = 20000
 DMESG_HAZARD_PATTERNS = [
@@ -2537,13 +2541,18 @@ def check_ledgers(nonpass_path, slices_path, mustpass_dir=None):
     missing = sorted(DEQP_STATUSES - PASS_STATUS - named)
     if missing:
         raise RunnerRefusal(f"no ledger row names status {missing}")
-    verb_source = Path(__file__).resolve().parents[5] / COMPUTE_VERB_SOURCE
-    if not verb_source.is_file():
-        raise RunnerRefusal(
-            f"{COMPUTE_VERB_SOURCE} is not beside this "
-            "runner; the gate pattern cannot be held to it"
+    root = Path(__file__).resolve().parents[5]
+    gates = []
+    for relative in (COMPUTE_VERB_SOURCE, COMPUTE_ROUTE_SOURCE):
+        source = root / relative
+        if not source.is_file():
+            raise RunnerRefusal(
+                f"{relative} is not beside this "
+                "runner; the gate pattern cannot be held to it"
+            )
+        gates += re.findall(
+            r'"(R3V_NATIVE_COMPUTE_[A-Z0-9_]+)"', source.read_text()
         )
-    gates = re.findall(r'"(R3V_NATIVE_COMPUTE_[A-Z0-9_]+)"', verb_source.read_text())
     unbound = sorted(
         g
         for g in set(gates)
@@ -2551,7 +2560,10 @@ def check_ledgers(nonpass_path, slices_path, mustpass_dir=None):
         and not SUBMISSION_GATE_PATTERN.match(g)
     )
     if not gates:
-        raise RunnerRefusal(f"{COMPUTE_VERB_SOURCE} names no compute gate")
+        raise RunnerRefusal(
+            f"{COMPUTE_VERB_SOURCE} and {COMPUTE_ROUTE_SOURCE} name no "
+            "compute gate"
+        )
     if unbound:
         raise RunnerRefusal(
             f"compute verb gates outside the contamination " f"pattern: {unbound}"

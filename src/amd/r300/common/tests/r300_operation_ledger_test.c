@@ -12,6 +12,7 @@
 #include "r300_carrier_policy.h"
 #include "r300_compute_identity_carrier.h"
 #include "r300_compute_verb.h"
+#include "r300_operation_route.h"
 #include "r300_numeric_domain.h"
 #include "r300_reg.h"
 
@@ -77,34 +78,39 @@ catalog_rows_valid(const struct r300_virtual_op_info *table, unsigned count,
 static bool
 identity_contract_valid(
    const struct r300_compute_identity_carrier_contract *contract,
-   const struct r300_compute_verb_row *verb, const char **reason)
+   const struct r300_operation_route_row *route, const char **reason)
 {
-   if (contract->operation_id != verb->operation_id) {
-      *reason = "route certificate and verb operation disagree";
+   /* The certificate binds to the R2VB route row: contracts, exactness, and
+    * evidence are route facts, and the semantic verb carries none of them. */
+   if (contract->operation_id != route->operation_id) {
+      *reason = "route certificate and route operation disagree";
       return false;
    }
-   if (contract->implementation_id != verb->implementation_id) {
-      *reason = "route certificate and verb implementation disagree";
+   if (contract->implementation_id != route->implementation_id) {
+      *reason = "route certificate and route implementation disagree";
       return false;
    }
-   if (contract->gpu_route_contract_id != verb->gpu_route_contract_id) {
-      *reason = "route certificate and verb contract disagree";
+   if (contract->gpu_route_contract_id != route->gpu_route_contract_id) {
+      *reason = "route certificate and route contract disagree";
       return false;
    }
-   if (contract->admission_id != R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY) {
+   if (contract->admission_id != R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY ||
+       route->admission_id != contract->admission_id) {
       *reason = "route certificate has an invalid admission identity";
       return false;
    }
-   if (verb->verb != R300_COMPUTE_VERB_IDENTITY_MAP ||
-       verb->index_class != R300_GRID_INDEX_LINEAR ||
-       verb->unit != R300_COMPUTE_VERB_UNIT_R2VB_CARRIER ||
-       verb->exactness != R300_COMPUTE_VERB_FP24_EXACT_WINDOW ||
-       verb->cpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
-       verb->gpu_route != R300_COMPUTE_VERB_ROUTE_EXECUTING ||
-       verb->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ||
-       verb->evidence_scope !=
+   if (route->route_id != R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP ||
+       route->executor != R300_OPERATION_ROUTE_EXECUTOR_GPU ||
+       route->index_class != R300_GRID_INDEX_LINEAR ||
+       route->unit != R300_EXECUTION_UNIT_R2VB_CARRIER ||
+       route->exactness != R300_COMPUTE_VERB_FP24_EXACT_WINDOW ||
+       route->state != R300_OPERATION_ROUTE_EXECUTING ||
+       !r300_operation_has_executing_route(
+          route->operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST) ||
+       route->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ||
+       route->evidence_scope !=
           R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL) {
-      *reason = "route certificate and verb shape disagree";
+      *reason = "route certificate and route shape disagree";
       return false;
    }
 
@@ -232,8 +238,8 @@ test_verb_joins(void)
       assert(r300_virtual_op_info_for_id(verbs[i].operation_id) != NULL);
    }
 
-   const struct r300_compute_verb_row *identity =
-      r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP);
+   const struct r300_operation_route_row *identity =
+      r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP);
    assert(identity_contract_valid(&r300_compute_identity_carrier_contract,
                                   identity, &reason));
    assert(reason == NULL);
@@ -242,28 +248,28 @@ test_verb_joins(void)
 static void
 test_contract_calibration(void)
 {
-   const struct r300_compute_verb_row *identity =
-      r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP);
+   const struct r300_operation_route_row *identity =
+      r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP);
    struct r300_compute_identity_carrier_contract mutated =
       r300_compute_identity_carrier_contract;
    const char *reason = NULL;
 
    mutated.operation_id = R300_OPERATION_ID_BINARY_MAP;
    assert(!identity_contract_valid(&mutated, identity, &reason));
-   assert(strcmp(reason, "route certificate and verb operation disagree") ==
+   assert(strcmp(reason, "route certificate and route operation disagree") ==
           0);
 
    mutated = r300_compute_identity_carrier_contract;
    mutated.implementation_id = R300_OPERATION_IMPLEMENTATION_NONE;
    assert(!identity_contract_valid(&mutated, identity, &reason));
    assert(strcmp(reason,
-                 "route certificate and verb implementation disagree") ==
+                 "route certificate and route implementation disagree") ==
           0);
 
    mutated = r300_compute_identity_carrier_contract;
    mutated.gpu_route_contract_id = R300_GPU_ROUTE_CONTRACT_NONE;
    assert(!identity_contract_valid(&mutated, identity, &reason));
-   assert(strcmp(reason, "route certificate and verb contract disagree") ==
+   assert(strcmp(reason, "route certificate and route contract disagree") ==
           0);
 
    mutated = r300_compute_identity_carrier_contract;
@@ -273,18 +279,18 @@ test_contract_calibration(void)
                  "route certificate has an invalid admission identity") ==
           0);
 
-   struct r300_compute_verb_row mutated_verb = *identity;
-   mutated_verb.unit = R300_COMPUTE_VERB_UNIT_RB3D_CLEAR;
+   struct r300_operation_route_row mutated_verb = *identity;
+   mutated_verb.unit = R300_EXECUTION_UNIT_RB3D_CLEAR;
    assert(!identity_contract_valid(&r300_compute_identity_carrier_contract,
                                    &mutated_verb, &reason));
-   assert(strcmp(reason, "route certificate and verb shape disagree") == 0);
+   assert(strcmp(reason, "route certificate and route shape disagree") == 0);
 
    mutated_verb = *identity;
    mutated_verb.evidence_scope =
       R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL;
    assert(!identity_contract_valid(&r300_compute_identity_carrier_contract,
                                    &mutated_verb, &reason));
-   assert(strcmp(reason, "route certificate and verb shape disagree") == 0);
+   assert(strcmp(reason, "route certificate and route shape disagree") == 0);
 
    mutated = r300_compute_identity_carrier_contract;
    mutated.domain = R300_NUM_DOMAIN_U7_DOT;

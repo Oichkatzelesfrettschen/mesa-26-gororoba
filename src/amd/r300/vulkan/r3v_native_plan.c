@@ -8,6 +8,7 @@
 #include "r3v_native_plan.h"
 
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_operation_route.h"
 #include "util/mesa-blake3.h"
 
 #include <assert.h>
@@ -818,13 +819,15 @@ r3v_native_plan_gates_open(const char *(*read_env)(void *ctx,
          return true;
       }
    }
-   uint32_t verb_count = 0;
-   const struct r300_compute_verb_row *rows =
-      r300_compute_verb_rows(&verb_count);
-   for (uint32_t v = 0; v < verb_count; v++) {
-      const char *value = read_env(ctx, rows[v].gpu_gate);
+   uint32_t route_count = 0;
+   const struct r300_operation_route_row *routes =
+      r300_operation_route_rows(&route_count);
+   for (uint32_t r = 0; r < route_count; r++) {
+      if (routes[r].gate == NULL)
+         continue;
+      const char *value = read_env(ctx, routes[r].gate);
       if (value != NULL && value[0] != '\0') {
-         *gate_out = rows[v].gpu_gate;
+         *gate_out = routes[r].gate;
          return true;
       }
    }
