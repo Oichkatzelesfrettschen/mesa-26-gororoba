@@ -1,0 +1,24 @@
+path_token	alias	note
+results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-deployment-runtime	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-attended-cell-rs482-first-submission	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-float2-tuple-index-pair-loaded-validator-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-float2-tuple-xy01-delivery-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-fp24-bisect-ceiling-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-fp24-sweep-top-bin-halving-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-msaa-resolve-downsample-semantics-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-noperspective-mixed-carrier-receipt-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-noperspective-partial-clip-carrier-receipt-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-noperspective-public-partial-clip-fallback-receipt-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-noperspective-q-lane-carrier-receipt-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-producer-carrier-delivery-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-public-flat-color0-two-draw-first-delivery-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-public-flat-two-draw-first-delivery-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-public-two-draw-first-delivery-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-reingest-rendered-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/r3v-native-two-pass-concatenation-first-delivery-rs482	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/rs482-first-draw-color-write-gate-discrimination	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/rs482-post-attended-cell-fence-wedge	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/rs482_native_direct_write_transport_visibility_pass_20260808T065343Z	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal
+results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z	rs482	retained bundle sealed before the platform identity resolved to RS485M; its name is fixed by the seal

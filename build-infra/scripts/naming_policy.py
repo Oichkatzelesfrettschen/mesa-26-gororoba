@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import io
 import re
 import subprocess
 import sys
+import tempfile
 import tokenize
 from pathlib import Path
 
@@ -49,15 +51,63 @@ RETIRED_CHIP_IDENTITY = re.compile(
 # The board's video BIOS names the part: the option-ROM string table of the
 # Dell Vostro 1000 IGP carries "RS485/M BR#26605" and "ATI Radeon Xpress
 # 1150".  1002:5974 is shared with the desktop RS482 (Xpress 1100), so
-# naming the attended target RS482 names a chip this platform does not
-# carry.  The die-class enumeration RS480/RS482/RS485 stays correct, RS482M
-# stays the 1002:5975 part, and evidence sealed before the firmware read is
-# exempt through retained_evidence().
+# binding this platform to RS482 names a chip it does not carry.
+#
+# The rule reads attribution rather than proximity, and every arm stops at a
+# clause boundary, so a sentence that contrasts the two parts states a fact
+# and passes: "RS482 is the desktop Xpress 1100 part; the Vostro 1000
+# carries RS485M."  The die-class enumeration RS480/RS482/RS485, the
+# 1002:5974 shared-id description, and the 1002:5975 RS482M row all stand.
+_VOSTRO = r"Vostro[- ]?1000"
+_RS482 = r"RS482(?![M/])"
+_BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
+_CLAUSE = r"[^.;\n]"
 MISATTRIBUTED_TARGET_CHIP = re.compile(
-    r"(?:\bVostro[- ]?1000\b[^\n]{0,72}?\bRS482(?![M/])\b|"
-    r"\bRS482(?![M/])\b[^\n]{0,72}?\bVostro[- ]?1000\b|"
-    r"\bvostro1000[-_]rs482\b)",
+    rf"\b{_VOSTRO}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE}{{0,40}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE}{{0,40}}?\b{_VOSTRO}\b"
+    rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_VOSTRO}\b"
+    rf"|\b{_VOSTRO}\b\s*/\s*{_RS482}\b"
+    rf"|\b{_RS482}\b\s*/\s*{_VOSTRO}\b"
+    rf"|\b{_RS482}\b{_CLAUSE}{{0,24}}?\b(?:in|on|inside)\b{_CLAUSE}{{0,24}}?"
+    rf"\bthe\s+{_VOSTRO}\b"
 )
+# A newly created artifact naming the platform rs482; a token the ledger
+# registers is an existing sealed name and passes.
+MISATTRIBUTED_TARGET_ARTIFACT = re.compile(r"\bvostro1000[-_]rs482\b", re.IGNORECASE)
+
+HISTORICAL_ARTIFACT_ALIAS_LEDGER = (
+    "build-infra/docs/historical-artifact-aliases.tsv"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def historical_artifact_aliases() -> frozenset[str]:
+    """The exact retained path tokens whose seals fixed the rs482 spelling.
+
+    Registration is the whole exemption: a token absent from the ledger is a
+    new artifact and refuses however its path is spelled."""
+    ledger = Path(__file__).resolve().parents[2] / HISTORICAL_ARTIFACT_ALIAS_LEDGER
+    if not ledger.is_file():
+        return frozenset()
+    rows = ledger.read_text(encoding="utf-8").splitlines()[1:]
+    return frozenset(
+        row.split("\t", 1)[0] for row in rows if row.strip()
+    )
+
+
+def registered_historical_artifact(line: str, offset: int) -> bool:
+    """Whether the token at offset falls inside a registered retained path."""
+    for candidate in re.finditer(r"[A-Za-z0-9_./-]+", line):
+        if candidate.start() <= offset < candidate.end():
+            text = candidate.group(0).rstrip("/")
+            return any(
+                text.endswith(registered) or registered in text
+                for registered in historical_artifact_aliases()
+            )
+    return False
+
+
 HISTORICAL_LOG_NAMES = frozenset(
     (
         "mesa_gororoba_no_rusticl_build_20260426T010131Z",
@@ -268,18 +318,6 @@ def retained_evidence(path: str) -> bool:
     )
 
 
-RETAINED_BUNDLE_PATH = re.compile(r"results/[-\w./]*")
-
-
-def inside_retained_bundle_path(line: str, offset: int) -> bool:
-    """A retained bundle is cited by the name its seal fixed, so a chip
-    token inside such a path is a citation rather than a claim."""
-    return any(
-        match.start() <= offset < match.end()
-        for match in RETAINED_BUNDLE_PATH.finditer(line)
-    )
-
-
 def inside_double_quoted_string(line: str, offset: int) -> bool:
     in_double_quoted_string = False
     escaped = False
@@ -412,19 +450,26 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"{identity_match.group(0)!r}"
         )
     for target_match in MISATTRIBUTED_TARGET_CHIP.finditer(text):
-        line_start = text.rfind("\n", 0, target_match.start()) + 1
-        line_end = text.find("\n", target_match.end())
-        if line_end == -1:
-            line_end = len(text)
-        if inside_retained_bundle_path(
-            text[line_start:line_end], target_match.start() - line_start
-        ):
-            continue
         line_number = starting_line_number + text.count("\n", 0, target_match.start())
         findings.append(
             f"{path}:{line_number}: the attended target is RS485M per its "
-            f"video BIOS, so this misattributes the chip: "
-            f"{target_match.group(0)!r}"
+            f"video BIOS, so this binds the platform to a chip it does not "
+            f"carry: {target_match.group(0)!r}"
+        )
+    for alias_match in MISATTRIBUTED_TARGET_ARTIFACT.finditer(text):
+        line_start = text.rfind("\n", 0, alias_match.start()) + 1
+        line_end = text.find("\n", alias_match.end())
+        if line_end == -1:
+            line_end = len(text)
+        if registered_historical_artifact(
+            text[line_start:line_end], alias_match.start() - line_start
+        ):
+            continue
+        line_number = starting_line_number + text.count("\n", 0, alias_match.start())
+        findings.append(
+            f"{path}:{line_number}: a new artifact names the platform rs482; "
+            f"the attended target is RS485M and only ledger-registered "
+            f"retained paths keep the alias: {alias_match.group(0)!r}"
         )
     for artifact_match in RETIRED_INTERNAL_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, artifact_match.start()) + 1
@@ -485,6 +530,23 @@ def untracked_files(repository_root: Path) -> tuple[str, ...]:
     )
 
 
+# The repository scan reads only files matching this alternation, so every
+# token any rule below can fire on appears here; a rule whose trigger were
+# absent would never be reached.  The self-test holds the two together by
+# requiring each known-bad calibration text to match this pattern.
+CANDIDATE_PREFILTER_TERMS = (
+    "decision",
+    "gororoba",
+    "RS48",
+    "vostro",
+    "5974",
+    "5975",
+)
+CANDIDATE_PREFILTER_PATTERN = "|".join(CANDIDATE_PREFILTER_TERMS)
+# The ledger registers exempt tokens, so it states no claim of its own.
+CANDIDATE_SCAN_EXCLUSIONS = (HISTORICAL_ARTIFACT_ALIAS_LEDGER,)
+
+
 def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
     result = subprocess.run(
         [
@@ -496,7 +558,7 @@ def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
             "-I",
             "-i",
             "-E",
-            "decision|gororoba",
+            CANDIDATE_PREFILTER_PATTERN,
             "--",
             ".",
             ":(exclude)build-infra/docs/review-thread-frontiers/**",
@@ -516,7 +578,11 @@ def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
             output=result.stdout,
             stderr=result.stderr,
         )
-    return tuple(result.stdout.splitlines())
+    return tuple(
+        line
+        for line in result.stdout.splitlines()
+        if line not in CANDIDATE_SCAN_EXCLUSIONS
+    )
 
 
 def candidate_file_violations(repository_root: Path, relative_path: str) -> list[str]:
@@ -724,17 +790,34 @@ def self_test() -> int:
         ("docs/example.md", "RS48" "5-marketed 1002:5975 refuses.\n", True),
         ("docs/example.md", "1002:5974 alone proves RS48" "2 here.\n", True),
         ("docs/example.md", "the Vostro 1000 (1002:5974, RS485M) target.\n", False),
-        ("docs/example.md", "the Vostro 1000 RS482 target board.\n", True),
-        ("docs/example.md", "RS482 is the chip in the Vostro 1000.\n", True),
-        ("build-infra/docs/review-thread-corpus/x.md",
-         "vostro1000-rs482 dump\n", False),
-        ("docs/example.md", "vostro1000-rs482-capture\n", True),
+        # Attribution in both directions, and the parenthetical and slash
+        # forms the tree actually carried.
+        ("docs/example.md", "The Vostro 1000 carries RS482.\n", True),
+        ("docs/example.md", "RS482 is the chip the Vostro 1000 uses.\n", True),
+        ("docs/example.md", "Vostro 1000 (RS482, AMD Turion 64 X2)\n", True),
+        ("docs/example.md", "RS482 (Vostro 1000, PCI 1002:5974) stack\n", True),
+        ("docs/example.md", "Vostro 1000 (RS482 / K8 / SB600) modules\n", True),
+        ("docs/example.md", "`Dell Vostro 1000` (AMD K8 + RS482 + SB600)\n", True),
+        ("docs/example.md", "RS482 in the Vostro 1000 northbridge\n", True),
+        # A contrast states a fact and passes: the clause boundary ends
+        # every arm, so the two parts can be named in one sentence.
         ("docs/example.md",
-         "see `steinmarder-r300/results/cachyos-vostro1000-rs482-run/`\n",
-         False),
+         "RS482 is the desktop Xpress 1100 part; the Vostro 1000 carries "
+         "RS485M.\n", False),
+        ("docs/example.md",
+         "1002:5974 is shared by RS482 and RS485-family products.\n", False),
+        ("docs/example.md",
+         "The Vostro 1000 does not carry RS485; it carries RS485M.\n", False),
         ("docs/example.md", "the Vostro 1000 RS480/RS482/RS485 family.\n", False),
         ("docs/example.md", "the Vostro 1000 carries RS485M silicon.\n", False),
-        ("docs/example.md", "1002:5975 is RS482M, not the Vostro 1000 part.\n", False),
+        ("docs/example.md", "1002:5975 is RS482M, not this platform part.\n", False),
+        # A new artifact refuses; a ledger-registered retained path passes.
+        ("docs/example.md", "vostro1000-rs482-capture\n", True),
+        ("docs/example.md", "results/vostro1000-rs482-new-run/\n", True),
+        ("docs/example.md",
+         "see `steinmarder-r300/results/"
+         "cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/`\n",
+         False),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba-* worktrees.\n", False),
         ("build-infra/example.md", "Install mesa-gororoba-debug-optimized.\n", False),
@@ -765,6 +848,44 @@ def self_test() -> int:
                 file=sys.stderr,
             )
             return 1
+    # The repository scan reads only files matching the prefilter, so a
+    # known-bad the prefilter misses would never be scanned at all.
+    prefilter = re.compile(CANDIDATE_PREFILTER_PATTERN, re.IGNORECASE)
+    for path, text, expected_failure in cases:
+        if expected_failure and not prefilter.search(text):
+            print(
+                f"naming policy self-test: known-bad text for {path} does "
+                f"not match the repository prefilter, so the repository "
+                f"scan would never read it",
+                file=sys.stderr,
+            )
+            return 1
+
+    # The complete repository checker, not violations() alone, must reject a
+    # tracked file whose only content is the misattribution.
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+        probe = root / "docs" / "probe.md"
+        probe.parent.mkdir(parents=True)
+        probe.write_text("The Vostro 1000 carries RS482.\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        scanned = tracked_candidate_files(root)
+        if "docs/probe.md" not in scanned:
+            print(
+                "naming policy self-test: the repository scan skipped a "
+                "tracked file carrying only the misattribution",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "docs/probe.md"):
+            print(
+                "naming policy self-test: the repository checker admitted "
+                "the misattribution",
+                file=sys.stderr,
+            )
+            return 1
+
     print("naming policy self-test: known-good and known-bad inputs accepted")
     return 0
 

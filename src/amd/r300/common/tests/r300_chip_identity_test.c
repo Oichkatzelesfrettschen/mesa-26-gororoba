@@ -169,17 +169,47 @@ test_platform_identity(void)
                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
                                         0x022a, "Vostro   1000 ", &row));
    assert(row == &r300_platform_vostro1000);
-   /* The ROM names the die and its mobile variant in one string, and the
-    * two scopes split from it: a register file is a die fact, a captured
-    * measurement is a part fact.  Neither is spelled RS482, which is the
-    * desktop Xpress 1100 sharing this PCI id. */
+   /* The exact tuple, field by field.  A shared PCI id names a die class
+    * and not a part, so the row is the agreement among the id, the board's
+    * subsystem id, its DMI product, and the option-ROM strings; asserting
+    * the whole tuple is what makes that agreement checkable. */
+   assert(row->pci_vendor == R300_PCI_VENDOR_ATI);
+   assert(row->pci_device == R300_PCI_DEVICE_RS48X_5974);
+   assert(row->subsystem_vendor == 0x1028);
+   assert(row->subsystem_device == 0x022a);
+   assert(strcmp(row->dmi_product_name, "Vostro 1000") == 0);
    assert(strcmp(row->firmware_chip_name, "RS485/M") == 0);
    assert(strcmp(row->firmware_product_name, "ATI Radeon Xpress 1150") == 0);
    assert(strcmp(row->die_name, "RS485") == 0);
    assert(strcmp(row->part_name, "RS485M") == 0);
    assert(strcmp(row->product_name, "Radeon Xpress 1150") == 0);
    assert(strcmp(row->historical_alias, "rs482") == 0);
-   assert(strstr(row->firmware_chip_name, row->die_name) != NULL);
+   assert(row->identity_basis ==
+          R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI_AND_FIRMWARE);
+
+   /* Neither name is RS482, which is the desktop Xpress 1100 sharing this
+    * PCI id. */
+   assert(strcmp(row->die_name, "RS482") != 0);
+   assert(strcmp(row->part_name, "RS482") != 0);
+
+   /* The id alone resolves nothing: a specimen carrying it without the
+    * board's subsystem id and DMI product is a different platform, and the
+    * lookup leaves it unresolved rather than assuming this one. */
+   const struct r300_platform_identity *absent = NULL;
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x0000, "Vostro 1000", &absent));
+   assert(absent == NULL);
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x022a, "Inspiron 1501", &absent));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x022a, NULL, &absent));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x0000,
+                                         0x0000, "", &absent));
+   assert(absent == NULL);
    assert(strcmp(row->historical_alias, "rs482") == 0);
    assert(row->subsystem_vendor ==
           r300_rs480_die_facts.specimen_subsystem_vendor);

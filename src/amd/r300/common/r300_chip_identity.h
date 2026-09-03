@@ -40,9 +40,19 @@
  *
  * The kernel enumerates the whole RS400-class family as CHIP_RS480 and
  * the GL renderer string is "ATI RS480"; both are owner-spelled and stay
- * verbatim.  Retained evidence sealed before the firmware read keeps the
- * rs482 spelling in its bundle names and hashed bytes.
+ * verbatim.
  */
+/* A shared PCI id names a die class and not a part, so a platform row
+ * records which observations agree on it: the strongest identity is the
+ * agreement among the id, the board's subsystem id, its DMI product, and
+ * the option-ROM strings. */
+enum r300_platform_identity_basis {
+   R300_PLATFORM_IDENTITY_BASIS_PCI_ONLY = 0,
+   R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI,
+   R300_PLATFORM_IDENTITY_BASIS_FIRMWARE_STRING,
+   R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI_AND_FIRMWARE,
+};
+
 struct r300_platform_identity {
    uint16_t pci_vendor;
    uint16_t pci_device;
@@ -67,8 +77,12 @@ struct r300_platform_identity {
    const char *part_name;
    /* The marketing product name in the spelling durable names use. */
    const char *product_name;
-   /* The token retained evidence was sealed under. */
+   /* The compatibility token older externally retained artifacts carry.
+    * It is not the platform's current part identity. */
    const char *historical_alias;
+   /* Which observations agree on the row.  A platform resolved from the
+    * shared PCI id alone is not resolved. */
+   enum r300_platform_identity_basis identity_basis;
 };
 
 extern const struct r300_platform_identity r300_platform_vostro1000;

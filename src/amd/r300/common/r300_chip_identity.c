@@ -83,6 +83,8 @@ const struct r300_platform_identity r300_platform_vostro1000 = {
    .part_name = "RS485M",
    .product_name = "Radeon Xpress 1150",
    .historical_alias = "rs482",
+   .identity_basis =
+      R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI_AND_FIRMWARE,
 };
 
 static const struct r300_platform_identity *const r300_platform_rows[] = {
