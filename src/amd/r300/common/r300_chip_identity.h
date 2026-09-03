@@ -42,16 +42,44 @@
  * the GL renderer string is "ATI RS480"; both are owner-spelled and stay
  * verbatim.
  */
-/* A shared PCI id names a die class and not a part, so a platform row
- * records which observations agree on it: the strongest identity is the
- * agreement among the id, the board's subsystem id, its DMI product, and
- * the option-ROM strings. */
-enum r300_platform_identity_basis {
-   R300_PLATFORM_IDENTITY_BASIS_PCI_ONLY = 0,
-   R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI,
-   R300_PLATFORM_IDENTITY_BASIS_FIRMWARE_STRING,
-   R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI_AND_FIRMWARE,
+/* One stable name per resolved platform, so a gate compares an identity
+ * rather than re-deriving a tuple at every site. */
+enum r300_platform_id {
+   R300_PLATFORM_ID_NONE = 0,
+   R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
 };
+
+/* What the runtime lookup actually compares.  A row is matched on the
+ * facts a running driver can read from the device and the firmware
+ * tables, which is the PCI tuple and the DMI product name. */
+enum r300_platform_match_basis {
+   R300_PLATFORM_MATCH_PCI_SUBSYSTEM_DMI = 0,
+};
+
+/* What the row's part identity rests on, which is a separate question
+ * from what the lookup compares: the option ROM is read once and
+ * retained, never on the submission path. */
+enum r300_platform_evidence_basis {
+   R300_PLATFORM_EVIDENCE_OPTION_ROM_STRING = 1u << 0,
+   R300_PLATFORM_EVIDENCE_PRODUCT_STRING = 1u << 1,
+   R300_PLATFORM_EVIDENCE_RETAINED_ROM_DIGEST = 1u << 2,
+};
+
+/* Measurements made on one board.  A second board sharing the PCI id is
+ * a different specimen, so these values never reach it. */
+struct r300_specimen_facts {
+   enum r300_platform_id platform_id;
+   /* Board identity read from the device: revision and subsystem. */
+   uint8_t pci_revision;
+   uint16_t subsystem_vendor;
+   uint16_t subsystem_device;
+   /* The cache publication registers as this board leaves them at rest.
+    * A register address is a family fact; the value in it is not. */
+   uint32_t dstcache_ctlstat_at_rest;
+   uint32_t zcache_ctlstat_at_rest;
+};
+
+extern const struct r300_specimen_facts r300_vostro1000_rs485m_specimen_facts;
 
 struct r300_platform_identity {
    uint16_t pci_vendor;
@@ -80,9 +108,15 @@ struct r300_platform_identity {
    /* The compatibility token older externally retained artifacts carry.
     * It is not the platform's current part identity. */
    const char *historical_alias;
-   /* Which observations agree on the row.  A platform resolved from the
-    * shared PCI id alone is not resolved. */
-   enum r300_platform_identity_basis identity_basis;
+   /* The stable name for this platform. */
+   enum r300_platform_id platform_id;
+   /* What r300_platform_identity_lookup compares to reach this row. */
+   enum r300_platform_match_basis runtime_match_basis;
+   /* What the part identity rests on, as a bit set of
+    * r300_platform_evidence_basis; the lookup verifies none of it. */
+   uint32_t identity_evidence;
+   /* Measurements made on this board. */
+   const struct r300_specimen_facts *specimen_facts;
 };
 
 extern const struct r300_platform_identity r300_platform_vostro1000;
@@ -110,7 +144,16 @@ enum r300_die_class {
  * so the one struct is the finite map and a separate quirk header would
  * duplicate it.
  */
-struct r300_die_facts {
+/* Whether a family claim was measured across the family or generalized
+ * from one specimen.  A value measured once and claimed for the family
+ * rests on shared source and a common register definition, which is a
+ * weaker basis than a second part agreeing, and the record says which. */
+enum r300_family_claim_basis {
+   R300_FAMILY_CLAIM_SOURCE_DERIVED = 0,
+   R300_FAMILY_CLAIM_CROSS_SILICON_VERIFIED,
+};
+
+struct r300_family_facts {
    /* The PVS/SE_TCL vertex transform engine is absent from the die, so
     * every vertex route is TCL bypass over produced window-space records
     * (finding 2026-05-31-rs482-has-tcl-gate-and-hardware-unit-map.md).
@@ -168,14 +211,14 @@ struct r300_die_facts {
     */
    bool video_decode_engine_absent;
 
-   /* The attended 1002:5974 specimen: PCI revision and subsystem read
-    * from the target (lspci/setpci, revision 0x00, subsystem 1028:022a).
-    * Specimen identity, not a die-class key; r300_platform_identity
-    * resolves the product.
+   /* Every measured value above was observed on one specimen and is
+    * claimed for the family on shared source and a common register
+    * definition, so observed_on names the board and claim_basis names
+    * the strength.  Board identity and at-rest register values live in
+    * r300_specimen_facts instead of here.
     */
-   uint8_t specimen_pci_revision;
-   uint16_t specimen_subsystem_vendor;
-   uint16_t specimen_subsystem_device;
+   enum r300_family_claim_basis claim_basis;
+   enum r300_platform_id observed_on;
 };
 
 struct r300_chip_identity {
@@ -183,14 +226,16 @@ struct r300_chip_identity {
    enum radeon_family family;
    enum r300_die_class die_class;
    /* Non-null only where measured facts exist for the die; the RS480
-    * family rows share the r300_rs480_die_facts record.
+    * family rows share the r300_rs4xx_igp_family_facts record.
     */
-   const struct r300_die_facts *die_facts;
+   const struct r300_family_facts *family_facts;
 };
 
-/* The RS480-class facts record, measured on the 1002:5974 Vostro 1000
- * specimen. */
-extern const struct r300_die_facts r300_rs480_die_facts;
+/* The RS4xx IGP family record.  Every field holds for the CHIP_RS480
+ * family; the specimen the values were observed on is named by
+ * observed_on, and board-specific readings live in r300_specimen_facts.
+ */
+extern const struct r300_family_facts r300_rs4xx_igp_family_facts;
 
 /* Resolve a PCI vendor/device pair against the r300_pci_ids table.  An id
  * outside the table, a vendor other than ATI, or a null output refuses, so
@@ -209,5 +254,15 @@ bool r300_platform_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
                                    uint16_t subsystem_device,
                                    const char *dmi_product_name,
                                    const struct r300_platform_identity **out);
+
+/* Resolve a board to its stable platform name.  Every field of the tuple
+ * must match a row, so a device carrying the shared PCI id on another
+ * board resolves to R300_PLATFORM_ID_NONE and a gate that requires a
+ * named platform refuses it.
+ */
+enum r300_platform_id
+r300_platform_id_resolve(uint16_t pci_vendor, uint16_t pci_device,
+                         uint16_t subsystem_vendor, uint16_t subsystem_device,
+                         const char *dmi_product_name);
 
 #endif /* R300_CHIP_IDENTITY_H */

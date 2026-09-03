@@ -127,7 +127,7 @@ test_rs482_parse_chipset_caps(void)
 
 
 static void
-test_rs480_die_facts(void)
+test_rs4xx_igp_family_facts(void)
 {
    /* The facts record rides only the RS480 family rows, and its numeric
     * and register fields agree with their macro homes.
@@ -135,15 +135,15 @@ test_rs480_die_facts(void)
    struct r300_chip_identity identity;
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
                                     R300_PCI_DEVICE_RS48X_5974, &identity));
-   assert(identity.die_facts == &r300_rs480_die_facts);
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
                                     R300_PCI_DEVICE_RS482M_5975, &identity));
-   assert(identity.die_facts == &r300_rs480_die_facts);
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI, 0x4144,
                                     &identity));
-   assert(identity.die_facts == NULL);
+   assert(identity.family_facts == NULL);
 
-   const struct r300_die_facts *facts = &r300_rs480_die_facts;
+   const struct r300_family_facts *facts = &r300_rs4xx_igp_family_facts;
    assert(facts->vertex_engine_absent);
    assert(facts->fp24_exact_int_ceiling == R300_FP24_EXACT_INT_CEILING);
    assert(facts->dstcache_ctlstat_reg == R300_RB3D_DSTCACHE_CTLSTAT);
@@ -184,8 +184,14 @@ test_platform_identity(void)
    assert(strcmp(row->part_name, "RS485M") == 0);
    assert(strcmp(row->product_name, "Radeon Xpress 1150") == 0);
    assert(strcmp(row->historical_alias, "rs482") == 0);
-   assert(row->identity_basis ==
-          R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI_AND_FIRMWARE);
+   assert(row->platform_id == R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M);
+   /* What the lookup compares and what the identity rests on are separate
+    * facts: the ROM is read once and retained, never on this path. */
+   assert(row->runtime_match_basis == R300_PLATFORM_MATCH_PCI_SUBSYSTEM_DMI);
+   assert(row->identity_evidence ==
+          (R300_PLATFORM_EVIDENCE_OPTION_ROM_STRING |
+           R300_PLATFORM_EVIDENCE_PRODUCT_STRING |
+           R300_PLATFORM_EVIDENCE_RETAINED_ROM_DIGEST));
 
    /* Neither name is RS482, which is the desktop Xpress 1100 sharing this
     * PCI id. */
@@ -212,9 +218,9 @@ test_platform_identity(void)
    assert(absent == NULL);
    assert(strcmp(row->historical_alias, "rs482") == 0);
    assert(row->subsystem_vendor ==
-          r300_rs480_die_facts.specimen_subsystem_vendor);
+          r300_vostro1000_rs485m_specimen_facts.subsystem_vendor);
    assert(row->subsystem_device ==
-          r300_rs480_die_facts.specimen_subsystem_device);
+          r300_vostro1000_rs485m_specimen_facts.subsystem_device);
    row = NULL;
    assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
                                          R300_PCI_DEVICE_RS48X_5974, 0x1028,
@@ -240,7 +246,7 @@ main(void)
    test_unknown_identity_refuses();
    test_die_class_partition();
    test_rs482_parse_chipset_caps();
-   test_rs480_die_facts();
+   test_rs4xx_igp_family_facts();
    printf("r300_chip_identity: OK (%zu id rows)\n",
           ARRAY_SIZE(expected_rows));
    return 0;

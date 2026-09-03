@@ -321,7 +321,7 @@ Structure R300/R3V and RS480/RS482/RS485 reverse-engineering and RCA along this 
 
 ### Chip identity and comment names
 
-Formulate chip identity strings so they remain directly searchable across codenames, product designations, Mesa enum identifiers, platforms, and ISA families. Use the standard RS482 source-comment format, with the Palm format beneath it for Evergreen-era work:
+Formulate chip identity strings so they remain directly searchable across codenames, product designations, Mesa enum identifiers, platforms, and ISA families. Use the standard RS485M source-comment format, with the Palm format beneath it for Evergreen-era work:
 
 `RS485M (Radeon Xpress 1150, CHIP_RS480, R300-class US/PFS fixed VLIW)`
 

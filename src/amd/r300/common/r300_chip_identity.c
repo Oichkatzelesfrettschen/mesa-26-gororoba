@@ -83,8 +83,12 @@ const struct r300_platform_identity r300_platform_vostro1000 = {
    .part_name = "RS485M",
    .product_name = "Radeon Xpress 1150",
    .historical_alias = "rs482",
-   .identity_basis =
-      R300_PLATFORM_IDENTITY_BASIS_PCI_SUBSYSTEM_DMI_AND_FIRMWARE,
+   .platform_id = R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
+   .runtime_match_basis = R300_PLATFORM_MATCH_PCI_SUBSYSTEM_DMI,
+   .identity_evidence = R300_PLATFORM_EVIDENCE_OPTION_ROM_STRING |
+                        R300_PLATFORM_EVIDENCE_PRODUCT_STRING |
+                        R300_PLATFORM_EVIDENCE_RETAINED_ROM_DIGEST,
+   .specimen_facts = &r300_vostro1000_rs485m_specimen_facts,
 };
 
 static const struct r300_platform_identity *const r300_platform_rows[] = {
@@ -146,7 +150,20 @@ r300_platform_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
  * r300-chip-identity test: the FP24 ceiling against r300_grid_fold.h and
  * the cache registers against r300_reg.h.
  */
-const struct r300_die_facts r300_rs480_die_facts = {
+/* Measurements made on the attended board: its identity as the device
+ * reports it, and the cache publication registers as it leaves them at
+ * rest.  A second board carrying 1002:5974 is a different specimen and
+ * reaches none of this. */
+const struct r300_specimen_facts r300_vostro1000_rs485m_specimen_facts = {
+   .platform_id = R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
+   .pci_revision = 0x00,
+   .subsystem_vendor = 0x1028,
+   .subsystem_device = 0x022a,
+   .dstcache_ctlstat_at_rest = 0x00000002,
+   .zcache_ctlstat_at_rest = 0x00000001,
+};
+
+const struct r300_family_facts r300_rs4xx_igp_family_facts = {
    .vertex_engine_absent = true,
    .uma_framebuffer_from_nb_tom = true,
    .gart_requires_snoop_disable = true,
@@ -163,9 +180,8 @@ const struct r300_die_facts r300_rs480_die_facts = {
    .dstcache_ctlstat_at_rest = 0x00000002,
    .zcache_ctlstat_at_rest = 0x00000001,
    .video_decode_engine_absent = true,
-   .specimen_pci_revision = 0x00,
-   .specimen_subsystem_vendor = 0x1028,
-   .specimen_subsystem_device = 0x022a,
+   .claim_basis = R300_FAMILY_CLAIM_SOURCE_DERIVED,
+   .observed_on = R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
 };
 
 bool
@@ -185,9 +201,23 @@ r300_chip_identity_lookup(uint16_t pci_vendor, uint16_t pci_device,
       identity->pci_device = row->pci_device;
       identity->family = row->family;
       identity->die_class = die_class;
-      identity->die_facts =
-         row->family == CHIP_RS480 ? &r300_rs480_die_facts : NULL;
+      identity->family_facts =
+         row->family == CHIP_RS480 ? &r300_rs4xx_igp_family_facts : NULL;
       return true;
    }
    return false;
+}
+
+
+enum r300_platform_id
+r300_platform_id_resolve(uint16_t pci_vendor, uint16_t pci_device,
+                         uint16_t subsystem_vendor, uint16_t subsystem_device,
+                         const char *dmi_product_name)
+{
+   const struct r300_platform_identity *row = NULL;
+   if (!r300_platform_identity_lookup(pci_vendor, pci_device,
+                                      subsystem_vendor, subsystem_device,
+                                      dmi_product_name, &row))
+      return R300_PLATFORM_ID_NONE;
+   return row->platform_id;
 }

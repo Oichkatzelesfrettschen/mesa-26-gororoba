@@ -1477,6 +1477,7 @@ if with_tests
       files('r3v_native_arming.c', 'tests/r3v_native_arming_test.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('.')],
+      link_with : [libr300_common],
       gnu_symbol_visibility : 'hidden',
     ),
     suite : ['r3v'],

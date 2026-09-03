@@ -542,6 +542,28 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
 
    device->pci_vendor_id = drm_device->deviceinfo.pci->vendor_id;
    device->pci_device_id = drm_device->deviceinfo.pci->device_id;
+   /* The board, resolved once here: libdrm carries the subsystem pair the
+    * device reports, and the DMI product name comes from the firmware
+    * tables.  A board that matches no row resolves to
+    * R300_PLATFORM_ID_NONE, which every gate requiring a qualified system
+    * refuses. */
+   {
+      char dmi_product[128] = { 0 };
+      FILE *const dmi = fopen("/sys/class/dmi/id/product_name", "re");
+      if (dmi != NULL) {
+         if (fgets(dmi_product, sizeof(dmi_product), dmi) != NULL) {
+            char *const newline = strchr(dmi_product, '\n');
+            if (newline != NULL)
+               *newline = '\0';
+         }
+         fclose(dmi);
+      }
+      device->platform_id = r300_platform_id_resolve(
+         drm_device->deviceinfo.pci->vendor_id,
+         drm_device->deviceinfo.pci->device_id,
+         drm_device->deviceinfo.pci->subvendor_id,
+         drm_device->deviceinfo.pci->subdevice_id, dmi_product);
+   }
    device->render_node_fd = render_node_fd;
 
    /* DRM node device IDs for VK_EXT_physical_device_drm.  fstat the render fd

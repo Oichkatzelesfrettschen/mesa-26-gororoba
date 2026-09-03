@@ -58,7 +58,7 @@ RETIRED_CHIP_IDENTITY = re.compile(
 # and passes: "RS482 is the desktop Xpress 1100 part; the Vostro 1000
 # carries RS485M."  The die-class enumeration RS480/RS482/RS485, the
 # 1002:5974 shared-id description, and the 1002:5975 RS482M row all stand.
-_VOSTRO = r"Vostro[- ]?1000"
+_VOSTRO = r"[Vv]ostro(?:[- ]?1000)?"
 _RS482 = r"RS482(?![M/])"
 _BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
 _CLAUSE = r"[^.;\n]"
@@ -74,7 +74,30 @@ MISATTRIBUTED_TARGET_CHIP = re.compile(
 )
 # A newly created artifact naming the platform rs482; a token the ledger
 # registers is an existing sealed name and passes.
-MISATTRIBUTED_TARGET_ARTIFACT = re.compile(r"\bvostro1000[-_]rs482\b", re.IGNORECASE)
+# A sentence that denies the binding states the correction, so a match
+# carrying a negation before its verb is read as the fact it is.
+CORRECTIVE_NEGATION = re.compile(
+    r"\b(?:not|never|no longer|isn't|aren't|doesn't|don't|wasn't)\b",
+    re.IGNORECASE,
+)
+
+# An artifact naming this specimen rs482 or rs480.  Recognized in the forms
+# the corpus uses: the platform token beside a part token in either order,
+# and the receipt-shaped r3v-native-...-rs482 name.  A token the ledger
+# registers is an existing sealed name and passes.
+_TOKEN_END = r"(?![A-Za-z0-9])"
+MISATTRIBUTED_TARGET_ARTIFACT = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"vostro(?:1000)?[-_]rs48[02]"
+    r"|rs48[02][-_]vostro(?:1000)?"
+    r"|r3v[-_]native[-_][A-Za-z0-9_-]*?[-_]rs48[02]"
+    r"|cachyos[-_]vostro1000[-_]rs48[02]"
+    r")" + _TOKEN_END,
+    re.IGNORECASE,
+)
+
+# Path-like tokens an artifact citation can appear inside.
+ARTIFACT_PATH_TOKEN = re.compile(r"[A-Za-z0-9_./-]+")
 
 HISTORICAL_ARTIFACT_ALIAS_LEDGER = (
     "build-infra/docs/historical-artifact-aliases.tsv"
@@ -96,15 +119,58 @@ def historical_artifact_aliases() -> frozenset[str]:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def historical_artifact_ledger_rows() -> tuple[tuple[str, ...], ...]:
+    ledger = Path(__file__).resolve().parents[2] / HISTORICAL_ARTIFACT_ALIAS_LEDGER
+    if not ledger.is_file():
+        return ()
+    rows = ledger.read_text(encoding="utf-8").splitlines()[1:]
+    return tuple(tuple(row.split("\t")) for row in rows if row.strip())
+
+
+@functools.lru_cache(maxsize=1)
+def historical_artifact_bundle_names() -> frozenset[str]:
+    """The registered paths' final segments, which is how a document cites
+    a retained bundle when the repository prefix is implied."""
+    return frozenset(
+        row[1] for row in historical_artifact_ledger_rows() if len(row) > 1
+    )
+
+
+def normalize_artifact_path(token: str) -> str:
+    """One spelling per artifact: markdown quoting and one trailing slash
+    removed, separators collapsed, case retained."""
+    text = token.strip().strip("`'\"").rstrip("/")
+    while "//" in text:
+        text = text.replace("//", "/")
+    return text
+
+
 def registered_historical_artifact(line: str, offset: int) -> bool:
-    """Whether the token at offset falls inside a registered retained path."""
-    for candidate in re.finditer(r"[A-Za-z0-9_./-]+", line):
-        if candidate.start() <= offset < candidate.end():
-            text = candidate.group(0).rstrip("/")
-            return any(
-                text.endswith(registered) or registered in text
-                for registered in historical_artifact_aliases()
-            )
+    """Whether the token at offset is a registered retained path.
+
+    Registration is exact: the normalized path token, or its tail after a
+    repository prefix, equals a ledger row.  A containment test would admit
+    any new path that merely embeds a registered one."""
+    ledger = historical_artifact_aliases()
+    for candidate in ARTIFACT_PATH_TOKEN.finditer(line):
+        if not candidate.start() <= offset < candidate.end():
+            continue
+        text = normalize_artifact_path(candidate.group(0))
+        if ".." in text.split("/"):
+            return False
+        if text in ledger:
+            return True
+        parts = text.split("/")
+        # A citation may carry a repository prefix ahead of the registered
+        # path; every trailing segment run is compared whole.
+        if any("/".join(parts[i:]) in ledger for i in range(1, len(parts))):
+            return True
+        # The bundle name is the registered identity, so a citation is
+        # exact when its last segment equals one whole.  A path that merely
+        # extends a registered name has a different last segment and is a
+        # different bundle.
+        return parts[-1] in historical_artifact_bundle_names()
     return False
 
 
@@ -450,6 +516,8 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"{identity_match.group(0)!r}"
         )
     for target_match in MISATTRIBUTED_TARGET_CHIP.finditer(text):
+        if CORRECTIVE_NEGATION.search(target_match.group(0)):
+            continue
         line_number = starting_line_number + text.count("\n", 0, target_match.start())
         findings.append(
             f"{path}:{line_number}: the attended target is RS485M per its "
@@ -813,6 +881,22 @@ def self_test() -> int:
         ("docs/example.md", "1002:5975 is RS482M, not this platform part.\n", False),
         # A new artifact refuses; a ledger-registered retained path passes.
         ("docs/example.md", "vostro1000-rs482-capture\n", True),
+        # The shorthand the corpus actually uses names the same board.
+        ("docs/example.md", "vostro (RS482, r300) lane\n", True),
+        ("docs/example.md", "the Vostro carries RS482\n", True),
+        # An explicit correction states the fact and passes.
+        ("docs/example.md", "the Vostro does not use RS482.\n", False),
+        ("docs/example.md", "the Vostro 1000 is not RS482.\n", False),
+        # Receipt-shaped and reversed artifact forms.
+        ("docs/example.md", "r3v-native-triangle-first-delivery-rs482\n", True),
+        ("docs/example.md", "rs482-vostro1000-capture\n", True),
+        ("docs/example.md", "rs480_vostro1000_matrix\n", True),
+        ("docs/example.md", "cachyos_vostro1000_rs482_run\n", True),
+        # Registration is exact: a new path that merely embeds a
+        # registered one is still new.
+        ("docs/example.md",
+         "results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-"
+         "production-identity-v2/\n", True),
         ("docs/example.md", "results/vostro1000-rs482-new-run/\n", True),
         ("docs/example.md",
          "see `steinmarder-r300/results/"

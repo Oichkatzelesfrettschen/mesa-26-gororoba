@@ -5,6 +5,8 @@
 #ifndef R3V_PHYSICAL_DEVICE_H
 #define R3V_PHYSICAL_DEVICE_H
 
+#include "amd/r300/common/r300_chip_identity.h"
+
 #include "vk_physical_device.h"
 #include "vk_sync.h"
 #include "vk_sync_timeline.h"
@@ -26,6 +28,11 @@ struct r3v_physical_device {
     * or R3V_PCI_DEVICE_ID_RS482M. */
    uint32_t pci_device_id;
    uint32_t pci_vendor_id;
+   /* The board this device sits on, resolved once from the PCI tuple and
+    * the DMI product name.  The PCI id alone names a die class shared by
+    * boards these campaigns never qualified, so every gate that needs a
+    * qualified system compares this instead. */
+   enum r300_platform_id platform_id;
 
    /* Render-node fd kept open to validate the DRM device.  Released
     * when the physical device is destroyed. */

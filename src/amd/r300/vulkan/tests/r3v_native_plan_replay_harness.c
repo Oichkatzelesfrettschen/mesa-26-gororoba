@@ -655,7 +655,7 @@ main(int argc, char **argv)
    assert(created == VK_SUCCESS);
    struct r3v_native_device *native = r3v_native_device_from_handle(rep.device);
    assert(native->plan_replay_active);
-   native->arming_provider = &r3v_native_shim_arming_provider;
+   r3v_native_install_shim_arming(native);
    saved_ops = native->drm.ops;
    injected_ops = *saved_ops;
    injected_ops.command_write_read = injected_command_write_read;

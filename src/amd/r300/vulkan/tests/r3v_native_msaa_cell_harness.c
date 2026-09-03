@@ -150,8 +150,7 @@ main(int argc, char **argv)
    if (result != VK_SUCCESS)
       return 1;
 
-   r3v_native_device_from_handle(device)->arming_provider =
-      &r3v_native_shim_arming_provider;
+   r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
 
    LOAD_DEVICE(vkAllocateMemory);
    LOAD_DEVICE(vkFreeMemory);
