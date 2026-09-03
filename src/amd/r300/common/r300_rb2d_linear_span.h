@@ -30,7 +30,7 @@
  * Whole rows are one rectangle of height N rather than N rectangles,
  * because DST_WIDTH_HEIGHT carries both extents.
  *
- * One surface reaches R300_RB2D_MAX_COORD_REACH rows, so a segment covers
+ * One surface reaches R300_RB2D_SAFE_EXCLUSIVE_END rows, so a segment covers
  * that many pitches -- 512 KiB at 64 bytes, 2 MiB at 256 -- and a longer
  * interval becomes several segments in order.  A segment is never silently
  * dropped: an interval that cannot be represented refuses here, before any

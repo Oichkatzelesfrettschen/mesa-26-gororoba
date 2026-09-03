@@ -82,8 +82,8 @@ covers_exactly(const struct r300_rb2d_span *span,
          const struct r300_rb2d_fill_rect *rc = &p->rects[r];
          assert(rc->value == span->value);
          /* Every rectangle stays inside the scissor the emitter opens. */
-         assert(rc->x + rc->width <= R300_RB2D_MAX_COORD_REACH);
-         assert(rc->y + rc->height <= R300_RB2D_MAX_COORD_REACH);
+         assert(rc->x + rc->width <= R300_RB2D_SAFE_EXCLUSIVE_END);
+         assert(rc->y + rc->height <= R300_RB2D_SAFE_EXCLUSIVE_END);
          for (uint32_t row = 0; row < rc->height; row++) {
             for (uint32_t col = 0; col < rc->width; col++) {
                const uint64_t byte = p->surface.base_offset_bytes +
@@ -141,15 +141,15 @@ test_layouts(void)
           R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_FIELD);
 
    /* The widest carrier the scissor admits is the largest 64-byte
-    * multiple whose row of dwords stays inside R300_RB2D_MAX_COORD_REACH,
+    * multiple whose row of dwords stays inside R300_RB2D_SAFE_EXCLUSIVE_END,
     * and one grid step past it refuses. */
    const uint32_t widest =
-      (R300_RB2D_MAX_COORD_REACH / (R300_RB2D_PITCH_GRANULARITY / 4u)) *
+      (R300_RB2D_SAFE_EXCLUSIVE_END / (R300_RB2D_PITCH_GRANULARITY / 4u)) *
       R300_RB2D_PITCH_GRANULARITY;
    l.pitch_bytes = widest;
    assert(r300_rb2d_span_layout_check(&l) == R300_RB2D_SPAN_OK);
    assert(r300_rb2d_span_layout_pixels_per_row(&l) == widest / 4u);
-   assert(widest / 4u <= R300_RB2D_MAX_COORD_REACH);
+   assert(widest / 4u <= R300_RB2D_SAFE_EXCLUSIVE_END);
    l.pitch_bytes = widest + R300_RB2D_PITCH_GRANULARITY;
    assert(r300_rb2d_span_layout_check(&l) ==
           R300_RB2D_SPAN_REFUSE_LAYOUT_ROW_BEYOND_SCISSOR);
@@ -276,7 +276,7 @@ test_all_or_nothing(void)
 {
    const uint32_t per_row = r300_rb2d_span_layout_pixels_per_row(&tight);
    const uint64_t window =
-      (uint64_t)R300_RB2D_MAX_COORD_REACH * tight.pitch_bytes;
+      (uint64_t)R300_RB2D_SAFE_EXCLUSIVE_END * tight.pitch_bytes;
    /* The tail is a whole number of dwords that is not a whole number of
     * rows, so the second segment's surface overruns the buffer. */
    const uint64_t tail_dwords = 78u * per_row + 1u;
@@ -387,7 +387,7 @@ static void
 test_segmentation(const struct r300_rb2d_span_layout *layout)
 {
    const uint64_t window =
-      (uint64_t)R300_RB2D_MAX_COORD_REACH * layout->pitch_bytes;
+      (uint64_t)R300_RB2D_SAFE_EXCLUSIVE_END * layout->pitch_bytes;
    const uint64_t bo = 4u * window;
    enum r300_rb2d_span_refusal r;
 
@@ -396,7 +396,7 @@ test_segmentation(const struct r300_rb2d_span_layout *layout)
    covers_exactly(&s, layout, bo, 1u);
    assert(plans[0].rects[plans[0].rect_count - 1u].y +
              plans[0].rects[plans[0].rect_count - 1u].height ==
-          R300_RB2D_MAX_COORD_REACH);
+          R300_RB2D_SAFE_EXCLUSIVE_END);
 
    /* One dword past the window opens a second segment. */
    s = (struct r300_rb2d_span){ 0u, window + 4u, 0x5a5a5a5au };
@@ -454,7 +454,7 @@ static void
 test_layout_subsumes_plan_check(void)
 {
    const uint32_t widest =
-      (R300_RB2D_MAX_COORD_REACH / (R300_RB2D_PITCH_GRANULARITY / 4u)) *
+      (R300_RB2D_SAFE_EXCLUSIVE_END / (R300_RB2D_PITCH_GRANULARITY / 4u)) *
       R300_RB2D_PITCH_GRANULARITY;
    uint32_t admitted = 0;
 
@@ -474,7 +474,7 @@ test_layout_subsumes_plan_check(void)
       }
       admitted++;
 
-      static const uint32_t heights[] = { 1u, R300_RB2D_MAX_COORD_REACH };
+      static const uint32_t heights[] = { 1u, R300_RB2D_SAFE_EXCLUSIVE_END };
       for (unsigned h = 0; h < ARRAY_LEN(heights); h++) {
          const struct r300_rb2d_fill_rect rect = {
             .x = 0u, .y = 0u, .width = per_row, .height = heights[h],

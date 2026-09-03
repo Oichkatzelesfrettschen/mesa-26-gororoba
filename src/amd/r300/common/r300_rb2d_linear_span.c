@@ -65,7 +65,7 @@ r300_rb2d_span_layout_check(const struct r300_rb2d_span_layout *layout)
    /* A whole-row rectangle spans the carrier, so the row itself has to
     * fit inside the scissor the emitter opens. */
    if (layout->pitch_bytes / RB2D_SPAN_BYTES_PER_PIXEL >
-       R300_RB2D_MAX_COORD_REACH)
+       R300_RB2D_SAFE_EXCLUSIVE_END)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_ROW_BEYOND_SCISSOR;
    return R300_RB2D_SPAN_OK;
 }
@@ -93,7 +93,7 @@ struct segment {
  *
  * The base is the offset field's own grid, so the first row starts at
  * (x, y) inside the first kibibyte and every later row starts at column
- * zero.  Rows stop at R300_RB2D_MAX_COORD_REACH because the emitter opens
+ * zero.  Rows stop at R300_RB2D_SAFE_EXCLUSIVE_END because the emitter opens
  * the 2D scissor there; a rectangle past it would be clipped by the stream
  * that established it.
  */
@@ -113,7 +113,7 @@ cut_segment(uint64_t byte_offset, uint64_t dwords_left, uint32_t pitch_bytes,
 
    /* The far edge of every rectangle stays inside the scissor, so the rows
     * this segment may touch run from y0 up to the reach. */
-   const uint32_t row_limit = R300_RB2D_MAX_COORD_REACH;
+   const uint32_t row_limit = R300_RB2D_SAFE_EXCLUSIVE_END;
 
    if (x0 != 0u && row < row_limit) {
       const uint64_t want = per_row - x0;

@@ -52,8 +52,8 @@
 /* The 2D scissor is established at its own field maximum rather than at the
  * surface extent, so a predecessor scissor cannot clip the plan's
  * rectangles.  That maximum, and why it also bounds a rectangle's far
- * edge, is stated once at R300_RB2D_MAX_COORD_REACH in r300_rb2d_fill.h. */
-#define RB2D_SCISSOR_MAX R300_RB2D_MAX_COORD_REACH
+ * edge, is stated once at R300_RB2D_SAFE_EXCLUSIVE_END in r300_rb2d_fill.h. */
+#define RB2D_SCISSOR_MAX R300_RB2D_SAFE_EXCLUSIVE_END
 
 /* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes
  * the relocation chunk at four times the slot. */
@@ -149,9 +149,9 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
       /* Both sums are bounded by twice the field maximum, so neither
        * overflows the 32-bit comparisons below. */
       /* The rectangle stays inside the scissor the emitter opens; the
-       * bound and its cost live at R300_RB2D_MAX_COORD_REACH. */
-      if (r->x + r->width > R300_RB2D_MAX_COORD_REACH ||
-          r->y + r->height > R300_RB2D_MAX_COORD_REACH)
+       * bound and its cost live at R300_RB2D_SAFE_EXCLUSIVE_END. */
+      if (r->x + r->width > R300_RB2D_SAFE_EXCLUSIVE_END ||
+          r->y + r->height > R300_RB2D_SAFE_EXCLUSIVE_END)
          return R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR;
       if (r->x + r->width > s->width_pixels ||
           r->y + r->height > s->height_pixels)
