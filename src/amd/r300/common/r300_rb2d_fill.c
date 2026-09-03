@@ -43,18 +43,17 @@
 #define RADEON_WAIT_2D_IDLECLEAN (1u << 16)
 #define RADEON_WAIT_HOST_IDLECLEAN (1u << 18)
 
-/* DST_PITCH_OFFSET splits into a 10-bit pitch field above a 22-bit offset
- * field, and DST_Y_X and DST_WIDTH_HEIGHT each pack two 16-bit fields, so a
- * plan value wider than its field has no representation in the word. */
-#define RB2D_PITCH_FIELD_MAX 0x3ffu
-#define RB2D_OFFSET_FIELD_MAX 0x3fffffu
+/* DST_Y_X and DST_WIDTH_HEIGHT each pack two 16-bit fields, so a plan
+ * value wider than its field has no representation in the word.  The pitch
+ * and offset field bounds live in the header beside the grids they count,
+ * because a caller sizes a surface against them. */
 #define RB2D_COORD_FIELD_MAX 0xffffu
 
 /* The 2D scissor is established at its own field maximum rather than at the
  * surface extent, so a predecessor scissor cannot clip the plan's
  * rectangles.  That maximum, and why it also bounds a rectangle's far
- * edge, is stated once at R300_RB2D_MAX_COORD_REACH in r300_rb2d_fill.h. */
-#define RB2D_SCISSOR_MAX R300_RB2D_MAX_COORD_REACH
+ * edge, is stated once at R300_RB2D_SAFE_EXCLUSIVE_END in r300_rb2d_fill.h. */
+#define RB2D_SCISSOR_MAX R300_RB2D_SAFE_EXCLUSIVE_END
 
 /* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes
  * the relocation chunk at four times the slot. */
@@ -124,12 +123,12 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
       return R300_RB2D_FILL_REFUSE_PITCH_ZERO;
    if (s->pitch_bytes % R300_RB2D_PITCH_GRANULARITY != 0)
       return R300_RB2D_FILL_REFUSE_PITCH_GRID;
-   if (s->pitch_bytes / R300_RB2D_PITCH_GRANULARITY > RB2D_PITCH_FIELD_MAX)
+   if (s->pitch_bytes / R300_RB2D_PITCH_GRANULARITY > R300_RB2D_MAX_PITCH_UNITS)
       return R300_RB2D_FILL_REFUSE_PITCH_FIELD;
    if (s->base_offset_bytes % R300_RB2D_OFFSET_GRANULARITY != 0)
       return R300_RB2D_FILL_REFUSE_OFFSET_GRID;
    if (s->base_offset_bytes / R300_RB2D_OFFSET_GRANULARITY >
-       RB2D_OFFSET_FIELD_MAX)
+       R300_RB2D_MAX_OFFSET_UNITS)
       return R300_RB2D_FILL_REFUSE_OFFSET_FIELD;
    if (s->width_pixels == 0 || s->height_pixels == 0)
       return R300_RB2D_FILL_REFUSE_EXTENT_ZERO;
@@ -150,9 +149,9 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
       /* Both sums are bounded by twice the field maximum, so neither
        * overflows the 32-bit comparisons below. */
       /* The rectangle stays inside the scissor the emitter opens; the
-       * bound and its cost live at R300_RB2D_MAX_COORD_REACH. */
-      if (r->x + r->width > R300_RB2D_MAX_COORD_REACH ||
-          r->y + r->height > R300_RB2D_MAX_COORD_REACH)
+       * bound and its cost live at R300_RB2D_SAFE_EXCLUSIVE_END. */
+      if (r->x + r->width > R300_RB2D_SAFE_EXCLUSIVE_END ||
+          r->y + r->height > R300_RB2D_SAFE_EXCLUSIVE_END)
          return R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR;
       if (r->x + r->width > s->width_pixels ||
           r->y + r->height > s->height_pixels)

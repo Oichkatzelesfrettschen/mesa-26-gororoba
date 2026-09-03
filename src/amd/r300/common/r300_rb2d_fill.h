@@ -29,32 +29,43 @@
 #define R300_RB2D_PITCH_GRANULARITY 64u
 #define R300_RB2D_OFFSET_GRANULARITY 1024u
 
-/* The far edge a rectangle may reach on either axis, and the one place
- * this repository states why; the emitter and the tests read the value
- * rather than restating the reasoning.
+/* DST_PITCH_OFFSET splits into a 10-bit pitch field above a 22-bit offset
+ * field, so a surface counts at most this many 64-byte pitch units and
+ * this many 1 KiB offset units.  A caller building a surface reads the
+ * bound here rather than restating the field split. */
+#define R300_RB2D_MAX_PITCH_UNITS 0x3ffu
+#define R300_RB2D_MAX_OFFSET_UNITS 0x3fffffu
+
+/* Two facts about the same number, kept apart because one is measured and
+ * one is chosen.
  *
- * DST_Y_X and DST_WIDTH_HEIGHT carry 16-bit fields, so the coordinate a
- * rectangle can name runs to 0xffff.  The emitter then opens the 2D
- * scissor through SC_BOTTOM_RIGHT and DEFAULT_SC_BOTTOM_RIGHT, whose
- * halves are 13 bits: radeon_reg.h spells that ceiling as
- * RADEON_DEFAULT_SC_RIGHT_MAX (0x1fff << 0) and
- * RADEON_DEFAULT_SC_BOTTOM_MAX (0x1fff << 16).  A rectangle between the
- * two widths is clipped by the scissor the same stream established, so the
- * fill lands short and every layer reports success.
+ * R300_RB2D_SCISSOR_FIELD_MAX is the encoding: DST_Y_X and
+ * DST_WIDTH_HEIGHT carry 16-bit fields, so a rectangle can name a
+ * coordinate to 0xffff, while the emitter opens the 2D scissor through
+ * SC_BOTTOM_RIGHT and DEFAULT_SC_BOTTOM_RIGHT, whose halves are 13 bits.
+ * radeon_reg.h spells that width as RADEON_DEFAULT_SC_RIGHT_MAX
+ * (0x1fff << 0) and RADEON_DEFAULT_SC_BOTTOM_MAX (0x1fff << 16).  A
+ * rectangle between the two widths is clipped by the scissor the same
+ * stream established, so the fill lands short and every layer reports
+ * success.
  *
- * Whether SC_BOTTOM_RIGHT names the last written pixel or the first
- * unwritten one decides whether a far edge of exactly 0x2000 is legal, and
- * no primary source settles it here: radeon_reg.h names the field width
- * and not its inclusivity.  The plan admits a far edge up to 0x1fff, the
- * reading that cannot over-admit, and gives up at most one row and one
- * column of a full-reach surface -- 64 bytes of a 512 KiB carrier window.
+ * R300_RB2D_SAFE_EXCLUSIVE_END is the choice: the largest exclusive far
+ * edge x + width or y + height the plan admits.  Whether SC_BOTTOM_RIGHT
+ * names the last written pixel or the first unwritten one decides whether
+ * an exclusive end of exactly 0x2000 is legal, and radeon_reg.h gives the
+ * field width without its inclusivity.  The plan takes the reading that
+ * cannot over-admit and gives up at most one row and one column of a
+ * full-reach surface -- 64 bytes of a 512 KiB carrier window at the
+ * tightest pitch.
  *
- * The question is decided by one fill whose far edge is exactly 0x2000,
- * read back against a sentinel: an inclusive register writes the last
- * column and an exclusive one leaves it. Until that runs, the tighter
- * bound stands and this comment is where its cost is recorded.
+ * One fill whose exclusive far edge is exactly 0x2000, read back against
+ * a sentinel, decides it: an inclusive register writes the last column and
+ * an exclusive one leaves it.  Until that runs the conservative bound
+ * stands, and the two names keep the measured encoding and the chosen
+ * bound from being read as one fact.
  */
-#define R300_RB2D_MAX_COORD_REACH 0x1fffu
+#define R300_RB2D_SCISSOR_FIELD_MAX 0x1fffu
+#define R300_RB2D_SAFE_EXCLUSIVE_END R300_RB2D_SCISSOR_FIELD_MAX
 
 /* The destination formats DP_GUI_MASTER_CNTL's format field names that this
  * plan emits.  ARGB8888 is the one the retained cell exercises; a format
