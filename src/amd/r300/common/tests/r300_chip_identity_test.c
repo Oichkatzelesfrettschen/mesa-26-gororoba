@@ -169,7 +169,17 @@ test_platform_identity(void)
                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
                                         0x022a, "Vostro   1000 ", &row));
    assert(row == &r300_platform_vostro1000);
-   assert(strcmp(row->canonical_target, "RS485") == 0);
+   /* The ROM names the die and its mobile variant in one string, and the
+    * two scopes split from it: a register file is a die fact, a captured
+    * measurement is a part fact.  Neither is spelled RS482, which is the
+    * desktop Xpress 1100 sharing this PCI id. */
+   assert(strcmp(row->firmware_chip_name, "RS485/M") == 0);
+   assert(strcmp(row->firmware_product_name, "ATI Radeon Xpress 1150") == 0);
+   assert(strcmp(row->die_name, "RS485") == 0);
+   assert(strcmp(row->part_name, "RS485M") == 0);
+   assert(strcmp(row->product_name, "Radeon Xpress 1150") == 0);
+   assert(strcmp(row->historical_alias, "rs482") == 0);
+   assert(strstr(row->firmware_chip_name, row->die_name) != NULL);
    assert(strcmp(row->historical_alias, "rs482") == 0);
    assert(row->subsystem_vendor ==
           r300_rs480_die_facts.specimen_subsystem_vendor);

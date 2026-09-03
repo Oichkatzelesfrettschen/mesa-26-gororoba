@@ -46,6 +46,18 @@ RETIRED_CHIP_IDENTITY = re.compile(
     r"\bRS485(?!M)\b[^\n]{0,24}?\b(?:0x)?5975\b|"
     r"\b(?:0x)?5974\b[^\n]{0,40}?\b(?:alone|only|exclusively)\b[^\n]{0,40}?\bRS482\b)",
 )
+# The board's video BIOS names the part: the option-ROM string table of the
+# Dell Vostro 1000 IGP carries "RS485/M BR#26605" and "ATI Radeon Xpress
+# 1150".  1002:5974 is shared with the desktop RS482 (Xpress 1100), so
+# naming the attended target RS482 names a chip this platform does not
+# carry.  The die-class enumeration RS480/RS482/RS485 stays correct, RS482M
+# stays the 1002:5975 part, and evidence sealed before the firmware read is
+# exempt through retained_evidence().
+MISATTRIBUTED_TARGET_CHIP = re.compile(
+    r"(?:\bVostro[- ]?1000\b[^\n]{0,72}?\bRS482(?![M/])\b|"
+    r"\bRS482(?![M/])\b[^\n]{0,72}?\bVostro[- ]?1000\b|"
+    r"\bvostro1000[-_]rs482\b)",
+)
 HISTORICAL_LOG_NAMES = frozenset(
     (
         "mesa_gororoba_no_rusticl_build_20260426T010131Z",
@@ -256,6 +268,18 @@ def retained_evidence(path: str) -> bool:
     )
 
 
+RETAINED_BUNDLE_PATH = re.compile(r"results/[-\w./]*")
+
+
+def inside_retained_bundle_path(line: str, offset: int) -> bool:
+    """A retained bundle is cited by the name its seal fixed, so a chip
+    token inside such a path is a citation rather than a claim."""
+    return any(
+        match.start() <= offset < match.end()
+        for match in RETAINED_BUNDLE_PATH.finditer(line)
+    )
+
+
 def inside_double_quoted_string(line: str, offset: int) -> bool:
     in_double_quoted_string = False
     escaped = False
@@ -386,6 +410,21 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
         findings.append(
             f"{path}:{line_number}: retired chip identity claim: "
             f"{identity_match.group(0)!r}"
+        )
+    for target_match in MISATTRIBUTED_TARGET_CHIP.finditer(text):
+        line_start = text.rfind("\n", 0, target_match.start()) + 1
+        line_end = text.find("\n", target_match.end())
+        if line_end == -1:
+            line_end = len(text)
+        if inside_retained_bundle_path(
+            text[line_start:line_end], target_match.start() - line_start
+        ):
+            continue
+        line_number = starting_line_number + text.count("\n", 0, target_match.start())
+        findings.append(
+            f"{path}:{line_number}: the attended target is RS485M per its "
+            f"video BIOS, so this misattributes the chip: "
+            f"{target_match.group(0)!r}"
         )
     for artifact_match in RETIRED_INTERNAL_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, artifact_match.start()) + 1
@@ -685,6 +724,17 @@ def self_test() -> int:
         ("docs/example.md", "RS48" "5-marketed 1002:5975 refuses.\n", True),
         ("docs/example.md", "1002:5974 alone proves RS48" "2 here.\n", True),
         ("docs/example.md", "the Vostro 1000 (1002:5974, RS485M) target.\n", False),
+        ("docs/example.md", "the Vostro 1000 RS482 target board.\n", True),
+        ("docs/example.md", "RS482 is the chip in the Vostro 1000.\n", True),
+        ("build-infra/docs/review-thread-corpus/x.md",
+         "vostro1000-rs482 dump\n", False),
+        ("docs/example.md", "vostro1000-rs482-capture\n", True),
+        ("docs/example.md",
+         "see `steinmarder-r300/results/cachyos-vostro1000-rs482-run/`\n",
+         False),
+        ("docs/example.md", "the Vostro 1000 RS480/RS482/RS485 family.\n", False),
+        ("docs/example.md", "the Vostro 1000 carries RS485M silicon.\n", False),
+        ("docs/example.md", "1002:5975 is RS482M, not the Vostro 1000 part.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba-* worktrees.\n", False),
         ("build-infra/example.md", "Install mesa-gororoba-debug-optimized.\n", False),

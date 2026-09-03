@@ -77,8 +77,11 @@ const struct r300_platform_identity r300_platform_vostro1000 = {
    .subsystem_vendor = 0x1028,
    .subsystem_device = 0x022a,
    .dmi_product_name = "Vostro 1000",
-   .canonical_target = "RS485",
-   .product_name = "Radeon Xpress 1150 (RS485M)",
+   .firmware_chip_name = "RS485/M",
+   .firmware_product_name = "ATI Radeon Xpress 1150",
+   .die_name = "RS485",
+   .part_name = "RS485M",
+   .product_name = "Radeon Xpress 1150",
    .historical_alias = "rs482",
 };
 

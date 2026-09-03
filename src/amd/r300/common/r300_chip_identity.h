@@ -28,12 +28,20 @@
 #define R300_PCI_DEVICE_RS482M_5975 0x5975
 
 /* The product a 1002:5974 specimen carries resolves through the platform:
- * the board's PCI subsystem id and DMI product name select the row.  The
- * attended target is the Dell Vostro 1000 (subsystem 1028:022a, DMI
- * "Vostro 1000"), whose IGP is marketed as Radeon Xpress 1150, the RS485M
- * product; the kernel enumerates it as CHIP_RS480 and the GL renderer
- * string is "ATI RS480".  Retained evidence sealed under the historical
- * alias keeps that spelling.
+ * the board's PCI subsystem id and DMI product name select the row.
+ *
+ * 1002:5974 is shared with the desktop RS482 (Radeon Xpress 1100), so the
+ * PCI id alone does not name the part.  The board's video BIOS does: the
+ * option-ROM string table of the Dell Vostro 1000 (subsystem 1028:022a,
+ * DMI "Vostro 1000") carries "RS485/M BR#26605" and "ATI Radeon Xpress
+ * 1150", which is the mobile RS485.  That string is the chip's own name
+ * for itself and outranks the shared id, so the attended target is RS485M
+ * and RS482 names a part this platform does not carry.
+ *
+ * The kernel enumerates the whole RS400-class family as CHIP_RS480 and
+ * the GL renderer string is "ATI RS480"; both are owner-spelled and stay
+ * verbatim.  Retained evidence sealed before the firmware read keeps the
+ * rs482 spelling in its bundle names and hashed bytes.
  */
 struct r300_platform_identity {
    uint16_t pci_vendor;
@@ -43,10 +51,21 @@ struct r300_platform_identity {
    /* DMI product name as the firmware spells it, trailing blanks
     * excluded. */
    const char *dmi_product_name;
-   /* The die-class product the platform carries (RS485 for the Vostro
-    * 1000 IGP). */
-   const char *canonical_target;
-   /* The marketing product name (Radeon Xpress 1150 / RS485M). */
+   /* The chip name the board's own video BIOS carries, verbatim from the
+    * option-ROM string table.  ATI writes one name for the die and its
+    * mobile variant together, so this string is never normalized. */
+   const char *firmware_chip_name;
+   /* The marketing product the same ROM names, verbatim. */
+   const char *firmware_product_name;
+   /* The die the ROM names, which is the scope a register file, a
+    * bitfield table, and an ISA rule hold over: those facts are shared by
+    * the desktop and mobile parts cut from it. */
+   const char *die_name;
+   /* The part this board carries, which is the scope a capture, a
+    * receipt, and an evidence bundle hold over: a measurement is made on
+    * one part, and this platform's is the mobile one. */
+   const char *part_name;
+   /* The marketing product name in the spelling durable names use. */
    const char *product_name;
    /* The token retained evidence was sealed under. */
    const char *historical_alias;

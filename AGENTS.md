@@ -323,14 +323,14 @@ Structure R300/R3V and RS480/RS482/RS485 reverse-engineering and RCA along this 
 
 Formulate chip identity strings so they remain directly searchable across codenames, product designations, Mesa enum identifiers, platforms, and ISA families. Use the standard RS482 source-comment format, with the Palm format beneath it for Evergreen-era work:
 
-`RS482 (Radeon Xpress 200M, CHIP_RS480, R300-class US/PFS fixed VLIW)`
+`RS485M (Radeon Xpress 1150, CHIP_RS480, R300-class US/PFS fixed VLIW)`
 
 `Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)`
 
 Standard chip identities:
 
 - `R300` (Radeon 9700): `CHIP_R300`; discrete R300 with hardware TCL.
-- `RS480` / `RS482` / `RS485` (Radeon Xpress 200M/1100/1150): `CHIP_RS480`; UMA integrated IGP, SW-TCL only (`num_vert_fpus = 0`), R2VB capable.
+- `RS480` / `RS482` / `RS485` (Radeon Xpress 200/1100/1150): `CHIP_RS480`; UMA integrated IGP, SW-TCL only (`num_vert_fpus = 0`), R2VB capable. The die is the register-file and ISA scope; the part cut from it is the measurement scope, and the Vostro 1000 carries the mobile `RS485M` (Radeon Xpress 1150), which its video BIOS names `RS485/M`.
 - `R420` (Radeon X800): `CHIP_R420`; discrete R400.
 - `RV515` / `RV530` / `R580` (Radeon X1000 series): `CHIP_RV515` / `CHIP_R580`; discrete R500 with US500 dynamic branching.
 - `R600` (HD 2900): `CHIP_R600`; R600 / TeraScale-1.
@@ -347,7 +347,7 @@ Standard source-comment nomenclature:
 - ISA encoding: `FMT_32_32_32 = 47`; `V_028C70_NUMBER_USCALED = 0x2`.
 - Architecture: `R300-class US/PFS fixed VLIW`; `Evergreen / TeraScale-2 VLIW5`; `Northern Islands / TeraScale-3 VLIW4`; `R600 / TeraScale-1`.
 - CPU side: `AMD K8 (Family 0Fh)` for Vostro 1000; `Bobcat` for Zacate/Ontario; `Llano` CPU.
-- Platform: `Dell Vostro 1000` (AMD K8 + RS482 + SB600); `Brazos` for Bobcat + Palm; `Llano`; `Trinity`.
+- Platform: `Dell Vostro 1000` (AMD K8 + RS485M + SB600); `Brazos` for Bobcat + Palm; `Llano`; `Trinity`.
 
 Ground hardware and API citations in public primary documents and exact section numbers. Confine internal extracts, bundle paths, and audit records to the evidence layer, deriving citation authority from public standards:
 

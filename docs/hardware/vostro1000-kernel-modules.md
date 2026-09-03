@@ -1,4 +1,4 @@
-# Vostro 1000 (RS482 / K8 / SB600) out-of-tree kernel modules
+# Vostro 1000 (RS485M / K8 / SB600) out-of-tree kernel modules
 
 The Dell Vostro 1000 target that validates the r300 gallium and r3v Vulkan
 drivers needs several out-of-tree kernel modules that no in-tree driver
