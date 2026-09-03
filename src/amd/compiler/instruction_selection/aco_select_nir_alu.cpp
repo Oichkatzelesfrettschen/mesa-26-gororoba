@@ -309,6 +309,39 @@ emit_idot_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, Te
 }
 
 void
+emit_soft_idot_4x8(isel_context* ctx, nir_alu_instr* instr, Temp dst, bool is_signed)
+{
+   /* GFX9 parts without v_dot4_i32_i8 reach the same result with one 24-bit
+    * multiply per byte pair and two three-input adds. The byte extracts fold
+    * into the multiply's SDWA operand selects, so the four multiplies carry no
+    * extract of their own.
+    *
+    * The nir_opt_algebraic expansion reaches the same four multiplies but
+    * leaves a balanced add tree that collapses to v_add_u32, v_add3_u32,
+    * v_add_u32; emitting both three-input adds here costs six arithmetic
+    * instructions against that seven.
+    */
+   Builder bld = create_alu_builder(ctx, instr);
+   Temp src0 = as_vgpr(ctx, get_alu_src(ctx, instr->src[0]));
+   Temp src1 = as_vgpr(ctx, get_alu_src(ctx, instr->src[1]));
+   Temp acc = as_vgpr(ctx, get_alu_src(ctx, instr->src[2]));
+   aco_opcode mul = is_signed ? aco_opcode::v_mul_i32_i24 : aco_opcode::v_mul_u32_u24;
+
+   Temp product[4];
+   for (unsigned byte = 0; byte < 4; byte++) {
+      Temp a = bld.pseudo(aco_opcode::p_extract, bld.def(v1), Operand(src0),
+                          Operand::c32(byte), Operand::c32(8u), Operand::c32(is_signed));
+      Temp b = bld.pseudo(aco_opcode::p_extract, bld.def(v1), Operand(src1),
+                          Operand::c32(byte), Operand::c32(8u), Operand::c32(is_signed));
+      product[byte] = bld.vop2(mul, bld.def(v1), a, b);
+   }
+
+   Temp partial =
+      bld.vop3(aco_opcode::v_add3_u32, bld.def(v1), product[0], product[1], product[2]);
+   bld.vop3(aco_opcode::v_add3_u32, Definition(dst), partial, product[3], acc);
+}
+
+void
 emit_pk_shift(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, Temp dst)
 {
    Builder bld = create_alu_builder(ctx, instr);
@@ -2023,8 +2056,10 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
    case nir_op_sdot_4x8_iadd: {
       if (ctx->options->gfx_level >= GFX11)
          emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_i32_iu8, dst, false, 0x3);
-      else
+      else if (ctx->program->dev.has_accelerated_dot_product)
          emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_i32_i8, dst, false);
+      else
+         emit_soft_idot_4x8(ctx, instr, dst, true);
       break;
    }
    case nir_op_sdot_4x8_iadd_sat: {
@@ -2043,7 +2078,10 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
       break;
    }
    case nir_op_udot_4x8_uadd: {
-      emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_u32_u8, dst, false);
+      if (ctx->program->dev.has_accelerated_dot_product)
+         emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_u32_u8, dst, false);
+      else
+         emit_soft_idot_4x8(ctx, instr, dst, false);
       break;
    }
    case nir_op_udot_4x8_uadd_sat: {
