@@ -736,16 +736,22 @@ splitting into limbs a unit does hold, rather than by a native datapath.
 
 ## Verb-to-unit binding
 
-One distinction governs the whole table. A row's **operation** carries a silicon
-witness in the catalog whenever its status is hardware-confirmed; the row's **GPU
-route** is a dispatchable path under an exact gate, and fourteen of fifteen rows
-have no such route built: `IDENTITY_MAP` alone runs both routes, and
-`BITWISE_NOT_MAP` runs its CPU route with its GPU route absent. Absent route with a confirmed operation means the
-arithmetic is proven and the plumbing is not, which is precisely what this atlas
-exists to unblock. `r300_compute_verb.c:r300_compute_dual_route_coverage_complete`
-therefore returns false against the full table, and only a gated claim can pass.
-That predicate measures the ledger's own dual-route matrix; Vulkan compute
-conformance is the wider contract named beside the refusal classes.
+One distinction governs the whole table, and two ledgers carry it. An
+**operation** (`r300_compute_verb.c`) carries a silicon witness in the catalog
+whenever its status is hardware-confirmed. A **route**
+(`r300_operation_route.c`) is one dispatchable path for that operation, on a
+named executor and unit, and it is `EXECUTING` only under an exact gate with
+evidence for its own retained cell. Seventeen routes realize the fifteen
+operations: two execute on the host, one on the GPU, and the remaining
+fourteen are candidates that name a unit and an exactness bound with no
+implementation behind them. `IDENTITY_MAP` alone owns an executing route on
+each executor; `BITWISE_NOT_MAP` owns an executing host route beside a ROP
+candidate. A candidate under a confirmed operation means the arithmetic is
+proven and the plumbing is not, which is precisely what this atlas exists to
+unblock. `r300_compute_dual_route_coverage_complete` therefore returns false
+across the fifteen operations, and only a gated claim can pass. That predicate
+measures the dual-route matrix; Vulkan compute conformance is the wider
+contract named beside the refusal classes.
 
 | Verb | Unit binding | Exactness bound | Route today | Probe still owed |
 |---|---|---|---|---|

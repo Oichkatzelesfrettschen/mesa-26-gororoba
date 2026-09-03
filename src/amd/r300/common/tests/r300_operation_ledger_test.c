@@ -83,15 +83,15 @@ identity_contract_valid(
    /* The certificate binds to the R2VB route row: contracts, exactness, and
     * evidence are route facts, and the semantic verb carries none of them. */
    if (contract->operation_id != route->operation_id) {
-      *reason = "route certificate and verb operation disagree";
+      *reason = "route certificate and route operation disagree";
       return false;
    }
    if (contract->implementation_id != route->implementation_id) {
-      *reason = "route certificate and verb implementation disagree";
+      *reason = "route certificate and route implementation disagree";
       return false;
    }
    if (contract->gpu_route_contract_id != route->gpu_route_contract_id) {
-      *reason = "route certificate and verb contract disagree";
+      *reason = "route certificate and route contract disagree";
       return false;
    }
    if (contract->admission_id != R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY ||
@@ -110,7 +110,7 @@ identity_contract_valid(
        route->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ||
        route->evidence_scope !=
           R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL) {
-      *reason = "route certificate and verb shape disagree";
+      *reason = "route certificate and route shape disagree";
       return false;
    }
 
@@ -256,20 +256,20 @@ test_contract_calibration(void)
 
    mutated.operation_id = R300_OPERATION_ID_BINARY_MAP;
    assert(!identity_contract_valid(&mutated, identity, &reason));
-   assert(strcmp(reason, "route certificate and verb operation disagree") ==
+   assert(strcmp(reason, "route certificate and route operation disagree") ==
           0);
 
    mutated = r300_compute_identity_carrier_contract;
    mutated.implementation_id = R300_OPERATION_IMPLEMENTATION_NONE;
    assert(!identity_contract_valid(&mutated, identity, &reason));
    assert(strcmp(reason,
-                 "route certificate and verb implementation disagree") ==
+                 "route certificate and route implementation disagree") ==
           0);
 
    mutated = r300_compute_identity_carrier_contract;
    mutated.gpu_route_contract_id = R300_GPU_ROUTE_CONTRACT_NONE;
    assert(!identity_contract_valid(&mutated, identity, &reason));
-   assert(strcmp(reason, "route certificate and verb contract disagree") ==
+   assert(strcmp(reason, "route certificate and route contract disagree") ==
           0);
 
    mutated = r300_compute_identity_carrier_contract;
@@ -283,14 +283,14 @@ test_contract_calibration(void)
    mutated_verb.unit = R300_EXECUTION_UNIT_RB3D_CLEAR;
    assert(!identity_contract_valid(&r300_compute_identity_carrier_contract,
                                    &mutated_verb, &reason));
-   assert(strcmp(reason, "route certificate and verb shape disagree") == 0);
+   assert(strcmp(reason, "route certificate and route shape disagree") == 0);
 
    mutated_verb = *identity;
    mutated_verb.evidence_scope =
       R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL;
    assert(!identity_contract_valid(&r300_compute_identity_carrier_contract,
                                    &mutated_verb, &reason));
-   assert(strcmp(reason, "route certificate and verb shape disagree") == 0);
+   assert(strcmp(reason, "route certificate and route shape disagree") == 0);
 
    mutated = r300_compute_identity_carrier_contract;
    mutated.domain = R300_NUM_DOMAIN_U7_DOT;

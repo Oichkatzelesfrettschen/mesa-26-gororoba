@@ -6,8 +6,8 @@
  * runs is the route ledger's fact (r300_operation_route.h), joined by
  * operation identity.
  * docs/hardware/rs482-gpu-compute-substrate-atlas.md is the design authority
- * for a row's GPU route, holding the per-unit arithmetic and the probe each
- * row still owes.
+ * for the routes an operation may acquire, holding the per-unit arithmetic
+ * and the probe each candidate still owes.
  */
 
 #include "r300_compute_verb.h"
