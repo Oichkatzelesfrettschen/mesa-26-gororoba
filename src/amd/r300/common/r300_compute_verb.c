@@ -206,6 +206,59 @@ r300_compute_failure_clause_name(enum r300_compute_failure_clause c)
    return (unsigned)c < R300_COMPUTE_FAILURE_CLAUSE_COUNT ? names[c] : NULL;
 }
 
+const char *
+r300_compute_verb_unit_name(enum r300_compute_verb_unit u)
+{
+   static const char *const names[R300_COMPUTE_VERB_UNIT_COUNT] = {
+      "host",
+      "tx_rb3d_copy",
+      "us_fp24_alu",
+      "rb3d_blend",
+      "rb3d_rop",
+      "zb_stencil",
+      "r2vb_carrier",
+      "rb3d_clear",
+   };
+   return (unsigned)u < R300_COMPUTE_VERB_UNIT_COUNT ? names[u] : NULL;
+}
+
+const char *
+r300_compute_verb_route_status_name(enum r300_compute_verb_route_status s)
+{
+   static const char *const names[] = {
+      "absent",
+      "precommitted",
+      "executing",
+   };
+   return (unsigned)s <= R300_COMPUTE_VERB_ROUTE_EXECUTING ? names[s] : NULL;
+}
+
+const char *
+r300_compute_verb_evidence_name(enum r300_compute_verb_evidence e)
+{
+   static const char *const names[] = {
+      "host",
+      "source_grounded",
+      "silicon_retained",
+   };
+   return (unsigned)e <= R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ? names[e]
+                                                                    : NULL;
+}
+
+const char *
+r300_compute_verb_evidence_scope_name(enum r300_compute_verb_evidence_scope s)
+{
+   static const char *const names[] = {
+      "host_executor",
+      "unit_contract",
+      "raster_cell",
+      "native_gpu_route_cell",
+   };
+   return (unsigned)s <= R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL
+             ? names[s]
+             : NULL;
+}
+
 bool
 r300_compute_verb_rows_valid(const struct r300_compute_verb_row *table,
                              uint32_t count, const char **reason)

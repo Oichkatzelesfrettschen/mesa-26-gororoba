@@ -668,6 +668,82 @@ test_names(void)
    assert(strcmp(r300_compute_failure_clause_name(
                     R300_COMPUTE_FAILURE_ORACLE_DIVERGENCE_QUARANTINES),
                  "oracle_divergence_quarantines") == 0);
+
+   /* The four sheet fields name every enumerant and refuse one past the
+    * end, so a renderer that cannot name a field refuses the row rather
+    * than printing a blank column. */
+   for (unsigned u = 0; u < R300_COMPUTE_VERB_UNIT_COUNT; u++)
+      assert(r300_compute_verb_unit_name((enum r300_compute_verb_unit)u) !=
+             NULL);
+   assert(r300_compute_verb_unit_name(R300_COMPUTE_VERB_UNIT_COUNT) == NULL);
+
+   for (unsigned s = 0; s <= R300_COMPUTE_VERB_ROUTE_EXECUTING; s++)
+      assert(r300_compute_verb_route_status_name(
+                (enum r300_compute_verb_route_status)s) != NULL);
+   assert(r300_compute_verb_route_status_name(
+             (enum r300_compute_verb_route_status)(
+                R300_COMPUTE_VERB_ROUTE_EXECUTING + 1)) == NULL);
+
+   for (unsigned e = 0; e <= R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED; e++)
+      assert(r300_compute_verb_evidence_name(
+                (enum r300_compute_verb_evidence)e) != NULL);
+   assert(r300_compute_verb_evidence_name(
+             (enum r300_compute_verb_evidence)(
+                R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED + 1)) == NULL);
+
+   for (unsigned s = 0;
+        s <= R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL; s++)
+      assert(r300_compute_verb_evidence_scope_name(
+                (enum r300_compute_verb_evidence_scope)s) != NULL);
+   assert(r300_compute_verb_evidence_scope_name(
+             (enum r300_compute_verb_evidence_scope)(
+                R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL + 1)) ==
+          NULL);
+
+   assert(strcmp(r300_compute_verb_evidence_name(
+                    R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED),
+                 "silicon_retained") == 0);
+   assert(strcmp(r300_compute_verb_evidence_scope_name(
+                    R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL),
+                 "raster_cell") == 0);
+}
+
+/* The ledger's shape as the sheet reports it: one verb executes on the GPU
+ * and names an exact route cell, one more executes on the host alone, and
+ * every other row carries retained evidence that reaches a unit rather than
+ * a route.  A row movement that changes these counts changes the program's
+ * claim about what executes, so the counts are pinned here. */
+static void
+test_route_population(void)
+{
+   uint32_t count = 0;
+   const struct r300_compute_verb_row *rows = r300_compute_verb_rows(&count);
+   unsigned gpu_executing = 0, cpu_executing = 0, no_route = 0;
+   unsigned retained_at_route_scope = 0, retained_at_raster_scope = 0;
+
+   assert(rows != NULL && count == R300_COMPUTE_VERB_COUNT);
+   for (uint32_t i = 0; i < count; i++) {
+      const struct r300_compute_verb_row *row = &rows[i];
+      const bool gpu = row->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING;
+      const bool cpu = row->cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING;
+
+      gpu_executing += gpu;
+      cpu_executing += cpu;
+      no_route += !gpu && !cpu;
+      if (row->evidence == R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED) {
+         retained_at_route_scope +=
+            row->evidence_scope ==
+            R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL;
+         retained_at_raster_scope +=
+            row->evidence_scope == R300_COMPUTE_VERB_EVIDENCE_SCOPE_RASTER_CELL;
+      }
+   }
+
+   assert(gpu_executing == 1);
+   assert(cpu_executing == 2);
+   assert(no_route == 13);
+   assert(retained_at_route_scope == 1);
+   assert(retained_at_raster_scope == 13);
 }
 
 int
@@ -679,6 +755,7 @@ main(void)
    test_checker_calibration();
    test_precommitment();
    test_names();
+   test_route_population();
    printf("r300_compute_verb_test: all checks passed\n");
    return 0;
 }
