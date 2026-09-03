@@ -61,6 +61,29 @@
  * the relocation chunk at four times the slot. */
 #define RB2D_RELOC_PAYLOAD(slot) ((slot) * 4)
 
+/* One descriptor per emitted format: the code DP_GUI_MASTER_CNTL's format
+ * field carries, and the bytes one pixel occupies, which the surface rules
+ * measure a row against.  A format lands here with both, so neither can be
+ * inferred from the other or inherited from a neighbor.
+ */
+struct rb2d_format_info {
+   uint32_t code;
+   uint32_t bytes_per_pixel;
+};
+
+static const struct rb2d_format_info format_table[R300_RB2D_FORMAT_COUNT] = {
+   [R300_RB2D_FORMAT_ARGB8888] = { RADEON_COLOR_FORMAT_ARGB8888, 4u },
+};
+
+/* NULL outside the table, so a format the plan never admitted resolves to no
+ * descriptor rather than to the first row's stride. */
+static const struct rb2d_format_info *
+format_info(enum r300_rb2d_format format)
+{
+   return (unsigned)format < R300_RB2D_FORMAT_COUNT ? &format_table[format]
+                                                    : NULL;
+}
+
 const char *
 r300_rb2d_fill_refusal_name(enum r300_rb2d_fill_refusal r)
 {
@@ -93,7 +116,9 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
 
    const struct r300_rb2d_surface *s = &plan->surface;
 
-   if ((unsigned)s->format >= R300_RB2D_FORMAT_COUNT)
+   const struct rb2d_format_info *format = format_info(s->format);
+
+   if (format == NULL)
       return R300_RB2D_FILL_REFUSE_FORMAT;
    if (s->pitch_bytes == 0)
       return R300_RB2D_FILL_REFUSE_PITCH_ZERO;
@@ -108,9 +133,11 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
       return R300_RB2D_FILL_REFUSE_OFFSET_FIELD;
    if (s->width_pixels == 0 || s->height_pixels == 0)
       return R300_RB2D_FILL_REFUSE_EXTENT_ZERO;
-   /* Four bytes per ARGB8888 pixel: a row narrower than its own width would
-    * make a rectangle inside the surface land in the next row's bytes. */
-   if (s->pitch_bytes / 4u < s->width_pixels)
+   /* A row narrower than its own width would make a rectangle inside the
+    * surface land in the next row's bytes.  The stride comes from the
+    * format's own descriptor, so a format added to the table states its
+    * bytes per pixel rather than inheriting ARGB8888's four. */
+   if (s->pitch_bytes / format->bytes_per_pixel < s->width_pixels)
       return R300_RB2D_FILL_REFUSE_PITCH_BELOW_WIDTH;
 
    for (uint32_t i = 0; i < plan->rect_count; i++) {
@@ -128,18 +155,6 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
    }
 
    return R300_RB2D_FILL_OK;
-}
-
-static uint32_t
-format_code(enum r300_rb2d_format format)
-{
-   switch (format) {
-   case R300_RB2D_FORMAT_ARGB8888:
-      return RADEON_COLOR_FORMAT_ARGB8888;
-   case R300_RB2D_FORMAT_COUNT:
-      break;
-   }
-   return RADEON_COLOR_FORMAT_ARGB8888;
 }
 
 static void
@@ -180,7 +195,9 @@ r300_rb2d_fill_emit_into(const struct r300_rb2d_fill_plan *plan,
    out->ib = words;
    r300_pm4_builder_init(&b, words, capacity);
 
+   /* The plan check above admitted the format, so its descriptor resolves. */
    const struct r300_rb2d_surface *s = &plan->surface;
+   const struct rb2d_format_info *format = format_info(s->format);
 
    r300_pm4_reg(&b, RADEON_DST_PITCH_OFFSET,
                 ((s->pitch_bytes / R300_RB2D_PITCH_GRANULARITY) << 22) |
@@ -196,7 +213,7 @@ r300_rb2d_fill_emit_into(const struct r300_rb2d_fill_plan *plan,
    r300_pm4_reg(&b, RADEON_DP_GUI_MASTER_CNTL,
                 RADEON_GMC_DST_PITCH_OFFSET_CNTL |
                    RADEON_GMC_BRUSH_SOLID_COLOR |
-                   (format_code(s->format) << 8) | RADEON_ROP3_P |
+                   (format->code << 8) | RADEON_ROP3_P |
                    RADEON_GMC_CLR_CMP_CNTL_DIS | RADEON_GMC_WR_MSK_DIS);
    r300_pm4_reg(&b, RADEON_DP_CNTL,
                 RADEON_DST_X_LEFT_TO_RIGHT | RADEON_DST_Y_TOP_TO_BOTTOM);
