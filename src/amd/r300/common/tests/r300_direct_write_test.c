@@ -159,9 +159,16 @@ test_oracle(void)
    free(pixels);
 }
 
-/* The digest of the canonical little-endian encoding is stable across
- * emissions, the identity the arming gate compares.
+/* The stream this cell emits, pinned.  The cell is the RB2D unit's only
+ * retained witness, and the arming gate compares this digest, so the bytes
+ * are the artifact rather than a consequence of how they are produced: the
+ * emitter may be refactored underneath, and this value may not move without
+ * a new witness.  32 dwords, 128 bytes.
  */
+#define R300_DIRECT_WRITE_GOLDEN_IB_BLAKE3 \
+   "03e186d5b4ca74058ed5a05559c7c9b146aea585a2cca95683386177af02477a"
+#define R300_DIRECT_WRITE_GOLDEN_IB_DWORDS 32u
+
 static void
 test_digest_stability(void)
 {
@@ -173,6 +180,8 @@ test_digest_stability(void)
    r300_triangle_ib_digest_hex(ib.ib, ib.ib_size_dwords, hex_one);
    r300_triangle_ib_digest_hex(ib.ib, ib.ib_size_dwords, hex_two);
    assert(strcmp(hex_one, hex_two) == 0);
+   assert(ib.ib_size_dwords == R300_DIRECT_WRITE_GOLDEN_IB_DWORDS);
+   assert(strcmp(hex_one, R300_DIRECT_WRITE_GOLDEN_IB_BLAKE3) == 0);
    r300_direct_write_release(&ib);
 }
 

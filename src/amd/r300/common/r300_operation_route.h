@@ -57,6 +57,11 @@ enum r300_execution_unit {
    R300_EXECUTION_UNIT_R2VB_CARRIER,
    /* The RB3D color-buffer clear path, with no fragment-ALU arithmetic. */
    R300_EXECUTION_UNIT_RB3D_CLEAR,
+   /* The RB2D solid-brush fill: DST_PITCH_OFFSET names a linear surface,
+    * DP_GUI_MASTER_CNTL selects the solid brush and ROP3_P, and each
+    * DST_WIDTH_HEIGHT write launches one rectangle.  No VAP, RS, US, RB3D,
+    * or ZB state participates (r300_rb2d_fill.h). */
+   R300_EXECUTION_UNIT_RB2D_FILL,
    R300_EXECUTION_UNIT_COUNT,
 };
 
@@ -84,6 +89,8 @@ enum r300_operation_route_id {
 
    R300_OPERATION_ROUTE_HOST_BITWISE_NOT,
    R300_OPERATION_ROUTE_RB3D_ROP_BITWISE_NOT,
+
+   R300_OPERATION_ROUTE_RB2D_CONST_FILL,
 
    R300_OPERATION_ROUTE_COUNT,
 };

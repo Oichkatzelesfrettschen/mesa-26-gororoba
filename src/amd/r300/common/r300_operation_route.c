@@ -99,6 +99,20 @@ static const struct r300_operation_route_row
             CANDIDATE, RB3D_ROP, NONE, NONE, NONE, LINEAR, BIT_EXACT, 0.0f,
             SOURCE_GROUNDED, UNIT_CONTRACT,
             "R3V_NATIVE_COMPUTE_BITWISE_NOT_GPU_EXPERIMENTAL"),
+
+      /* The second route for CONSTFILL, beside the RB3D clear candidate.
+       * It is precommitted rather than a candidate: r300_rb2d_fill.h holds
+       * the linear-surface plan, its emitter, and the admission rules
+       * DST_PITCH_OFFSET's own packing imposes, and the retained
+       * direct-write control cell is one instance of that plan whose stream
+       * the plan reproduces byte for byte.  Its evidence reaches the RB2D
+       * unit's behavior in that retained cell rather than this generalized
+       * route, so the route executes once a public command selects it and a
+       * current-epoch receipt records it. */
+      ROUTE(RB2D_CONST_FILL, "rb2d_const_fill", CONSTFILL, GPU, PRECOMMITTED,
+            RB2D_FILL, RB2D_LINEAR_SOLID_FILL, RB2D_LINEAR_SOLID_FILL,
+            RB2D_LINEAR_SURFACE, LINEAR, BIT_EXACT, 0.0f, SILICON_RETAINED,
+            RASTER_CELL, "R3V_NATIVE_COMPUTE_RB2D_CONST_FILL_GPU_EXPERIMENTAL"),
 };
 
 #undef ROUTE
@@ -208,8 +222,9 @@ const char *
 r300_execution_unit_name(enum r300_execution_unit u)
 {
    static const char *const names[R300_EXECUTION_UNIT_COUNT] = {
-      "host",         "tx_rb3d_copy", "us_fp24_alu", "rb3d_blend",
-      "rb3d_rop",     "zb_stencil",   "r2vb_carrier", "rb3d_clear",
+      "host",       "tx_rb3d_copy", "us_fp24_alu",  "rb3d_blend",
+      "rb3d_rop",   "zb_stencil",   "r2vb_carrier", "rb3d_clear",
+      "rb2d_fill",
    };
    return (unsigned)u < R300_EXECUTION_UNIT_COUNT ? names[u] : NULL;
 }
