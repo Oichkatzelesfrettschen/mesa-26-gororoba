@@ -112,7 +112,7 @@ main(void)
    const char *gate = getenv(R300_COMPUTE_QUEUE_CLAIM_GATE);
    const bool gate_open =
       gate != NULL && strcmp(gate, R300_COMPUTE_QUEUE_CLAIM_GATE_VALUE) == 0;
-   const bool conformant = r300_compute_verb_queue_conformant();
+   const bool conformant = r300_compute_dual_route_coverage_complete();
    const bool claimed = r300_compute_verb_queue_claim(gate_open);
    /* The mode names what the compute bit rests on: the whole ledger
     * executing, the exact framework gate over the delivered CPU route,

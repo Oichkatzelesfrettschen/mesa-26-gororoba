@@ -342,7 +342,7 @@ test_checker_calibration(void)
     * a table whose only executing route is a GPU route claims nothing
     * through the gate; an empty table claims nothing.
     */
-   assert(!r300_compute_verb_queue_conformant());
+   assert(!r300_compute_dual_route_coverage_complete());
    assert(!r300_compute_verb_queue_claim(false));
    assert(r300_compute_verb_queue_claim(true));
    memcpy(mutated, rows, sizeof(*rows) * count);
@@ -350,7 +350,7 @@ test_checker_calibration(void)
       mutated[v].cpu_route = R300_COMPUTE_VERB_ROUTE_EXECUTING;
       mutated[v].gpu_route = R300_COMPUTE_VERB_ROUTE_EXECUTING;
    }
-   assert(r300_compute_verb_queue_conformant_rows(mutated, count));
+   assert(r300_compute_dual_route_coverage_complete_rows(mutated, count));
    assert(r300_compute_verb_queue_claim_rows(mutated, count, false));
    memcpy(mutated, rows, sizeof(*rows) * count);
    for (uint32_t v = 0; v < count; v++)
