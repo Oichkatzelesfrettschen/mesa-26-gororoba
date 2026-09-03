@@ -23,10 +23,10 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
   size).
 - `VAP_OUTPUT_VTX_FMT_0` (0x2090): `POS_PRESENT` bit 0, `COLOR_n_PRESENT`
   bits 1..4, `PT_SIZE_PRESENT` bit 16.  `VAP_OUTPUT_VTX_FMT_1` (0x2094):
-  one 3-bit component count per texture unit 0..7 (manual).  The
-  deployed 0.8.12 checker (`r300_tcl_bypass_vtx_check`, kernel source
-  checkpoint `0104ede3f196`) reads both words and admits a draw whose
-  stream satisfies its modeled predicate: `POS_PRESENT` set and no FMT0
+  one 3-bit component count per texture unit 0..7 (manual).  The checker
+  `r300_tcl_bypass_vtx_check`, byte-identical across kernel checkpoints
+  `0104ede3f196` and `2be21eaa8927`, reads both words and admits a draw
+  whose stream satisfies its modeled predicate: `POS_PRESENT` set and no FMT0
   bit beyond `COLOR_0_PRESENT`, the FMT1 texture component counts
   decoded into the required width (4 for position, 4 more for COLOR0,
   the declared components per texture unit), complete PSC stream words,
