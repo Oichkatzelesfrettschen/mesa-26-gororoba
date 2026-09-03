@@ -119,6 +119,46 @@ test_plan_rules(void)
    r.x = 0x10000u;
    REFUSES(p, R300_RB2D_FILL_REFUSE_RECT_FIELD);
 
+   /* R300_RB2D_MAX_COORD_REACH bounds a rectangle's far edge; its header
+    * states why and what the bound costs.  Two properties are checked here:
+    * the bound is exact rather than generous, and the refusal lands before
+    * the surface-bounds rule, so a surface large enough to hold such a
+    * rectangle still refuses it -- the scissor clips, not the surface.
+    */
+   {
+      /* The pitch field caps a surface at 0x3ff 64-byte units, 65472 bytes
+       * or 16368 ARGB8888 pixels, which is wider than the reach, so the
+       * scissor bounds both axes.  This surface sits one pixel past the
+       * reach on each axis with its pitch inside the field. */
+      struct r300_rb2d_surface wide = p.surface;
+      wide.width_pixels = R300_RB2D_MAX_COORD_REACH + 1u;
+      wide.height_pixels = R300_RB2D_MAX_COORD_REACH + 1u;
+      wide.pitch_bytes = (R300_RB2D_MAX_COORD_REACH + 1u) * 4u;
+      struct r300_rb2d_fill_plan big = p;
+      big.surface = wide;
+      struct r300_rb2d_fill_rect far = { 0u, 0u, R300_RB2D_MAX_COORD_REACH,
+                                         1u, 1u };
+      big.rects = &far;
+      big.rect_count = 1u;
+      /* Reaching exactly the scissor value is admitted; one past refuses,
+       * so the bound is exact rather than generous. */
+      assert(r300_rb2d_fill_plan_check(&big) == R300_RB2D_FILL_OK);
+      far.width = R300_RB2D_MAX_COORD_REACH + 1u;
+      assert(r300_rb2d_fill_plan_check(&big) ==
+             R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR);
+      far = (struct r300_rb2d_fill_rect){ 0u, 0u, 1u,
+                                          R300_RB2D_MAX_COORD_REACH + 1u,
+                                          1u };
+      assert(r300_rb2d_fill_plan_check(&big) ==
+             R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR);
+      /* An origin at the reach with any extent also passes: the far edge
+       * is what the scissor clips. */
+      far = (struct r300_rb2d_fill_rect){ 0u, R300_RB2D_MAX_COORD_REACH, 1u,
+                                          1u, 1u };
+      assert(r300_rb2d_fill_plan_check(&big) ==
+             R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR);
+   }
+
    /* The surface extent bounds the rectangle, and the boundary case one
     * pixel inside is admitted so the rule is exact rather than generous. */
    r = (struct r300_rb2d_fill_rect){ 62u, 62u, 2u, 2u, 1u };
