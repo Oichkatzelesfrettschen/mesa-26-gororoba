@@ -538,7 +538,8 @@ create_compute_pipeline(struct r3v_native_device *device,
    const struct r300_compute_verb_row *verb = r300_compute_verb_for_job(&job);
    if (verb == NULL ||
        !r300_operation_has_executing_route(
-          verb->operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST)) {
+          verb->operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+          R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER)) {
       return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
                        "r3v-native: compute verb %s has no executing route",
                        verb ? verb->name : "outside the ledger");
@@ -850,6 +851,7 @@ r3v_native_deferred_dispatch_admit_gpu(struct r3v_native_device *device,
    const struct r300_operation_route_row *route =
       r300_operation_select_route(verb->operation_id,
                                   R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                  R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER,
                                   gate_open, NULL);
    if (route == NULL)
       return VK_SUCCESS;

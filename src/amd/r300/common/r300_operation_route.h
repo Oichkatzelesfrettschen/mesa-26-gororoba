@@ -26,6 +26,7 @@
 #include "r300_numeric_domain.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* The functional unit a route executes on.  R300-class silicon has no
@@ -102,6 +103,38 @@ enum r300_operation_route_executor {
    R300_OPERATION_ROUTE_EXECUTOR_GPU,
 };
 
+/* What a caller wants done, in terms no API owns.  An operation says what
+ * is computed and a route says where; neither says whether the bytes are a
+ * transfer destination, a bound render target, or a storage buffer a kernel
+ * writes, and a unit that serves one of those serves the others only where
+ * a row says so.  CONSTFILL shows the split: the RB2D solid brush writes a
+ * linear transfer destination, the RB3D clear path writes a bound colour
+ * target, and a compute kernel writes a storage buffer through descriptor
+ * offsets, so one operation reaches three routes that are not
+ * interchangeable.
+ *
+ * The vocabulary is a mask because a route may serve several uses, and it
+ * is append-only: a use lands with the row that names it, so the enum never
+ * carries a value no route serves.  A request names exactly one use.
+ */
+enum r300_operation_route_use {
+   /* A linear byte range in a buffer, named by offset and size, reached
+    * through a transfer command. */
+   R300_ROUTE_USE_TRANSFER_BUFFER = 1u << 0,
+   /* A colour target bound to the output stage, reached through a render
+    * pass or an attachment clear. */
+   R300_ROUTE_USE_RENDER_ATTACHMENT = 1u << 1,
+   /* A storage buffer a compute kernel writes through its descriptor
+    * binding, with the invocation index selecting the element. */
+   R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER = 1u << 2,
+};
+
+/* Every bit the vocabulary defines; the validator refuses a row outside it
+ * so an unnamed bit never reaches the selector as an eligible use. */
+#define R300_ROUTE_USE_ALL                                                    \
+   (R300_ROUTE_USE_TRANSFER_BUFFER | R300_ROUTE_USE_RENDER_ATTACHMENT |       \
+    R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER)
+
 /* How far a route has come.  CANDIDATE names a unit and an exactness bound
  * with no implementation or contract behind it; PRECOMMITTED carries both
  * plus an admission contract and opens by a later row movement with its
@@ -168,6 +201,12 @@ struct r300_operation_route_row {
    enum r300_operation_route_state state;
    enum r300_execution_unit unit;
 
+   /* The semantic uses this route serves, one or more bits of
+    * enum r300_operation_route_use.  A selection names one use and reaches
+    * only rows whose mask carries it, so a route qualified for one use
+    * never answers for another. */
+   uint32_t uses;
+
    /* The implementation, GPU route contract, and admission contract are a
     * set: all three are NONE on a candidate and all three are concrete on a
     * precommitted or executing GPU route.  A host route carries NONE for
@@ -206,39 +245,75 @@ r300_operation_route(enum r300_operation_route_id route_id);
 uint32_t
 r300_operation_route_count_for_operation(enum r300_operation_id operation_id);
 
+/* Whether an operation has an executing route on one executor that serves
+ * one use.  The use is part of the question: a unit that fills a linear
+ * transfer destination answers nothing about a kernel writing a storage
+ * buffer, so a coverage claim that drops the use reports the first route to
+ * execute as covering every caller of the same operation. */
 bool
 r300_operation_has_executing_route(enum r300_operation_id operation_id,
-                                   enum r300_operation_route_executor executor);
+                                   enum r300_operation_route_executor executor,
+                                   enum r300_operation_route_use use);
 
-/* Select the route an operation takes on one executor.
+/* Select the route an operation takes on one executor for one use.
  *
  * gate_state is indexed by route id and holds, for each route, whether that
  * route's own gate stands open; passing NULL treats every gate as closed.
- * A route is eligible when it realizes the operation, runs on the named
- * executor, is EXECUTING, and either carries no gate or has its own gate
- * open.  A gate belongs to exactly one route, so opening one never makes
- * another eligible.
+ * A route is eligible when it realizes the operation, serves the named use,
+ * runs on the named executor, is EXECUTING, and either carries no gate or
+ * has its own gate open.  A gate belongs to exactly one route, so opening
+ * one never makes another eligible.
+ *
+ * use names exactly one bit of enum r300_operation_route_use.  Zero bits
+ * and several bits both refuse: a caller performs one operation for one
+ * purpose, and a mask standing in for a request would let the selector pick
+ * across purposes.
  *
  * Selection fails closed: zero eligible routes and two or more eligible
  * routes both return NULL with *reason naming the refusal, because table
  * order is not a route policy and a second eligible route means the policy
- * that would choose between them has not been written.
+ * that would choose between them has not been written.  A caller holding
+ * such a policy enumerates with r300_operation_route_eligible() and names
+ * its choice.
  */
 const struct r300_operation_route_row *
 r300_operation_select_route(enum r300_operation_id operation_id,
                             enum r300_operation_route_executor executor,
+                            enum r300_operation_route_use use,
                             const bool *gate_state, const char **reason);
 
 /* The _rows form takes a table so a test calibrates the selector on a
  * mutated copy; the table the ledger ships holds one executing route per
- * operation and executor, so the two-eligible refusal is reachable only
- * from such a copy until a second executing route lands with its policy. */
+ * operation, executor, and use, so the two-eligible refusal is reachable
+ * only from such a copy until a second executing route lands with its
+ * policy. */
 const struct r300_operation_route_row *
 r300_operation_select_route_rows(const struct r300_operation_route_row *t,
                                  uint32_t count,
                                  enum r300_operation_id operation_id,
                                  enum r300_operation_route_executor executor,
+                                 enum r300_operation_route_use use,
                                  const bool *gate_state, const char **reason);
+
+/* Write the eligible routes into out[] and return how many there are,
+ * writing at most max and returning the full count so a caller detects a
+ * short buffer by a return above max.  Eligibility is the selector's, so
+ * the two agree by construction: the selector is this enumeration plus the
+ * rule that one route and only one route decides.  A caller that owns a
+ * policy over several eligible routes reads them here.
+ */
+uint32_t
+r300_operation_route_eligible(enum r300_operation_id operation_id,
+                              enum r300_operation_route_executor executor,
+                              enum r300_operation_route_use use,
+                              const bool *gate_state,
+                              const struct r300_operation_route_row **out,
+                              uint32_t max);
+
+/* The uses a route serves, spelled for diagnostics as a "|"-joined list of
+ * lowercase names into buf, which is returned.  An empty mask spells
+ * "none". */
+char *r300_operation_route_use_names(uint32_t uses, char *buf, size_t size);
 
 const char *r300_operation_route_executor_name(
    enum r300_operation_route_executor e);

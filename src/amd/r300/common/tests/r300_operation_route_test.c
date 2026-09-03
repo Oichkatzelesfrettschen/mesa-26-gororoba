@@ -68,9 +68,11 @@ test_population(void)
    unsigned any_executing = 0, gpu_verbs = 0, none_executing = 0;
    for (uint32_t v = 0; v < verbs; v++) {
       const bool host = r300_operation_has_executing_route(
-         verb_rows[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST);
+         verb_rows[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+         R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER);
       const bool gpu = r300_operation_has_executing_route(
-         verb_rows[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_GPU);
+         verb_rows[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+         R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER);
       any_executing += host || gpu;
       gpu_verbs += gpu;
       none_executing += !host && !gpu;
@@ -176,6 +178,10 @@ test_checker_calibration(void)
    REFUSES("route state outside the state enum");
    m[4].unit = R300_EXECUTION_UNIT_COUNT;
    REFUSES("route unit outside the execution-unit enum");
+   m[4].uses = 0u;
+   REFUSES("route serves no use");
+   m[4].uses = R300_ROUTE_USE_ALL + 1u;
+   REFUSES("route use mask outside the use vocabulary");
    m[4].exactness = (enum r300_compute_verb_exactness)3;
    REFUSES("route exactness outside the exactness enum");
    m[4].tolerance = 0.5f;
@@ -233,10 +239,12 @@ test_checker_calibration(void)
    }
    REFUSES("routes out of identity order");
 
-   /* Two executing routes for one operation and executor would leave the
-    * selector choosing by table position.  The table refuses that shape
-    * here rather than at the first dispatch that meets it -- the rule that
-    * makes a second CONST_FILL route safe to add. */
+   /* Two executing routes for one operation and executor contend only where
+    * their use masks overlap.  m[2] is the RB3D clear serving a bound
+    * colour target and m[1] is the R2VB carrier serving a storage buffer;
+    * promoting m[2] onto IDENTITY_MAP leaves both executing on the GPU for
+    * one operation and the table accepts it, because a caller naming one
+    * use reaches exactly one of them. */
    m[2].state = R300_OPERATION_ROUTE_EXECUTING;
    m[2].operation_id = R300_OPERATION_ID_IDENTITY_MAP;
    m[2].implementation_id =
@@ -247,10 +255,26 @@ test_checker_calibration(void)
    m[2].evidence = R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED;
    m[2].evidence_scope =
       R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL;
-   REFUSES("two executing routes for one operation and executor");
+   assert(m[1].uses == R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER);
+   assert(m[2].uses == R300_ROUTE_USE_RENDER_ATTACHMENT);
+   assert(r300_operation_route_rows_valid(m, count, &reason));
+
+   /* Give the promoted row the use m[1] already serves and the same shape
+    * refuses: the selector would then be choosing by table position, which
+    * is the rule that makes a second CONST_FILL route safe to add and an
+    * aliased one unsafe. */
+   m[2].uses = R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER;
+   REFUSES("two executing routes for one operation, executor, and use");
 }
 
 #undef REFUSES
+
+/* Local spellings of the use bits.  The enum names carry the meaning; a
+ * selector call spelling them in full wraps past the operation and executor
+ * that distinguish the arm. */
+#define USE_SSBO R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER
+#define USE_XFER R300_ROUTE_USE_TRANSFER_BUFFER
+#define USE_ATTACH R300_ROUTE_USE_RENDER_ATTACHMENT
 
 static void
 test_selector(void)
@@ -265,22 +289,58 @@ test_selector(void)
     * the gated GPU route is unreachable. */
    assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
                                       R300_OPERATION_ROUTE_EXECUTOR_HOST,
-                                      gates, &reason) ==
+                                      USE_SSBO, gates,
+                                      &reason) ==
           r300_operation_route(R300_OPERATION_ROUTE_HOST_IDENTITY_MAP));
    assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
-                                      R300_OPERATION_ROUTE_EXECUTOR_GPU, gates,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_SSBO, gates,
                                       &reason) == NULL);
    assert(strcmp(reason, "no eligible executing route") == 0);
    assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
-                                      R300_OPERATION_ROUTE_EXECUTOR_GPU, NULL,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_SSBO, NULL,
                                       &reason) == NULL);
 
    /* The exact route's own gate selects it. */
    gates[R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP] = true;
    assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
-                                      R300_OPERATION_ROUTE_EXECUTOR_GPU, gates,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_SSBO, gates,
                                       &reason) ==
           r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP));
+
+   /* The same gate, the same operation, a different use: the R2VB carrier
+    * serves a storage buffer a kernel writes and nothing else, so a
+    * transfer-destination request reaches no route however open the gate
+    * stands.  Applicability is the filter, not the gate. */
+   assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_XFER, gates,
+                                      &reason) == NULL);
+   assert(strcmp(reason, "no eligible executing route") == 0);
+
+   /* A request names one use.  Zero bits, several bits, and a bit outside
+    * the vocabulary each refuse before eligibility is considered, so a
+    * caller cannot ask across purposes and take whichever route answers
+    * first. */
+   assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      (enum r300_operation_route_use)0u, gates,
+                                      &reason) == NULL);
+   assert(strcmp(reason, "request names other than one defined use") == 0);
+   assert(r300_operation_select_route(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU,
+             (enum r300_operation_route_use)(USE_SSBO | USE_XFER),
+             gates, &reason) == NULL);
+   assert(strcmp(reason, "request names other than one defined use") == 0);
+   assert(r300_operation_select_route(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU,
+             (enum r300_operation_route_use)(R300_ROUTE_USE_ALL + 1u), gates,
+             &reason) == NULL);
+   assert(strcmp(reason, "request names other than one defined use") == 0);
 
    /* Every other gate open selects nothing: a gate belongs to one route,
     * and an open gate on a candidate route opens no execution. */
@@ -290,20 +350,35 @@ test_selector(void)
          gates[rows[r].route_id] = true;
    }
    assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
-                                      R300_OPERATION_ROUTE_EXECUTOR_GPU, gates,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_SSBO, gates,
                                       &reason) == NULL);
+   /* CONSTFILL's two GPU routes answer two different callers and neither
+    * executes: the RB2D fill is precommitted for a transfer destination and
+    * the RB3D clear is a candidate for a bound colour target, so both uses
+    * refuse with the RB2D gate open. */
    assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
-                                      R300_OPERATION_ROUTE_EXECUTOR_GPU, gates,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_XFER, gates,
+                                      &reason) == NULL);
+   assert(strcmp(reason, "no eligible executing route") == 0);
+   assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
+                                      R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                      USE_ATTACH, gates,
                                       &reason) == NULL);
    assert(strcmp(reason, "no eligible executing route") == 0);
    /* An operation with no host route selects nothing on the host either. */
    assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
                                       R300_OPERATION_ROUTE_EXECUTOR_HOST,
-                                      gates, &reason) == NULL);
+                                      USE_XFER, gates,
+                                      &reason) == NULL);
 
    /* Two eligible routes fail closed rather than letting table order pick.
     * The shipped table cannot hold that shape, so the arm runs on a mutated
-    * copy through the _rows form. */
+    * copy through the _rows form.  The mutation must also carry the use the
+    * request names: a second executing route serving another use is not a
+    * contender, which is the applicability rule stated from the other
+    * side. */
    struct r300_operation_route_row m[MAX_ROUTES];
    memcpy(m, rows, sizeof(*rows) * count);
    for (uint32_t r = 0; r < count; r++) {
@@ -315,11 +390,80 @@ test_selector(void)
    }
    memset(gates, 0, sizeof(gates));
    gates[R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP] = true;
+   /* The mutated row still serves the render attachment, so the two do not
+    * contend and the storage-buffer request resolves to the R2VB route. */
    assert(r300_operation_select_route_rows(
              m, count, R300_OPERATION_ID_IDENTITY_MAP,
-             R300_OPERATION_ROUTE_EXECUTOR_GPU, gates, &reason) == NULL);
+             R300_OPERATION_ROUTE_EXECUTOR_GPU, USE_SSBO, gates, &reason) ==
+          &m[R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP - 1]);
+   for (uint32_t r = 0; r < count; r++) {
+      if (m[r].route_id == R300_OPERATION_ROUTE_RB3D_CLEAR_CONST_FILL)
+         m[r].uses = USE_SSBO;
+   }
+   assert(r300_operation_select_route_rows(
+             m, count, R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU, USE_SSBO, gates,
+             &reason) == NULL);
    assert(strcmp(reason, "two eligible routes and no selector policy") == 0);
 }
+
+/* The enumerator and the selector answer the same question, and a caller
+ * that owns a policy reads the candidates here.  Two eligible routes are a
+ * selector refusal and an enumeration of two, so a short output buffer is
+ * detected by the returned count rather than by a truncated list. */
+static void
+test_eligible_enumeration(void)
+{
+   const struct r300_operation_route_row *out[MAX_ROUTES];
+   bool gates[R300_OPERATION_ROUTE_COUNT] = { false };
+
+   assert(r300_operation_route_eligible(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU, USE_SSBO, gates, out,
+             MAX_ROUTES) == 0);
+
+   gates[R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP] = true;
+   assert(r300_operation_route_eligible(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU, USE_SSBO, gates, out,
+             MAX_ROUTES) == 1);
+   assert(out[0] ==
+          r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP));
+   assert(r300_operation_route_eligible(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU, USE_XFER, gates, out,
+             MAX_ROUTES) == 0);
+   /* A malformed request enumerates nothing, matching the selector. */
+   assert(r300_operation_route_eligible(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU,
+             (enum r300_operation_route_use)0u, gates, out, MAX_ROUTES) == 0);
+   /* A zero-length output buffer still reports the true count. */
+   assert(r300_operation_route_eligible(
+             R300_OPERATION_ID_IDENTITY_MAP,
+             R300_OPERATION_ROUTE_EXECUTOR_GPU, USE_SSBO, gates, out, 0) == 1);
+}
+
+/* Coverage is asked per use.  Dropping the use would let CONSTFILL's RB2D
+ * transfer route stand in for a compute kernel writing a storage buffer, so
+ * the predicate separates the two even where one operation carries both. */
+static void
+test_executing_route_is_use_specific(void)
+{
+   assert(r300_operation_has_executing_route(
+      R300_OPERATION_ID_IDENTITY_MAP, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      USE_SSBO));
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_IDENTITY_MAP, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      USE_XFER));
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      USE_XFER));
+}
+
+#undef USE_ATTACH
+#undef USE_XFER
+#undef USE_SSBO
 
 /* Restoring a per-verb gate array cannot represent the ledger: two routes
  * for one operation carry two gates, and a verb-indexed array holds one.
@@ -402,6 +546,8 @@ main(void)
    test_identity_two_contracts();
    test_checker_calibration();
    test_selector();
+   test_eligible_enumeration();
+   test_executing_route_is_use_specific();
    test_per_verb_gate_array_cannot_represent();
    test_names();
    printf("r300_operation_route_test: all checks passed\n");

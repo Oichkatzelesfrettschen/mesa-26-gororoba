@@ -8,11 +8,18 @@
 
 #include <string.h>
 
-#define ROUTE(id, n, op, exec, st, u, impl, contract, adm, idx, ex, tol, ev,  \
-              scope, gate)                                                    \
+/* Short spellings for the use mask inside the table.  The enum names carry
+ * the meaning; a row spelling them in full would wrap past the fields that
+ * distinguish it. */
+#define XFER_BUF R300_ROUTE_USE_TRANSFER_BUFFER
+#define ATTACH R300_ROUTE_USE_RENDER_ATTACHMENT
+#define SSBO R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER
+
+#define ROUTE(id, n, op, exec, st, u, use, impl, contract, adm, idx, ex, tol, \
+              ev, scope, gate)                                                \
    { R300_OPERATION_ROUTE_##id, n, R300_OPERATION_ID_##op,                    \
      R300_OPERATION_ROUTE_EXECUTOR_##exec, R300_OPERATION_ROUTE_##st,         \
-     R300_EXECUTION_UNIT_##u, R300_OPERATION_IMPLEMENTATION_##impl,           \
+     R300_EXECUTION_UNIT_##u, (use), R300_OPERATION_IMPLEMENTATION_##impl,    \
      R300_GPU_ROUTE_CONTRACT_##contract, R300_ROUTE_ADMISSION_##adm,          \
      R300_GRID_INDEX_##idx, R300_COMPUTE_VERB_##ex, tol,                      \
      R300_COMPUTE_VERB_EVIDENCE_##ev,                                         \
@@ -31,73 +38,75 @@
 static const struct r300_operation_route_row
    routes[R300_OPERATION_ROUTE_COUNT - 1] = {
       ROUTE(HOST_IDENTITY_MAP, "host_identity_map", IDENTITY_MAP, HOST,
-            EXECUTING, HOST, NONE, NONE, NONE, LINEAR, BIT_EXACT, 0.0f, HOST,
-            HOST_EXECUTOR, NULL),
+            EXECUTING, HOST, SSBO, NONE, NONE, NONE, LINEAR, BIT_EXACT, 0.0f,
+            HOST, HOST_EXECUTOR, NULL),
       ROUTE(R2VB_IDENTITY_MAP, "r2vb_identity_map", IDENTITY_MAP, GPU,
-            EXECUTING, R2VB_CARRIER, R2VB_FETCHED_IDENTITY_CARRIER,
+            EXECUTING, R2VB_CARRIER, SSBO, R2VB_FETCHED_IDENTITY_CARRIER,
             R2VB_COMPUTE_IDENTITY_CARRIER, R2VB_FP24_IDENTITY, LINEAR,
             FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, NATIVE_GPU_ROUTE_CELL,
             "R3V_NATIVE_COMPUTE_IDENTITY_GPU_EXPERIMENTAL"),
 
       ROUTE(RB3D_CLEAR_CONST_FILL, "rb3d_clear_const_fill", CONSTFILL, GPU,
-            CANDIDATE, RB3D_CLEAR, NONE, NONE, NONE, NONE, BIT_EXACT, 0.0f,
-            SILICON_RETAINED, RASTER_CELL,
+            CANDIDATE, RB3D_CLEAR, ATTACH, NONE, NONE, NONE, NONE, BIT_EXACT,
+            0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_CONST_FILL_GPU_EXPERIMENTAL"),
       ROUTE(US_FP24_UNARY_AFFINE, "us_fp24_unary_affine", UNARY_AFFINE_MAP,
-            GPU, CANDIDATE, US_FP24_ALU, NONE, NONE, NONE, NONE,
+            GPU, CANDIDATE, US_FP24_ALU, SSBO, NONE, NONE, NONE, NONE,
             FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_AFFINE_GPU_EXPERIMENTAL"),
-      ROUTE(US_FP24_BINARY_ARITHMETIC, "us_fp24_binary_arithmetic", BINARY_MAP,
-            GPU, CANDIDATE, US_FP24_ALU, NONE, NONE, NONE, NONE,
-            FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
+      ROUTE(US_FP24_BINARY_ARITHMETIC, "us_fp24_binary_arithmetic",
+            BINARY_MAP, GPU, CANDIDATE, US_FP24_ALU, SSBO, NONE, NONE, NONE,
+            NONE, FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_BINARY_GPU_EXPERIMENTAL"),
       ROUTE(US_FP24_UNARY_TRANSCENDENTAL, "us_fp24_unary_transcendental",
-            UNARY_TRANSCENDENTAL_MAP, GPU, CANDIDATE, US_FP24_ALU, NONE, NONE,
-            NONE, NONE, FP24_BOUNDED, 0.03f, SILICON_RETAINED, RASTER_CELL,
+            UNARY_TRANSCENDENTAL_MAP, GPU, CANDIDATE, US_FP24_ALU, SSBO, NONE,
+            NONE, NONE, NONE, FP24_BOUNDED, 0.03f, SILICON_RETAINED,
+            RASTER_CELL,
             "R3V_NATIVE_COMPUTE_UNARY_TRANSCENDENTAL_GPU_EXPERIMENTAL"),
       ROUTE(US_FP24_BINARY_TRANSCENDENTAL, "us_fp24_binary_transcendental",
-            BINARY_TRANSCENDENTAL_MAP, GPU, CANDIDATE, US_FP24_ALU, NONE, NONE,
-            NONE, NONE, FP24_BOUNDED, 0.03f, SILICON_RETAINED, RASTER_CELL,
+            BINARY_TRANSCENDENTAL_MAP, GPU, CANDIDATE, US_FP24_ALU, SSBO,
+            NONE, NONE, NONE, NONE, FP24_BOUNDED, 0.03f, SILICON_RETAINED,
+            RASTER_CELL,
             "R3V_NATIVE_COMPUTE_BINARY_TRANSCENDENTAL_GPU_EXPERIMENTAL"),
       ROUTE(RB3D_ROP_BITWISE_LOGIC, "rb3d_rop_bitwise_logic",
-            BITWISE_LOGICOP_MAP, GPU, CANDIDATE, RB3D_ROP, NONE, NONE, NONE,
-            NONE, BIT_EXACT, 0.0f, SILICON_RETAINED, RASTER_CELL,
+            BITWISE_LOGICOP_MAP, GPU, CANDIDATE, RB3D_ROP, SSBO, NONE, NONE,
+            NONE, NONE, BIT_EXACT, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_BITWISE_GPU_EXPERIMENTAL"),
       ROUTE(US_FP24_MULTITAP, "us_fp24_multitap", MULTITAP_GATHER, GPU,
-            CANDIDATE, US_FP24_ALU, NONE, NONE, NONE, COORD,
+            CANDIDATE, US_FP24_ALU, SSBO, NONE, NONE, NONE, COORD,
             FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_MULTITAP_GPU_EXPERIMENTAL"),
       ROUTE(TX_RB3D_PREDICATED_STORE, "tx_rb3d_predicated_store",
-            PREDICATED_MASKED_STORE, GPU, CANDIDATE, TX_RB3D_COPY, NONE, NONE,
-            NONE, NONE, BIT_EXACT, 0.0f, SILICON_RETAINED, RASTER_CELL,
+            PREDICATED_MASKED_STORE, GPU, CANDIDATE, TX_RB3D_COPY, SSBO, NONE,
+            NONE, NONE, NONE, BIT_EXACT, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_PREDICATED_GPU_EXPERIMENTAL"),
       ROUTE(US_FP24_MULTIPASS_SCAN, "us_fp24_multipass_scan",
-            MULTIPASS_PING_PONG_SCAN, GPU, CANDIDATE, US_FP24_ALU, NONE, NONE,
-            NONE, NONE, FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
-            "R3V_NATIVE_COMPUTE_MULTIPASS_GPU_EXPERIMENTAL"),
+            MULTIPASS_PING_PONG_SCAN, GPU, CANDIDATE, US_FP24_ALU, SSBO, NONE,
+            NONE, NONE, NONE, FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED,
+            RASTER_CELL, "R3V_NATIVE_COMPUTE_MULTIPASS_GPU_EXPERIMENTAL"),
       ROUTE(RB3D_BLEND_REDUCE, "rb3d_blend_reduce", BLEND_ACC_REDUCTION, GPU,
-            CANDIDATE, RB3D_BLEND, NONE, NONE, NONE, NONE, FP24_EXACT_WINDOW,
-            0.0f, SILICON_RETAINED, RASTER_CELL,
+            CANDIDATE, RB3D_BLEND, SSBO, NONE, NONE, NONE, NONE,
+            FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_REDUCE_GPU_EXPERIMENTAL"),
       ROUTE(RB3D_BLEND_SATURATING_DIFF, "rb3d_blend_saturating_diff",
-            SATURATING_DIFF, GPU, CANDIDATE, RB3D_BLEND, NONE, NONE, NONE,
-            NONE, BIT_EXACT, 0.0f, SILICON_RETAINED, RASTER_CELL,
+            SATURATING_DIFF, GPU, CANDIDATE, RB3D_BLEND, SSBO, NONE, NONE,
+            NONE, NONE, BIT_EXACT, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_SATURATING_DIFF_GPU_EXPERIMENTAL"),
-      ROUTE(US_FP24_PARALLEL_4OUT, "us_fp24_parallel_4out",
-            PARALLEL_4OUT_MAP, GPU, CANDIDATE, US_FP24_ALU, NONE, NONE, NONE,
-            NONE, FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
+      ROUTE(US_FP24_PARALLEL_4OUT, "us_fp24_parallel_4out", PARALLEL_4OUT_MAP,
+            GPU, CANDIDATE, US_FP24_ALU, SSBO, NONE, NONE, NONE, NONE,
+            FP24_EXACT_WINDOW, 0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_PARALLEL_4OUT_GPU_EXPERIMENTAL"),
       ROUTE(ZB_STENCIL_INVERT, "zb_stencil_invert", STENCIL_INVERT_NOT, GPU,
-            CANDIDATE, ZB_STENCIL, NONE, NONE, NONE, NONE, BIT_EXACT, 0.0f,
-            SILICON_RETAINED, RASTER_CELL,
+            CANDIDATE, ZB_STENCIL, SSBO, NONE, NONE, NONE, NONE, BIT_EXACT,
+            0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_COMPUTE_STENCIL_INVERT_GPU_EXPERIMENTAL"),
 
       ROUTE(HOST_BITWISE_NOT, "host_bitwise_not", BITWISE_NOT_MAP, HOST,
-            EXECUTING, HOST, NONE, NONE, NONE, LINEAR, BIT_EXACT, 0.0f, HOST,
-            HOST_EXECUTOR, NULL),
-      ROUTE(RB3D_ROP_BITWISE_NOT, "rb3d_rop_bitwise_not", BITWISE_NOT_MAP, GPU,
-            CANDIDATE, RB3D_ROP, NONE, NONE, NONE, LINEAR, BIT_EXACT, 0.0f,
-            SOURCE_GROUNDED, UNIT_CONTRACT,
+            EXECUTING, HOST, SSBO, NONE, NONE, NONE, LINEAR, BIT_EXACT, 0.0f,
+            HOST, HOST_EXECUTOR, NULL),
+      ROUTE(RB3D_ROP_BITWISE_NOT, "rb3d_rop_bitwise_not", BITWISE_NOT_MAP,
+            GPU, CANDIDATE, RB3D_ROP, SSBO, NONE, NONE, NONE, LINEAR,
+            BIT_EXACT, 0.0f, SOURCE_GROUNDED, UNIT_CONTRACT,
             "R3V_NATIVE_COMPUTE_BITWISE_NOT_GPU_EXPERIMENTAL"),
 
       /* The second route for CONSTFILL, beside the RB3D clear candidate.
@@ -110,12 +119,16 @@ static const struct r300_operation_route_row
        * route, so the route executes once a public command selects it and a
        * current-epoch receipt records it. */
       ROUTE(RB2D_CONST_FILL, "rb2d_const_fill", CONSTFILL, GPU, PRECOMMITTED,
-            RB2D_FILL, RB2D_LINEAR_SOLID_FILL, RB2D_LINEAR_SOLID_FILL,
-            RB2D_LINEAR_SURFACE, LINEAR, BIT_EXACT, 0.0f, SILICON_RETAINED,
-            RASTER_CELL, "R3V_NATIVE_COMPUTE_RB2D_CONST_FILL_GPU_EXPERIMENTAL"),
+            RB2D_FILL, XFER_BUF, RB2D_LINEAR_SOLID_FILL,
+            RB2D_LINEAR_SOLID_FILL, RB2D_LINEAR_SURFACE, LINEAR, BIT_EXACT,
+            0.0f, SILICON_RETAINED, RASTER_CELL,
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL"),
 };
 
 #undef ROUTE
+#undef SSBO
+#undef ATTACH
+#undef XFER_BUF
 
 const struct r300_operation_route_row *
 r300_operation_route_rows(uint32_t *count)
@@ -148,15 +161,46 @@ r300_operation_route_count_for_operation(enum r300_operation_id operation_id)
 
 bool
 r300_operation_has_executing_route(enum r300_operation_id operation_id,
-                                   enum r300_operation_route_executor executor)
+                                   enum r300_operation_route_executor executor,
+                                   enum r300_operation_route_use use)
 {
    for (uint32_t i = 0; i < ARRAY_SIZE(routes); i++) {
       if (routes[i].operation_id == operation_id &&
-          routes[i].executor == executor &&
+          routes[i].executor == executor && (routes[i].uses & use) != 0 &&
           routes[i].state == R300_OPERATION_ROUTE_EXECUTING)
          return true;
    }
    return false;
+}
+
+/* One request names one purpose.  A zero mask asks for no use and a
+ * multi-bit mask asks across purposes, and the selector answers neither:
+ * eligibility would then mix rows that serve different callers. */
+static bool
+one_use(enum r300_operation_route_use use)
+{
+   const uint32_t m = (uint32_t)use;
+   return m != 0 && (m & (m - 1)) == 0 &&
+          (m & ~(uint32_t)R300_ROUTE_USE_ALL) == 0;
+}
+
+static bool
+route_eligible(const struct r300_operation_route_row *row,
+               enum r300_operation_id operation_id,
+               enum r300_operation_route_executor executor,
+               enum r300_operation_route_use use, const bool *gate_state)
+{
+   if (row->operation_id != operation_id || row->executor != executor ||
+       row->state != R300_OPERATION_ROUTE_EXECUTING)
+      return false;
+   /* The use decides applicability: a route qualified to fill a linear
+    * transfer destination answers no request for a bound colour target. */
+   if ((row->uses & (uint32_t)use) == 0)
+      return false;
+   /* A gated route runs only under its own gate; a route with no gate is
+    * the executor's default path. */
+   return row->gate == NULL ||
+          (gate_state != NULL && gate_state[row->route_id]);
 }
 
 const struct r300_operation_route_row *
@@ -164,19 +208,20 @@ r300_operation_select_route_rows(const struct r300_operation_route_row *t,
                                  uint32_t count,
                                  enum r300_operation_id operation_id,
                                  enum r300_operation_route_executor executor,
+                                 enum r300_operation_route_use use,
                                  const bool *gate_state, const char **reason)
 {
    const struct r300_operation_route_row *chosen = NULL;
 
+   if (!one_use(use)) {
+      if (reason != NULL)
+         *reason = "request names other than one defined use";
+      return NULL;
+   }
+
    for (uint32_t i = 0; i < count; i++) {
       const struct r300_operation_route_row *row = &t[i];
-      if (row->operation_id != operation_id || row->executor != executor ||
-          row->state != R300_OPERATION_ROUTE_EXECUTING)
-         continue;
-      /* A gated route runs only under its own gate; a route with no gate
-       * is the executor's default path. */
-      if (row->gate != NULL &&
-          (gate_state == NULL || !gate_state[row->route_id]))
+      if (!route_eligible(row, operation_id, executor, use, gate_state))
          continue;
       if (chosen != NULL) {
          /* Table order is not a route policy: two eligible routes mean the
@@ -196,11 +241,68 @@ r300_operation_select_route_rows(const struct r300_operation_route_row *t,
 const struct r300_operation_route_row *
 r300_operation_select_route(enum r300_operation_id operation_id,
                             enum r300_operation_route_executor executor,
+                            enum r300_operation_route_use use,
                             const bool *gate_state, const char **reason)
 {
    return r300_operation_select_route_rows(routes, ARRAY_SIZE(routes),
-                                           operation_id, executor, gate_state,
-                                           reason);
+                                           operation_id, executor, use,
+                                           gate_state, reason);
+}
+
+uint32_t
+r300_operation_route_eligible(enum r300_operation_id operation_id,
+                              enum r300_operation_route_executor executor,
+                              enum r300_operation_route_use use,
+                              const bool *gate_state,
+                              const struct r300_operation_route_row **out,
+                              uint32_t max)
+{
+   uint32_t n = 0;
+
+   if (!one_use(use))
+      return 0;
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(routes); i++) {
+      if (!route_eligible(&routes[i], operation_id, executor, use, gate_state))
+         continue;
+      if (out != NULL && n < max)
+         out[n] = &routes[i];
+      n++;
+   }
+   return n;
+}
+
+char *
+r300_operation_route_use_names(uint32_t uses, char *buf, size_t size)
+{
+   static const struct {
+      uint32_t bit;
+      const char *name;
+   } names[] = {
+      { R300_ROUTE_USE_TRANSFER_BUFFER, "transfer_buffer" },
+      { R300_ROUTE_USE_RENDER_ATTACHMENT, "render_attachment" },
+      { R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER, "compute_storage_buffer" },
+   };
+   size_t at = 0;
+
+   if (buf == NULL || size == 0)
+      return buf;
+   buf[0] = '\0';
+   for (uint32_t i = 0; i < ARRAY_SIZE(names); i++) {
+      if ((uses & names[i].bit) == 0)
+         continue;
+      const size_t need = strlen(names[i].name) + (at != 0 ? 1 : 0);
+      if (at + need + 1 > size)
+         break;
+      if (at != 0)
+         buf[at++] = '|';
+      memcpy(buf + at, names[i].name, strlen(names[i].name));
+      at += strlen(names[i].name);
+      buf[at] = '\0';
+   }
+   if (at == 0 && size >= sizeof("none"))
+      memcpy(buf, "none", sizeof("none"));
+   return buf;
 }
 
 const char *
@@ -308,6 +410,14 @@ r300_operation_route_rows_valid(const struct r300_operation_route_row *t,
       }
       if ((unsigned)r->unit >= R300_EXECUTION_UNIT_COUNT) {
          *reason = "route unit outside the execution-unit enum";
+         return false;
+      }
+      if (r->uses == 0) {
+         *reason = "route serves no use";
+         return false;
+      }
+      if ((r->uses & ~(uint32_t)R300_ROUTE_USE_ALL) != 0) {
+         *reason = "route use mask outside the use vocabulary";
          return false;
       }
       if ((unsigned)r->exactness > R300_COMPUTE_VERB_FP24_BOUNDED) {
@@ -421,17 +531,23 @@ r300_operation_route_rows_valid(const struct r300_operation_route_row *t,
    }
 
    /* One executor's eligible set must be decidable without table order.
-    * Two executing routes for one operation on one executor would leave the
-    * selector choosing by position, so the table refuses that shape here
-    * rather than at the first dispatch that meets it. */
+    * Eligibility is operation, executor, and use together, so two executing
+    * routes collide exactly where their use masks overlap: an RB2D fill
+    * serving transfer destinations and an RB3D clear serving bound colour
+    * targets both realize CONSTFILL on the GPU and never contend, while two
+    * routes claiming the same use would leave the selector choosing by
+    * position.  The table refuses that shape here rather than at the first
+    * dispatch that meets it. */
    for (uint32_t i = 0; i < count; i++) {
       if (t[i].state != R300_OPERATION_ROUTE_EXECUTING)
          continue;
       for (uint32_t j = 0; j < i; j++) {
          if (t[j].state == R300_OPERATION_ROUTE_EXECUTING &&
              t[j].operation_id == t[i].operation_id &&
-             t[j].executor == t[i].executor) {
-            *reason = "two executing routes for one operation and executor";
+             t[j].executor == t[i].executor &&
+             (t[j].uses & t[i].uses) != 0) {
+            *reason = "two executing routes for one operation, executor, and "
+                      "use";
             return false;
          }
       }

@@ -106,7 +106,8 @@ identity_contract_valid(
        route->exactness != R300_COMPUTE_VERB_FP24_EXACT_WINDOW ||
        route->state != R300_OPERATION_ROUTE_EXECUTING ||
        !r300_operation_has_executing_route(
-          route->operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST) ||
+          route->operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+          R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER) ||
        route->evidence != R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED ||
        route->evidence_scope !=
           R300_COMPUTE_VERB_EVIDENCE_SCOPE_NATIVE_GPU_ROUTE_CELL) {
