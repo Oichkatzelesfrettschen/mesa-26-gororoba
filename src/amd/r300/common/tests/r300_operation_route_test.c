@@ -31,7 +31,7 @@ test_population(void)
    unsigned candidate = 0, precommitted = 0;
    unsigned retained_at_route_scope = 0, retained_at_raster_scope = 0;
 
-   assert(rows != NULL && count == MAX_ROUTES && count == 17);
+   assert(rows != NULL && count == MAX_ROUTES && count == 18);
    for (uint32_t i = 0; i < count; i++) {
       const struct r300_operation_route_row *r = &rows[i];
       const bool exec = r->state == R300_OPERATION_ROUTE_EXECUTING;
@@ -55,9 +55,11 @@ test_population(void)
    assert(host_executing == 2);
    assert(gpu_executing == 1);
    assert(candidate == 14);
-   assert(precommitted == 0);
+   /* The RB2D fill: a named plan, contracts, and admission rules, with its
+    * evidence still reaching the unit rather than this route. */
+   assert(precommitted == 1);
    assert(retained_at_route_scope == 1);
-   assert(retained_at_raster_scope == 13);
+   assert(retained_at_raster_scope == 14);
 
    /* The verb-level aggregates the same table yields. */
    uint32_t verbs = 0;
@@ -341,7 +343,7 @@ test_per_verb_gate_array_cannot_represent(void)
     * GPU route beside an ungated host route, and identity_map's carries the
     * executing gated one, so two verbs own two routes each and a
     * verb-indexed array is one slot short of the routes it must gate. */
-   assert(gated == 15);
+   assert(gated == 16);
    assert(count > verbs);
    for (uint32_t v = 0; v < verbs; v++) {
       const uint32_t n =
@@ -352,6 +354,11 @@ test_per_verb_gate_array_cannot_represent(void)
              R300_OPERATION_ID_IDENTITY_MAP) == 2);
    assert(r300_operation_route_count_for_operation(
              R300_OPERATION_ID_BITWISE_NOT_MAP) == 2);
+   /* Two routes for one operation on one executor, neither executing: the
+    * shape the split exists to hold and the checker admits only while at
+    * most one of them executes. */
+   assert(r300_operation_route_count_for_operation(
+             R300_OPERATION_ID_CONSTFILL) == 2);
 }
 
 static void

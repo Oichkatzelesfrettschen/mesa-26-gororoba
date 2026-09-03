@@ -17,6 +17,7 @@ r300_common_contract_files = files(
   'r300_fragment_binary.c',
   'r300_numeric_domain.c',
   'r300_pm4_builder.c',
+  'r300_rb2d_fill.c',
   'r300_pm4_compose.c',
   'r300_r2vb_carrier_delivery.c',
   'r300_r2vb_fetch_pass.c',
@@ -156,6 +157,21 @@ r300_operation_route_test = executable(
   link_with : libr300_common,
   gnu_symbol_visibility : 'hidden',
 )
+r300_rb2d_fill_test = executable(
+  'r300_rb2d_fill_test',
+  files('tests/r300_rb2d_fill_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-rb2d-fill-plan',
+  r300_rb2d_fill_test,
+  suite : ['r300'],
+)
+
 test(
   'r300-operation-route',
   r300_operation_route_test,
@@ -965,7 +981,7 @@ test(
 # parser-decidable known-bad arms.
 r300_direct_write_test = executable(
   'r300_direct_write_test',
-  files('r300_direct_write.c', 'r300_fragment_binary.c',
+  files('r300_direct_write.c', 'r300_rb2d_fill.c', 'r300_fragment_binary.c',
         'r300_first_draw_state.c', 'r300_pm4_builder.c',
         'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_noperspective_q_lane_plan.c', 'r300_noperspective_mixed_carrier_plan.c', 'tests/r300_direct_write_test.c'),
   c_args : r300_format_contract_test_c_args,
@@ -982,7 +998,7 @@ test(
 
 r300_direct_write_manifest = executable(
   'r300_direct_write_manifest',
-  files('r300_direct_write.c', 'r300_direct_write_manifest.c',
+  files('r300_direct_write.c', 'r300_rb2d_fill.c', 'r300_direct_write_manifest.c',
         'r300_fragment_binary.c', 'r300_first_draw_state.c',
         'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_noperspective_q_lane_plan.c', 'r300_noperspective_mixed_carrier_plan.c'),
   c_args : r300_format_contract_test_c_args,

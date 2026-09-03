@@ -142,7 +142,8 @@ test_operation_join(void)
        * bitwise_not_map reach two, a host route beside a device one. */
       assert(routes >= 1);
       assert(routes == (rows[i].verb == R300_COMPUTE_VERB_IDENTITY_MAP ||
-                                rows[i].verb == R300_COMPUTE_VERB_BITWISE_NOT_MAP
+                                rows[i].verb == R300_COMPUTE_VERB_BITWISE_NOT_MAP ||
+                                rows[i].verb == R300_COMPUTE_VERB_CONST_FILL
                            ? 2u
                            : 1u));
    }

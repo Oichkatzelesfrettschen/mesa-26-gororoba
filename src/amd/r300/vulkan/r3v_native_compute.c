@@ -807,6 +807,10 @@ r3v_native_compute_cell_kind(enum r300_gpu_route_contract_id contract_id)
    switch (contract_id) {
    case R300_GPU_ROUTE_CONTRACT_R2VB_COMPUTE_IDENTITY_CARRIER:
       return R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER;
+   /* The RB2D linear fill has a plan and contracts and no executing route,
+    * so it names no cell kind and the admission below declines it; a cell
+    * kind lands with the receipt that makes the route execute. */
+   case R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL:
    case R300_GPU_ROUTE_CONTRACT_NONE:
    case R300_GPU_ROUTE_CONTRACT_COUNT:
       return R3V_NATIVE_CELL_KIND_UNDECLARED;

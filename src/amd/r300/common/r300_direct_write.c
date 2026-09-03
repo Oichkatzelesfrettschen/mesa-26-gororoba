@@ -2,157 +2,66 @@
 
 #include "r300_direct_write.h"
 #include "r300_pm4_builder.h"
+#include "r300_rb2d_fill.h"
 #include "r300_tcl_bypass_triangle.h"
+
+#include "util/macros.h"
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* 2D engine registers, spelled as drivers/gpu/drm/radeon/radeon_reg.h
- * spells them.  Every register except DST_PITCH_OFFSET sits on the
- * reg_srcs/r300 safe list and passes the CS parser unchecked;
- * DST_PITCH_OFFSET is the r300_packet0_check case r100_reloc_pitch_offset
- * handles, which consumes the cell's one relocation.
- * (safe-list membership: rg -e 0x1438 -e 0x146C -e 0x147C -e 0x1598
- * -e 0x16C0 -e 0x16CC -e 0x16E8 -e 0x16EC -e 0x16F0 -e 0x1714
- * -e 0x1720 drivers/gpu/drm/radeon/reg_srcs/r300, one line per
- * emitted register; case dispatch: rg --fixed-strings
- * r100_reloc_pitch_offset drivers/gpu/drm/radeon/r300.c)
+/* The cell is one instance of the general RB2D solid-fill plan: a 64x64
+ * linear ARGB8888 surface at the triangle target's pitch, filled at two
+ * probe pixels.  The plan owns the register contract and the surface rules;
+ * this file owns the fixed geometry and the output oracle that reads it,
+ * so the retained stream is reproduced rather than re-derived.
  */
-#define RADEON_DST_PITCH_OFFSET 0x142C
-#define RADEON_DST_Y_X 0x1438
-#define RADEON_DP_GUI_MASTER_CNTL 0x146C
-#define RADEON_DP_BRUSH_FRGD_CLR 0x147C
-#define RADEON_DST_WIDTH_HEIGHT 0x1598
-#define RADEON_DP_CNTL 0x16C0
-#define RADEON_DP_WRITE_MSK 0x16CC
-#define RADEON_DEFAULT_SC_BOTTOM_RIGHT 0x16E8
-#define RADEON_SC_TOP_LEFT 0x16EC
-#define RADEON_SC_BOTTOM_RIGHT 0x16F0
-#define RADEON_DSTCACHE_CTLSTAT 0x1714
-#define RADEON_WAIT_UNTIL 0x1720
+static const struct r300_rb2d_fill_rect probe_rects[] = {
+   { R300_DIRECT_WRITE_A_X, R300_DIRECT_WRITE_A_Y, 1u, 1u,
+     R300_DIRECT_WRITE_A_VALUE },
+   { R300_DIRECT_WRITE_B_X, R300_DIRECT_WRITE_B_Y, 1u, 1u,
+     R300_DIRECT_WRITE_B_VALUE },
+};
 
-#define RADEON_GMC_DST_PITCH_OFFSET_CNTL (1u << 1)
-#define RADEON_GMC_BRUSH_SOLID_COLOR (13u << 4)
-#define RADEON_COLOR_FORMAT_ARGB8888 6u
-#define RADEON_ROP3_P 0x00f00000u
-#define RADEON_GMC_CLR_CMP_CNTL_DIS (1u << 28)
-#define RADEON_GMC_WR_MSK_DIS (1u << 30)
-#define RADEON_DST_X_LEFT_TO_RIGHT (1u << 0)
-#define RADEON_DST_Y_TOP_TO_BOTTOM (1u << 1)
-#define RADEON_RB2D_DC_FLUSH_ALL 0xfu
-#define RADEON_WAIT_DMA_GUI_IDLE (1u << 9)
-#define RADEON_WAIT_2D_IDLECLEAN (1u << 16)
-#define RADEON_WAIT_HOST_IDLECLEAN (1u << 18)
-
-/* DST_PITCH_OFFSET packs the pitch in 64-byte units above a 1 KiB-granular
- * offset (r100_copy_blit: (pitch << 22) | (offset >> 10)), so the 256-byte
- * row carries pitch 4 and the BO-base destination carries offset 0;
- * per-pixel addressing rides in DST_Y_X.
- */
-#define R300_DIRECT_WRITE_PITCH_64B \
-   (R300_TRIANGLE_TARGET_PITCH_PIXELS * 4u / 64u)
-
-/* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes
- * the relocation chunk at four times the slot.
- */
-#define R300_DIRECT_WRITE_RELOC_PAYLOAD(slot) ((slot) * 4)
+static const struct r300_rb2d_fill_plan cell_plan = {
+   .surface = {
+      .base_offset_bytes = 0u,
+      .pitch_bytes = R300_TRIANGLE_TARGET_PITCH_PIXELS * 4u,
+      .width_pixels = R300_TRIANGLE_TARGET_WIDTH,
+      .height_pixels = R300_TRIANGLE_TARGET_HEIGHT,
+      .format = R300_RB2D_FORMAT_ARGB8888,
+   },
+   .write_mask = 0xffffffffu,
+   .rects = probe_rects,
+   .rect_count = ARRAY_SIZE(probe_rects),
+};
 
 #define R300_DIRECT_WRITE_MAX_DWORDS 64
-
-static void
-write_reloc(struct r300_pm4_builder *b, struct r300_direct_write_ib *out,
-            uint32_t slot)
-{
-   if (b->error != 0)
-      return;
-   if (slot >= R300_DIRECT_WRITE_SLOT_COUNT ||
-       out->reloc_site_count >= R300_DIRECT_WRITE_SLOT_COUNT) {
-      b->error = -EINVAL;
-      return;
-   }
-
-   const uint32_t index =
-      r300_pm4_reloc_nop(b, R300_DIRECT_WRITE_RELOC_PAYLOAD(slot));
-   if (index == R300_PM4_NO_INDEX)
-      return;
-
-   out->reloc_sites[out->reloc_site_count++] =
-      (struct r300_direct_write_reloc_site){
-         .ib_index = index,
-         .slot = slot,
-      };
-}
-
-static void
-emit_fill(struct r300_pm4_builder *b, uint32_t value, uint32_t x, uint32_t y)
-{
-   r300_pm4_reg(b, RADEON_DP_BRUSH_FRGD_CLR, value);
-   r300_pm4_reg(b, RADEON_DST_Y_X, (y << 16) | x);
-   /* Writing DST_WIDTH_HEIGHT launches the fill. */
-   r300_pm4_reg(b, RADEON_DST_WIDTH_HEIGHT, (1u << 16) | 1u);
-}
-
-static int
-emit_cell(struct r300_pm4_builder *b, struct r300_direct_write_ib *out)
-{
-   r300_pm4_reg(b, RADEON_DST_PITCH_OFFSET,
-                R300_DIRECT_WRITE_PITCH_64B << 22);
-   write_reloc(b, out, R300_DIRECT_WRITE_SLOT_COLOR);
-
-   /* The 2D scissor is established rather than inherited, so a predecessor
-    * scissor cannot clip the probe pixels; 0x1fff is each field's maximum.
-    */
-   r300_pm4_reg(b, RADEON_SC_TOP_LEFT, 0);
-   r300_pm4_reg(b, RADEON_SC_BOTTOM_RIGHT, 0x1fffu | (0x1fffu << 16));
-   r300_pm4_reg(b, RADEON_DEFAULT_SC_BOTTOM_RIGHT,
-                0x1fffu | (0x1fffu << 16));
-
-   r300_pm4_reg(b, RADEON_DP_GUI_MASTER_CNTL,
-                RADEON_GMC_DST_PITCH_OFFSET_CNTL |
-                RADEON_GMC_BRUSH_SOLID_COLOR |
-                (RADEON_COLOR_FORMAT_ARGB8888 << 8) |
-                RADEON_ROP3_P |
-                RADEON_GMC_CLR_CMP_CNTL_DIS |
-                RADEON_GMC_WR_MSK_DIS);
-   r300_pm4_reg(b, RADEON_DP_CNTL,
-                RADEON_DST_X_LEFT_TO_RIGHT | RADEON_DST_Y_TOP_TO_BOTTOM);
-   r300_pm4_reg(b, RADEON_DP_WRITE_MSK, 0xffffffffu);
-
-   emit_fill(b, R300_DIRECT_WRITE_A_VALUE,
-             R300_DIRECT_WRITE_A_X, R300_DIRECT_WRITE_A_Y);
-   emit_fill(b, R300_DIRECT_WRITE_B_VALUE,
-             R300_DIRECT_WRITE_B_X, R300_DIRECT_WRITE_B_Y);
-
-   /* The publication r100_copy_blit ends with: flush the 2D destination
-    * cache, then hold the stream until the 2D engine and host path drain.
-    */
-   r300_pm4_reg(b, RADEON_DSTCACHE_CTLSTAT, RADEON_RB2D_DC_FLUSH_ALL);
-   r300_pm4_reg(b, RADEON_WAIT_UNTIL,
-                RADEON_WAIT_2D_IDLECLEAN |
-                RADEON_WAIT_HOST_IDLECLEAN |
-                RADEON_WAIT_DMA_GUI_IDLE);
-
-   return r300_pm4_builder_finish(b, &out->ib_size_dwords);
-}
 
 int
 r300_direct_write_emit_into(uint32_t *words, uint32_t capacity,
                             struct r300_direct_write_ib *out)
 {
-   struct r300_pm4_builder b;
+   struct r300_rb2d_fill_ib fill;
    int r;
 
    if (!words || !out)
       return -EINVAL;
 
    memset(out, 0, sizeof(*out));
-   out->ib = words;
-   r300_pm4_builder_init(&b, words, capacity);
-   r = emit_cell(&b, out);
-   if (r != 0) {
-      memset(out, 0, sizeof(*out));
+   r = r300_rb2d_fill_emit_into(&cell_plan, words, capacity, &fill);
+   if (r != 0)
       return r;
+
+   out->ib = fill.ib;
+   out->ib_size_dwords = fill.ib_size_dwords;
+   out->reloc_site_count = fill.reloc_site_count;
+   for (uint32_t i = 0; i < fill.reloc_site_count; i++) {
+      out->reloc_sites[i] = (struct r300_direct_write_reloc_site){
+         .ib_index = fill.reloc_sites[i].ib_index,
+         .slot = fill.reloc_sites[i].slot,
+      };
    }
    return 0;
 }
@@ -190,27 +99,22 @@ r300_direct_write_release(struct r300_direct_write_ib *ib)
 int
 r300_direct_write_validate_reloc_sites(const struct r300_direct_write_ib *ib)
 {
-   if (!ib || !ib->ib)
-      return -EINVAL;
-   if (ib->reloc_site_count != R300_DIRECT_WRITE_SLOT_COUNT)
+   if (!ib)
       return -EINVAL;
 
-   const struct r300_direct_write_reloc_site *site = &ib->reloc_sites[0];
-
-   if (site->slot != R300_DIRECT_WRITE_SLOT_COLOR)
-      return -EINVAL;
-   if (site->ib_index >= ib->ib_size_dwords)
-      return -EINVAL;
-   if (ib->ib[site->ib_index] !=
-       R300_DIRECT_WRITE_RELOC_PAYLOAD(site->slot))
-      return -EINVAL;
-   /* The site indexes the NOP's payload, so the header sits one dword
-    * before it.
-    */
-   if (site->ib_index == 0 ||
-       ib->ib[site->ib_index - 1] != (0xC0000000u | R300_PM4_PACKET3_NOP))
-      return -EINVAL;
-   return 0;
+   struct r300_rb2d_fill_ib fill = {
+      .ib = ib->ib,
+      .ib_size_dwords = ib->ib_size_dwords,
+      .reloc_site_count = ib->reloc_site_count,
+   };
+   for (uint32_t i = 0;
+        i < ib->reloc_site_count && i < R300_RB2D_FILL_SLOT_COUNT; i++) {
+      fill.reloc_sites[i] = (struct r300_rb2d_fill_reloc_site){
+         .ib_index = ib->reloc_sites[i].ib_index,
+         .slot = ib->reloc_sites[i].slot,
+      };
+   }
+   return r300_rb2d_fill_validate_reloc_sites(&fill);
 }
 
 void
