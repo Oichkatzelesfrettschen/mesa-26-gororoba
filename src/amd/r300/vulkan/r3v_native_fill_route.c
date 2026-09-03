@@ -115,9 +115,18 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       .value = op->clear_dword,
    };
 
+   /* The carrier is the 256-byte row the retained direct-write control
+    * stream exercises (R300_RB2D_SPAN_PITCH_DIRECT_WRITE), so this route's
+    * plan differs from that witnessed stream in its rectangle list alone;
+    * ARGB8888 is the one format whose pixel is the span's 32-bit pattern. */
+   const struct r300_rb2d_span_layout layout = {
+      .pitch_bytes = R300_RB2D_SPAN_PITCH_DIRECT_WRITE,
+      .format = R300_RB2D_FORMAT_ARGB8888,
+   };
+
    enum r300_rb2d_span_refusal span_refusal = R300_RB2D_SPAN_OK;
-   const uint32_t segments =
-      r300_rb2d_linear_span_segments(&span, memory.bytes, &span_refusal);
+   const uint32_t segments = r300_rb2d_linear_span_segments(
+      &span, &layout, memory.bytes, &span_refusal);
    if (segments == 0 || segments > R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS) {
       const char *why = segments == 0
                            ? r300_rb2d_span_refusal_name(span_refusal)
@@ -141,8 +150,8 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   if (r300_rb2d_linear_span_plan(&span, memory.bytes, plans, rects, segments,
-                                  &span_refusal) != segments) {
+   if (r300_rb2d_linear_span_plan(&span, &layout, memory.bytes, plans, rects,
+                                  segments, &span_refusal) != segments) {
       free(plans);
       free(rects);
       if (policy == R3V_EXECUTION_GPU_ONLY) {
@@ -153,14 +162,21 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       return VK_SUCCESS;
    }
 
-   const uint64_t dwords = r300_rb2d_linear_span_dwords(plans, segments);
-   if (dwords == 0 || dwords > UINT32_MAX) {
+   /* A false return is an internal failure -- storage the caller sized
+    * from this same segments count, or a rectangle count the fill plan
+    * already admitted -- never a host fallback, so it reports device loss
+    * rather than returning VK_SUCCESS to the host path. */
+   uint32_t dwords = 0;
+   if (!r300_rb2d_linear_span_dwords(plans, segments, &dwords) ||
+       dwords == 0) {
       free(plans);
       free(rects);
-      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: fill route could not cost its own "
+                       "decomposition");
    }
 
-   uint32_t *ib = calloc((size_t)dwords, sizeof(*ib));
+   uint32_t *ib = calloc(dwords, sizeof(*ib));
    if (ib == NULL) {
       free(plans);
       free(rects);
@@ -175,7 +191,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    bool emitted = true;
    for (uint32_t s = 0; s < segments && emitted; s++) {
       struct r300_rb2d_fill_ib segment_ib;
-      const uint32_t room = (uint32_t)dwords - at;
+      const uint32_t room = dwords - at;
       if (r300_rb2d_fill_emit_into(&plans[s], ib + at, room, &segment_ib) !=
              0 ||
           r300_rb2d_fill_validate_reloc_sites(&segment_ib) != 0) {
@@ -189,7 +205,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    free(plans);
    free(rects);
 
-   if (!emitted || at != (uint32_t)dwords) {
+   if (!emitted || at != dwords) {
       free(ib);
       if (policy == R3V_EXECUTION_GPU_ONLY) {
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
@@ -215,7 +231,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    };
 
    r3v_native_cmd_buffer_install_ib(cmd, R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
-                                    ib, (uint32_t)dwords, references, 1u);
+                                    ib, dwords, references, 1u);
 
    /* The record is marked after the stream is installed, so the two move
     * together: a marked record without an installed IB would be a fill
@@ -233,7 +249,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       .device_submission = true,
       .experimental_admission =
          route->state != R300_OPERATION_ROUTE_EXECUTING,
-      .ib_dwords = (uint32_t)dwords,
+      .ib_dwords = dwords,
       .relocation_count = reloc_total,
    };
    cmd->fill_route_active = true;
