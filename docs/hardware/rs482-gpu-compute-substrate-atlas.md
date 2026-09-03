@@ -222,7 +222,7 @@ with sync-flood on timeout (vostro1000-re
 
 RS482 has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
 `num_vert_fpus` for `CHIP_RS480`, so it stays zero and `has_hardware_tcl` is
-false; `r300_chip_identity.c:r300_rs480_die_facts` records
+false; `r300_chip_identity.c:r300_rs4xx_igp_family_facts` records
 `.vertex_engine_absent = true` (known(source)). A `PVS_NUM_FPUS = 2` readback is
 a software TCL-bypass artifact rather than a unit count (steinmarder
 `2026-06-09-rs482-vap-cntl-num-fpus-provenance.md`; silicon), and forcing a
@@ -286,7 +286,7 @@ arithmetic. `SC_SCISSOR1` bounds the generated region, `GA_POLY_MODE` selects
 fill mode per winding, and `GB_ENABLE` carries the per-primitive stuff enables
 and the per-unit texture-coordinate source select. Die facts cap point size at
 64 and hardware line width at 8
-(`r300_chip_identity.c:r300_rs480_die_facts`; known(source)); the
+(`r300_chip_identity.c:r300_rs4xx_igp_family_facts`; known(source)); the
 `POINTSIZE_MAX` register field maximum of 10922 is a different quantity, the
 field's own range in subpixel units.
 
@@ -328,7 +328,7 @@ known(source)).
 Sixteen texture units exist across the family
 (`r300_chipset.c`; known(source)). Dimension ceilings separate by role: the
 sampler axis caps at 2048, the render span at 2560, and a tiled row at 2048
-(`r300_chip_identity.c:r300_rs480_die_facts`; known(source)), which is why the
+(`r300_chip_identity.c:r300_rs4xx_igp_family_facts`; known(source)), which is why the
 grid fold picks 2048--the smaller cap keeps a surface both renderable and
 sampleable. The virtualization document owns how a logical extent above 2048
 decomposes.
@@ -569,7 +569,7 @@ Publication runs through the destination cache control register.
 when idle; the 2D `DSTCACHE_CTLSTAT` 0x1714 is a different register and is
 blind-read safe (steinmarder `rs482_cache_ctlstat_register_lineage.tsv`;
 silicon). The at-rest value is pinned as a die fact in
-`r300_chip_identity.c:r300_rs480_die_facts` and cross-checked against
+`r300_chip_identity.c:r300_rs4xx_igp_family_facts` and cross-checked against
 `r300_reg.h` by the chip-identity test.
 
 ## ZB: depth, stencil, and the occlusion counter
@@ -684,7 +684,7 @@ Two cache control registers publish results. `RB3D_DSTCACHE_CTLSTAT` 0x4e4c
 publishes color writes and reads `0x00000002` at rest; `ZB_ZCACHE_CTLSTAT`
 0x4f18 publishes depth and stencil writes and reads `0x00000001` at rest. Both
 values are pinned as die facts
-(`r300_chip_identity.c:r300_rs480_die_facts`; silicon). The 0x4e4c read is safe
+(`r300_chip_identity.c:r300_vostro1000_rs485m_specimen_facts`; silicon). The 0x4e4c read is safe
 only against an idle engine.
 
 The GTT size sets differ by scope rather than disagreeing.

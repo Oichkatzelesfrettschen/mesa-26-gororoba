@@ -137,8 +137,10 @@ enum r300_die_class {
 
 
 /* Measured facts for the RS480 die class (RS480/RS482/RS485, one shared
- * register database across 1002:5954/5955/5974/5975).  Every row is exact
- * RS482 (1002:5974) evidence unless its comment widens the claim; the
+ * register database across 1002:5954/5955/5974/5975).  Every row was
+ * measured on the RS485M specimen this platform carries and is claimed for
+ * the family, which claim_basis and observed_on record, unless its comment
+ * widens or narrows the claim; the
  * commit history and the steinmarder-r300 findings named per field carry
  * the provenance.  The die classes other than RS480 carry no facts row,
  * so the one struct is the finite map and a separate quirk header would

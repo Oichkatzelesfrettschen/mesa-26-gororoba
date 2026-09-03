@@ -7,7 +7,7 @@ mechanism, the evidence each rung rests on, the falsifier, and the
 receipt that lets the advertised limit widen.  The limits and the
 minimums come from the CTS limit table (`vktApiFeatureInfo.cpp`,
 `featureLimitTable`, "Based on 1.0.28 Vulkan spec"); the die facts from
-`src/amd/r300/common/r300_chip_identity.c` (`r300_rs480_die_facts`).
+`src/amd/r300/common/r300_chip_identity.c` (`r300_rs4xx_igp_family_facts`).
 
 ## The three families
 

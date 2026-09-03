@@ -9,8 +9,10 @@ SPDX-License-Identifier: MIT
 `r3v` is an experimental Vulkan installable client driver for the AMD
 RS480-family integrated graphics processors:
 
-- Radeon Xpress 200M, RS482, PCI `1002:5974`;
-- Radeon Xpress 1100/1150 mobile, RS485 marketing name, PCI `1002:5975`.
+- Radeon Xpress 1100/1150, RS482 and RS485 sharing PCI `1002:5974`; the
+  Vostro 1000 specimen is the Xpress 1150, whose option ROM names the part
+  RS485/M;
+- Radeon Xpress 200M, RS482M, PCI `1002:5975`.
 
 The implementation is the native Radeon DRM ICD: Vulkan objects, command
 records, shader admission, R300 command-stream construction, DRM submission,
@@ -58,8 +60,9 @@ silicon has no documented native compute-dispatch packet.
 | Kernel driver | `radeon` | Linux `drivers/gpu/drm/radeon/` |
 | Renderer string | `ATI RS480` | r300g `r300_get_renderer()` |
 
-Mesa's PCI table uses the `RS482_` prefix for both device IDs. The second device
-is marketed as RS485. Source paths and PCI identities control technical claims;
+Mesa's PCI table uses the `RS482_` prefix for both device IDs. `0x5975` is the
+RS482M part; `0x5974` is shared by RS482 and RS485, and the specimen this
+repository measures is the mobile RS485M. Source paths and PCI identities control technical claims;
 marketing names remain descriptive only.
 
 The current r300g path routes RS480-family vertex-stage execution through

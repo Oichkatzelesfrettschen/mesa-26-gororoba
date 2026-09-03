@@ -74,12 +74,49 @@ MISATTRIBUTED_TARGET_CHIP = re.compile(
 )
 # A newly created artifact naming the platform rs482; a token the ledger
 # registers is an existing sealed name and passes.
+# A measurement names the board it was made on.  The dominant wrong form
+# carries no platform token at all -- "measured on RS482", "ran on RS482",
+# "silicon-confirmed on RS482", "the RS482 host" -- so attribution to the
+# Vostro token alone never reaches it.  An observation, capture, receipt, or
+# attended run produced on this board names RS485M.
+#
+# A family enumeration keeps its spelling, so RS482 written beside another
+# family member (RS480/RS482/RS485) is excluded, as is RS482M.
+_OBSERVED = (
+    r"(?i:measured|ran|run|running|observed|verif(?:y|ied)|confirmed"
+    r"|validated|captured|reproduced|attended|submitted|executed"
+    r"|exercised|falsified)"
+)
+_PART = r"RS48[02](?![M/]|\s*/\s*RS)"
+# A noun that names a board rather than a die: a part token in front of one
+# is this platform, whatever verb the sentence uses.
+_BOARD_NOUN = r"(?:host|board|target|silicon|specimen|machine|system)"
+MISATTRIBUTED_SPECIMEN_OBSERVATION = re.compile(
+    rf"\b{_OBSERVED}\b{_CLAUSE}{{0,32}}?\b(?i:on|against|upon)\b"
+    rf"{_CLAUSE}{{0,16}}?\b{_PART}\b"
+    rf"|\b{_PART}\s+{_BOARD_NOUN}\b"
+)
+MISATTRIBUTED_AUTHORIZED_PART = re.compile(
+    rf"\b(?i:authorized|attended)\s+{_PART}\b"
+)
+
 # A sentence that denies the binding states the correction, so a match
 # carrying a negation before its verb is read as the fact it is.
 CORRECTIVE_NEGATION = re.compile(
     r"\b(?:not|never|no longer|isn't|aren't|doesn't|don't|wasn't)\b",
     re.IGNORECASE,
 )
+
+
+def clause_denies(text: str, start: int, end: int) -> bool:
+    """Whether the clause holding [start, end) denies what it says.
+
+    A denial can sit before the verb the match begins at, so the guard reads
+    from the clause boundary rather than from the match."""
+    clause_start = max(
+        text.rfind(character, 0, start) for character in ".;\n"
+    ) + 1
+    return CORRECTIVE_NEGATION.search(text[clause_start:end]) is not None
 
 # An artifact naming this specimen rs482 or rs480.  Recognized in the forms
 # the corpus uses: the platform token beside a part token in either order,
@@ -516,13 +553,30 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"{identity_match.group(0)!r}"
         )
     for target_match in MISATTRIBUTED_TARGET_CHIP.finditer(text):
-        if CORRECTIVE_NEGATION.search(target_match.group(0)):
+        if clause_denies(text, target_match.start(), target_match.end()):
             continue
         line_number = starting_line_number + text.count("\n", 0, target_match.start())
         findings.append(
             f"{path}:{line_number}: the attended target is RS485M per its "
             f"video BIOS, so this binds the platform to a chip it does not "
             f"carry: {target_match.group(0)!r}"
+        )
+    for authorized_match in MISATTRIBUTED_AUTHORIZED_PART.finditer(text):
+        line_number = starting_line_number + text.count(
+            "\n", 0, authorized_match.start())
+        findings.append(
+            f"{path}:{line_number}: the authorized board is RS485M, so this "
+            f"names the wrong part: {authorized_match.group(0)!r}"
+        )
+    for observed_match in MISATTRIBUTED_SPECIMEN_OBSERVATION.finditer(text):
+        if clause_denies(text, observed_match.start(), observed_match.end()):
+            continue
+        line_number = starting_line_number + text.count(
+            "\n", 0, observed_match.start())
+        findings.append(
+            f"{path}:{line_number}: a measurement names the board it was "
+            f"made on, and this board is RS485M: "
+            f"{observed_match.group(0)!r}"
         )
     for alias_match in MISATTRIBUTED_TARGET_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, alias_match.start()) + 1
