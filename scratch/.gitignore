@@ -7,3 +7,5 @@
 *
 !.gitignore
 !README.md
+# The boundary snapshot a later session resumes from.
+!RESUME.md

@@ -95,8 +95,10 @@ same strings at 0x86 and 0x1a7.
 
 ## Lane C -- mesa registers
 
-    AGENT  radeon_legacy_2d_reg.h: twelve local RB2D registers + fields out
-           of r300_rb2d_fill.c. B11 IB byte-identical, span-plan IB
+    PUSHED radeon_legacy_2d_reg.h, PR 2120: twelve registers and twelve
+           field codes out of r300_rb2d_fill.c; both goldens byte-identical,
+           all twelve addresses agree with the kernel, six mutation
+           categories caught, profiles 3/4/5 at Ok 387 Fail 0. B11 IB byte-identical, span-plan IB
            byte-identical, BLAKE3 unchanged, kernel safe-list address
            parity, one known-bad address mutation per register family.
            Rebase and re-prove after #2118 merges.
