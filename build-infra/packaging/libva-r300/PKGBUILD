@@ -11,7 +11,7 @@
 # exists.  This restores the r300 VA codec support the fork carries from the
 # mesa 21.3.3-era g3dvl port; the gap was always libva-side, never mesa-side.
 #
-# Build/install (on the RS482 host):
+# Build/install (on the RS485M host):
 #   updpkgsums && makepkg -si
 # Verify auto-detect WITHOUT the env override:
 #   unset LIBVA_DRIVER_NAME; vainfo --display drm --device /dev/dri/renderD128

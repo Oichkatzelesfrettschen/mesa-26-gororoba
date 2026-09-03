@@ -400,7 +400,7 @@ Superseded rows govern retired planning vocabulary, replaced typed-gate and
 source-domain drafts, the rewritten uploader failure oracle, the deleted
 Gallium-backed Vulkan image lane, and the SPDX-only verified-holder policy.
 Static source and Git history establish these code-state dispositions;
-runtime, conformance, performance, and RS482 silicon claims remain outside
+runtime, conformance, performance, and RS485M silicon claims remain outside
 this closure.
 
 All 50 exact thread IDs were resolved after PR 1895 merged.  The resumable
