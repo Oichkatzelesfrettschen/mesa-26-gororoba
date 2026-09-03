@@ -45,8 +45,8 @@ catalog_rows_valid(const struct r300_virtual_op_info *table, unsigned count,
       }
       const struct r300_numeric_domain_info *domain =
          r300_numeric_domain_info(row->domain);
-      if (domain->domain != row->domain || domain->name == NULL ||
-          domain->name[0] == '\0') {
+      if (domain == NULL || domain->domain != row->domain ||
+          domain->name == NULL || domain->name[0] == '\0') {
          *reason = "catalog row lacks a stable numeric-domain name";
          return false;
       }
@@ -326,6 +326,45 @@ test_policy_joins(void)
           0);
 }
 
+/* The domain lookup carries the exactness contract a route admits against,
+ * so an unrecognized value resolves to no row rather than to index 0.  The
+ * refusal arms below are the calibration: each names a value outside
+ * [0, COUNT) and asserts the lookup declines it, and the FP24_RTZ arm proves
+ * a declined value does not arrive at the first row by another name. */
+static void
+test_domain_lookup_refusal(void)
+{
+   const struct r300_numeric_domain_info *info = NULL;
+
+   for (unsigned d = 0; d < R300_NUM_DOMAIN_COUNT; d++) {
+      assert(r300_numeric_domain_info_checked((enum r300_numeric_domain)d,
+                                              &info));
+      assert(info != NULL && info->domain == (enum r300_numeric_domain)d);
+   }
+
+   /* COUNT is the first value past the table; -1 reaches the same guard
+    * through the unsigned cast the lookup performs. */
+   static const enum r300_numeric_domain outside[] = {
+      R300_NUM_DOMAIN_COUNT,
+      (enum r300_numeric_domain)(R300_NUM_DOMAIN_COUNT + 1),
+      (enum r300_numeric_domain)-1,
+   };
+   for (unsigned i = 0; i < 3; i++) {
+      /* Seed a live row so the false path is shown to clear *out. */
+      info = r300_numeric_domain_info(R300_NUM_DOMAIN_FP24_RTZ);
+      assert(info != NULL);
+      assert(!r300_numeric_domain_info_checked(outside[i], &info));
+      assert(info == NULL);
+      assert(r300_numeric_domain_info(outside[i]) == NULL);
+   }
+
+   /* A declined value never resolves to the FP24_RTZ window. */
+   const struct r300_numeric_domain_info *fp24 =
+      r300_numeric_domain_info(R300_NUM_DOMAIN_FP24_RTZ);
+   assert(fp24 != NULL && fp24->exact_int_bound == R300_FP24_EXACT_INT_CEILING);
+   assert(r300_numeric_domain_info(R300_NUM_DOMAIN_COUNT) != fp24);
+}
+
 int
 main(void)
 {
@@ -334,6 +373,7 @@ main(void)
    test_verb_joins();
    test_contract_calibration();
    test_policy_joins();
+   test_domain_lookup_refusal();
    printf("r300_operation_ledger_test: all checks passed\n");
    return 0;
 }
