@@ -15,11 +15,16 @@
  * outside its enum ends the sheet instead of printing an empty column that
  * reads as an absent property.
  *
+ * The schema version leads every row and moves with the column layout, so
+ * a positional consumer reading version 1 never meets a row that carries
+ * the uses column version 2 added between unit and implementation_id.
+ *
  * operation_id is the join key: r300_numeric_domain.h holds the operation
  * strings to diagnostics and forbids their use as joins, and the names do
  * diverge (verb const_fill carries operation CONSTFILL).  One operation may
- * carry several routes, so the route identity is the sheet's own key and the
- * operation is what joins it to the verb and catalog exports.
+ * carry several routes separated by the uses they serve, so the route
+ * identity is the sheet's own key and the operation is what joins it to the
+ * verb and catalog exports.
  */
 
 #include "r300_compute_verb.h"
@@ -29,8 +34,8 @@
 
 static const char *const HEADER =
    "schema_version\troute_id\troute\toperation_id\texecutor\tstate\t"
-   "unit\timplementation_id\tcontract_id\tadmission_id\texactness\t"
-   "tolerance\tevidence\tevidence_scope\tgate\n";
+   "unit\tuses\timplementation_id\tcontract_id\tadmission_id\t"
+   "exactness\ttolerance\tevidence\tevidence_scope\tgate\n";
 
 int
 main(void)
@@ -62,6 +67,12 @@ main(void)
       const char *evidence = r300_compute_verb_evidence_name(row->evidence);
       const char *scope =
          r300_compute_verb_evidence_scope_name(row->evidence_scope);
+      /* Applicability is a route fact a consumer needs: two routes for one
+       * operation are separated by the uses they serve, so a sheet without
+       * the column would show CONSTFILL reaching two GPU routes with no
+       * statement of which caller each answers. */
+      char uses[96];
+      r300_operation_route_use_names(row->uses, uses, sizeof(uses));
 
       if (row->name == NULL || executor == NULL || state == NULL ||
           unit == NULL || exact == NULL || evidence == NULL || scope == NULL) {
@@ -69,9 +80,10 @@ main(void)
          return 1;
       }
 
-      if (printf("1\t%u\t%s\t%u\t%s\t%s\t%s\t%u\t%u\t%u\t%s\t%.9g\t%s\t%s\t%s\n",
+      if (printf("2\t%u\t%s\t%u\t%s\t%s\t%s\t%s\t%u\t%u\t%u\t%s\t%.9g"
+                 "\t%s\t%s\t%s\n",
                  (unsigned)row->route_id, row->name,
-                 (unsigned)row->operation_id, executor, state, unit,
+                 (unsigned)row->operation_id, executor, state, unit, uses,
                  (unsigned)row->implementation_id,
                  (unsigned)row->gpu_route_contract_id,
                  (unsigned)row->admission_id, exact, (double)row->tolerance,

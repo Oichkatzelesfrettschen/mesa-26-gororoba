@@ -46,8 +46,13 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
 #undef ROW
 
 /* Both queue predicates project over the route ledger.  A verb's routes are
- * found through its operation identity, so a verb whose operation gains a
- * route moves these answers without the verb table changing at all. */
+ * found through its operation identity and the storage-buffer use, so a verb
+ * whose operation gains a route moves these answers without the verb table
+ * changing at all.  The use is named because an operation reaches routes
+ * outside compute: CONSTFILL's RB2D route fills a linear transfer
+ * destination and says nothing about a kernel writing through a descriptor
+ * binding, so coverage that dropped the use would report the queue as
+ * complete on a route no dispatch can take. */
 bool
 r300_compute_dual_route_coverage_complete_rows(
    const struct r300_compute_verb_row *table, uint32_t count)
@@ -56,9 +61,11 @@ r300_compute_dual_route_coverage_complete_rows(
       return false;
    for (uint32_t v = 0; v < count; v++) {
       if (!r300_operation_has_executing_route(
-             table[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST) ||
+             table[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+             R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER) ||
           !r300_operation_has_executing_route(
-             table[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_GPU))
+             table[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+             R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER))
          return false;
    }
    return true;
@@ -74,7 +81,8 @@ r300_compute_verb_queue_claim_rows(
       return false;
    for (uint32_t v = 0; v < count; v++) {
       if (r300_operation_has_executing_route(
-             table[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST))
+             table[v].operation_id, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+             R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER))
          return true;
    }
    return false;

@@ -36,7 +36,10 @@ ledger_digest(char out[BLAKE3_OUT_LEN * 2 + 1])
    struct mesa_blake3 ctx;
    _mesa_blake3_init(&ctx);
    /* The semantic verbs first, then every route: the claim rests on both
-    * tables, so an edit to either moves the digest. */
+    * tables, so an edit to either moves the digest.  Every route field the
+    * selector reads is hashed, the use mask included: two ledgers whose
+    * routes serve different purposes select differently, so they are not
+    * the same ledger. */
    for (uint32_t i = 0; i < count; i++) {
       char line[512];
       int n = snprintf(line, sizeof(line), "v\t%u\t%s\t%u\n",
@@ -55,10 +58,10 @@ ledger_digest(char out[BLAKE3_OUT_LEN * 2 + 1])
       char line[512];
       int n = snprintf(line, sizeof(line),
                        "r\t%u\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t"
-                       "%08x\t%u\t%u\t%s\n",
+                       "%u\t%08x\t%u\t%u\t%s\n",
                        (unsigned)r->route_id, r->name,
                        (unsigned)r->operation_id, (unsigned)r->executor,
-                       (unsigned)r->state, (unsigned)r->unit,
+                       (unsigned)r->state, (unsigned)r->unit, r->uses,
                        (unsigned)r->implementation_id,
                        (unsigned)r->gpu_route_contract_id,
                        (unsigned)r->admission_id, (unsigned)r->index_class,
