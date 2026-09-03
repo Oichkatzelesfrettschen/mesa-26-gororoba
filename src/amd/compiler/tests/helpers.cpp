@@ -838,10 +838,13 @@ __qoCreateShaderModule(VkDevice dev, const QoShaderModuleCreateInfo* module_info
 }
 
 PipelineBuilder::PipelineBuilder(VkDevice dev)
+   : device(dev), color_outputs{}, ds_output(VK_FORMAT_UNDEFINED),
+     topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST), samples{}, sample_shading_enable(false),
+     min_sample_shading(0.0f), patch_size(0), vs_input{}, vs_bindings{}, vs_attributes{},
+     push_constant_range{}, desc_layouts_used(0), num_desc_bindings{}, desc_bindings{}, stages{},
+     owned_stages(0), gfx_pipeline_info{}, cs_pipeline_info{}, desc_layouts{},
+     pipeline_layout(VK_NULL_HANDLE), render_pass(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
 {
-   memset(this, 0, sizeof(*this));
-   topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-   device = dev;
 }
 
 PipelineBuilder::~PipelineBuilder()
