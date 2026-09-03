@@ -15,6 +15,10 @@
  * outside its enum ends the sheet instead of printing an empty column that
  * reads as an absent property.
  *
+ * The schema version leads every row and moves with the column layout, so
+ * a positional consumer reading version 1 never meets a row that carries
+ * the uses column version 2 added between unit and implementation_id.
+ *
  * operation_id is the join key: r300_numeric_domain.h holds the operation
  * strings to diagnostics and forbids their use as joins, and the names do
  * diverge (verb const_fill carries operation CONSTFILL).  One operation may
@@ -76,7 +80,7 @@ main(void)
          return 1;
       }
 
-      if (printf("1\t%u\t%s\t%u\t%s\t%s\t%s\t%s\t%u\t%u\t%u\t%s\t%.9g"
+      if (printf("2\t%u\t%s\t%u\t%s\t%s\t%s\t%s\t%u\t%u\t%u\t%s\t%.9g"
                  "\t%s\t%s\t%s\n",
                  (unsigned)row->route_id, row->name,
                  (unsigned)row->operation_id, executor, state, unit, uses,

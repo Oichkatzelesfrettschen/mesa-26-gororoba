@@ -108,7 +108,7 @@ enum r300_operation_route_executor {
  * transfer destination, a bound render target, or a storage buffer a kernel
  * writes, and a unit that serves one of those serves the others only where
  * a row says so.  CONSTFILL shows the split: the RB2D solid brush writes a
- * linear transfer destination, the RB3D clear path writes a bound colour
+ * linear transfer destination, the RB3D clear path writes a bound color
  * target, and a compute kernel writes a storage buffer through descriptor
  * offsets, so one operation reaches three routes that are not
  * interchangeable.
@@ -121,7 +121,7 @@ enum r300_operation_route_use {
    /* A linear byte range in a buffer, named by offset and size, reached
     * through a transfer command. */
    R300_ROUTE_USE_TRANSFER_BUFFER = 1u << 0,
-   /* A colour target bound to the output stage, reached through a render
+   /* A color target bound to the output stage, reached through a render
     * pass or an attachment clear. */
    R300_ROUTE_USE_RENDER_ATTACHMENT = 1u << 1,
    /* A storage buffer a compute kernel writes through its descriptor

@@ -159,20 +159,6 @@ r300_operation_route_count_for_operation(enum r300_operation_id operation_id)
    return n;
 }
 
-bool
-r300_operation_has_executing_route(enum r300_operation_id operation_id,
-                                   enum r300_operation_route_executor executor,
-                                   enum r300_operation_route_use use)
-{
-   for (uint32_t i = 0; i < ARRAY_SIZE(routes); i++) {
-      if (routes[i].operation_id == operation_id &&
-          routes[i].executor == executor && (routes[i].uses & use) != 0 &&
-          routes[i].state == R300_OPERATION_ROUTE_EXECUTING)
-         return true;
-   }
-   return false;
-}
-
 /* One request names one purpose.  A zero mask asks for no use and a
  * multi-bit mask asks across purposes, and the selector answers neither:
  * eligibility would then mix rows that serve different callers. */
@@ -182,6 +168,26 @@ one_use(enum r300_operation_route_use use)
    const uint32_t m = (uint32_t)use;
    return m != 0 && (m & (m - 1)) == 0 &&
           (m & ~(uint32_t)R300_ROUTE_USE_ALL) == 0;
+}
+
+bool
+r300_operation_has_executing_route(enum r300_operation_id operation_id,
+                                   enum r300_operation_route_executor executor,
+                                   enum r300_operation_route_use use)
+{
+   /* One use, the same contract the selector and the enumerator hold: an
+    * OR-ed mask would answer true for any bit that intersects a route, so a
+    * caller asking about two purposes at once would read one covered
+    * purpose as both. */
+   if (!one_use(use))
+      return false;
+   for (uint32_t i = 0; i < ARRAY_SIZE(routes); i++) {
+      if (routes[i].operation_id == operation_id &&
+          routes[i].executor == executor && (routes[i].uses & use) != 0 &&
+          routes[i].state == R300_OPERATION_ROUTE_EXECUTING)
+         return true;
+   }
+   return false;
 }
 
 static bool
@@ -194,7 +200,7 @@ route_eligible(const struct r300_operation_route_row *row,
        row->state != R300_OPERATION_ROUTE_EXECUTING)
       return false;
    /* The use decides applicability: a route qualified to fill a linear
-    * transfer destination answers no request for a bound colour target. */
+    * transfer destination answers no request for a bound color target. */
    if ((row->uses & (uint32_t)use) == 0)
       return false;
    /* A gated route runs only under its own gate; a route with no gate is
@@ -533,7 +539,7 @@ r300_operation_route_rows_valid(const struct r300_operation_route_row *t,
    /* One executor's eligible set must be decidable without table order.
     * Eligibility is operation, executor, and use together, so two executing
     * routes collide exactly where their use masks overlap: an RB2D fill
-    * serving transfer destinations and an RB3D clear serving bound colour
+    * serving transfer destinations and an RB3D clear serving bound color
     * targets both realize CONSTFILL on the GPU and never contend, while two
     * routes claiming the same use would leave the selector choosing by
     * position.  The table refuses that shape here rather than at the first

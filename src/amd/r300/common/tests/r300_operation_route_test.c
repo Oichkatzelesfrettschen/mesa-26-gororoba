@@ -241,7 +241,7 @@ test_checker_calibration(void)
 
    /* Two executing routes for one operation and executor contend only where
     * their use masks overlap.  m[2] is the RB3D clear serving a bound
-    * colour target and m[1] is the R2VB carrier serving a storage buffer;
+    * color target and m[1] is the R2VB carrier serving a storage buffer;
     * promoting m[2] onto IDENTITY_MAP leaves both executing on the GPU for
     * one operation and the table accepts it, because a caller naming one
     * use reaches exactly one of them. */
@@ -355,7 +355,7 @@ test_selector(void)
                                       &reason) == NULL);
    /* CONSTFILL's two GPU routes answer two different callers and neither
     * executes: the RB2D fill is precommitted for a transfer destination and
-    * the RB3D clear is a candidate for a bound colour target, so both uses
+    * the RB3D clear is a candidate for a bound color target, so both uses
     * refuse with the RB2D gate open. */
    assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
                                       R300_OPERATION_ROUTE_EXECUTOR_GPU,
@@ -459,6 +459,20 @@ test_executing_route_is_use_specific(void)
    assert(!r300_operation_has_executing_route(
       R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_GPU,
       USE_XFER));
+
+   /* The predicate holds the same one-use contract as the selector.  An
+    * OR-ed mask would answer true for any bit that intersects a route, so a
+    * caller asking about two purposes would read one covered purpose as
+    * both; zero bits and an undefined bit refuse for the same reason. */
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_IDENTITY_MAP, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      (enum r300_operation_route_use)(USE_SSBO | USE_XFER)));
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_IDENTITY_MAP, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      (enum r300_operation_route_use)0u));
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_IDENTITY_MAP, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      (enum r300_operation_route_use)(R300_ROUTE_USE_ALL + 1u)));
 }
 
 #undef USE_ATTACH
