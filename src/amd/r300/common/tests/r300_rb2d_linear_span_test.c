@@ -284,6 +284,32 @@ test_sweep(void)
    }
 }
 
+/* The attended cell's oracle shape, pinned here so the prediction the
+ * procedure document carries is the decomposition the planner produces
+ * rather than one a reader worked out.  A change to either that separates
+ * them fails before a submission is armed against the wrong bytes. */
+static void
+test_attended_cell_shape(void)
+{
+   const uint64_t bo = 64u * 1024u;
+   struct r300_rb2d_span s = { 12u, 4992u, 0x11223344u };
+
+   covers_exactly(&s, bo, 1u);
+   assert(plans[0].surface.base_offset_bytes == 0u);
+   assert(plans[0].surface.height_pixels == 79u);
+   assert(plans[0].rect_count == 3u);
+   assert(plans[0].rects[0].x == 3u && plans[0].rects[0].y == 0u &&
+          plans[0].rects[0].width == 13u && plans[0].rects[0].height == 1u);
+   assert(plans[0].rects[1].x == 0u && plans[0].rects[1].y == 1u &&
+          plans[0].rects[1].width == 16u && plans[0].rects[1].height == 77u);
+   assert(plans[0].rects[2].x == 0u && plans[0].rects[2].y == 78u &&
+          plans[0].rects[2].width == 3u && plans[0].rects[2].height == 1u);
+   /* The declared surface stays inside the allocation, and the canary the
+    * oracle places in the last 64 bytes lies past it. */
+   assert(79u * R300_RB2D_PITCH_GRANULARITY == 5056u);
+   assert(5056u < bo - 64u);
+}
+
 int
 main(void)
 {
@@ -291,6 +317,7 @@ main(void)
    test_shapes();
    test_segmentation();
    test_sweep();
+   test_attended_cell_shape();
    printf("r300_rb2d_linear_span_test: all checks passed\n");
    return 0;
 }
