@@ -104,6 +104,9 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       if (row->gate != NULL)
          device->compute_route_gates[row->route_id] = exact_gate(row->gate);
    }
+   /* The policy is read once, so a route decision cannot change under a
+    * command buffer already recorded against it. */
+   device->execution_policy = r3v_execution_policy_from_environment();
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL

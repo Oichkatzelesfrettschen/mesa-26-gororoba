@@ -1492,6 +1492,19 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
+      /* Route resolution precedes the transport classification, and so
+       * precedes the arming gate below it.  A fill this route can perform
+       * becomes a transport submission here; one it cannot leaves the
+       * command buffer untouched for the host path.  Resolving after
+       * arming would let a refused fill spend an authorization, and
+       * resolving after the zero-IB branch would let the host store loop
+       * run before the route that was supposed to replace it.
+       */
+      VkResult routed =
+         r3v_native_cmd_buffer_route_deferred_fill(device, cmd_buffer);
+      if (routed != VK_SUCCESS)
+         return routed;
+
       /* A zero-IB command buffer can still carry a deferred load-op clear
        * from an empty render pass, recorded transfer copies, or a
        * recorded dispatch on the CPU compute route.  Execute that
