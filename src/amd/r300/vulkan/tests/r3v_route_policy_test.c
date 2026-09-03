@@ -13,6 +13,9 @@
  * and must say so in its provenance.
  */
 
+/* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
+#undef NDEBUG
+
 #include "r3v_route_policy.h"
 
 #include <assert.h>
