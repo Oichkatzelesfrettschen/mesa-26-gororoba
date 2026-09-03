@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * Chip identity table proof: every r300_pci_ids row resolves to its family
- * and a die class, the RS482 target row carries the RS400-class IGP facts,
- * and identities outside the table refuse.
+ * and a die class, the shared RS48X_5974 row carries the RS400-class IGP
+ * facts, and identities outside the table refuse.
  */
 
 /* The asserts carry the test's verdicts, so they stay live in NDEBUG

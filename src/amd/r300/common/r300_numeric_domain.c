@@ -72,7 +72,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .is_native_compute = true,
       .theorem           = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17 for Q16_16 add; "
                            "(2^6-1)^2 = 3969, 4*3969 = 15876 < 2^17 per 6-bit limb column; "
-                           "limb arithmetic verified on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
+                           "limb arithmetic verified on RS485M (rs482_fp16_pow2_carry_exactness_20260607)",
    },
    {
       .domain            = R300_NUM_DOMAIN_U7_DOT,
@@ -439,7 +439,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "r300_nir_detect_qdiv_pattern (matches the single-self-dot reciprocal "
                          "1/dot(b,b), conj(b)*r, and the qmul_match Hamilton product a*inv(b)), "
                          "synthesized by r3v_build_qdiv_fs_nir, dispatched on the QMUL "
-                         "two-in/one-out replay core; HW-confirmed 4/4 on RS480 by qdiv_vk_probe "
+                         "two-in/one-out replay core; HW-confirmed 4/4 on RS485M by qdiv_vk_probe "
                          "(a/1=a, 1/(2i)=-0.5i, 4i/2i=2 bit-exact; x/x=1 within FP16 RT tol), the "
                          "FS compiling to 23 fragment ALU ops -- far under the 64-ALU limit",
       .implementation_label = "r300_nir_detect_qdiv_pattern",
@@ -481,7 +481,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "permutations).  This is the bridge: the vertex transform wired into the "
                          "FP24 ALU through the breadboard hole.  Position precision is the FP24 "
                          "snapped-coordinate budget; per-element matrix is the skinning extension.  "
-                         "The first-class op is HW-confirmed 4/4 byte-exact on RS482 (mat4vec_vk_"
+                         "The first-class op is HW-confirmed 4/4 byte-exact on RS485M (mat4vec_vk_"
                          "probe: matrix {2,0,0,5; 0,3,0,7; 0,0,4,9; 0,0,0,1} times four vertices, "
                          "GPU == CPU oracle to maxabs 0.0, QMUL control unregressed)",
       /* The descriptive five-load shape is four broadcast matrix rows plus
@@ -509,7 +509,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "octonion addition (a,b)+(c,d) = (a+c, b+d), componentwise vec8 "
                          "add over two output halves, zero DP4.  Admitted by "
                          "r300_nir_detect_oaddsub_pattern (is_sub=false) and filled in one "
-                         "MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe oadd",
+                         "MRT pass; HW-confirmed 4/4 on RS485M by oct_alg_vk_probe oadd",
       .implementation_label = "r300_nir_detect_oaddsub_pattern",
    },
    {
@@ -518,7 +518,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "octonion subtraction (a,b)-(c,d) = (a-c, b-d), componentwise vec8 "
                          "sub, zero DP4.  The is_sub=true form of the oaddsub detector, same "
-                         "single MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe osub",
+                         "single MRT pass; HW-confirmed 4/4 on RS485M by oct_alg_vk_probe osub",
       .implementation_label = "r300_nir_detect_oaddsub_pattern",
    },
    {
@@ -529,7 +529,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "involution: the lower half is the quaternion conjugate of a "
                          "(scalar lane kept, vector lanes negated), the upper half the full "
                          "negation of b; zero DP4.  Admitted by r300_nir_detect_oconj_pattern, "
-                         "filled in one MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe",
+                         "filled in one MRT pass; HW-confirmed 4/4 on RS485M by oct_alg_vk_probe",
       .implementation_label = "r300_nir_detect_oconj_pattern",
    },
    {
@@ -540,7 +540,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "to four lanes; two DP4s.  The norm whose multiplicativity "
                          "|xy|^2=|x|^2|y|^2 OMUL confirms (Hurwitz at dim 8).  Admitted by "
                          "r300_nir_detect_onorm_pattern and dispatched on the 2-in/1-out "
-                         "core; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe onorm",
+                         "core; HW-confirmed 4/4 on RS485M by oct_alg_vk_probe onorm",
       .implementation_label = "r300_nir_detect_onorm_pattern",
    },
    {
@@ -633,7 +633,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "served by the binary-map detector (nir_op_fadd of two load_ssbo "
                          "vec4s).  A value_is_float binary map now dispatches in the FP "
                          "domain (FP32 sampler, FP16 RT, FP32 readback) instead of UNORM8, "
-                         "HW-confirmed 4/4 on RS482 by qadd_vk_probe",
+                         "HW-confirmed 4/4 on RS485M by qadd_vk_probe",
       .implementation_label = "r300_nir_detect_binary_map",
    },
    {
@@ -642,7 +642,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion subtraction a-b = componentwise vec4 sub, zero DP4; "
                          "binary-map(nir_op_fsub) on the same FP-domain dispatch as QADD, "
-                         "HW-confirmed 4/4 on RS482 by qsub_vk_probe",
+                         "HW-confirmed 4/4 on RS485M by qsub_vk_probe",
       .implementation_label = "r300_nir_detect_binary_map",
    },
    {
@@ -664,7 +664,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "quat_conj_involution:68, quat_conj_antimorphism:150).  The "
                          "single-load vec4 sign flip is admitted by r300_nir_detect_qconj_"
                          "pattern and dispatched on the 1-in/1-out FP16-RT core, HW-"
-                         "confirmed 4/4 (exact) on RS482 by qconj_vk_probe",
+                         "confirmed 4/4 (exact) on RS485M by qconj_vk_probe",
       .implementation_label = "r300_nir_detect_qconj_pattern",
    },
    {
@@ -676,7 +676,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "CayleyDicksonAlgebra.v quat_norm_conjugate:84).  Admitted as the "
                          "single-load self-dot splat vec4(dot(a,a)) by r300_nir_detect_"
                          "qnorm_pattern and dispatched on the 1-in/1-out FP16-RT core, HW-"
-                         "confirmed 4/4 on RS482 by qnorm_vk_probe (the kernel reads lane 0)",
+                         "confirmed 4/4 on RS485M by qnorm_vk_probe (the kernel reads lane 0)",
       .implementation_label = "r300_nir_detect_qnorm_pattern",
    },
    {
@@ -692,7 +692,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "normalization lemma -- this op closed that gap).  Admitted as the "
                          "single-load fmul(a, frsq(dot(a,a)).xxxx) by r300_nir_detect_"
                          "qnormalize_pattern and dispatched on the 1-in/1-out FP16-RT core, "
-                         "HW-confirmed 4/4 on RS482 by qnormalize_vk_probe (|out| = 1)",
+                         "HW-confirmed 4/4 on RS485M by qnormalize_vk_probe (|out| = 1)",
       .implementation_label = "r300_nir_detect_qnormalize_pattern",
    },
    {
@@ -722,7 +722,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "intermediate is needed.  Three input SSBOs a,b,c, one output.  "
                          "Admitted by r300_nir_detect_qfmmul_pattern (find t = qmul(a,b), "
                          "verify the store is qmul(t,c)) and dispatched on the three-in/"
-                         "one-out core.  HW-confirmed 4/4 on RS482 by qfmmul_vk_probe",
+                         "one-out core.  HW-confirmed 4/4 on RS485M by qfmmul_vk_probe",
       .implementation_label = "r300_nir_detect_qfmmul_pattern",
    },
    {
@@ -745,7 +745,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "QFMUL detector.  The vec4*scalar fmul lowers OpVectorTimesScalar to a "
                          "4-component fmul whose scalar operand is a 1-component splat; the detector "
                          "keys on that identity-swizzled-vec4 + splat-swizzled-scalar shape.  "
-                         "HW-confirmed 4/4 byte-exact on RS482 (qfmul_vk_probe: s = 2.5 times four "
+                         "HW-confirmed 4/4 byte-exact on RS485M (qfmul_vk_probe: s = 2.5 times four "
                          "quaternions, GPU == CPU oracle to maxabs 0.0).  QFADD/QFSUB are masked "
                          "adds on the real part, QFDIV = a*rcp(s), QFTRANS = s*a + t*(1,0,0,0) a "
                          "MAD -- the remaining scalar-tier forms, 0 DP4 componentwise",
@@ -883,7 +883,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = min(a[gid], b[gid]) via R300_COMB_FCN_MIN "
                          "(VK_BLEND_OP_MIN, factors ONE/ONE ignored per spec); "
-                         "byte-exact over UNORM8 carrier: 6/6 cases RS482 silicon",
+                         "byte-exact over UNORM8 carrier: 6/6 cases RS485M silicon",
       /* The mechanism is pipeline blend-op state. */
       .implementation_label = NULL,
    },
@@ -897,7 +897,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = max(a[gid], b[gid]) via R300_COMB_FCN_MAX "
                          "(VK_BLEND_OP_MAX, factors ONE/ONE ignored per spec); "
-                         "byte-exact over UNORM8 carrier: 6/6 cases RS482 silicon",
+                         "byte-exact over UNORM8 carrier: 6/6 cases RS485M silicon",
       /* The mechanism is pipeline blend-op state. */
       .implementation_label = NULL,
    },
@@ -913,7 +913,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = max(a[gid] - b[gid], 0) via R300_COMB_FCN_SUB_CLAMP "
                          "(VK_BLEND_OP_SUBTRACT on UNORM8 target); clamp is UNORM8 format "
-                         "saturation; byte-exact: 6/6 cases RS482 silicon",
+                         "saturation; byte-exact: 6/6 cases RS485M silicon",
       /* The mechanism is pipeline blend-op state. */
       .implementation_label = NULL,
    },
@@ -932,7 +932,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out_k[gid] = f_k(gid) for k in {0,1,2,3}: four "
                          "parallel independent scatter writes via MRT; "
-                         "byte-exact 4/4 attachments on RS482 silicon "
+                         "byte-exact 4/4 attachments on RS485M silicon "
                          "(r300_substrate_probe.sh PROBE_MRT4)",
       /* The mechanism is a four-attachment render pass. */
       .implementation_label = NULL,
@@ -951,7 +951,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "INVERT(x) = ~x for x in [0,255]: VK_STENCIL_OP_INVERT "
                          "flips all 8 stencil bits per fragment; 0xA5 -> 0x5A "
-                         "bit-exact on RS482 silicon (r300_substrate_probe.sh "
+                         "bit-exact on RS485M silicon (r300_substrate_probe.sh "
                          "PROBE_STENCIL_INVERT)",
       /* The mechanism is stencil-op state rather than a NIR pattern. */
       .implementation_label = NULL,
