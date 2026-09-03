@@ -39,6 +39,10 @@ because the two diverge once an agent has worked.
 
     mesa 2119   This ledger. Merge after 2118.
 
+    mesa 2121   Review-thread frontier reconciliation. Merge after 2118,
+                since both touch build infrastructure and the frontier is
+                regenerated from the post-merge forge and source state.
+
     mesa 2117   Superseded, not to be merged. Its branch is a defect proof
                 and a source of cherry-picks for the two replacements.
 
@@ -57,8 +61,16 @@ because the two diverge once an agent has worked.
 
 ## Agents that reported before the boundary
 
-Three landed and are not stranded. Their branches are pushed and their
+Four landed and are not stranded. Their branches are pushed and their
 working trees clean.
+
+Correcting a claim made earlier in this session: the review-thread frontier
+was NOT the only thing keeping `make -C build-infra audit` red. With the
+frontier repaired, audit still fails at profile-audit, on
+raven2_aco_test_debug_x86_64v1-clang22 having no allowlist row. That is a
+second, independent pre-existing blocker, untouched by any branch here, and
+it also gates the profile-4 evidence build. Both must close before a
+qualification-grade artifact exists.
 
     r300/legacy_2d_register_authority       PR 2120   cd6ca1d7367
         Twelve registers and twelve field codes out of r300_rb2d_fill.c.
@@ -119,18 +131,34 @@ working trees clean.
         tools, run repo-debt-check-touched against origin/main, and run
         codex.
 
+    build/review_thread_frontier_owner_reconciliation  PR 2121  101647336ce
+        The gate reported one drifted thread because it raises on the first
+        mismatch and stops. The actual debt was 47 drifted owner entries
+        across 35 threads and 31 distinct owner and recorded-commit units,
+        in all three capture generations, found with a read-only probe
+        reusing the checker's own comparison functions. All 35 closures
+        survive on their own falsification conditions; none reopened. The
+        PKGBUILD drift itself was nine one-line pkgrel bumps, 22 to 31, and
+        nothing else. Only action-frontier.tsv is generated; the refresh
+        ledger is an authored observation record. Calibrated by a row that
+        is merged, chain-valid, and strictly advancing but carries the wrong
+        pkgrel, which the gate rejects on content identity.
+
+        Two findings beyond the task. A bounded slice on the residue checker
+        named the normalize docstring rather than the multiset comparison it
+        was supposed to govern, so a plain re-point would have passed the
+        gate while pointing at the wrong code; three r3v ranges needed the
+        same treatment. And make audit is not idempotent on this host:
+        source-root-selection-test leaves a stray empty /tmp/.git, and
+        containing_git_worktree accepts any .git path that merely exists()
+        without the is_git_directory validation defined right beneath it, so
+        a second run fails 16 of 155 source-root tests. The stray directory
+        was removed; the code weakness is reported and not fixed.
+
 ## Branches an agent owned when the budget ran out
 
 Each was told to push. Verify with `git fetch --prune` and read the branch;
 its state is the truth.
-
-    build/review_thread_frontier_owner_reconciliation
-        Repairs the pre-existing review-thread frontier failure. Evidence
-        owner build-infra/packaging/mesa-gororoba-debug-optimized/PKGBUILD
-        advanced past the recorded 217378421cb. Regenerate through the
-        generator, never by editing a digest. This blocks any profile-4
-        evidence build under REPRODUCIBLE_RUN=1, so it gates the
-        qualification ladder.
 
     r300/legacy_2d_register_authority
         Moves twelve legacy 2D registers and their fields out of
