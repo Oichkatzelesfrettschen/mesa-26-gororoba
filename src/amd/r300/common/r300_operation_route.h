@@ -242,6 +242,10 @@ r300_operation_route_rows(uint32_t *count);
 const struct r300_operation_route_row *
 r300_operation_route(enum r300_operation_route_id route_id);
 
+/* How many routes an operation carries, across every use and maturity.  It
+ * answers a reader asking how wide an operation's route set is and makes no
+ * coverage claim, so it takes no use; a caller deciding whether an operation
+ * runs asks r300_operation_has_executing_route(), which does. */
 uint32_t
 r300_operation_route_count_for_operation(enum r300_operation_id operation_id);
 
