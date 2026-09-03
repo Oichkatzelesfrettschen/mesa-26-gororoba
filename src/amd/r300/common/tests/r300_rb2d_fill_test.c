@@ -119,19 +119,17 @@ test_plan_rules(void)
    r.x = 0x10000u;
    REFUSES(p, R300_RB2D_FILL_REFUSE_RECT_FIELD);
 
-   /* The emitter opens the 2D scissor to R300_RB2D_MAX_COORD_REACH, which
-    * is narrower than the coordinate field, so a rectangle inside the field
-    * and past the scissor would be clipped by the stream's own register and
-    * report success.  The refusal lands before the surface-bounds rule, so
-    * a surface large enough to hold such a rectangle still refuses it: the
-    * scissor, not the surface, is what clips.
+   /* R300_RB2D_MAX_COORD_REACH bounds a rectangle's far edge; its header
+    * states why and what the bound costs.  Two properties are checked here:
+    * the bound is exact rather than generous, and the refusal lands before
+    * the surface-bounds rule, so a surface large enough to hold such a
+    * rectangle still refuses it -- the scissor clips, not the surface.
     */
    {
-      /* The widest surface the pitch field can name is 0x3ff 64-byte units,
-       * 65472 bytes, which is 16368 ARGB8888 pixels -- wider than the
-       * scissor reach, so the scissor is what bounds a rectangle on both
-       * axes.  This surface is one pixel past the reach on each axis and
-       * its pitch stays inside the field. */
+      /* The pitch field caps a surface at 0x3ff 64-byte units, 65472 bytes
+       * or 16368 ARGB8888 pixels, which is wider than the reach, so the
+       * scissor bounds both axes.  This surface sits one pixel past the
+       * reach on each axis with its pitch inside the field. */
       struct r300_rb2d_surface wide = p.surface;
       wide.width_pixels = R300_RB2D_MAX_COORD_REACH + 1u;
       wide.height_pixels = R300_RB2D_MAX_COORD_REACH + 1u;

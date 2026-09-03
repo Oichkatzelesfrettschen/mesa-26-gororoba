@@ -29,19 +29,30 @@
 #define R300_RB2D_PITCH_GRANULARITY 64u
 #define R300_RB2D_OFFSET_GRANULARITY 1024u
 
-/* The far edge a rectangle may reach on either axis.  DST_Y_X and
- * DST_WIDTH_HEIGHT carry 16-bit fields, but the emitter opens the 2D
- * scissor through SC_BOTTOM_RIGHT and DEFAULT_SC_BOTTOM_RIGHT, whose halves
- * are 13 bits: radeon_reg.h spells the ceiling as
- * RADEON_DEFAULT_SC_RIGHT_MAX (0x1fff << 0) and
- * RADEON_DEFAULT_SC_BOTTOM_MAX (0x1fff << 16).  A rectangle reaching past
- * that is clipped by the scissor the same stream established, so the fill
- * lands short with no error anywhere, and the plan refuses it instead.
+/* The far edge a rectangle may reach on either axis, and the one place
+ * this repository states why; the emitter and the tests read the value
+ * rather than restating the reasoning.
  *
- * The bound is the scissor value rather than one past it: whether
- * SC_BOTTOM_RIGHT names the last written pixel or the first unwritten one
- * is not settled by a primary source here, and the tighter reading is the
- * one that cannot over-admit.
+ * DST_Y_X and DST_WIDTH_HEIGHT carry 16-bit fields, so the coordinate a
+ * rectangle can name runs to 0xffff.  The emitter then opens the 2D
+ * scissor through SC_BOTTOM_RIGHT and DEFAULT_SC_BOTTOM_RIGHT, whose
+ * halves are 13 bits: radeon_reg.h spells that ceiling as
+ * RADEON_DEFAULT_SC_RIGHT_MAX (0x1fff << 0) and
+ * RADEON_DEFAULT_SC_BOTTOM_MAX (0x1fff << 16).  A rectangle between the
+ * two widths is clipped by the scissor the same stream established, so the
+ * fill lands short and every layer reports success.
+ *
+ * Whether SC_BOTTOM_RIGHT names the last written pixel or the first
+ * unwritten one decides whether a far edge of exactly 0x2000 is legal, and
+ * no primary source settles it here: radeon_reg.h names the field width
+ * and not its inclusivity.  The plan admits a far edge up to 0x1fff, the
+ * reading that cannot over-admit, and gives up at most one row and one
+ * column of a full-reach surface -- 64 bytes of a 512 KiB carrier window.
+ *
+ * The question is decided by one fill whose far edge is exactly 0x2000,
+ * read back against a sentinel: an inclusive register writes the last
+ * column and an exclusive one leaves it. Until that runs, the tighter
+ * bound stands and this comment is where its cost is recorded.
  */
 #define R300_RB2D_MAX_COORD_REACH 0x1fffu
 
