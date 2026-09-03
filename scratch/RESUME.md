@@ -81,6 +81,14 @@ qualification-grade artifact exists.
         and three direct-write tests recompute from the same emitter, so
         they are self-consistent rather than three independent witnesses.
 
+        Two caveats that bound what this branch proves. REPRODUCIBLE_RUN=1
+        was not set, so its profile verdicts are ordinary build and host
+        test evidence and not qualification-grade; the qualification ladder
+        still needs its own runs. And codex reviewed it clean while its own
+        kernel searches returned empty, so it checked zero addresses against
+        radeon_reg.h -- the twelve-of-twelve address parity is the agent's
+        cross-check alone, with no second reader.
+
     r3v/rb2d_fill_route_defect_repairs      no PR    8cb7b2c1aa1
         The four RB2D fill repairs as separate cherry-pickable commits on
         top of the rebase: f41aa162589 rebase to the layout-carrying span
