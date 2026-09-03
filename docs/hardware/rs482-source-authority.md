@@ -75,7 +75,7 @@ The current identities stay on separate axes:
 
 | Identity axis | Authority | Exact identity and claim boundary |
 | --- | --- | --- |
-| Modified source | `linux-radeon-gororoba` | current main commit `01aab9a5fdf75c771baa2aabb785c201649c476e`, driver tree `bedfecb34af16222225c04bb112a832e0c9578e6`; this tree includes commit `dc4c6ed` beyond the active package pin and carries no package or runtime claim |
+| Modified source | `linux-radeon-gororoba` | current main commit `2be21eaa892723f1c9cd826b7331c7d234e2c1ce`, driver tree `644b64d932603143b1abc719adf1759569f580e8`; the 0.8.13-1 recipe pins this same commit, so the source and recipe axes agree and this row carries no package or runtime claim of its own |
 | Active package recipe | `radeon-custom` 0.8.13-1 | package commit `9a52df357d72f4a0c0365fbf0f7941077bd69ed2`, recipe tree `e6206ad96dd4234577b4b0ed7932773f2fdef46e`, `PKGBUILD` blob `f0330735bbc722e1f9bc8080319cf53c261b7256`, source identity blob `6324f1dd5a249a56b930a4c19ea5907b0bc3fc25`; the recipe pins signed source tag object `d6e88ebe5acc6b1c7b57e2d1951d88b23495cf81`, source commit `2be21eaa892723f1c9cd826b7331c7d234e2c1ce`, and driver tree `644b64d932603143b1abc719adf1759569f580e8` |
 | Target deployment runtime | `steinmarder-r300/results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-deployment-runtime/` | retaining commit `59f9361e277bb63c52d335eda9009aa94b7d989c`, manifest SHA-256 `2ab2b00758b5226ac096da4d63c30652ebceef245f56373374b8f6fc21171ec6`, hash ledger SHA-256 `7bff34920965ddb4292b54a7bc9313f1f38102dd1592339a09d6cfd1ff6ff1e7`; records `radeon-unified-dkms-dev` 0.8.11-1, source commit `3c5ccb3cfb684c975efbb30c3e312c310b741cf9`, driver tree `e3a54399a004c714402b5c9bd56e1edcfd1caa1c`, and srcversion `727CE89E79FB2D14663C381` across a reboot |
 | Loaded module byte identity | `steinmarder-r300/src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/` | retaining commit `55e74d6bbb7cdc061ed0c154f22cd8ede35a7ca1`, manifest SHA-256 `84340d65c87cb4ca3aa1f01faaa559a00d7950a55fad4cee344b988d3eeff386`, hash ledger SHA-256 `cc8a82f210cdccc847f9320faa7dc9f6136e537ef3555c78d867f0055ca70e42`, compressed module SHA-256 `6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`, GNU Build ID `a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, and srcversion `A7F72BE636B52D7EED42415`; no newer retained bundle records the loaded module bytes |
@@ -83,10 +83,12 @@ The current identities stay on separate axes:
 
 <!-- markdownlint-enable MD013 -->
 
-The active 0.8.11-1 recipe packages source commit `3c5ccb3c`. The modified
-source authority has advanced to `01aab9a5`; that source becomes package or
-deployment authority only after `radeon-custom` advances its recipe and a
-retained target capture proves the resulting deployment.
+The active 0.8.13-1 recipe packages source commit `2be21eaa8927`, which is
+also the modified source authority's current main, so those two axes name one
+commit. The deployment axis stays behind them: a source commit becomes
+deployment authority only after a retained target capture proves the resulting
+deployment, and the newest such capture remains the 0.8.11-1 bundle at source
+commit `3c5ccb3c`. Registry currency below records that open drift.
 
 The 0.8.11-1 deployment bundle joins the installed package and board policy to
 the recipe's source commit and driver tree, built DKMS modules for both served
