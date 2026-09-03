@@ -117,7 +117,7 @@ exterior=2944 mismatch=0`; both crossed lines report
 
 ### First attempt: refused ahead of the ioctl
 
-The first attended attempt on RS482, boot
+The first attended attempt on RS485M, boot
 `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main `8e4c01d4aaf`, armed
 against cell blake3 `44959464`, returned `vkQueueSubmit` -4
 (`VK_ERROR_DEVICE_LOST`) with the watchdog never armed, a zero guarded

@@ -226,7 +226,7 @@ reference pass), offline kernel-parser replay with known-bad arms
 (`r3v-native-compute-gpu-route-*`: the composed route, the gate-off CPU
 route, the domain, alias, and ceiling refusals, the gate table, the
 comparator's pre-seeded agreement, and the quarantine refusal), and one
-attended RS482 delivery through `r3v_native_attended_compute_identity`
+attended RS485M delivery through `r3v_native_attended_compute_identity`
 under `docs/hardware/r3v-native-attended-compute-identity-procedure.md`
 (steinmarder-r300 bundle
 `r3v-native-compute-identity-carrier-cell-first-delivery-rs482`:

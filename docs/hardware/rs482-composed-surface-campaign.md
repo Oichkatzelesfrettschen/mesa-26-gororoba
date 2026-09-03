@@ -130,7 +130,7 @@ R1 first (one emitter parameter, smallest cell), then R4 (its resolve
 cell is independent of composition and closes seven limits at once),
 then R2 (composition, the largest surface), then R3 (sampling, which
 needs R2's composed images).  Every rung's attended cell is an
-operator-armed run on the RS482; the host-model receipts and the
+operator-armed run on the RS485M; the host-model receipts and the
 CS-track replay precede it.  The non-pass ledger row
 `limit_below_core_minimum` stays until all four rungs retain their
 cells, and `dEQP-VK.info.device_properties` is the judge.

@@ -90,7 +90,7 @@ record's artifacts.
 
 ## Executed run
 
-The cell ran on RS482 on 2026-08-15 from main `cbe9d2597cd` (IB blake3
+The cell ran on RS485M on 2026-08-15 from main `cbe9d2597cd` (IB blake3
 `320b2a819e6f46c5de824c4f4e09829a0861d36787a2799fec9bde6c540694a7`,
 298 dwords, digest identical across the dev host and the box) and
 returned `CARRIER_DELIVERED`: all three slots hold the XY01 expansion
@@ -114,7 +114,7 @@ PACKET0 run, so the first-draw contract and the bare prefix each grew and
 the cell's IB digest changed: the emission is 301 dwords with IB blake3
 `0ff78b5ebceca983184d845e2014387778d51f6722755d08c6e40ba121ab0258`.
 
-An attended RS482 (1002:5974) run delivered this digest CARRIER_DELIVERED
+An attended RS485M (1002:5974) run delivered this digest CARRIER_DELIVERED
 byte-exact -- twelve carrier dwords exact, poison-preserved padding,
 intact vertex source, vkQueueSubmit COMPLETED, empty dmesg delta -- under
 the loaded radeon-unified-dkms 0.8.3 XY01-aware validator (module

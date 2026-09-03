@@ -203,7 +203,7 @@ The fork adds an admission epoch around every RS400/RS480 MMIO, aperture, and
 page-table access, keyed on `radeon.h:radeon_rs4xx_hardware_target`. A failed
 reset latches `gpu_parked`, after which every MMIO leaf returns without issuing
 a non-posted HyperTransport transaction and command submission refuses
-(known(source)); an attended park on RS482 returned `-EIO` from object creation
+(known(source)); an attended park on RS485M returned `-EIO` from object creation
 and idle waits and `-EBUSY` from submission, and only a physical cold power cycle
 restored production (`radeon-custom` deployment record; silicon). Nonbaseline
 reset masks are compile-time restricted to the 3D-domain bits with static
@@ -502,7 +502,7 @@ model is clamp rather than an FP24 rule--the blend unit is a separate
 reduction stage downstream of the ALU, not an ALU operation
 (`r300_numeric_domain.c`, RB3D_BLEND domain; known(source)).
 
-Four blend reductions are silicon-confirmed on RS482
+Four blend reductions are silicon-confirmed on RS485M
 (`r300_numeric_domain.c` catalog rows; silicon): `BLEND_ACC_REDUCTION`, a
 histogram-style accumulate through `COMB_FCN_ADD` with factors ONE and ONE;
 `REDUCE_MIN` through `R300_COMB_FCN_MIN`, 6/6 byte-exact; `REDUCE_MAX` through

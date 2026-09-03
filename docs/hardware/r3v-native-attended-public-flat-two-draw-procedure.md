@@ -1,7 +1,7 @@
 # R3V native attended public Flat two-draw cell procedure
 
 The public Flat two-draw cell carries a Vulkan `Flat` varying from the
-application-shaped surface to RS482 silicon through the CPU delivery
+application-shaped surface to RS485M silicon through the CPU delivery
 route: a command buffer records two render passes with a draw each
 under one pipeline whose vertex output and fragment input are decorated
 `Flat`, the vertex module writes the doubled position as the varying, so

@@ -1,7 +1,7 @@
 # R3V native attended public direct GA Flat color-0 two-draw cell procedure
 
 The public direct GA Flat color-0 two-draw cell carries a Vulkan `Flat` RGBA varying from the
-application-shaped surface to RS482 silicon through the direct hardware route: the varying rides the
+application-shaped surface to RS485M silicon through the direct hardware route: the varying rides the
 TCL-bypass color 0 vector instead of TEX0, and the GA selects the provoking vertex's color per
 primitive (`r3v_interpolation_lowering.h`, `r300_flat_color0_plan.h`).  Two render passes each draw
 the reference triangle in a distinct vertex order under one pipeline, so the provoking vertex -- the
