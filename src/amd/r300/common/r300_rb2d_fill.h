@@ -29,6 +29,22 @@
 #define R300_RB2D_PITCH_GRANULARITY 64u
 #define R300_RB2D_OFFSET_GRANULARITY 1024u
 
+/* The far edge a rectangle may reach on either axis.  DST_Y_X and
+ * DST_WIDTH_HEIGHT carry 16-bit fields, but the emitter opens the 2D
+ * scissor through SC_BOTTOM_RIGHT and DEFAULT_SC_BOTTOM_RIGHT, whose halves
+ * are 13 bits: radeon_reg.h spells the ceiling as
+ * RADEON_DEFAULT_SC_RIGHT_MAX (0x1fff << 0) and
+ * RADEON_DEFAULT_SC_BOTTOM_MAX (0x1fff << 16).  A rectangle reaching past
+ * that is clipped by the scissor the same stream established, so the fill
+ * lands short with no error anywhere, and the plan refuses it instead.
+ *
+ * The bound is the scissor value rather than one past it: whether
+ * SC_BOTTOM_RIGHT names the last written pixel or the first unwritten one
+ * is not settled by a primary source here, and the tighter reading is the
+ * one that cannot over-admit.
+ */
+#define R300_RB2D_MAX_COORD_REACH 0x1fffu
+
 /* The destination formats DP_GUI_MASTER_CNTL's format field names that this
  * plan emits.  ARGB8888 is the one the retained cell exercises; a format
  * lands here with the row that fills in it. */
@@ -111,6 +127,7 @@ enum r300_rb2d_fill_refusal {
    R300_RB2D_FILL_REFUSE_PITCH_BELOW_WIDTH,
    R300_RB2D_FILL_REFUSE_RECT_EMPTY,
    R300_RB2D_FILL_REFUSE_RECT_FIELD,
+   R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR,
    R300_RB2D_FILL_REFUSE_RECT_OUTSIDE,
    R300_RB2D_FILL_REFUSAL_COUNT,
 };

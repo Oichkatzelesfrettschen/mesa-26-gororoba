@@ -50,12 +50,15 @@
 #define RB2D_OFFSET_FIELD_MAX 0x3fffffu
 #define RB2D_COORD_FIELD_MAX 0xffffu
 
-/* The 2D scissor is established at each field's maximum rather than at the
- * surface extent: a predecessor scissor cannot then clip the plan's
- * rectangles, and the surface extent is enforced where it is knowable, in
- * r300_rb2d_fill_plan_check, rather than by a register the hardware also
- * clips other work with. */
-#define RB2D_SCISSOR_MAX 0x1fffu
+/* The 2D scissor is established at its own field maximum rather than at the
+ * surface extent, so a predecessor scissor cannot clip the plan's
+ * rectangles.  That maximum is 13 bits, narrower than the 16-bit
+ * coordinate fields, and radeon_reg.h names it: RADEON_DEFAULT_SC_RIGHT_MAX
+ * (0x1fff << 0) and RADEON_DEFAULT_SC_BOTTOM_MAX (0x1fff << 16).  The
+ * coordinate reach the plan admits is therefore the scissor's, exported as
+ * R300_RB2D_MAX_COORD_REACH so a caller decomposing a larger region reads
+ * the bound rather than deriving one from the wider field. */
+#define RB2D_SCISSOR_MAX R300_RB2D_MAX_COORD_REACH
 
 /* Four dwords per drm_radeon_cs_reloc entry, so a slot's payload indexes
  * the relocation chunk at four times the slot. */
@@ -101,6 +104,7 @@ r300_rb2d_fill_refusal_name(enum r300_rb2d_fill_refusal r)
       "surface pitch is narrower than its width",
       "rectangle has a zero extent",
       "rectangle coordinate above its field",
+      "rectangle reaches past the 2D scissor",
       "rectangle reaches outside the surface",
    };
    return (unsigned)r < R300_RB2D_FILL_REFUSAL_COUNT ? names[r] : NULL;
@@ -148,7 +152,14 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
           r->width > RB2D_COORD_FIELD_MAX || r->height > RB2D_COORD_FIELD_MAX)
          return R300_RB2D_FILL_REFUSE_RECT_FIELD;
       /* Both sums are bounded by twice the field maximum, so neither
-       * overflows the 32-bit comparison below. */
+       * overflows the 32-bit comparisons below. */
+      /* The emitter opens the scissor to its own maximum, and a rectangle
+       * reaching past it is clipped by that same register: the fill lands
+       * short and the stream reports success, so the plan refuses the
+       * rectangle here where the shortfall is still nameable. */
+      if (r->x + r->width > R300_RB2D_MAX_COORD_REACH ||
+          r->y + r->height > R300_RB2D_MAX_COORD_REACH)
+         return R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR;
       if (r->x + r->width > s->width_pixels ||
           r->y + r->height > s->height_pixels)
          return R300_RB2D_FILL_REFUSE_RECT_OUTSIDE;
