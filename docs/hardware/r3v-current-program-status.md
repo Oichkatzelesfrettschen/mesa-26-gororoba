@@ -12,25 +12,31 @@ alone and is updated in place when a receipt or task changes.
 One epoch table carries every identity a claim in this document binds to.
 Each row is one field with one authority; a row moves only when its
 authority moves, so a receipt's source, the installed binary, and the
-repository head are never collapsed into one "current" revision. The
-values below are the freeze for the Flat-beside-NoPerspective receipt
-cycle (repository heads read on 2026-09-01).
+repository head are never collapsed into one "current" revision. The rows
+fall in three classes and move on three different events. A repository
+head answers `git rev-parse HEAD` and moves on every merge. A running
+identity -- the deployed kernel checkpoint, the package version, the
+loaded module srcversion, the installed ICD -- answers a command on the
+target and moves on a deployment. A receipt identity names what one
+retained bundle was captured against and never moves at all; where a
+running identity has advanced past a receipt's, the row carries both and
+names what carries the receipt forward.
 
 | Field | Value | Authority |
 |---|---|---|
 | Document revision | `git log -1 -- docs/hardware/r3v-current-program-status.md` | the commit that carries this table |
 | Repository head: mesa-26-gororoba | the commit carrying this table (`git log -1 -- docs/hardware/r3v-current-program-status.md`); the receipt's own source is the row below | `git rev-parse HEAD` in the live checkout |
-| Repository head: steinmarder-r300 | `915c000fe` (the merge that retains the Flat-beside-NoPerspective receipt) | `git rev-parse HEAD` |
+| Repository head: steinmarder-r300 | `377fab045` (live head); the Flat-beside-NoPerspective receipt entered at `915c000fe` and every later commit is additive to it | `git rev-parse HEAD` |
 | Repository head: linux-radeon-gororoba | `2be21eaa892723f1c9cd826b7331c7d234e2c1ce` (offline replay authority: `r300_tcl_bypass_vtx_check` and the CS-track controls replay from this head and from the deployed checkpoint) | `git rev-parse HEAD` |
-| Repository head: radeon-custom | `75ae53afaa8b053d7bd6091c73ce54ef19b987b` | `git rev-parse HEAD` |
+| Repository head: radeon-custom | `9a52df357` (live head; carries the `0.8.13-1` recipe the target now runs) | `git rev-parse HEAD` |
 | Repository head: vostro1000-re | `1d621a0f51a7c7fb343f0702f9481390b8240b94` | `git rev-parse HEAD` |
 | Route-admission source | the commit carrying this table: Flat location 0 beside NoPerspective location 1 on the mixed reciprocal carrier opens on the interface alone (the probe gate that quarantined it at `3aa3ad02c690` is removed by the receipt's promotion) | `r3v_interpolation_lowering.c`, `docs/hardware/rs482-post-vap-interpolation-pipeline.md` |
 | Receipt source | `6089c5b5bb9a9cc5d197c43c386dc38e5a53bb14` (Flat beside NoPerspective on the mixed carrier through host replication; the route under `R3V_NATIVE_FLAT_MIXED_CARRIER_PROBE=1` at that commit) | retained bundle `r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974/identity.txt` and its `flat-mixed-carrier-receipt/mesa_head.txt` |
 | Installed ICD source and build-id | profile 4 release: `690bd77e1eb`, `mesa-gororoba 2:26.2.0-21` at prefix `/usr`, build-id `b03d48e40fdd31379f946ac37c010e9fb656777f`, package sha256 `ae9dd914f26e675e820c19de8ecf1ef2fdf4344d2835b25b99bc3607848627aa`, ICD manifest sha256 `73f71a02ee887ce0861ecd527e7285933a7ddfc31e4d78ea870676ddd1e3e6fb` (package and installed DSO identical; the GL renderer string reports `Mesa 26.2.0-devel (git-690bd77e1e)`). This binary opens the Flat-beside-NoPerspective route on the interface alone, the promotion the receipt below authorized. The receipt's own installed binary stays `6089c5b5bb9`, `mesa-gororoba 2:26.2.0-20`, build-id `c3ba996b9fc75c04cfad2d2a3638c79cdfbb5092`; the statically linked runners come from the reproducible profile-4 qualification builddir at that commit, build-id `68dc7a2cf42d76a5bda1a0233c0ac21d7c8b9f76` | `pacman -Q`, `readelf -n` build-id across package and installed DSO; the receipt's `icd-pkgrel20/` leg |
 | Attended-runner source and digest | `6089c5b5bb9`; `r3v_native_attended_rs_tex_adj_probe` sha256 `71e664ed6221eb0805e1f5ba19caeab67f4e4292a817dc039035afe3726f6047`, `r3v_native_arming_runner` sha256 `d41751f350e647565d2537b1778a2af2a4fd716c3a34c48163dd84ee65c8f075` | the receipt's `flat-mixed-carrier-receipt/runner_sha256.txt` |
-| Deployed kernel source checkpoint | `0104ede3f1964cc844f9f1839cb6953e2639c4e6` (linux-radeon-gororoba branch `radeon/r300_tcl_bypass_color0_width`, COLOR0 width admission) | `radeon-custom` PKGBUILD `_source_commit` |
-| Package version | `radeon-unified-dkms 0.8.12-1` (radeon-custom `75ae53afaa8b` PKGBUILD); policy package as `pacman -Q radeon-rs482-policy` reports on the box | `pacman -Q` on the target |
-| Loaded module srcversion | `729892A3F3530EB12B8D842` | `/sys/module/radeon/srcversion` on the target |
+| Deployed kernel source checkpoint | `2be21eaa892723f1c9cd826b7331c7d234e2c1ce`; the interpolation receipt cycle (Latest target receipt and its predecessors through the Flat two-draw cell) was taken against `0104ede3f1964cc844f9f1839cb6953e2639c4e6` (linux-radeon-gororoba branch `radeon/r300_tcl_bypass_color0_width`, COLOR0 width admission) and holds across the move by the admission identity stated under the table; each earlier receipt names its own checkpoint where it is recorded | `radeon-custom` PKGBUILD `_source_commit`; on-target `source-identity.toml` |
+| Package version | `radeon-unified-dkms 0.8.13-1` (radeon-custom `9a52df357` PKGBUILD), built for `7.1.8-1-cachyos` and `6.18.42-1-cachyos-lts` with `lockup_timeout=0` from the package-owned board policy; the interpolation receipt cycle was taken under `0.8.12-1`, and the conformance-plan and render-shape sessions under `radeon-rs482-policy 0.8.11-1`; policy package as `pacman -Q radeon-rs482-policy` reports on the box | `pacman -Q` on the target |
+| Loaded module srcversion | `46C05689F2C98A526C314F4`; the interpolation receipt cycle was taken under `729892A3F3530EB12B8D842`, the conformance-plan and render-shape sessions under `727CE89E79FB2D14663C381`, and the exact identity-carrier route record binds to `088E045518D972727C1DD1C` | `/sys/module/radeon/srcversion` on the target |
 | Retained-evidence commit | `steinmarder-r300` `915c000fe` (the checkout in which `sha256sum -c bundle_hashes.sha256` passes for `r3v-native-noperspective-flat-mixed-carrier-receipt-vostro1000_rs485m_5974`) | evidence verification checkout |
 | dEQP source | `43c65c132` (`deqp-vk` `26d43d452e64`, release `opengl-cts-4.6.8.0-414-g43c65c132`) | installed `deqp-vk` release identity and corpus pin |
 
@@ -38,6 +44,22 @@ Evidence binds to profile 4: the installed ICD, the attended runner, and
 every receipt come from the `4_r300_full_release` build through
 `make -C build-infra`; profile 3 is the asserts-live diagnostic build and
 profile 5 (GCC) the wider-warning diagnostic when common R300 code changes.
+
+The receipts captured under `0104ede3f196` survive the move to
+`2be21eaa8927` by source identity rather than by replay. Across the two
+pins `r100.c`, `r300.c`, `radeon_cs.c`, `rs400.c`,
+`r300_tcl_bypass_vtx_check.h`, `replay_r300_cs_track.c`, and
+`replay_r300_tcl_bypass_ib.c` carry equal git blob hashes, so every
+command-stream admission predicate a cell was judged by is
+byte-identical, the synthesized-lane vertex predicate in the header
+included. Three commits separate the pins: one docs,
+one CS-track control script, and `8cc1692` "radeon: make GTT compaction
+reservation-safe", which touches `radeon_object.c` alone;
+`radeon_gtt_compact` has one caller, the `-ENOMEM` GTT retry in
+`radeon_gem_object_create`, so a single-cell submission on an unexhausted
+512M aperture never reaches the changed code. Source equality transfers
+an admission conclusion; it does not produce a current-epoch silicon
+observation, and a claim that needs one names its own run.
 
 ## Target deployment
 

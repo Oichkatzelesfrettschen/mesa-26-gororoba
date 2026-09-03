@@ -76,7 +76,7 @@ The current identities stay on separate axes:
 | Identity axis | Authority | Exact identity and claim boundary |
 | --- | --- | --- |
 | Modified source | `linux-radeon-gororoba` | current main commit `01aab9a5fdf75c771baa2aabb785c201649c476e`, driver tree `bedfecb34af16222225c04bb112a832e0c9578e6`; this tree includes commit `dc4c6ed` beyond the active package pin and carries no package or runtime claim |
-| Active package recipe | `radeon-custom` 0.8.11-1 | package commit `a329c2116298e3c5f7858777fd6e7686723b9e11`, recipe tree `ee444215769f3304784d01ea7c8630901900e7b3`, `PKGBUILD` blob `d858650a2f6eeed89b0bafd77d96597469b359da`, source identity blob `0ec95e27144cf26d8244395ffad6860bdcb8d151`; the recipe pins signed source tag object `b0102041d170882928c4a795d51c1626a945f2d1`, source commit `3c5ccb3cfb684c975efbb30c3e312c310b741cf9`, and driver tree `e3a54399a004c714402b5c9bd56e1edcfd1caa1c` |
+| Active package recipe | `radeon-custom` 0.8.13-1 | package commit `9a52df357d72f4a0c0365fbf0f7941077bd69ed2`, recipe tree `e6206ad96dd4234577b4b0ed7932773f2fdef46e`, `PKGBUILD` blob `f0330735bbc722e1f9bc8080319cf53c261b7256`, source identity blob `6324f1dd5a249a56b930a4c19ea5907b0bc3fc25`; the recipe pins signed source tag object `d6e88ebe5acc6b1c7b57e2d1951d88b23495cf81`, source commit `2be21eaa892723f1c9cd826b7331c7d234e2c1ce`, and driver tree `644b64d932603143b1abc719adf1759569f580e8` |
 | Target deployment runtime | `steinmarder-r300/results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-deployment-runtime/` | retaining commit `59f9361e277bb63c52d335eda9009aa94b7d989c`, manifest SHA-256 `2ab2b00758b5226ac096da4d63c30652ebceef245f56373374b8f6fc21171ec6`, hash ledger SHA-256 `7bff34920965ddb4292b54a7bc9313f1f38102dd1592339a09d6cfd1ff6ff1e7`; records `radeon-unified-dkms-dev` 0.8.11-1, source commit `3c5ccb3cfb684c975efbb30c3e312c310b741cf9`, driver tree `e3a54399a004c714402b5c9bd56e1edcfd1caa1c`, and srcversion `727CE89E79FB2D14663C381` across a reboot |
 | Loaded module byte identity | `steinmarder-r300/src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/` | retaining commit `55e74d6bbb7cdc061ed0c154f22cd8ede35a7ca1`, manifest SHA-256 `84340d65c87cb4ca3aa1f01faaa559a00d7950a55fad4cee344b988d3eeff386`, hash ledger SHA-256 `cc8a82f210cdccc847f9320faa7dc9f6136e537ef3555c78d867f0055ca70e42`, compressed module SHA-256 `6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`, GNU Build ID `a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, and srcversion `A7F72BE636B52D7EED42415`; no newer retained bundle records the loaded module bytes |
 | Parked-device behavior | `steinmarder-r300/src/re/r300/results/cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z/` | retaining commit `baa6b2d496c52392c0ecb5e18306db02e9dfd6cf`, outcome SHA-256 `f053e84ec97332abb5ec9c0611ac84d988c5070bdd2bc28eb22d1e10da82c243`, hash ledger SHA-256 `ab36a1a974679a8f9cb8c7da5bf0fd4452dbba3a5ca6151f5001841d926d96ae`; measures the 0.6-1 parked-entry contract, while later package and deployment identities carry no newer parked-device run |
@@ -244,3 +244,17 @@ radeon-unified-dkms` on the target. A version drift between that row and the
 installed package invalidates the loaded deployment identity until corrected.
 `docs/hardware/vostro1000-kernel-modules.md` tracks stable module mechanisms
 and ownership rather than changing package versions.
+
+That drift stands open. The target runs `radeon-unified-dkms 0.8.13-1` at
+srcversion `46C05689F2C98A526C314F4`, built for `7.1.8-1-cachyos` and
+`6.18.42-1-cachyos-lts`, while the target deployment runtime row names the
+0.8.11-1 bundle. The recipe axis moves with the package because the recipe is
+a repository object; the deployment axis names a retained target capture, and
+no deployment bundle is sealed for 0.8.13-1, so that row keeps the last
+identity a capture proves. Under this contract the loaded deployment identity
+reads invalid until a 0.8.13-1 target capture is retained, and a hardware
+qualification claim that needs a loaded deployment identity waits on that
+capture. `docs/hardware/r3v-current-program-status.md` carries the running
+identity in its epoch table meanwhile, and the interpolation receipts taken
+under 0.8.12-1 hold across the kernel move by the blob equality recorded
+there.
