@@ -230,11 +230,18 @@ const struct r300_compute_verb_row *r300_compute_verb_rows(uint32_t *count);
 
 /* The compute-queue claim.  VK_QUEUE_COMPUTE_BIT asserts the full
  * compute contract, so the ledger advertises it unconditionally only
- * when every row executes on both routes (the conformant predicate,
- * the ratchet that closes the gate as rows land); until then the bit
- * is a nonconformant claim behind this exact opt-in, and the gated
- * claim additionally asserts that some row executes on the ungated CPU
- * route, so losing the delivered verb closes the gated claim as well.
+ * when every row executes on both routes -- the coverage predicate, the
+ * ratchet that closes the gate as rows land.  That predicate measures
+ * this ledger's dual-route matrix and nothing wider: the Vulkan compute
+ * contract also spans the SPIR-V execution model, the descriptor and
+ * memory models, workgroup shared memory, barriers, general atomics, and
+ * image stores, and the refusal classes below name the ones this
+ * substrate declines outright, so full coverage here is a necessary
+ * condition for the unconditional bit and never a conformance verdict.
+ * Until coverage closes, the bit is a nonconformant claim behind this
+ * exact opt-in, and the gated claim additionally asserts that some row
+ * executes on the ungated CPU route, so losing the delivered verb closes
+ * the gated claim as well.
  * The GPU routes carry their own per-verb gates and never enter the
  * gated claim.  Compute pipeline creation opens with the same claim.
  * The _rows forms take a table so a test calibrates them on mutated
@@ -242,11 +249,11 @@ const struct r300_compute_verb_row *r300_compute_verb_rows(uint32_t *count);
  */
 #define R300_COMPUTE_QUEUE_CLAIM_GATE "R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL"
 #define R300_COMPUTE_QUEUE_CLAIM_GATE_VALUE "1"
-bool r300_compute_verb_queue_conformant_rows(
+bool r300_compute_gpu_coverage_complete_rows(
    const struct r300_compute_verb_row *rows, uint32_t count);
 bool r300_compute_verb_queue_claim_rows(
    const struct r300_compute_verb_row *rows, uint32_t count, bool gate_open);
-bool r300_compute_verb_queue_conformant(void);
+bool r300_compute_gpu_coverage_complete(void);
 bool r300_compute_verb_queue_claim(bool gate_open);
 
 const struct r300_compute_verb_row *

@@ -207,7 +207,7 @@ r3v_native_plan_replay_bind(struct r3v_native_plan_replay *replay,
    const bool gate_open =
       gate != NULL && strcmp(gate, R300_COMPUTE_QUEUE_CLAIM_GATE_VALUE) == 0;
    enum r3v_native_plan_queue_claim claim =
-      r300_compute_verb_queue_conformant()
+      r300_compute_gpu_coverage_complete()
          ? R3V_NATIVE_PLAN_QUEUE_CONFORMANT
       : r300_compute_verb_queue_claim(gate_open)
          ? R3V_NATIVE_PLAN_QUEUE_EXPERIMENTAL_COMPUTE_SUBSET
