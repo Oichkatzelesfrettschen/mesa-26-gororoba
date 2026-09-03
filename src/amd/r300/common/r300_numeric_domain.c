@@ -229,8 +229,19 @@ r300_numeric_domain_info(enum r300_numeric_domain domain)
     * without a table row -- the same divergence guard as r300_compute_admission.c. */
    STATIC_ASSERT(ARRAY_SIZE(r300_numeric_domain_table) == R300_NUM_DOMAIN_COUNT);
    if ((unsigned)domain >= R300_NUM_DOMAIN_COUNT)
-      return &r300_numeric_domain_table[0];
+      return NULL;
    return &r300_numeric_domain_table[(unsigned)domain];
+}
+
+bool
+r300_numeric_domain_info_checked(enum r300_numeric_domain domain,
+                                 const struct r300_numeric_domain_info **out)
+{
+   const struct r300_numeric_domain_info *info =
+      r300_numeric_domain_info(domain);
+
+   *out = info;
+   return info != NULL;
 }
 
 bool

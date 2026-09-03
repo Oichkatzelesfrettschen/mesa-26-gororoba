@@ -190,8 +190,8 @@ enum r300_numeric_domain {
 
 /* Per-domain descriptor.  One row per r300_numeric_domain value in the
  * r300_numeric_domain_table[] array.  r300_numeric_domain_info() returns a
- * pointer to the row for a given domain; the pointer is static and never NULL
- * for a valid enum value. */
+ * pointer to the row for a given domain; the pointer is static and outlives
+ * every caller. */
 struct r300_numeric_domain_info {
    enum r300_numeric_domain    domain;
    const char                 *name;              /* short stable token */
@@ -206,11 +206,20 @@ struct r300_numeric_domain_info {
    const char                 *theorem;           /* formal bound string or NULL */
 };
 
-/* Return the descriptor for a domain.  Returns the FP24_RTZ row (index 0)
- * as a safe fallback when domain is out of range; callers need not guard the
- * return value. */
+/* Return the descriptor for a domain, or NULL when domain lies outside
+ * [0, R300_NUM_DOMAIN_COUNT).  Domain identity decides exactness, rounding,
+ * and the integer window a route admits against, so an unrecognized value
+ * resolves to no row: a caller reads the exactness contract it asked for or
+ * refuses, and a stray cast never acquires FP24_RTZ's window by default. */
 const struct r300_numeric_domain_info *
 r300_numeric_domain_info(enum r300_numeric_domain domain);
+
+/* Resolve a domain and report whether it named a row.  Stores the row in
+ * *out on true and NULL on false, so a caller branches on the verdict rather
+ * than on a pointer it might forget to test. */
+bool
+r300_numeric_domain_info_checked(enum r300_numeric_domain domain,
+                                 const struct r300_numeric_domain_info **out);
 
 /* Return true when production admission, carrier, and dispatch work remains
  * pending. */

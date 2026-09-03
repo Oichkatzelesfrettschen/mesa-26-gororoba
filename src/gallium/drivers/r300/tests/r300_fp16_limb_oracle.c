@@ -62,6 +62,7 @@ test_domain_catalog(void)
    for (unsigned i = 0; i < R300_NUM_DOMAIN_COUNT; i++) {
       const struct r300_numeric_domain_info *info =
          r300_numeric_domain_info((enum r300_numeric_domain)i);
+      CHECK(info != NULL, "catalog: every in-range domain resolves to a row");
       char label[128];
       snprintf(label, sizeof(label),
                "catalog: bound kind/value agree for %s", info->name);
