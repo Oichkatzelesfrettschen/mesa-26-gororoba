@@ -963,7 +963,7 @@ if with_tests
     args : [files('tests/r3v_rename_ratchet.py'),
             meson.project_source_root()],
     suite : ['r3v'],
-    # The ratchet walks every scan root of the source tree; the RS482 host
+    # The ratchet walks every scan root of the source tree; the RS485M host
     # (K8) needs past the default 30 s for that walk.
     timeout : 600,
   )
@@ -987,7 +987,7 @@ if with_tests
   endforeach
 endif
 
-# Attended cell: performs a live DRM_RADEON_CS on RS482 silicon under the
+# Attended cell: performs a live DRM_RADEON_CS on RS485M silicon under the
 # authorization and procedure in
 # docs/hardware/r3v-native-attended-cell-procedure.md.  It drives the
 # native ICD directly, so it builds wherever the native backend does; it
@@ -1026,7 +1026,7 @@ r3v_native_attended_render_shape = executable(
 
 # Attended sampled cell: drives the public sampling surface (varying
 # vertex module, sampled fragment module, set-0 combined image sampler
-# over a one-color texture) to a live DRM_RADEON_CS on RS482 silicon
+# over a one-color texture) to a live DRM_RADEON_CS on RS485M silicon
 # under the render-shape attended procedure; the uniform texture makes
 # the interior equal one texel whatever the interpolated coordinates.
 r3v_native_attended_sampled = executable(
@@ -1047,7 +1047,7 @@ r3v_native_attended_sampled = executable(
 
 # Attended composed render-then-sample cell: records the composed cell
 # through r3v_native_record_composed_render_sample and drives it to a
-# live DRM_RADEON_CS on RS482 silicon, where the render half's target is
+# live DRM_RADEON_CS on RS485M silicon, where the render half's target is
 # the sample half's texture and both targets take one coverage verdict.
 r3v_native_attended_multi_pass = executable(
   'r3v_native_attended_multi_pass',
@@ -1165,7 +1165,7 @@ r3v_native_attended_composed = executable(
 
 # Attended multisample resolve cell: records the resolve cell through
 # r3v_native_record_msaa_resolve and drives it to a live DRM_RADEON_CS
-# on RS482 silicon, where four passes of the subsample-set oracle over
+# on RS485M silicon, where four passes of the subsample-set oracle over
 # one denominator classify what AARESOLVE_MODE_RESOLVE sends to the
 # resolve destination.
 r3v_native_attended_msaa_resolve = executable(
@@ -1285,7 +1285,7 @@ r3v_native_attended_reingest = executable(
 )
 
 # Attended FLOAT_4 + FLOAT_2 tuple cell: performs a live DRM_RADEON_CS
-# on RS482 silicon, fetching the two-array vertex stream through the
+# on RS485M silicon, fetching the two-array vertex stream through the
 # PSC XY01 selector into the carrier -- the read-back judges the
 # silicon's expansion of each two-dword record to (x, y, 0, 1).  Built
 # and never registered as a test, because running it is a hardware
@@ -1345,7 +1345,7 @@ r3v_native_attended_varying_triangle = executable(
 
 # Attended compute identity carrier cell: the public compute surface on
 # the identity verb's GPU route -- two storage buffers, the reference
-# identity-map kernel, one dispatch, submit -- so RS482 silicon fetches the
+# identity-map kernel, one dispatch, submit -- so RS485M silicon fetches the
 # input as F32_4 records and writes the output as one C4_32_FP slot row,
 # the driver's read-back judging it against the CPU bit copy.  Built and
 # never registered as a test, because running it is a hardware

@@ -593,7 +593,7 @@ r3v_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
     * emulated on it.  radeon.ko does not set DRIVER_SYNCOBJ (amdgpu does), so
     * drm_syncobj_create_ioctl's drm_core_check_feature(dev, DRIVER_SYNCOBJ)
     * gate returns -EOPNOTSUPP and DRM_CAP_SYNCOBJ reads 0 on the render node
-    * (measured on RS482: DRM_IOCTL_SYNCOBJ_CREATE returns errno 95).  No
+    * (measured on RS485M: DRM_IOCTL_SYNCOBJ_CREATE returns errno 95).  No
     * DRM syncobj means vk_drm_syncobj_get_type() would report features == 0,
     * so there is no slot for it here.  The consequence reaches past the
     * timeline: VK_KHR_external_semaphore_fd / VK_KHR_external_fence_fd stay

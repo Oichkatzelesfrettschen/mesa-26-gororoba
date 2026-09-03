@@ -126,8 +126,9 @@ Real submission sits behind a conjunction, evaluated by
 `r3v_native_arming_evaluate`: the exact-value gate
 `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`, an operator-declared bundle
 digest matching the BLAKE3 of the IB about to travel, the authorized
-RS482 PCI identity, the declared kernel release, the declared radeon
-module srcversion, and an evidence directory that exists and carries no
+Dell Vostro 1000 RS485M platform identity, the declared kernel release,
+the declared radeon module srcversion, and an evidence directory that
+exists and carries no
 attempt token. Reaching the ioctl writes that token by exclusive
 creation, so the directory admits one attempt, and an armed submit
 carries one command buffer. Any closed factor fails closed with
@@ -169,7 +170,7 @@ clean while the color target retained its sentinel fill. The cause of
 that unwritten target is underdetermined -- the run retained no
 predecessor register values, and
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
-canonical classification -- while a later RS482 silicon matrix proved
+canonical classification -- while a later RS485M silicon matrix proved
 that an unestablished `US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, or
 `SC_SCREENDOOR` each alone suppresses every color write, and the
 original cell owned none of the three. The recorded
@@ -405,7 +406,7 @@ around the runner (`r3v_cs_ioctl_trace.py trace --allow-tracee-failure`)
 declares that exit as expected or refuses every shard carrying a fail;
 and `dEQP-VK.api.device_init.create_instance_device_intentional_alloc_fail.basic`
 injects one allocation failure per allocation index of instance and
-device creation, 604 s on the RS482 host's K8 against the real device,
+device creation, 604 s on the RS485M host's K8 against the real device,
 so the `api-version-init` slice runs under a case ceiling above that
 (1800 s) while the other hazard-free slices finish every case inside
 120 s.  The receipt records declared values verbatim and inherited values as
@@ -560,8 +561,8 @@ recomputes the transported ELF and loader identities, requires the
 binary interpreter to resolve to the verifier host's interpreter, and
 uses that trusted loader's `--list` mode with `LD_*` overrides removed to
 confirm that the target providers export every required symbol version.
-The sealed binary digest preserves the producer's XED census.  The RS482
-host's loader refuses a binary whose ISA-needed note exceeds the
+The sealed binary digest preserves the producer's XED census.  The
+RS485M host's loader refuses a binary whose ISA-needed note exceeds the
 baseline.  The K8 build therefore compiles
 with `-march=x86-64 -mtune=k8` and links with `gcc -B<dir>` over the target's
 baseline `Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`,
