@@ -10,6 +10,7 @@ r300_common_contract_files = files(
   'r300_compute_identity_carrier.c',
   'r300_compute_identity_carrier_contract.c',
   'r300_compute_verb.c',
+  'r300_operation_route.c',
   'r300_direct_write.c',
   'r300_first_draw_state.c',
   'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_noperspective_q_lane_plan.c', 'r300_noperspective_mixed_carrier_plan.c',
@@ -89,7 +90,7 @@ r300_grid_fold_test = executable(
 # The compute verb ledger: rows, checker calibration, precommitment.
 r300_compute_verb_test = executable(
   'r300_compute_verb_test',
-  files('r300_compute_verb.c', 'r300_numeric_domain.c',
+  files('r300_compute_verb.c', 'r300_operation_route.c', 'r300_numeric_domain.c',
         'tests/r300_compute_verb_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : r300_format_contract_test_includes,
@@ -146,6 +147,21 @@ r300_compute_verb_route_sheet = executable(
   link_with : libr300_common,
   gnu_symbol_visibility : 'hidden',
 )
+r300_operation_route_test = executable(
+  'r300_operation_route_test',
+  files('tests/r300_operation_route_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-operation-route',
+  r300_operation_route_test,
+  suite : ['r300'],
+)
+
 test(
   'r300-compute-verb-route-sheet',
   r300_compute_verb_route_sheet,

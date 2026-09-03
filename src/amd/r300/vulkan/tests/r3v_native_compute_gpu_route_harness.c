@@ -19,6 +19,7 @@
 
 #include "amd/r300/common/r300_compute_identity_carrier.h"
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_operation_route.h"
 #include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/tests/r300_compute_identity_carrier_digests.h"
@@ -141,18 +142,21 @@ run_arm(enum arm arm, const char *name)
    setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
    setenv("R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL", "1", 1);
    const char *verb_gate =
-      r300_compute_verb_row(R300_COMPUTE_VERB_IDENTITY_MAP)->gpu_gate;
-   uint32_t verb_count = 0;
-   const struct r300_compute_verb_row *rows =
-      r300_compute_verb_rows(&verb_count);
-   const struct r300_compute_verb_row *identity =
-      &rows[R300_COMPUTE_VERB_IDENTITY_MAP];
+      r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP)->gate;
+   uint32_t route_count = 0;
+   const struct r300_operation_route_row *routes =
+      r300_operation_route_rows(&route_count);
+   /* The carrier plan binds to the R2VB route row, not to the semantic
+    * verb: contracts are route facts. */
+   const struct r300_operation_route_row *identity =
+      r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP);
    const struct r300_compute_identity_carrier_contract *contract =
       &r300_compute_identity_carrier_contract;
    assert(identity->operation_id == contract->operation_id);
    assert(identity->implementation_id == contract->implementation_id);
    assert(identity->gpu_route_contract_id ==
           contract->gpu_route_contract_id);
+   assert(identity->admission_id == contract->admission_id);
    assert(contract->admission_id == R300_ROUTE_ADMISSION_R2VB_FP24_IDENTITY);
    assert(contract->domain == R300_NUM_DOMAIN_FP24_RTZ);
    assert(contract->input_format_id == R300_VERTEX_FORMAT_F32_4);
@@ -165,14 +169,23 @@ run_arm(enum arm arm, const char *name)
           GROUP_WORDS / R300_COMPUTE_IDENTITY_CARRIER_REFERENCE_RECORDS);
    assert(contract->record_bytes ==
           contract->record_dwords * sizeof(uint32_t));
-   for (uint32_t v = 0; v < verb_count; v++)
-      unsetenv(rows[v].gpu_gate);
+   for (uint32_t r = 0; r < route_count; r++) {
+      if (routes[r].gate != NULL)
+         unsetenv(routes[r].gate);
+   }
    if (arm == ARM_GATE_TABLE) {
-      /* Every gate but the identity's open, the identity's closed by a
-       * value other than the literal. */
-      for (uint32_t v = 0; v < verb_count; v++)
-         setenv(rows[v].gpu_gate, v == R300_COMPUTE_VERB_IDENTITY_MAP ? "yes"
-                                                                    : "1", 1);
+      /* Every route gate but the identity's open, the identity's closed by
+       * a value other than the literal.  A gate belongs to one route, so
+       * the thirteen candidate gates standing open must select nothing. */
+      for (uint32_t r = 0; r < route_count; r++) {
+         if (routes[r].gate == NULL)
+            continue;
+         setenv(routes[r].gate,
+                routes[r].route_id == R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP
+                   ? "yes"
+                   : "1",
+                1);
+      }
    } else if (arm != ARM_GATE_OFF_CPU) {
       setenv(verb_gate, "1", 1);
    }
@@ -248,14 +261,19 @@ run_arm(enum arm arm, const char *name)
    injected_ops = *saved_ops;
    injected_ops.command_write_read = counting_command_write_read;
    native_device->drm.ops = &injected_ops;
-   assert((native_device->compute_verb_gates[R300_COMPUTE_VERB_IDENTITY_MAP] !=
+   assert((native_device
+              ->compute_route_gates[R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP] !=
            NULL) == (arm != ARM_GATE_OFF_CPU && arm != ARM_GATE_TABLE));
    if (arm == ARM_GATE_TABLE) {
       /* The table read at device creation: the literal opens, every
        * other value stays closed, and a refresh re-reads each gate. */
-      for (uint32_t v = 0; v < verb_count; v++) {
-         const bool open = native_device->compute_verb_gates[v] != NULL;
-         assert(open == (v != R300_COMPUTE_VERB_IDENTITY_MAP));
+      for (uint32_t r = 0; r < route_count; r++) {
+         if (routes[r].gate == NULL)
+            continue;
+         const bool open =
+            native_device->compute_route_gates[routes[r].route_id] != NULL;
+         assert(open == (routes[r].route_id !=
+                         R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP));
       }
       static const char *const closed_values[] = { "0", "", "yes", "1 ",
                                                    "01" };
@@ -263,17 +281,17 @@ run_arm(enum arm arm, const char *name)
            c++) {
          setenv(verb_gate, closed_values[c], 1);
          r3v_native_device_refresh_delivery_gates(native_device);
-         assert(native_device->compute_verb_gates[R300_COMPUTE_VERB_IDENTITY_MAP] ==
-                NULL);
+         assert(native_device->compute_route_gates
+                   [R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP] == NULL);
       }
       setenv(verb_gate, "1", 1);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(strcmp(native_device->compute_verb_gates
-                       [R300_COMPUTE_VERB_IDENTITY_MAP], "1") == 0);
+      assert(strcmp(native_device->compute_route_gates
+                       [R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP], "1") == 0);
       unsetenv(verb_gate);
       r3v_native_device_refresh_delivery_gates(native_device);
-      assert(native_device->compute_verb_gates[R300_COMPUTE_VERB_IDENTITY_MAP] ==
-             NULL);
+      assert(native_device->compute_route_gates
+                [R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP] == NULL);
    }
 
    VkQueue queue = VK_NULL_HANDLE;
