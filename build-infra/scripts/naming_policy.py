@@ -71,6 +71,12 @@ MISATTRIBUTED_TARGET_CHIP = re.compile(
     rf"|\b{_RS482}\b\s*/\s*{_VOSTRO}\b"
     rf"|\b{_RS482}\b{_CLAUSE}{{0,24}}?\b(?:in|on|inside)\b{_CLAUSE}{{0,24}}?"
     rf"\bthe\s+{_VOSTRO}\b"
+    # A clause that fails to bind (no recognized verb, e.g. "resemble") can
+    # be followed by a semicolon and a pronoun clause that does: "does not
+    # merely resemble RS482; it contains RS482" names the platform through
+    # the second clause's unnegated bind, with "it" continuing "Vostro".
+    rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,60}}?;\s*[Ii]t\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b"
+    rf"{_CLAUSE}{{0,40}}?\b{_RS482}\b"
 )
 # A newly created artifact naming the platform rs482; a token the ledger
 # registers is an existing sealed name and passes.
@@ -102,21 +108,54 @@ MISATTRIBUTED_AUTHORIZED_PART = re.compile(
 
 # A sentence that denies the binding states the correction, so a match
 # carrying a negation before its verb is read as the fact it is.
-CORRECTIVE_NEGATION = re.compile(
-    r"\b(?:not|never|no longer|isn't|aren't|doesn't|don't|wasn't)\b",
-    re.IGNORECASE,
-)
+_NEGATION_WORD = r"(?:not|never|no longer|isn't|aren't|doesn't|don't|wasn't)"
+CORRECTIVE_NEGATION = re.compile(rf"\b{_NEGATION_WORD}\b", re.IGNORECASE)
+# Do-support negation precedes the verb ("does not have"); copula negation
+# follows it ("is not").  Anchoring each to the boundary it must touch --
+# TRAILING at the verb's start, LEADING at its end -- keeps a negation from
+# leaking into a neighboring verb's window ("is not modern but uses RS482"
+# does not read "uses" as negated by the "not" that governs "is").
+_TRAILING_NEGATION = re.compile(rf"\b{_NEGATION_WORD}\s*$", re.IGNORECASE)
+_LEADING_NEGATION = re.compile(rf"^\s*{_NEGATION_WORD}\b", re.IGNORECASE)
+BIND_VERB_TOKEN = re.compile(rf"\b{_BINDS}\b")
+# A short window: enough to hold "does not " or "is not" without reaching
+# back far enough to pick up a negation that governs a different verb.
+_NEGATION_WINDOW_CHARS = 24
 
 
-def clause_denies(text: str, start: int, end: int) -> bool:
-    """Whether the clause holding [start, end) denies what it says.
+def match_denies(text: str, start: int, end: int) -> bool:
+    """Whether the match [start, end) states a correction rather than the
+    misattribution itself.
 
-    A denial can sit before the verb the match begins at, so the guard reads
-    from the clause boundary rather than from the match."""
-    clause_start = max(
-        text.rfind(character, 0, start) for character in ".;\n"
-    ) + 1
-    return CORRECTIVE_NEGATION.search(text[clause_start:end]) is not None
+    The negation binds to the verb that connects platform to part, not to
+    the clause: "does not have X and carries RS482" negates "have", and the
+    unnegated "carries" still asserts the binding, so the match is not a
+    denial.  Every recognized bind verb in the match must be negated for
+    the match to read as a stated correction.  A match with no recognized
+    bind verb (the parenthetical and slash forms, which carry no _BINDS
+    word at all) falls back to the whole-clause check, since there is no
+    verb to bind a negation to."""
+    span = text[start:end]
+    verbs = list(BIND_VERB_TOKEN.finditer(span))
+    if not verbs:
+        clause_start = max(
+            text.rfind(character, 0, start) for character in ".;\n"
+        ) + 1
+        return CORRECTIVE_NEGATION.search(text[clause_start:end]) is not None
+    for index, verb in enumerate(verbs):
+        window_start = max(
+            verbs[index - 1].end() if index > 0 else 0,
+            verb.start() - _NEGATION_WINDOW_CHARS,
+        )
+        before = span[window_start:verb.start()]
+        after = span[verb.end():verb.end() + 8]
+        negated = (
+            _TRAILING_NEGATION.search(before) is not None
+            or _LEADING_NEGATION.match(after) is not None
+        )
+        if not negated:
+            return False
+    return True
 
 # An artifact naming this specimen rs482 or rs480.  Recognized in the forms
 # the corpus uses: the platform token beside a part token in either order,
@@ -553,7 +592,7 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"{identity_match.group(0)!r}"
         )
     for target_match in MISATTRIBUTED_TARGET_CHIP.finditer(text):
-        if clause_denies(text, target_match.start(), target_match.end()):
+        if match_denies(text, target_match.start(), target_match.end()):
             continue
         line_number = starting_line_number + text.count("\n", 0, target_match.start())
         findings.append(
@@ -569,7 +608,7 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"names the wrong part: {authorized_match.group(0)!r}"
         )
     for observed_match in MISATTRIBUTED_SPECIMEN_OBSERVATION.finditer(text):
-        if clause_denies(text, observed_match.start(), observed_match.end()):
+        if match_denies(text, observed_match.start(), observed_match.end()):
             continue
         line_number = starting_line_number + text.count(
             "\n", 0, observed_match.start())
@@ -941,6 +980,34 @@ def self_test() -> int:
         # An explicit correction states the fact and passes.
         ("docs/example.md", "the Vostro does not use RS482.\n", False),
         ("docs/example.md", "the Vostro 1000 is not RS482.\n", False),
+        (
+            "docs/example.md",
+            "RS482 is not the part carried by the Vostro 1000.\n",
+            False,
+        ),
+        # The negation binds to the verb it touches, not to the clause: a
+        # negated predicate ahead of an unnegated bind verb still asserts
+        # the misattribution through that second, unnegated verb.
+        (
+            "docs/example.md",
+            "The Vostro 1000 does not have a discrete GPU and carries "
+            "RS482.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "The Vostro 1000 is not modern but uses RS482.\n",
+            True,
+        ),
+        # A clause with no recognized bind verb ("resemble") cannot deny
+        # anything; the pronoun clause after the semicolon carries the one
+        # bind verb in the match, and it is unnegated.
+        (
+            "docs/example.md",
+            "The Vostro 1000 does not merely resemble RS482; it contains "
+            "RS482.\n",
+            True,
+        ),
         # Receipt-shaped and reversed artifact forms.
         ("docs/example.md", "r3v-native-triangle-first-delivery-rs482\n", True),
         ("docs/example.md", "rs482-vostro1000-capture\n", True),
@@ -1007,19 +1074,38 @@ def self_test() -> int:
         probe = root / "docs" / "probe.md"
         probe.parent.mkdir(parents=True)
         probe.write_text("The Vostro 1000 carries RS482.\n", encoding="utf-8")
+        # The compound known-bad: a negated non-bind clause ahead of an
+        # unnegated bind clause across a semicolon, which match_denies must
+        # resolve through the second clause's verb rather than the first
+        # clause's unrelated negation.
+        compound_probe = root / "docs" / "compound_probe.md"
+        compound_probe.write_text(
+            "The Vostro 1000 does not merely resemble RS482; it contains "
+            "RS482.\n",
+            encoding="utf-8",
+        )
         subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
         scanned = tracked_candidate_files(root)
-        if "docs/probe.md" not in scanned:
-            print(
-                "naming policy self-test: the repository scan skipped a "
-                "tracked file carrying only the misattribution",
-                file=sys.stderr,
-            )
-            return 1
+        for expected in ("docs/probe.md", "docs/compound_probe.md"):
+            if expected not in scanned:
+                print(
+                    "naming policy self-test: the repository scan skipped "
+                    f"a tracked file carrying only the misattribution: "
+                    f"{expected}",
+                    file=sys.stderr,
+                )
+                return 1
         if not candidate_file_violations(root, "docs/probe.md"):
             print(
                 "naming policy self-test: the repository checker admitted "
                 "the misattribution",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "docs/compound_probe.md"):
+            print(
+                "naming policy self-test: the repository checker admitted "
+                "the compound negated-clause misattribution",
                 file=sys.stderr,
             )
             return 1
