@@ -2,46 +2,10 @@
 
 #include "r300_rb2d_fill.h"
 #include "r300_pm4_builder.h"
+#include "radeon_legacy_2d_reg.h"
 
 #include <errno.h>
 #include <string.h>
-
-/* 2D engine registers, spelled as drivers/gpu/drm/radeon/radeon_reg.h
- * spells them.  Every register except DST_PITCH_OFFSET sits on the
- * reg_srcs/r300 safe list and passes the CS parser unchecked;
- * DST_PITCH_OFFSET is the r300_packet0_check case r100_reloc_pitch_offset
- * handles, which consumes the plan's one relocation.
- * (safe-list membership: rg -e 0x1438 -e 0x146C -e 0x147C -e 0x1598
- * -e 0x16C0 -e 0x16CC -e 0x16E8 -e 0x16EC -e 0x16F0 -e 0x1714
- * -e 0x1720 drivers/gpu/drm/radeon/reg_srcs/r300, one line per
- * emitted register; case dispatch: rg --fixed-strings
- * r100_reloc_pitch_offset drivers/gpu/drm/radeon/r300.c)
- */
-#define RADEON_DST_PITCH_OFFSET 0x142C
-#define RADEON_DST_Y_X 0x1438
-#define RADEON_DP_GUI_MASTER_CNTL 0x146C
-#define RADEON_DP_BRUSH_FRGD_CLR 0x147C
-#define RADEON_DST_WIDTH_HEIGHT 0x1598
-#define RADEON_DP_CNTL 0x16C0
-#define RADEON_DP_WRITE_MSK 0x16CC
-#define RADEON_DEFAULT_SC_BOTTOM_RIGHT 0x16E8
-#define RADEON_SC_TOP_LEFT 0x16EC
-#define RADEON_SC_BOTTOM_RIGHT 0x16F0
-#define RADEON_DSTCACHE_CTLSTAT 0x1714
-#define RADEON_WAIT_UNTIL 0x1720
-
-#define RADEON_GMC_DST_PITCH_OFFSET_CNTL (1u << 1)
-#define RADEON_GMC_BRUSH_SOLID_COLOR (13u << 4)
-#define RADEON_COLOR_FORMAT_ARGB8888 6u
-#define RADEON_ROP3_P 0x00f00000u
-#define RADEON_GMC_CLR_CMP_CNTL_DIS (1u << 28)
-#define RADEON_GMC_WR_MSK_DIS (1u << 30)
-#define RADEON_DST_X_LEFT_TO_RIGHT (1u << 0)
-#define RADEON_DST_Y_TOP_TO_BOTTOM (1u << 1)
-#define RADEON_RB2D_DC_FLUSH_ALL 0xfu
-#define RADEON_WAIT_DMA_GUI_IDLE (1u << 9)
-#define RADEON_WAIT_2D_IDLECLEAN (1u << 16)
-#define RADEON_WAIT_HOST_IDLECLEAN (1u << 18)
 
 /* DST_Y_X and DST_WIDTH_HEIGHT each pack two 16-bit fields, so a plan
  * value wider than its field has no representation in the word.  The pitch
