@@ -197,15 +197,14 @@ struct r300_family_facts {
    uint32_t hw_line_width_max;
 
    /* Cache publication registers written in the first-draw contract and
-    * every R2VB publication tail; at rest they read 0x00000002 and
-    * 0x00000001 (findings 2026-08-19-rs480-rb3d-dstcache-ctlstat-armed-
-    * debut.md, 2026-08-20-rs480-zb-zcache-ctlstat-armed-debut.md,
-    * silicon).
+    * every R2VB publication tail.  A register's existence and address are
+    * family-scoped; the value a live device holds in it at rest is a
+    * specimen reading and lives in r300_specimen_facts instead (findings
+    * 2026-08-19-rs480-rb3d-dstcache-ctlstat-armed-debut.md, 2026-08-20-
+    * rs480-zb-zcache-ctlstat-armed-debut.md, silicon).
     */
    uint32_t dstcache_ctlstat_reg;
    uint32_t zcache_ctlstat_reg;
-   uint32_t dstcache_ctlstat_at_rest;
-   uint32_t zcache_ctlstat_at_rest;
 
    /* No video decode engine; texture sampling covers packed 4:2:2 only,
     * so planar 4:2:0 is absent (docs/hardware/r3v-implementation-
