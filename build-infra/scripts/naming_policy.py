@@ -93,7 +93,7 @@ _OBSERVED = (
     r"|validated|captured|reproduced|attended|submitted|executed"
     r"|exercised|falsified)"
 )
-_PART = r"RS48[02](?![M/]|\s*/\s*RS)"
+_PART = r"RS48[02](?![M/]|\s*/\s*RS|[- ]family)"
 # A noun that names a board rather than a die: a part token in front of one
 # is this platform, whatever verb the sentence uses.
 _BOARD_NOUN = r"(?:host|board|target|silicon|specimen|machine|system)"
@@ -970,6 +970,14 @@ def self_test() -> int:
         ("docs/example.md",
          "The Vostro 1000 does not carry RS485; it carries RS485M.\n", False),
         ("docs/example.md", "the Vostro 1000 RS480/RS482/RS485 family.\n", False),
+        # A part token qualified as a family predicates over the family.
+        ("docs/example.md",
+         "arms the measured route only on the RS480 family and only for "
+         "the packed source domain\n", False),
+        ("docs/example.md",
+         "does an attended RS480-family target submit the known-good "
+         "cell.\n", False),
+        ("docs/example.md", "the attended RS482 cell is retained\n", True),
         ("docs/example.md", "the Vostro 1000 carries RS485M silicon.\n", False),
         ("docs/example.md", "1002:5975 is RS482M, not this platform part.\n", False),
         # A new artifact refuses; a ledger-registered retained path passes.
