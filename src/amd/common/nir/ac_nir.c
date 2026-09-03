@@ -90,7 +90,20 @@ void ac_nir_set_options(const struct ac_compiler_info *info, bool use_llvm,
    options->has_ford_funord = true;
    options->has_fsub = true;
    options->has_isub = true;
-   options->has_sdot_4x8 = info->has_accelerated_dot_product;
+   /* ACO expands the signed 8-bit dot product on GFX9 parts that lack the
+    * native instruction into four SDWA byte-select multiplies and two
+    * three-input adds, which is shorter than the nir_opt_algebraic expansion
+    * of four multiplies, four adds, and eight extracts. Vega20 is GFX9 and
+    * carries v_dot4_i32_i8, so the capability gates on the instruction rather
+    * than on the generation. The unsigned form stays lowered by NIR because
+    * ac_nir_lower_ps_horizontal_add keys its msad-or-dot choice off
+    * has_udot_4x8, and one v_msad_u8 beats the six-instruction sequence.
+    * The saturating forms stay lowered because v_add3_u32 carries no clamp
+    * bit.
+    */
+   bool aco_soft_sdot_4x8 =
+      !use_llvm && info->gfx_level == GFX9 && !info->has_accelerated_dot_product;
+   options->has_sdot_4x8 = info->has_accelerated_dot_product || aco_soft_sdot_4x8;
    options->has_sudot_4x8 = info->has_accelerated_dot_product && info->gfx_level >= GFX11;
    options->has_udot_4x8 = info->has_accelerated_dot_product;
    options->has_sdot_4x8_sat = info->has_accelerated_dot_product;

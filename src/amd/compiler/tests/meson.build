@@ -13,6 +13,7 @@ aco_tests_files = files(
   'test_insert_nops.cpp',
   'test_insert_waitcnt.cpp',
   'test_isel.cpp',
+  'test_raven2_dot.cpp',
   'test_lower_branches.cpp',
   'test_lower_subdword.cpp',
   'test_optimizer.cpp',
@@ -27,6 +28,7 @@ aco_tests_files = files(
 
 spirv_files = files(
   'test_isel.cpp',
+  'test_raven2_dot.cpp',
   'test_d3d11_derivs.cpp',
 )
 

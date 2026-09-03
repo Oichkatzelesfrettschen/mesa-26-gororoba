@@ -120,6 +120,8 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
    program->dev.has_fmac_legacy32 = program->gfx_level >= GFX10_3 && program->gfx_level < GFX12;
    program->dev.fused_mad_mix = options->compiler_info->has_fma_mix;
    program->dev.has_mad32 = options->compiler_info->has_mad32;
+   program->dev.has_accelerated_dot_product =
+      options->compiler_info->has_accelerated_dot_product;
 
    program->dev.has_desc_resource_level = options->compiler_info->has_desc_resource_level;
 

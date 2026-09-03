@@ -2299,6 +2299,7 @@ struct DeviceInfo {
    bool has_mac_legacy32 = false;
    bool has_fmac_legacy32 = false;
    bool has_mad32 = false;
+   bool has_accelerated_dot_product = false;
    bool fused_mad_mix = false;
    bool xnack_enabled = false;
    bool sram_ecc_enabled = false;

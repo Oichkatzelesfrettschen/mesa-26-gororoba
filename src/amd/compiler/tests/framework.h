@@ -28,19 +28,20 @@ bool set_variant(const char* name);
 inline bool
 set_variant(amd_gfx_level cls, const char* rest = "")
 {
-   char buf[8 + strlen(rest)];
+   std::string variant;
    if (cls == GFX10_3) {
-      snprintf(buf, sizeof(buf), "gfx10_3%s", rest);
+      variant = "gfx10_3";
    } else if (cls == GFX11_5) {
-      snprintf(buf, sizeof(buf), "gfx11_5%s", rest);
+      variant = "gfx11_5";
    } else if (cls == GFX11_7) {
-      snprintf(buf, sizeof(buf), "gfx11_7%s", rest);
+      variant = "gfx11_7";
    } else {
       unsigned num = cls - GFX6 + 6;
       num -= (cls > GFX10_3) + ((cls > GFX11_7) ? 2 : 0);
-      snprintf(buf, sizeof(buf), "gfx%d%s", num, rest);
+      variant = "gfx" + std::to_string(num);
    }
-   return set_variant(buf);
+   variant += rest;
+   return set_variant(variant.c_str());
 }
 
 void fail_test(const char* fmt, ...);

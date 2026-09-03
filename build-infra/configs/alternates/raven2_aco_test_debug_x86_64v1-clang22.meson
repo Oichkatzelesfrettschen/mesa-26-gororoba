@@ -1,0 +1,25 @@
+[built-in options]
+buildtype = 'debugoptimized'
+c_args = ['-march=x86-64', '-mtune=generic']
+# clang 22 reports the generated nir_builder_opcodes.h index initializers as
+# -Wc99-designator, which -Werror turns into a build failure in test_isel.cpp.
+# The diagnostic is about a generated header, not about the test.
+cpp_args = ['-march=x86-64', '-mtune=generic', '-Wno-c99-designator']
+
+[project options]
+platforms = []
+gallium-drivers = []
+vulkan-drivers = ['amd']
+llvm = 'enabled'
+opengl = false
+gles1 = 'disabled'
+gles2 = 'disabled'
+glx = 'disabled'
+egl = 'disabled'
+gbm = 'disabled'
+gallium-rusticl = false
+shader-cache = 'disabled'
+tools = ['drm-shim']
+build-tests = false
+build-aco-tests = true
+werror = true
