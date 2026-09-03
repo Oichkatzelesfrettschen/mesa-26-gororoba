@@ -29,6 +29,13 @@
 #define R300_RB2D_PITCH_GRANULARITY 64u
 #define R300_RB2D_OFFSET_GRANULARITY 1024u
 
+/* DST_PITCH_OFFSET splits into a 10-bit pitch field above a 22-bit offset
+ * field, so a surface counts at most this many 64-byte pitch units and
+ * this many 1 KiB offset units.  A caller building a surface reads the
+ * bound here rather than restating the field split. */
+#define R300_RB2D_MAX_PITCH_UNITS 0x3ffu
+#define R300_RB2D_MAX_OFFSET_UNITS 0x3fffffu
+
 /* The far edge a rectangle may reach on either axis, and the one place
  * this repository states why; the emitter and the tests read the value
  * rather than restating the reasoning.

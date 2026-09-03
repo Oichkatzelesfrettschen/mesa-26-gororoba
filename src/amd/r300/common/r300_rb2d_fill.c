@@ -43,11 +43,10 @@
 #define RADEON_WAIT_2D_IDLECLEAN (1u << 16)
 #define RADEON_WAIT_HOST_IDLECLEAN (1u << 18)
 
-/* DST_PITCH_OFFSET splits into a 10-bit pitch field above a 22-bit offset
- * field, and DST_Y_X and DST_WIDTH_HEIGHT each pack two 16-bit fields, so a
- * plan value wider than its field has no representation in the word. */
-#define RB2D_PITCH_FIELD_MAX 0x3ffu
-#define RB2D_OFFSET_FIELD_MAX 0x3fffffu
+/* DST_Y_X and DST_WIDTH_HEIGHT each pack two 16-bit fields, so a plan
+ * value wider than its field has no representation in the word.  The pitch
+ * and offset field bounds live in the header beside the grids they count,
+ * because a caller sizes a surface against them. */
 #define RB2D_COORD_FIELD_MAX 0xffffu
 
 /* The 2D scissor is established at its own field maximum rather than at the
@@ -124,12 +123,12 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan)
       return R300_RB2D_FILL_REFUSE_PITCH_ZERO;
    if (s->pitch_bytes % R300_RB2D_PITCH_GRANULARITY != 0)
       return R300_RB2D_FILL_REFUSE_PITCH_GRID;
-   if (s->pitch_bytes / R300_RB2D_PITCH_GRANULARITY > RB2D_PITCH_FIELD_MAX)
+   if (s->pitch_bytes / R300_RB2D_PITCH_GRANULARITY > R300_RB2D_MAX_PITCH_UNITS)
       return R300_RB2D_FILL_REFUSE_PITCH_FIELD;
    if (s->base_offset_bytes % R300_RB2D_OFFSET_GRANULARITY != 0)
       return R300_RB2D_FILL_REFUSE_OFFSET_GRID;
    if (s->base_offset_bytes / R300_RB2D_OFFSET_GRANULARITY >
-       RB2D_OFFSET_FIELD_MAX)
+       R300_RB2D_MAX_OFFSET_UNITS)
       return R300_RB2D_FILL_REFUSE_OFFSET_FIELD;
    if (s->width_pixels == 0 || s->height_pixels == 0)
       return R300_RB2D_FILL_REFUSE_EXTENT_ZERO;
