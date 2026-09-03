@@ -33,11 +33,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One IB carries a bounded number of segments so a single fill cannot ask
- * for an unbounded allocation at submission.  Each segment reaches about
- * 512 KiB, so the bound admits a 32 MiB fill and refuses past it; a longer
- * range is the multi-submission contract's, not this route's. */
-#define R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS 64u
+/* One IB carries exactly one segment.  A segment covers
+ * R300_RB2D_SAFE_EXCLUSIVE_END (8191) rows before DST_WIDTH_HEIGHT's row
+ * count would ask past the scissor the emitter opens, so at this route's
+ * 256-byte carrier (R300_RB2D_SPAN_PITCH_DIRECT_WRITE) a 1 KiB-aligned
+ * destination offset reaches 8191 * 256 = 2,096,896 bytes -- 256 bytes
+ * short of 2 MiB, the one row R300_RB2D_SPAN_MAX_RECTS_PER_SEGMENT's
+ * partial-first-row rectangle gives up when the offset does not land on
+ * the carrier's own row boundary.  Emitting several segments into one IB
+ * to cover a longer range is a later revision of this route's contract,
+ * not an omission here: r300_rb2d_linear_span_plan already produces an
+ * ordered multi-segment decomposition, and nothing in the emission loop
+ * below assumes segments == 1, but this file has not yet run the
+ * relocation-accounting and mid-stream-refusal review a multi-segment IB
+ * needs before it is trusted at submission. */
+#define R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS 1u
 
 /* Whether the command buffer's whole content is one fill.  Anything else
  * shares the queue with work this route does not order. */
