@@ -1473,6 +1473,25 @@ if with_tests
     ),
     suite : ['r3v'],
   )
+  # The public fill route's shape admission on the host: a lone
+  # vkCmdFillBuffer routes to the RB2D solid brush, and the same fill
+  # behind a pending compute dispatch does not, calibrated by proving the
+  # lone-fill case routes on its own first.  Routing touches no DRM node,
+  # so the checks run with no device present.
+  test(
+    'r3v-native-fill-route',
+    executable(
+      'r3v_native_fill_route_test',
+      files('tests/r3v_native_fill_route_test.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : r3v_native_deps,
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
   # The tuple cell's recording contract on the host: the installed
   # stream, the carrier's two GTT domains beside the read-only vertex
   # relocation, the arming gate's tuple kind, and the vertex-stream

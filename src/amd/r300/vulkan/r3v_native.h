@@ -1516,6 +1516,17 @@ void r3v_native_cmd_buffer_install_ib(
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
 
+/* Whether the command buffer carries a draw, a pending dispatch, a query
+ * op, or an event op -- every recorded work kind besides a transfer copy.
+ * r3v_native_queue_prepare_submission's own inline-ordering test and any
+ * route admitting a copy-only shape (r3v_native_fill_route.c's
+ * shape_is_one_fill) both read this one function, so a work kind added to
+ * the command buffer is added here once rather than at each caller's own
+ * field list.
+ */
+bool r3v_native_cmd_buffer_has_other_recorded_work(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+
 /* Prepares one recorded command buffer's transport ahead of
  * vkQueueSubmit: relocation list, completion reference, the single CS
  * build, semantic-cell and submit-object retention, and the arming

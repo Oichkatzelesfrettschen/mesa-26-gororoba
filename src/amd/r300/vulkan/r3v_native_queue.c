@@ -1041,14 +1041,26 @@ r3v_native_prepared_release(struct r3v_native_device *device)
    memset(prepared, 0, sizeof(*prepared));
 }
 
-static bool
-r3v_native_cmd_buffer_requires_inline_ordering(
+/* Every work kind besides a transfer copy: a draw, a pending dispatch, a
+ * query op, or an event op.  This is the field set r3v_native.h declares
+ * for the purpose ("other recorded work" a copy-only route must find
+ * absent), so a work kind added to the command buffer is added here once
+ * and every caller of this function sees it without a second edit. */
+bool
+r3v_native_cmd_buffer_has_other_recorded_work(
    const struct r3v_native_cmd_buffer *cmd_buffer)
 {
    return cmd_buffer->deferred_draw_count != 0 ||
           cmd_buffer->deferred_dispatch.pending ||
-          cmd_buffer->deferred_copy_count != 0 ||
           cmd_buffer->query_op_count != 0 || cmd_buffer->event_op_count != 0;
+}
+
+static bool
+r3v_native_cmd_buffer_requires_inline_ordering(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   return r3v_native_cmd_buffer_has_other_recorded_work(cmd_buffer) ||
+          cmd_buffer->deferred_copy_count != 0;
 }
 
 VkResult

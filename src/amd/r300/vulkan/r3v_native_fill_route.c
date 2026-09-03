@@ -50,14 +50,25 @@
 #define R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS 1u
 
 /* Whether the command buffer's whole content is one fill.  Anything else
- * shares the queue with work this route does not order. */
+ * shares the queue with work this route does not order.
+ *
+ * The copy count is this route's own fact (exactly one, not the "no
+ * copies" r3v_native_cmd_buffer_has_other_recorded_work leaves alone), so
+ * it is tested here directly; every other work kind -- draw, dispatch,
+ * query op, event op -- is tested through that one shared function, the
+ * same field set r3v_native_queue_prepare_submission's inline-ordering
+ * check reads.  A work kind added to the command buffer without a
+ * matching edit there already breaks that check's own correctness, so
+ * this route inherits the fix instead of carrying a second, independently
+ * maintained list that a new kind can slip past (as deferred_dispatch.pending
+ * did here before this fix: it was absent from this file's own list while
+ * already present in the shared one). */
 static bool
 shape_is_one_fill(const struct r3v_native_cmd_buffer *cmd_buffer,
                   const struct r3v_native_deferred_copy **op_out)
 {
    if (cmd_buffer->ib_size_dwords != 0 || cmd_buffer->deferred_copy_count != 1 ||
-       cmd_buffer->deferred_draw_count != 0 ||
-       cmd_buffer->query_op_count != 0 || cmd_buffer->event_op_count != 0)
+       r3v_native_cmd_buffer_has_other_recorded_work(cmd_buffer))
       return false;
 
    const struct r3v_native_deferred_copy *op = &cmd_buffer->deferred_copies[0];
