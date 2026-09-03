@@ -712,24 +712,33 @@ test_names(void)
  * and names an exact route cell, one more executes on the host alone, and
  * every other row carries retained evidence that reaches a unit rather than
  * a route.  A row movement that changes these counts changes the program's
- * claim about what executes, so the counts are pinned here. */
+ * claim about what executes, so the counts are pinned here.
+ *
+ * A precommitted route is a named route with a lowering, an oracle, and a
+ * gate, so the routeless count tests ABSENT directly rather than negating
+ * EXECUTING; the precommitted totals are pinned beside it, and a row moving
+ * ABSENT to PRECOMMITTED moves a count either way. */
 static void
 test_route_population(void)
 {
    uint32_t count = 0;
    const struct r300_compute_verb_row *rows = r300_compute_verb_rows(&count);
-   unsigned gpu_executing = 0, cpu_executing = 0, no_route = 0;
+   unsigned gpu_executing = 0, cpu_executing = 0, both_absent = 0;
+   unsigned gpu_precommitted = 0, cpu_precommitted = 0;
    unsigned retained_at_route_scope = 0, retained_at_raster_scope = 0;
 
    assert(rows != NULL && count == R300_COMPUTE_VERB_COUNT);
    for (uint32_t i = 0; i < count; i++) {
       const struct r300_compute_verb_row *row = &rows[i];
-      const bool gpu = row->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING;
-      const bool cpu = row->cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING;
 
-      gpu_executing += gpu;
-      cpu_executing += cpu;
-      no_route += !gpu && !cpu;
+      gpu_executing += row->gpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING;
+      cpu_executing += row->cpu_route == R300_COMPUTE_VERB_ROUTE_EXECUTING;
+      gpu_precommitted +=
+         row->gpu_route == R300_COMPUTE_VERB_ROUTE_PRECOMMITTED;
+      cpu_precommitted +=
+         row->cpu_route == R300_COMPUTE_VERB_ROUTE_PRECOMMITTED;
+      both_absent += row->gpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT &&
+                     row->cpu_route == R300_COMPUTE_VERB_ROUTE_ABSENT;
       if (row->evidence == R300_COMPUTE_VERB_EVIDENCE_SILICON_RETAINED) {
          retained_at_route_scope +=
             row->evidence_scope ==
@@ -741,7 +750,9 @@ test_route_population(void)
 
    assert(gpu_executing == 1);
    assert(cpu_executing == 2);
-   assert(no_route == 13);
+   assert(gpu_precommitted == 0);
+   assert(cpu_precommitted == 0);
+   assert(both_absent == 13);
    assert(retained_at_route_scope == 1);
    assert(retained_at_raster_scope == 13);
 }

@@ -2,17 +2,22 @@
  * SPDX-License-Identifier: MIT
  *
  * Render the compute-verb ledger as a route sheet for external tooling and
- * for a reader deciding what executes.  The ledger's own C table orders a
- * row by declaration convenience, so a reader scanning it meets the evidence
- * strength before the route status and reads a retained-bundle token as a
- * working route; thirteen rows carry SILICON_RETAINED at raster-cell scope
- * with no route at all.  The sheet fixes the reading order: route status
- * leads, the implementation and contract that would carry a route follow,
- * and the evidence columns arrive last as a pair, strength beside subject.
+ * for a reader deciding what executes.  r300_operation_registry_export
+ * carries the operation join surface and excludes route state by design, so
+ * no export reaches the ledger's route and evidence columns and a consumer
+ * asking what executes reads the C table or nothing.  This sheet is that
+ * export.
  *
- * The emitter refuses a row it cannot name in full, so a field outside its
- * enum ends the sheet instead of printing an empty column that reads as an
- * absent property.
+ * Two properties carry it.  Evidence strength prints beside its scope in
+ * every row, so a SILICON_RETAINED token never stands alone: fourteen rows
+ * carry that strength and thirteen of them reach a raster cell rather than a
+ * route.  And the emitter refuses a row it cannot name in full, so a field
+ * outside its enum ends the sheet instead of printing an empty column that
+ * reads as an absent property.
+ *
+ * operation_id is the join key: r300_numeric_domain.h holds the operation
+ * strings to diagnostics and forbids their use as joins, and the names do
+ * diverge (verb const_fill carries operation CONSTFILL).
  */
 
 #include "r300_compute_verb.h"
@@ -21,8 +26,9 @@
 
 /* Route status leads; evidence strength and scope arrive together and last. */
 static const char *const HEADER =
-   "schema_version\tverb\tcpu_route\tgpu_route\timplementation_id\t"
-   "contract_id\tunit\texactness\ttolerance\tevidence\tevidence_scope\tgate\n";
+   "schema_version\tverb\toperation_id\tcpu_route\tgpu_route\t"
+   "implementation_id\tcontract_id\tunit\texactness\ttolerance\tevidence\t"
+   "evidence_scope\tgate\n";
 
 static const char *
 exactness_name(enum r300_compute_verb_exactness e)
@@ -74,8 +80,9 @@ main(void)
          return 1;
       }
 
-      if (printf("1\t%s\t%s\t%s\t%u\t%u\t%s\t%s\t%.9g\t%s\t%s\t%s\n",
-                 row->name, cpu, gpu, (unsigned)row->implementation_id,
+      if (printf("1\t%s\t%u\t%s\t%s\t%u\t%u\t%s\t%s\t%.9g\t%s\t%s\t%s\n",
+                 row->name, (unsigned)row->operation_id, cpu, gpu,
+                 (unsigned)row->implementation_id,
                  (unsigned)row->gpu_route_contract_id, unit, exact,
                  (double)row->tolerance, evidence, scope, row->gpu_gate) < 0)
          return 1;
