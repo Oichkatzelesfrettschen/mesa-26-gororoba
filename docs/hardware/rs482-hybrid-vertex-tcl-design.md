@@ -15,7 +15,7 @@ This document reserves **proven** for claims formally verified in Rocq in the
 `open_gororoba` repository (`proofs/theories/*.v`, checked, zero admits) -- the
 mathematics: Cayley-Dickson algebra, quaternion and octonion norms, quaternion
 matrix-rotation equivalence, rotation norm preservation, and the FP24 DP4
-exact-integer bound. Everything about the RS482 silicon -- that a draw executes,
+exact-integer bound. Everything about the RS485M silicon -- that a draw executes,
 that the wedge is in the VAP/GA, that a register shape submits hang-free, that
 MRT export is byte-exact, that the transform runs at a measured rate -- is
 **demonstrated on silicon** or **measured**, never "proven." A finite hardware
@@ -190,7 +190,7 @@ computes `esize*(nverts-1)*4` with `nverts=0`, underflows to `0xFFFFFFFC`, and
 rejects the IB with `-EINVAL` after the half-emitted stream has corrupted the
 heap. Fix commit `9899a4d8dd3` ("r300: clamp SWTCL vertex batches to the 16-bit VAP
 count limit") caps the r3xx/r4xx byte budget below the wrap and adds the r5xx
-alt-count path; validated on RS482 (the 65536-point draw renders).  The SWTCL
+alt-count path; validated on RS485M (the 65536-point draw renders).  The SWTCL
 path that coexists with R2VB re-ingest emits large-count draws under that
 clamp; the R2VB emitter declines draws with `count >= 65536` separately.  Do
 not re-introduce an unclamped `NUM_VERTICES` emit.
@@ -261,7 +261,7 @@ read asymmetry above.
 ## Mathematical decomposition of the transform
 
 The vertex TCL pipeline factors into stages, each tagged by where it is safe to
-run on RS482:
+run on RS485M:
 
 1. **Model-view-projection transform** `v_clip = M * v_object`, `M` a 4x4. A
    pure linear matrix multiply -- **HW-safe** on the fragment ALU (below).
@@ -376,7 +376,7 @@ standing vertex path:
   FP24 floor, then three viewport MADs), selected by the explicit
   `r300_r2vb_position_space` contract -- `POSITION_CLIP` emits the raw `M*v`
   homogeneous result, `POSITION_WINDOW` emits divided window space with
-  `w = 1`. Verified on RS482 against the CPU window-space oracle
+  `w = 1`. Verified on RS485M against the CPU window-space oracle
   (`r2vb_divide_verify` 3/3, tol 0.05).
 - **Clipping** classifies in the raw clip-space domain before the divide.
   The classifier (`r300_r2vb_clip.h`) mirrors the gallium draw software
