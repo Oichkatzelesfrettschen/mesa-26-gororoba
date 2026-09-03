@@ -222,6 +222,15 @@ test_checker_calibration(void)
    m[3].gate = m[2].gate;
    REFUSES("route table repeats a gate");
 
+   /* Identity order is what r300_operation_route()'s subtraction depends
+    * on: a swapped pair resolves every lookup for both to the other row. */
+   {
+      const struct r300_operation_route_row swap = m[4];
+      m[4] = m[5];
+      m[5] = swap;
+   }
+   REFUSES("routes out of identity order");
+
    /* Two executing routes for one operation and executor would leave the
     * selector choosing by table position.  The table refuses that shape
     * here rather than at the first dispatch that meets it -- the rule that

@@ -393,6 +393,18 @@ r300_operation_route_rows_valid(const struct r300_operation_route_row *t,
       }
    }
 
+   /* r300_operation_route() reaches a row by subtracting one from the
+    * identity, NONE holding index 0 of the enum and no row, so a row out of
+    * identity order would resolve every later lookup to a different route
+    * and bind a dispatch to contracts it never named.  The lookup's
+    * arithmetic is the rule. */
+   for (uint32_t i = 0; i < count; i++) {
+      if (t[i].route_id != (enum r300_operation_route_id)(i + 1)) {
+         *reason = "routes out of identity order";
+         return false;
+      }
+   }
+
    /* One executor's eligible set must be decidable without table order.
     * Two executing routes for one operation on one executor would leave the
     * selector choosing by position, so the table refuses that shape here
