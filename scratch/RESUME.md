@@ -55,6 +55,70 @@ because the two diverge once an agent has worked.
     vostro 669  Option ROM static decomposition model, 27 facets in four
                 layers, bounded to COMBIOS by the image's own discriminator.
 
+## Agents that reported before the boundary
+
+Three landed and are not stranded. Their branches are pushed and their
+working trees clean.
+
+    r300/legacy_2d_register_authority       PR 2120   cd6ca1d7367
+        Twelve registers and twelve field codes out of r300_rb2d_fill.c.
+        Both goldens byte-identical, all twelve addresses agree with the
+        kernel, six mutation categories caught, profiles 3/4/5 at Ok 387
+        Fail 0. Two findings worth keeping: rmmio_base maps from
+        pci_resource_start(pdev, 2), so the aperture is BAR 2 and not BAR 0;
+        and three direct-write tests recompute from the same emitter, so
+        they are self-consistent rather than three independent witnesses.
+
+    r3v/rb2d_fill_route_defect_repairs      no PR    8cb7b2c1aa1
+        The four RB2D fill repairs as separate cherry-pickable commits on
+        top of the rebase: f41aa162589 rebase to the layout-carrying span
+        planner, f2bba59fcf0 one-segment bound, 261cab2b13b dispatch hole
+        with its regression test, 8cb7b2c1aa1 arming case with the
+        provenance reorder and its test. Ok 390 Fail 0; both new tests
+        calibrated by reverting the fix and observing the assertion.
+        A new branch because the rebase rewrote history and the force-push
+        to the original PR branch was refused. This is a defect proof and a
+        cherry-pick source, not a merge candidate.
+
+        One-segment reach at the 256-byte pitch: 8191 rows times 256 bytes
+        is 2096896 bytes, 256 short of 2 MiB, the row an unaligned start
+        gives up to its partial first rectangle.
+
+        The arming case pins deferred_copy_count 1, reference_count 1, copy
+        kind FILL_BUFFER, gpu_routed, a bound destination buffer and memory,
+        dword-aligned offset and size, offset plus size inside the buffer,
+        and the reference's read_domains 0, write_domain GTT, and memory and
+        handle identity. The pattern dword carries no numeric bound because
+        DP_BRUSH_FRGD_CLR accepts any 32-bit value. What the replacement
+        still owes is the whole-submit authority: allocation size, pitch,
+        segment and rectangle counts, IB dwords and digest, relocation
+        sites, and the deployment epoch.
+
+    test/tool_gate_coverage_and_rs485m_naming  PR 670 draft  3d925b4b9ec
+        Coverage landed for all five tools, which was the blocker; the
+        naming correction did not. That is the right half to have finished,
+        because correcting naming without a gate is what produced the
+        earlier revert. Four new test files with mutation-proven coverage
+        plus runtime_event_capture.py's pre-existing test finally wired into
+        the Makefile.
+
+        The dispatcher's rule, recovered: it diffs base..HEAD for changed
+        tools, looks each up in verifier-coverage.tsv, and fails closed on a
+        missing row. A generator or tool needs either a declared self-check
+        or a paired test file, and whichever exists must itself resolve to a
+        command in the repo-debt-check-serial recipe. Presence on disk is
+        not coverage; runnable from the Makefile is.
+
+        Two tools cannot take full end-to-end coverage and got their
+        deterministic helpers covered instead: decompose_bios_modules.py
+        orchestrates bios_extract over Dell-copyrighted modules this
+        repository cannot commit, and mesa_workspace_tool_inventory.py's
+        main depends on live filesystem and package-manager state.
+
+        Remaining on that branch: correct the RS485M naming in the five
+        tools, run repo-debt-check-touched against origin/main, and run
+        codex.
+
 ## Branches an agent owned when the budget ran out
 
 Each was told to push. Verify with `git fetch --prune` and read the branch;
