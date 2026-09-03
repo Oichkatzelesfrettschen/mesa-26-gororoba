@@ -12,6 +12,11 @@
  * own rather than relying on an upstream recorder to have blocked it. The
  * device, memory, and command buffer are stack storage: routing touches no
  * DRM node, so the checks run with no device present.
+ *
+ * test_rb2d_fill_public_geometry_predicate covers the second half of the
+ * same route: the arming gate's cell_geometry_unfrozen (r3v_native_queue.c)
+ * must reach a real predicate for R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC
+ * rather than the UNDECLARED default every unhandled kind falls to.
  */
 
 #undef NDEBUG
@@ -20,6 +25,7 @@
 #include "r3v_route_policy.h"
 
 #include <assert.h>
+#include <radeon_drm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,11 +133,144 @@ test_dispatch_then_fill_refuses_shape(void)
    assert(!cmd_buffer.deferred_copies[0].gpu_routed);
 }
 
+/* Calibration and regression for the arming gate's RB2D_FILL_PUBLIC case
+ * (r3v_native_queue.c's cell_geometry_unfrozen). A shape as well-formed as
+ * this route itself installs must reach a real predicate outcome --
+ * frozen, false -- and every fact the case pins, broken one at a time,
+ * must report unfrozen. Before that case existed, RB2D_FILL_PUBLIC fell
+ * to cell_geometry_unfrozen's default arm and reported unfrozen
+ * unconditionally, so facts.nonmaximum_extent was always true and
+ * r3v_native_arming_evaluate always refused with
+ * R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT regardless of shape; the untouched
+ * default case, exercised here by an unrelated cell kind, still reports
+ * that same unconditional true. */
+static void
+test_rb2d_fill_public_geometry_predicate(void)
+{
+   struct r3v_native_memory memory = {
+      .bo = { .handle = 0x88u, .size = TEST_MEMORY_BYTES },
+   };
+   struct r3v_native_buffer dst = { .memory = &memory, .offset = 0 };
+   dst.vk.size = TEST_MEMORY_BYTES;
+   struct r3v_native_deferred_copy copy = {
+      .kind = R3V_NATIVE_COPY_FILL_BUFFER,
+      .dst_buffer = &dst,
+      .dst_offset = 0,
+      .size = TEST_FILL_BYTES,
+      .clear_dword = 0x11223344u,
+      .gpu_routed = true,
+   };
+   struct r3v_native_bo_reference ref = {
+      .handle = memory.bo.handle,
+      .read_domains = 0,
+      .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .memory = &memory,
+   };
+   struct r3v_native_cmd_buffer cmd_buffer = {
+      .cell_kind = R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
+      .deferred_copies = &copy,
+      .deferred_copy_count = 1,
+      .references = &ref,
+      .reference_count = 1,
+   };
+
+   assert(!r3v_native_cell_geometry_unfrozen(&cmd_buffer));
+
+   struct r3v_native_cmd_buffer bad;
+
+   bad = cmd_buffer;
+   bad.deferred_copy_count = 0;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   bad = cmd_buffer;
+   bad.reference_count = 0;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy not_fill = copy;
+   not_fill.kind = R3V_NATIVE_COPY_UPDATE_BUFFER;
+   bad = cmd_buffer;
+   bad.deferred_copies = &not_fill;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy not_routed = copy;
+   not_routed.gpu_routed = false;
+   bad = cmd_buffer;
+   bad.deferred_copies = &not_routed;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy no_dst = copy;
+   no_dst.dst_buffer = NULL;
+   bad = cmd_buffer;
+   bad.deferred_copies = &no_dst;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_buffer dst_no_memory = dst;
+   dst_no_memory.memory = NULL;
+   struct r3v_native_deferred_copy copy_no_memory = copy;
+   copy_no_memory.dst_buffer = &dst_no_memory;
+   bad = cmd_buffer;
+   bad.deferred_copies = &copy_no_memory;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy zero_size = copy;
+   zero_size.size = 0;
+   bad = cmd_buffer;
+   bad.deferred_copies = &zero_size;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy odd_size = copy;
+   odd_size.size = TEST_FILL_BYTES + 1;
+   bad = cmd_buffer;
+   bad.deferred_copies = &odd_size;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy odd_offset = copy;
+   odd_offset.dst_offset = 1;
+   bad = cmd_buffer;
+   bad.deferred_copies = &odd_offset;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_deferred_copy past_end = copy;
+   past_end.dst_offset = TEST_MEMORY_BYTES;
+   bad = cmd_buffer;
+   bad.deferred_copies = &past_end;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_bo_reference read_domain_set = ref;
+   read_domain_set.read_domains = RADEON_GEM_DOMAIN_GTT;
+   bad = cmd_buffer;
+   bad.references = &read_domain_set;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_bo_reference no_write_domain = ref;
+   no_write_domain.write_domain = 0;
+   bad = cmd_buffer;
+   bad.references = &no_write_domain;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   struct r3v_native_memory other_memory = {
+      .bo = { .handle = 0x99u, .size = TEST_MEMORY_BYTES },
+   };
+   struct r3v_native_bo_reference wrong_memory = ref;
+   wrong_memory.memory = &other_memory;
+   bad = cmd_buffer;
+   bad.references = &wrong_memory;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+
+   /* The state this route's cell kind fell to before its own case
+    * existed: no case names it, so the predicate refuses unconditionally
+    * however well-formed the recorded shape is. */
+   bad = cmd_buffer;
+   bad.cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
+   assert(r3v_native_cell_geometry_unfrozen(&bad));
+}
+
 int
 main(void)
 {
    test_single_fill_routes();
    test_dispatch_then_fill_refuses_shape();
+   test_rb2d_fill_public_geometry_predicate();
    printf("r3v_native_fill_route_test: all checks passed\n");
    return 0;
 }

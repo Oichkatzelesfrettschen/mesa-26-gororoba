@@ -1516,6 +1516,16 @@ void r3v_native_cmd_buffer_install_ib(
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
 
+/* The geometry fact the arming gate reads for cmd_buffer->cell_kind: true
+ * when the recorded shape does not match that kind's frozen contract (an
+ * unset or mismatched cell kind included), false when it does. Defined in
+ * r3v_native_queue.c beside the arming submission path that is its only
+ * production caller; exported so a host-only test can hold one cell
+ * kind's arm to a real geometry predicate without driving submission.
+ */
+bool r3v_native_cell_geometry_unfrozen(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+
 /* Whether the command buffer carries a draw, a pending dispatch, a query
  * op, or an event op -- every recorded work kind besides a transfer copy.
  * r3v_native_queue_prepare_submission's own inline-ordering test and any

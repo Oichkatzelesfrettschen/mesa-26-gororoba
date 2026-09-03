@@ -145,9 +145,14 @@ r3v_native_evidence_require_fresh(const char *dir,
  * directions, since the color backend writes the row and the consuming
  * vertex fetch reads it.  A kind outside the set reports unfrozen, and
  * the gate's own kind check names it first.
+ *
+ * Exported (not static) so r3v_native_fill_route_test.c can hold the
+ * RB2D_FILL_PUBLIC arm to a real cell without driving the full submission
+ * path; every other caller stays inside this file.
  */
-static bool
-cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
+bool
+r3v_native_cell_geometry_unfrozen(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
 {
    switch (cmd_buffer->cell_kind) {
    case R3V_NATIVE_CELL_KIND_TRIANGLE: {
@@ -430,6 +435,50 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
              depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
              depth->memory == NULL ||
              depth->memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES;
+   }
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC: {
+      /* The public fill's frozen shape is the recorded copy itself, not a
+       * fixed render extent the way the triangle family's public target
+       * is: r3v_native_fill_route.c builds one IB from
+       * cmd_buffer->deferred_copies[0], a byte range vkCmdFillBuffer
+       * named, so this predicate reads that copy and the one relocation
+       * the route installed for it rather than deferred_draws[0] and a
+       * target_width/target_height pair -- a fill-only command buffer
+       * never populates deferred_draws[0].  gpu_routed distinguishes the
+       * copy this route actually resolved to the GPU from one still
+       * awaiting the host store loop, so an un-routed record here is
+       * already a mismatch between the cell kind and the copy it names.
+       */
+      if (cmd_buffer->deferred_copy_count != 1 ||
+          cmd_buffer->reference_count != 1)
+         return true;
+      const struct r3v_native_deferred_copy *fill =
+         &cmd_buffer->deferred_copies[0];
+      if (fill->kind != R3V_NATIVE_COPY_FILL_BUFFER || !fill->gpu_routed ||
+          fill->dst_buffer == NULL || fill->dst_buffer->memory == NULL)
+         return true;
+      /* The span decomposition cuts on dword boundaries
+       * (r300_rb2d_linear_span.c) and refuses a footprint reaching past
+       * the bound buffer, so a frozen fill's own offset and size hold to
+       * the same two grids and the same containment the route already
+       * proved before it installed this cell's stream. The pattern dword
+       * itself (fill->value) carries no legality bound of its own --
+       * DP_BRUSH_FRGD_CLR takes any 32-bit pattern -- so it names the
+       * copy kind this case reads and nothing past that.
+       */
+      if (fill->size == 0 || fill->size % 4u != 0u ||
+          fill->dst_offset % 4u != 0u ||
+          fill->dst_offset + fill->size > fill->dst_buffer->vk.size)
+         return true;
+      /* One destination, device-written and never device-read, naming the
+       * exact memory the copy's own buffer binds -- the same fact
+       * r3v_native_fill_route.c's own reference[0] construction pins at
+       * install time. */
+      const struct r3v_native_bo_reference *dst = &cmd_buffer->references[0];
+      return dst->read_domains != 0 ||
+             dst->write_domain != RADEON_GEM_DOMAIN_GTT ||
+             dst->memory != fill->dst_buffer->memory ||
+             dst->handle != fill->dst_buffer->memory->bo.handle;
    }
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER: {
       uint32_t carrier_bytes;
@@ -1130,7 +1179,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
       device->pdevice->pci_device_id, cmd_buffer->cell_kind, ib_digest,
       device->manifest_dir, kernel_release, sizeof(kernel_release),
       module_srcversion, sizeof(module_srcversion));
-   facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
+   facts.nonmaximum_extent = r3v_native_cell_geometry_unfrozen(cmd_buffer);
    facts.serial_submissions_consumed = device->serial_submissions_consumed;
    facts.burst_recorded_draws = cmd_buffer->burst_draws;
 
@@ -1626,7 +1675,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             ib_digest, device->manifest_dir, kernel_release,
             sizeof(kernel_release), module_srcversion,
             sizeof(module_srcversion));
-         facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
+         facts.nonmaximum_extent = r3v_native_cell_geometry_unfrozen(cmd_buffer);
          facts.serial_submissions_consumed =
             device->serial_submissions_consumed;
          facts.burst_recorded_draws = cmd_buffer->burst_draws;

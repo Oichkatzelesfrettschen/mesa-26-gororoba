@@ -9,13 +9,13 @@
  * binding, the range, and the gates are the ones live at execution.  The
  * order inside it is the whole safety argument: every fallible step --
  * shape admission, route resolution, span decomposition, IB sizing,
- * allocation, emission, relocation validation -- completes before the
- * stream is installed, and the host fill for a routed record is skipped in
- * r3v_native_transfer.c before it maps anything.  A record that reaches
- * this file and leaves it routed is one the device performs; a record that
- * fails any step here leaves the command buffer exactly as it was and the
- * host path performs it, except under GPU_ONLY, where the refusal is the
- * answer.
+ * allocation, emission, relocation validation, provenance validation --
+ * completes before the stream is installed, and the host fill for a
+ * routed record is skipped in r3v_native_transfer.c before it maps
+ * anything.  A record that reaches this file and leaves it routed is one
+ * the device performs; a record that fails any step here leaves the
+ * command buffer exactly as it was and the host path performs it, except
+ * under GPU_ONLY, where the refusal is the answer.
  *
  * The admitted command shape is deliberately one: a command buffer whose
  * whole content is a single vkCmdFillBuffer, with no render pass, draw,
@@ -236,6 +236,35 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       return VK_SUCCESS;
    }
 
+   /* Built and validated in a local before anything touches cmd, so a
+    * provenance the policy rejects leaves the command buffer exactly as
+    * this file's own header contract promises -- no installed stream, no
+    * gpu_routed, no fill_route_active -- rather than the device-lost fault
+    * this route used to raise only after both were already set. */
+   const struct r3v_execution_provenance provenance = {
+      .operation_id = route->operation_id,
+      .route_id = route->route_id,
+      .unit = route->unit,
+      .executor = route->executor,
+      .route_state = route->state,
+      .host_semantic_node = false,
+      .device_submission = true,
+      .experimental_admission =
+         route->state != R300_OPERATION_ROUTE_EXECUTING,
+      .ib_dwords = dwords,
+      .relocation_count = reloc_total,
+   };
+
+   const char *provenance_reason = NULL;
+   if (!r3v_execution_provenance_valid(&provenance, policy,
+                                       &provenance_reason)) {
+      free(ib);
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: fill route provenance is invalid: %s",
+                       provenance_reason != NULL ? provenance_reason
+                                                 : "unnamed");
+   }
+
    struct r3v_native_bo_reference *references =
       calloc(1, sizeof(*references));
    if (references == NULL) {
@@ -254,38 +283,13 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    r3v_native_cmd_buffer_install_ib(cmd, R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
                                     ib, dwords, references, 1u);
 
-   /* The record is marked after the stream is installed, so the two move
-    * together: a marked record without an installed IB would be a fill
-    * nobody performs, and r3v_native_transfer.c refuses that pairing rather
-    * than falling back to the host. */
+   /* Both commit together, after the stream installs: a marked record
+    * without an installed IB would be a fill nobody performs, and
+    * r3v_native_transfer.c refuses that pairing rather than falling back
+    * to the host. */
    cmd->deferred_copies[0].gpu_routed = true;
-
-   cmd->fill_route_provenance = (struct r3v_execution_provenance){
-      .operation_id = route->operation_id,
-      .route_id = route->route_id,
-      .unit = route->unit,
-      .executor = route->executor,
-      .route_state = route->state,
-      .host_semantic_node = false,
-      .device_submission = true,
-      .experimental_admission =
-         route->state != R300_OPERATION_ROUTE_EXECUTING,
-      .ib_dwords = dwords,
-      .relocation_count = reloc_total,
-   };
+   cmd->fill_route_provenance = provenance;
    cmd->fill_route_active = true;
-
-   const char *provenance_reason = NULL;
-   if (!r3v_execution_provenance_valid(&cmd->fill_route_provenance, policy,
-                                       &provenance_reason)) {
-      /* The record cannot be unwound here without leaving the command
-       * buffer half-routed, so a provenance the policy rejects is a device
-       * fault rather than a fallback. */
-      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                       "r3v-native: fill route provenance is invalid: %s",
-                       provenance_reason != NULL ? provenance_reason
-                                                 : "unnamed");
-   }
 
    return VK_SUCCESS;
 }
