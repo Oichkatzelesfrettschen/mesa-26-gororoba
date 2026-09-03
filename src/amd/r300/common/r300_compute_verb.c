@@ -108,7 +108,7 @@ static const struct r300_compute_verb_row rows[R300_COMPUTE_VERB_COUNT] = {
 #undef ROW
 
 bool
-r300_compute_gpu_coverage_complete_rows(
+r300_compute_dual_route_coverage_complete_rows(
    const struct r300_compute_verb_row *table, uint32_t count)
 {
    if (count == 0)
@@ -125,7 +125,7 @@ bool
 r300_compute_verb_queue_claim_rows(
    const struct r300_compute_verb_row *table, uint32_t count, bool gate_open)
 {
-   if (r300_compute_gpu_coverage_complete_rows(table, count))
+   if (r300_compute_dual_route_coverage_complete_rows(table, count))
       return true;
    if (!gate_open)
       return false;
@@ -137,9 +137,9 @@ r300_compute_verb_queue_claim_rows(
 }
 
 bool
-r300_compute_gpu_coverage_complete(void)
+r300_compute_dual_route_coverage_complete(void)
 {
-   return r300_compute_gpu_coverage_complete_rows(rows,
+   return r300_compute_dual_route_coverage_complete_rows(rows,
                                                   R300_COMPUTE_VERB_COUNT);
 }
 

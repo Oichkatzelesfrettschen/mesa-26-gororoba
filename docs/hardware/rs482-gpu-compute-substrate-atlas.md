@@ -742,7 +742,7 @@ route** is a dispatchable path under an exact gate, and fourteen of fifteen rows
 have no such route built: `IDENTITY_MAP` alone runs both routes, and
 `BITWISE_NOT_MAP` runs its CPU route with its GPU route absent. Absent route with a confirmed operation means the
 arithmetic is proven and the plumbing is not, which is precisely what this atlas
-exists to unblock. `r300_compute_verb.c:r300_compute_gpu_coverage_complete`
+exists to unblock. `r300_compute_verb.c:r300_compute_dual_route_coverage_complete`
 therefore returns false against the full table, and only a gated claim can pass.
 That predicate measures the ledger's own dual-route matrix; Vulkan compute
 conformance is the wider contract named beside the refusal classes.
