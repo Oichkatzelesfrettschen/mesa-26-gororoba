@@ -78,8 +78,11 @@ qualification-grade artifact exists.
         kernel, six mutation categories caught, profiles 3/4/5 at Ok 387
         Fail 0. Two findings worth keeping: rmmio_base maps from
         pci_resource_start(pdev, 2), so the aperture is BAR 2 and not BAR 0;
-        and three direct-write tests recompute from the same emitter, so
-        they are self-consistent rather than three independent witnesses.
+        and of the three direct-write tests, two recompute from the same
+        emitter and passed under all six address mutations, so only the
+        pinned golden is a witness. Three tests, one witness. The new
+        per-register guard is what now makes a moved definition fail by
+        name rather than only moving a digest.
 
         Two caveats that bound what this branch proves. REPRODUCIBLE_RUN=1
         was not set, so its profile verdicts are ordinary build and host
