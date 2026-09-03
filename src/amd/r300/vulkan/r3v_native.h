@@ -8,6 +8,7 @@
 #define R3V_NATIVE_H
 
 #include "r3v_native_arming.h"
+#include "r3v_route_policy.h"
 #include "r3v_native_plan.h"
 
 #include "amd/r300/common/r300_compute_job.h"
@@ -223,6 +224,12 @@ struct r3v_native_deferred_copy {
    uint32_t clear_dword;
    uint8_t clear_texel[16];
    uint8_t *update_data;
+   /* The device performs this record: an executor was resolved at queue
+    * preparation and its stream installed, so the host executes nothing
+    * for it.  r3v_native_transfer.c tests this before it maps anything,
+    * because the map is the observable side effect a hardware claim
+    * excludes, not just the store loop. */
+   bool gpu_routed;
 };
 
 /* The first command-pool allocation keeps ordinary copy recordings compact;
@@ -701,6 +708,13 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
+
+   /* What the fill route resolved for this command buffer, valid only
+    * while fill_route_active.  It is the record a hardware claim rests
+    * on: the executor, the route identity, and whether the host computed
+    * the result. */
+   struct r3v_execution_provenance fill_route_provenance;
+   bool fill_route_active;
    uint32_t deferred_copy_capacity;
    /* The compute recording state: a dispatch-only command buffer binds
     * a compute pipeline and one set-0 descriptor set and records one
@@ -986,6 +1000,10 @@ struct r3v_native_device {
     * selects nothing.  Indexed by enum r300_operation_route_id, whose NONE
     * slot stays NULL. */
    const char *compute_route_gates[R300_OPERATION_ROUTE_COUNT];
+
+   /* What the device asks of every route decision, read once at creation
+    * so a policy cannot change under a recorded command buffer. */
+   enum r3v_execution_policy execution_policy;
    /* Failure injection at the fetched route's composition boundary: a
     * nonzero negative errno makes the admission treat the composed route
     * as refused with that errno, after the emitters ran and before any
@@ -1476,6 +1494,19 @@ VkResult r3v_native_cmd_buffer_append_ib(
    const struct r3v_native_bo_reference *references,
    uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell);
+
+/* Resolves the executor for a command buffer whose whole content is one
+ * vkCmdFillBuffer, and installs the RB2D stream when the GPU route answers.
+ *
+ * A shape this route does not admit returns VK_SUCCESS with nothing
+ * changed, so the host path performs it.  Under GPU_ONLY a request the
+ * route was asked to answer and could not refuses with
+ * VK_ERROR_FEATURE_NOT_PRESENT before anything is written.  Every fallible
+ * step completes before the stream is installed, so a failure anywhere
+ * leaves the command buffer exactly as it was.
+ */
+VkResult r3v_native_cmd_buffer_route_deferred_fill(
+   struct r3v_native_device *device, struct r3v_native_cmd_buffer *cmd);
 
 void r3v_native_cmd_buffer_install_ib(
    struct r3v_native_cmd_buffer *cmd_buffer, enum r3v_native_cell_kind kind,

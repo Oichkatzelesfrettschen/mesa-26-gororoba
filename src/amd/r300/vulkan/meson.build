@@ -117,6 +117,37 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # Host exclusion: the fill route's own source reaches no byte-moving or
+  # mapping call, the transfer path tests the routed flag before it maps,
+  # and the record is marked only after its stream is installed.  The
+  # checker calibrates on synthetic known-bad sources first.
+  test(
+    'r3v-fill-route-host-exclusion',
+    prog_python,
+    args : [files('tests/r3v_fill_route_host_exclusion.py'),
+            meson.project_source_root()],
+    suite : ['r3v'],
+  )
+
+  # Execution policy and provenance: a closed gate reaches the host,
+  # GPU_ONLY refuses rather than falling back, the precommitted RB2D route
+  # opens on the exact value alone and only for the use it serves, and a
+  # provenance record cannot overstate what executed.
+  test(
+    'r3v-route-policy',
+    executable(
+      'r3v_route_policy_test',
+      files('tests/r3v_route_policy_test.c', 'r3v_route_policy.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.'),
+                             include_directories('../common')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : [libr300_common],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Delivery route policy: the R2VB gate opens on the exact value alone,
   # the format set is closed, and every refused input lands on the CPU
   # route with a naming reason.
@@ -197,7 +228,9 @@ r3v_native_files = files(
   'r3v_native_plan_replay.c',
   'r3v_native_queue.c',
   'r3v_native_recording.c',
+  'r3v_native_fill_route.c',
   'r3v_native_transfer.c',
+  'r3v_route_policy.c',
   'r3v_interpolation_lowering.c',
   'r3v_post_vs_lowering.c',
   'r3v_shader_interface.c',

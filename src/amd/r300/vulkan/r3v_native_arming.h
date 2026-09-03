@@ -55,6 +55,11 @@ enum r3v_native_cell_kind {
    R3V_NATIVE_CELL_KIND_UNDECLARED = 0,
    R3V_NATIVE_CELL_KIND_TRIANGLE,
    R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
+   /* The public RB2D fill: one vkCmdFillBuffer resolved to the RB2D solid
+    * brush, emitted as the ordered fill plans one linear span decomposes
+    * into.  Unlike DIRECT_WRITE, whose geometry is fixed, this kind's
+    * rectangles come from the recorded byte range. */
+   R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
    R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
    R3V_NATIVE_CELL_KIND_R2VB_REINGEST,
    R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE,

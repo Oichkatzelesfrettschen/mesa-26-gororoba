@@ -143,6 +143,13 @@ execute_copy(struct r3v_native_device *device,
    }
    case R3V_NATIVE_COPY_FILL_BUFFER:
    case R3V_NATIVE_COPY_UPDATE_BUFFER: {
+      /* A routed record is the device's.  The test comes before the
+       * mapping because the map is the observable host side effect a
+       * hardware claim excludes, not just the store loop below it: a
+       * routed record that reached map_memory would already have broken
+       * the claim whatever it did afterwards. */
+      if (op->gpu_routed)
+         return VK_SUCCESS;
       dst_memory = op->dst_buffer->memory;
       if (dst_memory == NULL)
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
