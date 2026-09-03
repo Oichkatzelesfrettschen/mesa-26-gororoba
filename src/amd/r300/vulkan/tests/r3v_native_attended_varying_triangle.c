@@ -4,7 +4,7 @@
  * Attended runner for the computed-varying triangle cell: the public
  * Vulkan surface -- render pass, the varying vertex and pass-through
  * fragment modules, vertex buffer, draw, submit -- on the CPU delivery
- * route, so RS482 silicon rasterizes one vertex-computed varying through
+ * route, so RS485M silicon rasterizes one vertex-computed varying through
  * the RS interpolator into the color target.  The CPU executor writes
  * eight-dword records (the transformed position, then the tint the
  * vertex program computes) into the carrier; the consumer fetches them
@@ -242,7 +242,7 @@ main(int argc, char **argv)
     */
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Attended producer-plus-re-ingest cell: submits the concatenated
- * reference stream to RS482 silicon through the native ICD, retains the
+ * reference stream to RS485M silicon through the native ICD, retains the
  * carrier and the color target durably, and classifies the read-back.
  * The carrier check separates the producer stage from the consuming
  * draw, and the triangle output oracle judges the re-ingested render,
@@ -179,7 +179,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 

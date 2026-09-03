@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Attended rasterizer interpolation probe on RS482 (Radeon Xpress 200M,
- * CHIP_RS480, R300-class US/PFS fixed VLIW): two render passes draw one
+ * Attended rasterizer interpolation probe on RS485M (ATI Radeon Xpress
+ * 1150, CHIP_RS480, R300-class US/PFS fixed VLIW): two render passes draw one
  * carrier whose three vertices hold unequal reciprocal clip W and one
  * TEX0 varying, the first pass through the smooth fragment interface
  * and the second through the NoPerspective interface an open probe gate
@@ -920,7 +920,7 @@ main(int argc, char **argv)
         props.deviceID, props.deviceName);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 

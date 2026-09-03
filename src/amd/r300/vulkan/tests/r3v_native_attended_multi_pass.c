@@ -5,7 +5,7 @@
  * r3v_native_record_multi_pass -- the first installed, the second
  * appended through the primitive the public two-draw command buffer
  * takes -- and drives the concatenation to a live DRM_RADEON_CS on
- * RS482 silicon.  Each pass draws the reference triangle into its own
+ * RS485M silicon.  Each pass draws the reference triangle into its own
  * target with its own fragment constant, so each target names the pass
  * that wrote it and the offline emitter's digest is the stream's.  Runs
  * only under the authorization and procedure in
@@ -232,7 +232,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 
