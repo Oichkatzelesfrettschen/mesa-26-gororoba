@@ -44,6 +44,7 @@ enum r300_compute_verb_unit {
    R300_COMPUTE_VERB_UNIT_R2VB_CARRIER,
    /* The RB3D color-buffer clear path, with no fragment-ALU arithmetic. */
    R300_COMPUTE_VERB_UNIT_RB3D_CLEAR,
+   R300_COMPUTE_VERB_UNIT_COUNT,
 };
 
 /* What a route may promise against the CPU oracle.  The class is part
@@ -67,13 +68,17 @@ enum r300_compute_verb_route_status {
    R300_COMPUTE_VERB_ROUTE_EXECUTING,
 };
 
-/* The evidence class behind a row.  SILICON_RETAINED: the lowering
- * delivered bit- or tolerance-exact results on RS482 in a retained
- * bundle (the Gallium-mediated lane's raster-verb corpus, retired with
- * that lane; the bundle identities ride the commit message and the
- * findings corpus).  SOURCE_GROUNDED: the unit and encoding follow from
- * the register programming guide and the ISA, with no retained
- * delivery.  HOST: the CPU executor's own tests. */
+/* How strong a row's evidence is, saying nothing about what the evidence
+ * is about: the subject is the separate scope enum below, and the two
+ * read together or not at all.  SILICON_RETAINED: a retained RS482 bundle
+ * holds a bit- or tolerance-exact delivery (the Gallium-mediated lane's
+ * raster-verb corpus, retired with that lane; the bundle identities ride
+ * the commit message and the findings corpus).  What that bundle
+ * exercised -- one functional unit's behavior, or this verb's exact route
+ * -- is the row's scope, so SILICON_RETAINED at RASTER_CELL scope
+ * supports a proposed route and leaves the route absent.  SOURCE_GROUNDED:
+ * the unit and encoding follow from the register programming guide and the
+ * ISA, with no retained delivery.  HOST: the CPU executor's own tests. */
 enum r300_compute_verb_evidence {
    R300_COMPUTE_VERB_EVIDENCE_HOST = 0,
    R300_COMPUTE_VERB_EVIDENCE_SOURCE_GROUNDED,
@@ -83,7 +88,16 @@ enum r300_compute_verb_evidence {
 /* The smallest claim to which a row's evidence applies.  Scope is separate
  * from strength: a retained raster-cell observation may support a proposed
  * route, but it does not establish execution.  An executing native GPU route
- * must name evidence for the exact retained route cell. */
+ * must name evidence for the exact retained route cell.
+ *
+ * subject                 the claim the evidence reaches
+ * HOST_EXECUTOR           the CPU executor ran it
+ * UNIT_CONTRACT           the unit's encoding follows from the manuals
+ * RASTER_CELL             one functional unit behaved so in a retained cell
+ * NATIVE_GPU_ROUTE_CELL   this verb's own route delivered in a retained cell
+ *
+ * Only the last subject reaches a route.  A reader who sees an evidence
+ * strength without its scope has read half a row. */
 enum r300_compute_verb_evidence_scope {
    R300_COMPUTE_VERB_EVIDENCE_SCOPE_HOST_EXECUTOR = 0,
    R300_COMPUTE_VERB_EVIDENCE_SCOPE_UNIT_CONTRACT,
@@ -244,6 +258,18 @@ r300_compute_verb_for_job(const struct r300_compute_job *job);
 
 const char *r300_compute_refusal_class_name(enum r300_compute_refusal_class c);
 const char *r300_compute_failure_clause_name(enum r300_compute_failure_clause c);
+
+/* Stable tokens for the four fields a route sheet renders beside a verb.
+ * Each returns NULL outside its enum, so a sheet that cannot name a field
+ * refuses the row rather than printing a blank column.  The evidence and
+ * scope tokens are a pair: a renderer that prints one prints both, because
+ * a strength without its subject reads as a route claim it does not make. */
+const char *r300_compute_verb_unit_name(enum r300_compute_verb_unit u);
+const char *r300_compute_verb_route_status_name(
+   enum r300_compute_verb_route_status s);
+const char *r300_compute_verb_evidence_name(enum r300_compute_verb_evidence e);
+const char *r300_compute_verb_evidence_scope_name(
+   enum r300_compute_verb_evidence_scope s);
 
 /* Well-formedness of a row table: rows in enum order with distinct
  * names and distinct gate names, an index class inside the grid-fold
