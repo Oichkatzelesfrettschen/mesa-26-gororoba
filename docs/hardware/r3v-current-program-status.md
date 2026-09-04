@@ -66,7 +66,7 @@ observation, and a claim that needs one names its own run.
 | Field | Value | Authority |
 |---|---|---|
 | Host | `cachyos-vostro1000` (Dell Vostro 1000, AMD K8) | `docs/hardware/vostro1000-kernel-modules.md` |
-| GPU | PCI `1002:5974` (RS485M die id), subsystem `1028:022a`, DMI `Vostro 1000`: the Radeon Xpress 1150 / RS485M product; `CHIP_RS480`, renderer `ATI RS480`; retained evidence sealed under the historical alias `rs482` | `r300_platform_identity_lookup`, `include/pci_ids/r300_pci_ids.h` |
+| GPU | PCI `1002:5974` (shared die id; also the desktop Radeon Xpress 1100), subsystem `1028:022a`, DMI `Vostro 1000`: the Radeon Xpress 1150 / RS485M product; `CHIP_RS480`, renderer `ATI RS480`; retained evidence sealed under the historical alias `rs482` | `r300_platform_identity_lookup`, `include/pci_ids/r300_pci_ids.h` |
 | Kernel | `7.1.8-1-cachyos`, module and package per the epoch table | epoch table |
 | dEQP | per the epoch table; bundle on the box at `deqp-vk-bundle` | receipt `deqp` |
 | Corpus | pinned by `src/amd/r300/vulkan/tests/r3v_conformance_corpus.pin`; the bundle's own mustpass directory is the pinned corpus | runner `wrong_caselist` refusal |

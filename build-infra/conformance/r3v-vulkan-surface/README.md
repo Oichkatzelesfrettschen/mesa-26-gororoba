@@ -66,7 +66,7 @@ unknown dEQP verdicts, failed baseline copies, and retained output sentinels.
 
 ## Baseline provenance
 
-`baseline.tsv` was recorded on the RS485M (ATI RS485M) against the r3v
+`baseline.tsv` was recorded on the RS485M (renderer `ATI RS480`) against the r3v
 build carrying the nine extensions and the null-pipeline replay guard. The
 pre-existing deqp-vk Fails it pins (e.g. `format_properties.r8g8b8a8_unorm`,
 `get_physical_device_properties2` limit-validation cases) are r3v format and
