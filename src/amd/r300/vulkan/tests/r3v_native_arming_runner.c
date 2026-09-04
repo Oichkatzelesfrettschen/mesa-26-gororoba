@@ -515,17 +515,26 @@ main(int argc, char **argv)
     */
    const char *vendor_env = getenv("R3V_NATIVE_RUNNER_PCI_VENDOR");
    const char *device_env = getenv("R3V_NATIVE_RUNNER_PCI_DEVICE");
-   /* The resolved board is supplied on the same footing as the PCI pair,
-    * so a calibration arm can present the shared-id case that resolves to
-    * no qualified board and read the refusal the attended path would
-    * give.  "none" spells the unresolved board; unset supplies the
-    * authorized one.
+   /* The board is supplied rather than probed, so the two spellings it
+    * accepts are exact and anything else refuses: a value this runner
+    * does not recognize must not resolve to the authorized board.  The
+    * report below prints the supplied board rather than an observed one,
+    * because no device node is opened here; a non-Vostro host carrying
+    * 1002:5974 is presented by naming "none".
     */
    const char *platform_env = getenv("R3V_NATIVE_RUNNER_PLATFORM");
-   const enum r300_platform_id platform_id =
-      platform_env != NULL && strcmp(platform_env, "none") == 0
-         ? R300_PLATFORM_ID_NONE
-         : R3V_NATIVE_ARMING_PLATFORM;
+   enum r300_platform_id platform_id = R3V_NATIVE_ARMING_PLATFORM;
+   if (platform_env != NULL) {
+      if (strcmp(platform_env, "none") == 0) {
+         platform_id = R300_PLATFORM_ID_NONE;
+      } else if (strcmp(platform_env, "vostro1000-rs485m") != 0) {
+         fprintf(stderr,
+                 "R3V_NATIVE_RUNNER_PLATFORM accepts \"vostro1000-rs485m\" "
+                 "or \"none\"; got \"%s\"\n",
+                 platform_env);
+         return 2;
+      }
+   }
    uint32_t vendor_id = vendor_env != NULL
                            ? (uint32_t)strtoul(vendor_env, NULL, 0)
                            : R3V_NATIVE_ARMING_PCI_VENDOR;
@@ -578,7 +587,7 @@ main(int argc, char **argv)
                 device_id == R3V_NATIVE_ARMING_PCI_DEVICE
              ? "match"
              : "MISMATCH");
-   printf("  %-22s declared=%-34s observed=%-34s %s\n", "resolved board",
+   printf("  %-22s declared=%-34s supplied=%-34s %s\n", "board (supplied)",
           "DELL_VOSTRO1000_RS485M",
           platform_id == R300_PLATFORM_ID_NONE ? "(none)"
                                                : "DELL_VOSTRO1000_RS485M",
