@@ -139,11 +139,15 @@ test_operation_join(void)
       const uint32_t routes =
          r300_operation_route_count_for_operation(rows[i].operation_id);
       /* Every verb reaches at least one route; identity_map and
-       * bitwise_not_map reach two, a host route beside a device one. */
+       * bitwise_not_map reach two, a host route beside a device one, and
+       * const_fill reaches three: a host transfer route, a precommitted
+       * RB2D route over that same use, and the RB3D clear candidate over a
+       * bound color target. */
       assert(routes >= 1);
-      assert(routes == (rows[i].verb == R300_COMPUTE_VERB_IDENTITY_MAP ||
-                                rows[i].verb == R300_COMPUTE_VERB_BITWISE_NOT_MAP ||
-                                rows[i].verb == R300_COMPUTE_VERB_CONST_FILL
+      assert(routes == (rows[i].verb == R300_COMPUTE_VERB_CONST_FILL ? 3u
+                        : rows[i].verb == R300_COMPUTE_VERB_IDENTITY_MAP ||
+                                rows[i].verb ==
+                                   R300_COMPUTE_VERB_BITWISE_NOT_MAP
                            ? 2u
                            : 1u));
    }

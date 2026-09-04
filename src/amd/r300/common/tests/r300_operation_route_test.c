@@ -31,7 +31,7 @@ test_population(void)
    unsigned candidate = 0, precommitted = 0;
    unsigned retained_at_route_scope = 0, retained_at_raster_scope = 0;
 
-   assert(rows != NULL && count == MAX_ROUTES && count == 18);
+   assert(rows != NULL && count == MAX_ROUTES && count == 19);
    for (uint32_t i = 0; i < count; i++) {
       const struct r300_operation_route_row *r = &rows[i];
       const bool exec = r->state == R300_OPERATION_ROUTE_EXECUTING;
@@ -52,7 +52,7 @@ test_population(void)
       assert(r300_operation_route(r->route_id) == r);
    }
 
-   assert(host_executing == 2);
+   assert(host_executing == 3);
    assert(gpu_executing == 1);
    assert(candidate == 14);
    /* The RB2D fill: a named plan, contracts, and admission rules, with its
@@ -367,11 +367,24 @@ test_selector(void)
                                       USE_ATTACH, gates,
                                       &reason) == NULL);
    assert(strcmp(reason, "no eligible executing route") == 0);
-   /* An operation with no host route selects nothing on the host either. */
+   /* CONSTFILL's host route selects for the transfer destination it serves
+    * and for nothing else: the host fills a linear byte range today, and
+    * says nothing about a kernel writing a storage buffer. */
+   assert(r300_operation_select_route(
+             R300_OPERATION_ID_CONSTFILL,
+             R300_OPERATION_ROUTE_EXECUTOR_HOST, USE_XFER, gates, &reason) ==
+          r300_operation_route(
+             R300_OPERATION_ROUTE_HOST_TRANSFER_CONST_FILL));
    assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
                                       R300_OPERATION_ROUTE_EXECUTOR_HOST,
-                                      USE_XFER, gates,
-                                      &reason) == NULL);
+                                      USE_SSBO, gates, &reason) == NULL);
+   assert(strcmp(reason, "no eligible executing route") == 0);
+
+   /* An operation whose only route is a GPU candidate selects nothing on
+    * the host. */
+   assert(r300_operation_select_route(R300_OPERATION_ID_UNARY_AFFINE_MAP,
+                                      R300_OPERATION_ROUTE_EXECUTOR_HOST,
+                                      USE_SSBO, gates, &reason) == NULL);
 
    /* Two eligible routes fail closed rather than letting table order pick.
     * The shipped table cannot hold that shape, so the arm runs on a mutated
@@ -459,6 +472,14 @@ test_executing_route_is_use_specific(void)
    assert(!r300_operation_has_executing_route(
       R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_GPU,
       USE_XFER));
+   /* The host route over the same use does execute: the transfer path
+    * stores the pattern across the recorded range today. */
+   assert(r300_operation_has_executing_route(
+      R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+      USE_XFER));
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_HOST,
+      USE_SSBO));
 
    /* The predicate holds the same one-use contract as the selector.  An
     * OR-ed mask would answer true for any bit that intersects a route, so a
@@ -512,11 +533,12 @@ test_per_verb_gate_array_cannot_represent(void)
              R300_OPERATION_ID_IDENTITY_MAP) == 2);
    assert(r300_operation_route_count_for_operation(
              R300_OPERATION_ID_BITWISE_NOT_MAP) == 2);
-   /* Two routes for one operation on one executor, neither executing: the
-    * shape the split exists to hold and the checker admits only while at
-    * most one of them executes. */
+   /* CONSTFILL carries three: the host route that fills a linear
+    * transfer destination, the precommitted RB2D route over that same use,
+    * and the RB3D clear candidate over a bound color target.  Only the
+    * first executes, so the checker's one-executing-route rule holds. */
    assert(r300_operation_route_count_for_operation(
-             R300_OPERATION_ID_CONSTFILL) == 2);
+             R300_OPERATION_ID_CONSTFILL) == 3);
 }
 
 static void
