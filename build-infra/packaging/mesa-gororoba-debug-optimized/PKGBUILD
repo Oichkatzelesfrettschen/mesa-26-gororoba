@@ -1,5 +1,5 @@
 # mesa-gororoba-debug-optimized: the PRIMARY/default r300 Mesa installation for
-# the Vostro 1000 (RS482, AMD Turion 64 X2).  This is the canonical daily-driver
+# the Vostro 1000 (RS485M, AMD Turion 64 X2).  This is the canonical daily-driver
 # install target: debugoptimized -O2 -g3, assertions live, full debug info, frame
 # pointers, and the complete r300 feature surface (desktop GL 2.1 + GLES1/2,
 # GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2 decode, gallium-xa XA tracker /

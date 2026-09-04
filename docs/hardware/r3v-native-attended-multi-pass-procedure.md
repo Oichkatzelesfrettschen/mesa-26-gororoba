@@ -91,7 +91,7 @@ lines (each target under the other pass's constant) report
 ## Result
 
 The cell holds its silicon receipt from one attended submission on
-RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
+RS485M, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
 `64fa102e611`, under an arming report matching all five declarations
 against cell blake3 `6ff86047`.  Every predicted value held: both
 targets `coverage_exact=1 canary=1 interior=1152 analytic=1152

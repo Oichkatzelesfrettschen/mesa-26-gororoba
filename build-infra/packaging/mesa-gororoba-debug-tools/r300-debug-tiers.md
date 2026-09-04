@@ -80,7 +80,7 @@ Each paired with how it composes with the prime driver via the wrapper.
   CS submits, BO maps live without recompiling, e.g.
   `sudo bpftrace -e 'tracepoint:gpu_scheduler:* { printf("%s\n", comm); }'`.
 - **`radeontop`**: live GPU utilization / clock / memory; the clock-gap reads were
-  silicon-falsified on RS482 (the real signal is mclk %).
+  silicon-falsified on RS485M (the real signal is mclk %).
 - **`valgrind`**: complementary to ASan (run against the **debug-optimized** or
   **debug-O0** driver, NOT the prime -- don't stack valgrind on a sanitized binary);
   memcheck for the paths ASan instrumentation does not cover.

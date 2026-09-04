@@ -59,7 +59,7 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
   13:11 name the interpolator, `TEX_CN_WRITE` bit 3 and `COL_CN_WRITE`
   bit 14 enable the write, `TEX_ADDR` bits 10:6 and `COL_ADDR` bits 21:17
   name the US input register, `TEX_ADJ` bit 22 moves the sample point
-  (manual).  `TEX_ADJ` leaves the RS482 target unchanged (silicon:
+  (manual).  `TEX_ADJ` leaves the RS485M target unchanged (silicon:
   `2026-08-28-rs482-gb-select-w-select-affine-rs-inst-tex-adj-perspective-perturbed`).
 - `RS_COUNT` (0x4300): `IT_COUNT` bits 6:0 texture components, `IC_COUNT`
   bits 10:7 colors, `HIRES_EN` bit 18; `RS_INST_COUNT` (0x4304) bits 3:0

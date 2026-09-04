@@ -422,6 +422,34 @@ def python_comment_segments(text: str) -> tuple[list[tuple[int, str]], tuple[int
     return sorted(segments), None
 
 
+def preserved_license_header_lines(text: str) -> set[int]:
+    """Line numbers of a file's leading upstream license header.
+
+    A header carrying someone else's copyright is preserved verbatim
+    across moves and refactors, so its framing is that author's and not
+    a style choice this tree makes.  The block is the file's opening
+    comment, and it qualifies only when it names a copyright holder; a
+    plain SPDX line frames nothing and needs no exemption.  Only the
+    decorative-border rule reads this: a header that carries chronology
+    or a personal-name copyright is still reported.
+    """
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index >= len(lines) or not lines[index].lstrip().startswith("/*"):
+        return set()
+    header: set[int] = set()
+    carries_copyright = False
+    for offset in range(index, len(lines)):
+        header.add(offset + 1)
+        if "Copyright" in lines[offset]:
+            carries_copyright = True
+        if "*/" in lines[offset]:
+            return header if carries_copyright else set()
+    return set()
+
+
 def lint_source_text(path: Path, text: str, patterns) -> list[Violation]:
     if path.suffix == ".py":
         segments, parse_error = python_comment_segments(text)
@@ -443,10 +471,15 @@ def lint_source_text(path: Path, text: str, patterns) -> list[Violation]:
             if in_comment_context(line, path.suffix)
         ]
 
+    license_header = preserved_license_header_lines(text)
+
     violations: list[Violation] = []
     for line_no, line in segments:
         for pattern, kind, suggestion in patterns:
             if pattern.search(line):
+                if (kind == "decorative-comment-border"
+                        and line_no in license_header):
+                    continue
                 violations.append(
                     Violation(
                         path=path,
@@ -562,6 +595,56 @@ def run_self_test() -> int:
     hash_violations = lint_source_text(Path("hash.py"), hash_comment, SOURCE_PATTERNS)
     if not any(violation.kind == "phase-label" for violation in hash_violations):
         failures.append("ordinary Python hash comment escaped detection")
+
+    # The border rule yields to a preserved upstream license header and
+    # nowhere else, so each arm moves exactly one fact.
+    upstream_header = (
+        "/*****************************************\n"
+        " * Copyright 2011 Advanced Micro Devices, Inc.\n"
+        " * SPDX-License-Identifier: MIT\n"
+        " *****************************************/\n"
+        "\nvoid f(void) {}\n"
+    )
+    if lint_source_text(Path("upstream.c"), upstream_header, SOURCE_PATTERNS):
+        failures.append("preserved upstream license header was reported")
+
+    unowned_header = upstream_header.replace(
+        " * Copyright 2011 Advanced Micro Devices, Inc.\n", "")
+    if not any(violation.kind == "decorative-comment-border"
+               for violation in lint_source_text(
+                   Path("unowned.c"), unowned_header, SOURCE_PATTERNS)):
+        failures.append("a leading border naming no copyright holder escaped")
+
+    body_border = (
+        "/*\n * Copyright 2011 Advanced Micro Devices, Inc.\n */\n"
+        "\n/*\n * ==========================================\n"
+        " * Section\n */\nvoid f(void) {}\n"
+    )
+    if not any(violation.kind == "decorative-comment-border"
+               for violation in lint_source_text(
+                   Path("body.c"), body_border, SOURCE_PATTERNS)):
+        failures.append("a border below the license header escaped")
+
+    # The exemption covers the border rule on that line and leaves every
+    # later rule reading it.  The project-label rules run after the border
+    # rule, so a preserved header whose own border line also carries a
+    # capture-bundle timestamp still reports the timestamp.
+    labeled_border = upstream_header.replace(
+        "/*****************************************\n",
+        "/***** 20260801T120000Z *****\n")
+    if not any(violation.kind == "bundle-timestamp"
+               for violation in lint_source_text(
+                   Path("labeled.c"), labeled_border,
+                   SOURCE_PATTERNS + PROJECT_LABEL_PATTERNS)):
+        failures.append("a timestamp on an exempt border line escaped")
+
+    dated_header = upstream_header.replace(
+        " * SPDX-License-Identifier: MIT\n",
+        " * SPDX-License-Identifier: MIT\n * Phase 4 configures our driver.\n")
+    if not any(violation.kind == "phase-label"
+               for violation in lint_source_text(
+                   Path("dated.c"), dated_header, SOURCE_PATTERNS)):
+        failures.append("the header exemption reached a rule other than the border")
 
     invalid = lint_source_text(Path("invalid.py"), 'payload = """unterminated\n', SOURCE_PATTERNS)
     if not any(violation.kind == "python-comment-parse" for violation in invalid):

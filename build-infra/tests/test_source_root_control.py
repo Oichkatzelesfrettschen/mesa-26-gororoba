@@ -481,17 +481,97 @@ def test_validate_layout_protects_control_worktree(
         source_root_control.validate_layout("build", values)
 
 
+def write_git_repository_marker(worktree_root: Path) -> Path:
+    """Write the .git directory shape git gives a primary checkout.
+
+    A marker is a repository only if it carries HEAD beside objects/ and
+    refs/, so a fixture that creates an empty .git directory stands in
+    for nothing git writes.
+    """
+    marker = worktree_root / ".git"
+    (marker / "objects").mkdir(parents=True)
+    (marker / "refs").mkdir(parents=True)
+    (marker / "HEAD").write_text("ref: refs/heads/main\n")
+    return marker
+
+
+def write_git_linked_worktree_marker(worktree_root: Path,
+                                     metadata: Path) -> Path:
+    """Write the .git file shape git gives a linked worktree.
+
+    The metadata directory is written too, because the marker names it
+    and a marker naming an absent path is a different fixture.
+    """
+    metadata.mkdir(parents=True, exist_ok=True)
+    (metadata / "HEAD").write_text("ref: refs/heads/main\n")
+    (metadata / "commondir").write_text("../..\n")
+    (metadata / "gitdir").write_text(f"{worktree_root / '.git'}\n")
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    marker = worktree_root / ".git"
+    marker.write_text(f"gitdir: {metadata}\n")
+    return marker
+
+
 def test_validate_layout_rejects_peer_git_worktree(
     tmp_path: Path,
 ) -> None:
     values = layout_values(tmp_path)
     peer_root = tmp_path / ".mesa-26-gororoba-builds" / "peer"
-    (peer_root / ".git").mkdir(parents=True)
+    peer_root.mkdir(parents=True)
+    write_git_repository_marker(peer_root)
     values["build_root"] = peer_root / "build-output"
     values["builddir"] = peer_root / "build-output" / "build"
     values["prefix"] = peer_root / "build-output" / "prefix"
     with pytest.raises(source_root_control.ControlError):
         source_root_control.validate_layout("build", values)
+
+
+def test_validate_layout_rejects_peer_linked_git_worktree(
+    tmp_path: Path,
+) -> None:
+    """A linked worktree bounds a build root exactly as a checkout does."""
+    values = layout_values(tmp_path)
+    peer_root = tmp_path / ".mesa-26-gororoba-builds" / "linked-peer"
+    write_git_linked_worktree_marker(
+        peer_root, tmp_path / "elsewhere" / ".git" / "worktrees" / "peer")
+    values["build_root"] = peer_root / "build-output"
+    values["builddir"] = peer_root / "build-output" / "build"
+    values["prefix"] = peer_root / "build-output" / "prefix"
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_layout("build", values)
+
+
+def test_validate_layout_accepts_build_root_under_a_dangling_gitdir_marker(
+    tmp_path: Path,
+) -> None:
+    """A gitdir line naming an absent path names no repository."""
+    values = layout_values(tmp_path)
+    peer_root = tmp_path / ".mesa-26-gororoba-builds" / "dangling"
+    peer_root.mkdir(parents=True)
+    (peer_root / ".git").write_text(
+        f"gitdir: {tmp_path / 'absent' / 'worktrees' / 'gone'}\n")
+    values["build_root"] = peer_root / "build-output"
+    values["builddir"] = peer_root / "build-output" / "build"
+    values["prefix"] = peer_root / "build-output" / "prefix"
+    source_root_control.validate_layout("build", values)
+
+
+def test_validate_layout_accepts_build_root_under_an_empty_git_marker(
+    tmp_path: Path,
+) -> None:
+    """An empty .git directory names no repository, so it bounds nothing.
+
+    Any process may create one under a shared temporary root, and when a
+    bare existence check treated it as a worktree every build root
+    beneath that root refused.
+    """
+    values = layout_values(tmp_path)
+    peer_root = tmp_path / ".mesa-26-gororoba-builds" / "not-a-worktree"
+    (peer_root / ".git").mkdir(parents=True)
+    values["build_root"] = peer_root / "build-output"
+    values["builddir"] = peer_root / "build-output" / "build"
+    values["prefix"] = peer_root / "build-output" / "prefix"
+    source_root_control.validate_layout("build", values)
 
 
 def test_validate_layout_rejects_nested_git_worktree_before_clean(

@@ -100,7 +100,7 @@ evaluate_fixture(const struct fixture *f, const char *actual_digest)
    struct r3v_native_arming_facts facts;
    char kernel_storage[128];
    char module_storage[128];
-   r3v_native_arming_collect_from(&provider, &facts,
+   r3v_native_arming_collect_from(&provider, &facts, R3V_NATIVE_ARMING_PLATFORM,
                                   R3V_NATIVE_ARMING_PCI_VENDOR,
                                   R3V_NATIVE_ARMING_PCI_DEVICE,
                                   R3V_NATIVE_CELL_KIND_DIRECT_WRITE,

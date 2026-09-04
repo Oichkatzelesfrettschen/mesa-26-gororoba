@@ -107,6 +107,7 @@ test_tuple_kind_arms_and_undeclared_refuses(void)
       .cell_kind = R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE,
       .authorized_ib_blake3 = digest,
       .actual_ib_blake3 = digest,
+      .platform_id = R3V_NATIVE_ARMING_PLATFORM,
       .pci_vendor_id = R3V_NATIVE_ARMING_PCI_VENDOR,
       .pci_device_id = R3V_NATIVE_ARMING_PCI_DEVICE,
       .authorized_kernel_release = "7.1.3-2-cachyos",

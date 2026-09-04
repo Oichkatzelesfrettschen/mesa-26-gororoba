@@ -1837,7 +1837,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
      * constant-valued varying one FP24 ulp low: a -32.0 attribute reaches
      * the fragment shader as -31.9995..., so int() truncates a whole unit
      * off and every exact-compare against an integer reference fails.
-     * Measured on RS480: attribute-fed varyings of every width read
+     * Measured on RS485M: attribute-fed varyings of every width read
      * fract(|x|) = 0.999+ under TRUNC and exactly 0.0 under NEAREST,
      * while a VS-computed ramp crossing the same value is exact either
      * way. */

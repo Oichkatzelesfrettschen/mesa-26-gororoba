@@ -1141,7 +1141,7 @@ test_dp3_full_pair_broadcast(void)
 /* RS48x source-read profile calibration
  *
  * The profile earns trust the standard way: known-good inputs are the
- * retained RS482 silicon lanes (sign-flip mov discriminator, MAD product
+ * retained RS485M silicon lanes (sign-flip mov discriminator, MAD product
  * read, double-truncation chain), which the RS48X_NEG_PREDECESSOR profile
  * must reproduce bit-for-bit; the known-bad control is the IDENTITY
  * profile, which must diverge on exactly the negative-read lanes and agree

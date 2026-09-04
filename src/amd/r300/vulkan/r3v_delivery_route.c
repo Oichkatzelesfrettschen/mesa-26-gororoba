@@ -59,7 +59,7 @@ r3v_delivery_route_resolve(const char *gate_value,
          out->route = R3V_DELIVERY_ROUTE_R2VB_GPU_PRODUCER;
          out->position_space = R300_CARRIER_POSITION_WINDOW;
          out->reason = "R2VB GPU producer by exact experimental opt-in; "
-                       "F32_4 identity delivery holds on RS482 silicon";
+                       "F32_4 identity delivery holds on RS485M silicon";
          return;
       }
    }

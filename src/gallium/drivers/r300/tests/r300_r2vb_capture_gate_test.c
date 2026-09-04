@@ -104,9 +104,9 @@ check_pci_family_mapping(void)
 {
    static const uint32_t rs48x_pci_ids[] = {
       0x5954, /* RS480 */
-      0x5955, /* RS480 */
-      0x5974, /* RS482 */
-      0x5975, /* RS485-marketed */
+      0x5955, /* RS480M */
+      0x5974, /* shared by RS482 and RS485 */
+      0x5975, /* RS482M */
    };
 
    for (unsigned i = 0;

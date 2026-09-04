@@ -1,6 +1,6 @@
 # R3V native attended rasterizer interpolation probe procedure
 
-The rasterizer interpolation probe classifies one rasterizer control word on RS482 silicon. Two
+The rasterizer interpolation probe classifies one rasterizer control word on RS485M silicon. Two
 render passes record the varying TEX0 cell over one carrier whose three vertices hold strongly
 unequal reciprocal clip W; the control pass carries the varying cell's exact bytes, and the
 candidate pass carries the same bytes with one control word changed. The AMD R3xx 3D Registers

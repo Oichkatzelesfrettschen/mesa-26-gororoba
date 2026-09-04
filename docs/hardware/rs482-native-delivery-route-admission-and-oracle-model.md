@@ -252,7 +252,7 @@ A result from one rung does not substitute for a result from a higher one.
 | Kernel replay | the CS-tracker replay tool over the composed stream | that the radeon CS validator accepts the stream at its own arithmetic bounds | whether the silicon executes it as intended |
 | Host model | the drm-shim harnesses, closed-gate and open-gate | driver state transitions, refusal shapes, host-model cache events | anything about the GPU |
 | Arming runner | the non-submitting runner | the digest, the route split, and every arming factor without opening a device | delivery |
-| Attended run | the runner on RS482 with a retained bundle | delivery, by both oracles over the chain above | a population, from one payload |
+| Attended run | the runner on RS485M with a retained bundle | delivery, by both oracles over the chain above | a population, from one payload |
 
 The public GPU-producer route's composed stream replays at `dwords=547
 relocs=2 draws=2 passed=2 verdict=ACCEPT`, and the truncated-packet,

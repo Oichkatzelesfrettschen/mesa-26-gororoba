@@ -15,7 +15,7 @@ This document reserves **proven** for claims formally verified in Rocq in the
 `open_gororoba` repository (`proofs/theories/*.v`, checked, zero admits) -- the
 mathematics: Cayley-Dickson algebra, quaternion and octonion norms, quaternion
 matrix-rotation equivalence, rotation norm preservation, and the FP24 DP4
-exact-integer bound. Everything about the RS482 silicon -- that a draw executes,
+exact-integer bound. Everything about the RS485M silicon -- that a draw executes,
 that the wedge is in the VAP/GA, that a register shape submits hang-free, that
 MRT export is byte-exact, that the transform runs at a measured rate -- is
 **demonstrated on silicon** or **measured**, never "proven." A finite hardware
@@ -190,7 +190,7 @@ computes `esize*(nverts-1)*4` with `nverts=0`, underflows to `0xFFFFFFFC`, and
 rejects the IB with `-EINVAL` after the half-emitted stream has corrupted the
 heap. Fix commit `9899a4d8dd3` ("r300: clamp SWTCL vertex batches to the 16-bit VAP
 count limit") caps the r3xx/r4xx byte budget below the wrap and adds the r5xx
-alt-count path; validated on RS482 (the 65536-point draw renders).  The SWTCL
+alt-count path; validated on RS485M (the 65536-point draw renders).  The SWTCL
 path that coexists with R2VB re-ingest emits large-count draws under that
 clamp; the R2VB emitter declines draws with `count >= 65536` separately.  Do
 not re-introduce an unclamped `NUM_VERTICES` emit.
@@ -261,13 +261,13 @@ read asymmetry above.
 ## Mathematical decomposition of the transform
 
 The vertex TCL pipeline factors into stages, each tagged by where it is safe to
-run on RS482:
+run on RS485M:
 
 1. **Model-view-projection transform** `v_clip = M * v_object`, `M` a 4x4. A
    pure linear matrix multiply -- **HW-safe** on the fragment ALU (below).
 2. **Clip** against the view volume. **SW-safe**, and -- following Glaeser,
    "Fast Algorithms for 3D-Graphics" (1994) -- done in the *linear* domain
-   before any divide (see below).
+   before any divide, as "The coordinate contract (HBTCL-04a)" sets out.
 3. **Perspective divide** `x_ndc = x_clip / w_clip` (and y, z). A per-vertex
    scalar reciprocal -- **GPU-safe** on the fragment ALU or the VTE. Gallivm
    remains the CPU fallback and reference; feeding pre-divided window-space
@@ -325,7 +325,7 @@ a value must round-trip as an integer index, never the transformed coordinates.
 | Space | Representation | Produced by | Consumed by | VAP / VTE binding |
 | --- | --- | --- | --- | --- |
 | object | `(x,y,z,w)` FP24: app `w` when the position attribute has four components, else `w=1` | app VBO / producer `DRAW_IMMD` payload | the MVP multiply in the producer | object attributes enter the **producer** as embedded IMMD (or later TAM); they are not the re-ingest `3D_LOAD_VBPNTR` stream |
-| clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation, or clip-space VAP re-ingest | may be handed to the bypass VAP when `VTX_W0_FMT` enables the VTE reciprocal (see below) |
+| clip | `v_clip = M * v_object`, 4D, `w_clip` free | fragment-ALU MVP (04, linear) | SW clip / collineation, or clip-space VAP re-ingest | may be handed to the bypass VAP when `VTX_W0_FMT` enables the VTE reciprocal, per "The coordinate contract (HBTCL-04a)" |
 | collineation (`*`) | Glaeser `(lambda*x, lambda*y, k*lambda*z)`, lines stay lines | the linear companion map | SW clip classify + edge gen (04c/04d) | pure SW; frontend never sees it |
 | NDC | `v_ndc = v_clip.xyz / w_clip`, `[-1,1]` | fragment-ALU perspective divide (04b), VTE `1/w`, or gallivm fallback | viewport scale/bias | the admitted GPU route uses the fragment ALU or VTE; CPU divide is fallback-only |
 | window | `NDC * viewport_scale + bias`, screen coords | producer, or the VAP viewport | the GA setup FIFO | `VTX_XY_FMT`/`VTX_Z_FMT` (pre-divided) with `VPORT_*_ENA` off, or NDC + `VPORT_*_ENA` |
@@ -376,7 +376,7 @@ standing vertex path:
   FP24 floor, then three viewport MADs), selected by the explicit
   `r300_r2vb_position_space` contract -- `POSITION_CLIP` emits the raw `M*v`
   homogeneous result, `POSITION_WINDOW` emits divided window space with
-  `w = 1`. Verified on RS482 against the CPU window-space oracle
+  `w = 1`. Verified on RS485M against the CPU window-space oracle
   (`r2vb_divide_verify` 3/3, tol 0.05).
 - **Clipping** classifies in the raw clip-space domain before the divide.
   The classifier (`r300_r2vb_clip.h`) mirrors the gallium draw software
@@ -627,7 +627,7 @@ larger applications remain uncaptured and can reopen either demand-gated row.
 | HBTCL-01 | No-submit PM4 decode of the clear-quad IB vs a working r3v triangle IB: capture with in-tree `R300_TRACE` / `RADEON_DUMP_PATCHED_IB` (and, when present, the external `steinmarder` r300 retained-IB decode tools), then compare the VAP frontend words; name the single diverging register among `VAP_VF_CNTL` NUM_VERTICES, `VAP_VTE_CNTL` coord space, `VF_MAX_VTX_NUM`, `SC_SCISSORS` after +1440, `ZB_CNTL.Z_ENABLE` | -- |
 | HBTCL-02 | OPEN: commit `41d7ff464fb` routes the measured SWTCL TEXCOORD_XY point-sprite blit through the demonstrated-hang-free plain-quad shape. Re-run the exact `fbo-clearmipmap` reproducer under the forensic poller and close this row only when its fence retires without the `VAP_BUSY = GA_BUSY = 100%` stall. A completed draw with wrong pixels routes independently to the stale-US lane | HBTCL-01 |
 | HBTCL-03 | DONE: audited the three producer families (fixed-MVP, restage, passthrough), the explicit clip/window coordinate contract, the geometric clipping and topology pipeline, emitted-slot admission, and the typed one-`vec4` budget escape. Perspective divide (04b), geometric clipping (04c-04e), and the bounded standing-route promotion (HBTCL-08) are landed; the residual is algebraic compaction and multi-carry transport (04f.4-04f.5) plus the points-topology RCA (HBTCL-07) | -- |
-| HBTCL-04a | DONE: the coordinate contract section above (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
+| HBTCL-04a | DONE: "The coordinate contract (HBTCL-04a)" (object/clip/NDC/window representations, divide placement, re-ingest VTE shapes) | HBTCL-03 |
 | HBTCL-04b | DONE: perspective divide + viewport on the fragment ALU in every producer variant, selected by the explicit `r300_r2vb_position_space` contract; window-space delivery fetches verbatim via the source-space VTE. `r2vb_divide_verify` 3/3 on RS482 with delivery coverage matching the gallivm reference exactly | HBTCL-04a |
 | HBTCL-04c | DONE: clip classification in the raw clip-space domain -- Draw-parity clip codes, accept/reject/partial/fallback classes (`r300_r2vb_clip.h`), FP24 clip-BO oracle, conservative gated route action; 9/9 corpus classes byte-identical on RS482 | HBTCL-04b |
 | HBTCL-04d | DONE: edge generation -- Sutherland-Hodgman intersection of PARTIAL triangles in clip space (`t = d_out / (d_out - d_in)` blends), attribute interpolation, fan retriangulation; 10/10 corpus cases byte-identical on RS482 | HBTCL-04c |
@@ -640,8 +640,8 @@ larger applications remain uncaptured and can reopen either demand-gated row.
 | HBTCL-04f.3e | OPEN, PRODUCTION BLOCKER: typed source-domain equivalence. The exact-carry proof (04f.3) shows an integer within `+-2^17` round-trips FP24->FP32 exactly; it does not show the FP24 producer's `f2i32`/`f2u32` produced the same integer as the gallivm/Draw software VS, since a runtime float can quantize differently in FP24 before truncation (a value just below `2` truncates to `1` in software but rounds to `2` in FP24 first). The production contract needs two independent predicates: source conversion equivalence (the FP24 producer's typed value equals the Draw reference value) and carry transport exactness (04f.3). An arbitrary `f2i32(attribute)` + clamp bounds the output without proving the conversion matched the reference, so it declines `R300_R2VB_REJECT_TYPED_SOURCE_DOMAIN_UNPROVEN`. Typed-source expansion of the HBTCL-08 standing route stays blocked until a static source-domain predicate exists (exact integral floats within `+-2^17`; documented integer system streams; range-contracted integer uniform/push values; Boolean compares with proven threshold separation) | HBTCL-04f.3R |
 | HBTCL-04f.4 | PARKED, DEMAND-GATED by the 108-cell census above: the retained population contains no over-budget or split producer, so implementation waits on a retained demand witness. Semantics-preserving algebraic compaction of the over-budget producer remains designed in `rs482-producer-alu-compaction-design.md` (two-proof certified-rewrite pipeline over the emitted resource vector, shared producer plan with the split; the multiply-minimization family is gated off as a DP4-regime loss). PROOF-FP24-01 fixes the exact-integer window at 2^17, the affine closed form is contract-restricted, and `recur90` stays a split stress case | HBTCL-04f.2 |
 | HBTCL-04f.5 | OPEN, DEMAND-GATED by the same census: the retained population contains no producer that requires more than one carry stream. Multi-carry / MRT transport remains the escape for a future retained producer with that shape; gallivm handles every unsupported shape. R400 code banks stay diagnostic-only -- bank instructions execute but a live temporary does not survive the bank boundary | HBTCL-04f.2 |
-| HBTCL-05 | DONE (corpus-verified): the "VAP register table" section above, with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200-0x22dc` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
-| HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): the "Lighting on the fragment ALU" section above -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
+| HBTCL-05 | DONE (corpus-verified): "VAP register table", with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200-0x22dc` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
+| HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): "Lighting on the fragment ALU (HBTCL-06 policy)" -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
 | HBTCL-08 | DONE, BOUNDED (commit `7ff312da4a8`): exact `R300_R2VB_STANDING=1` arms the measured route only on the RS480 family and only for the packed-FP32 source and delivery domain pinned by `ffc78065325`; every unsupported point, computed-varying, typed-source, or source-format row declines to gallivm with a reason. HBTCL-07 remains the independent points-topology RCA rather than an unproven expansion of this bounded route | HBTCL-02, HBTCL-04 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |

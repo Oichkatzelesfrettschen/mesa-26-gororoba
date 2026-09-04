@@ -152,13 +152,13 @@ enum r300_numeric_domain {
    R300_NUM_DOMAIN_RB3D_BLEND,
 
    /* RB3D ROP Boolean bitplane algebra.  AND, OR, and XOR are
-    * hardware-confirmed bit-exact on RS482; ROP NOT still needs a targeted
+    * hardware-confirmed bit-exact on RS485M; ROP NOT still needs a targeted
     * truth-table probe.  Operates on raw color-target bits, not FP24 values. */
    R300_NUM_DOMAIN_ROP_BOOL,
 
    /* Stencil U8 per-pixel state machine.  Per-pixel value in Z/256 or a
     * saturating/replace form depending on the stencil op.
-    * INCR and INVERT are hardware-confirmed on RS482; DECR/WRAP need probes. */
+    * INCR and INVERT are hardware-confirmed on RS485M; DECR/WRAP need probes. */
    R300_NUM_DOMAIN_U8_STENCIL,
 
    /* ZPASS fragment-count reduction.  N = sum_{p in Omega} [predicate(p)].

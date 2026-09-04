@@ -3,7 +3,7 @@
  *
  * Attended composed render-then-sample cell: records the composed cell
  * through r3v_native_record_composed_render_sample and drives it to a
- * live DRM_RADEON_CS on RS482 silicon.  The render half draws into the
+ * live DRM_RADEON_CS on RS485M silicon.  The render half draws into the
  * first target and the sample half samples that target as its texture,
  * so one indirect buffer carries the destination-cache flush ahead of
  * the texture-tag invalidate and the second target holds what the first
@@ -248,7 +248,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Attended depth control: submits the two-triangle depth-test cell to
- * RS482 silicon through the native ICD, retains the complete color
+ * RS485M silicon through the native ICD, retains the complete color
  * target and depth surface durably, and classifies the outcome.  This
  * program performs a live DRM_RADEON_CS and runs only under the
  * operator's authorization; the driver's arming conjunction admits it
@@ -166,7 +166,7 @@ main(int argc, char **argv)
     */
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 
