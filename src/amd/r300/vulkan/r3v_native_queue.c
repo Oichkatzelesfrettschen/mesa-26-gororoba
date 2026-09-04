@@ -9,6 +9,7 @@
 #include "r3v_native_arming.h"
 #include "r3v_native_identity.h"
 #include "r3v_physical_device.h"
+#include "r3v_submit_preflight.h"
 
 #include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
@@ -1041,14 +1042,39 @@ r3v_native_prepared_release(struct r3v_native_device *device)
    memset(prepared, 0, sizeof(*prepared));
 }
 
+/* The recorded-work census this command buffer carries.  One call names
+ * every kind the recording counts, so a work kind added to the command
+ * buffer is added here once and every predicate reading the census sees it;
+ * a predicate carrying its own field list would keep answering from the
+ * kinds it already knew.  The recorded stream's length rides the census
+ * beside the counted kinds: it names the transport rather than work the
+ * submission boundary orders around.
+ */
+static void
+r3v_native_cmd_buffer_work_census(
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_recorded_work_census *census)
+{
+   r3v_recorded_work_census_set(census, cmd_buffer->deferred_copy_count,
+                                cmd_buffer->deferred_draw_count,
+                                cmd_buffer->deferred_dispatch.pending ? 1u
+                                                                      : 0u,
+                                cmd_buffer->query_op_count,
+                                cmd_buffer->event_op_count,
+                                cmd_buffer->ib_size_dwords);
+}
+
+/* Whether the buffer holds work whose semantics execute in recorded order at
+ * submission.  The prepare path hoists a transport ahead of the submission
+ * boundary, so it reaches a buffer with none.
+ */
 static bool
 r3v_native_cmd_buffer_requires_inline_ordering(
    const struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   return cmd_buffer->deferred_draw_count != 0 ||
-          cmd_buffer->deferred_dispatch.pending ||
-          cmd_buffer->deferred_copy_count != 0 ||
-          cmd_buffer->query_op_count != 0 || cmd_buffer->event_op_count != 0;
+   struct r3v_recorded_work_census census;
+   r3v_native_cmd_buffer_work_census(cmd_buffer, &census);
+   return r3v_recorded_work_census_ordered(&census);
 }
 
 VkResult

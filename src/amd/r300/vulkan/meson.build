@@ -151,6 +151,26 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # Submit preflight: the census reproduces the queue's former field list
+  # over all thirty-two combinations of its ordered-work counters, each
+  # whole-submit refusal is reachable alone, the transaction admits a
+  # device-visible effect in the commit phase alone, and the route-table
+  # admission calibrates on mutated tables.
+  test(
+    'r3v-submit-preflight',
+    executable(
+      'r3v_submit_preflight_test',
+      files('tests/r3v_submit_preflight_test.c', 'r3v_submit_preflight.c',
+            'r3v_route_policy.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : libr300_common,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # The SPIR-V admitters name every refused construct through a string
   # literal; the ledger enumerates that rejection surface so a new or
   # removed reason reports as a ledger movement.
@@ -218,6 +238,7 @@ r3v_native_files = files(
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
   'r3v_route_policy.c',
+  'r3v_submit_preflight.c',
   'r3v_interpolation_lowering.c',
   'r3v_post_vs_lowering.c',
   'r3v_shader_interface.c',
@@ -348,6 +369,7 @@ if with_tests
       'r3v_physical_device.h',
       'r3v_private.h',
       'r3v_route_policy.h',
+      'r3v_submit_preflight.h',
       ),
     depends : r3v_entrypoints,
     suite : ['r3v'],
