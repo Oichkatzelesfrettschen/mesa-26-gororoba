@@ -40,11 +40,8 @@
  * metadata reaches storage.  Returns 0 or a negative errno.
  */
 
-/* The board the gate compares.  A harness that replaces the fact provider
- * also declares the platform it stands in for; production resolves it from
- * the device and the firmware tables at physical-device creation. */
-static enum r300_platform_id
-arming_platform(const struct r3v_native_device *device)
+enum r300_platform_id
+r3v_native_arming_platform(const struct r3v_native_device *device)
 {
    return device->arming_provider != NULL ? device->arming_platform
                                           : device->pdevice->platform_id;
@@ -1246,7 +1243,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    r3v_native_arming_collect_from(
       device->arming_provider != NULL ? device->arming_provider
                                       : r3v_native_arming_host_provider(),
-      &facts, arming_platform(device), device->pdevice->pci_vendor_id,
+      &facts, r3v_native_arming_platform(device), device->pdevice->pci_vendor_id,
       device->pdevice->pci_device_id, cmd_buffer->cell_kind, ib_digest,
       device->manifest_dir, kernel_release, sizeof(kernel_release),
       module_srcversion, sizeof(module_srcversion));
@@ -1756,7 +1753,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * source; a capture or replay pass, which never enters that
        * branch, still carries the identity its own gate compares.
        */
-      facts.platform_id = arming_platform(device);
+      facts.platform_id = r3v_native_arming_platform(device);
       facts.pci_vendor_id = device->pdevice->pci_vendor_id;
       facts.pci_device_id = device->pdevice->pci_device_id;
       const bool serial_kind =
@@ -1783,7 +1780,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             device->arming_provider != NULL
                ? device->arming_provider
                : r3v_native_arming_host_provider(),
-            &facts, arming_platform(device),
+            &facts, r3v_native_arming_platform(device),
             device->pdevice->pci_vendor_id,
             device->pdevice->pci_device_id, cmd_buffer->cell_kind,
             ib_digest, device->manifest_dir, kernel_release,

@@ -315,6 +315,10 @@ scene_init(struct scene *s, const struct reference *ref)
    };
    s->device.pdevice = &s->pdevice;
    s->device.arming_provider = &provider;
+   /* The harness replaces the fact provider, so it declares the board it
+    * stands in for; 1002:5974 alone resolves to no platform and the gate
+    * refuses it. */
+   s->device.arming_platform = R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M;
    s->device.execution_policy = R3V_EXECUTION_AUTO;
    s->device.submit_hazard_accepted = true;
    s->device.manifest_dir = FIXTURE_EVIDENCE_DIR;
@@ -516,6 +520,14 @@ test_declines_leave_the_command_buffer_untouched(const struct reference *ref)
    ARM("a recorded draw beside the fill", s.cmd.deferred_draw_count = 1);
    ARM("a recorded query op beside the fill", s.cmd.query_op_count = 1);
    ARM("a recorded event op beside the fill", s.cmd.event_op_count = 1);
+
+   /* The board gate: 1002:5974 sits on desktop Xpress 1100 systems as well,
+    * so an unresolved board and an id that disagrees with the resolved one
+    * both leave the fill on the host path. */
+   ARM("an unresolved board",
+       s.device.arming_platform = R300_PLATFORM_ID_NONE);
+   ARM("a vendor id the resolved board does not carry",
+       s.pdevice.pci_vendor_id = 0x10de);
 #undef ARM
 
    /* A command buffer that already carries a stream is another cell's, so

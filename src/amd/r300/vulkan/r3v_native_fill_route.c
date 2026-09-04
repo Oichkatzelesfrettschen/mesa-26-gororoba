@@ -437,7 +437,8 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    r3v_native_arming_collect_from(
       device->arming_provider != NULL ? device->arming_provider
                                       : r3v_native_arming_host_provider(),
-      &facts, device->pdevice->pci_vendor_id, device->pdevice->pci_device_id,
+      &facts, r3v_native_arming_platform(device),
+      device->pdevice->pci_vendor_id, device->pdevice->pci_device_id,
       R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC, ib_digest, device->manifest_dir,
       kernel_release, sizeof(kernel_release), module_srcversion,
       sizeof(module_srcversion));

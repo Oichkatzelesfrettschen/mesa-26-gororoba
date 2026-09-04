@@ -1508,6 +1508,14 @@ void r3v_native_cmd_buffer_release_recording(
  * on failure.
  */
 struct r300_tcl_bypass_triangle_ib;
+/* The board the arming gate compares.  A harness that replaces the fact
+ * provider also declares the platform it stands in for; production resolves
+ * it from the device and the firmware tables at physical-device creation.
+ * Every hazardous route reads the board through this one resolution.
+ */
+enum r300_platform_id
+r3v_native_arming_platform(const struct r3v_native_device *device);
+
 VkResult r3v_native_cmd_buffer_append_ib(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
