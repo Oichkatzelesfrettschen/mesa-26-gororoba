@@ -29,6 +29,7 @@
 #include "common/amd_family.h"
 #include "drm-shim/drm_shim.h"
 #include "util/log.h"
+#include "util/macros.h"
 #include "util/os_misc.h"
 #include <util/u_math.h>
 #include <radeon_drm.h>
@@ -49,9 +50,31 @@ radeon_ioctl_noop(int fd, unsigned long request, void *arg)
    return 0;
 }
 
+/* Submissions this shim answered.  The shim stands where the kernel's
+ * DRM_RADEON_CS handler stands, so a run whose count stays zero made no
+ * command submission at all: the handler is the one place a submission can
+ * arrive.  A test reads it through dlsym on the preloaded object, which is
+ * why it carries default visibility rather than the object's own hidden
+ * default.
+ */
+static uint64_t radeon_cs_ioctls;
+
+/* The accessor is radeon-specific, so it is declared here rather than in
+ * drm_shim.h beside the generic shim's own test hooks; the declaration
+ * stands ahead of the definition because the object builds with prototypes
+ * required. */
+PUBLIC uint64_t drm_shim_test_radeon_cs_ioctls(void);
+
+PUBLIC uint64_t
+drm_shim_test_radeon_cs_ioctls(void)
+{
+   return radeon_cs_ioctls;
+}
+
 static int
 radeon_ioctl_cs(int fd, unsigned long request, void *arg)
 {
+   radeon_cs_ioctls++;
    const char *failure = getenv("R3V_NATIVE_SHIM_CS_REFUSE");
    if (failure != NULL && strcmp(failure, "1") == 0)
       return -EINVAL;

@@ -2221,6 +2221,37 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_loader_env = environment(r3v_native_cell_vars + {
       'VK_DRIVER_FILES' : _dev_icd.full_path(),
     })
+    # Kernel-entering command submissions an application makes by loading
+    # the driver.  The shim answers DRM_RADEON_CS in place of the kernel
+    # and is the one place a submission arrives, so the count its handler
+    # keeps is the process's submission count.  The loader leg reaches a
+    # device and its queue and reads that count back as zero; the
+    # calibration leg issues one submission through the same interposed
+    # path and reads it back as one, so the zero is a measured absence.
+    r3v_native_loader_cs_count = executable(
+      'r3v_native_loader_cs_count',
+      files('tests/r3v_native_loader_cs_count.c'),
+      include_directories : [inc_include, inc_src],
+      dependencies : [dep_vulkan_loader, dep_dl, dep_libdrm],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-native-loader-cs-count',
+      r3v_native_loader_cs_count,
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-loader-cs-count-calibration',
+      r3v_native_loader_cs_count,
+      args : ['--calibrate'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
     r3v_native_format_features_test = executable(
       'r3v_native_format_features_test',
       files('tests/r3v_native_format_features_test.c'),
