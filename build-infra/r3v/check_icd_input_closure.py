@@ -18,8 +18,12 @@ inputs that moved and requires a rebuild.
 
 Usage:
   check_icd_input_closure.py --builddir DIR --target PATH --source-root DIR
-                             --repair-range A..B [--closure-out FILE]
-                             [--ratchet CMD...]
+                             --repair-range A..B [--git-root DIR]
+                             [--closure-out FILE] [--ratchet CMD...]
+
+A reproducible qualification compiles an archive-derived source view that
+is not a repository, so ``--git-root`` names the checkout the range
+resolves in while ``--source-root`` stays the view the build graph read.
 
 Exit 0 when the intersection is empty (and the ratchet, when given, passes),
 1 when an input moved or the ratchet fails, 2 on usage or tool failure.
@@ -81,6 +85,10 @@ def main() -> int:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--repair-range", required=True,
                         help="git range A..B of the repository-policy repair")
+    parser.add_argument("--git-root", type=Path,
+                        help="repository the repair range resolves in when "
+                             "the source root is an archive-derived view "
+                             "(default: the source root)")
     parser.add_argument("--closure-out", type=Path)
     parser.add_argument("--ratchet", nargs=argparse.REMAINDER,
                         help="command running the repaired repository-policy "
@@ -95,7 +103,7 @@ def main() -> int:
         return 2
     changed = [line for line in run(
         ["git", "diff", "--name-only", args.repair_range],
-        cwd=args.source_root).splitlines() if line]
+        cwd=args.git_root or args.source_root).splitlines() if line]
     if not changed:
         print("check_icd_input_closure: the repair range changes no path; "
               "the denominator is empty", file=sys.stderr)
