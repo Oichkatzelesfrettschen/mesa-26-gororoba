@@ -98,10 +98,30 @@ same strings at 0x86 and 0x1a7.
 
 ## Lane B -- mesa build infrastructure
 
-    AGENT  review-thread-frontier repair (PRRT_kwDOR3YK5M6Qaw1U, evidence
-           owner mesa-gororoba-debug-optimized/PKGBUILD past 217378421cb).
-           Pre-existing on main; blocks profile-4 evidence under
-           REPRODUCIBLE_RUN=1. Rebase and merge AFTER #2118.
+    `make -C build-infra audit` is red on main for THREE independent
+    pre-existing reasons, each with its own PR. All three gate the
+    profile-4 evidence build under REPRODUCIBLE_RUN=1.
+
+    PUSHED #2122 profile-audit: raven2_aco_test_debug_x86_64v1-clang22
+           carried no allowlist row and the gate fails closed on a
+           missing row. Calibrated on two known-bads with distinct
+           diagnostics. 11 profiles against 11 rows.
+    PUSHED #2123 containing_git_worktree bounded a worktree by the mere
+           existence of a .git entry, while is_git_directory -- the
+           correct predicate -- sits beneath it uncalled. An empty
+           /tmp/.git made every build root under /tmp refuse and failed
+           16 of 155 source-root tests. Both shapes git writes are now
+           followed to the metadata they name.
+           Two tests asserted the defect rather than the rule: the peer
+           fixture built an empty .git directory, and the linked-worktree
+           fixture named a target it never created. Both now write real
+           metadata, and the empty and dangling markers are pinned as
+           cases that bound nothing. 158 passed with the stray directory
+           still present.
+    AGENT  #2121 review-thread-frontier repair (PRRT_kwDOR3YK5M6Qaw1U,
+           evidence owner mesa-gororoba-debug-optimized/PKGBUILD past
+           217378421cb). With #2122 and #2123 applied, the audit reaches
+           this check and stops here. Rebase and merge AFTER #2118.
     AGENT  build-infra naming census disposition: profile display names,
            build-dir names, meson options, env files, make targets, package
            recipes and comments, runner names, receipt identifiers,
