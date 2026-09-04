@@ -496,11 +496,19 @@ def write_git_repository_marker(worktree_root: Path) -> Path:
 
 
 def write_git_linked_worktree_marker(worktree_root: Path,
-                                     repository: Path) -> Path:
-    """Write the .git file shape git gives a linked worktree."""
+                                     metadata: Path) -> Path:
+    """Write the .git file shape git gives a linked worktree.
+
+    The metadata directory is written too, because the marker names it
+    and a marker naming an absent path is a different fixture.
+    """
+    metadata.mkdir(parents=True, exist_ok=True)
+    (metadata / "HEAD").write_text("ref: refs/heads/main\n")
+    (metadata / "commondir").write_text("../..\n")
+    (metadata / "gitdir").write_text(f"{worktree_root / '.git'}\n")
     worktree_root.mkdir(parents=True, exist_ok=True)
     marker = worktree_root / ".git"
-    marker.write_text(f"gitdir: {repository}\n")
+    marker.write_text(f"gitdir: {metadata}\n")
     return marker
 
 
@@ -531,6 +539,21 @@ def test_validate_layout_rejects_peer_linked_git_worktree(
     values["prefix"] = peer_root / "build-output" / "prefix"
     with pytest.raises(source_root_control.ControlError):
         source_root_control.validate_layout("build", values)
+
+
+def test_validate_layout_accepts_build_root_under_a_dangling_gitdir_marker(
+    tmp_path: Path,
+) -> None:
+    """A gitdir line naming an absent path names no repository."""
+    values = layout_values(tmp_path)
+    peer_root = tmp_path / ".mesa-26-gororoba-builds" / "dangling"
+    peer_root.mkdir(parents=True)
+    (peer_root / ".git").write_text(
+        f"gitdir: {tmp_path / 'absent' / 'worktrees' / 'gone'}\n")
+    values["build_root"] = peer_root / "build-output"
+    values["builddir"] = peer_root / "build-output" / "build"
+    values["prefix"] = peer_root / "build-output" / "prefix"
+    source_root_control.validate_layout("build", values)
 
 
 def test_validate_layout_accepts_build_root_under_an_empty_git_marker(

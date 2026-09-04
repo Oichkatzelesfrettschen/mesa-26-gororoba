@@ -1007,19 +1007,32 @@ def is_git_worktree_marker(path: Path) -> bool:
 
     Git writes one of two shapes: a directory that is itself the
     repository, or, for a linked worktree, a file whose first line reads
-    "gitdir: <path>".  A symlink resolves to whichever of those it names.
-    An entry of any other shape -- most commonly an empty directory a
-    passing process created under a shared temporary root -- names no
-    repository, so it bounds nothing.
+    "gitdir: <path>" naming that worktree's metadata.  A symlink resolves
+    to whichever of those it names.  Both shapes are followed to the
+    metadata they claim and accepted only when it is there, so a marker
+    that names nothing -- an empty directory, or a gitdir line pointing
+    at an absent path -- bounds nothing.  Either shape is one a passing
+    process can leave under a shared temporary root.
     """
     if path.is_dir():
         return is_git_directory(path)
     if path.is_file():
         try:
             with path.open("r", errors="replace") as marker:
-                return marker.readline().startswith("gitdir:")
+                first_line = marker.readline()
         except OSError:
             return False
+        if not first_line.startswith("gitdir:"):
+            return False
+        target = first_line[len("gitdir:"):].strip()
+        if not target:
+            return False
+        # Git writes the target relative to the marker's own directory
+        # when it is not absolute.
+        resolved = Path(target)
+        if not resolved.is_absolute():
+            resolved = path.parent / resolved
+        return is_git_directory(resolved)
     return False
 
 
