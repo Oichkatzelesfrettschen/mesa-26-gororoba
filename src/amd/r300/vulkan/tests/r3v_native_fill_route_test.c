@@ -734,6 +734,49 @@ test_record_follows_its_transport(const struct reference *ref)
    scene_release(&s);
 }
 
+/* A command buffer is submittable more than once, and the install is
+ * scoped to one submission: the authorization, the declared identity, and
+ * the one-shot evidence directory each describe one.  A second route call
+ * over the same command buffer returns it to its recorded shape and runs
+ * the whole admission again, so the second submission is authorized on its
+ * own terms rather than carrying the first's.
+ */
+static void
+test_resubmission_readmits(const struct reference *ref)
+{
+   struct scene s;
+   if (!scene_init(&s, ref)) {
+      CHECK(false, "the scene does not build");
+      return;
+   }
+   if (!route(&s, NULL)) {
+      CHECK(false, "the first submission does not route");
+      scene_release(&s);
+      return;
+   }
+   char first_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(s.cmd.ib, s.cmd.ib_size_dwords, first_digest);
+
+   /* The same world admits the second submission on its own terms, and the
+    * stream it builds is the one the first built. */
+   CHECK(route(&s, NULL), "the second submission does not route");
+   char second_digest[BLAKE3_OUT_LEN * 2 + 1];
+   r300_triangle_ib_digest_hex(s.cmd.ib, s.cmd.ib_size_dwords,
+                               second_digest);
+   CHECK(strcmp(first_digest, second_digest) == 0,
+         "the second submission built a different stream");
+
+   /* A spent evidence directory refuses the next submission, and the
+    * command buffer is left in its recorded shape for the host store loop.
+    * A stale install surviving into this call would leave a stream behind
+    * and fail here. */
+   s.fixture.attempt_token_present = true;
+   CHECK(!route(&s, NULL),
+         "a spent attempt token still routes the next submission");
+   check_untouched(&s, "a spent attempt token on resubmission");
+   scene_release(&s);
+}
+
 int
 main(void)
 {
@@ -749,6 +792,7 @@ main(void)
    test_host_exclusion_counter(&ref);
    test_reset_drops_the_routed_record(&ref);
    test_record_follows_its_transport(&ref);
+   test_resubmission_readmits(&ref);
 
    if (failures != 0) {
       fprintf(stderr, "%u check(s) failed\n", failures);

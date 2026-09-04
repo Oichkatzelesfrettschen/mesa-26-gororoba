@@ -184,6 +184,11 @@ REFUSALS = [
     ("queue-record-transport-walk", QUEUE,
      "   const unsigned reached = completion_retired ? 4u : (ioctl_accepted ? 3u : 2u);",
      "   const unsigned reached = 0u;", GLUE_TEST, REACHABLE),
+    ("glue-retire-previous-submission", GLUE,
+     "   if (cmd != NULL && cmd->fill_route_active)\n"
+     "      retire_previous_submission(cmd);",
+     "   if (false)\n      retire_previous_submission(cmd);",
+     GLUE_TEST, REACHABLE),
     # The route's own admission.
     ("shape-other-work", GLUE,
      "       r3v_native_cmd_buffer_has_other_recorded_work(cmd_buffer))\n"

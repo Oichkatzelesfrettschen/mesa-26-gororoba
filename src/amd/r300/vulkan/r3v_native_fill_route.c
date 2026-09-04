@@ -151,6 +151,28 @@ decline(struct r3v_native_device *device, enum r3v_execution_policy policy,
                     reason != NULL ? reason : "unnamed");
 }
 
+/* Returns a command buffer this route claimed on an earlier submission to
+ * the shape it was recorded in.
+ *
+ * A Vulkan command buffer is submittable more than once, and this route's
+ * install is a submission-scoped effect: the arming authorization, the
+ * declared submission identity, and the one-shot evidence directory each
+ * describe one submission.  A second submit that found the first's stream
+ * still installed would carry a spent authorization to the device, or
+ * refuse a fill the host had already been told to skip.  Retiring the
+ * install here runs the whole admission again for every submission, and
+ * the record goes with the transport it described.
+ */
+static void
+retire_previous_submission(struct r3v_native_cmd_buffer *cmd)
+{
+   r3v_native_cmd_buffer_release_ib(cmd);
+   for (uint32_t i = 0; i < cmd->deferred_copy_count; i++)
+      cmd->deferred_copies[i].gpu_routed = false;
+   cmd->fill_route_provenance = (struct r3v_execution_provenance){ 0 };
+   cmd->fill_route_active = false;
+}
+
 VkResult
 r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
                                           struct r3v_native_cmd_buffer *cmd,
@@ -158,6 +180,9 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
 {
    const struct r3v_native_deferred_copy *op = NULL;
    const enum r3v_execution_policy policy = device->execution_policy;
+
+   if (cmd != NULL && cmd->fill_route_active)
+      retire_previous_submission(cmd);
 
    if (cmd == NULL || !shape_is_one_fill(cmd, &op)) {
       /* A shape this route does not admit is not a refusal: GPU_ONLY's

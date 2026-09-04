@@ -33,6 +33,15 @@ those leaves the command buffer as it found it, so the host store loop
 performs the fill it was going to perform, and the ordinary state -- the
 submission gate closed -- is one of those declines.
 
+The install is scoped to one submission. A Vulkan command buffer is
+submittable more than once, and the arming authorization, the declared
+identity, and the one-shot evidence directory each describe one
+submission, so a buffer arriving with a previous submission's stream still
+installed is returned to its recorded shape and re-admitted in full. A
+spent evidence directory therefore refuses the second submission and leaves
+the fill to the host store loop rather than carrying a spent authorization
+to the device.
+
 The declared submission identity is
 `R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3`, over the allocation, the
 buffer binding, the range and its pattern, the carrier pitch and format,
@@ -57,7 +66,7 @@ submission rather than being weighed against the others.
 | `r3v-fill-route` memory contract, cell predicate, identity, authority | done |
 | `r3v-native-fill-route` decline arms leave the command buffer untouched | done |
 | route-local host semantic writes zero, against a known-bad host leg | done |
-| every refusal calibrated by removing it and failing its test | done |
+| every refusal calibrated by removing it and failing its test | done: 43 rows, 41 refused, 1 internal guard, 1 reached by no fixture |
 | the prepared plan mutated field by field and refused | done |
 | kernel-entering `DRM_RADEON_CS` count zero for a loader-only application | done |
 | `r300-rb2d-linear-span` coverage replay, sweep, and the pinned cell shape | done |

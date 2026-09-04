@@ -1511,6 +1511,12 @@ VkResult r3v_native_cmd_buffer_append_ib(
    uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell);
 
+/* Returns an installed stream and its relocation list to the allocator and
+ * clears the cell kind, leaving the command buffer with no transport.  A
+ * route whose install is scoped to one submission calls this to return the
+ * buffer to its recorded shape before the next submission re-admits it. */
+void r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer);
+
 void r3v_native_cmd_buffer_install_ib(
    struct r3v_native_cmd_buffer *cmd_buffer, enum r3v_native_cell_kind kind,
    uint32_t *ib, uint32_t ib_size_dwords,

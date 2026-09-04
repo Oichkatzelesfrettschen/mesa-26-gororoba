@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void
+void
 r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
 {
    /* radeon_drm_vk_cs_build binds the IB chunk to this pointer rather than
