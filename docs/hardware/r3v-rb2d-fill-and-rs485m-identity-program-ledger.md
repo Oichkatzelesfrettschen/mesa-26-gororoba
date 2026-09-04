@@ -24,7 +24,8 @@ dependency), STOP (deliberately not done).
 ## Epoch
 
     mesa main            70ab2c8fc2f   (#2116, #2122, #2123 merged)
-    vostro main          069c0a36bf9   (#671, #668, #669 merged)
+    vostro main          b53ac57d1ab   (#671, #668, #669, #672 merged)
+    stein main           cd6c5ba49c1   (#579, #581 merged; #580 in gate)
     mesa #2118           2009b159c34, open, rebased on main, profiles 3/4/5
     mesa #2117           superseded, being replaced by two PRs
     stein main           f3627d422
@@ -161,10 +162,22 @@ same strings at 0x86 and 0x1a7.
 
 ## Lane D -- mesa RB2D route
 
-    AGENT  #2117 four repairs as cherry-pickable commits, NOT a merge
-           candidate: rebase (3 span call sites broke), one 256-byte
-           segment, dispatch hole, missing arming case, provenance before
-           install
+    DONE   #2117 CLOSED as superseded. Its branch stays as a defect proof
+           and cherry-pick source, not a merge candidate.
+    PUSHED #2124 transactional submit route preparation, no GPU execution
+           change. Its order audit found what the source only claimed:
+           r3v_native_queue_submit states in three comments that every
+           gate precedes the first application-memory write, and SIX
+           refusals stand behind it. One is material -- arming disarm
+           runs after execute_deferred_draws, so a failed disarm refuses
+           a submit whose host writes have landed and whose one-shot
+           authorization is spent. Each of the six is declared by name
+           and an undeclared seventh fails the audit. 31 refusals
+           calibrated by reverting each check; three proposed checks were
+           removed rather than shipped because they proved unreachable
+           behind rules already present. Codex found nine real defects
+           over four rounds, including a gate cache opening on a value's
+           presence rather than its content.
     QUEUED r3v/transactional-submit-route-preparation -- no GPU execution
            change. prepare -> validate -> commit; r3v_recorded_work_census;
            submit-wide preflight counting route candidates; GPU_ONLY over
@@ -193,11 +206,40 @@ same strings at 0x86 and 0x1a7.
 
 ## Lane E -- steinmarder
 
-    AGENT  #576 PyYAML workflow dependency, time-invariant comment, local
-           gate transcript as merge authority (no runners since 08-22)
-    AGENT  RS485M identity migration: 7 prose claims, 92 silicon_target
-           rows classified, self-contradicting COMBIOS finding front
-           matter, 1002:5974 seed -> ambiguous row, regenerate
+    DONE   #576 PyYAML workflow dependency, time-invariant comment
+    DONE   RS485M identity migration, 241 files
+    DONE   #581 merged 100fbaf573f. build_rs482_fp24_substrate_coefficient
+           _ledger --check read a stale manifest on a clean main, so
+           make check failed for every branch in this repository whatever
+           it touched. The corpus was current; four recorded digests were
+           behind it.
+    DONE   #579 merged cd6c5ba49c1. Operation-evidence ledger v2 with
+           contract_schema dispatch: an unknown schema raises rather than
+           defaulting, and the RB2D contract enforces the no-record-
+           before-silicon rule structurally, admitting no bundle key and
+           pinning evidence.level to contract_shape_only. Review found
+           three packing strings checked for presence and not value, so a
+           record reading "garbage" passed; each is pinned now.
+    PUSHED #580 seal the parked-entry contract matrix bundle. Four review
+           rounds, each a real defect: the retro-seal wrote a fixed
+           dmesg-pair claim into every manifest; the first repair walked
+           one directory level and reported a nested log as absent, which
+           asserts absence rather than overstating presence; joining the
+           paths made a string naming no artifact, against this
+           repository's own manifest-as-API rule; and the exact-target
+           naming gate read a bundle as new because sealing ADDS files,
+           demanding an August capture be renamed. That last one is fixed
+           in the gate: a bundle is new when it did not exist at the
+           base, calibrated both ways.
+    PUSHED 575 rework on its own branch. Five of six corrections
+           confirmed against kernel source at the deployed checkpoint;
+           the sixth refused because the branch text was already hedged.
+           In its place: an already-merged predecessor finding cites
+           radeon_clocks.c as reaching SCLK_CNTL2 for every family at or
+           above CHIP_RV350 including CHIP_RS480, which is false, since
+           the chain is if/else-if and RS400/RS480 is caught earlier. The
+           underlying claim survives through r300_asic_reset; the
+           citation does not.
     QUEUED rs4xx_pci_identity.tsv, rs4xx_platform_identity.tsv,
            rs4xx_firmware_identity.tsv, rs4xx_source_name_assertions.tsv,
            rs4xx_identity_aliases.tsv
