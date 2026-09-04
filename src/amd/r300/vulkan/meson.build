@@ -151,6 +151,25 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # The fill route's admission layer and the mutation matrix over the
+  # attended cell's prepared plan: the memory contract, the frozen-cell
+  # predicate, the submission identity, and the operator's declaration,
+  # each calibrated beside the admitted case it refuses a mutation of.
+  # Ten bound fields are mutated one at a time and the owning check named.
+  test(
+    'r3v-fill-route',
+    executable(
+      'r3v_fill_route_test',
+      files('tests/r3v_fill_route_test.c', 'r3v_fill_route.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : libr300_common,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Submit preflight: the census reproduces the queue's former field list
   # over all thirty-two combinations of its ordered-work counters, each
   # whole-submit refusal is reachable alone, the transaction admits a
