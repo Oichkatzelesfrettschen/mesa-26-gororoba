@@ -8,7 +8,7 @@ locates it through the STEINMARDER_ROOT environment variable (or a
 --steinmarder-root argument) and runs the registry's live-tree audit
 against the r300 driver directory containing this script.  The audit
 reports, per finding class, where the driver header and the documented
-RS485M-class register census diverge: documented registers the header
+RS480-class register census diverge: documented registers the header
 lacks, name disagreements at an offset, field shifts outside documented
 extents, and consumer emissions of registers no RS485M-reaching evidence
 covers.

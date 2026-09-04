@@ -1,7 +1,7 @@
 # A stable hybrid vertex TCL for RS485M, built up from SW-TCL
 
 The RS485M IGP has no hardware transform-and-lighting: `r300_chipset.c` leaves
-`num_vert_fpus = 0` for the RS485M family, so `has_tcl` is false and
+`num_vert_fpus = 0` for the RS480 family, so `has_tcl` is false and
 the programmable vertex shader (PVS / SE_TCL) block behind the register window
 `0x2200-0x2504` is architecturally absent, not merely clock-gated. Any attempt
 to drive it wedges the part with no software recovery. This document decomposes
@@ -643,7 +643,7 @@ larger applications remain uncaptured and can reopen either demand-gated row.
 | HBTCL-05 | DONE (corpus-verified): "VAP register table", with the viewport `SE_VPORT_*`/`VAP_VPORT_*` scale-offset block, `VSM_VTX_ASSM`, and `VTX_TIMEOUT` added; the read/write asymmetry corrected (front-end `0x2080`/`0x2140` read-safe, PVS ports `0x2200-0x22dc` read-wedge, all writes posted-safe); the 16-bit `VF_CNTL` underflow lever + commit `9899a4d8dd3` (SWTCL 16-bit VAP count clamp); the system-value slot-reservation registry; the R2VB CS-write surface. `TCL_BYPASS`/`CLIP_DISABLE`/`NUM_VERTICES` bitfields confirmed against `r300_reg.h` and the write-sweep corpus | -- |
 | HBTCL-06 | DONE (compiler-verified, R400_US excluded from the standing budget): "Lighting on the fragment ALU (HBTCL-06 policy)" -- native op set from the `r300_fragprog_emit.c` co-issue switches (`ROUND` corrected to lowered), the 64-slot ceiling as co-issued vector+scalar pairs (up to 128 ops when independent; dependent alpha-pipe transcendentals still serialize), the lighting-term mapping table, and the butterfly/Cayley-Dickson non-result (dense `4x4` is already at its `DP4` floor; CD stays in the matrix-build step). The 512-slot R400_US path remains probe-gated (`R300_HB_R400_US`) and is not a standing budget for HBTCL lighting | -- |
 | HBTCL-07 | Root-cause the R2VB points-topology smear; GA point-setup registers (`GA_POINT_SIZE`, `GA_POINT_MINMAX`) and `VAP_VTX_SIZE` remain open hypotheses after near-zero effect measurements -- keep the RCA root-cause-neutral until the no-submit decode names the carrier | HBTCL-03 |
-| HBTCL-08 | DONE, BOUNDED (commit `7ff312da4a8`): exact `R300_R2VB_STANDING=1` arms the measured route only on the RS485M family and only for the packed-FP32 source and delivery domain pinned by `ffc78065325`; every unsupported point, computed-varying, typed-source, or source-format row declines to gallivm with a reason. HBTCL-07 remains the independent points-topology RCA rather than an unproven expansion of this bounded route | HBTCL-02, HBTCL-04 |
+| HBTCL-08 | DONE, BOUNDED (commit `7ff312da4a8`): exact `R300_R2VB_STANDING=1` arms the measured route only on the RS480 family and only for the packed-FP32 source and delivery domain pinned by `ffc78065325`; every unsupported point, computed-varying, typed-source, or source-format row declines to gallivm with a reason. HBTCL-07 remains the independent points-topology RCA rather than an unproven expansion of this bounded route | HBTCL-02, HBTCL-04 |
 | HBTCL-09 | Combine demonstrated MRT multi-attribute export with R2VB so position, normal, and texcoord can leave the producer in one transform pass | HBTCL-03 |
 | HBTCL-10 | Probe E2/RB2D/CBA2D vertex-buffer movement as a possible GART-to-VAP-input mover, using the same hazard-governed no-submit/attended style as the rest of RS485M work | HBTCL-03 |
 

@@ -17,7 +17,7 @@ designs; it binds the campaign's data model together.
 
 ## Silicon substrate
 
-The target is the RS485M-class integrated GPU (PCI `1002:5974`, marketed as
+The target is the RS480-class integrated GPU (PCI `1002:5974`, marketed as
 RS485M, Radeon Xpress 200), an R300-derived 3D core behind an AMD
 K8 HyperTransport northbridge in a Dell Vostro 1000.  The properties below
 are the constraints every mechanism in this campaign answers to.

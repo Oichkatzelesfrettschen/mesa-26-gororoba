@@ -2,12 +2,12 @@
 SPDX-License-Identifier: MIT
 -->
 
-# r3v -- experimental Vulkan ICD for RS485M-family Radeon
+# r3v -- experimental Vulkan ICD for RS480-family Radeon
 
 ## Overview
 
 `r3v` is an experimental Vulkan installable client driver for the AMD
-RS485M-family integrated graphics processors:
+RS480-family integrated graphics processors:
 
 - Radeon Xpress 1100/1150, RS482 and RS485 sharing PCI `1002:5974`; the
   Vostro 1000 specimen is the Xpress 1150, whose option ROM names the part
@@ -51,7 +51,7 @@ silicon has no documented native compute-dispatch packet.
 | Field | Value | Primary source |
 |---|---|---|
 | Vendor | ATI / AMD | PCI vendor ID `0x1002` |
-| RS485M device | `0x5974` | `include/pci_ids/r300_pci_ids.h`; the Vostro 1000 specimen (subsystem `1028:022a`) is the Radeon Xpress 1150 / RS485M product |
+| RS482/RS485 device | `0x5974` | `include/pci_ids/r300_pci_ids.h`; the Vostro 1000 specimen (subsystem `1028:022a`) is the Radeon Xpress 1150 / RS485M product |
 | RS482M device | `0x5975` | `include/pci_ids/r300_pci_ids.h` |
 | Mesa family | `CHIP_RS480` | `r300_parse_chipset()` |
 | Generation | R3xx | AMD R3xx Register Reference Guide |
@@ -61,7 +61,7 @@ silicon has no documented native compute-dispatch packet.
 | Renderer string | `ATI RS480` | r300g `r300_get_renderer()` |
 
 Mesa's PCI table uses the `RS482_` prefix for both device IDs. `0x5975` is the
-RS482M part; `0x5974` is shared by RS485M and RS485, and the specimen this
+RS482M part; `0x5974` is shared by RS482 and RS485, and the specimen this
 repository measures is the mobile RS485M. `0x5974` alone cannot distinguish
 the two: the part resolves from the PCI device id, the board's PCI subsystem
 id, the DMI product name, and the option-ROM firmware string jointly, with no
@@ -69,7 +69,7 @@ one of the four overriding the others (`r300_platform_identity_lookup`,
 `runtime_match_basis`, `identity_evidence` in
 `src/amd/r300/common/r300_chip_identity.h`).
 
-The current r300g path routes RS485M-family vertex-stage execution through
+The current r300g path routes RS480-family vertex-stage execution through
 Gallium Draw software TCL because Mesa classifies the family with
 `num_vert_fpus == 0`. This is a current driver-path fact, not proof that the
 silicon can never execute a hardware vertex program. The RS, TX, US, CB, and ZB
@@ -321,7 +321,7 @@ At minimum, a loader/identity check records:
 | Surface | Required observation |
 |---|---|
 | Instance | `vkCreateInstance` succeeds |
-| Physical device | one supported RS485M-family PCI identity is enumerated |
+| Physical device | one supported RS480-family PCI identity is enumerated |
 | Queue families | graphics and transfer only; no compute |
 | Mapped ICD | the process maps the intended `libvulkan_r3v.so` |
 | Kernel window | no unexplained CS validation, reset, hang, or lockup event |

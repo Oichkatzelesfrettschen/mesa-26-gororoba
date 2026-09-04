@@ -1147,7 +1147,7 @@ vertex tuples, and R2VB semantics stay in the R300 layers.
 r3v_instance
   -> r3v_physical_device
        -> render-node fd
-       -> RS485M device information
+       -> RS480 device information
        -> one UMA budget model
   -> r3v_device
        -> radeon_drm_vk_device
@@ -1212,7 +1212,7 @@ not PVS and not R2VB. It uses:
 The no-submit form first fixes PM4, relocation identity, state coverage, and
 command size. Radeon shim results remain host-model evidence. Offline kernel
 replay proves parser acceptance and calibrated malformed rejection. Only then
-does an attended RS485M-family target submit the known-good cell.
+does an attended RS480-family target submit the known-good cell.
 
 ### CPU vertex execution and R2VB migration
 
@@ -1406,7 +1406,7 @@ Suitable common value-type mechanisms include:
 
 R300-specific mechanisms remain under R300 common or Vulkan code:
 
-- RS485M family capabilities and quirks;
+- RS480 family capabilities and quirks;
 - invariant and VAP-invariant register values;
 - R300 shader ISA and RC metadata;
 - VAP, PSC, RS, GA, US, TX, CB, ZB, and ROP registers;

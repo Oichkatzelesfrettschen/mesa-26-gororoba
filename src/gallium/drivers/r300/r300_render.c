@@ -2637,7 +2637,7 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
 
     /* Point-sprite path: one hardware point expanded by GA_POINT_SIZE, with
      * GB_POINT_STUFF_ENABLE stuffing texcoords for TEXCOORD_XY.  On
-     * RS485M-class SWTCL (has_tcl=false) that frontend wedges (RBBM latches
+     * RS480-class SWTCL (has_tcl=false) that frontend wedges (RBBM latches
      * CP+VAP+GA busy, backend idle) for TEXCOORD_XY format-converting
      * blits.  Route ATTRIB_NONE and TEXCOORD_XY through util_blitter's
      * plain two-triangle quad on SWTCL.  TEXCOORD_XYZW and instanced

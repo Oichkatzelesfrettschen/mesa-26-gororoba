@@ -19,10 +19,10 @@ extern "C" {
 
 #define R3V_VENDOR_ID_ATI R300_PCI_VENDOR_ATI
 
-/* The RS48x IGPs: 1002:5974 is RS485M (Radeon Xpress 1100/1150) and
+/* The RS48x IGPs: 1002:5974 is RS482/RS485 (Radeon Xpress 1100/1150) and
  * 1002:5975 is RS482M (Mobility Radeon Xpress 200).  The common chip
- * identity table maps both into the RS485M family; both report
- * GL_RENDERER="ATI RS480", and the RS485M-class vertex transform engine is
+ * identity table maps both into the RS480 family; both report
+ * GL_RENDERER="ATI RS480", and the RS480-class vertex transform engine is
  * absent, so every vertex route is TCL bypass over produced records. */
 #define R3V_PCI_DEVICE_ID_RS48X R300_PCI_DEVICE_RS48X_5974
 #define R3V_PCI_DEVICE_ID_RS482M R300_PCI_DEVICE_RS482M_5975

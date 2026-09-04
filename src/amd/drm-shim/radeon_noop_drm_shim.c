@@ -996,13 +996,13 @@ test_identity(int fd, uint16_t expected_device_id,
       drm_shim_test_path_is_hidden(
          "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs") ==
          rs480_source_hidden,
-      "RS485M fallback debugfs registration differs from selected family %s",
+      "RS480 fallback debugfs registration differs from selected family %s",
       expected->family_name);
    TEST_CHECK(
       drm_shim_test_path_is_hidden(
          "/sys/kernel/debug/dri/0/"
          "radeon_rs480_candidate_gart_mc_regs") == rs480_source_hidden,
-      "RS485M per-card debugfs registration differs from selected family %s",
+      "RS480 per-card debugfs registration differs from selected family %s",
       expected->family_name);
 
    uint32_t info_device_id = UINT32_MAX;

@@ -125,7 +125,7 @@ that fails the size check rather than a permissive default (known(source)).
 ### Family gating, corrected
 
 `radeon_family.h` orders the enum `CHIP_R300 < CHIP_RV350 < CHIP_R420 <
-CHIP_RS400 < CHIP_RS480 < CHIP_RV515` (known(source), read directly). RS485M
+CHIP_RS400 < CHIP_RS480 < CHIP_RV515` (known(source), read directly). RS480
 therefore sits **above** the RV350 and R420 thresholds and below the RV515 one,
 which splits the family gates in `r300_packet0_check` two ways.
 
@@ -607,7 +607,7 @@ the count never passes through the ALU
 silicon). Exactness against a CPU oracle at large counts is source-grounded
 rather than measured.
 
-HiZ RAM is absent on RS485M: `hiz_ram_dwords` is zero in the family capability
+HiZ RAM is absent on RS480: `hiz_ram_dwords` is zero in the family capability
 table and a live debug query reports no HiZ RAM (steinmarder
 `r300_chip_family_caps.tsv`; silicon negative). ZMASK is present at 5120 dwords
 with 8x8 Z compression, live-positive and under-mined. `ZB_FORMAT` carries

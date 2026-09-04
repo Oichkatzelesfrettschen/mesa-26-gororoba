@@ -155,7 +155,7 @@ catch it.
 
 ## Host coherency model
 
-The RS485M-family GART runs with request snooping disabled: `rs400_gart_enable`
+The RS480-family GART runs with request snooping disabled: `rs400_gart_enable`
 programs `RS480_AGP_MODE_CNTL` with `REQ_TYPE_SNOOP_DIS`, and `radeon_bo_create`
 strips `RADEON_GEM_GTT_WC` and `RADEON_GEM_GTT_UC` on every non-PCIE device, so
 a GTT mapping is always `ttm_cached`. The driver therefore keeps the

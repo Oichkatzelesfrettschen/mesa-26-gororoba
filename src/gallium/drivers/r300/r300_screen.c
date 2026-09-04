@@ -799,7 +799,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         &r300screen->r2vb, r300screen->caps.family == CHIP_RS480);
     if (r300_screen_r2vb_config(r300screen)->standing_defaults_enabled) {
         fprintf(stderr,
-                "r300: R2VB standing defaults captured (RS485M-family measured "
+                "r300: R2VB standing defaults captured (RS480-family measured "
                 "domain)\n");
     }
 

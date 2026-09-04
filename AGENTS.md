@@ -304,9 +304,9 @@ When `open_gororoba/proofs/` is available, use proof names as review checks.
 
 ## R300/R3V and RS485M evidence lane
 
-Target hardware context: Vostro 1000 / AMD Athlon 64 / K8 + Radeon Xpress 200M/1100/1150 (RS485M `1002:5954`, RS485M `1002:5974`, RS482M `1002:5975`; the Vostro 1000 carries `1002:5974` with subsystem `1028:022a`, the Radeon Xpress 1150 / RS485M product) + SB600. Contrast with discrete R300 (`CHIP_R300`), R350, RV350/RV380, and R420/R500 ASICs.
+Target hardware context: Vostro 1000 / AMD Athlon 64 / K8 + Radeon Xpress 200M/1100/1150 (RS480 `1002:5954`, RS482/RS485 `1002:5974`, RS482M `1002:5975`; the Vostro 1000 carries `1002:5974` with subsystem `1028:022a`, the Radeon Xpress 1150 / RS485M product) + SB600. Contrast with discrete R300 (`CHIP_R300`), R350, RV350/RV380, and R420/R500 ASICs.
 
-Distinguish RS485M-family IGP architecture from discrete R300:
+Distinguish RS480-family IGP architecture from discrete R300:
 - Geometry execution: RS485M lacks hardware vertex processing / TCL engines (`num_vert_fpus = 0`). Geometry routes through host SW-TCL or Render-to-Vertex-Buffer (R2VB) carrier textures re-ingested into VAP (`R300_VAP_CNTL`).
 - Memory controller & aperture: UMA host system memory accessed through the RS485M Northbridge indirect register path (`RS480_NB_MC_INDEX` / `RS480_NB_MC_DATA` in `rs400.c` / `rs400d.h`).
 - Fragment shader ALU: Fixed VLIW FP24 (s1e7m16) Ultra Shader pipeline (`R300_US_CONFIG`, `R300_US_ALU_RGB_ADDR_0`, `R300_US_ALU_ALPHA_ADDR_0`).

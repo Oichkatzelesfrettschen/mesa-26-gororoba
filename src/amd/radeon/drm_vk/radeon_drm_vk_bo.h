@@ -40,7 +40,7 @@ void radeon_drm_vk_bo_unmap(struct radeon_drm_vk_device *device,
                             const struct radeon_drm_vk_bo *bo, void *map);
 
 /* Writes back and invalidates every CPU cache line covering a host mapping.
- * The RS485M-family GART runs with request snooping disabled
+ * The RS480-family GART runs with request snooping disabled
  * (rs400_gart_enable programs RS480_AGP_MODE_CNTL with REQ_TYPE_SNOOP_DIS),
  * and radeon_bo_create strips RADEON_GEM_GTT_WC and RADEON_GEM_GTT_UC on
  * every non-PCIE device, so a GTT mapping is always ttm_cached and the

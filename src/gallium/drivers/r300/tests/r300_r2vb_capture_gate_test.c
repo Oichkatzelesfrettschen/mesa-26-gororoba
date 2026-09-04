@@ -79,7 +79,7 @@ static void
 check_rs48x_capability(void)
 {
    CHECK(r300_r2vb_rs480_capability_gate(CHIP_RS480, false, 0),
-         "RS485M PCI-derived family and SWTCL shape admit the self-test");
+         "RS480 PCI-derived family and SWTCL shape admit the self-test");
    CHECK(!r300_r2vb_rs480_capability_gate(CHIP_RS400, false, 0),
          "RS400 PCI-derived family declines the self-test");
    CHECK(!r300_r2vb_rs480_capability_gate(CHIP_RC410, false, 0),
@@ -103,9 +103,9 @@ static void
 check_pci_family_mapping(void)
 {
    static const uint32_t rs48x_pci_ids[] = {
-      0x5954, /* RS485M */
+      0x5954, /* RS480 */
       0x5955, /* RS480M */
-      0x5974, /* shared by RS485M and RS485 */
+      0x5974, /* shared by RS482 and RS485 */
       0x5975, /* RS482M */
    };
 
@@ -115,7 +115,7 @@ check_pci_family_mapping(void)
       r300_parse_chipset(rs48x_pci_ids[i], &caps);
       CHECK(r300_r2vb_rs480_capability_gate(caps.family, caps.has_tcl,
                                              caps.num_vert_fpus),
-            "RS485M-family PCI mapping admits the calibrated SWTCL shape");
+            "RS480-family PCI mapping admits the calibrated SWTCL shape");
    }
 }
 

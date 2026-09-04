@@ -34,7 +34,7 @@
  * Firmware and the module's gartsize parameter therefore select the
  * per-device capacities.  The native report preserves the positive,
  * overflow-safe sum of those two DRM values instead of imposing a universal
- * RS485M-family ceiling that the kernel sources do not define.
+ * RS480-family ceiling that the kernel sources do not define.
  */
 
 enum r3v_memory_properties_verdict {
@@ -100,7 +100,7 @@ r3v_memory_properties_check(const VkPhysicalDeviceMemoryProperties *m,
    return R3V_MEMORY_PROPERTIES_OK;
 }
 
-/* The native lane reports one budget: RS485M-family UMA draws the GTT
+/* The native lane reports one budget: RS480-family UMA draws the GTT
  * aperture and the firmware-selected IGP VRAM interval from the same system
  * memory, so a single DEVICE_LOCAL heap carries both kernel pools.  Type 0
  * is the GTT|CPU_ACCESS placement r3v_native_memory_type_policy allocates and
