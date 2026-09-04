@@ -375,6 +375,47 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # The submission boundary's phase order, read out of the source it
+  # governs: every refusal ahead of the first device-visible effect is the
+  # prepare/validate rule working, and each refusal behind it is declared in
+  # the audit with the mechanism that keeps it there.  An undeclared late
+  # refusal, or a declared one that leaves the source, fails.
+  test(
+    'r3v-submit-transaction-order-selftest',
+    prog_python,
+    args : [files('tests/r3v_submit_transaction_order_audit.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-submit-transaction-order',
+    prog_python,
+    args : [files('tests/r3v_submit_transaction_order_audit.py'),
+            '--queue', files('r3v_native_queue.c')],
+    suite : ['r3v'],
+  )
+
+  # The reserved refusal result carries a public meaning, so the
+  # preparation layer signals with typed verdicts and the API boundary
+  # alone spells a Vulkan result.
+  test(
+    'r3v-internal-refusal-signal-selftest',
+    prog_python,
+    args : [files('tests/r3v_internal_refusal_signal_audit.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-internal-refusal-signal',
+    prog_python,
+    args : [files('tests/r3v_internal_refusal_signal_audit.py'),
+            '--source', files('r3v_route_policy.h'),
+            '--source', files('r3v_route_policy.c'),
+            '--source', files('r3v_submit_preflight.h'),
+            '--source', files('r3v_submit_preflight.c')],
+    suite : ['r3v'],
+  )
+
   # Executable form of the boundaries doc's completion criterion that
   # feature and extension tables come from implemented behavior: every
   # device extension the native branch advertises names the native
