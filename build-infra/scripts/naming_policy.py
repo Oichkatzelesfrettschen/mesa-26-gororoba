@@ -58,8 +58,16 @@ RETIRED_CHIP_IDENTITY = re.compile(
 # and passes: "RS482 is the desktop Xpress 1100 part; the Vostro 1000
 # carries RS485M."  The die-class enumeration RS480/RS482/RS485, the
 # 1002:5974 shared-id description, and the 1002:5975 RS482M row all stand.
-_VOSTRO = r"[Vv]ostro(?:[- ]?1000)?"
-_RS482 = r"RS482(?![M/])"
+# Dell shipped many Vostro models.  The bare shorthand names this board,
+# so it stands only when no other model number follows it: "Vostro 1500
+# uses RS482" states a fact about a different machine and passes.
+_VOSTRO = r"[Vv]ostro(?:[- ]?1000(?![0-9])|(?![- ]?[0-9]))"
+# RS480 and RS482 are both retired names for this platform: the kernel
+# die class covers RS480/RS482/RS485 alike, so binding the board to
+# either one names a chip it does not carry.  "ATI RS480" is the
+# renderer string the driver reports, and CHIP_RS480 is the upstream
+# enum, so the word boundary and the ATI lookbehind leave both intact.
+_RS482 = r"(?<!ATI )RS48[02](?![M/])"
 _BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
 _CLAUSE = r"[^.;\n]"
 # The gap a bind verb reaches into its target crosses shapes that never
@@ -143,7 +151,7 @@ _OBSERVED = (
 # the run, never the bare die, so RS485 reads the same as RS480/RS482
 # here; the M-suffix, slash-family, and "-family"/" family" exclusions
 # already carried by RS480/RS482 apply identically to RS485.
-_PART = r"RS48[025](?![M/]|\s*/\s*RS|[- ]family)"
+_PART = r"(?<!ATI )RS48[025](?![M/]|\s*/\s*RS|[- ]family)"
 # A noun that names a board rather than a die: a part token in front of one
 # is this platform, whatever verb the sentence uses.
 _BOARD_NOUN = r"(?:host|board|target|silicon|specimen|machine|system)"
@@ -158,7 +166,7 @@ _VERDICT = r"(?i:passes|fails|regresses)"
 # ".;" still ends it.  The windows are wide enough for a detailed clause
 # ("measured under the complete conformance corpus ... on RS482") that a
 # tight cap or a bare newline exclusion would otherwise let escape.
-_SOFT_WRAP_CLAUSE = r"(?:[^.;]|\n(?!\s*\n))"
+_SOFT_WRAP_CLAUSE = r"(?:[^.;\n]|\n(?!\s*\n))"
 # A bare "Vostro 1000" already satisfies the "on" object as the board, so a
 # later parenthetical part token in the same clause (a hardware-makeup
 # aside such as "on the Dell Vostro 1000 (AMD K8 + RS482 + SB600)") names
@@ -167,8 +175,12 @@ _SOFT_WRAP_CLAUSE = r"(?:[^.;]|\n(?!\s*\n))"
 # reachable, since the lookahead only excludes the bare board mention.
 _BOARD_ALREADY_BOUND = r"\bVostro\s+1000\b(?!['’]s)"
 _SPECIMEN_GAP = rf"(?:(?!{_BOARD_ALREADY_BOUND}){_SOFT_WRAP_CLAUSE})"
+# A verdict reports a run as surely as a measurement does, so the leading
+# verb of a prepositional observation is either one: "the case passes on
+# RS482" names the board the case ran on.
+_OBSERVED_OR_VERDICT = rf"(?:{_OBSERVED}|{_VERDICT})"
 MISATTRIBUTED_SPECIMEN_OBSERVATION = re.compile(
-    rf"\b{_OBSERVED}\b{_SOFT_WRAP_CLAUSE}{{0,120}}?\b(?i:on|against|upon)\b"
+    rf"\b{_OBSERVED_OR_VERDICT}\b{_SOFT_WRAP_CLAUSE}{{0,120}}?\b(?i:on|against|upon)\b"
     rf"{_SPECIMEN_GAP}{{0,48}}?\b{_PART}\b"
     rf"|\b{_PART}\s+{_BOARD_NOUN}\b"
     rf"|\b{_PART}\b{_SOFT_WRAP_CLAUSE}{{0,16}}?\b{_VERDICT}\b"
@@ -1475,6 +1487,41 @@ def self_test() -> int:
             "build-infra/scripts/source_root_control.py",
             'CURRENT = ".gororoba-source-view"\n',
             True,
+        ),
+        # RS480 is a retired name for this platform exactly as RS482 is, so
+        # a binding to either one reports; the upstream enum and the
+        # renderer string keep their owners' spelling.
+        ("docs/example.md", "The Vostro 1000 carries RS480.\n", True),
+        ("docs/example.md", "The Vostro 1000 carries RS482.\n", True),
+        (
+            "docs/example.md",
+            "The renderer string reads ATI RS480 on this board.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "CHIP_RS480 covers the RS480/RS482/RS485 die class.\n",
+            False,
+        ),
+        # Dell shipped many Vostro models, and only this one carries the
+        # part, so another model number states a fact about another machine.
+        ("docs/example.md", "The Vostro 1500 uses RS482.\n", False),
+        # A verdict names the board a case ran on the same way a
+        # measurement does.
+        ("docs/example.md", "The case passes on RS482 today.\n", True),
+        # A soft line break carries one clause; a blank line ends it, so a
+        # later paragraph is a separate statement.
+        (
+            "docs/example.md",
+            "the attended-cell runner has carried one armed\n"
+            "submission on RS482 that the kernel accepted\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "measured the cache behavior on the tested board\n\n"
+            "RS482 is a separate desktop part.\n",
+            False,
         ),
     )
     for path, text, expected_failure in cases:

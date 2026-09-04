@@ -41,7 +41,7 @@ Seven principles generate the rules in this file. A case no rule names resolves 
 - Record the exact symbol-discovery technique alongside every code locator: `(clangd: textDocument/references on FUNC)`, `(global -r SYMBOL)`, `(ast-grep --pattern PATTERN)`, `(rg --fixed-strings SYMBOL src/)`.
 - Formulate and record a complete falsification harness before changing driver code: state the direct observation, governing spec constraint, implementation hypothesis, falsification criterion, validation command or retained bundle path, and predicted test movement across CTS, Piglit, or deqp suites.
 - Begin GPU fault analysis with a decisive `dmesg` capture to check for DRM CS validation rejections.
-- Target the RS480(RS482/485) / K8 / SB600 Vostro 1000 platform through its registered out-of-tree kernel modules (radeon GPU-reset + hazard mitigation, SB600 watchdog, EC thermal) as documented in `docs/hardware/vostro1000-kernel-modules.md`.
+- Target the Vostro 1000 platform -- RS485M IGP, AMD K8 (Family 0Fh), SB600 -- through its registered out-of-tree kernel modules (radeon GPU-reset + hazard mitigation, SB600 watchdog, EC thermal) as documented in `docs/hardware/vostro1000-kernel-modules.md`.
 - Symbolize crashes by verifying active module reachability in `/proc/PID/maps` or `gdb info sharedlibrary`.
 - Segregate build, runtime, conformance, and silicon findings into distinct, unmixed evidence classes.
 - Ground conformance claims in executed test runs; use build success strictly to prove compilation.
