@@ -630,6 +630,20 @@ def policy_implementation_identifier_violations(
     ]
 
 
+def artifact_token_at(text: str, start: int) -> str:
+    """The whole artifact token a match opens, not just its prefix.
+
+    The pattern anchors on the platform-and-chip prefix, so a retained
+    bundle reports as `cachyos_vostro1000_rs482` while the artifact a
+    reader must seal or rename is the full directory name.  The token
+    runs to the first character a bundle name cannot carry.
+    """
+    end = start
+    while end < len(text) and (text[end].isalnum() or text[end] in "._-"):
+        end += 1
+    return text[start:end]
+
+
 def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]:
     if retained_evidence(path):
         return []
@@ -693,7 +707,8 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
         findings.append(
             f"{path}:{line_number}: a new artifact names the platform rs482; "
             f"the attended target is RS485M and only ledger-registered "
-            f"retained paths keep the alias: {alias_match.group(0)!r}"
+            f"retained paths keep the alias: "
+            f"{artifact_token_at(text, alias_match.start())!r}"
         )
     # The path itself is an artifact name, and its payload need not repeat
     # it: a file created at results/vostro1000-rs482-new/data.txt carries
@@ -705,7 +720,8 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
         findings.append(
             f"{path}: a new artifact names the platform rs482 in its own "
             f"path; the attended target is RS485M and only ledger-registered "
-            f"retained paths keep the alias: {name_match.group(0)!r}"
+            f"retained paths keep the alias: "
+            f"{artifact_token_at(path, name_match.start())!r}"
         )
     for artifact_match in RETIRED_INTERNAL_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, artifact_match.start()) + 1
@@ -1278,9 +1294,19 @@ def self_test() -> int:
             "deployment-runtime\n",
             False,
         ),
+        # Registration is three-valued, so each value carries an arm.  A
+        # sealed row keeps the alias; a row present but unsealed does not,
+        # because a seal is what fixes the spelling; a path absent from
+        # the ledger never registered at all.
         (
             "docs/example.md",
-            "results/r3v-native-fp24-bisect-ceiling-rs482\n",
+            "results/cachyos_vostro1000_rs482_radeon_unified_0.7-1_"
+            "prod_admission_20260807T055048Z\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "results/r3v-native-fp24-bisect-ceiling-rs482-unregistered\n",
             True,
         ),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
