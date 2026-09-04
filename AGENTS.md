@@ -961,7 +961,7 @@ House repository-wide doctrine in this root document; place subsystem-specific r
 
 The project motto is:
 
-`AD ASTRA PER MATHEMATICA ET SCIENTIAM ET TECHNICUM`
+`AD AETHERA UNIVERSI PER MATHEMATICAM ET SCIENTIAM ET ARTEM TECHNICAM`
 
 Direct all repository engineering through mathematics, scientific inquiry, and disciplined technical rigor. Welcome bold creative insight, and ground every hypothesis in concrete mechanisms, empirical evidence, robust implementations, and verifiable test outcomes.
 
