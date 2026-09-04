@@ -473,7 +473,7 @@ vl_idct_stage2_vert_shader(struct vl_idct *idct, nir_builder *b,
     * just below the boundary whenever the fraction is not exactly representable;
     * NEAREST then fetches row 2k-1, the previous block's high-frequency texel,
     * and the reconstruction loses vertical frequencies 0..3 for that block-row.
-    * Measured on RS480: the uncentered pair lands (2k-1, 2k+1) for 32 of 36
+    * Measured on RS485M: the uncentered pair lands (2k-1, 2k+1) for 32 of 36
     * block-rows of a 288-tall plane; only rows whose fraction is dyadic
     * (k = 0, 9, 18, 27) resolve exactly.  Bias BOTH texels' row lanes to the
     * texel center (+0.5/(buffer_height/4)): floor of a centered coordinate is

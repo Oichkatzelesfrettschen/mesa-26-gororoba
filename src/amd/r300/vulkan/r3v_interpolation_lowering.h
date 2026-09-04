@@ -4,7 +4,7 @@
  * Route selection for Vulkan interpolation qualifiers on the R3V native
  * CPU delivery route.  A Flat varying reaches the fragment stage either
  * through host provoking-value replication (r3v_post_vs_lowering.h) or
- * through the RS482 GA's own provoking-vertex selection over the color
+ * through the RS485M GA's own provoking-vertex selection over the color
  * 0 vector (r300_flat_color0_plan.h).  The selector admits the direct
  * hardware route on the conjunction below and falls back to
  * replication otherwise, so every refused predicate lands on the
@@ -50,7 +50,7 @@ enum r3v_interpolation_route {
    /* NoPerspective through GB_SELECT.W_SELECT = 1: the GB hands the
     * rasterizer 1.0 as the outgoing 1/W (AMD R3xx 3D Registers,
     * GB_SELECT), so every interpolant in the draw is linear in window
-    * space.  On RS482 the two-pass census classifies that word affine
+    * space.  On RS485M the two-pass census classifies that word affine
     * on every judged pixel (882/882 within one UNORM8 quantum) with the
     * same stream classifying perspective under W_SELECT = 0, while
     * RS_INST.TEX_ADJ leaves the target unchanged
@@ -184,7 +184,7 @@ struct r3v_interpolation_query {
  * lowering) with a naming reason. */
 /* The rasterizer probe candidate a NoPerspective interface takes.
  * Bit 22 of RS_INST (TEX_ADJ) and GB_SELECT.W_SELECT carry no retained
- * silicon classification on RS482, so neither is a NoPerspective
+ * silicon classification on RS485M, so neither is a NoPerspective
  * route; a candidate marks the pass whose stream differs from the
  * control varying cell in that one word, and the census classifies
  * the bit (r300_rs_tex_adj_probe.h).  The candidate opens on exactly

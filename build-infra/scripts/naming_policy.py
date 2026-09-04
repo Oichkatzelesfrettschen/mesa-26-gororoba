@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import io
 import re
 import subprocess
 import sys
+import tempfile
 import tokenize
 from pathlib import Path
 
@@ -46,6 +48,323 @@ RETIRED_CHIP_IDENTITY = re.compile(
     r"\bRS485(?!M)\b[^\n]{0,24}?\b(?:0x)?5975\b|"
     r"\b(?:0x)?5974\b[^\n]{0,40}?\b(?:alone|only|exclusively)\b[^\n]{0,40}?\bRS482\b)",
 )
+# The board's video BIOS names the part: the option-ROM string table of the
+# Dell Vostro 1000 IGP carries "RS485/M BR#26605" and "ATI Radeon Xpress
+# 1150".  1002:5974 is shared with the desktop RS482 (Xpress 1100), so
+# binding this platform to RS482 names a chip it does not carry.
+#
+# The rule reads attribution rather than proximity, and every arm stops at a
+# clause boundary, so a sentence that contrasts the two parts states a fact
+# and passes: "RS482 is the desktop Xpress 1100 part; the Vostro 1000
+# carries RS485M."  The die-class enumeration RS480/RS482/RS485, the
+# 1002:5974 shared-id description, and the 1002:5975 RS482M row all stand.
+# Dell shipped many Vostro models.  The bare shorthand names this board,
+# so it stands only when no other model number follows it: "Vostro 1500
+# uses RS482" states a fact about a different machine and passes.
+_VOSTRO = r"[Vv]ostro(?:[- ]?1000(?![0-9])|(?![- ]?[0-9]))"
+# RS480 and RS482 are both retired names for this platform: the kernel
+# die class covers RS480/RS482/RS485 alike, so binding the board to
+# either one names a chip it does not carry.  A quoted token is an
+# identifier rather than a claim, so the renderer string `"ATI RS480"`
+# and a quoted part name stand; CHIP_RS480 keeps the upstream spelling
+# through the word boundary, since an underscore opens none.  The quote
+# is what exempts, so an unquoted "carries ATI RS480" still reports.
+_RS482 = r"(?<![\"\x27`])(?<![\"\x27`]ATI )RS48[02](?![M/])"
+_BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
+_CLAUSE = r"[^.;\n]"
+# Markdown wraps a sentence across lines without ending its clause, so a
+# soft line break -- one newline not followed by a blank line -- is clause
+# content where a bind verb reaches its target, and a paragraph break ends
+# it: "the Vostro 1000 carries\nRS480" binds exactly as it reads.  The
+# parenthetical arms keep the single-line clause, because a wrapped aside
+# is a hardware-makeup list rather than an attribution.
+_BIND_CLAUSE = r"(?:[^.;\n]|\n(?!\s*\n))"
+# The gap a bind verb reaches into its target crosses shapes that never
+# state the binding themselves.  A same-as comparison ("has the same PCI
+# device ID as RS482") predicates the verb over the shared property named
+# between "same" and its paired "as", not over the target token, so that
+# whole span ends the reach; "same" alone does not, since "carries the
+# same RS482 northbridge" has no paired "as" and still binds the target
+# directly.  A contrastive conjunction ("RS482 is the desktop chip, while
+# the Vostro 1000 carries RS485M") opens a second clause with its own
+# subject that a bare comma does not close, so
+# "while"/"but"/"whereas"/"though"/"although" end the reach outright.  A
+# coordinated family enumeration ("RS482 and RS485 dies of the Vostro 1000
+# generation") names the group the following predicate is about, so "and"
+# directly ahead of another die-class token ends the reach the same way.
+# A distinction predicate ("is distinguishable from RS482", "is different
+# from RS482") states the contrast the rule exists to enforce, unlike
+# "same", unambiguously on its own with no paired word needed.  The
+# lookahead runs at every offset, so a forbidden span blocks the reach
+# wherever it starts, not only at the gap's first character.
+_SAME_AS_COMPARISON = r"\bsame\b[^.;\n]{0,30}?\bas\b"
+_CONTRASTIVE_CONJUNCTION = r"\b(?:while|but|whereas|though|although)\b"
+_FAMILY_COORDINATION = r"\band\s+RS48[025]M?\b"
+_DISTINCTION_PREDICATE = r"\b(?:distinguishable|different|distinct|separate|separable)\s+from\b"
+_NONBINDING_GAP = (
+    rf"(?:{_SAME_AS_COMPARISON}|{_CONTRASTIVE_CONJUNCTION}|{_FAMILY_COORDINATION}"
+    rf"|{_DISTINCTION_PREDICATE})"
+)
+_CLAUSE_TO_TARGET = rf"(?:(?!{_NONBINDING_GAP}){_BIND_CLAUSE})"
+# A straight apostrophe is this project's own typography, but prose can
+# still carry a typographic ("smart") one, so the possessive form reads
+# either byte.
+_POSSESSIVE = "['’]s"
+MISATTRIBUTED_TARGET_CHIP = re.compile(
+    rf"\b{_VOSTRO}\b{_BIND_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_BIND_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_VOSTRO}\b"
+    rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_VOSTRO}\b"
+    rf"|\b{_VOSTRO}\b\s*/\s*{_RS482}\b"
+    rf"|\b{_RS482}\b\s*/\s*{_VOSTRO}\b"
+    rf"|\b{_RS482}\b{_CLAUSE}{{0,24}}?\b(?:in|on|inside)\b{_CLAUSE}{{0,24}}?"
+    rf"\bthe\s+{_VOSTRO}\b"
+    # A clause that fails to bind (no recognized verb, e.g. "resemble") can
+    # be followed by a semicolon and a pronoun clause that does: "does not
+    # merely resemble RS482; it contains RS482" names the platform through
+    # the second clause's unnegated bind, with "it" continuing "Vostro".
+    rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,60}}?;\s*it\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b"
+    rf"{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    # A possessive or an "of" genitive attributes the part without any
+    # _BINDS verb at all: "the Vostro 1000's RS482 IGP" and "the RS482 IGP
+    # of the Vostro 1000" state the same ownership the bind-verb forms do.
+    rf"|\b{_VOSTRO}{_POSSESSIVE}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_CLAUSE_TO_TARGET}{{0,24}}?\bof\b{_CLAUSE_TO_TARGET}{{0,24}}?"
+    rf"\b(?:the\s+)?{_VOSTRO}\b",
+    re.IGNORECASE,
+)
+# A newly created artifact naming the platform rs482; a token the ledger
+# registers is an existing sealed name and passes.
+# A measurement names the board it was made on.  The dominant wrong form
+# carries no platform token at all -- "measured on RS482", "ran on RS482",
+# "silicon-confirmed on RS482", "the RS482 host" -- so attribution to the
+# Vostro token alone never reaches it.  An observation, capture, receipt, or
+# attended run produced on this board names RS485M.
+#
+# A result-phrased claim carries no observation verb at all: "on the Vostro
+# 1000, RS482 passes ..." states the same specimen-identity claim through
+# the corpus's own PASS/FAIL/regression verdict vocabulary, with the part
+# token as the verdict's subject instead of an "on" object.  A part token
+# that directly governs a verdict verb reads as the same misattribution.
+#
+# A family enumeration keeps its spelling, so RS482 written beside another
+# family member (RS480/RS482/RS485) is excluded, as is RS482M.
+_OBSERVED = (
+    r"(?i:measured|ran|run|running|observed|verif(?:y|ied)|confirmed"
+    r"|validated|captured|reproduced|attended|submitted|executed"
+    r"|exercised|falsified)"
+)
+# RS480 and RS482 are physical desktop parts; RS485 (bare, no M suffix)
+# is the die name shared across the RS482 desktop and RS485M mobile
+# parts.  A specimen observation names the physical part that carried
+# the run, never the bare die, so RS485 reads the same as RS480/RS482
+# here; the M-suffix, slash-family, and "-family"/" family" exclusions
+# already carried by RS480/RS482 apply identically to RS485.
+_PART = r"(?<![\"\x27`])(?<![\"\x27`]ATI )RS48[025](?![M/]|\s*/\s*RS|[- ]family)"
+# A noun that names a board rather than a die: a part token in front of one
+# is this platform, whatever verb the sentence uses.
+_BOARD_NOUN = r"(?:host|board|target|silicon|specimen|machine|system)"
+# The finite third-person-singular form only: "RS482 pass-B capture" names
+# a compiler pass, not a verdict, and the bare noun/imperative "pass" is
+# ambiguous with that sense throughout this corpus, so only the verb form
+# that agrees with a singular chip-token subject qualifies.
+_VERDICT = r"(?i:passes|fails|regresses)"
+# Markdown prose wraps a sentence across lines without ending its clause:
+# a soft line break -- one newline not followed by a blank line -- crosses
+# the gap the same as any other whitespace, and a real paragraph break or
+# ".;" still ends it.  The windows are wide enough for a detailed clause
+# ("measured under the complete conformance corpus ... on RS482") that a
+# tight cap or a bare newline exclusion would otherwise let escape.
+_SOFT_WRAP_CLAUSE = _BIND_CLAUSE
+# A bare "Vostro 1000" already satisfies the "on" object as the board, so a
+# later parenthetical part token in the same clause (a hardware-makeup
+# aside such as "on the Dell Vostro 1000 (AMD K8 + RS482 + SB600)") names
+# what the board carries, not a second observation target. The possessive
+# form ("the Vostro 1000's RS482") still binds "on" to the part and stays
+# reachable, since the lookahead only excludes the bare board mention.
+_BOARD_ALREADY_BOUND = r"\bVostro\s+1000\b(?!['’]s)"
+_SPECIMEN_GAP = rf"(?:(?!{_BOARD_ALREADY_BOUND}){_SOFT_WRAP_CLAUSE})"
+# A verdict reports a run as surely as a measurement does, so the leading
+# verb of a prepositional observation is either one: "the case passes on
+# RS482" names the board the case ran on.
+_OBSERVED_OR_VERDICT = rf"(?:{_OBSERVED}|{_VERDICT})"
+MISATTRIBUTED_SPECIMEN_OBSERVATION = re.compile(
+    rf"\b{_OBSERVED_OR_VERDICT}\b{_SOFT_WRAP_CLAUSE}{{0,120}}?\b(?i:on|against|upon)\b"
+    rf"{_SPECIMEN_GAP}{{0,48}}?\b{_PART}\b"
+    rf"|\b{_PART}\s+{_BOARD_NOUN}\b"
+    rf"|\b{_PART}\b{_SOFT_WRAP_CLAUSE}{{0,16}}?\b{_VERDICT}\b"
+)
+MISATTRIBUTED_AUTHORIZED_PART = re.compile(
+    rf"\b(?i:authorized|attended)\s+{_PART}\b"
+)
+
+# A sentence that denies the binding states the correction, so a match
+# carrying a negation before its verb is read as the fact it is.
+_NEGATION_WORD = r"(?:not|never|no longer|isn't|aren't|doesn't|don't|wasn't)"
+CORRECTIVE_NEGATION = re.compile(rf"\b{_NEGATION_WORD}\b", re.IGNORECASE)
+# Do-support negation precedes the verb ("does not have"); copula negation
+# follows it ("is not").  Anchoring each to the boundary it must touch --
+# TRAILING at the verb's start, LEADING at its end -- keeps a negation from
+# leaking into a neighboring verb's window ("is not modern but uses RS482"
+# does not read "uses" as negated by the "not" that governs "is").
+_TRAILING_NEGATION = re.compile(rf"\b{_NEGATION_WORD}\s*$", re.IGNORECASE)
+_LEADING_NEGATION = re.compile(rf"^\s*{_NEGATION_WORD}\b", re.IGNORECASE)
+BIND_VERB_TOKEN = re.compile(rf"\b{_BINDS}\b")
+# A short window: enough to hold "does not " or "is not" without reaching
+# back far enough to pick up a negation that governs a different verb.
+_NEGATION_WINDOW_CHARS = 24
+
+
+def match_denies(text: str, start: int, end: int) -> bool:
+    """Whether the match [start, end) states a correction rather than the
+    misattribution itself.
+
+    The negation binds to the verb that connects platform to part, not to
+    the clause: "does not have X and carries RS482" negates "have", and the
+    unnegated "carries" still asserts the binding, so the match is not a
+    denial.  Every recognized bind verb in the match must be negated for
+    the match to read as a stated correction.  A match with no recognized
+    bind verb (the parenthetical and slash forms, which carry no _BINDS
+    word at all) falls back to the whole-clause check, since there is no
+    verb to bind a negation to."""
+    span = text[start:end]
+    verbs = list(BIND_VERB_TOKEN.finditer(span))
+    if not verbs:
+        clause_start = max(
+            text.rfind(character, 0, start) for character in ".;\n"
+        ) + 1
+        return CORRECTIVE_NEGATION.search(text[clause_start:end]) is not None
+    for index, verb in enumerate(verbs):
+        window_start = max(
+            verbs[index - 1].end() if index > 0 else 0,
+            verb.start() - _NEGATION_WINDOW_CHARS,
+        )
+        before = span[window_start:verb.start()]
+        after = span[verb.end():verb.end() + 8]
+        negated = (
+            _TRAILING_NEGATION.search(before) is not None
+            or _LEADING_NEGATION.match(after) is not None
+        )
+        if not negated:
+            return False
+    return True
+
+# An artifact naming this specimen rs482 or rs480.  Recognized in the forms
+# the corpus uses: the platform token beside a part token in either order,
+# and the receipt-shaped r3v-native-...-rs482 name.  A token the ledger
+# registers is an existing sealed name and passes.
+_TOKEN_END = r"(?![A-Za-z0-9])"
+MISATTRIBUTED_TARGET_ARTIFACT = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"vostro(?:1000)?[-_]rs48[02]"
+    r"|rs48[02][-_]vostro(?:1000)?"
+    r"|r3v[-_]native[-_][A-Za-z0-9_-]*?[-_]rs48[02]"
+    r"|cachyos[-_]vostro1000[-_]rs48[02]"
+    r")" + _TOKEN_END,
+    re.IGNORECASE,
+)
+
+# Path-like tokens an artifact citation can appear inside.
+ARTIFACT_PATH_TOKEN = re.compile(r"[A-Za-z0-9_./-]+")
+
+HISTORICAL_ARTIFACT_ALIAS_LEDGER = (
+    "build-infra/docs/historical-artifact-aliases.tsv"
+)
+
+
+HISTORICAL_ARTIFACT_LEDGER_SEALED_COLUMN = 3
+
+
+@functools.lru_cache(maxsize=1)
+def historical_artifact_ledger_rows() -> tuple[tuple[str, ...], ...]:
+    ledger = Path(__file__).resolve().parents[2] / HISTORICAL_ARTIFACT_ALIAS_LEDGER
+    if not ledger.is_file():
+        return ()
+    rows = ledger.read_text(encoding="utf-8").splitlines()[1:]
+    return tuple(tuple(row.split("\t")) for row in rows if row.strip())
+
+
+def _row_is_sealed(row: tuple[str, ...]) -> bool:
+    """Whether the ledger row's own `sealed` column reads `true`.
+
+    A row the corpus has not yet sealed records a candidate rename still
+    open for revision, not a fixed historical name, so it carries no
+    exemption of its own.  A short row (the column absent entirely) seals
+    nothing."""
+    return (
+        len(row) > HISTORICAL_ARTIFACT_LEDGER_SEALED_COLUMN
+        and row[HISTORICAL_ARTIFACT_LEDGER_SEALED_COLUMN] == "true"
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def historical_artifact_aliases() -> frozenset[str]:
+    """The exact retained path tokens whose seals fixed the rs482 spelling.
+
+    Registration is the whole exemption, and only a sealed row registers:
+    a token absent from the ledger, or present but not yet sealed, is a
+    new or still-open artifact and refuses however its path is spelled."""
+    return frozenset(
+        row[0] for row in historical_artifact_ledger_rows() if _row_is_sealed(row)
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def historical_artifact_bundle_names() -> frozenset[str]:
+    """The sealed rows' final path segments, which is how a document cites
+    a retained bundle when the repository prefix is implied."""
+    return frozenset(
+        row[1]
+        for row in historical_artifact_ledger_rows()
+        if len(row) > 1 and _row_is_sealed(row)
+    )
+
+
+def normalize_artifact_path(token: str) -> str:
+    """One spelling per artifact: markdown quoting and one trailing slash
+    removed, separators collapsed, case retained."""
+    text = token.strip().strip("`'\"").rstrip("/")
+    while "//" in text:
+        text = text.replace("//", "/")
+    return text
+
+
+RECOGNIZED_ARTIFACT_REPOSITORY_PREFIX = "steinmarder-r300"
+
+
+def registered_historical_artifact(line: str, offset: int) -> bool:
+    """Whether the token at offset is a registered retained path.
+
+    Registration is exact: the normalized path token equals a ledger row's
+    registered path, optionally with exactly one leading
+    `steinmarder-r300` segment -- the sole external repository this
+    ledger's paths live in -- stripped first.  A containment test would
+    admit any new path that merely embeds a registered one, and an
+    unbounded prefix strip would let any directory (`scratch/results/
+    <bundle>`) inherit a real path's registration by dropping enough
+    segments to reach it; only the one recognized repository name may be
+    dropped.  A bare token -- no path separator at all, the shape an
+    inline `bundle \\`name\\`` citation carries -- has no directory to
+    misrepresent, so it matches a sealed row's bundle name alone instead."""
+    ledger = historical_artifact_aliases()
+    for candidate in ARTIFACT_PATH_TOKEN.finditer(line):
+        if not candidate.start() <= offset < candidate.end():
+            continue
+        text = normalize_artifact_path(candidate.group(0))
+        parts = text.split("/")
+        if ".." in parts:
+            return False
+        if text in ledger:
+            return True
+        if len(parts) == 1:
+            return parts[0] in historical_artifact_bundle_names()
+        return (
+            parts[0] == RECOGNIZED_ARTIFACT_REPOSITORY_PREFIX
+            and "/".join(parts[1:]) in ledger
+        )
+    return False
+
+
 HISTORICAL_LOG_NAMES = frozenset(
     (
         "mesa_gororoba_no_rusticl_build_20260426T010131Z",
@@ -363,6 +682,46 @@ def policy_implementation_identifier_violations(
     ]
 
 
+def artifact_token_at(text: str, start: int) -> str:
+    """The whole artifact token a match opens, not just its prefix.
+
+    The pattern anchors on the platform-and-chip prefix, so a retained
+    bundle reports as `cachyos_vostro1000_rs482` while the artifact a
+    reader must seal or rename is the full directory name.  The token
+    runs to the first character a bundle name cannot carry.
+    """
+    end = start
+    while end < len(text) and (text[end].isalnum() or text[end] in "._-"):
+        end += 1
+    return text[start:end]
+
+
+def artifact_path_violations(path: str) -> list[str]:
+    """Check the path string itself, independent of any file content.
+
+    The path is an artifact name on its own: a file created at
+    results/vostro1000-rs482-new/data.txt carries the misattribution in
+    its own directory name whether or not "vostro1000-rs482-new" appears
+    anywhere inside the file, and a symlink or a file whose content is
+    binary (carries a NUL byte) never reaches a content scan at all, so
+    this check runs standalone against the path for those two cases
+    instead of only from inside violations() alongside a content read.
+    """
+    if retained_evidence(path):
+        return []
+    findings: list[str] = []
+    for name_match in MISATTRIBUTED_TARGET_ARTIFACT.finditer(path):
+        if registered_historical_artifact(path, name_match.start()):
+            continue
+        findings.append(
+            f"{path}: a new artifact names the platform rs482 in its own "
+            f"path; the attended target is RS485M and only ledger-registered "
+            f"retained paths keep the alias: "
+            f"{artifact_token_at(path, name_match.start())!r}"
+        )
+    return findings
+
+
 def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]:
     if retained_evidence(path):
         return []
@@ -387,6 +746,49 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"{path}:{line_number}: retired chip identity claim: "
             f"{identity_match.group(0)!r}"
         )
+    for target_match in MISATTRIBUTED_TARGET_CHIP.finditer(text):
+        if match_denies(text, target_match.start(), target_match.end()):
+            continue
+        line_number = starting_line_number + text.count("\n", 0, target_match.start())
+        findings.append(
+            f"{path}:{line_number}: the attended target is RS485M per its "
+            f"video BIOS, so this binds the platform to a chip it does not "
+            f"carry: {target_match.group(0)!r}"
+        )
+    for authorized_match in MISATTRIBUTED_AUTHORIZED_PART.finditer(text):
+        line_number = starting_line_number + text.count(
+            "\n", 0, authorized_match.start())
+        findings.append(
+            f"{path}:{line_number}: the authorized board is RS485M, so this "
+            f"names the wrong part: {authorized_match.group(0)!r}"
+        )
+    for observed_match in MISATTRIBUTED_SPECIMEN_OBSERVATION.finditer(text):
+        if match_denies(text, observed_match.start(), observed_match.end()):
+            continue
+        line_number = starting_line_number + text.count(
+            "\n", 0, observed_match.start())
+        findings.append(
+            f"{path}:{line_number}: a measurement names the board it was "
+            f"made on, and this board is RS485M: "
+            f"{observed_match.group(0)!r}"
+        )
+    for alias_match in MISATTRIBUTED_TARGET_ARTIFACT.finditer(text):
+        line_start = text.rfind("\n", 0, alias_match.start()) + 1
+        line_end = text.find("\n", alias_match.end())
+        if line_end == -1:
+            line_end = len(text)
+        if registered_historical_artifact(
+            text[line_start:line_end], alias_match.start() - line_start
+        ):
+            continue
+        line_number = starting_line_number + text.count("\n", 0, alias_match.start())
+        findings.append(
+            f"{path}:{line_number}: a new artifact names the platform rs482; "
+            f"the attended target is RS485M and only ledger-registered "
+            f"retained paths keep the alias: "
+            f"{artifact_token_at(text, alias_match.start())!r}"
+        )
+    findings.extend(artifact_path_violations(path))
     for artifact_match in RETIRED_INTERNAL_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, artifact_match.start()) + 1
         line_end = text.find("\n", artifact_match.end())
@@ -446,8 +848,34 @@ def untracked_files(repository_root: Path) -> tuple[str, ...]:
     )
 
 
+# The repository scan reads only files matching this alternation, so every
+# token any rule below can fire on appears here; a rule whose trigger were
+# absent would never be reached.  The self-test holds the two together by
+# requiring each known-bad calibration text to match this pattern.
+CANDIDATE_PREFILTER_TERMS = (
+    "decision",
+    "gororoba",
+    "RS48",
+    "vostro",
+    "5974",
+    "5975",
+)
+CANDIDATE_PREFILTER_PATTERN = "|".join(CANDIDATE_PREFILTER_TERMS)
+# The ledger registers exempt tokens, so it states no claim of its own.
+CANDIDATE_SCAN_EXCLUSIONS = (HISTORICAL_ARTIFACT_ALIAS_LEDGER,)
+
+
+CANDIDATE_SCAN_EXCLUDE_PATHSPECS = (
+    ":(exclude)build-infra/docs/review-thread-frontiers/**",
+    ":(exclude)build-infra/docs/review-thread-classifications/**",
+    ":(exclude)build-infra/docs/review-thread-corpus/**",
+    ":(exclude)build-infra/docs/review-thread-corpus-analysis/**",
+    ":(exclude)build-infra/docs/last-100-pr-review-comment-audit.md",
+)
+
+
 def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
-    result = subprocess.run(
+    content_result = subprocess.run(
         [
             "git",
             "-C",
@@ -457,39 +885,69 @@ def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
             "-I",
             "-i",
             "-E",
-            "decision|gororoba",
+            CANDIDATE_PREFILTER_PATTERN,
             "--",
             ".",
-            ":(exclude)build-infra/docs/review-thread-frontiers/**",
-            ":(exclude)build-infra/docs/review-thread-classifications/**",
-            ":(exclude)build-infra/docs/review-thread-corpus/**",
-            ":(exclude)build-infra/docs/review-thread-corpus-analysis/**",
-            ":(exclude)build-infra/docs/last-100-pr-review-comment-audit.md",
+            *CANDIDATE_SCAN_EXCLUDE_PATHSPECS,
         ],
         check=False,
         capture_output=True,
         text=True,
     )
-    if result.returncode not in (0, 1):
+    if content_result.returncode not in (0, 1):
         raise subprocess.CalledProcessError(
-            result.returncode,
-            result.args,
-            output=result.stdout,
-            stderr=result.stderr,
+            content_result.returncode,
+            content_result.args,
+            output=content_result.stdout,
+            stderr=content_result.stderr,
         )
-    return tuple(result.stdout.splitlines())
+    # git grep reads content only, so a file whose own path names the
+    # misattribution (violations() scans path as well as text) needs its
+    # path matched against every tracked file name too, not only files
+    # whose payload happens to repeat the same term.
+    all_tracked_result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "ls-files",
+            "-z",
+            "--",
+            ".",
+            *CANDIDATE_SCAN_EXCLUDE_PATHSPECS,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    prefilter = re.compile(CANDIDATE_PREFILTER_PATTERN, re.IGNORECASE)
+    path_matches = (
+        entry.decode("utf-8", errors="surrogateescape")
+        for entry in all_tracked_result.stdout.split(b"\0")
+        if entry
+    )
+    candidates = set(content_result.stdout.splitlines())
+    candidates.update(path for path in path_matches if prefilter.search(path))
+    return tuple(
+        sorted(path for path in candidates if path not in CANDIDATE_SCAN_EXCLUSIONS)
+    )
 
 
 def candidate_file_violations(repository_root: Path, relative_path: str) -> list[str]:
     path = repository_root / relative_path
+    # A symlink's target path carries no scannable content of its own, but
+    # the link's own path can still misname the platform, so the path
+    # check still runs even though the content scan below cannot.
     if path.is_symlink():
-        return []
+        return artifact_path_violations(relative_path)
     try:
         contents = path.read_bytes()
     except OSError as error:
         return [f"{relative_path}: cannot read candidate file: {error}"]
+    # A NUL byte marks binary content the text scan cannot decode
+    # meaningfully, but the path itself is still text, so it still gets
+    # checked even though the content scan below is skipped.
     if b"\0" in contents:
-        return []
+        return artifact_path_violations(relative_path)
     return violations(relative_path, contents.decode("utf-8", errors="replace"))
 
 
@@ -685,6 +1143,340 @@ def self_test() -> int:
         ("docs/example.md", "RS48" "5-marketed 1002:5975 refuses.\n", True),
         ("docs/example.md", "1002:5974 alone proves RS48" "2 here.\n", True),
         ("docs/example.md", "the Vostro 1000 (1002:5974, RS485M) target.\n", False),
+        # Attribution in both directions, and the parenthetical and slash
+        # forms the tree actually carried.
+        ("docs/example.md", "The Vostro 1000 carries RS482.\n", True),
+        ("docs/example.md", "RS482 is the chip the Vostro 1000 uses.\n", True),
+        ("docs/example.md", "Vostro 1000 (RS482, AMD Turion 64 X2)\n", True),
+        ("docs/example.md", "RS482 (Vostro 1000, PCI 1002:5974) stack\n", True),
+        ("docs/example.md", "Vostro 1000 (RS482 / K8 / SB600) modules\n", True),
+        ("docs/example.md", "`Dell Vostro 1000` (AMD K8 + RS482 + SB600)\n", True),
+        ("docs/example.md", "RS482 in the Vostro 1000 northbridge\n", True),
+        # Possessive and "of" genitive attribution carry no _BINDS verb at
+        # all, so they need their own arms alongside the verb-governed and
+        # parenthetical forms above.
+        (
+            "docs/example.md",
+            "The Vostro 1000's RS482 IGP shares the K8 northbridge.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "the RS482 IGP of the Vostro 1000 shares the K8 northbridge.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "the RS482 IGP of Vostro 1000 shares the K8 northbridge.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "The Vostro 1000's RS485M IGP shares the K8 northbridge.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "the RS485M IGP of the Vostro 1000 shares the K8 northbridge.\n",
+            False,
+        ),
+        # The "of" branch's reach must stop before an unrelated "of": the
+        # true governed part sits before the die-class token to its right,
+        # so "of" governing something else entirely -- coordinated with
+        # RS482 by "and", or reached only across a coordinated family
+        # enumeration -- passes.
+        (
+            "docs/example.md",
+            "RS482 is the desktop part, and the RS485M of the Vostro 1000 "
+            "differs.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "The RS482 and RS485 dies of the Vostro 1000 generation share "
+            "a register file.\n",
+            False,
+        ),
+        # The chip token reads case-insensitively, since the repository
+        # prefilter that selects a candidate file already scans that way
+        # (`git grep -i`); a lowercase attribution is the same claim.
+        ("docs/example.md", "The Vostro 1000 carries rs482.\n", True),
+        # Case-insensitivity must not open the die-class enumeration or an
+        # artifact citation: the RS482(?![M/]) exclusion, and the absence
+        # of any bind verb between Vostro and a bare hyphenated token,
+        # both hold regardless of case.
+        ("docs/example.md", "rs480/RS482/rs485 family\n", False),
+        ("docs/example.md", "vostro1000-rs482-capture\n", True),
+        # A typographic apostrophe carries the same possessive the
+        # project's own straight-quote style writes; the arm above already
+        # covers the straight form.
+        (
+            "docs/example.md",
+            "The Vostro 1000’s RS482 IGP shares the K8 northbridge.\n",
+            True,
+        ),
+        # A distinction predicate states the contrast the rule exists to
+        # enforce, in either binding direction, and needs no paired word
+        # the way "same" needs "as": the predicate itself is unambiguous.
+        (
+            "docs/example.md",
+            "The Vostro 1000 is distinguishable from RS482 by its ROM.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "RS482 is different from the Vostro 1000 in its subsystem id.\n",
+            False,
+        ),
+        # A contrast states a fact and passes: the clause boundary ends
+        # every arm, so the two parts can be named in one sentence.
+        ("docs/example.md",
+         "RS482 is the desktop Xpress 1100 part; the Vostro 1000 carries "
+         "RS485M.\n", False),
+        ("docs/example.md",
+         "1002:5974 is shared by RS482 and RS485-family products.\n", False),
+        # A same-as comparison predicates the bind verb over the shared
+        # property named between "same" and its paired "as", not over
+        # RS482, so it states the shared-id fact and passes.
+        ("docs/example.md",
+         "The Vostro 1000 has the same PCI device ID as RS482.\n", False),
+        # "same" with no paired "as" names no shared property, so it does
+        # not end the reach: the bind verb still asserts the misattribution.
+        (
+            "docs/example.md",
+            "The Vostro 1000 carries the same RS482 northbridge.\n",
+            True,
+        ),
+        # A contrastive conjunction opens a second clause with its own
+        # subject; a bare comma does not close the first clause, so the
+        # reach from "is" must stop at "while" rather than crossing it to
+        # reach the second clause's "Vostro 1000".
+        ("docs/example.md",
+         "RS482 is the desktop chip, while the Vostro 1000 carries "
+         "RS485M.\n", False),
+        # An unqualified bind verb with neither comparison shape present
+        # still refuses.
+        ("docs/example.md", "the Vostro 1000 uses RS482.\n", True),
+        ("docs/example.md",
+         "The Vostro 1000 does not carry RS485; it carries RS485M.\n", False),
+        ("docs/example.md", "the Vostro 1000 RS480/RS482/RS485 family.\n", False),
+        # A part token qualified as a family predicates over the family.
+        ("docs/example.md",
+         "arms the measured route only on the RS480 family and only for "
+         "the packed source domain\n", False),
+        ("docs/example.md",
+         "does an attended RS480-family target submit the known-good "
+         "cell.\n", False),
+        ("docs/example.md", "the attended RS482 cell is retained\n", True),
+        # A result-phrased specimen claim carries no observation verb: the
+        # part token is the verdict's own subject, in the corpus's
+        # PASS/FAIL/regression vocabulary, rather than an "on" object.
+        (
+            "docs/example.md",
+            "on the Vostro 1000, RS482 passes the smoke case.\n",
+            True,
+        ),
+        ("docs/example.md", "RS482 fails the sampled-array case.\n", True),
+        ("docs/example.md", "RS482 regresses the two-draw receipt.\n", True),
+        # The observed-on-part branch: a bare same-line claim, the same
+        # claim wrapped across a Markdown soft line break, and a detailed
+        # clause between "on" and the part token that only the widened
+        # window reaches.
+        ("docs/example.md", "measured this cell on RS482 today.\n", True),
+        (
+            "docs/example.md",
+            "the cell holds its receipt from one attended submission on\n"
+            "RS482, boot deadbeef.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "the expanded stream is validated ahead of publication "
+            "(silicon receipt on RS482 over a one-plane fan).\n",
+            True,
+        ),
+        # A real paragraph break (a blank line) still ends the clause, so
+        # an unrelated RS482 mention in the next paragraph does not bind
+        # to a prior observation verb.
+        (
+            "docs/example.md",
+            "measured this cell with care.\n\nRS482 is a separate topic "
+            "in the next paragraph.\n",
+            False,
+        ),
+        # A bare "Vostro 1000" already satisfies "on" as the board; a
+        # parenthetical hardware-makeup aside naming RS482 afterward
+        # describes what that board carries, not a second observation
+        # target.
+        (
+            "docs/example.md",
+            "measured SB600 counter properties on the Dell Vostro 1000\n"
+            "(AMD K8 + RS482 + SB600).\n",
+            False,
+        ),
+        # The possessive form still binds "on" to the part directly, so
+        # the board-already-named exclusion does not swallow it.
+        (
+            "docs/example.md",
+            "measured this cell on the Vostro 1000's RS482 silicon.\n",
+            True,
+        ),
+        # The part-plus-board-noun branch, independent of the verb form.
+        ("docs/example.md", "the crash reproduces only on the RS482 host.\n", True),
+        # RS485 bare (no M suffix) is the die name shared by the RS482
+        # desktop and RS485M mobile parts, so a specimen observation
+        # naming it directly is the same part/die confusion as naming
+        # RS480 or RS482.
+        ("docs/example.md", "the probe was measured on RS485.\n", True),
+        ("docs/example.md", "the crash reproduces only on the RS485 host.\n", True),
+        # RS485M is a specific part, not the bare die, and stays exempt.
+        ("docs/example.md", "the probe was measured on RS485M.\n", False),
+        # The family-slash and "-family" exclusions carried by RS480/RS482
+        # apply to RS485 identically.
+        (
+            "docs/example.md",
+            "measured the RS480/RS482/RS485 family error budget.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "measured an RS485-family target this run.\n",
+            False,
+        ),
+        # A verdict verb over the qualified family predicates the family,
+        # not this specimen, the same exclusion _PART already carries.
+        (
+            "docs/example.md",
+            "the RS480-family route passes the packed source domain.\n",
+            False,
+        ),
+        ("docs/example.md", "the Vostro 1000 carries RS485M silicon.\n", False),
+        ("docs/example.md", "1002:5975 is RS482M, not this platform part.\n", False),
+        # A new artifact refuses; a ledger-registered retained path passes.
+        ("docs/example.md", "vostro1000-rs482-capture\n", True),
+        # The shorthand the corpus actually uses names the same board.
+        ("docs/example.md", "vostro (RS482, r300) lane\n", True),
+        ("docs/example.md", "the Vostro carries RS482\n", True),
+        # An explicit correction states the fact and passes.
+        ("docs/example.md", "the Vostro does not use RS482.\n", False),
+        ("docs/example.md", "the Vostro 1000 is not RS482.\n", False),
+        (
+            "docs/example.md",
+            "RS482 is not the part carried by the Vostro 1000.\n",
+            False,
+        ),
+        # The negation binds to the verb it touches, not to the clause: a
+        # negated predicate ahead of an unnegated bind verb still asserts
+        # the misattribution through that second, unnegated verb.
+        (
+            "docs/example.md",
+            "The Vostro 1000 does not have a discrete GPU and carries "
+            "RS482.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "The Vostro 1000 is not modern but uses RS482.\n",
+            True,
+        ),
+        # A clause with no recognized bind verb ("resemble") cannot deny
+        # anything; the pronoun clause after the semicolon carries the one
+        # bind verb in the match, and it is unnegated.
+        (
+            "docs/example.md",
+            "The Vostro 1000 does not merely resemble RS482; it contains "
+            "RS482.\n",
+            True,
+        ),
+        # Receipt-shaped and reversed artifact forms.
+        ("docs/example.md", "r3v-native-triangle-first-delivery-rs482\n", True),
+        ("docs/example.md", "rs482-vostro1000-capture\n", True),
+        ("docs/example.md", "rs480_vostro1000_matrix\n", True),
+        ("docs/example.md", "cachyos_vostro1000_rs482_run\n", True),
+        # The rule reads the file's own path as well as its content: a new
+        # artifact named results/vostro1000-rs482-new/data.txt carries the
+        # misattribution in its directory whether or not the payload
+        # repeats it.  A registered, sealed path keeps its exemption even
+        # when the payload never repeats the name either.
+        (
+            "results/vostro1000-rs482-new/data.txt",
+            "unrelated payload that never repeats the path\n",
+            True,
+        ),
+        (
+            "results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-"
+            "deployment-runtime",
+            "unrelated payload that never repeats the path\n",
+            False,
+        ),
+        # Registration is exact: a new path that merely embeds a
+        # registered one is still new.
+        ("docs/example.md",
+         "results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-"
+         "production-identity-v2/\n", True),
+        ("docs/example.md", "results/vostro1000-rs482-new-run/\n", True),
+        # The registered path carries `src/re/r300/results/`, the real
+        # form the corpus cites; a repository-name prefix ahead of the
+        # whole registered path still matches by trailing-segment run.
+        ("docs/example.md",
+         "see `steinmarder-r300/src/re/r300/results/"
+         "cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/`\n",
+         False),
+        # A bare bundle-name citation with no path separator at all --
+        # the shape an inline `bundle \`name\`` reference carries -- still
+        # matches a sealed row's registered bundle name.
+        (
+            "docs/example.md",
+            "bundle "
+            "`cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity`\n",
+            False,
+        ),
+        # A basename that matches a registered bundle only when it stands
+        # alone; a directory ahead of it that is not the registered path
+        # does not inherit the registration, so a bundle name relocated
+        # under an unrelated prefix refuses.
+        (
+            "docs/example.md",
+            "scratch/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-"
+            "deployment-runtime\n",
+            True,
+        ),
+        # The discriminating case: an unrecognized directory ahead of the
+        # complete, otherwise-exact registered path (not just a bare
+        # basename) still refuses, so an unbounded prefix strip cannot
+        # smuggle a relocated bundle through on its tail alone.
+        (
+            "docs/example.md",
+            "scratch/results/cachyos-vostro1000-rs482-radeon-unified-"
+            "0.8.11-1-deployment-runtime\n",
+            True,
+        ),
+        # A row's own `sealed` column gates its exemption: a sealed row
+        # (this exact path_token carries `sealed` = "true") still passes,
+        # and an explicitly unsealed row -- a candidate rename the corpus
+        # has not sealed, 125 of 592 in the ledger -- now refuses like an
+        # unregistered artifact rather than exempting on registration alone.
+        (
+            "docs/example.md",
+            "results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-"
+            "deployment-runtime\n",
+            False,
+        ),
+        # Registration is three-valued, so each value carries an arm.  A
+        # sealed row keeps the alias; a row present but unsealed does not,
+        # because a seal is what fixes the spelling; a path absent from
+        # the ledger never registered at all.
+        (
+            "docs/example.md",
+            "results/cachyos_vostro1000_rs482_radeon_unified_0.7-1_"
+            "prod_admission_20260807T055048Z\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "results/r3v-native-fp24-bisect-ceiling-rs482-unregistered\n",
+            True,
+        ),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba-* worktrees.\n", False),
         ("build-infra/example.md", "Install mesa-gororoba-debug-optimized.\n", False),
@@ -705,16 +1497,169 @@ def self_test() -> int:
             'CURRENT = ".gororoba-source-view"\n',
             True,
         ),
+        # RS480 is a retired name for this platform exactly as RS482 is, so
+        # a binding to either one reports; the upstream enum and the
+        # renderer string keep their owners' spelling.
+        ("docs/example.md", "The Vostro 1000 carries RS480.\n", True),
+        ("docs/example.md", "The Vostro 1000 carries RS482.\n", True),
+        (
+            "docs/example.md",
+            'The renderer string is "ATI RS480" on this board.\n',
+            False,
+        ),
+        ("docs/example.md", "The Vostro 1000 carries ATI RS480.\n", True),
+        ("docs/example.md", "The Vostro 1000 carries\nRS480.\n", True),
+        ("docs/example.md", "The Vostro 1000 carries\nRS482.\n", True),
+        (
+            "docs/example.md",
+            "The Vostro 1000 ships today.\n\nRS482 is a desktop part.\n",
+            False,
+        ),
+        ("docs/example.md", "The ATI RS480 host passes.\n", True),
+        (
+            "docs/example.md",
+            "CHIP_RS480 covers the RS480/RS482/RS485 die class.\n",
+            False,
+        ),
+        # Dell shipped many Vostro models, and only this one carries the
+        # part, so another model number states a fact about another machine.
+        ("docs/example.md", "The Vostro 1500 uses RS482.\n", False),
+        # A verdict names the board a case ran on the same way a
+        # measurement does.
+        ("docs/example.md", "The case passes on RS482 today.\n", True),
+        # A soft line break carries one clause; a blank line ends it, so a
+        # later paragraph is a separate statement.
+        (
+            "docs/example.md",
+            "the attended-cell runner has carried one armed\n"
+            "submission on RS482 that the kernel accepted\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "measured the cache behavior on the tested board\n\n"
+            "RS482 is a separate desktop part.\n",
+            False,
+        ),
     )
     for path, text, expected_failure in cases:
         failed = bool(violations(path, text))
         if failed != expected_failure:
             print(
                 f"naming policy self-test mismatch for {path}: "
-                f"expected_failure={expected_failure}, failed={failed}",
+                f"expected_failure={expected_failure}, failed={failed}: "
+                f"{text!r}",
                 file=sys.stderr,
             )
             return 1
+    # The repository scan selects a candidate by content match or by path
+    # match (tracked_candidate_files unions both), so a known-bad the
+    # prefilter misses on both its text and its path would never be
+    # scanned at all.
+    prefilter = re.compile(CANDIDATE_PREFILTER_PATTERN, re.IGNORECASE)
+    for path, text, expected_failure in cases:
+        if (
+            expected_failure
+            and not prefilter.search(text)
+            and not prefilter.search(path)
+        ):
+            print(
+                f"naming policy self-test: known-bad case for {path} "
+                f"matches the repository prefilter in neither its text nor "
+                f"its path, so the repository scan would never read it",
+                file=sys.stderr,
+            )
+            return 1
+
+    # The complete repository checker, not violations() alone, must reject a
+    # tracked file whose only content is the misattribution.
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+        probe = root / "docs" / "probe.md"
+        probe.parent.mkdir(parents=True)
+        probe.write_text("The Vostro 1000 carries RS482.\n", encoding="utf-8")
+        # The compound known-bad: a negated non-bind clause ahead of an
+        # unnegated bind clause across a semicolon, which match_denies must
+        # resolve through the second clause's verb rather than the first
+        # clause's unrelated negation.
+        compound_probe = root / "docs" / "compound_probe.md"
+        compound_probe.write_text(
+            "The Vostro 1000 does not merely resemble RS482; it contains "
+            "RS482.\n",
+            encoding="utf-8",
+        )
+        # The artifact's own path carries the misattribution and its
+        # payload never repeats it, so git grep's content-only prefilter
+        # must not be the sole path into the candidate set, and
+        # violations() must scan the path as well as the text.
+        named_artifact_probe = root / "results" / "vostro1000-rs482-new" / "data.txt"
+        named_artifact_probe.parent.mkdir(parents=True)
+        named_artifact_probe.write_text(
+            "unrelated payload that never repeats the directory name\n",
+            encoding="utf-8",
+        )
+        # A symlink and a NUL-byte (binary) file carry no scannable content,
+        # so candidate_file_violations() must fall back to the path-only
+        # check for both instead of returning early with no finding at all.
+        symlink_probe = root / "results" / "vostro1000-rs482-link"
+        symlink_probe.symlink_to(probe)
+        binary_probe = root / "results" / "vostro1000-rs482-blob.bin"
+        binary_probe.write_bytes(b"\x00\x01binary payload, no text claim\x00")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        scanned = tracked_candidate_files(root)
+        for expected in (
+            "docs/probe.md",
+            "docs/compound_probe.md",
+            "results/vostro1000-rs482-new/data.txt",
+            "results/vostro1000-rs482-link",
+            "results/vostro1000-rs482-blob.bin",
+        ):
+            if expected not in scanned:
+                print(
+                    "naming policy self-test: the repository scan skipped "
+                    f"a tracked file carrying only the misattribution: "
+                    f"{expected}",
+                    file=sys.stderr,
+                )
+                return 1
+        if not candidate_file_violations(root, "docs/probe.md"):
+            print(
+                "naming policy self-test: the repository checker admitted "
+                "the misattribution",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "docs/compound_probe.md"):
+            print(
+                "naming policy self-test: the repository checker admitted "
+                "the compound negated-clause misattribution",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "results/vostro1000-rs482-new/data.txt"):
+            print(
+                "naming policy self-test: the repository checker admitted "
+                "an artifact whose path names the misattribution and whose "
+                "content never repeats it",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "results/vostro1000-rs482-link"):
+            print(
+                "naming policy self-test: the repository checker admitted a "
+                "symlink whose own path names the misattribution",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "results/vostro1000-rs482-blob.bin"):
+            print(
+                "naming policy self-test: the repository checker admitted a "
+                "binary file whose own path names the misattribution",
+                file=sys.stderr,
+            )
+            return 1
+
     print("naming policy self-test: known-good and known-bad inputs accepted")
     return 0
 

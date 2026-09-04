@@ -1,4 +1,4 @@
-# Vostro 1000 (RS482 / K8 / SB600) out-of-tree kernel modules
+# Vostro 1000 (RS485M / K8 / SB600) out-of-tree kernel modules
 
 The Dell Vostro 1000 target that validates the r300 gallium and r3v Vulkan
 drivers needs several out-of-tree kernel modules that no in-tree driver
@@ -14,7 +14,7 @@ path lives in `vostro1000-re`.
 
 ## Why this hardware needs out-of-tree modules
 
-The RS482 IGP shares the K8 northbridge. A GPU command stream fault can hang
+The RS485M IGP shares the K8 northbridge. A GPU command stream fault can hang
 the ring. The production policy keeps `radeon.lockup_timeout=0`. A separate
 attended reset run must prove host survival and GPU recovery before automatic
 reset becomes admissible. The retained
@@ -35,7 +35,7 @@ patches remain reconstruction evidence and do not construct the active module.
 
 | Package | Module | Purpose | Source and deployment authority |
 | --- | --- | --- | --- |
-| `radeon-unified-dkms` | `radeon` | Carries the RS480 reset ladder, parked device containment, register policy, and Palm safety mechanisms. The production profile excludes development triggers, and the RS482 board policy admits PCI `1002:5974` | source in `linux-radeon-gororoba`; package and deployment in `radeon-custom`; exact current identities in `rs482-source-authority.md` |
+| `radeon-unified-dkms` | `radeon` | Carries the RS480 reset ladder, parked device containment, register policy, and Palm safety mechanisms. The production profile excludes development triggers, and the board policy admits the shared PCI id `1002:5974` | source in `linux-radeon-gororoba`; package and deployment in `radeon-custom`; exact current identities in `rs482-source-authority.md` |
 
 <!-- markdownlint-enable MD013 -->
 

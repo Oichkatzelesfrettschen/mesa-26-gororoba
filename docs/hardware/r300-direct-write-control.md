@@ -1,4 +1,4 @@
-# RS482 direct native write control
+# RS485M direct native write control
 
 Status: EXECUTION-READY pending the separate explicit authorization. See
 Artifact identity for what stands proven and
@@ -69,7 +69,7 @@ relocation case; `docs/hardware/r300-direct-write-2d-fill-authority.md`
 carries the register contract and its kernel-source derivation. The fill
 touches no VAP, RS, US, RB3D, or ZB state and performs no source fetch,
 so the write path is brush value, ROP, 2D destination -- outside the
-color-write gates the first run implicated. Whether the RS482 2D engine
+color-write gates the first run implicated. Whether the RS485M 2D engine
 writes an unsnooped-GART destination coherently under the in-stream
 flush and wait remains the silicon hypothesis this control tests.
 
@@ -148,7 +148,7 @@ keep native submission closed.
    control: each stream is a distinct object, and each declares its own
    digest.
 4. `radeon_deployment_preflight.sh` reports `verdict=CLEAR` on the boot that
-   will carry the run, with the RS482 present, `lockup_timeout=0`, no fence
+   will carry the run, with the RS485M present, `lockup_timeout=0`, no fence
    waiter, no lockup or reset or park signature for the boot, a fresh evidence
    directory, and an off-box log path.
 5. The one-shot `attempt.token` is written durably before the ioctl, so a

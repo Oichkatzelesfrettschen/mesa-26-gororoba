@@ -47,6 +47,10 @@ SCAN_ROOTS = ("meson.build", "meson.options", "src", "build-infra", "docs")
 LEDGER = "docs/r3v-rename-allowlist.txt"
 # The ratchet names the tokens it scans for.
 SELF = "src/amd/r300/vulkan/tests/r3v_rename_ratchet.py"
+# The historical-artifact ledger records retained bundle names in the exact
+# spelling their seals fixed, so it quotes retired tokens by design; it is a
+# registry of past names rather than a use of them.
+ARTIFACT_ALIAS_LEDGER = "build-infra/docs/historical-artifact-aliases.tsv"
 SKIP_DIRS = {".git", "__pycache__"}
 # Retained review evidence: forge responses recorded verbatim and the
 # tables derived from them, which quote whatever spelling a pull request
@@ -193,7 +197,7 @@ def find_hits(
         manifest_cache = {}
     for path in scan_files(root):
         rel = path.relative_to(root).as_posix()
-        if (rel in (LEDGER, SELF) or
+        if (rel in (LEDGER, SELF, ARTIFACT_ALIAS_LEDGER) or
                 bundle_seal(root, rel, manifest_cache) is not None):
             continue
         text: str | None

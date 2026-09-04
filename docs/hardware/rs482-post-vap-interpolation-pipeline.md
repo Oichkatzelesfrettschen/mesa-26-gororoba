@@ -1,11 +1,11 @@
-# RS482 post-VAP interpolation pipeline for Flat, Smooth, and NoPerspective varyings
+# RS485M post-VAP interpolation pipeline for Flat, Smooth, and NoPerspective varyings
 
 The R3V native route delivers every varying through the TCL-bypass
 triangle cell: the host executes the vertex job, the post-VS stage
 rewrites records, the clipper cuts, and the device fetches records
 through VAP, interpolates them in the RS, and executes the US program.
 This document is the register-level model that decides where a Flat, a
-Smooth, and a NoPerspective varying can ride on RS482 (Radeon Xpress
+Smooth, and a NoPerspective varying can ride on RS485M (Radeon Xpress
 200M, CHIP_RS480, R300-class US/PFS fixed VLIW) and what bounds the
 count.  Evidence classes are named per row: `manual` is AMD R3xx 3D
 Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
@@ -52,14 +52,14 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
   (manual).  The manual documents `RS_IP_0..7` for R300; `r300_reg.h`
   names `R300_RS_IP_0..3`; the R3V plans hold the RS vector budget at
   `R300_NOPERSPECTIVE_CARRIER_RS_VECTOR_BUDGET` (driver).  Hypothesis:
-  interpolators 4..7 exist on RS482 as the manual states; no retained
+  interpolators 4..7 exist on RS485M as the manual states; no retained
   receipt exercises a fifth vector, so the four-vector boundary is the
   next probe, not a silicon fact.
 - `RS_INST_n` (0x4330 + 4n, 0..7): `TEX_ID` bits 2:0 and `COL_ID` bits
   13:11 name the interpolator, `TEX_CN_WRITE` bit 3 and `COL_CN_WRITE`
   bit 14 enable the write, `TEX_ADDR` bits 10:6 and `COL_ADDR` bits 21:17
   name the US input register, `TEX_ADJ` bit 22 moves the sample point
-  (manual).  `TEX_ADJ` leaves the RS482 target unchanged (silicon:
+  (manual).  `TEX_ADJ` leaves the RS485M target unchanged (silicon:
   `2026-08-28-rs482-gb-select-w-select-affine-rs-inst-tex-adj-perspective-perturbed`).
 - `RS_COUNT` (0x4300): `IT_COUNT` bits 6:0 texture components, `IC_COUNT`
   bits 10:7 colors, `HIRES_EN` bit 18; `RS_INST_COUNT` (0x4304) bits 3:0

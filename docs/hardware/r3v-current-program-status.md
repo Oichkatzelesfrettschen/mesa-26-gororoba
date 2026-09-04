@@ -1,7 +1,7 @@
 # R3V current program status
 
 This document is the one program-status authority for the R3V native
-Vulkan ICD on RS482. It states the revision and evidence boundaries, the
+Vulkan ICD on RS485M. It states the revision and evidence boundaries, the
 target deployment, the active conformance partition, the latest target
 receipt, the DSO and queue-claim modes, the open tasks, and the documents
 it supersedes. Other documents point here; the status table lives here
@@ -66,7 +66,7 @@ observation, and a claim that needs one names its own run.
 | Field | Value | Authority |
 |---|---|---|
 | Host | `cachyos-vostro1000` (Dell Vostro 1000, AMD K8) | `docs/hardware/vostro1000-kernel-modules.md` |
-| GPU | PCI `1002:5974` (RS482/RS485 die id), subsystem `1028:022a`, DMI `Vostro 1000`: the Radeon Xpress 1150 / RS485M product; `CHIP_RS480`, renderer `ATI RS480`; retained evidence sealed under the historical alias `rs482` | `r300_platform_identity_lookup`, `include/pci_ids/r300_pci_ids.h` |
+| GPU | PCI `1002:5974` (shared die id; also the desktop Radeon Xpress 1100), subsystem `1028:022a`, DMI `Vostro 1000`: the Radeon Xpress 1150 / RS485M product; `CHIP_RS480`, renderer `ATI RS480`; retained evidence sealed under the historical alias `rs482` | `r300_platform_identity_lookup`, `include/pci_ids/r300_pci_ids.h` |
 | Kernel | `7.1.8-1-cachyos`, module and package per the epoch table | epoch table |
 | dEQP | per the epoch table; bundle on the box at `deqp-vk-bundle` | receipt `deqp` |
 | Corpus | pinned by `src/amd/r300/vulkan/tests/r3v_conformance_corpus.pin`; the bundle's own mustpass directory is the pinned corpus | runner `wrong_caselist` refusal |
@@ -166,7 +166,7 @@ The preceding target receipt is the public partial-clip fallback:
 | Oracle | the probe census (`r300_rs_tex_adj_probe.h`): 1296 judged interior pixels, tolerance 2, model separation 5 quanta; the predictions self-classify ahead of the ioctl; four known-bads refuse with exit 2 in preflight (force gate, W_SELECT probe gate, R2VB gate, `--production` on the unclipped carrier candidate) |
 | Integrity | retained by `steinmarder-r300` `834d87d14`; every entry in `bundle_hashes.sha256` verifies there |
 
-The receipt proves the public partial-clip fallback on RS482: the
+The receipt proves the public partial-clip fallback on RS485M: the
 NoPerspective pipeline retains both qualified cells and the clipping
 class is decided at submission after the CPU vertex execution, so a
 triangle the clipper accepts whole runs the direct GB W_SELECT cell and
@@ -194,7 +194,7 @@ retained by `steinmarder-r300` `7467cce8c`.
 The preceding target receipt is
 `r3v-native-public-flat-color0-two-draw-first-delivery-rs482` (Mesa
 `42ff2b207c8dedb0a789639bd1c4cd6159b07690`, cell BLAKE3 `3646c222b6c5...605c`,
-452 IB dwords): end-to-end Vulkan `Flat` RGB and alpha through the RS482
+452 IB dwords): end-to-end Vulkan `Flat` RGB and alpha through the RS485M
 GA color-0 provoking-vertex selection, both targets byte-equal to their
 provoking-vertex images, later replayed byte-equal under
 `radeon-unified-dkms 0.8.12-1`
@@ -205,7 +205,7 @@ The latest CTS qualification receipt remains
 `133f7703713910fed6b3f3c545dd1bf08a60395c`, one 231-dword triangle IB,
 receipt seal `c68d24e2957a...`, valid `Pass`, and dmesg delta 0. The
 prediction for `dEQP-VK.api.smoke.triangle` was Fail on image comparison
-because the noop-shim host-planning pass rasterizes nothing; RS482
+because the noop-shim host-planning pass rasterizes nothing; RS485M
 produced Pass. That deviation refutes the `driver_defect_open` ledger
 instance for `dEQP-VK.api.smoke.triangle` alone. The other
 `driver_defect_open` rows remain open. The six plan mutations (order,
@@ -262,7 +262,7 @@ Every submitting graphics case of the command slice refuses at
 `vk.createImage` or `vk.endCommandBuffer`, so the first dEQP transcript
 waited on those elements; the one-case compose, independent plan check,
 drm-shim mutation ladder, and one-attempt silicon replay are done, and
-the case passes on RS482 (bundle
+the case passes on RS485M (bundle
 `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`).
 
 ## Draw, synchronization, and transfer host-planning pass
@@ -392,7 +392,7 @@ The DSO mode names which binary answered and how a run bound to it:
   `no_nonempty_ib`); the slice's silicon requirement stands;
 - plan-bound: a submission-hazard silicon run replays a composed plan
   that binds at the first submission to the DSO BLAKE3, the built source
-  SHA prefix, the kernel and module identity, the RS482 PCI identity, and
+  SHA prefix, the kernel and module identity, the RS485M PCI identity, and
   the nonce (`r3v_native_plan.c`).
 
 The queue-claim mode is the receipt's `queue_claim.mode`, produced by
@@ -419,7 +419,7 @@ Delivered prerequisites:
 
 - the first dEQP transcript is delivered: `dEQP-VK.api.smoke.triangle`,
   the one-case bridge from dEQP semantics to the exact-plan hardware gate,
-  produces a valid qualification pass on RS482 through the plan replay (see the
+  produces a valid qualification pass on RS485M through the plan replay (see the
   latest target receipt above); this prerequisite stays closed, and the open
   target-run blockers start under P0 below. It reached a nonempty IB after the
   five render-family elements landed.  Those elements decompose into three
@@ -431,7 +431,7 @@ Delivered prerequisites:
   arm per parameter plus the composed smoke shape earns all three; the
   render-family transfer readback is a host route over the linear color
   BO with no executed change; OPTIMAL admission is a pure admission fact.
-  The attended render-shape session ran on RS482
+  The attended render-shape session ran on RS485M
   (`docs/hardware/r3v-native-attended-render-shape-procedure.md`): seven
   arms in table order (reference control, lanes, pitch, constant,
   extent, composed smoke shape, composed-asym), each armed under its own
@@ -462,7 +462,7 @@ Delivered prerequisites:
   family at any page-aligned offset whose footprint fits, and the
   load-op clear and the in-pass attachment clears realize any
   `VkClearColorValue` through the target's lane order and the UNORM8
-  conversion.  Both render-shape receipts are closed on RS482 (bundle
+  conversion.  Both render-shape receipts are closed on RS485M (bundle
   steinmarder-r300
   `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`): the
   offset arm renders the reference shape based at byte 4096 with the first
@@ -472,7 +472,7 @@ Delivered prerequisites:
   each armed under its own digest, `vkQueueSubmit` 0, dmesg delta 0,
   `ib.bin` byte-identical to the emitter.  The smoke.triangle transcript
   (231 IB dwords, three relocations: vertex read, color write, completion
-  write) then composed to a sealed plan and replayed on RS482 to a
+  write) then composed to a sealed plan and replayed on RS485M to a
   qualification-valid `Pass`: the plan binds this box's source, DSO, kernel,
   and module identity at the first submission, the queue opens the CS
   ioctl without `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED`, dEQP writes reference
@@ -494,7 +494,7 @@ Delivered prerequisites:
   and `R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3` pins the stream that
   produces; the retained CPU-route digest keeps naming the oracle-color
   reference cell.  The row closes: the module-constant arm renders the
-  reference shape under the admitted module's `vec4(0, 1, 0, 1)` on RS482,
+  reference shape under the admitted module's `vec4(0, 1, 0, 1)` on RS485M,
   oracle centroid `0xff00ff00`, in bundle
   `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`;
 
@@ -515,7 +515,7 @@ P1 (host-model rungs that move classified rows without a new gate):
   host-planning pass proves no robustness case reaches an IB before it);
 - `pipeline_barrier_executing_route_gap`: the secondary replay, the
   nearest scaling blit, and the sampled-image admission moved the family
-  4 -> 28 Pass under the shim and all three movements hold on RS482
+  4 -> 28 Pass under the shim and all three movements hold on RS485M
   silicon (rungs 1-3 above); the residual walls are the withheld
   storage/all-usage image shapes at `vkCreateImage` (24 cases) and the
   render pipelines outside the qualified draw subset at
@@ -563,7 +563,7 @@ reproduce the locator.
    `r3v_CmdExecuteCommands`
    replays a secondary's recorded host-executed ops (deferred copies,
    event ops, query ops) into the primary in recorded order, and the
-   moved `pipeline_barrier` subgroups meet the RS482 silicon qualification
+   moved `pipeline_barrier` subgroups meet the RS485M silicon qualification
    requirements (8/8 Pass, dmesg delta 0, gates closed, seal `13b4b86a37c2b2`,
    bundle steinmarder-r300
    `r3v-native-secondary-replay-pipeline-barrier-first-silicon-pass-rs482`);
@@ -578,7 +578,7 @@ reproduce the locator.
    with the supplied filter. For positive, zero-origin rectangles, the source
    coordinate reduces to `(d + 0.5) * srcExtent / dstExtent`; the executing
    route supplies `VK_FILTER_NEAREST`, uses distinct images, and refuses flips.
-   The twelve moved subgroups produce valid qualification passes on RS482 silicon
+   The twelve moved subgroups produce valid qualification passes on RS485M silicon
    (12/12 Pass, dmesg delta 0, gates closed, seal `765a0687a232c2`,
    bundle steinmarder-r300
    `r3v-native-scaling-blit-pipeline-barrier-silicon-pass-rs482`);
@@ -586,7 +586,7 @@ reproduce the locator.
    zero and is closed:
    the sampled cell binds a uniform R8G8B8A8 texel through a
    combined-image-sampler descriptor set and a TCL-bypass triangle
-   samples it on TX unit 0; the attended run on RS482 rendered the
+   samples it on TX unit 0; the attended run on RS485M rendered the
    predicted centroid `0xe02060a0` with an empty dmesg delta and gates
    armed one-shot (cell blake3 `4e3d252315fb`, bundle steinmarder-r300
    `r3v-native-sampled-descriptor-cell-silicon-pass-rs482`); the
@@ -600,12 +600,12 @@ reproduce the locator.
 4. sampled-image shapes -- depend on the executing routes in rows 2 and 3.
    The first shape is closed: the B8G8R8A8_UNORM sampled lane
    order rides the swapped TX_FORMAT1 select set and rendered the
-   predicted centroid on RS482 with the byte-X falsifier absent (cell
+   predicted centroid on RS485M with the byte-X falsifier absent (cell
    blake3 `640c1336`, bundle steinmarder-r300
    `r3v-native-sampled-bgra-lane-order-silicon-pass-rs482`), and a
    split-row texture separates an addressed fetch from a constant one:
    two oracle pixels read the texels at texel rows 6 and 11 as predicted
-   on RS482. This receipt proves varying-derived T-axis row addressing
+   on RS485M. This receipt proves varying-derived T-axis row addressing
    alone (bundle steinmarder-r300
    `r3v-native-sampled-split-row-addressing-silicon-pass-rs482`).
    S-axis column-dependent addressing remains open. Its discriminator uses
@@ -655,7 +655,7 @@ reproduce the locator.
    `TX_OFFSET_0` carries the full span.  The sampling family holds the
    silicon receipt: the attended arms `layer`, `row1`, and `wide`
    (`r3v_native_sampled_arms.h`, digests `4afc72c0`, `83063087`, and
-   `575c6747`) each submitted one live `DRM_RADEON_CS` on RS482 and read
+   `575c6747`) each submitted one live `DRM_RADEON_CS` on RS485M and read
    the dword its prediction named, with every dmesg delta empty.  The
    layered arm's two unselected layers hold a decoy texel, so a dropped
    `TX_OFFSET_0` stride reads layer 0 and lands on the named falsifier
@@ -702,7 +702,7 @@ reproduce the locator.
    types alone (`r3v_native_view_type_executes`), which
    `r3v-native-submit-order-sampled-array-view-refused` and the
    attachment arm of `r3v-native-public-surface` pin.  Measured
-   movement on RS482 (steinmarder-r300
+   movement on RS485M (steinmarder-r300
    `r3v-object-management-view-rows-measured-rs482`): `image_3d`,
    `image_view_3d`, `image_view_1d_arr`, and `image_view_2d_arr` each
    read 6 passed, 0 failed, 4 not supported at mesa `f743d0f9bec`;
@@ -864,7 +864,7 @@ reproduce the locator.
    constant, the pre-submission seed, and the union -- with a footprint
    census that separates a permuted destination order from an absent
    write without a tiling model.
-   The rung holds its silicon receipt in two arms on RS482
+   The rung holds its silicon receipt in two arms on RS485M
    (`docs/hardware/r3v-native-attended-msaa-resolve-procedure.md`;
    bundle steinmarder-r300
    `r3v-native-msaa-resolve-downsample-semantics-rs482`).  The first arm
@@ -910,7 +910,7 @@ reproduce the locator.
    cell followed by a sampling cell in one indirect buffer publishes
    the color writes before the texture fetch reads them; and the
    role-based composer (`r300_pm4_compose.h`) already binds several
-   independently emitted fragments into one submission on RS482
+   independently emitted fragments into one submission on RS485M
    silicon through the fetched producer route.  The composed cell itself
    lands: `r300_tcl_bypass_triangle_composed_render_sample_emit` emits
    the render half, then the sample half whose texture geometry is the
@@ -962,7 +962,7 @@ reproduce the locator.
    sample interior reading it names a texture fetch ahead of the render
    half's publication, so the coherency edge, rather than the coverage,
    carries a deviation there.  The cell holds the silicon
-   receipt: one attended submission on RS482 under the authorization the
+   receipt: one attended submission on RS485M under the authorization the
    arming report matched on all five declarations, `vkQueueSubmit`
    returning 0, both coverage verdicts reading `judged=1
    coverage_exact=1 canary=1` with 1152 interior pixels against 1152
@@ -1014,7 +1014,7 @@ reproduce the locator.
    parser over a four-entry relocation list.  The attended runner
    `r3v_native_attended_multi_pass` and its procedure
    (`docs/hardware/r3v-native-attended-multi-pass-procedure.md`) carry
-   the one two-draw submission, delivered on RS482 at mesa `64fa102e611`
+   the one two-draw submission, delivered on RS485M at mesa `64fa102e611`
    (steinmarder-r300
    `r3v-native-two-pass-concatenation-first-delivery-rs482`): both
    targets exact under their own constants over 1152 pixels and zero
@@ -1059,13 +1059,13 @@ conformance defect. The Vulkan 1.0 Required Format Support table requires
 requirements exercised by `dEQP-VK.api.info.format_properties.*`, including
 `dEQP-VK.api.info.format_properties.r8_uint`. The inspected source contains no
 executing storage-image, storage-texel-buffer, or integer-format route, so the
-driver keeps those feature bits outside its advertised surface. Exact RS482
+driver keeps those feature bits outside its advertised surface. Exact RS485M
 structural silicon absence remains unproven until a named hardware authority or
 discriminating silicon receipt establishes it.
 
 Expansion follows one delivery graph and one ownership boundary. [R3V
 implementation boundaries](r3v-implementation-boundaries.md) owns source
-ownership and completion criteria; [RS482 native delivery route admission and
+ownership and completion criteria; [RS485M native delivery route admission and
 oracle model](rs482-native-delivery-route-admission-and-oracle-model.md) owns
 route topology, admission, coherency, and oracle structure. This status
 document retains the expansion-order consequence: each route runs from source

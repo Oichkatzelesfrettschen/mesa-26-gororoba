@@ -167,7 +167,7 @@ the device wrote inside the extent.
 
 ## First attempt: the subsample set never reached either draw
 
-The first attended submission on RS482 (boot
+The first attended submission on RS485M (boot
 `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, cell blake3 `e78da1dc`, 477 IB
 dwords) returned `vkQueueSubmit` 0 with an empty dmesg delta, a 104 us
 guarded interval, and the destination holding `0xa5a5a5a5` in all 4096
@@ -198,7 +198,7 @@ half and RESOLVE for the resolve half, and closes both at the epilogue.
 ## Result
 
 The cell holds its silicon receipt from the second attended arm on
-RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
+RS485M, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
 report matching all five declarations against cell blake3 `be78db1c`.
 The hypothesis held:
 

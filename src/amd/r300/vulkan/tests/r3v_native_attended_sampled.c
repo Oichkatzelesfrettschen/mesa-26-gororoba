@@ -4,7 +4,7 @@
  * Attended sampled cell: drives the public sampling surface -- the
  * varying vertex module, the sampled fragment module, and the set-0
  * combined image sampler over a one-color texture -- to a live
- * DRM_RADEON_CS on RS482 silicon and reports the render-shape oracle's
+ * DRM_RADEON_CS on RS485M silicon and reports the render-shape oracle's
  * verdict.  A uniform texture makes every sampled coordinate return
  * one texel, so the interior equals that texel whatever the
  * interpolated coordinates are; a wrong TX program cannot reproduce
@@ -240,7 +240,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 

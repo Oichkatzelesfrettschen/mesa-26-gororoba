@@ -1,14 +1,14 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Typed numeric domain model for the RS482/r300 compute-as-raster substrate.
+ * Typed numeric domain model for the RS485M/r300 compute-as-raster substrate.
  *
  * The root type for the PFS fragment ALU is F_{24}^{RTZ}: a finite FP24 value
  * set (s1e7m16, exponent bias 62, normal range [2^-61, 2^65]) with
  * round-toward-zero arithmetic and an exact integer window of |n| <= 2^17.
  * No NaN, no Inf, no subnormals; underflow flushes to zero; overflow saturates.
  *
- * Each hardware block on RS482 implements a distinct algebra over a specific
+ * Each hardware block on RS485M implements a distinct algebra over a specific
  * carrier type.  Naming those carriers explicitly lets admission classifiers,
  * pattern detectors, and orchestrator dispatch logic state which domain a
  * virtual op operates in instead of collapsing everything to "float" or
@@ -72,7 +72,7 @@ enum r300_vop_status {
    R300_VOP_REJECTED,         /* falsified by silicon measurement */
 };
 
-/* Numeric carrier domains realized by RS482 hardware blocks.  Ordered by
+/* Numeric carrier domains realized by RS485M hardware blocks.  Ordered by
  * hardware block: PFS ALU first, then sampler, then output and reduction
  * units.  The VAP format-ingestion domain is listed last as a source
  * transform, not a compute or reduction domain. */
@@ -112,7 +112,7 @@ enum r300_numeric_domain {
 
    /* Unsigned 7-bit dot product: 0 <= a_i, b_i <= 127.
     * Theorem: 4*(2^7-1)^2 = 64516 < 2^17 = 131072.
-    * Hardware-confirmed: RS482 surfaceless-EGL dp4 probe (6/6 exact,
+    * Hardware-confirmed: RS485M surfaceless-EGL dp4 probe (6/6 exact,
     * including 64516, signed cancellation, and random cases) and
     * end-to-end r3v Vulkan DP4 readback (4/4 byte-exact). */
    R300_NUM_DOMAIN_U7_DOT,
@@ -140,7 +140,7 @@ enum r300_numeric_domain {
    /* TX sampler: 6-bit bilinear interpolation weight for UNORM payloads.
     * UNORM textures interpolate with 6-bit fixed-point weights (Evergreen
     * ISA / TeraScale-2 hardware specification).  Float payloads (FP16/FP32
-    * textures) are point-sampled, not bilinearly filtered, on RS482.
+    * textures) are point-sampled, not bilinearly filtered, on RS485M.
     * This domain names the sampler interpolation carrier; it is not a PFS
     * compute domain. */
    R300_NUM_DOMAIN_TX_INT6_WEIGHT,
@@ -152,13 +152,13 @@ enum r300_numeric_domain {
    R300_NUM_DOMAIN_RB3D_BLEND,
 
    /* RB3D ROP Boolean bitplane algebra.  AND, OR, and XOR are
-    * hardware-confirmed bit-exact on RS482; ROP NOT still needs a targeted
+    * hardware-confirmed bit-exact on RS485M; ROP NOT still needs a targeted
     * truth-table probe.  Operates on raw color-target bits, not FP24 values. */
    R300_NUM_DOMAIN_ROP_BOOL,
 
    /* Stencil U8 per-pixel state machine.  Per-pixel value in Z/256 or a
     * saturating/replace form depending on the stencil op.
-    * INCR and INVERT are hardware-confirmed on RS482; DECR/WRAP need probes. */
+    * INCR and INVERT are hardware-confirmed on RS485M; DECR/WRAP need probes. */
    R300_NUM_DOMAIN_U8_STENCIL,
 
    /* ZPASS fragment-count reduction.  N = sum_{p in Omega} [predicate(p)].
@@ -315,7 +315,7 @@ enum r300_route_admission_id {
 };
 
 /* Virtual operation descriptor: one row per named virtual op in the
- * RS482 compute-as-raster substrate catalog.  Each op lives in a specific
+ * RS485M compute-as-raster substrate catalog.  Each op lives in a specific
  * numeric domain, has a named theorem, and carries a compact catalog
  * evidence/status summary consulted by the interim cross-ledger validator.
  * implementation_label is preserved provenance prose, not a live symbol;

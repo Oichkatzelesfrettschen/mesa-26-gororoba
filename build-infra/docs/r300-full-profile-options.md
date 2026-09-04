@@ -55,7 +55,7 @@ tools, and the mesa overlay/device-select Vulkan layers.  The release profile
 keeps those debug-only surfaces out of the artifact.
 
 The release and debug profiles intentionally keep `llvm = 'disabled'` and
-`draw-use-llvm = false` until the no-LLVM RS482 SW-TCL baseline has a retained
+`draw-use-llvm = false` until the no-LLVM RS485M SW-TCL baseline has a retained
 measurement.  A Vostro experiment branch named
 `r300/rs482-swtcl-draw-jit-release` demonstrated the alternate profile shape
 (`llvm = 'enabled'`, `draw-use-llvm = true`) for Gallium draw JIT throughput, but

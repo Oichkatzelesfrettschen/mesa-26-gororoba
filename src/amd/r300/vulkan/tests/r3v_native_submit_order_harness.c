@@ -496,7 +496,7 @@ module_constant_clip_cell(uint32_t source_triangle_count,
 /* The composed fetched route the driver submits for a width: the
  * reference producer prefix ahead of the module-constant consumer.  The
  * reference composition is built first and its digest held to the
- * retained silicon pin, so the producer half stays bound to the RS482
+ * retained silicon pin, so the producer half stays bound to the RS485M
  * receipt; the consumer half alone is replaced, which is the half the
  * recorded fragment constant moves.
  */
@@ -831,7 +831,7 @@ run_arm(enum arm arm, const char *name)
 
    struct r3v_native_device *native_device =
       r3v_native_device_from_handle(device);
-   native_device->arming_provider = &r3v_native_shim_arming_provider;
+   r3v_native_install_shim_arming(native_device);
    /* The injection table wraps the table the device resolved, so every
     * call the arm leaves alone still reaches the shim. */
    saved_ops = native_device->drm.ops;

@@ -2,7 +2,7 @@
 
 This document is the procedure for the second attended native
 triangle-cell submission from the native R3V ICD, a physically
-attended run on the RS482 host under a separate explicit
+attended run on the RS485M host under a separate explicit
 authorization. The ordinal counts attended triangle-cell runs, not
 native `DRM_RADEON_CS` submissions globally; other native controls
 (the direct-write control among them) carry their own submissions
@@ -23,7 +23,7 @@ lockup line. The color target showed no modification: the oracle's
 historical cause remains underdetermined: the run did not retain the
 predecessor values of `US_OUT_FMT_0`, `COLOR_CHANNEL_MASK`, and
 `SC_SCREENDOOR`, so which register, if any, produced that outcome is
-unidentified. A later RS482 silicon matrix (steinmarder-r300 bundle
+unidentified. A later RS485M silicon matrix (steinmarder-r300 bundle
 `rs482-first-draw-color-write-gate-discrimination`) proved that each
 of the three, left at a killing value, is independently sufficient to
 reproduce the same observation, byte-identical to the sentinel fill,
@@ -97,7 +97,7 @@ The run proceeds only when all of the following hold.
   and artifact digests bind the live executable and native DSO to the release
   build that the preflight suite qualified.
 - `r300-tcl-bypass-offline-replay` and
-  `r3v-native-submit-object-replay` pass on the RS482 host itself. The
+  `r3v-native-submit-object-replay` pass on the RS485M host itself. The
   single-IB runners use the build output
   `scripts/replay_r300_tcl_bypass_ib` through `R3V_KERNEL_REPLAY_TOOL`;
   the tool accepts one `ib.bin` and the `--set-vtx-size` control that
@@ -156,7 +156,7 @@ The run proceeds only when all of the following hold.
   production compiled profile, and its identity agrees with the loaded
   module. `Substrate admission` below carries the decision table and the
   transition this check refuses without.
-- The RS482 recovery stack is registered before the hazard gate opens. The
+- The RS485M recovery stack is registered before the hazard gate opens. The
   Radeon module is the deployed `radeon-unified-dkms` build, the SB600 TCO
   module is registered as `sp5100_tco`, the watchdog device and
   `sb600-guard` are present, and the wedge-recovery sysctls are loaded. Read

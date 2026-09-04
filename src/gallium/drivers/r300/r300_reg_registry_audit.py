@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 
-"""Audit r300_reg.h against the RS482 register evidence registry.
+"""Audit r300_reg.h against the RS485M register evidence registry.
 
 The registry lives in the steinmarder evidence repository; this wrapper
 locates it through the STEINMARDER_ROOT environment variable (or a

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Attended producer-only cell: submits the reference R2VB producer pass to
- * RS482 silicon through the native ICD, retains the complete carrier
+ * RS485M silicon through the native ICD, retains the complete carrier
  * durably, and classifies the read-back.  The cell renders no visible
  * target and re-ingests nothing, so the carrier bytes are the whole
  * result: the poison prefill makes an unwritten slot decidable, the
@@ -197,7 +197,7 @@ main(int argc, char **argv)
     */
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 

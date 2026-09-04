@@ -949,6 +949,11 @@ struct r3v_native_device {
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
    const struct r3v_native_arming_provider *arming_provider;
+   /* The board a replaced arming provider stands in for.  A shim device
+    * sits on no board, so a harness that supplies the collected facts
+    * supplies this one too; production leaves the provider null and the
+    * board resolved at physical-device creation governs. */
+   enum r300_platform_id arming_platform;
    struct r3v_native_prepared_submission prepared;
    /* Test harnesses can refuse semantic-cell retention with a negative errno
     * before any artifact write.  Production devices leave this zero.

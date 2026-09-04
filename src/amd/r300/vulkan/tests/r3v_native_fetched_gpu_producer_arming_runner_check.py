@@ -162,8 +162,8 @@ def main():
         environment["R3V_NATIVE_RUNNER_PCI_DEVICE"] = "0x5975"
         wrong_chip = run(runner, evidence_dir, environment)
         if wrong_chip.returncode == 0 or \
-                "not the authorized RS482 identity" not in wrong_chip.stdout:
-            return fail("wrong chip did not refuse", wrong_chip)
+                "not the authorized Dell Vostro 1000 RS485M platform" not in wrong_chip.stdout:
+            return fail("a board that is not the authorized platform did not refuse", wrong_chip)
         environment.pop("R3V_NATIVE_RUNNER_PCI_DEVICE", None)
 
         # The fetched gate alone closed is the immediate route, and a

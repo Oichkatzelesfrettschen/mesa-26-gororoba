@@ -1,7 +1,7 @@
 # R3V native attended render-shape procedure
 
 This document is the procedure for one physically attended session on
-the RS482 host that submits the TCL-bypass triangle cell over declared
+the RS485M host that submits the TCL-bypass triangle cell over declared
 render shapes: the extent, row pitch, lane order, and fragment constant
 a Vulkan render pass places on the qualified cell
 (`r300_triangle_render_shape`, `src/amd/r300/common/r300_tcl_bypass_triangle.h`).

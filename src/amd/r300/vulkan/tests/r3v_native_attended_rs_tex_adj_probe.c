@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Attended rasterizer interpolation probe on RS482 (Radeon Xpress 200M,
- * CHIP_RS480, R300-class US/PFS fixed VLIW): two render passes draw one
+ * Attended rasterizer interpolation probe on RS485M (ATI Radeon Xpress
+ * 1150, CHIP_RS480, R300-class US/PFS fixed VLIW): two render passes draw one
  * carrier whose three vertices hold unequal reciprocal clip W and one
  * TEX0 varying, the first pass through the smooth fragment interface
  * and the second through the NoPerspective interface an open probe gate
@@ -920,7 +920,7 @@ main(int argc, char **argv)
         props.deviceID, props.deviceName);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 
@@ -2210,7 +2210,7 @@ main(int argc, char **argv)
                    "alpha, each within one quantum on every judged pixel "
                    "under rung D's cell with no gate: the receipt of Flat "
                    "through host replication beside the mixed reciprocal "
-                   "carrier on RS482"
+                   "carrier on RS485M"
                  : "the flat-mixed oracle does not hold; the [flat-mixed] "
                    "line names the failed clause")
         : mixed_route
@@ -2223,7 +2223,7 @@ main(int argc, char **argv)
                    "competing model matching no separated pixel: the "
                    "receipt of the mixed reciprocal carrier -- TC0 "
                    "Smooth, TC1 premultiplied, TC2 carrier, three RS "
-                   "vectors at VAP_VTX_SIZE 16 -- on RS482"
+                   "vectors at VAP_VTX_SIZE 16 -- on RS485M"
                  : "the mixed oracle does not hold; the [mixed] line "
                    "names the failed clause")
         : q_lane_route
@@ -2233,7 +2233,7 @@ main(int argc, char **argv)
                    "affine within one quantum on every judged pixel in "
                    "each of three separated channels with alpha exactly "
                    "1: the receipt of the q-lane carrier -- the varying "
-                   "cell's words, xyz * rcp(w) US program -- on RS482"
+                   "cell's words, xyz * rcp(w) US program -- on RS485M"
                  : "the q-lane oracle does not hold; the classification "
                    "printed above stands and the [q-lane] line names the "
                    "failed clause")
@@ -2244,13 +2244,13 @@ main(int argc, char **argv)
              "carrier cell the selector chose at submission with no gate; "
              "affine is the Vulkan NoPerspective value, so that "
              "classification is the receipt of the public partial-clip "
-             "fallback on RS482"
+             "fallback on RS485M"
         : production
            ? "the control cell interpolates perspective-correct and the "
              "public NoPerspective pipeline's target carries the "
              "classification printed above; affine is the Vulkan "
              "NoPerspective value, so that classification is the receipt "
-             "of the direct GB W_SELECT route on RS482"
+             "of the direct GB W_SELECT route on RS485M"
         : partial
            ? "the control cell interpolates perspective-correct over the "
              "clipped fan and the forced reciprocal-carrier pipeline's "
@@ -2258,17 +2258,17 @@ main(int argc, char **argv)
              "the Vulkan NoPerspective value, so that classification is "
              "the receipt of the carrier through the clipper -- packed "
              "ahead of the cut, generated vertices at the clipped-edge "
-             "value -- on RS482"
+             "value -- on RS485M"
         : carrier_route
            ? "the control cell interpolates perspective-correct and the "
              "forced reciprocal-carrier pipeline's target carries the "
              "classification printed above; affine is the Vulkan "
              "NoPerspective value, so that classification is the receipt "
              "of the TC1 carrier cell -- widened record, second "
-             "interpolator, RCP+MUL US program -- on RS482"
+             "interpolator, RCP+MUL US program -- on RS485M"
            : "the control cell interpolates perspective-correct and the "
              "candidate word's target carries the classification printed "
-             "above; the statement is what that one bit does on RS482");
+             "above; the statement is what that one bit does on RS485M");
    if (run_log != NULL)
       fclose(run_log);
    /* The classification is the result, so the exit status names the

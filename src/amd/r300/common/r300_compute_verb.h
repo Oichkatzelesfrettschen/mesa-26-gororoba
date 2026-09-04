@@ -119,7 +119,7 @@ enum r300_compute_failure_clause {
     * quarantines the verb's GPU capability on the device. */
    R300_COMPUTE_FAILURE_ORACLE_DIVERGENCE_QUARANTINES,
    /* No capability bit advertises on a GPU route before the verb's
-    * attended RS482 cell is retained. */
+    * attended RS485M cell is retained. */
    R300_COMPUTE_FAILURE_ADVERTISE_AFTER_SILICON,
    R300_COMPUTE_FAILURE_CLAUSE_COUNT,
 };

@@ -114,7 +114,7 @@ evaluate_fixture(const struct fixture *f, uint32_t vendor, uint32_t device,
    struct r3v_native_arming_facts facts;
    char kernel_storage[128];
    char module_storage[128];
-   r3v_native_arming_collect_from(&provider, &facts, vendor, device,
+   r3v_native_arming_collect_from(&provider, &facts, R3V_NATIVE_ARMING_PLATFORM, vendor, device,
                                   R3V_NATIVE_CELL_KIND_TRIANGLE,
                                   actual_digest, FIXTURE_EVIDENCE_DIR,
                                   kernel_storage, sizeof(kernel_storage),
@@ -166,7 +166,7 @@ main(void)
    f = armed_fixture;
    assert(evaluate_fixture(&f, R3V_NATIVE_ARMING_PCI_VENDOR, 0x5854,
                            FIXTURE_DIGEST) ==
-          R3V_NATIVE_ARMING_CHIP_MISMATCH);
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
 
    f = armed_fixture;
    f.running_kernel = "6.16.0-other";

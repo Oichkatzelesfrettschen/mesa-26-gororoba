@@ -179,6 +179,7 @@ test_unknown_cell_kind_refuses_arming(void)
       .cell_kind = R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
       .authorized_ib_blake3 = digest,
       .actual_ib_blake3 = digest,
+      .platform_id = R3V_NATIVE_ARMING_PLATFORM,
       .pci_vendor_id = R3V_NATIVE_ARMING_PCI_VENDOR,
       .pci_device_id = R3V_NATIVE_ARMING_PCI_DEVICE,
       .authorized_kernel_release = "7.1.3-2-cachyos",

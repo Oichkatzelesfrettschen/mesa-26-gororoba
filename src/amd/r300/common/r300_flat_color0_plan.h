@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Direct hardware Flat interpolation on RS482 (Radeon Xpress 200M,
+ * Direct hardware Flat interpolation on RS485M (Radeon Xpress 200M,
  * CHIP_RS480, R300-class US/PFS fixed VLIW): the varying rides the
  * TCL-bypass color 0 vector, the GA selects the provoking vertex's
  * color per primitive, and the RS routes color 0 into the US input

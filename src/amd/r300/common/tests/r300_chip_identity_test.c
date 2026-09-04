@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * Chip identity table proof: every r300_pci_ids row resolves to its family
- * and a die class, the RS482 target row carries the RS400-class IGP facts,
- * and identities outside the table refuse.
+ * and a die class, the shared RS48X_5974 row carries the RS400-class IGP
+ * facts, and identities outside the table refuse.
  */
 
 /* The asserts carry the test's verdicts, so they stay live in NDEBUG
@@ -126,8 +126,22 @@ test_rs482_parse_chipset_caps(void)
 }
 
 
+/* struct r300_family_facts carries no per-specimen register reading: a
+ * register's address is family-scoped (dstcache_ctlstat_reg,
+ * zcache_ctlstat_reg), but the value one board holds in it at rest is a
+ * measurement and belongs to struct r300_specimen_facts instead.  This
+ * pins the family struct's size so a field re-added to it (as
+ * dstcache_ctlstat_at_rest and zcache_ctlstat_at_rest once were) breaks
+ * the build here rather than silently handing every RS480-family lookup
+ * the Vostro 1000's specimen readings again.
+ */
+_Static_assert(sizeof(struct r300_family_facts) == 56,
+               "r300_family_facts changed size; if a field was added, "
+               "confirm it is a family-scoped fact and not a per-specimen "
+               "register reading (those belong in r300_specimen_facts)");
+
 static void
-test_rs480_die_facts(void)
+test_rs4xx_igp_family_facts(void)
 {
    /* The facts record rides only the RS480 family rows, and its numeric
     * and register fields agree with their macro homes.
@@ -135,15 +149,15 @@ test_rs480_die_facts(void)
    struct r300_chip_identity identity;
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
                                     R300_PCI_DEVICE_RS48X_5974, &identity));
-   assert(identity.die_facts == &r300_rs480_die_facts);
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
                                     R300_PCI_DEVICE_RS482M_5975, &identity));
-   assert(identity.die_facts == &r300_rs480_die_facts);
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
    assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI, 0x4144,
                                     &identity));
-   assert(identity.die_facts == NULL);
+   assert(identity.family_facts == NULL);
 
-   const struct r300_die_facts *facts = &r300_rs480_die_facts;
+   const struct r300_family_facts *facts = &r300_rs4xx_igp_family_facts;
    assert(facts->vertex_engine_absent);
    assert(facts->fp24_exact_int_ceiling == R300_FP24_EXACT_INT_CEILING);
    assert(facts->dstcache_ctlstat_reg == R300_RB3D_DSTCACHE_CTLSTAT);
@@ -169,12 +183,61 @@ test_platform_identity(void)
                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
                                         0x022a, "Vostro   1000 ", &row));
    assert(row == &r300_platform_vostro1000);
-   assert(strcmp(row->canonical_target, "RS485") == 0);
+   /* The exact tuple, field by field.  A shared PCI id names a die class
+    * and not a part, so the row is the agreement among the id, the board's
+    * subsystem id, its DMI product, and the option-ROM strings; asserting
+    * the whole tuple is what makes that agreement checkable. */
+   assert(row->pci_vendor == R300_PCI_VENDOR_ATI);
+   assert(row->pci_device == R300_PCI_DEVICE_RS48X_5974);
+   assert(row->subsystem_vendor == 0x1028);
+   assert(row->subsystem_device == 0x022a);
+   assert(strcmp(row->dmi_product_name, "Vostro 1000") == 0);
+   assert(strcmp(row->firmware_chip_name, "RS485/M") == 0);
+   assert(strcmp(row->firmware_product_name, "ATI Radeon Xpress 1150") == 0);
+   assert(strcmp(row->die_name, "RS485") == 0);
+   assert(strcmp(row->part_name, "RS485M") == 0);
+   assert(strcmp(row->product_name, "Radeon Xpress 1150") == 0);
+   assert(strcmp(row->historical_alias, "rs482") == 0);
+   assert(row->platform_id == R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M);
+   /* What the lookup compares and what the identity rests on are separate
+    * facts: the ROM is read once and retained, never on this path. */
+   assert(row->runtime_match_basis == R300_PLATFORM_MATCH_PCI_SUBSYSTEM_DMI);
+   assert(row->identity_evidence ==
+          (R300_PLATFORM_EVIDENCE_OPTION_ROM_STRING |
+           R300_PLATFORM_EVIDENCE_PRODUCT_STRING |
+           R300_PLATFORM_EVIDENCE_RETAINED_ROM_DIGEST));
+
+   /* Neither name is RS482, which is the desktop Xpress 1100 sharing this
+    * PCI id. */
+   assert(strcmp(row->die_name, "RS482") != 0);
+   assert(strcmp(row->part_name, "RS482") != 0);
+
+   /* The id alone resolves nothing: a specimen carrying it without the
+    * board's subsystem id and DMI product is a different platform, and the
+    * lookup leaves it unresolved rather than assuming this one. */
+   const struct r300_platform_identity *absent = NULL;
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x0000, "Vostro 1000", &absent));
+   assert(absent == NULL);
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x022a, "Inspiron 1501", &absent));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                         0x022a, NULL, &absent));
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x0000,
+                                         0x0000, "", &absent));
+   assert(absent == NULL);
    assert(strcmp(row->historical_alias, "rs482") == 0);
    assert(row->subsystem_vendor ==
-          r300_rs480_die_facts.specimen_subsystem_vendor);
+          r300_vostro1000_rs485m_specimen_facts.subsystem_vendor);
    assert(row->subsystem_device ==
-          r300_rs480_die_facts.specimen_subsystem_device);
+          r300_vostro1000_rs485m_specimen_facts.subsystem_device);
+   /* The resolved row's specimen facts are the Vostro record itself, not a
+    * copy: a second board sharing 1002:5974 never reaches this pointer. */
+   assert(row->specimen_facts == &r300_vostro1000_rs485m_specimen_facts);
    row = NULL;
    assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
                                          R300_PCI_DEVICE_RS48X_5974, 0x1028,
@@ -191,6 +254,52 @@ test_platform_identity(void)
    assert(row == NULL);
 }
 
+/* Family facts and specimen facts resolve through two separate lookups
+ * (r300_chip_identity_lookup keyed on the PCI vendor/device pair alone;
+ * r300_platform_identity_lookup keyed on the full board tuple), and
+ * struct r300_chip_identity carries no specimen_facts member at all, so a
+ * chip-identity-only lookup structurally cannot reach a specimen record.
+ * This walks the four rows the separation rests on. */
+static void
+test_family_specimen_separation(void)
+{
+   struct r300_chip_identity identity;
+   const struct r300_platform_identity *row = NULL;
+
+   /* Row 1: a generic CHIP_RS480 lookup (the shared 1002:5974 id, with no
+    * subsystem or DMI match attempted) reaches the family facts every
+    * RS480-family device shares. */
+   assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
+                                    R300_PCI_DEVICE_RS48X_5974, &identity));
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
+
+   /* Row 2: the bare 1002:5974 id, without the Vostro's subsystem and DMI
+    * product name, resolves no platform, so no specimen_facts is
+    * reachable from it -- r300_chip_identity carries no such member to
+    * begin with. */
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS48X_5974, 0x0000,
+                                         0x0000, "", &row));
+
+   /* Row 3: 1002:5975 (RS482M) reaches the same family facts as 5974, and
+    * no subsystem/DMI combination resolves it to the Vostro platform row,
+    * so it never reaches r300_vostro1000_rs485m_specimen_facts. */
+   assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
+                                    R300_PCI_DEVICE_RS482M_5975, &identity));
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
+   assert(!r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                         R300_PCI_DEVICE_RS482M_5975, 0x1028,
+                                         0x022a, "Vostro 1000", &row));
+
+   /* Row 4: the Vostro 1000's full tuple resolves the named platform, and
+    * its specimen_facts is the Vostro record by pointer, not a copy. */
+   assert(r300_platform_identity_lookup(R300_PCI_VENDOR_ATI,
+                                        R300_PCI_DEVICE_RS48X_5974, 0x1028,
+                                        0x022a, "Vostro 1000", &row));
+   assert(row->platform_id == R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M);
+   assert(row->specimen_facts == &r300_vostro1000_rs485m_specimen_facts);
+}
+
 int
 main(void)
 {
@@ -200,7 +309,8 @@ main(void)
    test_unknown_identity_refuses();
    test_die_class_partition();
    test_rs482_parse_chipset_caps();
-   test_rs480_die_facts();
+   test_rs4xx_igp_family_facts();
+   test_family_specimen_separation();
    printf("r300_chip_identity: OK (%zu id rows)\n",
           ARRAY_SIZE(expected_rows));
    return 0;

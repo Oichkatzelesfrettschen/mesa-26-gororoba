@@ -71,7 +71,7 @@ extern "C" {
 /* Conformance classification reported to probes and external tooling.
  *
  * No documented or silicon-proven native compute dispatch surface
- * exists for this RS482/RS485 R3V target: no COMPUTE queue, no
+ * exists for this RS485M R3V target: no COMPUTE queue, no
  * workgroup shared memory, no shader atomics, no SPIR-V compute
  * capabilities, no SSBO storage semantics in the current Mesa r300
  * implementation oracle or the AMD R3xx-RRG documentation.  The

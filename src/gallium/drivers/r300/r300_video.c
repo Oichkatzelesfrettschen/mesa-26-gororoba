@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* RS482/R300-class hardware has no UVD/VCE video block, so the only
+/* RS485M/R300-class hardware has no UVD/VCE video block, so the only
  * hardware-accelerated decode path is the g3dvl shader decoder: macroblocks
  * reconstructed by fragment shaders (IDCT, motion compensation, inverse zigzag
  * scan) on the 3D pipe.  This backend advertises MPEG-1/MPEG-2 and routes codec
