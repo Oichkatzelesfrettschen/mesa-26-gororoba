@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Attended native cell: submits the fixed TCL-bypass triangle to RS482
+ * Attended native cell: submits the fixed TCL-bypass triangle to RS485M
  * silicon through the native ICD and reports the output oracle's
  * verdict.  This program performs a live DRM_RADEON_CS and runs only
  * under the authorization and procedure in

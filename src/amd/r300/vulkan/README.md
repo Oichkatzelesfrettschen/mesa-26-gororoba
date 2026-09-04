@@ -184,7 +184,7 @@ are emitted in pipeline order ahead of the cell, the poison-model checker
 proves the stream establishes every clause itself, and the recorder,
 manifest tool, and harness reference all build the one byte-identical
 successor IB. The successor cell has rendered its predicted interior on
-RS482 with the exterior and canary rows clean (retained bundle
+RS485M with the exterior and canary rows clean (retained bundle
 `results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`
 in the steinmarder-r300 evidence tree;
 `docs/hardware/r3v-implementation-boundaries.md` carries the
@@ -435,7 +435,7 @@ and `R3V_NATIVE_PLAN_NONCE`): the planning pass under the drm-shim
 captures the shard's ordered submissions, `r3v_native_plan_tool
 compose` seals them with the run identities, and the device replays
 the plan alone, binding at the first submission to the DSO digest, the
-built source SHA prefix, the kernel and module identity, the RS482 PCI
+built source SHA prefix, the kernel and module identity, the RS485M PCI
 identity, the nonce, an empty evidence directory, and closed gates,
 admitting each submission's whole entry before any device-visible
 effect, holding the IB at the ioctl boundary to the admitted digest,

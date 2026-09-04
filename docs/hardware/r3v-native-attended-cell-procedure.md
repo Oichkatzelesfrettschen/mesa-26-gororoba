@@ -156,7 +156,7 @@ The run proceeds only when all of the following hold.
   production compiled profile, and its identity agrees with the loaded
   module. `Substrate admission` below carries the decision table and the
   transition this check refuses without.
-- The RS482 recovery stack is registered before the hazard gate opens. The
+- The RS485M recovery stack is registered before the hazard gate opens. The
   Radeon module is the deployed `radeon-unified-dkms` build, the SB600 TCO
   module is registered as `sp5100_tco`, the watchdog device and
   `sb600-guard` are present, and the wedge-recovery sysctls are loaded. Read

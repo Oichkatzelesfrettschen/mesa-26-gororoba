@@ -368,7 +368,7 @@ static void r300_init_states(struct pipe_context *pipe)
              * Static VAP setup since r300_emit_vs_state() is never called.
              * The resource word, including the HB_VERT_FPU probe, comes from the
              * validated config; the probe adjusts PVS_NUM_FPUS only and does not
-             * promote RS482 into the full hardware-TCL route.
+             * promote RS485M into the full hardware-TCL route.
              */
             OUT_CB_REG(R300_VAP_CNTL,
                        r300_hb_tcl_vap_cntl(&r300->screen->hb_tcl));

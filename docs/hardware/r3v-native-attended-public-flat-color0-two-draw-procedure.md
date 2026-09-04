@@ -174,7 +174,7 @@ canonical stream against the replication stream also fails the canonical check.
 `r3v-interpolation-lowering` refuses the direct route and selects replication for a partially
 clipped primitive.
 
-A delivered receipt proves end-to-end Vulkan `Flat` (RGBA) through RS482 GA provoking-vertex
+A delivered receipt proves end-to-end Vulkan `Flat` (RGBA) through RS485M GA provoking-vertex
 selection over color 0, judged against the replication oracle's expected images, on the reference
 triangle and the reference two-pass concatenation alone.  Hypothesis to record: the color 0 lane may
 carry lower precision than TEX0, a possibility the quarter-step alphas are built to tolerate without
@@ -213,7 +213,7 @@ the SB600 counter reported `armed verified 65535 65535 65369`,
 `disarmed verified 65362`, a 140 us guarded interval over
 `DRM_IOCTL_RADEON_CS` through fence completion, and `inactive` after.
 
-The receipt proves end-to-end Vulkan Flat, RGB and alpha, through RS482
+The receipt proves end-to-end Vulkan Flat, RGB and alpha, through RS485M
 GA provoking-vertex selection over color 0: the device-fetched carriers
 still held three distinct records per pass with the provoking first, so
 host replication did not run, and each target is byte-equal to the

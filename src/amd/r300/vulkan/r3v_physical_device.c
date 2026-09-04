@@ -67,7 +67,7 @@ r3v_chip_name_from_pci_device_id(uint32_t pci_device_id)
 }
 
 /* R3xx hardware limits are split between the Vulkan 1.0 physical-device
- * minimums the ICD must advertise and the smaller RS482 execution caps that
+ * minimums the ICD must advertise and the smaller RS485M execution caps that
  * the resource paths tile or reject at creation time.  The executable Mesa
  * r300g oracle is the execution cap; the Vulkan limit table is the API floor.
  *
@@ -76,7 +76,7 @@ r3v_chip_name_from_pci_device_id(uint32_t pci_device_id)
  *   "Mesa r300g <file>" src/gallium/drivers/r300/<file>.[ch] in this tree
  *   "Vulkan spec <ref>" Vulkan 1.4 specification section reference
  *
-    * Where the RS482 path has no single native 4096-wide render surface,
+    * Where the RS485M path has no single native 4096-wide render surface,
     * r3v presents the Vulkan floor through a 2560 hardware-backed span plus
     * a residual span.  Native r300g resources remain the fast path for images
     * that fit in one span. */
@@ -84,7 +84,7 @@ static void
 r3v_physical_device_init_limits(struct vk_properties *const props,
                                    uint64_t const gart_size_kb)
 {
-   /* Texture and image dimensions.  The RS482 render path accepts a 2560-wide
+   /* Texture and image dimensions.  The RS485M render path accepts a 2560-wide
     * hardware span; r3v composes the Vulkan 4096 floor from that fast path
     * plus a residual span when an image exceeds the single-span limit. */
    props->maxImageDimension1D = R3V_VK10_MIN_IMAGE_DIMENSION_1D;
@@ -178,8 +178,8 @@ r3v_physical_device_init_limits(struct vk_properties *const props,
    props->maxGeometryOutputVertices = 0;
    props->maxGeometryTotalOutputComponents = 0;
 
-   /* Fragment shader budget for the RS482/RS485 R3V target.
-    * R300-class RS482 fragment programs are constrained by the
+   /* Fragment shader budget for the RS485M R3V target.
+    * R300-class RS485M fragment programs are constrained by the
     * current Mesa r300 operational budget of 64 ALU instructions
     * (R300_PFS_INSTR_*), 32 TEX instructions, and 32 vec4 PFS_PARAM
     * constants (R300_PFS_PARAM_0..31).  Vulkan has no direct
@@ -1086,7 +1086,7 @@ r3v_GetPhysicalDeviceSparseImageFormatProperties2(
 }
 
 /* Fallback heap sizes when DRM_RADEON_GEM_INFO reports zero; the query is
- * the kernel's own gart_size / vram_size.  RS482/RS485 is UMA: the GART
+ * the kernel's own gart_size / vram_size.  RS485M is UMA: the GART
  * aperture and the BIOS-carved shared-VRAM partition overlap in physical
  * memory, so a probe needing the exact physical split must treat the two
  * heaps as one shared pool. */

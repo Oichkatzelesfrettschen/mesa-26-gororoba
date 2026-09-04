@@ -7,7 +7,7 @@ candidate pass carries the same bytes with one control word changed. The AMD R3x
 document defines `RS_INST.TEX_ADJ` (bit 22) as the choice between real and adjusted pixel centers
 for texture-coordinate sampling, and `GB_SELECT.W_SELECT` (bit 4, value 1 selecting 1.0) as the
 source of the outgoing 1/W "used to disable perspective correct colors/textures"; neither carries a
-retained silicon classification on RS482, so the probe treats each as an unidentified control word
+retained silicon classification on RS485M, so the probe treats each as an unidentified control word
 until a full pixel census against the registered interpolation models names it
 (`r300_rs_tex_adj_probe.h`). The mechanism is named for the bit under test, not for NoPerspective:
 only a census that lands on the affine model promotes a word into a direct NoPerspective contract.
@@ -69,7 +69,7 @@ digest from `--multi-pass-rs-w-select-probe`). The runner refuses a present prob
 object creation, since a gate would hand the interface a candidate instead of the route under
 test. The census, predictions, witness, and verdict are the probe's; an `affine` classification
 of the NoPerspective target under the perspective control premise is the receipt of the public
-Vulkan NoPerspective route on RS482, retained apart from the word-classification bundles. The
+Vulkan NoPerspective route on RS485M, retained apart from the word-classification bundles. The
 recording boundary is calibrated on the drm-shim under
 `r3v-native-noperspective-production-route-record`.
 
@@ -167,7 +167,7 @@ expected images (`expected_perspective.bin`, `expected_affine.bin`, `expected_pr
 4. `vkQueueSubmit` returns 0, the dmesg delta is empty, and the watchdog counter returns to
    `inactive` after the guarded interval.
 
-RS482 classified `RS_INST_TEX_ADJ` as `perspective-perturbed` (881 of 882 judged pixels
+RS485M classified `RS_INST_TEX_ADJ` as `perspective-perturbed` (881 of 882 judged pixels
 unchanged against the control, one within a quantum) and `GB_SELECT_W_SELECT` as `affine` (882 of
 882 within one quantum, zero perspective matches); the direct NoPerspective route in
 `r3v_interpolation_lowering.h` carries the W_SELECT word.

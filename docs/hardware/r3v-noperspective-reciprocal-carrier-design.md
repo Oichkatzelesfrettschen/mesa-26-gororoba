@@ -1,7 +1,7 @@
 # R3V NoPerspective reciprocal carrier design
 
 The direct GB W_SELECT route serves one NoPerspective interface shape on
-RS482: one full float vec4 at location 0 with no other varying, because
+RS485M: one full float vec4 at location 0 with no other varying, because
 `GB_SELECT.W_SELECT` is one word for the whole draw. Every other
 NoPerspective interface is created `R3V_INTERPOLATION_ROUTE_UNSUPPORTED`
 and refuses at record time (`r3v_interpolation_lowering.h`). This document

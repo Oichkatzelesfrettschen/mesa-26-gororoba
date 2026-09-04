@@ -14,7 +14,7 @@
  *
  * Measured SB600 counter properties, from the retained tick measurement
  * sb600-watchdog-tick-32768hz-pet-ineffective on the Dell Vostro 1000
- * (AMD K8 + RS482 + SB600):
+ * (AMD K8 + RS485M + SB600):
  *
  *   WatchDogCount tick        32.768 kHz
  *   WatchDogCount width       16 bits

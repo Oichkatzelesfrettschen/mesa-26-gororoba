@@ -1,4 +1,4 @@
-# RS482 Source and Release Authority Index
+# RS485M Source and Release Authority Index
 
 This document is the canonical cross-repository integration index for the
 RS485M (Vostro 1000, PCI 1002:5974) display and GPU stack. Each layer names its

@@ -1,4 +1,4 @@
-# RS482 R2VB producer-plan evidence architecture
+# RS485M R2VB producer-plan evidence architecture
 
 This document is the research-data architecture of the R2VB producer-plan
 campaign: the silicon substrate fully decomposed, the mechanism stack as it
@@ -73,7 +73,7 @@ Three decision components share one program identity:
   defect finding, not an application fault.
 
 The dual-authority overlap is the falsification engine of the campaign.  The
-RS482 shadow-parity corpus caught the plan's cv=0 cell rejecting a
+RS485M shadow-parity corpus caught the plan's cv=0 cell rejecting a
 computed-varying producer that the memo admitted; the root cause was a cell
 semantics mismatch (the plan applied whole-shader varying discipline to a
 cell that predicts the position pass alone), fixed by scoping the varying

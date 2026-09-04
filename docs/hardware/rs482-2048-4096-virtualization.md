@@ -1,8 +1,8 @@
-# RS482 2048-to-4096 virtualization capability matrix
+# RS485M 2048-to-4096 virtualization capability matrix
 
 One home for the family of representation-preserving transformations that
 present 2048-physical surfaces and rasters as 4096-scale logical objects on
-R300-class hardware (RS482, `1002:5974`).  Each domain uses the quotient/
+R300-class hardware (RS485M, `1002:5974`).  Each domain uses the quotient/
 remainder decomposition `i = q * 2048 + r` in the form its access semantics
 require; the domains share the radix, not one mechanism.
 
@@ -31,7 +31,7 @@ mixed-radix coordinate isomorphism preserving the flat byte stream.
   `r3v_queue.c` replay): logical optimal images up to 4096 per axis as a
   2x2 grid of 2048 tiles with per-tile viewport/scissor translation.
   Evidence: silicon -- 4096 image create, render-pass clear, and
-  tile-boundary copies proven on RS482; a general primitive crossing the
+  tile-boundary copies proven on RS485M; a general primitive crossing the
   seam under replay is source-supported with the geometry-seam probe still
   open.
 - R3V NEAREST sampling (partition lowered into the shader,
@@ -80,7 +80,7 @@ mixed-radix coordinate isomorphism preserving the flat byte stream.
 
 ## Value-exactness allowance
 
-The deviation stage is localized: the RS482 US source-operand read
+The deviation stage is localized: the RS485M US source-operand read
 delivers a negative nonzero input- or temporary-register value one FP24
 ULP smaller in magnitude, before the ABS/NEG source modifiers apply;
 positive operands, ALU computation, register writes, and exports are

@@ -9,7 +9,7 @@ the US and the color backend stores it into the poisoned carrier.  The
 producer cell establishes the carrier write from an embedded draw body, and
 the re-ingest cell establishes the fetch of GPU-written FLOAT_4 data.  The
 executed run below decides the exact F32 `FLOAT_2 + XY01` expansion question
-for its recorded RS482 identity; other format and route questions retain
+for its recorded RS485M identity; other format and route questions retain
 separate frontiers.
 
 The offline kernel-parser replay accepts the stream under the synthesized-lane
@@ -98,7 +98,7 @@ byte-exact -- (8.0, 0.75, 0.0, 1.0), (56.0, 1.0, 0.0, 1.0),
 (999.0, 2.0, 0.0, 1.0) -- with `expected_pass=1 tail_poison_pass=1
 vertex_intact=1 mismatched=0`, empty dmesg delta, fence retired.  The
 PSC synthesized-lane expansion of one fetched F32 `FLOAT_2` element
-under the `XY01` selector holds on PCI `1002:5974` RS482 for this exact
+under the `XY01` selector holds on PCI `1002:5974` RS485M for this exact
 packet and vertex extent.  Other widths, data types, selectors, and the
 public integrated delivery route remain separate evidence frontiers.  The
 release-build preflight for this run surfaced the

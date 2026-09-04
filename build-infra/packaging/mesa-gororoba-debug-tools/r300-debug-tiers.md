@@ -1,7 +1,7 @@
-# RS482/r300 GPU debug stack
+# RS485M/r300 GPU debug stack
 
-Four driver tiers plus the GPU instrumentation tool set, for r300/RS482 work on
-the radeon KMD (RS482 is the **radeon** kernel driver, not amdgpu -- every tool
+Four driver tiers plus the GPU instrumentation tool set, for r300/RS485M work on
+the radeon KMD (RS485M is the **radeon** kernel driver, not amdgpu -- every tool
 below targets radeon).  The tiers are numbered by RCA priority.
 
 ## The four driver tiers
@@ -71,7 +71,7 @@ Each paired with how it composes with the prime driver via the wrapper.
   fragment program (alu_end = the 64-ALU-budget check), `cs` the command stream,
   `vm` the virtual-memory map.  `RADEON_DEBUG=fp,cs mesa-gororoba-debug-asan-run <app>`.
 - **`umr` (umr-gororoba)**: register / ring / IP-block inspection over radeon.
-  The fork carries the RS482 ip_discovery-absent skip so it drives RS482 without
+  The fork carries the RS485M ip_discovery-absent skip so it drives RS485M without
   the navi discovery path.  `sudo umr -O bits -r rs480.rs480.<reg>` etc.
 - **`sudo dmesg`** (mandatory for GPU work, per AGENTS.md): the radeon CS validator
   rejects (`radeon: ... CS ...`) only show under sudo; discriminate a driver bug

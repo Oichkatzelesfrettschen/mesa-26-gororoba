@@ -6,7 +6,7 @@ three FLOAT_4 vertices into a poisoned GTT carrier, the publication tail
 retires the color write and syncs the engines, and the reference triangle
 draw re-binds that carrier through `3D_LOAD_VBPNTR` and renders into a
 sentinel-filled 64x64 target. The executed run below establishes this ordering
-for its recorded RS482 identity and exact concatenated stream. Public-route
+for its recorded RS485M identity and exact concatenated stream. Public-route
 composition remains a separate mechanism.
 
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the

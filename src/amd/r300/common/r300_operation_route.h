@@ -92,6 +92,7 @@ enum r300_operation_route_id {
    R300_OPERATION_ROUTE_RB3D_ROP_BITWISE_NOT,
 
    R300_OPERATION_ROUTE_RB2D_CONST_FILL,
+   R300_OPERATION_ROUTE_HOST_TRANSFER_CONST_FILL,
 
    R300_OPERATION_ROUTE_COUNT,
 };
@@ -159,7 +160,7 @@ enum r300_compute_verb_exactness {
 
 /* How strong a route's evidence is, saying nothing about what the evidence
  * is about: the subject is the scope enum below, and the two read together
- * or not at all.  SILICON_RETAINED: a retained RS482 bundle holds a bit- or
+ * or not at all.  SILICON_RETAINED: a retained RS485M bundle holds a bit- or
  * tolerance-exact delivery (the Gallium-mediated lane's raster-verb corpus,
  * retired with that lane; the bundle identities ride the commit message and
  * the findings corpus).  SOURCE_GROUNDED: the unit and encoding follow from
