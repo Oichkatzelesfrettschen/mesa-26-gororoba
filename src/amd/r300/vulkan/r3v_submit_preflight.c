@@ -307,7 +307,13 @@ r3v_route_gate_state_from_cache(const char *const *cached_values,
    memset(gate_state, 0, count * sizeof(*gate_state));
    if (cached_values == NULL)
       return true;
+   /* A route gate opens on the literal "1" and on nothing else.  The
+    * device's own reader already stores that value or NULL, and the rule is
+    * restated here because this is where a cached string becomes an open
+    * gate: an entry holding "0", "", or any other text would otherwise arm
+    * a hazardous route by being present. */
    for (uint32_t r = 0; r < R300_OPERATION_ROUTE_COUNT; r++)
-      gate_state[r] = cached_values[r] != NULL;
+      gate_state[r] = cached_values[r] != NULL &&
+                      strcmp(cached_values[r], "1") == 0;
    return true;
 }

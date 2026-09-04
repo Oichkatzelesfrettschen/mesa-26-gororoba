@@ -183,7 +183,10 @@ struct r3v_execution_provenance {
  * A record naming a route identity is held to that route's ledger row --
  * operation, executor, unit, and maturity -- because the ledger owns those
  * facts and a record carrying its own copies could describe a delivery no
- * route performs.  A host record that names no row leaves route_id NONE.
+ * route performs.  A host record that names no row leaves route_id NONE and
+ * keeps the ledger's zero values for the fields a row owns, so it asserts
+ * no unit and no maturity it cannot back, and a value outside either enum
+ * fails that comparison the same way.
  */
 bool r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
                                     enum r3v_execution_policy policy,

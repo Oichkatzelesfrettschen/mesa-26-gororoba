@@ -464,6 +464,47 @@ test_provenance(void)
    };
    assert(r3v_execution_provenance_valid(&anonymous, R3V_EXECUTION_AUTO,
                                          &reason));
+   /* An anonymous record claiming a device unit or a maturity asserts what
+    * no row assigns it. */
+   struct r3v_execution_provenance claimed = anonymous;
+   claimed.unit = R300_EXECUTION_UNIT_RB2D_FILL;
+   assert(!r3v_execution_provenance_valid(&claimed, R3V_EXECUTION_AUTO,
+                                          &reason));
+   claimed = anonymous;
+   claimed.route_state = R300_OPERATION_ROUTE_EXECUTING;
+   assert(!r3v_execution_provenance_valid(&claimed, R3V_EXECUTION_AUTO,
+                                          &reason));
+
+   /* An operation outside the catalog and an executor outside its enum
+    * each refuse: the first names nothing a route realizes, and the second
+    * would fall to the host branch and be compared against nothing.  A unit
+    * or maturity outside its enum refuses through the row comparison or the
+    * anonymous zero values above, which is why neither carries a bound of
+    * its own. */
+   struct r3v_execution_provenance wild = anonymous;
+   wild.operation_id = (enum r300_operation_id)R300_OPERATION_ID_COUNT;
+   assert(!r3v_execution_provenance_valid(&wild, R3V_EXECUTION_AUTO,
+                                          &reason));
+   wild = anonymous;
+   wild.executor = (enum r300_operation_route_executor)7;
+   assert(!r3v_execution_provenance_valid(&wild, R3V_EXECUTION_AUTO,
+                                          &reason));
+   wild = anonymous;
+   wild.unit = (enum r300_execution_unit)R300_EXECUTION_UNIT_COUNT;
+   assert(!r3v_execution_provenance_valid(&wild, R3V_EXECUTION_AUTO,
+                                          &reason));
+   wild = anonymous;
+   wild.route_state = (enum r300_operation_route_state)9;
+   assert(!r3v_execution_provenance_valid(&wild, R3V_EXECUTION_AUTO,
+                                          &reason));
+   wild = gpu_provenance();
+   wild.unit = (enum r300_execution_unit)R300_EXECUTION_UNIT_COUNT;
+   assert(!r3v_execution_provenance_valid(&wild, R3V_EXECUTION_AUTO,
+                                          &reason));
+   wild = gpu_provenance();
+   wild.route_state = (enum r300_operation_route_state)9;
+   assert(!r3v_execution_provenance_valid(&wild, R3V_EXECUTION_AUTO,
+                                          &reason));
 
    /* The submission flag and the phase state one fact, so a record short of
     * the ioctl entry reporting a submission refuses, and one past it

@@ -401,6 +401,21 @@ test_gate_state_from_cache(void)
    for (unsigned r = 0; r < R300_OPERATION_ROUTE_COUNT; r++)
       assert(gates[r] == (r == R300_OPERATION_ROUTE_RB2D_CONST_FILL));
 
+   /* The gate opens on the literal "1" and on nothing else: a cached value
+    * that is merely present arms no hazardous route. */
+   static const char *const closed[] = { "0",    "",  "true",
+                                         "yes",  "2", " 1",
+                                         "1 ",   "01" };
+   for (unsigned i = 0; i < sizeof(closed) / sizeof(closed[0]); i++) {
+      cached[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = closed[i];
+      memset(gates, true, sizeof(gates));
+      assert(r3v_route_gate_state_from_cache(cached, gates,
+                                             R300_OPERATION_ROUTE_COUNT));
+      for (unsigned r = 0; r < R300_OPERATION_ROUTE_COUNT; r++)
+         assert(!gates[r]);
+   }
+   cached[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = "1";
+
    /* An array short of the ledger cannot hold every identity, so the fill
     * refuses instead of leaving entries the selector would index. */
    assert(!r3v_route_gate_state_from_cache(cached, gates,

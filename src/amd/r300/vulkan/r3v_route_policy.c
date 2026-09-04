@@ -89,12 +89,23 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
       *reason = "provenance is absent";
       return false;
    }
-   if (p->operation_id == R300_OPERATION_ID_NONE) {
+   if (p->operation_id == R300_OPERATION_ID_NONE ||
+       (unsigned)p->operation_id >= R300_OPERATION_ID_COUNT) {
       *reason = "provenance names no operation";
       return false;
    }
    if (r3v_execution_phase_name(p->phase) == NULL) {
       *reason = "provenance phase outside the execution ladder";
+      return false;
+   }
+   /* The executor is bounded before it is read.  Everything below asks
+    * whether it is GPU, so a third value would fall to the host branch and
+    * be compared against nothing; the unit and the maturity need no bound
+    * of their own, because a record naming a route is compared field for
+    * field against its row and one naming none is held to the ledger's zero
+    * values, and an out-of-range value fails both. */
+   if ((unsigned)p->executor > R300_OPERATION_ROUTE_EXECUTOR_GPU) {
+      *reason = "provenance executor outside the executor enum";
       return false;
    }
 
@@ -128,6 +139,19 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
       }
       if (row->state != p->route_state) {
          *reason = "provenance maturity disagrees with its route row";
+         return false;
+      }
+   } else {
+      /* A record that names no route makes no claim a row could back, so it
+       * carries the ledger's zero values for the fields a row owns: the
+       * host unit and the unpromoted maturity.  A device unit or a
+       * promotion here would assert what no route row assigns it. */
+      if (p->unit != R300_EXECUTION_UNIT_HOST) {
+         *reason = "provenance names no route yet claims a device unit";
+         return false;
+      }
+      if (p->route_state != R300_OPERATION_ROUTE_CANDIDATE) {
+         *reason = "provenance names no route yet claims a maturity";
          return false;
       }
    }

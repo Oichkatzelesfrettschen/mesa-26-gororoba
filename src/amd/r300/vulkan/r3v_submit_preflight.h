@@ -234,10 +234,12 @@ bool r3v_route_table_admits_device(const struct r300_operation_route_row *t,
                                    uint32_t count, const char **reason);
 
 /* Fills gate_state[] from the device's cached gate values: an entry holds
- * true when that route's gate was read at the exact opt-in value.  count is
- * the array length in both directions and must cover every route identity,
- * so the selector's index is in range by construction.  Returns false when
- * the array is too short to hold the ledger. */
+ * true when that route's cached value is the literal "1", the exact opt-in
+ * every route gate takes.  A cached "0", an empty string, and any other text
+ * leave the gate closed, so a value's presence is not consent.  count is the
+ * array length in both directions and must cover every route identity, so
+ * the selector's index is in range by construction.  Returns false when the
+ * array is too short to hold the ledger. */
 bool r3v_route_gate_state_from_cache(const char *const *cached_values,
                                      bool *gate_state, uint32_t count);
 
