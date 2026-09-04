@@ -61,17 +61,26 @@ test_policy_values(void)
           R3V_EXECUTION_GPU_ONLY);
    assert(r3v_execution_policy_from_value("cpu_reference") ==
           R3V_EXECUTION_CPU_REFERENCE);
-   /* An unrecognized value leaves the default rather than opening a
-    * stricter or looser path by accident. */
-   assert(r3v_execution_policy_from_value("GPU_ONLY") == R3V_EXECUTION_AUTO);
+   /* An unset or empty value is the default an operator who asked for
+    * nothing gets; every other unmatched value names no policy, so the
+    * device refuses it rather than running under AUTO. */
    assert(r3v_execution_policy_from_value("") == R3V_EXECUTION_AUTO);
+   assert(r3v_execution_policy_from_value("auto") == R3V_EXECUTION_AUTO);
+   assert(r3v_execution_policy_from_value("GPU_ONLY") ==
+          R3V_EXECUTION_POLICY_INVALID);
+   assert(r3v_execution_policy_from_value("gpu_onl") ==
+          R3V_EXECUTION_POLICY_INVALID);
+   assert(r3v_execution_policy_from_value("gpu_only ") ==
+          R3V_EXECUTION_POLICY_INVALID);
+   assert(strcmp(r3v_execution_policy_name(R3V_EXECUTION_POLICY_INVALID),
+                 "invalid") == 0);
    assert(r3v_execution_policy_from_value(" gpu_only") ==
-          R3V_EXECUTION_AUTO);
+          R3V_EXECUTION_POLICY_INVALID);
 
-   for (unsigned i = 0; i <= R3V_EXECUTION_CPU_REFERENCE; i++)
+   for (unsigned i = 0; i <= R3V_EXECUTION_POLICY_INVALID; i++)
       assert(r3v_execution_policy_name((enum r3v_execution_policy)i) != NULL);
    assert(r3v_execution_policy_name(
-             (enum r3v_execution_policy)(R3V_EXECUTION_CPU_REFERENCE + 1)) ==
+             (enum r3v_execution_policy)(R3V_EXECUTION_POLICY_INVALID + 1)) ==
           NULL);
    for (unsigned i = 0; i <= R3V_ROUTE_DECISION_REFUSE; i++)
       assert(r3v_route_decision_name((enum r3v_route_decision)i) != NULL);

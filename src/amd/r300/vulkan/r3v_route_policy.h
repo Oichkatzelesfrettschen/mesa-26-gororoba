@@ -54,13 +54,19 @@ enum r3v_execution_policy {
    R3V_EXECUTION_AUTO = 0,
    R3V_EXECUTION_GPU_ONLY,
    R3V_EXECUTION_CPU_REFERENCE,
+   /* A value that names no policy.  Device creation refuses it rather than
+    * running under a policy the operator did not ask for. */
+   R3V_EXECUTION_POLICY_INVALID,
 };
 
-/* Reads the policy a value names, defaulting to AUTO.  The values are the
- * enum's own lowercase names; anything else is AUTO, so a typo leaves the
- * default rather than opening a stricter or looser path.  The caller
- * supplies the value it cached, which keeps the environment read at device
- * creation beside the route gates.
+/* Reads the policy a value names.  The values are the enum's own lowercase
+ * names, matched exactly; an unset or empty value is AUTO, the default an
+ * operator who asked for nothing gets.  Any other value names no policy and
+ * reads as R3V_EXECUTION_POLICY_INVALID, because "gpu_onl" resolving to AUTO
+ * would let host fallback run the work an operator required on the GPU and
+ * would carry that into the evidence a run produces.  The caller supplies the
+ * value it cached, which keeps the environment read at device creation beside
+ * the route gates.
  */
 enum r3v_execution_policy r3v_execution_policy_from_value(const char *value);
 

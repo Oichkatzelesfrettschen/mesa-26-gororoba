@@ -11,20 +11,23 @@
 enum r3v_execution_policy
 r3v_execution_policy_from_value(const char *value)
 {
-   if (value == NULL)
+   if (value == NULL || value[0] == '\0')
+      return R3V_EXECUTION_AUTO;
+   if (strcmp(value, "auto") == 0)
       return R3V_EXECUTION_AUTO;
    if (strcmp(value, "gpu_only") == 0)
       return R3V_EXECUTION_GPU_ONLY;
    if (strcmp(value, "cpu_reference") == 0)
       return R3V_EXECUTION_CPU_REFERENCE;
-   return R3V_EXECUTION_AUTO;
+   return R3V_EXECUTION_POLICY_INVALID;
 }
 
 const char *
 r3v_execution_policy_name(enum r3v_execution_policy p)
 {
-   static const char *const names[] = { "auto", "gpu_only", "cpu_reference" };
-   return (unsigned)p <= R3V_EXECUTION_CPU_REFERENCE ? names[p] : NULL;
+   static const char *const names[] = { "auto", "gpu_only", "cpu_reference",
+                                        "invalid" };
+   return (unsigned)p <= R3V_EXECUTION_POLICY_INVALID ? names[p] : NULL;
 }
 
 const char *

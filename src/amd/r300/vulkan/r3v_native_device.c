@@ -217,6 +217,22 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->manifest_dir = r3v_native_manifest_dir();
    r3v_native_device_refresh_delivery_gates(device);
 
+   /* A value naming no policy refuses the device.  Reading it as AUTO would
+    * let host fallback run the work an operator required on the GPU, and the
+    * run would carry that into its evidence unremarked. */
+   if (device->execution_policy == R3V_EXECUTION_POLICY_INVALID) {
+      const char *declared = getenv("R3V_NATIVE_EXECUTION_POLICY");
+      vk_queue_finish(&device->queue.vk);
+      radeon_drm_vk_device_finish(&device->drm);
+      vk_device_finish(&device->vk);
+      vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+      return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: R3V_NATIVE_EXECUTION_POLICY names no "
+                       "policy: \"%s\"; the values are auto, gpu_only, and "
+                       "cpu_reference",
+                       declared != NULL ? declared : "");
+   }
+
    /* Plan capture opens the CS ioctl with the hazard gate closed, so it
     * exists only under the preloaded drm-shim and only with the gate
     * closed; a set capture path outside that shape refuses the device.
