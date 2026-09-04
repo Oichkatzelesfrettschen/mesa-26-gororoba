@@ -64,10 +64,12 @@ RETIRED_CHIP_IDENTITY = re.compile(
 _VOSTRO = r"[Vv]ostro(?:[- ]?1000(?![0-9])|(?![- ]?[0-9]))"
 # RS480 and RS482 are both retired names for this platform: the kernel
 # die class covers RS480/RS482/RS485 alike, so binding the board to
-# either one names a chip it does not carry.  "ATI RS480" is the
-# renderer string the driver reports, and CHIP_RS480 is the upstream
-# enum, so the word boundary and the ATI lookbehind leave both intact.
-_RS482 = r"(?<!ATI )RS48[02](?![M/])"
+# either one names a chip it does not carry.  A quoted token is an
+# identifier rather than a claim, so the renderer string `"ATI RS480"`
+# and a quoted part name stand; CHIP_RS480 keeps the upstream spelling
+# through the word boundary, since an underscore opens none.  The quote
+# is what exempts, so an unquoted "carries ATI RS480" still reports.
+_RS482 = r"(?<![\"\x27`])(?<![\"\x27`]ATI )RS48[02](?![M/])"
 _BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
 _CLAUSE = r"[^.;\n]"
 # The gap a bind verb reaches into its target crosses shapes that never
@@ -151,7 +153,7 @@ _OBSERVED = (
 # the run, never the bare die, so RS485 reads the same as RS480/RS482
 # here; the M-suffix, slash-family, and "-family"/" family" exclusions
 # already carried by RS480/RS482 apply identically to RS485.
-_PART = r"(?<!ATI )RS48[025](?![M/]|\s*/\s*RS|[- ]family)"
+_PART = r"(?<![\"\x27`])(?<![\"\x27`]ATI )RS48[025](?![M/]|\s*/\s*RS|[- ]family)"
 # A noun that names a board rather than a die: a part token in front of one
 # is this platform, whatever verb the sentence uses.
 _BOARD_NOUN = r"(?:host|board|target|silicon|specimen|machine|system)"
@@ -1495,9 +1497,11 @@ def self_test() -> int:
         ("docs/example.md", "The Vostro 1000 carries RS482.\n", True),
         (
             "docs/example.md",
-            "The renderer string reads ATI RS480 on this board.\n",
+            'The renderer string is "ATI RS480" on this board.\n',
             False,
         ),
+        ("docs/example.md", "The Vostro 1000 carries ATI RS480.\n", True),
+        ("docs/example.md", "The ATI RS480 host passes.\n", True),
         (
             "docs/example.md",
             "CHIP_RS480 covers the RS480/RS482/RS485 die class.\n",
