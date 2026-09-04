@@ -132,6 +132,25 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # Route policy and phased provenance: a closed gate reaches the host,
+  # GPU_ONLY refuses rather than falling back, a use mask naming two
+  # purposes reaches neither scan, and the six-state execution ladder
+  # advances one state at a time.  Selection reads the device's cached gate
+  # array, so the test drives that array instead of an environment.
+  test(
+    'r3v-route-policy',
+    executable(
+      'r3v_route_policy_test',
+      files('tests/r3v_route_policy_test.c', 'r3v_route_policy.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : libr300_common,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # The SPIR-V admitters name every refused construct through a string
   # literal; the ledger enumerates that rejection surface so a new or
   # removed reason reports as a ledger movement.
@@ -198,6 +217,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_route_policy.c',
   'r3v_interpolation_lowering.c',
   'r3v_post_vs_lowering.c',
   'r3v_shader_interface.c',
@@ -327,6 +347,7 @@ if with_tests
       'r3v_native_reference_spirv.h',
       'r3v_physical_device.h',
       'r3v_private.h',
+      'r3v_route_policy.h',
       ),
     depends : r3v_entrypoints,
     suite : ['r3v'],
