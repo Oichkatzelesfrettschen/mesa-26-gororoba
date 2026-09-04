@@ -263,6 +263,22 @@ same strings at 0x86 and 0x1a7.
     capture device it builds its own plan with, so half its arms carried
     an undeclared board.
 
+## Unexplained tool output, bounded
+
+    distcc reported a remote compile failure and a successful local retry
+    on two files in one of four profile builds, flagging the exit-status
+    disagreement. The two files are exactly the two that include
+    <stdatomic.h>. That message compares exit status rather than object
+    bytes, and the object used is the local one, so the build is sound.
+
+    The toolchain-mismatch hypothesis is falsified: both hosts run clang
+    22.1.8 and resolve /usr/lib/clang/22/include/stdatomic.h. The cause is
+    undetermined and the occurrence is intermittent -- one build in four,
+    absent from the profile-3, profile-5, and repeated profile-4 runs.
+    Intermittence is the reason it stays open rather than the reason to
+    close it. Evidence builds set distcc off, so this cannot reach a
+    qualification verdict either way.
+
 ## Standing stop lines
 
     No recursive rs482 -> RS485M rename. Four populations: platform claims
