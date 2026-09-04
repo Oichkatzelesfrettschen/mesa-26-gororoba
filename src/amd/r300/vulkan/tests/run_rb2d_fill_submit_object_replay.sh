@@ -14,6 +14,11 @@
 # code, and holds every mutation to the class the kernel-derived parser
 # gives it.
 #
+# Every mutation is a byte rewrite this script performs itself and proves
+# by cmp against the original before the replay tool sees it, so an
+# ACCEPT verdict on a mutated stream is a verdict on changed bytes and
+# never on a flag the tool ignored.
+#
 # The parser owns three things on this stream: the PACKET0 register
 # admission (r300_packet0_check over the safe-register bitmap), the
 # relocation protocol (a PACKET3 NOP after DST_PITCH_OFFSET), and the
@@ -231,7 +236,9 @@ if validate_submit_manifest "${workdir}/bad_completion.json" \
 fi
 
 # The stream's own layout, found by walking it rather than hard-coded, so
-# the mutations below name the dword they rewrite by register.
+# the mutations below name the dword they rewrite by register.  An absent
+# register leaves the index empty, which refuses below rather than
+# degrading into an arithmetic default.
 ib="${evidence}/ib.bin"
 find_payload() {
     python3 - "${ib}" "$1" "${2:-1}" <<'PY'
@@ -260,6 +267,12 @@ while i < len(words):
 sys.exit(1)
 PY
 }
+require_index() {
+    if [ -z "$2" ]; then
+        echo "the stream carries no $1" >&2
+        exit 1
+    fi
+}
 dst_pitch_offset=0x142c
 sc_bottom_right=0x16f0
 dp_cntl=0x16c0
@@ -267,14 +280,27 @@ dst_y_x=0x1438
 dst_width_height=0x1598
 dstcache_ctlstat=0x1714
 wait_until=0x1720
-reloc_payload=$(( $(find_payload ${dst_pitch_offset}) + 2 ))
-reloc_header=$(( reloc_payload - 1 ))
-dp_cntl_header=$(( $(find_payload ${dp_cntl}) - 1 ))
-dstcache_header=$(( $(find_payload ${dstcache_ctlstat}) - 1 ))
-second_rect_y_x=$(find_payload ${dst_y_x} 2)
-second_rect_size=$(find_payload ${dst_width_height} 2)
-ib_dwords=$(( $(wc -c < "${ib}") / 4 ))
-last_wait=$(( $(find_payload ${wait_until}) - 1 ))
+pitch_index=$(find_payload ${dst_pitch_offset} || :)
+require_index "DST_PITCH_OFFSET write" "${pitch_index}"
+reloc_payload=$(( pitch_index + 2 ))
+reloc_header=$(( pitch_index + 1 ))
+scissor_index=$(find_payload ${sc_bottom_right} || :)
+require_index "SC_BOTTOM_RIGHT write" "${scissor_index}"
+dp_cntl_index=$(find_payload ${dp_cntl} || :)
+require_index "DP_CNTL write" "${dp_cntl_index}"
+dp_cntl_header=$(( dp_cntl_index - 1 ))
+dstcache_index=$(find_payload ${dstcache_ctlstat} || :)
+require_index "RB2D_DSTCACHE_CTLSTAT write" "${dstcache_index}"
+dstcache_header=$(( dstcache_index - 1 ))
+second_rect_y_x=$(find_payload ${dst_y_x} 2 || :)
+require_index "second DST_Y_X write" "${second_rect_y_x}"
+second_rect_size=$(find_payload ${dst_width_height} 2 || :)
+require_index "second DST_WIDTH_HEIGHT write" "${second_rect_size}"
+wait_index=$(find_payload ${wait_until} || :)
+require_index "WAIT_UNTIL write" "${wait_index}"
+ib_bytes=$(wc -c < "${ib}")
+ib_dwords=$(( ib_bytes / 4 ))
+last_wait=$(( wait_index - 1 ))
 if [ "${last_wait}" -ne $(( ib_dwords - 2 )) ]; then
     echo "the final WAIT_UNTIL is not the stream's last packet" >&2
     exit 1
@@ -284,7 +310,7 @@ fi
 # admitted by name in the parser's own trace.
 "${R3V_CS_TRACK_REPLAY_TOOL}" --verbose "${workdir}/bundle.txt" "${ib}" \
     > "${workdir}/good.txt" 2>&1
-cat "${workdir}/good.txt" | tail -1
+tail -1 "${workdir}/good.txt"
 case "$(tail -1 "${workdir}/good.txt")" in
     *"relocs=2 "*"verdict=ACCEPT-NO-DRAW"*) ;;
     *)
@@ -314,63 +340,113 @@ admitted "rectangle registers" 0x1438 0x1598
 admitted "destination cache flush" 0x1714
 admitted "wait state" 0x1720
 
+# rewrite OUT IDX=VAL...: the original stream with the named dwords
+# replaced; truncate OUT NDW: its first NDW dwords; extend OUT: one zero
+# dword appended.  Each output must differ from the original, or the
+# mutation did not happen and the verdict below would be the original's.
+rewrite() {
+    out="$1"; shift
+    python3 - "${ib}" "${out}" "$@" <<'PY'
+import struct, sys
+data = bytearray(open(sys.argv[1], 'rb').read())
+for edit in sys.argv[3:]:
+    index, value = edit.split('=')
+    index = int(index, 0)
+    struct.pack_into('<I', data, index * 4, int(value, 0) & 0xFFFFFFFF)
+open(sys.argv[2], 'wb').write(data)
+PY
+    mutated "${out}"
+}
+truncate_to() {
+    python3 -c 'import sys; d=open(sys.argv[1],"rb").read(); open(sys.argv[2],"wb").write(d[:int(sys.argv[3])*4])' \
+        "${ib}" "$1" "$2"
+    mutated "$1"
+}
+extend() {
+    python3 -c 'import sys; d=open(sys.argv[1],"rb").read(); open(sys.argv[2],"wb").write(d+b"\0\0\0\0")' \
+        "${ib}" "$1"
+    mutated "$1"
+}
+mutated() {
+    if cmp -s "${ib}" "$1"; then
+        echo "mutation left the stream unchanged: $1" >&2
+        exit 1
+    fi
+}
+
 # Every mutation, held to the class the kernel-derived parser gives it.
 verdict_of() {
     out=$("$@" 2>&1) && :
-    printf '%s\n' "${out}" | grep -o 'verdict=[A-Z-]*' | head -1
+    printf '%s\n' "${out}" | sed -n 's/.*\(verdict=[A-Z-]*\).*/\1/p' | head -1
 }
 expect() {
-    want="$1"; label="$2"; shift 2
-    got=$(verdict_of "$@")
-    printf '%-10s %-48s %s\n' "${want}" "${label}" "${got}"
+    want="$1"; label="$2"; bundle="$3"; stream="$4"
+    got=$(verdict_of "${R3V_CS_TRACK_REPLAY_TOOL}" "${bundle}" "${stream}")
+    printf '%-14s %-48s %s\n' "${want}" "${label}" "${got}"
     if [ "${got}" != "verdict=${want}" ]; then
         echo "${label}: expected verdict=${want}, got '${got}'" >&2
         exit 1
     fi
 }
-T="${R3V_CS_TRACK_REPLAY_TOOL}"
 B="${workdir}/bundle.txt"
+W="${workdir}"
 echo "parser-owned mutations (REJECT):"
-expect REJECT "missing relocation (NOP -> PACKET0 SC_TOP_LEFT)" \
-    "$T" --set-dword "${reloc_header}=0x000005bb" \
-         --set-dword "${reloc_payload}=0" "$B" "${ib}"
-head -c $(( (ib_dwords - 1) * 4 )) "${ib}" > "${workdir}/truncated.bin"
-expect REJECT "truncated packet (final dword dropped)" \
-    "$T" "$B" "${workdir}/truncated.bin"
-{ cat "${ib}"; printf '\0\0\0\0'; } > "${workdir}/extra.bin"
-expect REJECT "extra packet payload appended" "$T" "$B" "${workdir}/extra.bin"
-expect REJECT "wrong destination-cache register (0x1430)" \
-    "$T" --set-dword "${dstcache_header}=0x0000050c" "$B" "${ib}"
-expect REJECT "forbidden register in place of DP_CNTL (0x1430)" \
-    "$T" --set-dword "${dp_cntl_header}=0x0000050c" "$B" "${ib}"
+rewrite "$W/no-reloc.bin" "${reloc_header}=0x000005bb" "${reloc_payload}=0"
+expect REJECT "missing relocation (NOP -> PACKET0 SC_TOP_LEFT)" "$B" \
+    "$W/no-reloc.bin"
+truncate_to "$W/truncated.bin" $(( ib_dwords - 1 ))
+expect REJECT "truncated packet (final dword dropped)" "$B" "$W/truncated.bin"
+extend "$W/extra.bin"
+expect REJECT "extra packet payload appended" "$B" "$W/extra.bin"
+rewrite "$W/bad-dstcache.bin" "${dstcache_header}=0x0000050c"
+expect REJECT "wrong destination-cache register (0x1430)" "$B" \
+    "$W/bad-dstcache.bin"
+rewrite "$W/bad-dp-cntl.bin" "${dp_cntl_header}=0x0000050c"
+expect REJECT "forbidden register in place of DP_CNTL (0x1430)" "$B" \
+    "$W/bad-dp-cntl.bin"
 
 echo "kernel-transparent mutations (ACCEPT-NO-DRAW; Mesa-owned refusals):"
-expect ACCEPT-NO-DRAW "wrong relocation target (completion object)" \
-    "$T" --set-dword "${reloc_payload}=1" "$B" "${ib}"
+rewrite "$W/wrong-reloc.bin" "${reloc_payload}=1"
+expect ACCEPT-NO-DRAW "wrong relocation target (completion object)" "$B" \
+    "$W/wrong-reloc.bin"
 {
     echo "family rs480"
     sed -n 's/^bo 1 /bo 0 /p' "$B"
     sed -n 's/^bo 0 /bo 1 /p' "$B"
-} > "${workdir}/swapped-bundle.txt"
+} > "$W/swapped-bundle.txt"
+if cmp -s "$B" "$W/swapped-bundle.txt"; then
+    echo "bundle swap left the bundle unchanged" >&2
+    exit 1
+fi
 expect ACCEPT-NO-DRAW "wrong relocation order (swapped bundle)" \
-    "$T" "${workdir}/swapped-bundle.txt" "${ib}"
-expect ACCEPT-NO-DRAW "wrong pitch field (pitch 0)" \
-    "$T" --set-reg "${dst_pitch_offset}=0x00000000" "$B" "${ib}"
+    "$W/swapped-bundle.txt" "${ib}"
+rewrite "$W/pitch-zero.bin" "${pitch_index}=0x00000000"
+expect ACCEPT-NO-DRAW "wrong pitch field (pitch 0)" "$B" "$W/pitch-zero.bin"
+rewrite "$W/base-past.bin" "${pitch_index}=0x0100ffff"
 expect ACCEPT-NO-DRAW "wrong destination base (offset past the object)" \
-    "$T" --set-reg "${dst_pitch_offset}=0x0100ffff" "$B" "${ib}"
-expect ACCEPT-NO-DRAW "rectangle past the safe scissor (y 0x2000)" \
-    "$T" --set-dword "${second_rect_y_x}=0x20000000" "$B" "${ib}"
-expect ACCEPT-NO-DRAW "rectangle past the object (height 0x1fff)" \
-    "$T" --set-dword "${second_rect_size}=0x00401fff" "$B" "${ib}"
-expect ACCEPT-NO-DRAW "scissor widened past the safe bound" \
-    "$T" --set-reg "${sc_bottom_right}=0x20002000" "$B" "${ib}"
-expect ACCEPT-NO-DRAW "bad WAIT_UNTIL (0xffffffff)" \
-    "$T" --set-reg "${wait_until}=0xffffffff" "$B" "${ib}"
-head -c $(( last_wait * 4 )) "${ib}" > "${workdir}/no-wait.bin"
-expect ACCEPT-NO-DRAW "stream truncated before the final wait" \
-    "$T" "$B" "${workdir}/no-wait.bin"
+    "$B" "$W/base-past.bin"
+rewrite "$W/rect-scissor.bin" "${second_rect_y_x}=0x20000000"
+expect ACCEPT-NO-DRAW "rectangle past the safe scissor (y 0x2000)" "$B" \
+    "$W/rect-scissor.bin"
+rewrite "$W/rect-object.bin" "${second_rect_size}=0x00401fff"
+expect ACCEPT-NO-DRAW "rectangle past the object (height 0x1fff)" "$B" \
+    "$W/rect-object.bin"
+rewrite "$W/scissor-wide.bin" "${scissor_index}=0x20002000"
+expect ACCEPT-NO-DRAW "scissor widened past the safe bound" "$B" \
+    "$W/scissor-wide.bin"
+rewrite "$W/bad-wait.bin" "${wait_index}=0xffffffff"
+expect ACCEPT-NO-DRAW "bad WAIT_UNTIL (0xffffffff)" "$B" "$W/bad-wait.bin"
+truncate_to "$W/no-wait.bin" "${last_wait}"
+expect ACCEPT-NO-DRAW "stream truncated before the final wait" "$B" \
+    "$W/no-wait.bin"
+sed 's/^bo 0 role=\([a-z]*\) size=[0-9]*/bo 0 role=\1 size=1024/' "$B" \
+    > "$W/small-bundle.txt"
+if cmp -s "$B" "$W/small-bundle.txt"; then
+    echo "bundle resize left the bundle unchanged" >&2
+    exit 1
+fi
 expect ACCEPT-NO-DRAW "destination object undersized (1024 bytes)" \
-    "$T" --set-bo-size 0=1024 "$B" "${ib}"
+    "$W/small-bundle.txt" "${ib}"
 
 echo "rb2d fill submit-object replay: retained bytes ACCEPT-NO-DRAW;" \
      "parser-owned mutations reject; the 2D destination geometry passes" \

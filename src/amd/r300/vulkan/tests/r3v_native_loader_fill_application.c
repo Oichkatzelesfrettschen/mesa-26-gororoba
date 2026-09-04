@@ -194,8 +194,8 @@ main(int argc, char **argv)
    if (!env_number("R3V_LOADER_FILL_VALUE", CELL_FILL_VALUE, &fill_value) ||
        !env_number("R3V_LOADER_FILL_OFFSET", CELL_FILL_OFFSET, &fill_offset) ||
        !env_number("R3V_LOADER_FILL_BYTES", CELL_FILL_BYTES, &fill_bytes) ||
-       fill_value > UINT32_MAX || fill_offset + fill_bytes > CELL_ALLOCATION_BYTES ||
-       fill_bytes == 0) {
+       fill_value > UINT32_MAX || fill_offset > CELL_ALLOCATION_BYTES ||
+       fill_bytes == 0 || fill_bytes > CELL_ALLOCATION_BYTES - fill_offset) {
       fprintf(stderr, "fill fixture is malformed or outside the cell\n");
       return 2;
    }

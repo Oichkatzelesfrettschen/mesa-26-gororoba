@@ -30,6 +30,15 @@
 # The wrong-write-domain, wrong-relocation-site, and wrong-pitch arms are
 # not reachable from the public API -- the route owns those fields -- and
 # r3v-native-fill-route mutates them in process.
+#
+# What the public API shows of a refusal is one bit: the common queue
+# layer marks the queue lost and returns VK_ERROR_DEVICE_LOST for any
+# failure the driver's submit reports, so every arm below observes that
+# result, an unmoved shim counter, and an unspent directory.  Each arm is
+# therefore a one-variable experiment against the armed leg -- the same
+# process shape, one declared fact changed -- which proves the fact is
+# necessary for admission; which gate refused it is named in process by
+# r3v-native-fill-route and r3v-native-rb2d-fill-arming-runner.
 
 import json
 import os
@@ -119,7 +128,9 @@ class Leg:
         present = sorted(name for name in RETAINED
                          if os.path.exists(os.path.join(evidence, name))) \
             if os.path.isdir(evidence) else []
-        print(f"{label}: status {result.returncode}, retained {present}")
+        print(f"{label}: status {result.returncode}, "
+              f"submit {field(result.stdout, 'submit_result')}, "
+              f"retained {present}")
         return result, evidence, present
 
 
@@ -127,6 +138,9 @@ def require_refused(label, result, present):
     if result.returncode != 0:
         fail(f"{label}: application status {result.returncode}\n"
              f"{result.stdout}\n{result.stderr}")
+    if field(result.stdout, "submit_result") != "VK_ERROR_DEVICE_LOST":
+        fail(f"{label}: the loader saw {field(result.stdout, 'submit_result')}"
+             f" rather than the queue-lost refusal")
     if field(result.stdout, "shim_cs_ioctls") != "0":
         fail(f"{label}: the shim observed a CS")
     if present:
@@ -289,9 +303,10 @@ def main():
         result, _, present = leg.run(
             "wrong ICD DSO", "submitted", declare=declaration,
             extra={"R3V_EXPECTED_ICD_DSO": "/no/such/libvulkan_r3v.so"})
-        if result.returncode != 2 or present:
-            fail("wrong ICD DSO: the application did not refuse as a fixture "
-                 "failure before recording")
+        if result.returncode != 2 or present or \
+                "the loader did not map" not in result.stderr:
+            fail("wrong ICD DSO: the application did not refuse on the "
+                 "mapped DSO before recording")
 
         # The host path over the protected mapping faults: the protection
         # judges stores.  The same path over a writable mapping fills the
