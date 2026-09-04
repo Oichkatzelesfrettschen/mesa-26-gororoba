@@ -413,6 +413,30 @@ hostname as a fixture argument in five places. A test that needs a host
 takes a placeholder; this is the one site where the hostname reads as
 environment state rather than a citation.
 
+## Vocabulary: name the mechanism, not the machine
+
+Operator decision. Machining metaphors leave the prose and the tree. The
+word they replace is the mechanism the thing performs.
+
+    r3v_rename_ratchet.py     -> r3v_retired_name_check.py
+    r3v-rename-ratchet        -> r3v-retired-name-check
+    r3v-rename-ratchet-selftest -> r3v-retired-name-check-selftest
+
+The rename reaches the test's own docstring, its SELF path constant, its
+usage line, its temporary-directory prefix, the rename allowlist that
+cites it, and three comments elsewhere that used the metaphor for
+unrelated mechanisms. SELF is the one that would have broken quietly: the
+check scans for its own path, so a rename without it leaves the check
+hunting a file that no longer exists.
+
+The 86 citations inside the generated review-thread corpora keep the old
+path. They record what a reviewer pointed at, the way a sealed bundle
+name records what was sealed.
+
+`gate` stays. It is the doctrine's own word for the safety boundary --
+fail-closed gates, the hazard gate, gated hazardous execution paths --
+and it governs the stop lines below.
+
 ## Standing stop lines
 
     No recursive rs482 -> RS485M rename. Four populations: platform claims
