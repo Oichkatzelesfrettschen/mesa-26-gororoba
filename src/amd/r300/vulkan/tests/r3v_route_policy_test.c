@@ -19,6 +19,8 @@
 
 #include "r3v_route_policy.h"
 
+#include "util/macros.h"
+
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -632,10 +634,64 @@ test_host_transfer_const_fill_row(void)
    assert(selected == row);
 }
 
+/* Automatic selection is a separate fact from a route's maturity.  A
+ * receipt promotes a route; it does not measure where the device beats the
+ * host store loop, and AUTO takes an unnamed route only on that
+ * measurement.  The predicate is calibrated over an explicit admitted set,
+ * so both answers are exercised, and the shipped set is empty because no
+ * crossover has been measured for any route.
+ */
+static void
+test_automatic_selection_is_separate_from_maturity(void)
+{
+   static const enum r300_operation_route_id admitted[] = {
+      R300_OPERATION_ROUTE_RB2D_CONST_FILL,
+   };
+   assert(r3v_route_automatic_selection_admitted_in(
+      admitted, ARRAY_SIZE(admitted), R300_OPERATION_ROUTE_RB2D_CONST_FILL));
+   assert(!r3v_route_automatic_selection_admitted_in(
+      admitted, ARRAY_SIZE(admitted),
+      R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP));
+   assert(!r3v_route_automatic_selection_admitted_in(NULL, 1,
+      R300_OPERATION_ROUTE_RB2D_CONST_FILL));
+
+   /* The shipped set: no route is taken by automatic selection, the RB2D
+    * fill route included, so its only door is its own gate. */
+   uint32_t rows = 0;
+   const struct r300_operation_route_row *table =
+      r300_operation_route_rows(&rows);
+   for (uint32_t i = 0; i < rows; i++) {
+      assert(!r3v_route_automatic_selection_admitted(table[i].route_id));
+   }
+   assert(!r3v_route_automatic_selection_admitted(R300_OPERATION_ROUTE_NONE));
+}
+
+/* The withheld-automatic-selection branch governs a promoted route reached
+ * with no gate of its own.  Every GPU row the ledger carries is gated, so
+ * that branch has no live subject; this holds that fact rather than leaving
+ * it an accident, and the first ungated GPU promotion fails here and makes
+ * the branch live.
+ */
+static void
+test_every_gpu_row_is_gated(void)
+{
+   uint32_t rows = 0;
+   const struct r300_operation_route_row *table =
+      r300_operation_route_rows(&rows);
+   assert(rows != 0);
+   for (uint32_t i = 0; i < rows; i++) {
+      if (table[i].executor != R300_OPERATION_ROUTE_EXECUTOR_GPU)
+         continue;
+      assert(table[i].gate != NULL && table[i].gate[0] != '\0');
+   }
+}
+
 int
 main(void)
 {
    test_policy_values();
+   test_automatic_selection_is_separate_from_maturity();
+   test_every_gpu_row_is_gated();
    test_gate_closed_reaches_the_host();
    test_cached_gate_admits_the_precommitted_route();
    test_use_mask_names_one_purpose();

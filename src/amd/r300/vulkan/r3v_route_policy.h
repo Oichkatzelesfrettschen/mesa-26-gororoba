@@ -193,6 +193,31 @@ bool r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
                                     enum r3v_execution_policy policy,
                                     const char **reason);
 
+/* Whether AUTO may take a route the caller named no other way.
+ *
+ * A route's maturity says its delivery is proven; automatic selection says
+ * the device is the faster executor for the request at hand.  The two are
+ * separate facts, and a receipt buys only the first.  No crossover between
+ * the host store loop and any R300 GPU route has been measured, so no route
+ * is admitted for automatic selection and AUTO keeps the host path; a route
+ * earns a row here when a measured crossover names the size above which the
+ * device wins.
+ *
+ * The predicate governs the ungated promoted path alone.  A gated route is
+ * named by the operator who opened its gate, and GPU_ONLY is named by the
+ * caller, so both are explicit requests rather than a default this decides.
+ * Every GPU row the ledger carries is gated today, which
+ * r3v_route_policy_test holds as its own invariant, so the first ungated
+ * promotion is what makes this branch live.
+ */
+bool r3v_route_automatic_selection_admitted(enum r300_operation_route_id id);
+
+/* The predicate over an explicit admitted set, which is what lets a test
+ * exercise both answers without a ledger row that does not exist. */
+bool r3v_route_automatic_selection_admitted_in(
+   const enum r300_operation_route_id *admitted, uint32_t count,
+   enum r300_operation_route_id id);
+
 /* Chooses the executor for one request.
  *
  * gate_state is indexed by route id, as r300_operation_select_route takes

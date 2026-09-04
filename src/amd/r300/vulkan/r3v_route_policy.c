@@ -4,6 +4,8 @@
 
 #include "r3v_route_policy.h"
 
+#include "util/macros.h"
+
 #include <string.h>
 
 enum r3v_execution_policy
@@ -232,6 +234,36 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
    return true;
 }
 
+bool
+r3v_route_automatic_selection_admitted_in(
+   const enum r300_operation_route_id *admitted, uint32_t count,
+   enum r300_operation_route_id id)
+{
+   if (admitted == NULL)
+      return false;
+   for (uint32_t i = 0; i < count; i++) {
+      if (admitted[i] == id)
+         return true;
+   }
+   return false;
+}
+
+/* The admitted set is empty: no crossover has been measured for any route,
+ * so AUTO takes none of them without an explicit request. */
+static const enum r300_operation_route_id automatic_selection_admitted[1] = {
+   R300_OPERATION_ROUTE_NONE,
+};
+
+bool
+r3v_route_automatic_selection_admitted(enum r300_operation_route_id id)
+{
+   if (id == R300_OPERATION_ROUTE_NONE)
+      return false;
+   return r3v_route_automatic_selection_admitted_in(
+      automatic_selection_admitted,
+      ARRAY_SIZE(automatic_selection_admitted), id);
+}
+
 /* One defined purpose, the same rule r300_operation_select_route holds.  A
  * request performs one operation for one purpose; a mask spanning two would
  * let a scan match on whichever bit a row happens to carry. */
@@ -343,6 +375,25 @@ r3v_route_policy_select(const struct r3v_route_request *request,
                                   R300_OPERATION_ROUTE_EXECUTOR_GPU,
                                   request->use, gate_state, reason);
    if (promoted != NULL) {
+      /* An ungated promoted route under AUTO is the one decision nobody
+       * named: the ledger says the route delivers, and the caller asked
+       * for the fastest executor rather than for this one.  Automatic
+       * selection is the separate fact that answers it, and it is withheld
+       * until a crossover measures where the device wins.  A gate the
+       * operator opened and a GPU_ONLY the caller wrote are both explicit,
+       * so neither consults it.
+       */
+      if (request->policy == R3V_EXECUTION_AUTO && promoted->gate == NULL &&
+          !r3v_route_automatic_selection_admitted(promoted->route_id)) {
+         if (!request->destination_host_mapped) {
+            *reason = "automatic selection is withheld and the destination "
+                      "is not host mapped";
+            return R3V_ROUTE_DECISION_REFUSE;
+         }
+         *reason = "automatic selection for this route is withheld until a "
+                   "crossover is measured; the host path carries it";
+         return R3V_ROUTE_DECISION_HOST;
+      }
       *route = promoted;
       return R3V_ROUTE_DECISION_GPU;
    }
