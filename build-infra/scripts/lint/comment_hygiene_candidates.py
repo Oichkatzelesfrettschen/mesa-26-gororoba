@@ -46,17 +46,25 @@ class GitQueryFailed(Exception):
     """A git query the denominator depends on did not answer."""
 
 
-def _git(root, *args):
+def _git(root, *args, **kwargs):
     """Run one git query; a failure raises so the gate never judges a
     set it could not build.  An absent base ref, a corrupt index, or a
-    missing repository all reach the caller as a refusal."""
-    done = subprocess.run(("git", "-C", str(root)) + args,
-                          capture_output=True, text=True)
+    missing repository all reach the caller as a refusal.
+
+    A path query passes ``paths=True`` and reads NUL-delimited output.
+    git's default core.quotePath escapes a non-ASCII or whitespace name
+    into a quoted C string, and that representation names no file, so a
+    line-delimited read hands the linter a path it cannot open while the
+    count still reports the candidate."""
+    paths = kwargs.pop("paths", False)
+    query = ("git", "-C", str(root)) + args + (("-z",) if paths else ())
+    done = subprocess.run(query, capture_output=True, text=True)
     if done.returncode != 0:
         raise GitQueryFailed("git %s: %s" % (" ".join(args),
                                              done.stderr.strip()
                                              or "exit %d" % done.returncode))
-    return [line for line in done.stdout.split("\n") if line]
+    separator = "\0" if paths else "\n"
+    return [item for item in done.stdout.split(separator) if item]
 
 
 def collect(root, base):
@@ -65,13 +73,15 @@ def collect(root, base):
     if not merge_base:
         raise GitQueryFailed("merge-base %s HEAD named no commit" % base)
     committed = _git(root, "diff", "--name-only", FILTER, merge_base[0],
-                     "HEAD")
+                     "HEAD", paths=True)
     return {
         "committed": sorted(committed),
-        "staged": sorted(_git(root, "diff", "--cached", "--name-only", FILTER)),
-        "unstaged": sorted(_git(root, "diff", "--name-only", FILTER)),
+        "staged": sorted(_git(root, "diff", "--cached", "--name-only", FILTER,
+                              paths=True)),
+        "unstaged": sorted(_git(root, "diff", "--name-only", FILTER,
+                                paths=True)),
         "untracked": sorted(_git(root, "ls-files", "--others",
-                                 "--exclude-standard")),
+                                 "--exclude-standard", paths=True)),
     }
 
 
@@ -219,6 +229,19 @@ def self_test():
         if done.returncode != 0:
             failures.append("a path with spaces split into several arguments")
 
+    # a non-ASCII name reaches the judged set as the path git quotes away
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _fixture(root)
+        accented = "caf\u00e9.c"
+        (root / accented).write_text("int accented;\n")
+        files, _ = select(collect(root, "main"), "working-tree")
+        if accented not in files:
+            failures.append("a non-ASCII name never entered the judged set")
+        unresolved = [name for name in files if not (root / name).exists()]
+        if unresolved:
+            failures.append("a judged path does not resolve: %r" % unresolved)
+
     # an empty checkout reports zero through every source, not through one
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -268,6 +291,12 @@ def main():
               file=sys.stderr)
         return 1
     if args.lint_with:
+        missing = [name for name in files if not (root / name).exists()]
+        if missing:
+            print("FAIL  comment-hygiene candidates: %d judged path(s) do not "
+                  "resolve: %s" % (len(missing), ", ".join(missing[:5])),
+                  file=sys.stderr)
+            return 1
         if not files:
             print("OK    comment hygiene: the judged set is empty")
             return 0
