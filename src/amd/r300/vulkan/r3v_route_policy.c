@@ -262,6 +262,14 @@ r3v_route_policy_select(const struct r3v_route_request *request,
       *reason = "route request is absent";
       return R3V_ROUTE_DECISION_REFUSE;
    }
+   /* The operation is the join into the route catalog, so a request naming
+    * none or naming one outside it reaches no row on either executor and
+    * describes no semantic the host could run either. */
+   if (request->operation_id == R300_OPERATION_ID_NONE ||
+       (unsigned)request->operation_id >= R300_OPERATION_ID_COUNT) {
+      *reason = "route request names no catalog operation";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
    if (request->byte_size == 0) {
       *reason = "route request names an empty range";
       return R3V_ROUTE_DECISION_REFUSE;

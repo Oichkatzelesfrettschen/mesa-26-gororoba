@@ -303,6 +303,19 @@ test_malformed_requests_refuse(void)
    assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
           R3V_ROUTE_DECISION_REFUSE);
 
+   /* The operation is the join into the catalog, so one naming nothing and
+    * one outside the catalog reach no executor.  Each policy asks the same
+    * question, so each refuses. */
+   for (unsigned pol = 0; pol <= R3V_EXECUTION_CPU_REFERENCE; pol++) {
+      request = fill_request((enum r3v_execution_policy)pol);
+      request.operation_id = R300_OPERATION_ID_NONE;
+      assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+             R3V_ROUTE_DECISION_REFUSE);
+      request.operation_id = (enum r300_operation_id)R300_OPERATION_ID_COUNT;
+      assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+             R3V_ROUTE_DECISION_REFUSE);
+   }
+
    request = fill_request((enum r3v_execution_policy)7);
    assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
           R3V_ROUTE_DECISION_REFUSE);
