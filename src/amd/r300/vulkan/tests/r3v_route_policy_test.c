@@ -19,6 +19,8 @@
 
 #include "r3v_route_policy.h"
 
+#include "util/macros.h"
+
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,17 +61,26 @@ test_policy_values(void)
           R3V_EXECUTION_GPU_ONLY);
    assert(r3v_execution_policy_from_value("cpu_reference") ==
           R3V_EXECUTION_CPU_REFERENCE);
-   /* An unrecognized value leaves the default rather than opening a
-    * stricter or looser path by accident. */
-   assert(r3v_execution_policy_from_value("GPU_ONLY") == R3V_EXECUTION_AUTO);
+   /* An unset or empty value is the default an operator who asked for
+    * nothing gets; every other unmatched value names no policy, so the
+    * device refuses it rather than running under AUTO. */
    assert(r3v_execution_policy_from_value("") == R3V_EXECUTION_AUTO);
+   assert(r3v_execution_policy_from_value("auto") == R3V_EXECUTION_AUTO);
+   assert(r3v_execution_policy_from_value("GPU_ONLY") ==
+          R3V_EXECUTION_POLICY_INVALID);
+   assert(r3v_execution_policy_from_value("gpu_onl") ==
+          R3V_EXECUTION_POLICY_INVALID);
+   assert(r3v_execution_policy_from_value("gpu_only ") ==
+          R3V_EXECUTION_POLICY_INVALID);
+   assert(strcmp(r3v_execution_policy_name(R3V_EXECUTION_POLICY_INVALID),
+                 "invalid") == 0);
    assert(r3v_execution_policy_from_value(" gpu_only") ==
-          R3V_EXECUTION_AUTO);
+          R3V_EXECUTION_POLICY_INVALID);
 
-   for (unsigned i = 0; i <= R3V_EXECUTION_CPU_REFERENCE; i++)
+   for (unsigned i = 0; i <= R3V_EXECUTION_POLICY_INVALID; i++)
       assert(r3v_execution_policy_name((enum r3v_execution_policy)i) != NULL);
    assert(r3v_execution_policy_name(
-             (enum r3v_execution_policy)(R3V_EXECUTION_CPU_REFERENCE + 1)) ==
+             (enum r3v_execution_policy)(R3V_EXECUTION_POLICY_INVALID + 1)) ==
           NULL);
    for (unsigned i = 0; i <= R3V_ROUTE_DECISION_REFUSE; i++)
       assert(r3v_route_decision_name((enum r3v_route_decision)i) != NULL);
@@ -388,6 +399,36 @@ gpu_provenance(void)
    };
 }
 
+/* GPU_ONLY owns two facts about a record: the host did not compute it and
+ * the route runs on the device.  The submission flag is not a third: it
+ * tracks the phase, so demanding it at every phase refused the prepared
+ * record the policy exists to admit. */
+static void
+test_gpu_only_admits_a_prepared_record(void)
+{
+   const char *reason = NULL;
+   struct r3v_execution_provenance p = gpu_provenance();
+   p.phase = R3V_EXECUTION_PHASE_PREPARED;
+   p.device_submission = false;
+   assert(r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                         &reason));
+
+   p.host_semantic_node = true;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                          &reason));
+   p.host_semantic_node = false;
+   p.executor = R300_OPERATION_ROUTE_EXECUTOR_HOST;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                          &reason));
+
+   /* The flag still tracks the phase in both directions, whatever the
+    * policy, so a prepared record claiming a submission is refused. */
+   p = gpu_provenance();
+   p.phase = R3V_EXECUTION_PHASE_PREPARED;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                          &reason));
+}
+
 static struct r3v_execution_provenance
 host_provenance(void)
 {
@@ -632,10 +673,65 @@ test_host_transfer_const_fill_row(void)
    assert(selected == row);
 }
 
+/* Automatic selection is a separate fact from a route's maturity.  A
+ * receipt promotes a route; it does not measure where the device beats the
+ * host store loop, and AUTO takes an unnamed route only on that
+ * measurement.  The predicate is calibrated over an explicit admitted set,
+ * so both answers are exercised, and the shipped set is empty because no
+ * crossover has been measured for any route.
+ */
+static void
+test_automatic_selection_is_separate_from_maturity(void)
+{
+   static const enum r300_operation_route_id admitted[] = {
+      R300_OPERATION_ROUTE_RB2D_CONST_FILL,
+   };
+   assert(r3v_route_automatic_selection_admitted_in(
+      admitted, ARRAY_SIZE(admitted), R300_OPERATION_ROUTE_RB2D_CONST_FILL));
+   assert(!r3v_route_automatic_selection_admitted_in(
+      admitted, ARRAY_SIZE(admitted),
+      R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP));
+   assert(!r3v_route_automatic_selection_admitted_in(NULL, 1,
+      R300_OPERATION_ROUTE_RB2D_CONST_FILL));
+
+   /* The shipped set: no route is taken by automatic selection, the RB2D
+    * fill route included, so its only door is its own gate. */
+   uint32_t rows = 0;
+   const struct r300_operation_route_row *table =
+      r300_operation_route_rows(&rows);
+   for (uint32_t i = 0; i < rows; i++) {
+      assert(!r3v_route_automatic_selection_admitted(table[i].route_id));
+   }
+   assert(!r3v_route_automatic_selection_admitted(R300_OPERATION_ROUTE_NONE));
+}
+
+/* The withheld-automatic-selection branch governs a promoted route reached
+ * with no gate of its own.  Every GPU row the ledger carries is gated, so
+ * that branch has no live subject; this holds that fact rather than leaving
+ * it an accident, and the first ungated GPU promotion fails here and makes
+ * the branch live.
+ */
+static void
+test_every_gpu_row_is_gated(void)
+{
+   uint32_t rows = 0;
+   const struct r300_operation_route_row *table =
+      r300_operation_route_rows(&rows);
+   assert(rows != 0);
+   for (uint32_t i = 0; i < rows; i++) {
+      if (table[i].executor != R300_OPERATION_ROUTE_EXECUTOR_GPU)
+         continue;
+      assert(table[i].gate != NULL && table[i].gate[0] != '\0');
+   }
+}
+
 int
 main(void)
 {
    test_policy_values();
+   test_gpu_only_admits_a_prepared_record();
+   test_automatic_selection_is_separate_from_maturity();
+   test_every_gpu_row_is_gated();
    test_gate_closed_reaches_the_host();
    test_cached_gate_admits_the_precommitted_route();
    test_use_mask_names_one_purpose();

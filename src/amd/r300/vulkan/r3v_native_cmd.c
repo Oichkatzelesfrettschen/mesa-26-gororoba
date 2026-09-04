@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void
+void
 r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
 {
    /* radeon_drm_vk_cs_build binds the IB chunk to this pointer rather than
@@ -108,6 +108,12 @@ r3v_native_cmd_buffer_release_recording(
           sizeof(cmd_buffer->deferred_draws));
    cmd_buffer->deferred_draw_count = 0;
    cmd_buffer->deferred_copy_count = 0;
+   /* The routed record describes the copies this reset just dropped, so it
+    * goes with them.  A record surviving the reset would report the next
+    * recording as one a GPU route performs, and the submission boundary's
+    * policy accounting reads exactly that flag. */
+   cmd_buffer->fill_route_active = false;
+   cmd_buffer->fill_route_provenance = (struct r3v_execution_provenance){0};
    cmd_buffer->bound_compute_pipeline = NULL;
    cmd_buffer->bound_compute_set = NULL;
    vk_free(&cmd_buffer->vk.pool->alloc,

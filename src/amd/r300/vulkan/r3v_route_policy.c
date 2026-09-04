@@ -4,25 +4,30 @@
 
 #include "r3v_route_policy.h"
 
+#include "util/macros.h"
+
 #include <string.h>
 
 enum r3v_execution_policy
 r3v_execution_policy_from_value(const char *value)
 {
-   if (value == NULL)
+   if (value == NULL || value[0] == '\0')
+      return R3V_EXECUTION_AUTO;
+   if (strcmp(value, "auto") == 0)
       return R3V_EXECUTION_AUTO;
    if (strcmp(value, "gpu_only") == 0)
       return R3V_EXECUTION_GPU_ONLY;
    if (strcmp(value, "cpu_reference") == 0)
       return R3V_EXECUTION_CPU_REFERENCE;
-   return R3V_EXECUTION_AUTO;
+   return R3V_EXECUTION_POLICY_INVALID;
 }
 
 const char *
 r3v_execution_policy_name(enum r3v_execution_policy p)
 {
-   static const char *const names[] = { "auto", "gpu_only", "cpu_reference" };
-   return (unsigned)p <= R3V_EXECUTION_CPU_REFERENCE ? names[p] : NULL;
+   static const char *const names[] = { "auto", "gpu_only", "cpu_reference",
+                                        "invalid" };
+   return (unsigned)p <= R3V_EXECUTION_POLICY_INVALID ? names[p] : NULL;
 }
 
 const char *
@@ -211,10 +216,13 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
          *reason = "GPU_ONLY: the route runs on the host";
          return false;
       }
-      if (!p->device_submission) {
-         *reason = "GPU_ONLY: no submission reached the device";
-         return false;
-      }
+      /* The submission itself is not asked here.  device_submission and the
+       * phase already agree above, so a record past the ioctl carries the
+       * submission and one short of it carries none; demanding the flag at
+       * every phase refused the prepared record this policy exists to
+       * admit.  GPU_ONLY's own content is the two facts above, and the
+       * refusal that replaces a host fallback lives at the route decision.
+       */
       break;
    case R3V_EXECUTION_CPU_REFERENCE:
       if (gpu) {
@@ -230,6 +238,36 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
    }
 
    return true;
+}
+
+bool
+r3v_route_automatic_selection_admitted_in(
+   const enum r300_operation_route_id *admitted, uint32_t count,
+   enum r300_operation_route_id id)
+{
+   if (admitted == NULL)
+      return false;
+   for (uint32_t i = 0; i < count; i++) {
+      if (admitted[i] == id)
+         return true;
+   }
+   return false;
+}
+
+/* The admitted set is empty: no crossover has been measured for any route,
+ * so AUTO takes none of them without an explicit request. */
+static const enum r300_operation_route_id automatic_selection_admitted[1] = {
+   R300_OPERATION_ROUTE_NONE,
+};
+
+bool
+r3v_route_automatic_selection_admitted(enum r300_operation_route_id id)
+{
+   if (id == R300_OPERATION_ROUTE_NONE)
+      return false;
+   return r3v_route_automatic_selection_admitted_in(
+      automatic_selection_admitted,
+      ARRAY_SIZE(automatic_selection_admitted), id);
 }
 
 /* One defined purpose, the same rule r300_operation_select_route holds.  A
@@ -343,6 +381,25 @@ r3v_route_policy_select(const struct r3v_route_request *request,
                                   R300_OPERATION_ROUTE_EXECUTOR_GPU,
                                   request->use, gate_state, reason);
    if (promoted != NULL) {
+      /* An ungated promoted route under AUTO is the one decision nobody
+       * named: the ledger says the route delivers, and the caller asked
+       * for the fastest executor rather than for this one.  Automatic
+       * selection is the separate fact that answers it, and it is withheld
+       * until a crossover measures where the device wins.  A gate the
+       * operator opened and a GPU_ONLY the caller wrote are both explicit,
+       * so neither consults it.
+       */
+      if (request->policy == R3V_EXECUTION_AUTO && promoted->gate == NULL &&
+          !r3v_route_automatic_selection_admitted(promoted->route_id)) {
+         if (!request->destination_host_mapped) {
+            *reason = "automatic selection is withheld and the destination "
+                      "is not host mapped";
+            return R3V_ROUTE_DECISION_REFUSE;
+         }
+         *reason = "automatic selection for this route is withheld until a "
+                   "crossover is measured; the host path carries it";
+         return R3V_ROUTE_DECISION_HOST;
+      }
       *route = promoted;
       return R3V_ROUTE_DECISION_GPU;
    }

@@ -1,9 +1,10 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * The RB2D solid-fill plan: every surface and rectangle rule refused on its
- * own mutation, the field packing the retained 1x1 cell cannot show, and
- * the emission the fixed direct-write control reproduces byte for byte.
+ * The RB2D solid-fill plan: the legacy 2D register vocabulary pinned to the
+ * kernel's own offsets, every surface and rectangle rule refused on its own
+ * mutation, the field packing the retained 1x1 cell cannot show, and the
+ * emission the fixed direct-write control reproduces byte for byte.
  */
 
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
@@ -12,6 +13,7 @@
 #include "r300_direct_write.h"
 #include "r300_rb2d_fill.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "radeon_legacy_2d_reg.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -272,9 +274,57 @@ test_control_cell_parity(void)
    r300_direct_write_release(&cell);
 }
 
+/* The legacy 2D vocabulary, restated here from the kernel rather than read
+ * from the header under test, so a definition that moves is refused by the
+ * name that moved.  The emitted-stream digests refuse the same mutation as
+ * a byte movement without naming a register; this control names it.  Every
+ * offset is the drivers/gpu/drm/radeon/radeon_reg.h value, and the eleven
+ * the CS parser admits unchecked are the reg_srcs/r300 rows.
+ */
+static void
+test_register_addresses(void)
+{
+   /* Destination geometry, the pitch/offset word carrying the plan's one
+    * relocation. */
+   assert(RADEON_DST_PITCH_OFFSET == 0x142C);
+   assert(RADEON_DST_Y_X == 0x1438);
+   assert(RADEON_DST_WIDTH_HEIGHT == 0x1598);
+
+   /* GUI master control and the words it operates through. */
+   assert(RADEON_DP_GUI_MASTER_CNTL == 0x146C);
+   assert(RADEON_DP_BRUSH_FRGD_CLR == 0x147C);
+   assert(RADEON_DP_CNTL == 0x16C0);
+   assert(RADEON_DP_WRITE_MSK == 0x16CC);
+
+   /* The 2D scissor. */
+   assert(RADEON_DEFAULT_SC_BOTTOM_RIGHT == 0x16E8);
+   assert(RADEON_SC_TOP_LEFT == 0x16EC);
+   assert(RADEON_SC_BOTTOM_RIGHT == 0x16F0);
+
+   /* Destination cache and the stream hold that follows it. */
+   assert(RADEON_DSTCACHE_CTLSTAT == 0x1714);
+   assert(RADEON_WAIT_UNTIL == 0x1720);
+
+   /* The field and value codes those words carry, in the order
+    * r100_copy_blit assembles DP_GUI_MASTER_CNTL. */
+   assert(RADEON_GMC_DST_PITCH_OFFSET_CNTL == 0x00000002u);
+   assert(RADEON_GMC_BRUSH_SOLID_COLOR == 0x000000d0u);
+   assert(RADEON_COLOR_FORMAT_ARGB8888 == 6u);
+   assert(RADEON_ROP3_P == 0x00f00000u);
+   assert(RADEON_GMC_CLR_CMP_CNTL_DIS == 0x10000000u);
+   assert(RADEON_GMC_WR_MSK_DIS == 0x40000000u);
+   assert(RADEON_DST_X_LEFT_TO_RIGHT == 0x00000001u);
+   assert(RADEON_DST_Y_TOP_TO_BOTTOM == 0x00000002u);
+   assert(RADEON_RB2D_DC_FLUSH_ALL == 0x0000000fu);
+   assert(RADEON_WAIT_DMA_GUI_IDLE == 0x00000200);
+   assert(RADEON_WAIT_2D_IDLECLEAN == 0x00010000);
+   assert(RADEON_WAIT_HOST_IDLECLEAN == 0x00040000);
+}
+
 int
 main(void)
 {
+   test_register_addresses();
    test_plan_rules();
    test_emit_refusals();
    test_field_packing();

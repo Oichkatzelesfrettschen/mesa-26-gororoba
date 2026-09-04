@@ -191,6 +191,18 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
       return NULL;
    }
 
+   /* A recorded dispatch and a recorded copy in one command buffer is a
+    * shape neither executor orders: r3v_CmdDispatch refuses a buffer that
+    * already carries a copy, so the copy side holds the same rule and the
+    * pair is refused from whichever side arrives second.
+    * Symbol discovery uses (rg --fixed-strings deferred_dispatch.pending
+    * src/amd/r300/vulkan/).
+    */
+   if (cmd_buffer->deferred_dispatch.pending) {
+      r3v_native_cmd_poison(commandBuffer);
+      return NULL;
+   }
+
    if (cmd_buffer->deferred_copy_count == cmd_buffer->deferred_copy_capacity) {
       const uint32_t old_capacity = cmd_buffer->deferred_copy_capacity;
       const uint32_t new_capacity = old_capacity != 0

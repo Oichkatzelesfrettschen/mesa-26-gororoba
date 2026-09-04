@@ -46,6 +46,31 @@ release_memory(struct r3v_native_device *device,
    memory->map = NULL;
 }
 
+static VkResult execute_host_copy(struct r3v_native_device *device,
+                                 const struct r3v_native_deferred_copy *op);
+
+/* A routed record is the device's, and the host counter stands above every
+ * kind and every mapping below it, because the map -- not the store loop
+ * under it -- is the observable host side effect a hardware claim excludes.
+ * One count lands per record that produced its bytes here, so a GPU route's
+ * claim is that this counter does not move for the record it carries: a
+ * number a test reads rather than a property a reader infers from the
+ * source.  A record that fails before writing moves nothing, since the
+ * counter is read as evidence that the host produced a result.
+ */
+static VkResult
+execute_copy(struct r3v_native_device *device,
+             const struct r3v_native_deferred_copy *op)
+{
+   if (op->gpu_routed)
+      return VK_SUCCESS;
+
+   const VkResult result = execute_host_copy(device, op);
+   if (result == VK_SUCCESS)
+      device->host_semantic_writes++;
+   return result;
+}
+
 /* One recorded copy: the record-time admission proved every byte
  * bound, including the bind ranges, so execution's own failure surface
  * is the mapping ioctl and a resource unbound between record and
@@ -55,8 +80,8 @@ release_memory(struct r3v_native_device *device,
  * bytes rather than undefined reads.
  */
 static VkResult
-execute_copy(struct r3v_native_device *device,
-             const struct r3v_native_deferred_copy *op)
+execute_host_copy(struct r3v_native_device *device,
+                  const struct r3v_native_deferred_copy *op)
 {
    struct r3v_native_memory *src_memory;
    struct r3v_native_memory *dst_memory;

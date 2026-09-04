@@ -151,6 +151,25 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # The fill route's admission layer and the mutation matrix over the
+  # attended cell's prepared plan: the memory contract, the frozen-cell
+  # predicate, the submission identity, and the operator's declaration,
+  # each calibrated beside the admitted case it refuses a mutation of.
+  # Ten bound fields are mutated one at a time and the owning check named.
+  test(
+    'r3v-fill-route',
+    executable(
+      'r3v_fill_route_test',
+      files('tests/r3v_fill_route_test.c', 'r3v_fill_route.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : libr300_common,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Submit preflight: the census reproduces the queue's former field list
   # over all thirty-two combinations of its ordered-work counters, each
   # whole-submit refusal is reachable alone, the transaction admits a
@@ -226,6 +245,7 @@ r3v_native_files = files(
   'r3v_native_compute.c',
   'r3v_native_device.c',
   'r3v_native_draw.c',
+  'r3v_native_fill_route.c',
   'r3v_native_image.c',
   'r3v_native_identity.c',
   'r3v_native_memory.c',
@@ -237,6 +257,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_fill_route.c',
   'r3v_route_policy.c',
   'r3v_submit_preflight.c',
   'r3v_interpolation_lowering.c',
@@ -1524,6 +1545,26 @@ if with_tests
     ),
     suite : ['r3v'],
   )
+  # The public fill route on the host: the attended cell routes with every
+  # gate open, each decline leaves the command buffer with no stream, no
+  # cell kind, no relocation and an unrouted copy, GPU_ONLY refuses where
+  # AUTO declines, and the host-write counter separates the routed leg from
+  # the same record on the host path.  The mapping is the test's own
+  # storage, so no DRM node opens.
+  test(
+    'r3v-native-fill-route',
+    executable(
+      'r3v_native_fill_route_test',
+      files('tests/r3v_native_fill_route_test.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : r3v_native_deps,
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
   # The tuple cell's recording contract on the host: the installed
   # stream, the carrier's two GTT domains beside the read-only vertex
   # relocation, the arming gate's tuple kind, and the vertex-stream
@@ -2222,6 +2263,56 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_loader_env = environment(r3v_native_cell_vars + {
       'VK_DRIVER_FILES' : _dev_icd.full_path(),
     })
+    # Kernel-entering command submissions an application makes by loading
+    # the driver.  The shim answers DRM_RADEON_CS in place of the kernel
+    # and is the one place a submission arrives, so the count its handler
+    # keeps is the process's submission count.  The loader leg reaches a
+    # device and its queue and reads that count back as zero; the
+    # calibration leg issues one submission through the same interposed
+    # path and reads it back as one, so the zero is a measured absence.
+    r3v_native_loader_cs_count = executable(
+      'r3v_native_loader_cs_count',
+      files('tests/r3v_native_loader_cs_count.c'),
+      include_directories : [inc_include, inc_src],
+      dependencies : [dep_vulkan_loader, dep_dl, dep_libdrm],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-native-loader-cs-count',
+      r3v_native_loader_cs_count,
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-loader-cs-count-calibration',
+      r3v_native_loader_cs_count,
+      args : ['--calibrate'],
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    # What GPU_ONLY refuses.  The policy is the submit's, so a command
+    # buffer carrying recorded work no GPU route performs refuses ahead of
+    # every host execution.  Both legs record two fills, a shape no route
+    # claims: AUTO fills the destination on the host path, GPU_ONLY refuses
+    # the submit and leaves every byte at its sentinel.
+    test(
+      'r3v-native-execution-policy',
+      executable(
+        'r3v_native_execution_policy_test',
+        files('tests/r3v_native_execution_policy_test.c'),
+        include_directories : [inc_include],
+        dependencies : [dep_vulkan_loader],
+        c_args : [no_override_init_args],
+      ),
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
     r3v_native_format_features_test = executable(
       'r3v_native_format_features_test',
       files('tests/r3v_native_format_features_test.c'),

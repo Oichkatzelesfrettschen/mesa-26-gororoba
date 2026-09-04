@@ -40,11 +40,8 @@
  * metadata reaches storage.  Returns 0 or a negative errno.
  */
 
-/* The board the gate compares.  A harness that replaces the fact provider
- * also declares the platform it stands in for; production resolves it from
- * the device and the firmware tables at physical-device creation. */
-static enum r300_platform_id
-arming_platform(const struct r3v_native_device *device)
+enum r300_platform_id
+r3v_native_arming_platform(const struct r3v_native_device *device)
 {
    return device->arming_provider != NULL ? device->arming_platform
                                           : device->pdevice->platform_id;
@@ -158,8 +155,9 @@ r3v_native_evidence_require_fresh(const char *dir,
  * vertex fetch reads it.  A kind outside the set reports unfrozen, and
  * the gate's own kind check names it first.
  */
-static bool
-cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
+bool
+r3v_native_cell_geometry_unfrozen(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
 {
    switch (cmd_buffer->cell_kind) {
    case R3V_NATIVE_CELL_KIND_TRIANGLE: {
@@ -442,6 +440,43 @@ cell_geometry_unfrozen(const struct r3v_native_cmd_buffer *cmd_buffer)
              depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
              depth->memory == NULL ||
              depth->memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES;
+   }
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC: {
+      /* The public fill's frozen shape is the recorded copy itself rather
+       * than a fixed render extent: the route builds one stream from
+       * deferred_copies[0], the byte range vkCmdFillBuffer named, so this
+       * arm reads that copy and the one relocation installed for it.  A
+       * fill-only command buffer never populates deferred_draws[0].
+       *
+       * r3v_fill_route_cell_frozen holds the shape.  The route calls it on
+       * the cell it is about to install and this calls it on the cell the
+       * command buffer carries, so the predicate that admits a submission
+       * is the predicate that judges it.
+       */
+      struct r3v_fill_route_cell cell = {
+         .copy_count = cmd_buffer->deferred_copy_count,
+         .reference_count = cmd_buffer->reference_count,
+      };
+      if (cell.copy_count == 1 && cell.reference_count == 1) {
+         const struct r3v_native_deferred_copy *fill =
+            &cmd_buffer->deferred_copies[0];
+         const struct r3v_native_bo_reference *dst =
+            &cmd_buffer->references[0];
+         cell.copy_is_fill = fill->kind == R3V_NATIVE_COPY_FILL_BUFFER;
+         cell.gpu_routed = fill->gpu_routed;
+         cell.destination_bound = fill->dst_buffer != NULL &&
+                                  fill->dst_buffer->memory != NULL;
+         cell.fill_offset = fill->dst_offset;
+         cell.fill_bytes = fill->size;
+         cell.buffer_bytes =
+            fill->dst_buffer != NULL ? fill->dst_buffer->vk.size : 0;
+         cell.read_domains = dst->read_domains;
+         cell.write_domain = dst->write_domain;
+         cell.reference_names_destination =
+            cell.destination_bound && dst->memory == fill->dst_buffer->memory &&
+            dst->handle == fill->dst_buffer->memory->bo.handle;
+      }
+      return !r3v_fill_route_cell_frozen(&cell);
    }
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER: {
       uint32_t carrier_bytes;
@@ -1088,6 +1123,63 @@ r3v_native_cmd_buffer_requires_inline_ordering(
    return r3v_recorded_work_census_ordered(&census);
 }
 
+/* Walks the routed fill's record along the transport that carried it.
+ *
+ * The route leaves the record at PREPARED: it built a stream and nothing
+ * had reached the kernel.  The submission boundary owns the four states
+ * above that, and the ladder is total and advances one state at a time, so
+ * a reader separates a stream the kernel took from one the device retired.
+ * device_submission holds exactly from the ioctl entry, which
+ * r3v_execution_provenance_valid requires in both directions, so it moves
+ * with the phase rather than beside it.
+ *
+ * The walk stops where the transport stopped, so a rejected submission
+ * records the kernel entry it made and no acceptance.  A refused advance
+ * means the record no longer describes its own transport, and the record
+ * is dropped rather than left saying something the ladder does not admit.
+ */
+void
+r3v_native_fill_route_record_transport(
+   struct r3v_native_cmd_buffer *cmd_buffer, bool ioctl_accepted,
+   bool completion_retired)
+{
+   if (!cmd_buffer->fill_route_active)
+      return;
+
+   struct r3v_execution_provenance *record =
+      &cmd_buffer->fill_route_provenance;
+   static const enum r3v_execution_phase ladder[] = {
+      R3V_EXECUTION_PHASE_COMMITTED,
+      R3V_EXECUTION_PHASE_IOCTL_ENTERED,
+      R3V_EXECUTION_PHASE_IOCTL_ACCEPTED,
+      R3V_EXECUTION_PHASE_COMPLETION_RETIRED,
+   };
+   const unsigned reached = completion_retired ? 4u : (ioctl_accepted ? 3u : 2u);
+   for (unsigned i = 0; i < reached; i++) {
+      if (ladder[i] >= R3V_EXECUTION_PHASE_IOCTL_ENTERED)
+         record->device_submission = true;
+      if (!r3v_execution_phase_advance(&record->phase, ladder[i], NULL)) {
+         cmd_buffer->fill_route_active = false;
+         *record = (struct r3v_execution_provenance){0};
+         return;
+      }
+   }
+}
+
+/* Every recorded work kind besides a transfer copy.  A route admitting a
+ * copy-only shape subtracts the copies from the census total rather than
+ * enumerating the remaining kinds, so a kind added to the command buffer
+ * reaches every such admission through the census alone.
+ */
+bool
+r3v_native_cmd_buffer_has_other_recorded_work(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r3v_recorded_work_census census;
+   r3v_native_cmd_buffer_work_census(cmd_buffer, &census);
+   return r3v_recorded_work_census_total(&census) != census.transfer_copies;
+}
+
 VkResult
 r3v_native_queue_prepare_submission(VkDevice _device,
                                     VkCommandBuffer commandBuffer)
@@ -1151,11 +1243,12 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    r3v_native_arming_collect_from(
       device->arming_provider != NULL ? device->arming_provider
                                       : r3v_native_arming_host_provider(),
-      &facts, arming_platform(device), device->pdevice->pci_vendor_id,
+      &facts, r3v_native_arming_platform(device), device->pdevice->pci_vendor_id,
       device->pdevice->pci_device_id, cmd_buffer->cell_kind, ib_digest,
       device->manifest_dir, kernel_release, sizeof(kernel_release),
       module_srcversion, sizeof(module_srcversion));
-   facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
+   facts.nonmaximum_extent =
+            r3v_native_cell_geometry_unfrozen(cmd_buffer);
    facts.serial_submissions_consumed = device->serial_submissions_consumed;
    facts.burst_recorded_draws = cmd_buffer->burst_draws;
 
@@ -1398,6 +1491,50 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
+   /* Route resolution and the submit's policy verdict, both ahead of the
+    * wait loop below.  A permanent binary wait is consumed where it is
+    * taken, so a refusal behind it leaves the caller's synchronization
+    * partly applied; every gate that can refuse this submit therefore
+    * stands here, ahead of every effect of any kind.
+    *
+    * The route claims a submit of exactly one command buffer, so a wider
+    * submit resolves nothing and every buffer's recorded work is work no
+    * GPU route performs.  A prepared submission commits through its own
+    * transport tail, which the route has no part in.
+    */
+   if (submit->command_buffer_count == 1 && !device->prepared.valid) {
+      struct r3v_native_cmd_buffer *routed_buffer = container_of(
+         submit->command_buffers[0], struct r3v_native_cmd_buffer, vk);
+      const VkResult routed = r3v_native_cmd_buffer_route_deferred_fill(
+         device, routed_buffer, submit->command_buffer_count);
+      if (routed != VK_SUCCESS)
+         return routed;
+   }
+   /* The rule is what the host would produce, which is narrower than the
+    * census-level rule r3v_submit_preflight_check holds: that one refuses a
+    * submit carrying command buffers and no route candidate, and would
+    * therefore refuse an empty submit that produces nothing and a
+    * transport-only submit the device performs end to end.  The boundary
+    * enforces the narrower rule because those two are submissions gpu_only
+    * has no reason to decline; the preparation layer's census rule and this
+    * one are the same question answered at two grains, and the coarser one
+    * has no caller.
+    */
+   if (device->execution_policy == R3V_EXECUTION_GPU_ONLY) {
+      for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+         const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+            submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
+         struct r3v_recorded_work_census census;
+         r3v_native_cmd_buffer_work_census(cmd_buffer, &census);
+         const uint32_t routed_work = cmd_buffer->fill_route_active ? 1u : 0u;
+         if (r3v_recorded_work_census_total(&census) > routed_work) {
+            return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                             "r3v-native: gpu_only: the submit carries "
+                             "recorded work no GPU route performs");
+         }
+      }
+   }
+
    /* r3v_cpu_sync_wait (rg --fixed-strings "r3v_cpu_sync_wait"
     * src/amd/r300/vulkan/r3v_cpu_sync.c) completes each declared dependency
     * before deferred CPU execution below.  The queue path
@@ -1616,7 +1753,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * source; a capture or replay pass, which never enters that
        * branch, still carries the identity its own gate compares.
        */
-      facts.platform_id = arming_platform(device);
+      facts.platform_id = r3v_native_arming_platform(device);
       facts.pci_vendor_id = device->pdevice->pci_vendor_id;
       facts.pci_device_id = device->pdevice->pci_device_id;
       const bool serial_kind =
@@ -1643,13 +1780,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             device->arming_provider != NULL
                ? device->arming_provider
                : r3v_native_arming_host_provider(),
-            &facts, arming_platform(device),
+            &facts, r3v_native_arming_platform(device),
             device->pdevice->pci_vendor_id,
             device->pdevice->pci_device_id, cmd_buffer->cell_kind,
             ib_digest, device->manifest_dir, kernel_release,
             sizeof(kernel_release), module_srcversion,
             sizeof(module_srcversion));
-         facts.nonmaximum_extent = cell_geometry_unfrozen(cmd_buffer);
+         facts.nonmaximum_extent =
+            r3v_native_cell_geometry_unfrozen(cmd_buffer);
          facts.serial_submissions_consumed =
             device->serial_submissions_consumed;
          facts.burst_recorded_draws = cmd_buffer->burst_draws;
@@ -2038,6 +2176,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             trace_result = -EIO;
       }
       device->transport_return_ns = r3v_native_raw_now_ns();
+      r3v_native_fill_route_record_transport(cmd_buffer, ioctl_accepted,
+                                             result == 0);
       if (result == 0 && trace_result != 0)
          result = trace_result;
       if (result == 0) {

@@ -66,6 +66,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    switch (facts->cell_kind) {
    case R3V_NATIVE_CELL_KIND_TRIANGLE:
    case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:
    case R3V_NATIVE_CELL_KIND_R2VB_REINGEST:
    case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE:
