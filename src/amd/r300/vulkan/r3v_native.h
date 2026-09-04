@@ -7,8 +7,10 @@
 #ifndef R3V_NATIVE_H
 #define R3V_NATIVE_H
 
+#include "r3v_fill_route.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_plan.h"
+#include "r3v_route_policy.h"
 
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
@@ -223,6 +225,12 @@ struct r3v_native_deferred_copy {
    uint32_t clear_dword;
    uint8_t clear_texel[16];
    uint8_t *update_data;
+   /* The device performs this record: an executor was resolved at the
+    * submission boundary and its stream installed, so the host produces no
+    * byte of the result.  r3v_native_transfer.c tests this ahead of the
+    * mapping, because the map is the observable host side effect a hardware
+    * claim excludes rather than only the store loop under it. */
+   bool gpu_routed;
 };
 
 /* The first command-pool allocation keeps ordinary copy recordings compact;
@@ -701,6 +709,13 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
+
+   /* What the fill route resolved for this command buffer, valid while
+    * fill_route_active.  It is the record a hardware claim rests on: the
+    * executor, the route identity, how far the execution travelled, and
+    * whether the host computed the result. */
+   struct r3v_execution_provenance fill_route_provenance;
+   bool fill_route_active;
    uint32_t deferred_copy_capacity;
    /* The compute recording state: a dispatch-only command buffer binds
     * a compute pipeline and one set-0 descriptor set and records one
@@ -991,6 +1006,25 @@ struct r3v_native_device {
     * selects nothing.  Indexed by enum r300_operation_route_id, whose NONE
     * slot stays NULL. */
    const char *compute_route_gates[R300_OPERATION_ROUTE_COUNT];
+
+   /* What the device asks of every route decision, read once at creation so
+    * a policy cannot change under a recorded command buffer. */
+   enum r3v_execution_policy execution_policy;
+
+   /* The operator's declared submission identity for the RB2D fill route,
+    * cached from R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3 beside the route
+    * gates.  An absent or malformed value refuses the route; the identity
+    * itself is r3v_fill_route_identity_digest's value over the whole
+    * semantic and submit shape. */
+   const char *authorized_fill_identity;
+   char authorized_fill_identity_storage[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+
+   /* Host semantic writes: one per transfer record whose result bytes the
+    * host produced, counted where the mapping is taken rather than in the
+    * store loop under it.  A GPU route's whole claim is that this counter
+    * does not move for the record it carries, so the count is a fact a test
+    * reads rather than a property a reader infers from the source. */
+   uint64_t host_semantic_writes;
    /* Failure injection at the fetched route's composition boundary: a
     * nonzero negative errno makes the admission treat the composed route
     * as refused with that errno, after the emitters ran and before any
@@ -1474,6 +1508,14 @@ void r3v_native_cmd_buffer_release_recording(
  * on failure.
  */
 struct r300_tcl_bypass_triangle_ib;
+/* The board the arming gate compares.  A harness that replaces the fact
+ * provider also declares the platform it stands in for; production resolves
+ * it from the device and the firmware tables at physical-device creation.
+ * Every hazardous route reads the board through this one resolution.
+ */
+enum r300_platform_id
+r3v_native_arming_platform(const struct r3v_native_device *device);
+
 VkResult r3v_native_cmd_buffer_append_ib(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
@@ -1482,6 +1524,12 @@ VkResult r3v_native_cmd_buffer_append_ib(
    uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell);
 
+/* Returns an installed stream and its relocation list to the allocator and
+ * clears the cell kind, leaving the command buffer with no transport.  A
+ * route whose install is scoped to one submission calls this to return the
+ * buffer to its recorded shape before the next submission re-admits it. */
+void r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer);
+
 void r3v_native_cmd_buffer_install_ib(
    struct r3v_native_cmd_buffer *cmd_buffer, enum r3v_native_cell_kind kind,
    uint32_t *ib, uint32_t ib_size_dwords,
@@ -1489,6 +1537,55 @@ void r3v_native_cmd_buffer_install_ib(
 
 VkResult r3v_native_queue_submit(struct vk_queue *queue,
                                  struct vk_queue_submit *submit);
+
+/* Resolves the executor for a command buffer whose whole content is one
+ * vkCmdFillBuffer, and installs the RB2D stream when every gate admits it.
+ *
+ * submit_command_buffers is the whole submit's count: the arming
+ * authorization, the retained evidence, and the completion describe one
+ * transport, so a wider submit declines here.
+ *
+ * A shape this route does not admit returns VK_SUCCESS with nothing
+ * changed, so the host path performs the fill.  Under GPU_ONLY a request
+ * the route was asked to answer and could not refuses with
+ * VK_ERROR_FEATURE_NOT_PRESENT before anything is written.  The stream
+ * installs and gpu_routed sets inside the transaction's commit phase, which
+ * every refusal precedes, so a refused route leaves the command buffer as
+ * it found it and the host performs the fill it was going to perform.
+ */
+VkResult r3v_native_cmd_buffer_route_deferred_fill(
+   struct r3v_native_device *device, struct r3v_native_cmd_buffer *cmd,
+   uint32_t submit_command_buffers);
+
+/* The geometry fact the arming gate reads for cmd_buffer->cell_kind: true
+ * when the recorded shape does not match that kind's frozen contract, an
+ * unset or unrecognized kind included.  Defined in r3v_native_queue.c beside
+ * the arming path that is its production caller, and declared here so a
+ * host-only test holds one kind's arm to a real cell without driving a
+ * submission. */
+bool r3v_native_cell_geometry_unfrozen(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* Whether the command buffer carries a draw, a pending dispatch, a query
+ * op, or an event op: every recorded work kind besides a transfer copy.
+ * The submission boundary's inline-ordering test and any route admitting a
+ * copy-only shape both read this one function, so a work kind added to the
+ * command buffer is added here once rather than at each caller's own field
+ * list. */
+bool r3v_native_cmd_buffer_has_other_recorded_work(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* Walks a routed fill's record along the transport that carried it: the
+ * commit, the ioctl entry, the acceptance the kernel gave, and the
+ * completion the device retired, stopping where the transport stopped.
+ * device_submission moves with the phase, so a record past the entry
+ * reports a submission and one short of it reports none.  A record whose
+ * ladder cannot advance is dropped rather than left describing a transport
+ * it did not take.  Defined in r3v_native_queue.c beside the submission
+ * tail that is its production caller. */
+void r3v_native_fill_route_record_transport(
+   struct r3v_native_cmd_buffer *cmd_buffer, bool ioctl_accepted,
+   bool completion_retired);
 
 /* Prepares one recorded command buffer's transport ahead of
  * vkQueueSubmit: relocation list, completion reference, the single CS

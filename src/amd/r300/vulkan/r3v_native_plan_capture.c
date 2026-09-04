@@ -65,6 +65,9 @@ static const char *const sampled_roles[] = {"vertex", "color", "texture"};
  */
 static const char *const public_route_roles[] = {"carrier", "color"};
 static const char *const direct_write_roles[] = {"color"};
+/* The public fill names one buffer object, written by the 2D engine and
+ * read by nothing in the stream. */
+static const char *const rb2d_fill_roles[] = {"destination"};
 static const char *const producer_roles[] = {"carrier"};
 static const char *const reingest_roles[] = {"carrier", "color"};
 static const char *const float2_tuple_roles[] = {"carrier", "vertex"};
@@ -91,6 +94,9 @@ r3v_native_plan_capture_slot_role(enum r3v_native_cell_kind kind,
       break;
    case R3V_NATIVE_CELL_KIND_DIRECT_WRITE:
       TABLE(direct_write_roles);
+      break;
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
+      TABLE(rb2d_fill_roles);
       break;
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:
       TABLE(producer_roles);

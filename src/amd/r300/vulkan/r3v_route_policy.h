@@ -54,13 +54,19 @@ enum r3v_execution_policy {
    R3V_EXECUTION_AUTO = 0,
    R3V_EXECUTION_GPU_ONLY,
    R3V_EXECUTION_CPU_REFERENCE,
+   /* A value that names no policy.  Device creation refuses it rather than
+    * running under a policy the operator did not ask for. */
+   R3V_EXECUTION_POLICY_INVALID,
 };
 
-/* Reads the policy a value names, defaulting to AUTO.  The values are the
- * enum's own lowercase names; anything else is AUTO, so a typo leaves the
- * default rather than opening a stricter or looser path.  The caller
- * supplies the value it cached, which keeps the environment read at device
- * creation beside the route gates.
+/* Reads the policy a value names.  The values are the enum's own lowercase
+ * names, matched exactly; an unset or empty value is AUTO, the default an
+ * operator who asked for nothing gets.  Any other value names no policy and
+ * reads as R3V_EXECUTION_POLICY_INVALID, because "gpu_onl" resolving to AUTO
+ * would let host fallback run the work an operator required on the GPU and
+ * would carry that into the evidence a run produces.  The caller supplies the
+ * value it cached, which keeps the environment read at device creation beside
+ * the route gates.
  */
 enum r3v_execution_policy r3v_execution_policy_from_value(const char *value);
 
@@ -192,6 +198,31 @@ struct r3v_execution_provenance {
 bool r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
                                     enum r3v_execution_policy policy,
                                     const char **reason);
+
+/* Whether AUTO may take a route the caller named no other way.
+ *
+ * A route's maturity says its delivery is proven; automatic selection says
+ * the device is the faster executor for the request at hand.  The two are
+ * separate facts, and a receipt buys only the first.  No crossover between
+ * the host store loop and any R300 GPU route has been measured, so no route
+ * is admitted for automatic selection and AUTO keeps the host path; a route
+ * earns a row here when a measured crossover names the size above which the
+ * device wins.
+ *
+ * The predicate governs the ungated promoted path alone.  A gated route is
+ * named by the operator who opened its gate, and GPU_ONLY is named by the
+ * caller, so both are explicit requests rather than a default this decides.
+ * Every GPU row the ledger carries is gated today, which
+ * r3v_route_policy_test holds as its own invariant, so the first ungated
+ * promotion is what makes this branch live.
+ */
+bool r3v_route_automatic_selection_admitted(enum r300_operation_route_id id);
+
+/* The predicate over an explicit admitted set, which is what lets a test
+ * exercise both answers without a ledger row that does not exist. */
+bool r3v_route_automatic_selection_admitted_in(
+   const enum r300_operation_route_id *admitted, uint32_t count,
+   enum r300_operation_route_id id);
 
 /* Chooses the executor for one request.
  *

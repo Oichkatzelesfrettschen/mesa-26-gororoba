@@ -105,6 +105,28 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       if (row->gate != NULL)
          device->compute_route_gates[row->route_id] = exact_gate(row->gate);
    }
+   /* The policy is read once, so a route decision cannot change under a
+    * command buffer already recorded against it. */
+   device->execution_policy =
+      r3v_execution_policy_from_value(getenv("R3V_NATIVE_EXECUTION_POLICY"));
+   /* The declared submission identity rides the same read: an operator
+    * authorizes one submission, and a value that appears after a command
+    * buffer is recorded authorizes nothing this device performs. */
+   const char *identity =
+      getenv("R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3");
+   device->authorized_fill_identity = NULL;
+   if (identity != NULL &&
+       strlen(identity) ==
+          sizeof(device->authorized_fill_identity_storage) - 1) {
+      /* Copied rather than pointed at: a getenv result is valid until the
+       * next environment mutation, and an authorization the environment can
+       * replace under a recorded command buffer authorizes nothing.  A
+       * value of any other width is not a digest and stays undeclared. */
+      memcpy(device->authorized_fill_identity_storage, identity,
+             sizeof(device->authorized_fill_identity_storage));
+      device->authorized_fill_identity =
+         device->authorized_fill_identity_storage;
+   }
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
@@ -194,6 +216,22 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
    device->manifest_dir = r3v_native_manifest_dir();
    r3v_native_device_refresh_delivery_gates(device);
+
+   /* A value naming no policy refuses the device.  Reading it as AUTO would
+    * let host fallback run the work an operator required on the GPU, and the
+    * run would carry that into its evidence unremarked. */
+   if (device->execution_policy == R3V_EXECUTION_POLICY_INVALID) {
+      const char *declared = getenv("R3V_NATIVE_EXECUTION_POLICY");
+      vk_queue_finish(&device->queue.vk);
+      radeon_drm_vk_device_finish(&device->drm);
+      vk_device_finish(&device->vk);
+      vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+      return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: R3V_NATIVE_EXECUTION_POLICY names no "
+                       "policy: \"%s\"; the values are auto, gpu_only, and "
+                       "cpu_reference",
+                       declared != NULL ? declared : "");
+   }
 
    /* Plan capture opens the CS ioctl with the hazard gate closed, so it
     * exists only under the preloaded drm-shim and only with the gate

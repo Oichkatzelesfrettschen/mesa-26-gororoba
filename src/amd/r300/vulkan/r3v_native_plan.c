@@ -40,6 +40,7 @@ static const struct {
    {R3V_NATIVE_CELL_KIND_UNDECLARED, "undeclared"},
    {R3V_NATIVE_CELL_KIND_TRIANGLE, "triangle"},
    {R3V_NATIVE_CELL_KIND_DIRECT_WRITE, "direct_write"},
+   {R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC, "rb2d_fill_public"},
    {R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, "r2vb_producer"},
    {R3V_NATIVE_CELL_KIND_R2VB_REINGEST, "r2vb_reingest"},
    {R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE, "r2vb_float2_tuple"},
