@@ -68,43 +68,56 @@ def _git(root, *args, **kwargs):
 
 
 def collect(root, base):
-    """Return the four candidate sources, each a sorted path list."""
+    """Return each candidate source twice: every changed path, and the
+    subset a linter can open.
+
+    The reported counts come from the unfiltered lists, so a deletion or
+    an unmerged entry still marks the tree as carrying work outside HEAD.
+    The judged set comes from the ACMRT lists, since a deleted path has
+    no bytes to lint."""
     merge_base = _git(root, "merge-base", base, "HEAD")
     if not merge_base:
         raise GitQueryFailed("merge-base %s HEAD named no commit" % base)
-    committed = _git(root, "diff", "--name-only", FILTER, merge_base[0],
-                     "HEAD", paths=True)
-    return {
-        "committed": sorted(committed),
-        "staged": sorted(_git(root, "diff", "--cached", "--name-only", FILTER,
-                              paths=True)),
-        "unstaged": sorted(_git(root, "diff", "--name-only", FILTER,
-                                paths=True)),
-        "untracked": sorted(_git(root, "ls-files", "--others",
-                                 "--exclude-standard", paths=True)),
+    anchor = merge_base[0]
+    queries = {
+        "committed": ("diff", "--name-only", anchor, "HEAD"),
+        "staged": ("diff", "--cached", "--name-only"),
+        "unstaged": ("diff", "--name-only"),
     }
+    every, live = {}, {}
+    for name, query in queries.items():
+        every[name] = sorted(_git(root, *query, paths=True))
+        live[name] = sorted(_git(root, *(query + (FILTER,)), paths=True))
+    untracked = sorted(_git(root, "ls-files", "--others", "--exclude-standard",
+                            paths=True))
+    every["untracked"] = untracked
+    live["untracked"] = untracked
+    return {"every": every, "live": live}
 
 
 def select(sources, mode):
     """Return (files, refusal) for the mode's judged set."""
+    every, live = sources["every"], sources["live"]
     if mode == "committed":
         # index bytes are absent from HEAD, so a populated index unbinds the
-        # verdict from the declared SHA exactly as an unstaged edit does
-        outside = (sources["staged"] + sources["unstaged"]
-                   + sources["untracked"])
+        # verdict from the declared SHA exactly as an unstaged edit does; a
+        # staged or unstaged deletion is that same work, so the unfiltered
+        # lists decide cleanliness
+        outside = sorted(set(every["staged"] + every["unstaged"]
+                             + every["untracked"]))
         if outside:
             return [], ("%d file(s) sit outside HEAD: %s"
-                        % (len(outside), ", ".join(sorted(set(outside))[:5])))
-        judged = sources["committed"]
+                        % (len(outside), ", ".join(outside[:5])))
+        judged = live["committed"]
     else:
-        judged = (sources["committed"] + sources["staged"]
-                  + sources["unstaged"] + sources["untracked"])
+        judged = (live["committed"] + live["staged"] + live["unstaged"]
+                  + live["untracked"])
     return sorted(set(judged)), None
 
 
 def contract(root, base, mode, sources, files):
     digest = hashlib.sha256("\n".join(files).encode()).hexdigest()[:12]
-    counts = " ".join("%s=%d" % (name, len(sources[name]))
+    counts = " ".join("%s=%d" % (name, len(sources["every"][name]))
                       for name in ("committed", "staged", "unstaged",
                                    "untracked"))
     return ("candidates base=%s mode=%s %s total=%d digest=%s"
@@ -164,7 +177,7 @@ def self_test():
             _fixture(root)
             mutate(root)
             sources = collect(root, "main")
-            if not sources[name]:
+            if not sources["every"][name]:
                 failures.append("%s: the source reports no file" % name)
                 continue
             files, refusal = select(sources, "working-tree")
@@ -211,6 +224,20 @@ def self_test():
         if refusal or files != ["tracked.c"]:
             failures.append("committed mode failed on a clean tree: "
                             "%r %r" % (files, refusal))
+
+    # a staged or unstaged deletion is work outside HEAD, so committed
+    # mode refuses it even though the path has no bytes left to lint
+    for staged in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _fixture(root)
+            (root / "tracked.c").unlink()
+            if staged:
+                _run(root, "add", "-A", "tracked.c")
+            _, refusal = select(collect(root, "main"), "committed")
+            if refusal is None:
+                failures.append("committed mode accepted a %s deletion"
+                                % ("staged" if staged else "unstaged"))
 
     # a path carrying whitespace stays one candidate through the lint call
     with tempfile.TemporaryDirectory() as tmp:
@@ -291,10 +318,11 @@ def main():
               file=sys.stderr)
         return 1
     if args.lint_with:
-        missing = [name for name in files if not (root / name).exists()]
-        if missing:
+        unopenable = [name for name in files
+                      if not os.access(str(root / name), os.R_OK)]
+        if unopenable:
             print("FAIL  comment-hygiene candidates: %d judged path(s) do not "
-                  "resolve: %s" % (len(missing), ", ".join(missing[:5])),
+                  "open: %s" % (len(unopenable), ", ".join(unopenable[:5])),
                   file=sys.stderr)
             return 1
         if not files:
