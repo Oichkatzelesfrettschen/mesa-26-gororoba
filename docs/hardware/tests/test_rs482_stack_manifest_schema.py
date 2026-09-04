@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Calibrate accepted and rejected RS482 stack manifest claims."""
+"""Calibrate accepted and rejected RS485M stack manifest claims."""
 
 from __future__ import annotations
 

@@ -39,6 +39,17 @@
  * visible, and the entry survives power loss only after the directory's own
  * metadata reaches storage.  Returns 0 or a negative errno.
  */
+
+/* The board the gate compares.  A harness that replaces the fact provider
+ * also declares the platform it stands in for; production resolves it from
+ * the device and the firmware tables at physical-device creation. */
+static enum r300_platform_id
+arming_platform(const struct r3v_native_device *device)
+{
+   return device->arming_provider != NULL ? device->arming_platform
+                                          : device->pdevice->platform_id;
+}
+
 static int
 fsync_dir(const char *dir)
 {
@@ -1235,7 +1246,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    r3v_native_arming_collect_from(
       device->arming_provider != NULL ? device->arming_provider
                                       : r3v_native_arming_host_provider(),
-      &facts, device->pdevice->pci_vendor_id,
+      &facts, arming_platform(device), device->pdevice->pci_vendor_id,
       device->pdevice->pci_device_id, cmd_buffer->cell_kind, ib_digest,
       device->manifest_dir, kernel_release, sizeof(kernel_release),
       module_srcversion, sizeof(module_srcversion));
@@ -1738,6 +1749,16 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       char kernel_release[128];
       char module_srcversion[128];
       struct r3v_native_arming_facts facts = {0};
+      /* The board a submission would reach is read from the device
+       * itself, so it costs no environment read and no file probe and
+       * holds whatever the hazard gate says.  The attended collection
+       * below writes these same three fields again from the same
+       * source; a capture or replay pass, which never enters that
+       * branch, still carries the identity its own gate compares.
+       */
+      facts.platform_id = arming_platform(device);
+      facts.pci_vendor_id = device->pdevice->pci_vendor_id;
+      facts.pci_device_id = device->pdevice->pci_device_id;
       const bool serial_kind =
          cmd_buffer->cell_kind ==
          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
@@ -1762,7 +1783,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             device->arming_provider != NULL
                ? device->arming_provider
                : r3v_native_arming_host_provider(),
-            &facts, device->pdevice->pci_vendor_id,
+            &facts, arming_platform(device),
+            device->pdevice->pci_vendor_id,
             device->pdevice->pci_device_id, cmd_buffer->cell_kind,
             ib_digest, device->manifest_dir, kernel_release,
             sizeof(kernel_release), module_srcversion,
@@ -1878,6 +1900,26 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "attended run");
       }
 
+      /* Identity precedes evidence.  A capture session records its
+       * entry and a replay session binds and latches, and both then
+       * reach the ioctl, so the board is compared before any of that
+       * state moves rather than after it: a plan file on a device that
+       * resolves to no qualified board refuses here, with the session
+       * unlatched and nothing recorded.
+       */
+      if (device->plan_capture_active || device->plan_replay_active) {
+         const enum r3v_native_arming_verdict board =
+            r3v_native_arming_platform_verdict(&facts);
+         if (board != R3V_NATIVE_ARMING_ARMED) {
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: submission refused: %s",
+                             r3v_native_arming_verdict_name(board));
+         }
+      }
+
       /* Plan capture records the whole entry the live replay must
        * present -- digest, dwords, kind, emitter, every relocation --
        * before the ioctl reaches the shim, and refuses the submission
@@ -1946,9 +1988,17 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * before the ioctl.  The exact ioctl payload retains before that gate,
        * and a retention failure refuses with nothing sent.
        */
+      /* Capture and replay stand outside the attended-run ceremony: they
+       * declare no bundle digest, pin no kernel or module identity, and
+       * spend no one-shot token, so the full evaluation has nothing to
+       * judge.  The board underneath is a separate question, and this
+       * path still reaches DRM_RADEON_CS, so the identity half of the
+       * gate holds here too -- a plan file on a device sharing
+       * 1002:5974 that resolves to no qualified board refuses.
+       */
       enum r3v_native_arming_verdict arming =
          device->plan_capture_active || device->plan_replay_active
-            ? R3V_NATIVE_ARMING_ARMED
+            ? r3v_native_arming_platform_verdict(&facts)
             : r3v_native_arming_evaluate(&facts);
       const bool serial_attended =
          serial_kind && device->submit_hazard_accepted &&

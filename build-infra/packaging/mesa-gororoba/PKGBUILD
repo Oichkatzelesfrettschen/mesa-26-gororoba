@@ -33,7 +33,7 @@
 #
 #   * RELEASE / system install: this PKGBUILD -> /usr, replacing stock mesa.
 #     Promote here once a change is stable enough for normal desktop and
-#     headless probe use on the target RS482 host.
+#     headless probe use on the target RS485M host.
 #
 # Install / reinstall:
 #   sudo pacman -U mesa-gororoba-*.pkg.tar.zst

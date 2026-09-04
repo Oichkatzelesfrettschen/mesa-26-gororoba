@@ -13,7 +13,7 @@
 
 /* The default config must reproduce the historical TCL_BYPASS VAP_CNTL word
  * exactly, or a default screen would change the emitted register.  This is the
- * value the live RS482 readback shows. */
+ * value the live RS485M readback shows. */
 _Static_assert((R300_PVS_NUM_SLOTS(R300_HB_TCL_DEFAULT_NUM_SLOTS) |
                 R300_PVS_NUM_CNTLRS(R300_HB_TCL_DEFAULT_NUM_CNTLRS) |
                 R300_PVS_NUM_FPUS(R300_HB_TCL_DEFAULT_VERT_FPU) |
@@ -77,7 +77,7 @@ r300_hb_tcl_init(struct r300_screen *screen)
        !hb_tcl || strcmp(hb_tcl, "1") != 0)
       return;
 
-   /* The R2VB self-test emits the RS482 TCL_BYPASS packet sequence, whose
+   /* The R2VB self-test emits the RS485M TCL_BYPASS packet sequence, whose
     * producer contract requires the no-TCL, zero-vertex-FPU capability shape.
     * The producer and capture call sites are reproducible with
     * `(rg --fixed-strings r300_emit_rs482_r2vb_compute_loop
@@ -102,15 +102,15 @@ r300_hb_tcl_init(struct r300_screen *screen)
     *
     * has_hardware_tcl is deliberately left as the chipset set it (false for
     * RS48x): that flag means the full hardware-TCL vertex path is proven to
-    * execute.  The measured RS482 draw-correlation oracle reached the PVS upload
+    * execute.  The measured RS485M draw-correlation oracle reached the PVS upload
     * and draw path through this route, then the first hardware-TCL draw wedged
     * the ring before a fence signal or framebuffer verdict.  That observation
-    * proves this route is not usable on the measured RS482 system; it does not
+    * proves this route is not usable on the measured RS485M system; it does not
     * distinguish a non-executing PVS from a PVS-internal hang, bad VAP resource
     * setup, or another hardware-TCL command-stream fault.  The manual
-    * radeon_gpu_reset lever was tested on that wedged RS482 ring and froze the
+    * radeon_gpu_reset lever was tested on that wedged RS485M ring and froze the
     * host through the r300_asic_reset VAP/GA soft-reset path, so this harness
-    * remains attended and one physical reboot per wedge on the measured RS482
+    * remains attended and one physical reboot per wedge on the measured RS485M
     * path.  The has_tcl && !has_hardware_tcl state stays the honest
     * "attempting hardware TCL while PVS execution remains unproven"
     * configuration; the only has_hardware_tcl readers gate on !has_tcl, so they
@@ -120,7 +120,7 @@ r300_hb_tcl_init(struct r300_screen *screen)
 
    fprintf(stderr,
            "r300: RS48x HB_TCL route force on; has_tcl=true num_vert_fpus=%u "
-           "(has_hardware_tcl stays %u; the measured RS482 first hardware-TCL "
+           "(has_hardware_tcl stays %u; the measured RS485M first hardware-TCL "
            "draw wedges before a fence or framebuffer verdict; PVS execution "
            "remains unproven -- experimental only)\n",
            cfg->vert_fpu, screen->caps.has_hardware_tcl);

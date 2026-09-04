@@ -1,7 +1,7 @@
 # R3V native attended public direct GA Flat color-0 two-draw cell procedure
 
 The public direct GA Flat color-0 two-draw cell carries a Vulkan `Flat` RGBA varying from the
-application-shaped surface to RS482 silicon through the direct hardware route: the varying rides the
+application-shaped surface to RS485M silicon through the direct hardware route: the varying rides the
 TCL-bypass color 0 vector instead of TEX0, and the GA selects the provoking vertex's color per
 primitive (`r3v_interpolation_lowering.h`, `r300_flat_color0_plan.h`).  Two render passes each draw
 the reference triangle in a distinct vertex order under one pipeline, so the provoking vertex -- the
@@ -174,7 +174,7 @@ canonical stream against the replication stream also fails the canonical check.
 `r3v-interpolation-lowering` refuses the direct route and selects replication for a partially
 clipped primitive.
 
-A delivered receipt proves end-to-end Vulkan `Flat` (RGBA) through RS482 GA provoking-vertex
+A delivered receipt proves end-to-end Vulkan `Flat` (RGBA) through RS485M GA provoking-vertex
 selection over color 0, judged against the replication oracle's expected images, on the reference
 triangle and the reference two-pass concatenation alone.  Hypothesis to record: the color 0 lane may
 carry lower precision than TEX0, a possibility the quarter-step alphas are built to tolerate without
@@ -189,7 +189,7 @@ and `second_expected.bin`, each the shape's full footprint including the canary 
 ## Result
 
 The cell holds its silicon receipt from one attended submission on
-RS482 at Mesa `42ff2b207c8`, boot
+RS485M at Mesa `42ff2b207c8`, boot
 `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming report matching
 all five declarations against cell blake3 `3646c222`, retained as
 `steinmarder-r300/src/re/r300/results/r3v-native-public-flat-color0-two-draw-first-delivery-rs482`.
@@ -213,7 +213,7 @@ the SB600 counter reported `armed verified 65535 65535 65369`,
 `disarmed verified 65362`, a 140 us guarded interval over
 `DRM_IOCTL_RADEON_CS` through fence completion, and `inactive` after.
 
-The receipt proves end-to-end Vulkan Flat, RGB and alpha, through RS482
+The receipt proves end-to-end Vulkan Flat, RGB and alpha, through RS485M
 GA provoking-vertex selection over color 0: the device-fetched carriers
 still held three distinct records per pass with the provoking first, so
 host replication did not run, and each target is byte-equal to the

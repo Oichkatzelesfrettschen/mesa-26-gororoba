@@ -3,7 +3,7 @@
  *
  * Attended public GPU-producer cell: drives the application-shaped
  * Vulkan surface -- render pass, pipeline, vertex buffer, draw, submit
- * -- so RS482 silicon executes the composed route.  The producer pass
+ * -- so RS485M silicon executes the composed route.  The producer pass
  * rasterizes the application's records into the carrier and the
  * consumer cell fetches that same buffer object as its vertex stream,
  * both inside one DRM_RADEON_CS, so two independent oracles decide the
@@ -307,7 +307,7 @@ main(int argc, char **argv)
     */
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 

@@ -1,0 +1,11 @@
+# Working files for an in-flight investigation live here so they survive a
+# session while staying out of history: a session-local temporary directory
+# does not outlive the session that made it, and a durable finding belongs in
+# docs/hardware or the steinmarder-r300 evidence tree instead.
+#
+# This file and README.md are tracked; everything beside them is not.
+*
+!.gitignore
+!README.md
+# The boundary snapshot a later session resumes from.
+!RESUME.md

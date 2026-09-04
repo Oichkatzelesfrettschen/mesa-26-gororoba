@@ -1,4 +1,4 @@
-# Source this file to select the RS482-focused mesa-gororoba loader policy, or
+# Source this file to select the RS485M-focused mesa-gororoba loader policy, or
 # use mesa-gororoba-run to scope it to one command.
 
 if [ "${GOROROBA_MESA_PREFIX+x}" = x ]; then

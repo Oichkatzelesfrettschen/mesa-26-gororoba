@@ -12,7 +12,7 @@ struct pipe_context;
 struct pipe_video_codec;
 
 /* Report g3dvl MPEG-1/MPEG-2 shader-decode capabilities; 0 for everything else
- * (no UVD on RS482/R300-class hardware). */
+ * (no UVD on RS485M/R300-class hardware). */
 int
 r300_get_video_param(struct pipe_screen *screen,
                      enum pipe_video_profile profile,

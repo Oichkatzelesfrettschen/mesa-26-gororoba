@@ -4,7 +4,7 @@
 
 r300 validation on the Vostro (full GL/GLES plus the ati_r300 ICD) needs a
 repeatable fast lane that uses clang 22,
-keeps ccache warm on the slow RS482 host, and sends cache misses to LAN distcc
+keeps ccache warm on the slow RS485M host, and sends cache misses to LAN distcc
 volunteers.  The default lane uses `ccache clang-22` in Meson, with
 `CCACHE_PREFIX=distcc` in the environment.  ccache resolves the compiler on the
 Vostro before invoking distcc, so volunteers for this lane need the same

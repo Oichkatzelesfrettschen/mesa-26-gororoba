@@ -5,7 +5,7 @@
  * passes with a draw each through the application-shaped Vulkan
  * surface under one pipeline whose vertex output and fragment input
  * carry the Flat decoration, and drives the concatenated stream to a
- * live DRM_RADEON_CS on RS482 silicon.  The pipeline selects the direct
+ * live DRM_RADEON_CS on RS485M silicon.  The pipeline selects the direct
  * hardware route (r3v_interpolation_lowering.h): the varying rides the
  * TCL-bypass color 0 vector, each draw's first-draw contract programs
  * GA_COLOR_CONTROL with RGB0 and ALPHA0 FLAT and PROVOKING_VERTEX_FIRST
@@ -439,7 +439,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 
@@ -1228,7 +1228,7 @@ main(int argc, char **argv)
 
    printf("[verdict] %s\n",
           pass_verdict
-             ? "end-to-end Vulkan Flat (RGBA) delivered through RS482 GA "
+             ? "end-to-end Vulkan Flat (RGBA) delivered through RS485M GA "
                "provoking-vertex selection over color 0: each target is "
                "byte-equal to the CPU replication oracle's expected image"
           : crossed || other_vertex_present || alpha_interpolated

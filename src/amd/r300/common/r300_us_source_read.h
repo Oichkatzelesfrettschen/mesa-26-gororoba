@@ -9,7 +9,7 @@
  * saturate.  This header models a separate execution stage: what the US
  * delivers when an instruction reads a stored value as a source operand.
  *
- * Measured behavior (RS482 silicon, sign-flip mov discriminator on a cold
+ * Measured behavior (RS485M silicon, sign-flip mov discriminator on a cold
  * first-contact boot, byte-for-bit against precommitted models): a negative
  * nonzero source operand read from an input or temporary register arrives
  * one FP24 ULP smaller in magnitude -- the immediately preceding lattice
@@ -46,7 +46,7 @@ extern "C" {
 
 /* Execution-stage model for the US source-operand read.  IDENTITY is the
  * ideal read (the stored value arrives unchanged, bit for bit);
- * RS48X_NEG_PREDECESSOR is the measured RS482 behavior described above.
+ * RS48X_NEG_PREDECESSOR is the measured RS485M behavior described above.
  * Storage conversion is a separate stage: producers land values on the
  * lattice through r300_fp24_store_quantize_f32, and the read model then
  * operates on stored lattice values.  The pipeline is
@@ -64,7 +64,7 @@ enum r300_source_read_model {
 /* FP32 bit patterns of the generic FP24 lattice boundaries.  Min normal
  * 2^-61 and max finite (2 - 2^-16) * 2^65 follow from s1e7m16 with bias 62.
  * Consumers that require a byte-identical transport can impose a narrower
- * route contract; the measured RS482 R2VB identity ceiling lives in
+ * route contract; the measured RS485M R2VB identity ceiling lives in
  * r300_r2vb_carrier_delivery.h rather than in this generic storage model. */
 #define R300_FP24_MIN_NORMAL_F32_BITS 0x21000000u
 #define R300_FP24_MAX_FINITE_F32_BITS 0x607FFF80u

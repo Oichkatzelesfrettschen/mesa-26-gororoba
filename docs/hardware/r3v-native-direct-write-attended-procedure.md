@@ -2,7 +2,7 @@
 
 This document is the procedure for the attended direct-write control
 run: one live `DRM_RADEON_CS` submission of the fixed 2D solid-fill
-cell from the native R3V ICD, physically attended on the RS482 host,
+cell from the native R3V ICD, physically attended on the RS485M host,
 on a sacrificial boot, under a separate explicit authorization. The
 control's mechanism, register authority, observable, and failure
 classification live in `docs/hardware/r300-direct-write-control.md`
@@ -61,7 +61,7 @@ replay verdicts to the running kernel.
 
 ## Preconditions
 
-The run proceeds only when all of the following hold on the RS482 host
+The run proceeds only when all of the following hold on the RS485M host
 itself:
 
 - The four suites (`r300`, `r3v`, `radeon-drm-vk`, `drm-shim`)

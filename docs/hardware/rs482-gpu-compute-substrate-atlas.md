@@ -1,4 +1,4 @@
-# RS482 GPU compute substrate atlas
+# RS485M GPU compute substrate atlas
 
 RS482 (Radeon Xpress 1100/1150, PCI `1002:5974`, `CHIP_RS480`, R300-class
 integrated graphics, vertex engine absent) runs its admitted compute kernels on
@@ -22,7 +22,7 @@ of those algebras contains it.
 
 Every claim below carries one class.
 
-- **silicon**: a retained RS482 hardware run witnesses the exact value.
+- **silicon**: a retained RS485M hardware run witnesses the exact value.
 - **known(source)**: read directly from source, a register definition, or a
   generated table in this repository, the kernel fork, or the register
   databases.
@@ -160,7 +160,7 @@ instructions is unreachable on a production module.
 ### The TCL-bypass width invariant
 
 `r300.c:r300_cs_tcl_bypass_vtx_output_check` runs before the stock bounds check
-and encodes an RS482-observed hang as a static parse rejection: an underfed
+and encodes an RS485M-observed hang as a static parse rejection: an underfed
 TCL-bypass draw leaves the geometry assembler waiting for dwords that never
 arrive and wedges the vertex front end and the ring (known(source), and the
 wedge class is silicon--a VAP/PVS wedge recovers only through a cold power
@@ -203,7 +203,7 @@ The fork adds an admission epoch around every RS400/RS480 MMIO, aperture, and
 page-table access, keyed on `radeon.h:radeon_rs4xx_hardware_target`. A failed
 reset latches `gpu_parked`, after which every MMIO leaf returns without issuing
 a non-posted HyperTransport transaction and command submission refuses
-(known(source)); an attended park on RS482 returned `-EIO` from object creation
+(known(source)); an attended park on RS485M returned `-EIO` from object creation
 and idle waits and `-EBUSY` from submission, and only a physical cold power cycle
 restored production (`radeon-custom` deployment record; silicon). Nonbaseline
 reset masks are compile-time restricted to the 3D-domain bits with static
@@ -220,9 +220,9 @@ with sync-flood on timeout (vostro1000-re
 
 ## VAP and the vertex fetcher
 
-RS482 has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
+RS485M has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
 `num_vert_fpus` for `CHIP_RS480`, so it stays zero and `has_hardware_tcl` is
-false; `r300_chip_identity.c:r300_rs480_die_facts` records
+false; `r300_chip_identity.c:r300_rs4xx_igp_family_facts` records
 `.vertex_engine_absent = true` (known(source)). A `PVS_NUM_FPUS = 2` readback is
 a software TCL-bypass artifact rather than a unit count (steinmarder
 `2026-06-09-rs482-vap-cntl-num-fpus-provenance.md`; silicon), and forcing a
@@ -286,7 +286,7 @@ arithmetic. `SC_SCISSOR1` bounds the generated region, `GA_POLY_MODE` selects
 fill mode per winding, and `GB_ENABLE` carries the per-primitive stuff enables
 and the per-unit texture-coordinate source select. Die facts cap point size at
 64 and hardware line width at 8
-(`r300_chip_identity.c:r300_rs480_die_facts`; known(source)); the
+(`r300_chip_identity.c:r300_rs4xx_igp_family_facts`; known(source)); the
 `POINTSIZE_MAX` register field maximum of 10922 is a different quantity, the
 field's own range in subpixel units.
 
@@ -328,7 +328,7 @@ known(source)).
 Sixteen texture units exist across the family
 (`r300_chipset.c`; known(source)). Dimension ceilings separate by role: the
 sampler axis caps at 2048, the render span at 2560, and a tiled row at 2048
-(`r300_chip_identity.c:r300_rs480_die_facts`; known(source)), which is why the
+(`r300_chip_identity.c:r300_rs4xx_igp_family_facts`; known(source)), which is why the
 grid fold picks 2048--the smaller cap keeps a surface both renderable and
 sampleable. The virtualization document owns how a logical extent above 2048
 decomposes.
@@ -502,7 +502,7 @@ model is clamp rather than an FP24 rule--the blend unit is a separate
 reduction stage downstream of the ALU, not an ALU operation
 (`r300_numeric_domain.c`, RB3D_BLEND domain; known(source)).
 
-Four blend reductions are silicon-confirmed on RS482
+Four blend reductions are silicon-confirmed on RS485M
 (`r300_numeric_domain.c` catalog rows; silicon): `BLEND_ACC_REDUCTION`, a
 histogram-style accumulate through `COMB_FCN_ADD` with factors ONE and ONE;
 `REDUCE_MIN` through `R300_COMB_FCN_MIN`, 6/6 byte-exact; `REDUCE_MAX` through
@@ -569,7 +569,7 @@ Publication runs through the destination cache control register.
 when idle; the 2D `DSTCACHE_CTLSTAT` 0x1714 is a different register and is
 blind-read safe (steinmarder `rs482_cache_ctlstat_register_lineage.tsv`;
 silicon). The at-rest value is pinned as a die fact in
-`r300_chip_identity.c:r300_rs480_die_facts` and cross-checked against
+`r300_chip_identity.c:r300_rs4xx_igp_family_facts` and cross-checked against
 `r300_reg.h` by the chip-identity test.
 
 ## ZB: depth, stencil, and the occlusion counter
@@ -595,7 +595,7 @@ samples-passed query--is confirmed by a probe ladder
 (`r300_numeric_domain.c`; silicon). `DECR`, `INVERT`, and the wrapping pair have
 no located witness: the carrier-algebra decomposition lists all of them as gaps.
 The driver catalog's `STENCIL_INVERT_NOT` row claims a 0xA5 to 0x5A bit-exact
-RS482 result from a named probe, and neither that probe script nor its bundle is
+RS485M result from a named probe, and neither that probe script nor its bundle is
 locatable in either evidence repository, so `INVERT` reads as hypothesized here
 with its bundle recovery on the probe frontier.
 
@@ -671,7 +671,7 @@ resolve to cache-disabled through PAT index 2 over write-back MTRR; the
 allocation class named coherent is allocation terminology and not an observed
 coherence property (vostro1000-re `uma-gart-cacheability-graph.md`;
 observation). The framebuffer CPU mapping resolves to write-combining. The K8
-host GART is off for the graphics translation path, so the RS482 GTT is the
+host GART is off for the graphics translation path, so the RS485M GTT is the
 active translation.
 
 The rule a host read of device output must invalidate before reading is
@@ -684,7 +684,7 @@ Two cache control registers publish results. `RB3D_DSTCACHE_CTLSTAT` 0x4e4c
 publishes color writes and reads `0x00000002` at rest; `ZB_ZCACHE_CTLSTAT`
 0x4f18 publishes depth and stencil writes and reads `0x00000001` at rest. Both
 values are pinned as die facts
-(`r300_chip_identity.c:r300_rs480_die_facts`; silicon). The 0x4e4c read is safe
+(`r300_chip_identity.c:r300_vostro1000_rs485m_specimen_facts`; silicon). The 0x4e4c read is safe
 only against an idle engine.
 
 The GTT size sets differ by scope rather than disagreeing.
@@ -796,7 +796,7 @@ Ordered by what unblocks the most verb routes.
   `BITWISE_LOGICOP_MAP` and `BITWISE_NOT_MAP`, and reconciles the catalog with
   the corpus.
 - **Stencil `INVERT` witness recovery**, then `DECR`, `INCR_WRAP`, and
-  `DECR_WRAP`. The catalog names an RS482 probe and a 0xA5 to 0x5A result whose
+  `DECR_WRAP`. The catalog names an RS485M probe and a 0xA5 to 0x5A result whose
   script and bundle are absent from both evidence repositories; recover the
   bundle or rerun. Unblocks `STENCIL_INVERT`.
 - **DP4 with non-dyadic operands** and the **FMA fusion boundary**: whether the

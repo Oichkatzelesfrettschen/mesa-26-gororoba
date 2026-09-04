@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Verify that each RS482 kernel authority axis has an immutable identity."""
+"""Verify that each RS485M kernel authority axis has an immutable identity."""
 
 from __future__ import annotations
 

@@ -1,13 +1,13 @@
-# RS482 composed surfaces: 4096 images and the 4-sample count
+# RS485M composed surfaces: 4096 images and the 4-sample count
 
 `dEQP-VK.info.device_properties` fails the R3V ICD on three limit
 families below the Vulkan 1.0 core minimums, and each has a driver
-route to a pass on the RS482 die.  This document records the
+route to a pass on the RS485M die.  This document records the
 mechanism, the evidence each rung rests on, the falsifier, and the
 receipt that lets the advertised limit widen.  The limits and the
 minimums come from the CTS limit table (`vktApiFeatureInfo.cpp`,
 `featureLimitTable`, "Based on 1.0.28 Vulkan spec"); the die facts from
-`src/amd/r300/common/r300_chip_identity.c` (`r300_rs480_die_facts`).
+`src/amd/r300/common/r300_chip_identity.c` (`r300_rs4xx_igp_family_facts`).
 
 ## The three families
 
@@ -17,7 +17,7 @@ minimums come from the CTS limit table (`vktApiFeatureInfo.cpp`,
 | `maxFramebufferWidth/Height`, `maxViewportDimensions` | 64 | 4096 | render span 2560 | executed cell ceiling, then composed |
 | seven sample-count masks | `1` | `1\|4` | `GB_AA_CONFIG`, `GB_MSPOS0/1`, `RB3D_AARESOLVE_*` present; 2x/4x FBO MSAA executes 8/8 | unbuilt native MSAA path |
 
-The sample-count row corrects an earlier assumption: RS482 has
+The sample-count row corrects an earlier assumption: RS485M has
 multisample hardware.  steinmarder-r300 finding
 `2026-05-26-r300-default-fb-msaa-readback-not-driver-specific` records
 FBO MSAA depth/stencil at samples 2 and 4 passing 8/8 on the hardware
@@ -130,7 +130,7 @@ R1 first (one emitter parameter, smallest cell), then R4 (its resolve
 cell is independent of composition and closes seven limits at once),
 then R2 (composition, the largest surface), then R3 (sampling, which
 needs R2's composed images).  Every rung's attended cell is an
-operator-armed run on the RS482; the host-model receipts and the
+operator-armed run on the RS485M; the host-model receipts and the
 CS-track replay precede it.  The non-pass ledger row
 `limit_below_core_minimum` stays until all four rungs retain their
 cells, and `dEQP-VK.info.device_properties` is the judge.

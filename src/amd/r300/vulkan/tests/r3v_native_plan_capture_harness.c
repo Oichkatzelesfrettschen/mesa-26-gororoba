@@ -12,6 +12,7 @@
 
 #include "r3v_native.h"
 #include "r3v_native_reference_spirv.h"
+#include "r3v_native_shim_arming.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/tests/r300_retained_route_digests.h"
@@ -148,6 +149,13 @@ create(VkInstance *instance_out, VkDevice *device_out,
    *device_out = device;
    if (result != VK_SUCCESS)
       return result;
+
+   /* The shim device reports no subsystem or DMI identity, so it resolves
+    * to no board.  A harness that replaces the fact provider declares the
+    * platform it stands in for, which is what keeps the capture path's
+    * identity gate exercised here rather than bypassed.
+    */
+   r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
 #define LOAD(name) name = (PFN_##name)gdpa(device, #name); assert(name);
    DEVICE_COMMANDS(LOAD)
 #undef LOAD

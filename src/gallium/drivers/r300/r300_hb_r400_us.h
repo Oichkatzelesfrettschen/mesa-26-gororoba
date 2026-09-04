@@ -13,7 +13,7 @@ struct r300_screen;
  * The RS48x integrated parts are classified R300-class (caps.is_r400 false),
  * so the driver never programs R400_US_CODE_BANK / R400_US_CODE_EXT /
  * R400_US_ALU_EXT_ADDR_* and the fragment program is compiled to the R300
- * envelope (64 ALU, 32 TEX, 32 constants).  The RS482 MMIO census reads the
+ * envelope (64 ALU, 32 TEX, 32 constants).  The RS485M MMIO census reads the
  * whole R400 US register footprint as present-and-responding on this silicon
  * (US_CODE_BANK retains written values), so whether the US block actually
  * executes R400 code banks is an open, testable question -- the same shape as

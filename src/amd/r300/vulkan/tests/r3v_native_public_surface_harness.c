@@ -1687,8 +1687,7 @@ main(void)
           */
          r3v_native_device_from_handle(device)->manifest_dir = manifest_dir;
          r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
-         r3v_native_device_from_handle(device)->arming_provider =
-            &r3v_native_shim_arming_provider;
+         r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
          const VkResult armed_result = vkQueueSubmit(
             queue, 1,
             &(VkSubmitInfo){
@@ -1822,8 +1821,7 @@ main(void)
          r3v_native_device_from_handle(device)->manifest_dir =
             flat_manifest_dir;
          r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
-         r3v_native_device_from_handle(device)->arming_provider =
-            &r3v_native_shim_arming_provider;
+         r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
          const VkResult flat_result = vkQueueSubmit(
             queue, 1,
             &(VkSubmitInfo){
@@ -1979,8 +1977,7 @@ main(void)
          r3v_native_device_from_handle(device)->manifest_dir =
             direct_manifest_dir;
          r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
-         r3v_native_device_from_handle(device)->arming_provider =
-            &r3v_native_shim_arming_provider;
+         r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
          const VkResult direct_result = vkQueueSubmit(
             queue, 1,
             &(VkSubmitInfo){
@@ -4166,7 +4163,7 @@ main(void)
       /* The direct GB W_SELECT route: with every probe gate closed the
        * NoPerspective interface selects the route on its own, records
        * the stream the gated W_SELECT candidate records byte for byte
-       * -- the word the RS482 census classified affine -- differing
+       * -- the word the RS485M census classified affine -- differing
        * from the Smooth interface's stream in the one GB_SELECT dword,
        * executes over the ACCEPT triangle, and refuses the partially
        * clipped one ahead of carrier publication. */

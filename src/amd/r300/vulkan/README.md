@@ -9,8 +9,10 @@ SPDX-License-Identifier: MIT
 `r3v` is an experimental Vulkan installable client driver for the AMD
 RS480-family integrated graphics processors:
 
-- Radeon Xpress 200M, RS482, PCI `1002:5974`;
-- Radeon Xpress 1100/1150 mobile, RS485 marketing name, PCI `1002:5975`.
+- Radeon Xpress 1100/1150, RS482 and RS485 sharing PCI `1002:5974`; the
+  Vostro 1000 specimen is the Xpress 1150, whose option ROM names the part
+  RS485/M;
+- Radeon Xpress 200M, RS482M, PCI `1002:5975`.
 
 The implementation is the native Radeon DRM ICD: Vulkan objects, command
 records, shader admission, R300 command-stream construction, DRM submission,
@@ -58,9 +60,14 @@ silicon has no documented native compute-dispatch packet.
 | Kernel driver | `radeon` | Linux `drivers/gpu/drm/radeon/` |
 | Renderer string | `ATI RS480` | r300g `r300_get_renderer()` |
 
-Mesa's PCI table uses the `RS482_` prefix for both device IDs. The second device
-is marketed as RS485. Source paths and PCI identities control technical claims;
-marketing names remain descriptive only.
+Mesa's PCI table uses the `RS482_` prefix for both device IDs. `0x5975` is the
+RS482M part; `0x5974` is shared by RS482 and RS485, and the specimen this
+repository measures is the mobile RS485M. `0x5974` alone cannot distinguish
+the two: the part resolves from the PCI device id, the board's PCI subsystem
+id, the DMI product name, and the option-ROM firmware string jointly, with no
+one of the four overriding the others (`r300_platform_identity_lookup`,
+`runtime_match_basis`, `identity_evidence` in
+`src/amd/r300/common/r300_chip_identity.h`).
 
 The current r300g path routes RS480-family vertex-stage execution through
 Gallium Draw software TCL because Mesa classifies the family with
@@ -123,8 +130,9 @@ Real submission sits behind a conjunction, evaluated by
 `r3v_native_arming_evaluate`: the exact-value gate
 `R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1`, an operator-declared bundle
 digest matching the BLAKE3 of the IB about to travel, the authorized
-RS482 PCI identity, the declared kernel release, the declared radeon
-module srcversion, and an evidence directory that exists and carries no
+Dell Vostro 1000 RS485M platform identity, the declared kernel release,
+the declared radeon module srcversion, and an evidence directory that
+exists and carries no
 attempt token. Reaching the ioctl writes that token by exclusive
 creation, so the directory admits one attempt, and an armed submit
 carries one command buffer. Any closed factor fails closed with
@@ -161,12 +169,12 @@ native surface outside that draw decomposes as follows:
   CPU-copy present path.
 The drm-shim harness and offline kernel-parser replay carry the
 pre-hardware evidence; the attended-cell runner has carried one armed
-`DRM_RADEON_CS` submission on RS482 that the kernel accepted and retired
+`DRM_RADEON_CS` submission on RS485M that the kernel accepted and retired
 clean while the color target retained its sentinel fill. The cause of
 that unwritten target is underdetermined -- the run retained no
 predecessor register values, and
 `docs/hardware/r3v-native-attended-cell-procedure.md` carries the
-canonical classification -- while a later RS482 silicon matrix proved
+canonical classification -- while a later RS485M silicon matrix proved
 that an unestablished `US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, or
 `SC_SCREENDOOR` each alone suppresses every color write, and the
 original cell owned none of the three. The recorded
@@ -176,7 +184,7 @@ are emitted in pipeline order ahead of the cell, the poison-model checker
 proves the stream establishes every clause itself, and the recorder,
 manifest tool, and harness reference all build the one byte-identical
 successor IB. The successor cell has rendered its predicted interior on
-RS482 with the exterior and canary rows clean (retained bundle
+RS485M with the exterior and canary rows clean (retained bundle
 `results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`
 in the steinmarder-r300 evidence tree;
 `docs/hardware/r3v-implementation-boundaries.md` carries the
@@ -402,7 +410,7 @@ around the runner (`r3v_cs_ioctl_trace.py trace --allow-tracee-failure`)
 declares that exit as expected or refuses every shard carrying a fail;
 and `dEQP-VK.api.device_init.create_instance_device_intentional_alloc_fail.basic`
 injects one allocation failure per allocation index of instance and
-device creation, 604 s on the RS482 host's K8 against the real device,
+device creation, 604 s on the RS485M host's K8 against the real device,
 so the `api-version-init` slice runs under a case ceiling above that
 (1800 s) while the other hazard-free slices finish every case inside
 120 s.  The receipt records declared values verbatim and inherited values as
@@ -427,7 +435,7 @@ and `R3V_NATIVE_PLAN_NONCE`): the planning pass under the drm-shim
 captures the shard's ordered submissions, `r3v_native_plan_tool
 compose` seals them with the run identities, and the device replays
 the plan alone, binding at the first submission to the DSO digest, the
-built source SHA prefix, the kernel and module identity, the RS482 PCI
+built source SHA prefix, the kernel and module identity, the RS485M PCI
 identity, the nonce, an empty evidence directory, and closed gates,
 admitting each submission's whole entry before any device-visible
 effect, holding the IB at the ioctl boundary to the admitted digest,
@@ -496,7 +504,7 @@ The `transfer`, `draw`, `synchronization`, and `robustness` slices
 capture nothing either: over all 416,370 cases in their 23 shards, run
 one process per case under the drm-shim with capture declared, zero
 transcripts carry an entry, and a closed-gate target run of the same
-shards on RS482 reproduces the host model's status on every case
+shards on RS485M reproduces the host model's status on every case
 (0 of 24,206 witnessed ioctls are `DRM_IOCTL_RADEON_CS`).  Two recipe
 facts from those passes: the transcript path is bounded by
 `R3V_NATIVE_PLAN_PATH_MAX` (255 bytes) including the case name a
@@ -557,8 +565,8 @@ recomputes the transported ELF and loader identities, requires the
 binary interpreter to resolve to the verifier host's interpreter, and
 uses that trusted loader's `--list` mode with `LD_*` overrides removed to
 confirm that the target providers export every required symbol version.
-The sealed binary digest preserves the producer's XED census.  The RS482
-host's loader refuses a binary whose ISA-needed note exceeds the
+The sealed binary digest preserves the producer's XED census.  The
+RS485M host's loader refuses a binary whose ISA-needed note exceeds the
 baseline.  The K8 build therefore compiles
 with `-march=x86-64 -mtune=k8` and links with `gcc -B<dir>` over the target's
 baseline `Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`,

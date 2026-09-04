@@ -1,4 +1,4 @@
-# RS482 r300-first loader policy for interactive shells.
+# RS485M r300-first loader policy for interactive shells.
 
 export __EGL_VENDOR_LIBRARY_FILENAMES="${__EGL_VENDOR_LIBRARY_FILENAMES:-/usr/share/glvnd/egl_vendor.d/50_mesa.json}"
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json}"

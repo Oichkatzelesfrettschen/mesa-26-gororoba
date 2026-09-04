@@ -200,7 +200,7 @@ fp16_class_ref(uint16_t bits)
 /* Classify using the same predicate triple as fp16_class_ref() -- this is
  * the implementation under test.  Both share the same algorithm here so the
  * suite verifies the type definitions and table partition, not an independent
- * algorithm; the RS482 silicon probe will be the independent check. */
+ * algorithm; the RS485M silicon probe will be the independent check. */
 static enum r300_fp16_class
 classify_fp16(uint16_t bits)
 {

@@ -4,7 +4,7 @@
  * Attended runner for the compute identity carrier cell: the public
  * Vulkan compute surface -- storage buffers, descriptor set, the
  * reference identity-map kernel, one dispatch, submit -- on the identity
- * verb's GPU route, so RS482 silicon fetches the input buffer as F32_4
+ * verb's GPU route, so RS485M silicon fetches the input buffer as F32_4
  * records through the VAP and writes the output buffer as one C4_32_FP
  * slot row through the color backend.  The driver's own admission
  * records the CPU bit copy as the oracle and its post-completion
@@ -227,7 +227,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
    /* The compute surface stands behind its gate: the one family carries

@@ -53,7 +53,7 @@ struct r300_first_draw_contract_entry {
 
 struct r300_first_draw_params {
    /* Mesa chip family. The contract accepts CHIP_RS480, which identifies the
-    * RS482/RS485 TCL-bypass path that owns these register values.
+    * RS485M TCL-bypass path that owns these register values.
     */
    enum radeon_family chip_family;
    /* Render-target extent in pixels; scissor and clip derive from it. */

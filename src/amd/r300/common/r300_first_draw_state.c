@@ -27,7 +27,7 @@ scissor_word(uint32_t x, uint32_t y)
 }
 
 /* The table lists every register a verified-rendering r300g TCL-bypass
- * triangle on RS482 establishes before its draw and the fixed cell does
+ * triangle on RS485M establishes before its draw and the fixed cell does
  * not, in emission order, with the traced reference value. Entries whose
  * value derives from the
  * draw parameters carry 0 here and are resolved in

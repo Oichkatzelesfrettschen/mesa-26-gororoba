@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Retained RS482 (1002:5974) route identities: the BLAKE3 of each
+ * Retained RS485M (1002:5974) route identities: the BLAKE3 of each
  * little-endian dword stream an attended route-dispatch-timing run
  * submitted on silicon, with the dword counts and the consumer split the
  * composed stream declared.  A test that emits or submits either route

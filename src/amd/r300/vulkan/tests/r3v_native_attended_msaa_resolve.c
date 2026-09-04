@@ -3,7 +3,7 @@
  *
  * Attended multisample resolve cell: records the resolve cell through
  * r3v_native_record_msaa_resolve and drives it to a live
- * DRM_RADEON_CS on RS482 silicon.  The render half draws the analytic
+ * DRM_RADEON_CS on RS485M silicon.  The render half draws the analytic
  * triangle into a sample-expanded surface with the subsample set live,
  * then the resolve half covers the extent under
  * RB3D_AARESOLVE_CTL.AARESOLVE_MODE_RESOLVE with a fragment constant no
@@ -239,7 +239,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 

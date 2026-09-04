@@ -416,7 +416,7 @@ init_pipe_state(struct vl_mc *r)
        * construction -- except on a single-component render target (R8/I8/L8
        * take the I8 hardware format with the COLORMASK_RRRR swizzle), where
        * the blender reads the replicated color as the alpha and SRC_ALPHA
-       * squares the source: measured on RS480, the decode target holds
+       * squares the source: measured on RS485M, the decode target holds
        * value^2 and the intra mid-level 0.5 lands at 0.25.  ONE delivers the
        * shader value on every render-target format. */
       blend.rt[0].rgb_src_factor = PIPE_BLENDFACTOR_ONE;

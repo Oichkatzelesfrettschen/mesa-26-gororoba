@@ -121,7 +121,7 @@ canary row.
 ## Result
 
 The cell holds its silicon receipt from one attended submission on
-RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
+RS485M, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
 report matching all five declarations against cell blake3 `247949a2`.
 Every predicted value held:
 

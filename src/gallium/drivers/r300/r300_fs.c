@@ -789,7 +789,7 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
  * after the unsplit program failed at the emit ceiling, and it is adopted
  * only when BOTH halves compile clean through the RC backend.  The NIR
  * instruction-count estimate is refused as an authority because the pair
- * scheduler deflates vec4 chains: the three RS482 capacity cases estimate
+ * scheduler deflates vec4 chains: the three RS485M capacity cases estimate
  * 127-130 NIR ALU yet emit 69-86 RC slots. */
 
 #define R300_MP_MAX_SCRATCH     4
@@ -969,11 +969,12 @@ r300_mp_unpack_carries(nir_builder *b, nir_def **rt_texs,
 /* Decompose a deferred partition's shape so the cut criterion is visible from
  * the gate log: the control-flow structure (block count), the raw ALU/TEX mass,
  * and -- for a single-block program -- every SSA def crossing the naive budget
- * cut, with opcode and component count.  Measured on the three RS482 capacity
- * cases, this shows the deferral cause is frontier width, not control flow:
- * every case is single-block at this point (ifs bcsel-flatten upstream) with
- * frontiers of one vec4, four vec4s (an fmul/fabs/fneg tail over two bases),
- * and seven mixed-type defs of fifteen components. */
+ * cut, with opcode and component count.  Measured on the three RS485M
+ * capacity cases, this shows the deferral cause is frontier width, not
+ * control flow: every case is single-block at this point (ifs
+ * bcsel-flatten upstream) with frontiers of one vec4, four vec4s (an
+ * fmul/fabs/fneg tail over two bases), and seven mixed-type defs of
+ * fifteen components. */
 static void
 r300_nir_fs_report_defer_shape(nir_shader *nir, unsigned per_pass_budget)
 {
@@ -1540,7 +1541,7 @@ retry:
     }
 
     /* Classic front end, default open; R300_USE_CLASSIC_FS=0 opts out.
-     * Qualified on RS482 against the full deqp-gles2 functional suite with
+     * Qualified on RS485M against the full deqp-gles2 functional suite with
      * zero attributable gate-on deltas: every rejection falls back to
      * nir_to_rc by name, non-plain external state never enters selection,
      * and a post-classic backend error retries the whole translation with

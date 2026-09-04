@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Attended FLOAT_4 + FLOAT_2 tuple cell: submits the fetched tuple pass
- * to RS482 silicon through the native ICD, retains the carrier and the
+ * to RS485M silicon through the native ICD, retains the carrier and the
  * fetched vertex stream durably, and classifies the read-back.  The
  * carrier is the whole rendered result: each slot judges the silicon's
  * PSC XY01 expansion of one two-dword model record to (x, y, 0, 1), so
@@ -196,7 +196,7 @@ main(int argc, char **argv)
     */
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 

@@ -1,5 +1,5 @@
 First UBSan findings from the maximal ASan+UBSan r300 driver (profile 7_), surfaced
-running `vkcube --c 40` under mesa-gororoba-debug-asan-run on RS482 (boot stable, driver
+running `vkcube --c 40` under mesa-gororoba-debug-asan-run on RS485M (boot stable, driver
 selected GPU and rendered).  These are latent undefined-behaviour sites the release/
 debug drivers execute silently; UBSan flags them.  Most are the common mesa "pointer
 arithmetic / member access computed before a null check" idiom (technically UB, often

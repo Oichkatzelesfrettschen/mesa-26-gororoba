@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Direct hardware Flat interpolation plan through color 0 on RS482.
+ * Direct hardware Flat interpolation plan through color 0 on RS485M.
  */
 
 #include "r300_flat_color0_plan.h"

@@ -29,7 +29,8 @@ enum r3v_native_arming_verdict {
    R3V_NATIVE_ARMING_BUNDLE_MISMATCH,
    R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND,
    R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT,
-   R3V_NATIVE_ARMING_CHIP_MISMATCH,
+   R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED,
+   R3V_NATIVE_ARMING_PLATFORM_MISMATCH,
    R3V_NATIVE_ARMING_KERNEL_UNDECLARED,
    R3V_NATIVE_ARMING_KERNEL_MISMATCH,
    R3V_NATIVE_ARMING_MODULE_UNDECLARED,
@@ -165,9 +166,14 @@ struct r3v_native_arming_facts {
     * so the run has no attended-run identity.
     */
    bool nonmaximum_extent;
-   /* The enumerated chip, checked against the authorized RS480-family
-    * identity rather than any supported identity.
+   /* The board the device sits on, resolved once at physical-device
+    * creation from the PCI tuple and the DMI product name.  The PCI id
+    * alone names a die class shared by boards whose memory, display,
+    * thermal, and recovery behavior these campaigns never qualified, so
+    * the gate compares the resolved platform and keeps the id as the
+    * consistency check it can be.
     */
+   enum r300_platform_id platform_id;
    uint32_t pci_vendor_id;
    uint32_t pci_device_id;
    /* Deployment identity: release string and radeon module srcversion. */
@@ -205,15 +211,34 @@ struct r3v_native_arming_facts {
 #define R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS 64u
 #define R3V_NATIVE_ARMING_BURST_MAX_DRAWS 64u
 
-/* The authorized attended-run chip: RS482, the only identity whose
- * silicon behavior the cell's falsifiers were written against.
+/* The authorized attended-run board: the Dell Vostro 1000 RS485M
+ * specimen, the only platform whose silicon behavior the cell's
+ * falsifiers were written against.  The PCI pair is the shared id that
+ * board carries, kept as a consistency check on the resolved platform
+ * rather than as the authority.
  */
+#define R3V_NATIVE_ARMING_PLATFORM \
+   R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M
 #define R3V_NATIVE_ARMING_PCI_VENDOR ((uint32_t)R300_PCI_VENDOR_ATI)
 #define R3V_NATIVE_ARMING_PCI_DEVICE ((uint32_t)R300_PCI_DEVICE_RS48X_5974)
 
 /* Pure decision over the collected facts. */
 enum r3v_native_arming_verdict
 r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts);
+
+/* The board-identity half of the gate, which is a fact about the silicon a
+ * submission reaches rather than about the ceremony around one attended
+ * run.  Plan capture and replay set aside the attended-run factors -- the
+ * declared bundle digest, kernel release, module srcversion, evidence
+ * directory, and one-shot token -- because a replay is not an attended run
+ * and carries no token; the board underneath is the same question either
+ * way, so every path that reaches DRM_RADEON_CS asks this one.  Returns
+ * R3V_NATIVE_ARMING_ARMED when the resolved platform is the authorized
+ * board and its PCI pair agrees.
+ */
+enum r3v_native_arming_verdict
+r3v_native_arming_platform_verdict(
+   const struct r3v_native_arming_facts *facts);
 
 const char *
 r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict);
@@ -247,7 +272,8 @@ const struct r3v_native_arming_provider *r3v_native_arming_host_provider(void);
  */
 void r3v_native_arming_collect_from(
    const struct r3v_native_arming_provider *provider,
-   struct r3v_native_arming_facts *facts, uint32_t pci_vendor_id,
+   struct r3v_native_arming_facts *facts,
+   enum r300_platform_id platform_id, uint32_t pci_vendor_id,
    uint32_t pci_device_id, enum r3v_native_cell_kind cell_kind,
    const char *actual_ib_blake3, const char *evidence_dir,
    char *kernel_storage, size_t kernel_size, char *module_storage,
@@ -261,6 +287,7 @@ void r3v_native_arming_collect_from(
  * call frame that built them.
  */
 void r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
+                               enum r300_platform_id platform_id,
                                uint32_t pci_vendor_id, uint32_t pci_device_id,
                                enum r3v_native_cell_kind cell_kind,
                                const char *actual_ib_blake3,

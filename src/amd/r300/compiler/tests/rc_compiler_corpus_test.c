@@ -22,12 +22,12 @@
  *
  * Scope is the compiler transform only.  The production fragment pipeline
  * wires this pass for r500 with optimization on (r3xx_fragprog.c gates it on
- * is_r500 && opt), so an r300-class part such as RS482 never runs it; the
+ * is_r500 && opt), so an r300-class part such as RS485M never runs it; the
  * 7-bit encoding it implements is nonetheless radeon-compiler-wide, and the
- * corpus exercises that encoding under the RS482-relevant r300 swizzle caps.
+ * corpus exercises that encoding under the RS485M-relevant r300 swizzle caps.
  *
  * The later rows pin down rc_get_stats (compiler/radeon_compiler.c), because
- * RS482-facing notes and admissions use its cycle model as the software-side
+ * RS485M-facing notes and admissions use its cycle model as the software-side
  * timing proxy.  The model counts one cycle per non-BEGIN_TEX instruction, then
  * layers the BEGIN_TEX penalty and the extra MAD cycle on top.  The corpus
  * keeps those rows on the r300-class path with is_r500 = 0, so the tests do

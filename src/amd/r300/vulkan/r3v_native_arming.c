@@ -25,6 +25,27 @@ declared(const char *value)
 }
 
 enum r3v_native_arming_verdict
+r3v_native_arming_platform_verdict(const struct r3v_native_arming_facts *facts)
+{
+   if (facts == NULL)
+      return R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED;
+
+   /* An unresolved board is the shared-id case: 1002:5974 sits on desktop
+    * Xpress 1100 systems too, and nothing here was qualified on one. */
+   if (facts->platform_id == R300_PLATFORM_ID_NONE)
+      return R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED;
+   if (facts->platform_id != R3V_NATIVE_ARMING_PLATFORM)
+      return R3V_NATIVE_ARMING_PLATFORM_MISMATCH;
+   /* The resolved platform implies its id; a disagreement means the
+    * resolution and the enumerated device came from different places. */
+   if (facts->pci_vendor_id != R3V_NATIVE_ARMING_PCI_VENDOR ||
+       facts->pci_device_id != R3V_NATIVE_ARMING_PCI_DEVICE)
+      return R3V_NATIVE_ARMING_PLATFORM_MISMATCH;
+
+   return R3V_NATIVE_ARMING_ARMED;
+}
+
+enum r3v_native_arming_verdict
 r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
 {
    if (facts == NULL)
@@ -68,9 +89,10 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    if (facts->nonmaximum_extent)
       return R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT;
 
-   if (facts->pci_vendor_id != R3V_NATIVE_ARMING_PCI_VENDOR ||
-       facts->pci_device_id != R3V_NATIVE_ARMING_PCI_DEVICE)
-      return R3V_NATIVE_ARMING_CHIP_MISMATCH;
+   const enum r3v_native_arming_verdict platform =
+      r3v_native_arming_platform_verdict(facts);
+   if (platform != R3V_NATIVE_ARMING_ARMED)
+      return platform;
 
    if (!declared(facts->authorized_kernel_release))
       return R3V_NATIVE_ARMING_KERNEL_UNDECLARED;
@@ -149,8 +171,12 @@ r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict)
       return "recorded cell kind carries no frozen geometry contract";
    case R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT:
       return "extent differs from the cell kind's frozen geometry";
-   case R3V_NATIVE_ARMING_CHIP_MISMATCH:
-      return "enumerated chip is not the authorized RS482 identity";
+   case R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED:
+      return "the board did not resolve to a named platform; the shared "
+             "PCI id names a die class and not a qualified system";
+   case R3V_NATIVE_ARMING_PLATFORM_MISMATCH:
+      return "the resolved board is not the authorized Dell Vostro 1000 "
+             "RS485M platform";
    case R3V_NATIVE_ARMING_KERNEL_UNDECLARED:
       return "authorized kernel release undeclared "
              "(R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE)";
@@ -265,7 +291,8 @@ r3v_native_arming_host_provider(void)
 void
 r3v_native_arming_collect_from(
    const struct r3v_native_arming_provider *provider,
-   struct r3v_native_arming_facts *facts, uint32_t pci_vendor_id,
+   struct r3v_native_arming_facts *facts,
+   enum r300_platform_id platform_id, uint32_t pci_vendor_id,
    uint32_t pci_device_id, enum r3v_native_cell_kind cell_kind,
    const char *actual_ib_blake3, const char *evidence_dir,
    char *kernel_storage, size_t kernel_size, char *module_storage,
@@ -280,6 +307,7 @@ r3v_native_arming_collect_from(
    facts->authorized_ib_blake3 =
       provider->read_env(provider->ctx, "R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
    facts->actual_ib_blake3 = actual_ib_blake3;
+   facts->platform_id = platform_id;
    facts->pci_vendor_id = pci_vendor_id;
    facts->pci_device_id = pci_device_id;
    facts->authorized_kernel_release =
@@ -356,6 +384,7 @@ r3v_native_arming_collect_from(
 
 void
 r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
+                          enum r300_platform_id platform_id,
                           uint32_t pci_vendor_id, uint32_t pci_device_id,
                           enum r3v_native_cell_kind cell_kind,
                           const char *actual_ib_blake3,
@@ -363,8 +392,8 @@ r3v_native_arming_collect(struct r3v_native_arming_facts *facts,
                           size_t kernel_size, char *module_storage,
                           size_t module_size)
 {
-   r3v_native_arming_collect_from(&host_provider, facts, pci_vendor_id,
-                                  pci_device_id, cell_kind,
+   r3v_native_arming_collect_from(&host_provider, facts, platform_id,
+                                  pci_vendor_id, pci_device_id, cell_kind,
                                   actual_ib_blake3, evidence_dir,
                                   kernel_storage, kernel_size,
                                   module_storage, module_size);

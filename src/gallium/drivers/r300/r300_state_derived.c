@@ -735,7 +735,7 @@ static void r300_update_rs_block(struct r300_context *r300)
      * color rasterizes a color vector the VAP never produces (RS_COUNT counts
      * one color, VAP_OUTPUT_VTX_FMT_0 declares none), the over-rasterization
      * shape the comment at the head of this function names as a lockup.
-     * Silicon-tested on RS482: this declared POS+TEX0 shape still wedges the
+     * Silicon-tested on RS485M: this declared POS+TEX0 shape still wedges the
      * vertex frontend (RBBM latches CP+VAP+GA busy, backend idle) on the
      * first position-only SWTCL draw, so the VAP/RS declaration mismatch is
      * not the wedge cause by itself; the lever is retained for register-
@@ -822,7 +822,7 @@ static void r300_update_rs_block(struct r300_context *r300)
 }
 
 /* Decoded VAP/RS producer-consumer tuple: the semantic register fields that
- * decide whether the RS482 vertex frontend drains or wedges.  Buffer addresses,
+ * decide whether the RS485M vertex frontend drains or wedges.  Buffer addresses,
  * relocations, draw-packet counts, and viewport constants are excluded -- they
  * are not part of the producer-consumer contract r300_update_rs_block documents,
  * so two draws with identical tuples share the same frontend fate regardless of
@@ -839,7 +839,7 @@ struct r300_vap_rs_tuple {
 };
 
 /* Contract violations, most-load-bearing first.  The dummy-color signature is
- * the RS482 GL SW-TCL wedge discriminator: r300_update_rs_block rasterizes one
+ * the RS485M GL SW-TCL wedge discriminator: r300_update_rs_block rasterizes one
  * dummy color (SWIZ_0001) only when a draw declares no color and no texcoord, so
  * the RS rasterizes a color vector VAP never produces -- the "more outputs
  * rasterized than set in VAP/GA -> locks up" rule at the head of this file. */

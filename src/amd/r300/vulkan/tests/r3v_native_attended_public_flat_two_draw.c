@@ -5,7 +5,7 @@
  * draw each through the application-shaped Vulkan surface under one
  * pipeline whose vertex output and fragment input carry the Flat
  * decoration, and drives the concatenated stream to a live
- * DRM_RADEON_CS on RS482 silicon.  The vertex module writes the
+ * DRM_RADEON_CS on RS485M silicon.  The vertex module writes the
  * position doubled as the varying, so the three vertices carry three
  * distinct saturated colors; each pass draws the triangle in its own
  * vertex order, so the provoking vertex -- the first, per the Vulkan
@@ -305,7 +305,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 

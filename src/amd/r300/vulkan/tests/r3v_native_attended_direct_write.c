@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Attended direct-write control: submits the fixed 2D solid-fill cell to
- * RS482 silicon through the native ICD, retains the complete color target
+ * RS485M silicon through the native ICD, retains the complete color target
  * durably, and classifies the outcome.  This program performs a live
  * DRM_RADEON_CS and runs only under the authorization and procedure in
  * docs/hardware/r3v-native-direct-write-attended-procedure.md; the
@@ -174,7 +174,7 @@ main(int argc, char **argv)
     */
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
 
