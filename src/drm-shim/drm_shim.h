@@ -197,6 +197,12 @@ void drm_shim_device_atfork_parent(void);
 void drm_shim_device_atfork_child(void);
 void drm_shim_pci_device_setup(uint16_t vendor_id, uint16_t device_id,
                                const char *pci_slot, const char *driver_name);
+void drm_shim_pci_device_setup_subsystem(uint16_t vendor_id,
+                                         uint16_t device_id,
+                                         uint16_t subsystem_vendor_id,
+                                         uint16_t subsystem_device_id,
+                                         const char *pci_slot,
+                                         const char *driver_name);
 void drm_shim_platform_device_setup(const char *driver_name, const char *fullname, const char *compatible);
 void drm_shim_override_file(const char *contents,
                             const char *path_format, ...) PRINTFLIKE(2, 3);

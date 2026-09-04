@@ -2549,10 +2549,84 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       dependencies : [dep_vulkan_loader],
       c_args : [no_override_init_args],
     )
+    # Non-submitting RB2D fill arming runner: builds the attended fill
+    # cell's exact stream, resolves the board from sysfs, derives every
+    # arming factor and the declared submission identity for a declared
+    # destination handle, and stops at the authorization boundary.  The
+    # check drives a fixture sysfs tree through the positive ARMED leg and
+    # every single-fact refusal, and requires the runner to leave the
+    # evidence directory untouched.
+    r3v_native_rb2d_fill_arming_runner = executable(
+      'r3v_native_rb2d_fill_arming_runner',
+      [files('r3v_native_arming.c', 'r3v_fill_route.c',
+             'tests/r3v_native_rb2d_fill_arming_runner.c'), sha1_h],
+      include_directories : [r3v_native_inc, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [idep_mesautil],
+      link_with : [libr300_common],
+      gnu_symbol_visibility : 'hidden',
+    )
     r3v_native_loader_app_vars = r3v_native_cell_vars + {
       'VK_DRIVER_FILES' : _dev_icd.full_path(),
       'R3V_EXPECTED_ICD_DSO' : libvulkan_r3v.full_path(),
     }
+    # The public RB2D fill route from the loader: one vkCmdFillBuffer over
+    # the attended cell through vkQueueSubmit into the ICD VK_DRIVER_FILES
+    # names, with the drm-shim presenting the declared RS485M board and
+    # absorbing the one DRM_RADEON_CS.  The binary links libvulkan and libc
+    # alone; the symbol audit below holds that link surface.
+    r3v_native_loader_fill_application = executable(
+      'r3v_native_loader_fill_application',
+      files('tests/r3v_native_loader_fill_application.c'),
+      include_directories : [inc_include, inc_src],
+      dependencies : [dep_vulkan_loader, dep_dl],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-native-loader-fill-application',
+      prog_python,
+      args : [
+        files('tests/r3v_native_loader_fill_application_check.py'),
+        r3v_native_loader_fill_application,
+        r3v_native_rb2d_fill_arming_runner,
+      ],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                 r3v_native_loader_fill_application,
+                 r3v_native_rb2d_fill_arming_runner],
+      timeout : 300,
+      suite : ['r3v'],
+    )
+    if prog_nm_r3v.found()
+      test(
+        'r3v-native-loader-fill-application-symbol-audit',
+        prog_python,
+        args : [
+          files('tests/r3v_native_loader_application_symbol_audit.py'),
+          prog_nm_r3v.full_path(),
+          r3v_native_loader_fill_application.full_path(),
+        ],
+        depends : [r3v_native_loader_fill_application],
+        suite : ['r3v'],
+      )
+    endif
+    # The fill route's exact-submit-object replay through the full CS
+    # parser/tracker: parser-owned mutations reject, and the 2D destination
+    # geometry the kernel does not track is asserted as the ACCEPT it
+    # earns.  Runtime-gated on R3V_CS_TRACK_REPLAY_TOOL (skip 77 when
+    # unset).
+    test(
+      'r3v-native-rb2d-fill-submit-object-replay',
+      files('tests/run_rb2d_fill_submit_object_replay.sh')[0],
+      args : [r3v_native_loader_fill_application,
+              r3v_native_rb2d_fill_arming_runner],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                 r3v_native_loader_fill_application,
+                 r3v_native_rb2d_fill_arming_runner],
+      timeout : 120,
+      suite : ['r3v'],
+    )
     # The queue-claim report reaches the ICD through the loader under
     # VK_DRIVER_FILES and names the queue flags it advertises, the claim
     # mode behind the compute bit, and the verb ledger digest; the
@@ -3445,6 +3519,17 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       files('tests/r3v_native_direct_write_arming_runner_check.py'),
       r3v_native_direct_write_arming_runner,
       r3v_native_arming_runner,
+    ],
+    suite : ['r3v'],
+  )
+
+  test(
+    'r3v-native-rb2d-fill-arming-runner',
+    prog_python,
+    args : [
+      files('tests/r3v_native_rb2d_fill_arming_runner_check.py'),
+      r3v_native_rb2d_fill_arming_runner,
+      r3v_native_direct_write_arming_runner,
     ],
     suite : ['r3v'],
   )
