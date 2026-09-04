@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Registry implementation for the RS482/r300 typed numeric domain model.
+ * Registry implementation for the RS485M/r300 typed numeric domain model.
  *
  * The per-domain descriptor table defines numeric traits (rounding model,
  * exact bound kind and value, significand width, and special-value policy).
@@ -217,7 +217,7 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_subnormal     = true,
       .is_native_compute = false, /* emulated via integer limb arithmetic on FP24 substrate */
       .theorem           = "2-limb base-64: c0=a0*b0<=3969, c1=a0*b1+a1*b0<=3906, "
-                           "c2=a1*b1<=961; all < 2^17; carry limbs (r0,r1,r2) 12/12 exact on RS482 "
+                           "c2=a1*b1<=961; all < 2^17; carry limbs (r0,r1,r2) 12/12 exact on RS485M "
                            "(rs482_fp16_pow2_carry_exactness_20260607); classification 15/15 exact",
    },
 };
@@ -251,7 +251,7 @@ r300_vop_status_is_carrier_pending(enum r300_vop_status status)
           status == R300_VOP_HW_CONFIRMED_CARRIER_PENDING;
 }
 
-/* Virtual op catalog for the RS482 compute-as-raster substrate.
+/* Virtual op catalog for the RS485M compute-as-raster substrate.
  *
  * Each row records one named virtual op: domain, status, theorem, and an
  * optional descriptive implementation label.  External evidence paths belong
@@ -401,7 +401,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "FP16 bit[15]=sign, bits[14:10]=exp(0..31), bits[9:0]=mantissa; "
                          "class determined by (exp==0, exp==31, mantissa==0) partition; "
-                         "15/15 bit patterns exact on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
+                         "15/15 bit patterns exact on RS485M (rs482_fp16_pow2_carry_exactness_20260607)",
       .implementation_label = "r300_nir_lower_ieee16_classify",
    },
    {
@@ -409,7 +409,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "2-limb base-64: c1=a0*b1+a1*b0 <= 2*63*31=3906 < 2^17; "
-                         "carry limbs (r0,r1,r2) 12/12 exact on RS482; "
+                         "carry limbs (r0,r1,r2) 12/12 exact on RS485M; "
                          "RNE round from guard/sticky/lsb (rs482_fp16_pow2_carry_exactness_20260607)",
       .implementation_label = "r300_nir_lower_ieee16_mul_normal_rne",
    },
@@ -419,7 +419,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "Hamilton product = Cayley-Dickson multiplication at dim 4 = four "
                          "sign-permuted DP4s; sign-for-sign the machine-verified quat_mul; "
-                         "integer self-check (1,2,3,4)*(5,6,7,8) = (-60,12,30,24) exact on RS482",
+                         "integer self-check (1,2,3,4)*(5,6,7,8) = (-60,12,30,24) exact on RS485M",
       /* QMUL is four sign-permuted DP4s. */
       .implementation_label = "r300_nir_detect_qmul_pattern",
    },
@@ -465,7 +465,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "general 4x4 vertex transform out[j] = M * p[j], component i = "
                          "dot(row_i, p_j) -- four DP4s per vertex, one fullscreen invocation, "
                          "the absent vertex FPU's core operation run on the PRESENT FP24 "
-                         "fragment ALU.  RS480 has num_vert_fpus = 0 (r300_chipset.c never sets "
+                         "fragment ALU.  RS485M has num_vert_fpus = 0 (r300_chipset.c never sets "
                          "it for CHIP_RS480, so has_hardware_tcl = num_vert_fpus>0 = false): the "
                          "vertex engine is a breadboard, FPUs ABSENT not gated.  But the MVP "
                          "transform IS a vec4 of four DP4s, and DP4 is HW-confirmed on the "
@@ -619,7 +619,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "cannot both be hi-half-zero, and the R300 witness "
                          "C1637_R300SedenionZeroDivisor proves (e1+e10)(e5+e14)=0 with both "
                          "operands nonzero and NOT downcast (HW-confirmed reading exact zero "
-                         "on RS482, r2vb_sed_q0_verify).  So the admission predicate is a "
+                         "on RS485M, r2vb_sed_q0_verify).  So the admission predicate is a "
                          "two-operand hi-half-zero test feeding the octonion ODIV lane; the "
                          "general dim-16 division stays REJECTED (Hurwitz wall, see ODIV)",
       /* The admitted downcast lane reuses the octonion ODIV shape. */
@@ -818,7 +818,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "sum/4 per 2x2 via one LINEAR corner tap, exact iff "
                          "sum mod 4 == 0 (UNORM8 inter-level carrier); off-grid "
                          "sums quantize within one byte; UNORM8 payloads only "
-                         "(float payloads point-sample on RS482)",
+                         "(float payloads point-sample on RS485M)",
       .implementation_label = "r300_nir_detect_log4_pool_pattern",
    },
    {
@@ -876,7 +876,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * Vulkan spec: blend factors are ignored for VK_BLEND_OP_MIN/MAX.
        * R300_COMB_FCN_MIN = (4 << 12); r300_translate_blend_function selects it
        * (rg --fixed-strings R300_COMB_FCN_MIN src/).
-       * RS482 probe (r300_substrate_probe.sh): 6/6 byte-exact
+       * RS485M probe (r300_substrate_probe.sh): 6/6 byte-exact
        * (min(96,160)=96, min(192,64)=64 for both RGBA channels). */
       OP(REDUCE_MIN),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
@@ -891,7 +891,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       /* COMB_FCN_MAX: result = max(src_factor * src, dst_factor * dst).
        * R300_COMB_FCN_MAX = (5 << 12); r300_translate_blend_function selects it
        * (rg --fixed-strings R300_COMB_FCN_MAX src/).
-       * RS482 probe: 6/6 byte-exact (max(96,160)=160, max(192,64)=192). */
+       * RS485M probe: 6/6 byte-exact (max(96,160)=160, max(192,64)=192). */
       OP(REDUCE_MAX),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
@@ -907,7 +907,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * R300_COMB_FCN_SUB_CLAMP = (2 << 12); r300_translate_blend_function
        * selects it (rg --fixed-strings R300_COMB_FCN_SUB_CLAMP src/).
        * Equivalent to saturating subtract sat_sub(a, b) = max(a - b, 0).
-       * RS482 probe: 6/6 byte-exact (sat(96-160)=0, 192-64=128). */
+       * RS485M probe: 6/6 byte-exact (sat(96-160)=0, 192-64=128). */
       OP(SATURATING_DIFF),
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
       .status          = R300_VOP_HW_CONFIRMED,
@@ -925,7 +925,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        *  rg --fixed-strings maxColorAttachments src/amd/r300/vulkan/).
        * independentBlend=false: all 4 attachments share RB3D_CBLEND state,
        * but distinct FS output locations route to distinct color buffers.
-       * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
+       * RS485M probe: 4-attachment framebuffer, FS writes 0x01020304 /
        * 0x05060708 / 0x090a0b0c / 0x0d0e0f10 -- all 4 readback byte-exact. */
       OP(PARALLEL_4OUT_MAP),
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
@@ -944,7 +944,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * to the Gallium operation (rg --fixed-strings r3v_stencil_op_to_pipe
        * src/amd/r300/vulkan/; rg --fixed-strings PIPE_STENCIL_OP_INVERT src/).
        * Bitwise contract: INVERT(x) = ~x for all x in [0, 255].
-       * RS482 probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
+       * RS485M probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
        * Enables bitwise NOT on U8 stencil payloads without the ALU. */
       OP(STENCIL_INVERT_NOT),
       .domain          = R300_NUM_DOMAIN_U8_STENCIL,
@@ -970,7 +970,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_BOUNDARY,
       .theorem         = "out[gid] = f(in[gid]) for f in {rcp,rsq,sqrt,exp2,"
-                         "log2,sin,cos,fract,floor,round}; retained RS482 "
+                         "log2,sin,cos,fract,floor,round}; retained RS485M "
                          "cells validate the family within the declared 3% "
                          "relative bound, not bit-exact",
       .implementation_label = NULL,
@@ -980,7 +980,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_BOUNDARY,
       .theorem         = "out[gid] = f(a[gid], b[gid]) for f in {pow,div}; "
-                         "retained scalar and vec4 RS482 cells validate the "
+                         "retained scalar and vec4 RS485M cells validate the "
                          "family within the declared 3% relative bound, not "
                          "bit-exact",
       .implementation_label = NULL,

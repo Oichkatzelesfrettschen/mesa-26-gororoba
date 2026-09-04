@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * The varying TCL-bypass triangle cell's retained RS482 (1002:5974)
+ * The varying TCL-bypass triangle cell's retained RS485M (1002:5974)
  * identity: the BLAKE3 of the little-endian dword stream
  * r300_tcl_bypass_triangle_varying_reference_emit() emits --
  * position-plus-varying records through the pass-through fragment

@@ -15,7 +15,7 @@
 #include "amd/r300/common/r300_vertex_stream.h"
 
 /* The generic FP24 storage model reaches the 0xC0 exponent bin, while the
- * measured RS482 R2VB identity route delivers that bin with a decremented
+ * measured RS485M R2VB identity route delivers that bin with a decremented
  * exponent.  Keep the route ceiling explicit so generic source reads and
  * route-specific byte-identity admission cannot silently share a bound. */
 #define R300_R2VB_FP24_IDENTITY_MAX_F32_BITS 0x5FFFFF80u

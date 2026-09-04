@@ -22,7 +22,7 @@ r300_r2vb_option_is(const char *value, const char *expected)
    return value && strcmp(value, expected) == 0;
 }
 
-/* r300_parse_chipset maps the RS480, RS482, and RS485 PCI entries to
+/* r300_parse_chipset maps the RS485M, RS485M, and RS485 PCI entries to
  * CHIP_RS480.  The R2VB packet surface requires that family and the
  * canonical software-TCL capability shape before either capture path emits
  * command packets. */

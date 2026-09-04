@@ -96,7 +96,7 @@ radeon_ioctl_info(int fd, unsigned long request, void *arg)
       return 0;
 
    case RADEON_INFO_READ_REG:
-      /* The noop device models register reads as unsupported.  RS480 GART
+      /* The noop device models register reads as unsupported.  RS485M GART
        * memory-controller state remains a silicon-only observation. */
       return -EINVAL;
 
@@ -361,7 +361,7 @@ drm_shim_driver_init(void)
    shim_device.version_patchlevel = 0;
 
    if (radeon_family == CHIP_RS480) {
-      /* RS480 GART memory-controller state remains a silicon-only
+      /* RS485M GART memory-controller state remains a silicon-only
        * observation under the noop device. */
       drm_shim_hide_path(
          "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs");
@@ -996,13 +996,13 @@ test_identity(int fd, uint16_t expected_device_id,
       drm_shim_test_path_is_hidden(
          "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs") ==
          rs480_source_hidden,
-      "RS480 fallback debugfs registration differs from selected family %s",
+      "RS485M fallback debugfs registration differs from selected family %s",
       expected->family_name);
    TEST_CHECK(
       drm_shim_test_path_is_hidden(
          "/sys/kernel/debug/dri/0/"
          "radeon_rs480_candidate_gart_mc_regs") == rs480_source_hidden,
-      "RS480 per-card debugfs registration differs from selected family %s",
+      "RS485M per-card debugfs registration differs from selected family %s",
       expected->family_name);
 
    uint32_t info_device_id = UINT32_MAX;
@@ -1697,14 +1697,14 @@ test_hidden_paths(void)
 {
    TEST_CHECK(drm_shim_test_path_is_hidden(
                  "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs"),
-              "RS480 fallback debugfs path is not registered");
+              "RS485M fallback debugfs path is not registered");
    TEST_CHECK(drm_shim_test_path_is_hidden(
                  "/sys/kernel/debug/dri/0/"
                  "radeon_rs480_candidate_gart_mc_regs"),
-              "RS480 per-card debugfs path is not registered");
+              "RS485M per-card debugfs path is not registered");
    TEST_CHECK(!drm_shim_test_path_is_hidden(
                  "/sys/kernel/debug/dri/0/radeon_rs480_visible_neighbor"),
-              "RS480 debugfs neighbor is hidden");
+              "RS485M debugfs neighbor is hidden");
 
    char exact_path[] = "/tmp/radeon-shim-hidden-exact-XXXXXX";
    int fd = mkstemp(exact_path);

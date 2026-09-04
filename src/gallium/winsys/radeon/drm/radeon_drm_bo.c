@@ -78,7 +78,7 @@ static void radeon_real_bo_wait_idle(struct radeon_bo *bo)
    struct drm_radeon_gem_wait_idle args = {0};
 
    /* DRM_RADEON_GEM_WAIT_IDLE blocks on one specific GEM handle until its
-    * fence signals. On RS480-class parts a wedged submit accepts the CS but
+    * fence signals. On RS485M-class parts a wedged submit accepts the CS but
     * never signals, so this loop spins on -EBUSY forever and the kernel stack
     * parks in radeon_gem_wait_idle_ioctl. Naming the waited handle here maps
     * the stall to a single BO whose size/domain/VA the R300_TRACE bo_table and

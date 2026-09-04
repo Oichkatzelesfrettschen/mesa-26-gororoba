@@ -1,9 +1,9 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * r300_r2vb.c -- RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop.
+ * r300_r2vb.c -- RS485M render-to-vertex-buffer (R2VB) synthesized-vertex loop.
  *
- * RS482 ordinary draws keep num_vert_fpus = 0 and has_tcl = false, so a normal
+ * RS485M ordinary draws keep num_vert_fpus = 0 and has_tcl = false, so a normal
  * draw transforms vertices on the CPU through the gallivm SWTCL draw module
  * instead of the VAP/PVS hardware vertex-shader route.  The R2VB idea moves the
  * transform onto the fragment ALU: pass 1 renders the
@@ -2140,7 +2140,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * and line topologies but wrong), bounds the vertex-index pair to
      * [0, num_vertices - 1] so no inherited clamp folds rows, and binds
      * the GTT BO the CB wrote, mirroring r300_emit_vertex_arrays_swtcl.
-     * RS482 sets R300_VAP_TCL_BYPASS unconditionally (r300_state.c), so
+     * RS485M sets R300_VAP_TCL_BYPASS unconditionally (r300_state.c), so
      * the VAP rasters these pre-transformed vertices without invoking the
      * (absent) PVS.
      *
@@ -2238,7 +2238,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     END_CS;
 }
 
-/* Gated self-test for the RS482 R2VB packet surface.  R300_HB_TCL=1 names the
+/* Gated self-test for the RS485M R2VB packet surface.  R300_HB_TCL=1 names the
  * explicit experiment family; R300_R2VB_TIMING reserves the no-TCL capability
  * shape and selects the transport mode.  Both variables are required:
  *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
@@ -2495,7 +2495,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         r300->screen->caps.family, r300->screen->caps.has_tcl,
         r300->screen->caps.num_vert_fpus);
 
-    /* The compute loop emits the RS482 TCL_BYPASS contract and asserts the
+    /* The compute loop emits the RS485M TCL_BYPASS contract and asserts the
      * no-TCL, zero-vertex-FPU capability shape.  HB_TCL reserves this exact
      * route when R300_R2VB_TIMING is present; a standalone HB_TCL route stays
      * outside this self-test until a native hardware-TCL producer exists. */
@@ -2734,7 +2734,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 }
 
 /* Simple-draw-class classifier for the fragment-ALU R2VB vertex route.  The
- * route replaces the gallivm CPU vertex transform on RS482 (num_vert_fpus == 0)
+ * route replaces the gallivm CPU vertex transform on RS485M (num_vert_fpus == 0)
  * for draws the proven producer + TCL_BYPASS re-ingest can express.  This is the
  * structural gate; the vertex transform itself (compiling the bound VS onto the
  * fragment ALU) is the open follow-on, so a CANDIDATE verdict means "structurally
@@ -7608,7 +7608,7 @@ r2vb_bo_draw_action_name(enum r2vb_bo_draw_action action)
 }
 
 /* Twelve-lane arithmetic discriminator FS for the fragment-ALU sign
- * characterization: on RS482 the window-space producer reads back every
+ * characterization: on RS485M the window-space producer reads back every
  * negative-product viewport-MAD lane one FP24 ULP toward zero while every
  * positive-product lane is bit-exact.  Each output channel isolates one
  * operation class over the logical vec4 m from an R32G32B32 source (XYZ1,
@@ -7866,7 +7866,7 @@ r2vb_run_bo_fetch_producer3(struct r300_context *r300,
         why = "raw_submit_gate";
     /* Diagnostic width modes admit exactly the layout boundary counts: 2048
      * and 2049 (the first one-row frontier, silicon-green), 2559/2560/2561
-     * (the RS482 color-render-axis boundary), 4096 (the one-row storage
+     * (the RS485M color-render-axis boundary), 4096 (the one-row storage
      * ceiling and the row half of the layout-boundary comparison against
      * 2048x2), the 2048-wide grid ladder 6144 (2048x3), 8192 (2048x4),
      * and 21516 (2048x11 with a 1012-slot poisonable final-row tail), and
@@ -9727,7 +9727,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * the old multi-stream path kept the extra position-input velems as phantom
      * streams (velems > outputs) and that malformed fetch wedged the ring; the
      * reconstruction builds velems from outputs, so velems == outputs and the hard
-     * invariant holds.  On RS482 the gated submit then completes and rasterizes,
+     * invariant holds.  On RS485M the gated submit then completes and rasterizes,
      * boot-stable. */
     static int mvp_reingest = -1;
     if (mvp_reingest < 0) {

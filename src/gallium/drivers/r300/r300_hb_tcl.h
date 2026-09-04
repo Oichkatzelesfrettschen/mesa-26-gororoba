@@ -26,7 +26,7 @@ struct r300_screen;
  * caps.num_vert_fpus = vert_fpu: the driver then takes
  * the hardware-TCL route (no Gallium draw, r300 VS compiler, PVS upload,
  * TCL_BYPASS cleared) so the PVS upload and draw path become reachable.  A
- * live draw-correlation oracle on measured RS482 reached that path and timed
+ * live draw-correlation oracle on measured RS485M reached that path and timed
  * out at the first hardware-TCL draw before a fence signal or framebuffer
  * verdict.  That is a ring-wedge observation, not proof that PVS never
  * executes, so this route is an experimental harness, not a usable rendering
@@ -58,7 +58,7 @@ struct r300_hb_tcl_config {
 
 /*
  * Populate screen->hb_tcl with the default bypass allocation, then, when
- * R300_HB_TCL=1 on an RC410/RS480 part without hardware TCL and
+ * R300_HB_TCL=1 on an RC410/RS485M part without hardware TCL and
  * R300_R2VB_TIMING is unset, mark it enabled and fold in a validated
  * R300_HB_VERT_FPU probe.  R300_R2VB_TIMING reserves the no-TCL shape for the
  * R2VB packet self-test.  Reads getenv once at screen create.  Safe to call on
@@ -72,7 +72,7 @@ void r300_hb_tcl_init(struct r300_screen *screen);
  * validated config.  Returns exactly the historical word
  * (NUM_SLOTS(10)|NUM_CNTLRS(5)|NUM_FPUS(2)|VF_MAX_VTX_NUM(5) = 0x0014025a) for
  * the default config, so the bypass path is byte-identical unless a probe
- * changed vert_fpu.  That word is the value the live RS482 readback shows; the
+ * changed vert_fpu.  That word is the value the live RS485M readback shows; the
  * VF_MAX_VTX_NUM=5 nibble is what fingerprints it as this bypass write rather
  * than the hardware-TCL emit path, which writes VF_MAX_VTX_NUM=12.
  */

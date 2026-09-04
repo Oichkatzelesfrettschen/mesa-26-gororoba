@@ -158,12 +158,12 @@ static bool r300_fast_zclear_allowed(struct r300_context *r300,
      * fast-clear to that threshold.
      *
      * The analyzed pre-R5xx integrated and RV3xx cases stay below the RV530
-     * threshold through their allocation bound: RS480/RC410 and RV350/RV370/RV380
+     * threshold through their allocation bound: RS485M/RC410 and RV350/RV370/RV380
      * use zmask_ram = RV3xx_ZMASK_SIZE = 5120 (= 0x1400) dwords with one GB
      * pipe, so zmask_dwords is bounded by r300_setup_hyperz_properties().
      * This does not claim that every pre-R5xx pipe configuration is bounded
      * below 0x1400.
-     * TODO: Confirm this static bound with a fast-clear test on RS480/RC410 hardware. */
+     * TODO: Confirm this static bound with a fast-clear test on RS485M/RC410 hardware. */
     if (r300->screen->caps.is_r500 && zmask_dwords > 0x1400)
         return false;
 

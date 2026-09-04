@@ -15,7 +15,7 @@ The selected PCI ID and family dispatch carry exact Mesa table identity.  The
 PCI slot, subsystem IDs, reported memory capacities, pipe counts, clocks,
 queue state, and counters are synthetic deterministic values.  The noop device
 models register reads as unsupported, so `RADEON_INFO_READ_REG` returns
-`-EINVAL`.  The initialized shim hides the RS480 GART debugfs paths from libc
+`-EINVAL`.  The initialized shim hides the RS485M GART debugfs paths from libc
 pathname queries through absolute, relative, normalized, and canonical
 aliases.  Memory usage counters return zero, and valid buffer busy queries
 report idle in their creation domain because the stubbed command stream

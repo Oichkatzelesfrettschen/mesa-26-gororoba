@@ -38,11 +38,11 @@ struct nir_intrinsic_instr;
  * rg --fixed-strings R300_VAP_OUTPUT_VTX_FMT_1 src/gallium/drivers/r300/;
  * rg --fixed-strings R300_RS_IP_0 src/gallium/drivers/r300/;
  * rg --fixed-strings R300_R2VB_MAX_PRODUCER_INPUTS src/gallium/drivers/r300/).
- * The RS482 register-table notes in
+ * The RS485M register-table notes in
  * docs/hardware/rs482-hybrid-vertex-tcl-design.md and the retained VAP/RS
  * captures are calibration evidence for that 0..7 surface, not primary
  * hardware authority.  Pass-B admission requires num_in + 1 <= 8.  A
- * nine-input RS482 pass-B capture that executes without truncation or decline
+ * nine-input RS485M pass-B capture that executes without truncation or decline
  * falsifies this bound; the calibrated software witness is reproducible with
  * `meson test -C build r300-r2vb-plan-oracle`. */
 #define R300_R2VB_MAX_PRODUCER_INPUTS 8
@@ -400,7 +400,7 @@ enum r300_r2vb_auto_single_reason {
  * ceiling and rounds its physical pitch to an even pixel count.
  * GRID_2048 always uses width == pitch == 2048 with
  * height == ceil(count / 2048), the common rendered-and-sampled axis from
- * the RS482 virtualization matrix (2560 is the color-render axis; the
+ * the RS485M virtualization matrix (2560 is the color-render axis; the
  * one-row 2559/2560/2561 boundary cells probe it under LEGACY_ROW). */
 enum r300_r2vb_slot_layout_policy {
     R300_R2VB_LAYOUT_LEGACY_ROW,

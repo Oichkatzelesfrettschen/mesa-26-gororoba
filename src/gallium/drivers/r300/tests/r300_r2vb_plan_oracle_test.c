@@ -399,7 +399,7 @@ shader_def_alu(nir_shader *nir, nir_def *def)
  * host-calibrated admission witness, not a silicon result; reproduce it with
  * `meson test -C build r300-r2vb-plan-oracle`.  The register/source
  * authority for the separate eight-stream boundary is
- * `src/amd/r300/common/r300_reg.h` and `r300_context.h`; the RS482
+ * `src/amd/r300/common/r300_reg.h` and `r300_context.h`; the RS485M
  * register-table notes in `docs/hardware/rs482-hybrid-vertex-tcl-design.md`
  * and this nine-input calibration row are retained evidence, not primary
  * hardware authority.  A nine-input pass-B capture that executes without
@@ -453,7 +453,7 @@ build_no_uniform_interface(void)
    return end_vs(&v, v.pos);
 }
 
-/* The RS482 spill1 reference producer shape (r2vb_varying.vert): a computed
+/* The RS485M spill1 reference producer shape (r2vb_varying.vert): a computed
  * flat varying from the first input plus a passthrough varying of a second
  * input.  The position-pass admission the route consults at cv=0 measures
  * the restaged position producer alone, so this shader memos FITS there;
@@ -734,7 +734,7 @@ case_force_split_shadow(struct r300_context *r300)
 }
 
 /* A producer with no uniform-class variable is admissible: the production
- * route delivers passthrough and transform-only producers, and the RS482
+ * route delivers passthrough and transform-only producers, and the RS485M
  * shadow-parity corpus caught the plan diverging from the memo (io_shape
  * reject vs memo FITS) on exactly these shaders when the shape scan demanded
  * a uniform interface. */
@@ -763,7 +763,7 @@ case_uniform_free_single(struct r300_context *r300)
 /* The cv=0 plan cell predicts the position-pass admission memo, which the
  * clip route consults for its position leg while varyings ride the
  * passthrough re-ingest or the cv=1 varying producer.  A computed varying
- * therefore stays outside the cv=0 cell instead of rejecting it: the RS482
+ * therefore stays outside the cv=0 cell instead of rejecting it: the RS485M
  * shadow-parity corpus caught the plan diverging (reject/io_shape vs memo
  * FITS) on exactly the spill1 reference producer in both spaces. */
 static void
@@ -1090,7 +1090,7 @@ case_structural_rejects(struct r300_context *r300)
    r300_r2vb_plan_release(&plan);
    ralloc_free(vs);
 
-   /* Uniform-free producers are admissible (the RS482 shadow-parity corpus
+   /* Uniform-free producers are admissible (the RS485M shadow-parity corpus
     * delivers them byte-identically); the shape gate keys on gl_Position,
     * not on a uniform interface. */
    vs = build_no_uniform_interface();

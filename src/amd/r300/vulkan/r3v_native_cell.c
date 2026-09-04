@@ -2548,7 +2548,7 @@ r3v_native_deferred_draw_verify_gpu_producer(
     * publishing the poison, so the post-completion invalidate over the
     * command buffer's live mappings
     * (rg --fixed-strings "Device writes landed in memory past the cache"
-    * src/amd/r300/vulkan/r3v_native_queue.c) passes it by.  The RS480 GART
+    * src/amd/r300/vulkan/r3v_native_queue.c) passes it by.  The RS485M GART
     * runs with request snooping disabled and every GTT mapping is
     * ttm_cached, so the poison written at admission still covers these
     * lines and a read through a fresh mapping returns it.  Invalidating the

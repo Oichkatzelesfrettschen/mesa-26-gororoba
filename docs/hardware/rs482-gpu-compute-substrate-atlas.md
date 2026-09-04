@@ -1,4 +1,4 @@
-# RS482 GPU compute substrate atlas
+# RS485M GPU compute substrate atlas
 
 RS482 (Radeon Xpress 1100/1150, PCI `1002:5974`, `CHIP_RS480`, R300-class
 integrated graphics, vertex engine absent) runs its admitted compute kernels on
@@ -22,7 +22,7 @@ of those algebras contains it.
 
 Every claim below carries one class.
 
-- **silicon**: a retained RS482 hardware run witnesses the exact value.
+- **silicon**: a retained RS485M hardware run witnesses the exact value.
 - **known(source)**: read directly from source, a register definition, or a
   generated table in this repository, the kernel fork, or the register
   databases.
@@ -125,7 +125,7 @@ that fails the size check rather than a permissive default (known(source)).
 ### Family gating, corrected
 
 `radeon_family.h` orders the enum `CHIP_R300 < CHIP_RV350 < CHIP_R420 <
-CHIP_RS400 < CHIP_RS480 < CHIP_RV515` (known(source), read directly). RS480
+CHIP_RS400 < CHIP_RS480 < CHIP_RV515` (known(source), read directly). RS485M
 therefore sits **above** the RV350 and R420 thresholds and below the RV515 one,
 which splits the family gates in `r300_packet0_check` two ways.
 
@@ -135,7 +135,7 @@ which splits the family gates in `r300_packet0_check` two ways.
   and 16 carry width_11 and height_11 and are decoded only above it. `SC_SCISSOR1`
   additionally subtracts 1440 when deriving `maxy` below that threshold, and
   `r100_cs_track_texture_check` withholds the extra high width and height bits.
-- Admitted because RS480 clears the lower thresholds: `R300_TX_FORMAT_ATI2N`
+- Admitted because RS485M clears the lower thresholds: `R300_TX_FORMAT_ATI2N`
   passes the `>= CHIP_R420` gate, and `GB_Z_PEQ_CONFIG` 0x4028 passes the `>=
   CHIP_RV350` gate once the submitter owns hyperz.
 
@@ -146,7 +146,7 @@ and `HIZ_PITCH` reject any nonzero value, and `RB3D_CCTL` rejects
 `CMASK_ENABLE` (known(source)). A compute route that wants ZMASK or a fast
 depth clear must hold that ownership.
 
-RS480 alone instantiates the R400 extended fragment register file (`US_CODE_BANK`
+RS485M alone instantiates the R400 extended fragment register file (`US_CODE_BANK`
 0x46B8, `US_CODE_EXT` 0x46BC, `US_ALU_EXT_ADDR_0..63` 0x4AC0-0x4BBC) on
 R300-class silicon. The stock bitmap marks those addresses checked with no case
 to accept them, so they reject by default; `reg_srcs/rs480` clears exactly those
@@ -160,7 +160,7 @@ instructions is unreachable on a production module.
 ### The TCL-bypass width invariant
 
 `r300.c:r300_cs_tcl_bypass_vtx_output_check` runs before the stock bounds check
-and encodes an RS482-observed hang as a static parse rejection: an underfed
+and encodes an RS485M-observed hang as a static parse rejection: an underfed
 TCL-bypass draw leaves the geometry assembler waiting for dwords that never
 arrive and wedges the vertex front end and the ring (known(source), and the
 wedge class is silicon--a VAP/PVS wedge recovers only through a cold power
@@ -199,7 +199,7 @@ snooping globally (known(source)). Whether a per-PTE snoop bit overrides that
 global disable is unresolved in both evidence repositories and stays
 **hypothesized**; the memory-model document owns that question.
 
-The fork adds an admission epoch around every RS400/RS480 MMIO, aperture, and
+The fork adds an admission epoch around every RS400/RS485M MMIO, aperture, and
 page-table access, keyed on `radeon.h:radeon_rs4xx_hardware_target`. A failed
 reset latches `gpu_parked`, after which every MMIO leaf returns without issuing
 a non-posted HyperTransport transaction and command submission refuses
@@ -220,7 +220,7 @@ with sync-flood on timeout (vostro1000-re
 
 ## VAP and the vertex fetcher
 
-RS482 has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
+RS485M has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
 `num_vert_fpus` for `CHIP_RS480`, so it stays zero and `has_hardware_tcl` is
 false; `r300_chip_identity.c:r300_rs4xx_igp_family_facts` records
 `.vertex_engine_absent = true` (known(source)). A `PVS_NUM_FPUS = 2` readback is
@@ -562,7 +562,7 @@ is an open item rather than a closed one (steinmarder `rs482-rb3d-zb.4.md`;
 observation, open). What restricts it here is the driver and kernel layer:
 `r300.c:r300_packet0_check` rejects `RB3D_CCTL` `CMASK_ENABLE` unless the
 submitter owns cmask, and the family capability table sets `has_cmask` false for
-RS480 (steinmarder `r300_chip_family_caps.tsv`; known(source)).
+RS485M (steinmarder `r300_chip_family_caps.tsv`; known(source)).
 
 Publication runs through the destination cache control register.
 `RB3D_DSTCACHE_CTLSTAT` 0x4e4c reads `0x00000002` at rest and is read-safe only
@@ -595,7 +595,7 @@ samples-passed query--is confirmed by a probe ladder
 (`r300_numeric_domain.c`; silicon). `DECR`, `INVERT`, and the wrapping pair have
 no located witness: the carrier-algebra decomposition lists all of them as gaps.
 The driver catalog's `STENCIL_INVERT_NOT` row claims a 0xA5 to 0x5A bit-exact
-RS482 result from a named probe, and neither that probe script nor its bundle is
+RS485M result from a named probe, and neither that probe script nor its bundle is
 locatable in either evidence repository, so `INVERT` reads as hypothesized here
 with its bundle recovery on the probe frontier.
 
@@ -607,7 +607,7 @@ the count never passes through the ALU
 silicon). Exactness against a CPU oracle at large counts is source-grounded
 rather than measured.
 
-HiZ RAM is absent on RS480: `hiz_ram_dwords` is zero in the family capability
+HiZ RAM is absent on RS485M: `hiz_ram_dwords` is zero in the family capability
 table and a live debug query reports no HiZ RAM (steinmarder
 `r300_chip_family_caps.tsv`; silicon negative). ZMASK is present at 5120 dwords
 with 8x8 Z compression, live-positive and under-mined. `ZB_FORMAT` carries
@@ -671,7 +671,7 @@ resolve to cache-disabled through PAT index 2 over write-back MTRR; the
 allocation class named coherent is allocation terminology and not an observed
 coherence property (vostro1000-re `uma-gart-cacheability-graph.md`;
 observation). The framebuffer CPU mapping resolves to write-combining. The K8
-host GART is off for the graphics translation path, so the RS482 GTT is the
+host GART is off for the graphics translation path, so the RS485M GTT is the
 active translation.
 
 The rule a host read of device output must invalidate before reading is
@@ -796,7 +796,7 @@ Ordered by what unblocks the most verb routes.
   `BITWISE_LOGICOP_MAP` and `BITWISE_NOT_MAP`, and reconciles the catalog with
   the corpus.
 - **Stencil `INVERT` witness recovery**, then `DECR`, `INCR_WRAP`, and
-  `DECR_WRAP`. The catalog names an RS482 probe and a 0xA5 to 0x5A result whose
+  `DECR_WRAP`. The catalog names an RS485M probe and a 0xA5 to 0x5A result whose
   script and bundle are absent from both evidence repositories; recover the
   bundle or rerun. Unblocks `STENCIL_INVERT`.
 - **DP4 with non-dyadic operands** and the **FMA fusion boundary**: whether the

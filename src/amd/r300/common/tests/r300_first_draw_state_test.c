@@ -38,7 +38,7 @@ static const uint32_t poison_vectors[] = {
    0x00000f00, /* US_OUT_FMT UNUSED-shaped residue */
 };
 
-/* Hand-authored RS480 64x64 state. This stream is independent of the
+/* Hand-authored RS485M 64x64 state. This stream is independent of the
  * resolver table, so a copied table mistake cannot make both sides green.
  */
 struct known_good_first_draw_write {

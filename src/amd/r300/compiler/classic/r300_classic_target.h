@@ -15,7 +15,7 @@
  * and the unit test diffs them against the radeon_code.h authority. */
 
 enum r300_classic_pfs_class {
-   /* R300/RS480-class unified shader: 64 paired ALU, 32 TEX, 32 vec4 temps,
+   /* R300/RS485M-class unified shader: 64 paired ALU, 32 TEX, 32 vec4 temps,
     * 32 vec4 constants, no flow control (r300_fragprog_emit has no
     * RC_OPCODE_IF or RC_OPCODE_BGNLOOP case). */
    R300_CLASSIC_PFS_R300,

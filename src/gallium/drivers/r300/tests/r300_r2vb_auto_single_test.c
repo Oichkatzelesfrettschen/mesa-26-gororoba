@@ -133,7 +133,7 @@ check_screen_scoped_runtime_config(void)
 
       char label[160];
       snprintf(label, sizeof(label),
-               "runtime config: RS480 standing defaults survive creation order %u",
+               "runtime config: RS485M standing defaults survive creation order %u",
                creation_order);
       CHECK(rs480_config.route_enabled &&
                rs480_config.standing_defaults_enabled &&
@@ -145,7 +145,7 @@ check_screen_scoped_runtime_config(void)
             label);
 
       snprintf(label, sizeof(label),
-               "runtime config: non-RS480 screen stays closed in creation order %u",
+               "runtime config: non-RS485M screen stays closed in creation order %u",
                creation_order);
       CHECK(!other_config.standing_defaults_enabled &&
                !other_config.route_enabled &&
@@ -245,7 +245,7 @@ check_screen_scoped_runtime_config(void)
             manual_config.auto_single_vertex_floor == 4096 &&
             manual_config.slot_fetch_enabled && manual_config.slot_grid_enabled &&
             manual_config.raw_submit_accepted,
-         "runtime config: explicit member gates remain available off RS480");
+         "runtime config: explicit member gates remain available off RS485M");
 
    struct r300_r2vb_runtime_environment mutable_environment = {
       .standing = "1",

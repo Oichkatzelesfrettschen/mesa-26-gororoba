@@ -1920,7 +1920,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return deferred;
       }
 
-      /* The RS480 GART reads and writes with request snooping disabled,
+      /* The RS485M GART reads and writes with request snooping disabled,
        * and every GTT mapping is ttm_cached, so the driver keeps the
        * HOST_COHERENT promise itself: every referenced memory with a live
        * CPU mapping publishes its cache lines before the submission ioctl

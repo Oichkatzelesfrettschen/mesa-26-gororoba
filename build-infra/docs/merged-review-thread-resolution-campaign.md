@@ -70,7 +70,7 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   recovery journal, generated action frontier, and partial resolution ledger.
   Nineteen exact fixed or superseded rows are closed and re-verified.  Its 29
   actionable rows require merged repairs, while two hardware-evidence rows
-  retain their explicit RS482 observation gates.
+  retain their explicit RS485M observation gates.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third, fourth, and fifth batch
@@ -360,7 +360,7 @@ evidence commit.
 The merged repairs cover install locking and status propagation, public source
 references, Rust image parity, SFN local-group failure state, package hooks and
 deployment consent, VL plane and vertex-row identity, generator-test isolation,
-RS480 debugfs parsing, package ownership, result visibility, GPUVis child
+RS485M debugfs parsing, package ownership, result visibility, GPUVis child
 failure handling, zscan and IDCT coordinate identity, and Draw output-row
 semantics.  Superseded rows govern removed pair and pump targets, retired
 install.dat parsing, replaced profiles, a relocated build area, and replaced
@@ -395,7 +395,7 @@ The merged mechanisms cover CSO teardown ownership, distcc volunteer parsing
 and compiler-pair probes, dynamic NIR output spans, opt-scoped Vulkan layers,
 Hybrid-TCL and producer-design evidence contracts, source-domain witness
 semantics, forced-split shadow admission, owned producer BO staging,
-validation-flush reservation, and RS482 stack-manifest payload identity.
+validation-flush reservation, and RS485M stack-manifest payload identity.
 Superseded rows govern retired planning vocabulary, replaced typed-gate and
 source-domain drafts, the rewritten uploader failure oracle, the deleted
 Gallium-backed Vulkan image lane, and the SPDX-only verified-holder policy.
@@ -480,7 +480,7 @@ PR 1904's unchanged CAVLC comments name the independent oracle and exact coeffic
 index bounds; the focused block test passes from the retained qualification
 build.
 
-Two RS482 stack-manifest rows are fixed by PR 1905 merge commit
+Two RS485M stack-manifest rows are fixed by PR 1905 merge commit
 `82b7f3491b25b02063d31952b566c873ca5b2d8e`.  A clean Python 3.14 environment
 installs the pinned `jsonschema` 4.26.0 requirement and passes all four schema
 tests.  The shared identity definitions and mutation corpus reject short,
@@ -527,7 +527,7 @@ fixture pass.  PR 1932 re-audits all four targets at merge commit
 resolved and re-queried.
 
 The final three mechanisms are fixed on merged main and closed.  PR 1934 merge commit
-`3b355908198285831108be57003bdfbd69a796cb` stores the RS480 standing-route
+`3b355908198285831108be57003bdfbd69a796cb` stores the RS485M standing-route
 composite in screen-owned state and covers both mixed-screen creation orders
 plus alternating consumers.  PR 1936 merge commit
 `b058622f9f395c151befc9c0294230cd383815d6` classifies all 39 current
@@ -576,7 +576,7 @@ declared source owner changes.
 | closed as fixed | 14 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 | actionable | 29 | Implement, test, merge, synchronize, then resolve |
-| pending RS482 evidence | 2 | Execute the declared hardware oracle |
+| pending RS485M evidence | 2 | Execute the declared hardware oracle |
 
 The closed rows cover DRM-shim exec locators and residue
 calibration, source-header policy, r300 compiler initialization, the qualified
@@ -620,7 +620,7 @@ The actionable rows retain concrete repair gates for native clipping and
 carrier ownership, evidence pins, Terakan state and lifetime checks, runner
 process and input semantics, dispatch analysis, exact producer payload
 identity, and producer replay interpretation.  The intensity-blend and C1C
-packet rows stay pending until their exact RS482 oracles produce retained
+packet rows stay pending until their exact RS485M oracles produce retained
 evidence.
 
 Live GraphQL state reports 19 resolved and 31 unresolved exact IDs.  Each

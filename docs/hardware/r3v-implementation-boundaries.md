@@ -21,7 +21,7 @@ one-shot disarm, and both the semantic cell and the exact submit object
 retain as digest-bound evidence. Its evidence stands at the host-unit,
 build/link, no-submit PM4, offline kernel-parser, drm-shim host-model, and
 one-shot silicon classes. Foundational native-cell records and the
-procedure-linked R2VB records exist for their declared RS482 identities. The
+procedure-linked R2VB records exist for their declared RS485M identities. The
 first foundational cell submitted the bare inherited-state stream and left
 the target at its sentinel fill; its kernel acceptance, retirement, and
 oracle are
@@ -33,7 +33,7 @@ outcome reports the predicted triangle -- interior `0xff00ff00`,
 exterior and canary at the sentinel. The first-run color-write cause
 remains underdetermined. The gate matrix proves that
 `US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, and `SC_SCREENDOOR` each
-independently suppress color writes on RS482, while its identical
+independently suppress color writes on RS485M, while its identical
 readbacks cannot identify which predecessor state the first cell
 inherited. The self-contained successor proves that establishing those
 gates enables the witnessed raster output; it does not identify the
@@ -61,14 +61,14 @@ common scale. A clipped polygon can span more than the complete positive
 binary32 dynamic range; at that boundary, smaller weights round upward to
 `FLT_TRUE_MIN` so a finite homogeneous position never becomes the singular
 carrier value zero. That positive-preserving rounding is host-model evidence,
-not an RS482 interpolation-accuracy claim.
+not an RS485M interpolation-accuracy claim.
 
 The admitted shader grammar exposes `Flat` (host provoking-value replication,
 or the direct GA color 0 route for one full vec4 at location 0) and
 `NoPerspective`, admitted on any float vec4 varying and implemented for
 one full vec4 at location 0 on CPU delivery over a triangle list by two
 concrete cells the submission selects between: the direct GB W_SELECT cell
-(the `GB_SELECT.W_SELECT = 1` word the RS482 census classified affine) when
+(the `GB_SELECT.W_SELECT = 1` word the RS485M census classified affine) when
 every source triangle is ACCEPT, and the `(a * w, w)` TC1 reciprocal
 carrier cell when any source triangle is PARTIAL. The pipeline is created
 on the `W_SELECT_OR_RECIPROCAL_CARRIER` route, the draw record installs the
@@ -103,7 +103,7 @@ the `xyz * rcp(w)` US program, and every clipping class is admitted
 (`docs/hardware/r3v-noperspective-reciprocal-carrier-design.md`, rung C).
 A component offset, a width mismatch between the varying and the narrow
 program, a vec4 under the narrow program, and the narrow program on a
-Smooth or Flat interface stay `UNSUPPORTED`. Silicon receipt on RS482 for
+Smooth or Flat interface stay `UNSUPPORTED`. Silicon receipt on RS485M for
 the vec3 shape: affine 882/882 at max deviation 1, alpha 255 on every
 judged pixel
 (`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-q-lane-carrier-receipt-rs482`).
@@ -125,7 +125,7 @@ varying, the mixed interface under the pass-through program -- stays
 `UNSUPPORTED`, an open R2VB delivery gate
 withholds the route, and the plan refuses more than four RS vectors
 including the carrier or a US program past the R300 budget. Silicon
-receipt on RS482: red and green perspective 882/882 beside blue and
+receipt on RS485M: red and green perspective 882/882 beside blue and
 alpha affine 882/882, each at max deviation 1 with the competing model
 on no separated pixel
 (`steinmarder-r300/src/re/r300/results/r3v-native-noperspective-mixed-carrier-receipt-rs482`).
@@ -144,7 +144,7 @@ The gated GPU-producer route keeps its fixed three-record window-space
 consumer and performs no host clipping or viewport transform. Route admission
 selects that consumer before the relocation list and digest are retained. The
 expanded clip-space consumer has host-unit and drm-shim evidence only; it has
-no RS482 submission or raster witness. The loader boundary is proven at the
+no RS485M submission or raster witness. The loader boundary is proven at the
 same host-model class: the `r3v-native-loader-application` gate links a
 standalone application against the installed Vulkan loader alone, reaches the
 ICD only through its manifest, performs the complete instance-to-submit
@@ -286,7 +286,7 @@ does not supply missing userspace semantics.
 
 PALM and Terakan provide reusable direct-DRM engineering patterns. Their
 Evergreen register values, packet semantics, cache rules, shader ISA, and
-silicon results are not RS480 authority.
+silicon results are not RS485M authority.
 
 ## Current-source authority
 
@@ -853,7 +853,7 @@ carried lives on in references that run without it:
 - retained manifests: the submit manifests and digest-bound submit objects
   the queue retains under `R3V_NATIVE_MANIFEST_DIR`, the typed-carry corpus
   sha256 manifest (`src/gallium/drivers/r300/tests/typed_carry_corpus/
-  r300_typed_carry_reference.sha256`, three rows equal to the retained RS482
+  r300_typed_carry_reference.sha256`, three rows equal to the retained RS485M
   bundle digests), and the vertex front-end parity manifest
   (`src/amd/r300/compiler/tests/r300_vertex_front_end_parity.manifest`);
 - common-IR parity: `r300-vertex-front-end-parity` holds the NIR front end
@@ -896,7 +896,7 @@ order is the one `Ordered development` names.
 The video scope for the native ICD is fixed by silicon:
 `VK_KHR_video_queue` and every decode or encode profile need a decode
 engine, a queue with `VK_QUEUE_VIDEO_DECODE_BIT_KHR`, planar 4:2:0 DPB
-formats, and entropy decode, and RS482 supplies none of them -- the
+formats, and entropy decode, and RS485M supplies none of them -- the
 texture and render-target tables carry packed 4:2:2 (`YUYV`/`UYVY`
 through `R300_EASY_TX_FORMAT(..., YVYU422)`) alone, and CABAC/CAVLC is
 serial integer work the FP24 fragment ALU cannot express. The one
@@ -1064,7 +1064,7 @@ mechanisms are:
   exact two-relocation object.  The TCL-bypass width predicate declines its
   PRIM_WALK-3 draw by declared scope.  The producer-specific attended runner
   and recovery procedure are present, but the current paired-index emission
-  requires a fresh RS482 qualification before a current-head silicon claim.
+  requires a fresh RS485M qualification before a current-head silicon claim.
 
 Compute pipelines, descriptors, transfer images and copies beyond the
 bounded linear `B8G8R8A8_UNORM` family, native WSI presentation and
@@ -1133,7 +1133,7 @@ and target boot, not current-head runtime or conformance proof.
 | Layer | Authority |
 |---|---|
 | `src/amd/radeon/drm_vk/` | Radeon DRM BO, map, PRIME, relocation, submission, and finite completion transport |
-| `src/amd/r300/common/` | RS480/R300 device facts, formats, packet fields, state packs, barriers, and validators |
+| `src/amd/r300/common/` | RS485M/R300 device facts, formats, packet fields, state packs, barriers, and validators |
 | `src/amd/r300/cpu/` | portable byte-defined vertex execution baseline plus measured per-target tuned paths |
 | `src/amd/r300/vulkan/` | Vulkan objects, command lowering, execution graph, queue policy, images, WSI, and entry points |
 
@@ -1147,7 +1147,7 @@ vertex tuples, and R2VB semantics stay in the R300 layers.
 r3v_instance
   -> r3v_physical_device
        -> render-node fd
-       -> RS480 device information
+       -> RS485M device information
        -> one UMA budget model
   -> r3v_device
        -> radeon_drm_vk_device
@@ -1212,7 +1212,7 @@ not PVS and not R2VB. It uses:
 The no-submit form first fixes PM4, relocation identity, state coverage, and
 command size. Radeon shim results remain host-model evidence. Offline kernel
 replay proves parser acceptance and calibrated malformed rejection. Only then
-does an attended RS480-family target submit the known-good cell.
+does an attended RS485M-family target submit the known-good cell.
 
 ### CPU vertex execution and R2VB migration
 
@@ -1243,7 +1243,7 @@ R2VB migration follows the fixed triangle and CPU route:
    varying triangle cell on the CPU route, runner
    `r3v_native_attended_varying_triangle`, procedure
    `r3v-native-attended-varying-triangle-procedure.md`; silicon-delivered
-   on RS482 with the gradient exact at every interior sample, retained as
+   on RS485M with the gradient exact at every interior sample, retained as
    steinmarder-r300 bundle
    `r3v-native-varying-triangle-cell-first-delivery-rs482`);
 6. read several vertex attributes, one job slot per shader input
@@ -1406,7 +1406,7 @@ Suitable common value-type mechanisms include:
 
 R300-specific mechanisms remain under R300 common or Vulkan code:
 
-- RS480 family capabilities and quirks;
+- RS485M family capabilities and quirks;
 - invariant and VAP-invariant register values;
 - R300 shader ISA and RC metadata;
 - VAP, PSC, RS, GA, US, TX, CB, ZB, and ROP registers;
@@ -1437,7 +1437,7 @@ r300g's live automatic R2VB producer admits `F32_3` and `F32_4`, and its
 live automatic final delivery admits FP32x4 only. The R3V
 identity-delivery host model covers `F32_4`, `F32_3`, and `F32_2` under its
 exact opt-in. Operator-armed producer, re-ingest, and exact F32
-`FLOAT_2 + XY01` cells hold on RS482. The public route composes and
+`FLOAT_2 + XY01` cells hold on RS485M. The public route composes and
 submits one payload-specific F32_4 producer plus triangle consumer through
 `vkCmdDraw` and `vkQueueSubmit` under its exact double opt-in.
 
@@ -1467,12 +1467,12 @@ a narrow source never implies narrow final-delivery support.
 | Repository | Authority |
 |---|---|
 | `mesa-26-gororoba` | the R3V ICD, r300g, compilers, state packs, R2VB, WSI, and tests |
-| `steinmarder-r300` (separate repository; `src/re/r300/` and root `results/`) | RS480 frontier, probes, falsifiers, findings, manifests, and target result bundles |
+| `steinmarder-r300` (separate repository; `src/re/r300/` and root `results/`) | RS485M frontier, probes, falsifiers, findings, manifests, and target result bundles |
 | `vostro1000-re` | K8 and platform behavior plus CPU-executor qualification |
 | `linux-radeon-gororoba` | Radeon parser, GEM, GART, faults, completion, recovery, and containment |
 | `radeon-custom` | source pin, package construction, deployment transition, rollback, and installed runtime identity |
 | Xserver and Radeon DDX repositories | X11 source, package, and installed-image authority |
-| `steinmarder-r600-terakan` | reusable process patterns and PALM evidence, never RS480 hardware facts |
+| `steinmarder-r600-terakan` | reusable process patterns and PALM evidence, never RS485M hardware facts |
 
 Mesa behavior changes land in Mesa. Kernel changes land in the kernel source
 repository. Package policy lands in the package repository. Target evidence and
@@ -1525,7 +1525,7 @@ does not promote another.
     and `F32_2` only with new admission and silicon evidence. The
     identity-delivery host model and no-submit producer emitter are
     landed. Operator-armed producer, FP24 boundary, same-IB re-ingest, and
-    exact F32 `FLOAT_2 + XY01` cells carry retained RS482 results; their
+    exact F32 `FLOAT_2 + XY01` cells carry retained RS485M results; their
     procedure documents own the contracts and point to the result bundles:
     `r3v-native-attended-producer-procedure.md`,
     `r3v-native-attended-reingest-procedure.md`, and

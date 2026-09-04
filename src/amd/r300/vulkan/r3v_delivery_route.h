@@ -51,7 +51,7 @@ enum r3v_delivery_route {
    /* The device-side producer: the carrier is written by the R2VB
     * producer pass instead of a host copy.  Selecting it takes both
     * experimental gates at their exact values, and only F32_4 -- the
-    * format whose identity delivery and re-ingest hold on RS482
+    * format whose identity delivery and re-ingest hold on RS485M
     * silicon -- resolves to it; the FLOAT_2 tuple mechanism reaches
     * silicon through the operator-armed attended surface, outside this
     * resolver.  The route names the mechanism for the deferred draw;

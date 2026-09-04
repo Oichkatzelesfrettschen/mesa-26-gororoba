@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Rasterizer interpolation discriminator on RS482 (Radeon Xpress 200M,
+ * Rasterizer interpolation discriminator on RS485M (Radeon Xpress 200M,
  * CHIP_RS480, R300-class US/PFS fixed VLIW): one TEX0 varying rides a
  * carrier whose vertices hold unequal reciprocal clip W, and a pair of
  * passes differing in exactly one rasterizer control word separates
@@ -24,7 +24,7 @@ struct r300_triangle_render_shape;
  * W_SELECT (bit 4) is documented as the source of the outgoing 1/W,
  * value 1 selecting 1.0 "to disable perspective correct
  * colors/textures" (AMD R3xx 3D Registers, GB_SELECT).  Neither carries
- * a retained silicon classification on RS482, so the probe treats each
+ * a retained silicon classification on RS485M, so the probe treats each
  * as an unidentified control until a census against the registered
  * models names it. */
 enum r300_rs_tex_adj_probe_candidate {

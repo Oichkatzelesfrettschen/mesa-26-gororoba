@@ -1,11 +1,11 @@
-# RS482 post-VAP interpolation pipeline for Flat, Smooth, and NoPerspective varyings
+# RS485M post-VAP interpolation pipeline for Flat, Smooth, and NoPerspective varyings
 
 The R3V native route delivers every varying through the TCL-bypass
 triangle cell: the host executes the vertex job, the post-VS stage
 rewrites records, the clipper cuts, and the device fetches records
 through VAP, interpolates them in the RS, and executes the US program.
 This document is the register-level model that decides where a Flat, a
-Smooth, and a NoPerspective varying can ride on RS482 (Radeon Xpress
+Smooth, and a NoPerspective varying can ride on RS485M (Radeon Xpress
 200M, CHIP_RS480, R300-class US/PFS fixed VLIW) and what bounds the
 count.  Evidence classes are named per row: `manual` is AMD R3xx 3D
 Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
@@ -52,7 +52,7 @@ Registers; `kernel` is `drivers/gpu/drm/radeon/r300.c`; `driver` is
   (manual).  The manual documents `RS_IP_0..7` for R300; `r300_reg.h`
   names `R300_RS_IP_0..3`; the R3V plans hold the RS vector budget at
   `R300_NOPERSPECTIVE_CARRIER_RS_VECTOR_BUDGET` (driver).  Hypothesis:
-  interpolators 4..7 exist on RS482 as the manual states; no retained
+  interpolators 4..7 exist on RS485M as the manual states; no retained
   receipt exercises a fifth vector, so the four-vector boundary is the
   next probe, not a silicon fact.
 - `RS_INST_n` (0x4330 + 4n, 0..7): `TEX_ID` bits 2:0 and `COL_ID` bits

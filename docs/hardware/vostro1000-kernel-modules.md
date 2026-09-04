@@ -35,7 +35,7 @@ patches remain reconstruction evidence and do not construct the active module.
 
 | Package | Module | Purpose | Source and deployment authority |
 | --- | --- | --- | --- |
-| `radeon-unified-dkms` | `radeon` | Carries the RS480 reset ladder, parked device containment, register policy, and Palm safety mechanisms. The production profile excludes development triggers, and the board policy admits the shared PCI id `1002:5974` | source in `linux-radeon-gororoba`; package and deployment in `radeon-custom`; exact current identities in `rs482-source-authority.md` |
+| `radeon-unified-dkms` | `radeon` | Carries the RS485M reset ladder, parked device containment, register policy, and Palm safety mechanisms. The production profile excludes development triggers, and the board policy admits the shared PCI id `1002:5974` | source in `linux-radeon-gororoba`; package and deployment in `radeon-custom`; exact current identities in `rs482-source-authority.md` |
 
 <!-- markdownlint-enable MD013 -->
 

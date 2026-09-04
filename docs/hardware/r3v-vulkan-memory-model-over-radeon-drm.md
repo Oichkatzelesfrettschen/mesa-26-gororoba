@@ -2,7 +2,7 @@
 
 This document assigns each stage of the Vulkan memory model to its owner,
 from the Vulkan entry point through the R3V transport to the Radeon DRM
-UAPI and the kernel TTM/GART machinery, for the RS480-family UMA target
+UAPI and the kernel TTM/GART machinery, for the RS485M-family UMA target
 (`1002:5974`, `CHIP_RS480`).  Kernel-side facts cite row identifiers from
 the linux-radeon-gororoba ledger `policy/rs4xx-gart-memory-path.tsv` and
 its capacity companion `policy/rs4xx-vram-gtt-capacity-contract.tsv`;
@@ -13,7 +13,7 @@ pin for those rows lives in the kernel-contract pin test (see
 
 ## Domains and platform geometry
 
-RS480-family graphics memory is one physical pool with two windows: the
+RS485M-family graphics memory is one physical pool with two windows: the
 firmware selects the shared-VRAM interval from the northbridge TOM range
 (kernel row `RS482_VRAM_CARVEOUT_ACCOUNTING`), and the internal GART
 translates a virtual aperture over ordinary system pages (rows

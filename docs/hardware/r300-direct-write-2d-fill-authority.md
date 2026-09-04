@@ -8,7 +8,7 @@ rectangle fill, driven entirely by PACKET0 register writes the radeon
 user-CS parser admits. Every claim below names its source; the parser
 facts are KERNEL_SOURCE_DERIVED from linux-radeon-gororoba at the
 deployed driver checkpoint, and the silicon behavior of the fill on
-RS482 remains the hypothesis the control exists to test.
+RS485M remains the hypothesis the control exists to test.
 
 ## Parser admission
 
@@ -72,7 +72,7 @@ is brush value -> ROP -> 2D destination, so the first-draw color-write
 gates (`US_OUT_FMT_0`, `RB3D_COLOR_CHANNEL_MASK`, `SC_SCREENDOOR`) sit
 outside it, and the fill has no source fetch, so the GPU performs one
 write and no read. What remains untested until silicon: whether the
-RS482 2D engine writes an unsnooped-GART destination coherently under
+RS485M 2D engine writes an unsnooped-GART destination coherently under
 this flush/wait sequence, and whether the 2D default scissor admits
 the 64x64 extent without explicit `SC_TOP_LEFT`/`SC_BOTTOM_RIGHT`
 programming -- the stream programs the scissor registers explicitly so

@@ -1,8 +1,8 @@
-# RS482 composed surfaces: 4096 images and the 4-sample count
+# RS485M composed surfaces: 4096 images and the 4-sample count
 
 `dEQP-VK.info.device_properties` fails the R3V ICD on three limit
 families below the Vulkan 1.0 core minimums, and each has a driver
-route to a pass on the RS482 die.  This document records the
+route to a pass on the RS485M die.  This document records the
 mechanism, the evidence each rung rests on, the falsifier, and the
 receipt that lets the advertised limit widen.  The limits and the
 minimums come from the CTS limit table (`vktApiFeatureInfo.cpp`,
@@ -17,11 +17,11 @@ minimums come from the CTS limit table (`vktApiFeatureInfo.cpp`,
 | `maxFramebufferWidth/Height`, `maxViewportDimensions` | 64 | 4096 | render span 2560 | executed cell ceiling, then composed |
 | seven sample-count masks | `1` | `1\|4` | `GB_AA_CONFIG`, `GB_MSPOS0/1`, `RB3D_AARESOLVE_*` present; 2x/4x FBO MSAA executes 8/8 | unbuilt native MSAA path |
 
-The sample-count row corrects an earlier assumption: RS482 has
+The sample-count row corrects an earlier assumption: RS485M has
 multisample hardware.  steinmarder-r300 finding
 `2026-05-26-r300-default-fb-msaa-readback-not-driver-specific` records
 FBO MSAA depth/stencil at samples 2 and 4 passing 8/8 on the hardware
-X11 session (renderer `ATI RS480`, zero GPU resets), and the RS482
+X11 session (renderer `ATI RS480`, zero GPU resets), and the RS485M
 register database carries `R300_GB_AA_CONFIG` (0x4020),
 `R300_GB_MSPOS0/1` (0x4010/0x4014), and `R300_RB3D_AARESOLVE_OFFSET/
 PITCH/CTL` (0x4E80/0x4E84/0x4E88) as present with at-rest live reads.

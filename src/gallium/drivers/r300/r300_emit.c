@@ -1418,7 +1418,7 @@ void r300_emit_us_resync(struct r300_context *r300)
     }
 }
 
-/* Hypothesis: RS482 first-CS clear/A constant aliasing lets the u_blitter
+/* Hypothesis: RS485M first-CS clear/A constant aliasing lets the u_blitter
  * clear FS source PFS constant 0, and the next draw's constant upload
  * overwrites that register in the same IB with no draw-completion wait, so a
  * fan primitive still rasterizing can observe the successor draw's constants.

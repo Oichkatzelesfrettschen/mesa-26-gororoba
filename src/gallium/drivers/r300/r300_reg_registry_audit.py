@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 
-"""Audit r300_reg.h against the RS482 register evidence registry.
+"""Audit r300_reg.h against the RS485M register evidence registry.
 
 The registry lives in the steinmarder evidence repository; this wrapper
 locates it through the STEINMARDER_ROOT environment variable (or a
 --steinmarder-root argument) and runs the registry's live-tree audit
 against the r300 driver directory containing this script.  The audit
 reports, per finding class, where the driver header and the documented
-RS480-class register census diverge: documented registers the header
+RS485M-class register census diverge: documented registers the header
 lacks, name disagreements at an offset, field shifts outside documented
-extents, and consumer emissions of registers no RS480-reaching evidence
+extents, and consumer emissions of registers no RS485M-reaching evidence
 covers.
 
 Exits 0 with a skip message when the registry checkout is absent, so

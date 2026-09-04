@@ -4163,7 +4163,7 @@ main(void)
       /* The direct GB W_SELECT route: with every probe gate closed the
        * NoPerspective interface selects the route on its own, records
        * the stream the gated W_SELECT candidate records byte for byte
-       * -- the word the RS482 census classified affine -- differing
+       * -- the word the RS485M census classified affine -- differing
        * from the Smooth interface's stream in the one GB_SELECT dword,
        * executes over the ACCEPT triangle, and refuses the partially
        * clipped one ahead of carrier publication. */

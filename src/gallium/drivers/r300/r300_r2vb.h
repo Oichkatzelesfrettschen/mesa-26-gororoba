@@ -35,7 +35,7 @@ struct r300_r2vb_runtime_environment {
 };
 
 /* Immutable R2VB route decisions owned by one screen.  The composite
- * standing gate supplies RS480 defaults; explicit member values retain
+ * standing gate supplies RS485M defaults; explicit member values retain
  * exact-value, fail-closed parsing and take precedence over those defaults. */
 struct r300_r2vb_runtime_config {
     bool standing_defaults_enabled;
@@ -227,7 +227,7 @@ bool r300_r2vb_vertex_buffer_upload_end(
     unsigned vertex_buffer_index, uint32_t buffer_offset, uint32_t start,
     uint32_t count, uint32_t resource_width, uint32_t *upload_end);
 
-/* Emit the RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
+/* Emit the RS485M render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
  * current command stream.  The caller binds the r300 fragment-shader state (the
  * "vertex compute" program) and the pass-1 geometry through the normal r300
  * state path BEFORE calling this; see the contract comment in r300_r2vb.c.
@@ -359,7 +359,7 @@ r300_r2vb_submit3_mark_submitted(unsigned *state)
           R300_R2VB_SUBMIT3_IN_PROGRESS;
 }
 
-/* Gated self-test for the RS482 R2VB packet surface, fired once from r300_flush
+/* Gated self-test for the RS485M R2VB packet surface, fired once from r300_flush
  * with from_flush=true so the loop appends to a CS a real draw has populated.
  * R300_HB_TCL=1 plus any present R300_R2VB_TIMING value reserves the no-TCL
  * capability shape during screen creation.  The exact capture or submit value

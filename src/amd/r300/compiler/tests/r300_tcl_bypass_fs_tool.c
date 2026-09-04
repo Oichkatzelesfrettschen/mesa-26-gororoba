@@ -44,7 +44,7 @@ static struct pipe_screen *
 fake_r300_screen(struct r300_screen *s)
 {
    /* Zeroed caps select the plain R300 US register emission, the register
-    * set the RS480-family cell programs.
+    * set the RS485M-family cell programs.
     */
    memset(s, 0, sizeof(*s));
    s->caps.has_tcl = true;

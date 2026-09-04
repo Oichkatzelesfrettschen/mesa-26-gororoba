@@ -1,6 +1,6 @@
 # r300 point/line/sprite conformance regression harness
 
-A deqp-GLES2 regression gate for the RS480/RS482 point, line, and sprite work.
+A deqp-GLES2 regression gate for the RS485M point, line, and sprite work.
 These fixes (per-vertex point size through the gallium draw wide-point stage, the
 aliased-line-width clamp, gl_PointCoord, the point-size cap) each pass on real
 silicon but ride the shared draw module and the GA rasterizer setup, so they are

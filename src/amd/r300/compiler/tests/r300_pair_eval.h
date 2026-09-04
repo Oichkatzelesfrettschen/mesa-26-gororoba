@@ -47,7 +47,7 @@ struct r300_pair_eval {
  * evaluator carries it by default). */
 struct r300_pair_eval_profile r300_pair_eval_profile_identity(void);
 
-/* The measured RS482 US profile: RGB-port input and temporary reads apply the
+/* The measured RS485M US profile: RGB-port input and temporary reads apply the
  * negative-predecessor transform. Alpha-port reads, constant, texture, and
  * presubtract stay unmodeled and fail closed on negative values. */
 struct r300_pair_eval_profile r300_pair_eval_profile_rs48x_measured(void);

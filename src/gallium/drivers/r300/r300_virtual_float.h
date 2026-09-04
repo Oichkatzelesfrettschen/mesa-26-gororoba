@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Types for the virtual IEEE FP16 machine emulated on the RS482/r300 FP24
+ * Types for the virtual IEEE FP16 machine emulated on the RS485M/r300 FP24
  * substrate (R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL).
  *
  * The 2-limb base-64 significand multiply theorem:
@@ -26,7 +26,7 @@
  *   so the low 12 bits contribute at most 4095; 511*4096+4095 < 2^21).
  *
  * Retained silicon evidence: carry limbs (r0,r1,r2) 12/12 exact
- * and classification 15/15 exact on RS482 hardware (rs482_fp16_pow2_carry_exactness_20260607).
+ * and classification 15/15 exact on RS485M hardware (rs482_fp16_pow2_carry_exactness_20260607).
  */
 
 #ifndef R300_VIRTUAL_FLOAT_H

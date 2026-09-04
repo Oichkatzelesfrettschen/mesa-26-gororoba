@@ -792,14 +792,14 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
 
-    /* The standing route supplies RS480-only defaults without changing the
+    /* The standing route supplies RS485M-only defaults without changing the
      * process environment.  Each explicit option is parsed before the next
      * environment lookup, so zero, empty, and malformed values stay closed. */
     r300_r2vb_runtime_config_init_from_process(
         &r300screen->r2vb, r300screen->caps.family == CHIP_RS480);
     if (r300_screen_r2vb_config(r300screen)->standing_defaults_enabled) {
         fprintf(stderr,
-                "r300: R2VB standing defaults captured (RS480-family measured "
+                "r300: R2VB standing defaults captured (RS485M-family measured "
                 "domain)\n");
     }
 
@@ -812,14 +812,14 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         r300screen->caps.family == CHIP_RS480) {
         if (r300screen->info.rs480_gart_mc.valid) {
             SCREEN_DBG(r300screen, DBG_INFO,
-                       "r300: RS480 GART/MC (%s): AGP_BASE_2=0x%08x GART_FEATURE_ID=0x%08x GART_BASE=0x%08x\n",
+                       "r300: RS485M GART/MC (%s): AGP_BASE_2=0x%08x GART_FEATURE_ID=0x%08x GART_BASE=0x%08x\n",
                        r300screen->info.rs480_gart_mc.from_debugfs ? "debugfs" : "ioctl",
                        r300screen->info.rs480_gart_mc.agp_base_2,
                        r300screen->info.rs480_gart_mc.gart_feature_id,
                        r300screen->info.rs480_gart_mc.gart_base);
         } else {
             SCREEN_DBG(r300screen, DBG_INFO,
-                       "r300: RS480 GART/MC unavailable via ioctl or debugfs fallback.\n");
+                       "r300: RS485M GART/MC unavailable via ioctl or debugfs fallback.\n");
         }
     }
 

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Attended render-shape cell: submits the TCL-bypass triangle over a
- * declared extent, pitch, lane order, and fragment constant to RS482
+ * declared extent, pitch, lane order, and fragment constant to RS485M
  * silicon through the native ICD and reports the render-shape oracle's
  * verdict.  This program performs a live DRM_RADEON_CS and runs only
  * under the authorization and procedure in

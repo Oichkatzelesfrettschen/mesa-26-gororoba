@@ -45,9 +45,9 @@ if with_tests
 
   foreach selector_test : [
     ['default', 'DEFAULT', '0x7140', 'RV515', 'identity'],
-    ['rs482_name', 'RS482_5974', '0x5974', 'RS480', 'identity'],
-    ['rs482_name_lowercase', 'rs482_5974', '0x5974', 'RS480', 'identity'],
-    ['rs480_family', 'RS480', '0x5954', 'RS480', 'identity'],
+    ['rs482_name', 'RS482_5974', '0x5974', 'RS485M', 'identity'],
+    ['rs482_name_lowercase', 'rs482_5974', '0x5974', 'RS485M', 'identity'],
+    ['rs480_family', 'RS485M', '0x5954', 'RS485M', 'identity'],
     ['uppercase_uevent', '0x4E44', '0x4E44', 'R300', 'identity'],
   ]
     test(
@@ -64,7 +64,7 @@ if with_tests
   endforeach
 
   foreach selector_test : [
-    ['rs482_numeric', '0x5974', '0x5974', 'RS480'],
+    ['rs482_numeric', '0x5974', '0x5974', 'RS485M'],
     ['cayman_vm', 'CAYMAN', '0x6700', 'CAYMAN'],
     ['tahiti_shader_array', 'TAHITI', '0x6780', 'TAHITI'],
   ]

@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Retained RS482 (1002:5974) identity of the reference compute identity
+ * Retained RS485M (1002:5974) identity of the reference compute identity
  * carrier pass: the BLAKE3 of the little-endian dword stream
  * r300_compute_identity_carrier_reference_emit() emits -- sixteen F32_4
  * records (one 64-invocation workgroup) fetched from a one-page input at

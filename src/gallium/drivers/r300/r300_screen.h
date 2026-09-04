@@ -46,7 +46,7 @@ struct r300_screen {
     /* Route gates captured once for this screen after chipset discovery. */
     struct r300_r2vb_runtime_config r2vb;
 
-    /* RS482 hybrid-TCL VAP resource config, kept separate from caps.has_tcl.
+    /* RS485M hybrid-TCL VAP resource config, kept separate from caps.has_tcl.
      * Populated once at screen create by r300_hb_tcl_init; the static
      * TCL_BYPASS VAP_CNTL setup reads it through r300_hb_tcl_vap_cntl. */
     struct r300_hb_tcl_config hb_tcl;

@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Carrier-policy contracts for candidate RS482 compute-as-raster paths.
+ * Carrier-policy contracts for candidate RS485M compute-as-raster paths.
  *
  * These static instances define API-neutral buffer formats, strides, and
  * result bounds.  They remain contract inventory until a consumer explicitly

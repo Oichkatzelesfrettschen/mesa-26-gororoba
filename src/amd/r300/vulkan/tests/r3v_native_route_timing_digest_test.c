@@ -22,7 +22,7 @@
  * compare two workloads, so the round trip is pinned here in binary32.
  *
  * All three digests, the composed lengths, and the consumer splits are
- * pinned to the retained RS482 route identities, so a composer or
+ * pinned to the retained RS485M route identities, so a composer or
  * emitter change reports as a movement against the bytes silicon
  * executed.
  * `--inject-consumer-drift` flips one consumer dword after

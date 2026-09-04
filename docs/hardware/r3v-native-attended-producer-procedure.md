@@ -157,7 +157,7 @@ The `fp24-bisect` stream ran on RS485M on 2026-08-14 from main
 313 dwords) and returned `CARRIER_DELIVERED`: all twelve lanes through
 `0x5fffff80` byte-exact, tail poison intact, empty dmesg delta, fence
 retired. Combined with the sweep's halved `0x60000000` lane, the
-identity-delivery ceiling is `0x5fffff80` exactly: the RS482 R2VB identity
+identity-delivery ceiling is `0x5fffff80` exactly: the RS485M R2VB identity
 route resolves as s1e7m16 with bias 62 and the top exponent field reserved,
 so `R300_R2VB_FP24_IDENTITY_MAX_F32_BITS` carries `0x5FFFFF80` while the
 generic `R300_FP24_MAX_FINITE_F32_BITS` remains `0x607FFF80` for stored and

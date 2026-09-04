@@ -3,7 +3,7 @@
  *
  * Lower VS system values to synthetic vertex inputs.
  *
- * RS480-family parts keep num_vert_fpus = 0 and has_tcl = false, so r300g
+ * RS485M-family parts keep num_vert_fpus = 0 and has_tcl = false, so r300g
  * ordinary draws use the Gallium Draw SW-TCL path instead of the hardware
  * VAP/PVS vertex-shader route.  gl_VertexIndex / gl_InstanceIndex therefore
  * cannot be produced by PVS microcode, and the NIR-to-RC translator rejects

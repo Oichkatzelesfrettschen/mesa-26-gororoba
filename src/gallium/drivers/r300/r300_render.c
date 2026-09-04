@@ -379,9 +379,7 @@ void r300_r2vb_reserve_bo_draw_cs(struct r300_context *r300, unsigned cs_dwords)
     }
 }
 
-/*****************************************************************************
- * The HWTCL draw functions.                                                 *
- ****************************************************************************/
+/* The HWTCL draw functions. */
 
 static void r300_draw_arrays_immediate(struct r300_context *r300,
                                        const struct pipe_draw_info *info,
@@ -1082,7 +1080,7 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
         r300_mp_snapshot(r300, "post-A");
 
     /* Pass A's color writes sit in the CB cache; pass B's texture fetches
-     * do not snoop it.  On RS48x (RS480/RS482/RS485, CHIP_RS480 family) the
+     * do not snoop it.  On RS48x (RS485M, CHIP_RS480 family) the
      * measured path that makes the carry visible is a one-texel read map of
      * each scratch: r300_texture_transfer_map runs detile+blit+flush+BO-wait.
      * Pixel-exact multipass validation relies on that sequence; it is an
@@ -1290,15 +1288,14 @@ static void r300_draw_vbo(struct pipe_context* pipe,
     }
 }
 
-/****************************************************************************
- * The rest of this file is for SW TCL rendering only. Please be polite and *
- * keep these functions separated so that they are easier to locate. ~C.    *
- ***************************************************************************/
+/* The rest of this file is for SW TCL rendering only. Please be polite and
+ * keep these functions separated so that they are easier to locate. ~C.
+ */
 
 /* SW TCL elements, using Draw. */
 /* WARNING -- R300_R2VB_EXEC is experimental and SUSPECTED to hang the GPU.  On
  * the first silicon run where this actually executed (vertex data uploaded from
- * the SWTCL malloced_buffer shadow), the reset-less RS482 went unresponsive
+ * the SWTCL malloced_buffer shadow), the reset-less RS485M went unresponsive
  * during the route-on draw.  The likely cause: r300_update_derived_state set the
  * RS interpolators and VAP_OUTPUT_VTX_FMT for the gallivm draw-module OUTPUT
  * vertex layout, which is not guaranteed to match the application vertex-element
@@ -1448,7 +1445,7 @@ static bool r300_r2vb_capture_preflight(struct r300_context *r300,
             align(util_format_get_blocksize(ve->velem[i].src_format), 4) / 4;
 
     /* Independent of the fetch loop: VAP output tuple is one FP32x4 per
-     * declared attrib.  The RS482 hang was VAP_VTX_SIZE=8 under a 12-dword
+     * declared attrib.  The RS485M hang was VAP_VTX_SIZE=8 under a 12-dword
      * OUTPUT_VTX_FMT contract (two passthroughs collapsed to one stream). */
     unsigned tuple_dwords = num_attribs * 4u;
 
@@ -1858,7 +1855,7 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
          * tuple (4 dwords per vertex_info attrib for the FP32x4 delivery
          * reconstruction).  Comparing fetch_sum to vap_vtx_size alone is
          * tautological when both are filled from the same loop; the tuple
-         * clause is the independent check that caught the RS482 GA hang
+         * clause is the independent check that caught the RS485M GA hang
          * (8-dword stream under a 12-dword OUTPUT_VTX_FMT contract). */
         unsigned fetch_dword_sum = 0;
         for (unsigned i = 0; i < r300->velems->count; i++)
@@ -2135,7 +2132,7 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
                     fscode ? fscode->deriv_src_generic : -2, want);
     }
 
-    /* RS482 fragment-ALU R2VB routing shares this Gallium draw_vbo choke point
+    /* RS485M fragment-ALU R2VB routing shares this Gallium draw_vbo choke point
      * between GL and r3v.  A route that declines enters Draw; a route that
      * delivers or proves a trivial reject consumes the visible draw here. */
     /* Clear the producer-fed discriminator for this draw before routing: only a
@@ -2272,7 +2269,7 @@ static bool r300_render_allocate_vertices(struct vbuf_render* render,
 
     if (!r300->vbo || size + r300->draw_vbo_offset > r300->vbo->size) {
         /* A fresh GTT vertex buffer pins another R300_MAX_DRAW_VBO_SIZE of GART, which
-         * on UMA RS480/RS485 is system DRAM.  A single very large SW-TCL primitive (a
+         * on UMA RS485M is system DRAM.  A single very large SW-TCL primitive (a
          * 2^19-point wide-point draw splits into hundreds of vsplit segments) cycles
          * this path and its companion u_upload index buffers hundreds of times, and the
          * GPU keeps reading each buffer long enough that the pb_cache allocates a fresh
@@ -2610,9 +2607,7 @@ struct draw_stage* r300_draw_stage(struct r300_context* r300)
     return stage;
 }
 
-/****************************************************************************
- *                         End of SW TCL functions                          *
- ***************************************************************************/
+/* End of SW TCL functions. */
 
 /* This functions is used to draw a rectangle for the blitter module.
  *
@@ -2642,7 +2637,7 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
 
     /* Point-sprite path: one hardware point expanded by GA_POINT_SIZE, with
      * GB_POINT_STUFF_ENABLE stuffing texcoords for TEXCOORD_XY.  On
-     * RS480-class SWTCL (has_tcl=false) that frontend wedges (RBBM latches
+     * RS485M-class SWTCL (has_tcl=false) that frontend wedges (RBBM latches
      * CP+VAP+GA busy, backend idle) for TEXCOORD_XY format-converting
      * blits.  Route ATTRIB_NONE and TEXCOORD_XY through util_blitter's
      * plain two-triangle quad on SWTCL.  TEXCOORD_XYZW and instanced

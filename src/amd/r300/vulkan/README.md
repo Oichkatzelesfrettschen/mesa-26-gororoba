@@ -2,12 +2,12 @@
 SPDX-License-Identifier: MIT
 -->
 
-# r3v -- experimental Vulkan ICD for RS480-family Radeon
+# r3v -- experimental Vulkan ICD for RS485M-family Radeon
 
 ## Overview
 
 `r3v` is an experimental Vulkan installable client driver for the AMD
-RS480-family integrated graphics processors:
+RS485M-family integrated graphics processors:
 
 - Radeon Xpress 1100/1150, RS482 and RS485 sharing PCI `1002:5974`; the
   Vostro 1000 specimen is the Xpress 1150, whose option ROM names the part
@@ -51,7 +51,7 @@ silicon has no documented native compute-dispatch packet.
 | Field | Value | Primary source |
 |---|---|---|
 | Vendor | ATI / AMD | PCI vendor ID `0x1002` |
-| RS482/RS485 device | `0x5974` | `include/pci_ids/r300_pci_ids.h`; the Vostro 1000 specimen (subsystem `1028:022a`) is the Radeon Xpress 1150 / RS485M product |
+| RS485M device | `0x5974` | `include/pci_ids/r300_pci_ids.h`; the Vostro 1000 specimen (subsystem `1028:022a`) is the Radeon Xpress 1150 / RS485M product |
 | RS482M device | `0x5975` | `include/pci_ids/r300_pci_ids.h` |
 | Mesa family | `CHIP_RS480` | `r300_parse_chipset()` |
 | Generation | R3xx | AMD R3xx Register Reference Guide |
@@ -61,7 +61,7 @@ silicon has no documented native compute-dispatch packet.
 | Renderer string | `ATI RS480` | r300g `r300_get_renderer()` |
 
 Mesa's PCI table uses the `RS482_` prefix for both device IDs. `0x5975` is the
-RS482M part; `0x5974` is shared by RS482 and RS485, and the specimen this
+RS482M part; `0x5974` is shared by RS485M and RS485, and the specimen this
 repository measures is the mobile RS485M. `0x5974` alone cannot distinguish
 the two: the part resolves from the PCI device id, the board's PCI subsystem
 id, the DMI product name, and the option-ROM firmware string jointly, with no
@@ -69,7 +69,7 @@ one of the four overriding the others (`r300_platform_identity_lookup`,
 `runtime_match_basis`, `identity_evidence` in
 `src/amd/r300/common/r300_chip_identity.h`).
 
-The current r300g path routes RS480-family vertex-stage execution through
+The current r300g path routes RS485M-family vertex-stage execution through
 Gallium Draw software TCL because Mesa classifies the family with
 `num_vert_fpus == 0`. This is a current driver-path fact, not proof that the
 silicon can never execute a hardware vertex program. The RS, TX, US, CB, and ZB
@@ -184,7 +184,7 @@ are emitted in pipeline order ahead of the cell, the poison-model checker
 proves the stream establishes every clause itself, and the recorder,
 manifest tool, and harness reference all build the one byte-identical
 successor IB. The successor cell has rendered its predicted interior on
-RS482 with the exterior and canary rows clean (retained bundle
+RS485M with the exterior and canary rows clean (retained bundle
 `results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`
 in the steinmarder-r300 evidence tree;
 `docs/hardware/r3v-implementation-boundaries.md` carries the
@@ -321,7 +321,7 @@ At minimum, a loader/identity check records:
 | Surface | Required observation |
 |---|---|
 | Instance | `vkCreateInstance` succeeds |
-| Physical device | one supported RS480-family PCI identity is enumerated |
+| Physical device | one supported RS485M-family PCI identity is enumerated |
 | Queue families | graphics and transfer only; no compute |
 | Mapped ICD | the process maps the intended `libvulkan_r3v.so` |
 | Kernel window | no unexplained CS validation, reset, hang, or lockup event |
@@ -435,7 +435,7 @@ and `R3V_NATIVE_PLAN_NONCE`): the planning pass under the drm-shim
 captures the shard's ordered submissions, `r3v_native_plan_tool
 compose` seals them with the run identities, and the device replays
 the plan alone, binding at the first submission to the DSO digest, the
-built source SHA prefix, the kernel and module identity, the RS482 PCI
+built source SHA prefix, the kernel and module identity, the RS485M PCI
 identity, the nonce, an empty evidence directory, and closed gates,
 admitting each submission's whole entry before any device-visible
 effect, holding the IB at the ioctl boundary to the admitted digest,

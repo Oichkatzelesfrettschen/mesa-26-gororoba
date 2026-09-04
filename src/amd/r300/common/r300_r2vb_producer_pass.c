@@ -686,7 +686,7 @@ const float r300_r2vb_producer_fp24_bisect_records
    { 0x1.0p+59f, 0x1.0p+60f, 0x1.0p+61f, 0x1.0p+62f },
    /* The top candidates: 2^63 (0x5f000000), its maximum mantissa
     * (0x5f7fff80), 2^64 (0x5f800000), and its maximum mantissa
-    * (0x5fffff80).  The RS482 R2VB identity-delivery path emits
+    * (0x5fffff80).  The RS485M R2VB identity-delivery path emits
     * 0x5fffff80, the maximum finite s1e7m16 value, byte-exact; the next
     * exponent bin (0x60000000, 2^65) returns with its exponent decremented.
     */
