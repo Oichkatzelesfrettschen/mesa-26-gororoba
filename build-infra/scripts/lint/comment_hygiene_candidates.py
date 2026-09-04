@@ -225,6 +225,28 @@ def self_test():
             failures.append("committed mode failed on a clean tree: "
                             "%r %r" % (files, refusal))
 
+    # a name opening with a hyphen reaches the linter as a path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _fixture(root)
+        hyphenated = "-leading-hyphen.c"
+        (root / hyphenated).write_text("int hyphenated;\n")
+        files, _ = select(collect(root, "main"), "working-tree")
+        if hyphenated not in files:
+            failures.append("a leading-hyphen name never entered the set")
+        probe = root / "argv_probe.py"
+        probe.write_text("import argparse, sys\n"
+                         "p = argparse.ArgumentParser()\n"
+                         "p.add_argument('--strict', action='store_true')\n"
+                         "p.add_argument('files', nargs='*')\n"
+                         "a = p.parse_args()\n"
+                         "sys.exit(0 if a.files == [%r] else 1)\n"
+                         % hyphenated)
+        done = subprocess.run([sys.executable, str(probe), "--strict", "--",
+                               hyphenated], cwd=str(root))
+        if done.returncode != 0:
+            failures.append("a leading-hyphen name parsed as an option")
+
     # a staged or unstaged deletion is work outside HEAD, so committed
     # mode refuses it even though the path has no bytes left to lint
     for staged in (False, True):
@@ -330,8 +352,10 @@ def main():
             return 0
         # relative names run from the repository root, so a report locates
         # each file the way every other repository gate spells it
-        return subprocess.run([sys.executable, args.lint_with, "--strict"]
-                              + files, cwd=str(root)).returncode
+        # -- ends the option list, so a name opening with a hyphen reaches
+        # the linter as a path instead of an unrecognized option
+        return subprocess.run([sys.executable, args.lint_with, "--strict",
+                               "--"] + files, cwd=str(root)).returncode
     for name in files:
         print(name)
     return 0
