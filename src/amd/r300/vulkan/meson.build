@@ -1006,7 +1006,7 @@ r3v_native_attended_cell = executable(
   install : false,
 )
 
-# Attended render-shape cell: performs a live DRM_RADEON_CS on RS482
+# Attended render-shape cell: performs a live DRM_RADEON_CS on RS485M
 # silicon under the authorization and procedure in
 # docs/hardware/r3v-native-attended-render-shape-procedure.md.  It takes
 # the shape on its command line in the arming runner's --shape form, so
@@ -1213,7 +1213,7 @@ r3v_native_watchdog_bracket = executable(
   install : false,
 )
 
-# Attended direct-write control: performs a live DRM_RADEON_CS on RS482
+# Attended direct-write control: performs a live DRM_RADEON_CS on RS485M
 # silicon under the authorization and procedure in
 # docs/hardware/r3v-native-direct-write-attended-procedure.md.  The
 # triangle attended cell keeps its own executable; each cell's digest
@@ -1233,7 +1233,7 @@ r3v_native_attended_direct_write = executable(
   install : false,
 )
 
-# Attended depth control: performs a live DRM_RADEON_CS on RS482
+# Attended depth control: performs a live DRM_RADEON_CS on RS485M
 # silicon drawing the two-triangle depth-test cell, then retains the
 # color target and the depth surface and classifies both oracles.  Its
 # first run is the B14 depth-control workload debut, unobserved by any
@@ -1252,7 +1252,7 @@ r3v_native_attended_zb_depth_control = executable(
   install : false,
 )
 
-# Attended producer-only cell: performs a live DRM_RADEON_CS on RS482
+# Attended producer-only cell: performs a live DRM_RADEON_CS on RS485M
 # silicon, writing the vertex carrier alone -- no visible target and no
 # re-ingest -- so the CPU read-back of the carrier against the delivery
 # identity, with the poison retained past the delivered extent, is the

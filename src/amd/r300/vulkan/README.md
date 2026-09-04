@@ -169,7 +169,7 @@ native surface outside that draw decomposes as follows:
   CPU-copy present path.
 The drm-shim harness and offline kernel-parser replay carry the
 pre-hardware evidence; the attended-cell runner has carried one armed
-`DRM_RADEON_CS` submission on RS482 that the kernel accepted and retired
+`DRM_RADEON_CS` submission on RS485M that the kernel accepted and retired
 clean while the color target retained its sentinel fill. The cause of
 that unwritten target is underdetermined -- the run retained no
 predecessor register values, and
@@ -504,7 +504,7 @@ The `transfer`, `draw`, `synchronization`, and `robustness` slices
 capture nothing either: over all 416,370 cases in their 23 shards, run
 one process per case under the drm-shim with capture declared, zero
 transcripts carry an entry, and a closed-gate target run of the same
-shards on RS482 reproduces the host model's status on every case
+shards on RS485M reproduces the host model's status on every case
 (0 of 24,206 witnessed ioctls are `DRM_IOCTL_RADEON_CS`).  Two recipe
 facts from those passes: the transcript path is bounded by
 `R3V_NATIVE_PLAN_PATH_MAX` (255 bytes) including the case name a
