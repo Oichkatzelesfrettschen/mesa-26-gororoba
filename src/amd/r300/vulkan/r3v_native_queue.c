@@ -1733,6 +1733,26 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "attended run");
       }
 
+      /* Identity precedes evidence.  A capture session records its
+       * entry and a replay session binds and latches, and both then
+       * reach the ioctl, so the board is compared before any of that
+       * state moves rather than after it: a plan file on a device that
+       * resolves to no qualified board refuses here, with the session
+       * unlatched and nothing recorded.
+       */
+      if (device->plan_capture_active || device->plan_replay_active) {
+         const enum r3v_native_arming_verdict board =
+            r3v_native_arming_platform_verdict(&facts);
+         if (board != R3V_NATIVE_ARMING_ARMED) {
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: submission refused: %s",
+                             r3v_native_arming_verdict_name(board));
+         }
+      }
+
       /* Plan capture records the whole entry the live replay must
        * present -- digest, dwords, kind, emitter, every relocation --
        * before the ioctl reaches the shim, and refuses the submission
