@@ -702,7 +702,7 @@ reproduce the locator.
    types alone (`r3v_native_view_type_executes`), which
    `r3v-native-submit-order-sampled-array-view-refused` and the
    attachment arm of `r3v-native-public-surface` pin.  Measured
-   movement on RS482 (steinmarder-r300
+   movement on RS485M (steinmarder-r300
    `r3v-object-management-view-rows-measured-rs482`): `image_3d`,
    `image_view_3d`, `image_view_1d_arr`, and `image_view_2d_arr` each
    read 6 passed, 0 failed, 4 not supported at mesa `f743d0f9bec`;

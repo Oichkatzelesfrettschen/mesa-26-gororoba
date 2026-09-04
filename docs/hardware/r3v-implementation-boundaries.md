@@ -91,7 +91,7 @@ conjunction in every clipping class. Packed ahead of the clipper, the
 carrier's linear blend of `(a * w, w)` yields the Vulkan clipped
 NoPerspective value at a generated vertex, a carrier envelope refusal fails
 the draw ahead of publication, and the expanded stream is validated ahead
-of publication (silicon receipt on RS482 over a one-plane fan: affine
+of publication (silicon receipt on RS485M over a one-plane fan: affine
 1296/1296).
 A float, vec2, or vec3 NoPerspective varying at location 0 whose
 components start at x and run contiguously rides the `RECIPROCAL_Q_LANE`
@@ -1504,7 +1504,7 @@ does not promote another.
    and private fixed-cell recording each keep a bounded ownership contract).
 8. Emit and offline-validate the fixed identity-bypass triangle (landed).
 9. Run the attended native triangle cell (landed: the contract-prefixed
-   cell rendered as predicted on RS482; procedure and arming live in
+   cell rendered as predicted on RS485M; procedure and arming live in
    `docs/hardware/r3v-native-attended-cell-procedure.md`, while the
    retained record in the sibling `steinmarder-r300` repository is
    `results/rs482_native_triangle_first_correct_pixel_witness_20260808T070427Z/`).

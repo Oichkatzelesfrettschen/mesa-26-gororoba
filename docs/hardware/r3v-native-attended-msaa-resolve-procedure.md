@@ -198,7 +198,7 @@ half and RESOLVE for the resolve half, and closes both at the epilogue.
 ## Result
 
 The cell holds its silicon receipt from the second attended arm on
-RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
+RS485M, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming
 report matching all five declarations against cell blake3 `be78db1c`.
 The hypothesis held:
 

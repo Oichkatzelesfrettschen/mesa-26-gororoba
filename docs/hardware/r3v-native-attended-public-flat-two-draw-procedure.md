@@ -135,7 +135,7 @@ canary row.
 ## Result
 
 The cell holds its silicon receipt from one attended submission on
-RS482, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
+RS485M, boot `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, mesa main
 `ae2e0183f69`, under an arming report matching all five declarations
 against cell blake3 `8a0c4f37` and an `[interface]` line reading
 blake3 `096d66a9` with `varying_mask=0x1 flat_mask=0x1

@@ -101,7 +101,7 @@ passes the tuple, and the undersized-VTX_SIZE arm rejects through the same
 predicate.
 
 Automatic live promotion remains disabled.  The attended tuple cell establishes
-one F32 `FLOAT_2 + XY01 + VAP_VTX_SIZE 6` packet on PCI `1002:5974` RS482;
+one F32 `FLOAT_2 + XY01 + VAP_VTX_SIZE 6` packet on PCI `1002:5974` RS485M;
 `r3v-native-attended-float2-tuple-procedure.md` owns the executed-run record and
 its exact scope.  Public GPU-route dispatch and standing promotion remain
 separate frontiers.

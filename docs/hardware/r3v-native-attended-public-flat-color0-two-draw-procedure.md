@@ -189,7 +189,7 @@ and `second_expected.bin`, each the shape's full footprint including the canary 
 ## Result
 
 The cell holds its silicon receipt from one attended submission on
-RS482 at Mesa `42ff2b207c8`, boot
+RS485M at Mesa `42ff2b207c8`, boot
 `e5fc857e-4aa3-42e7-b3e5-7f31e2250f53`, under an arming report matching
 all five declarations against cell blake3 `3646c222`, retained as
 `steinmarder-r300/src/re/r300/results/r3v-native-public-flat-color0-two-draw-first-delivery-rs482`.

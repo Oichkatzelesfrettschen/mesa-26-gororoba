@@ -379,7 +379,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "225 and a convolution column sums at most 8 partials = 1800 << 2^17, "
                          "FP24-exact with wide margin.  The multi-limb MUL principle is "
                          "HW-confirmed at five 7-bit limbs (MULTILIMB7_U32_MUL).  HW-confirmed "
-                         "10/10 bit-exact on RS482 (R300_R2VB_QMAC, 31 r300 ALU, boot-stable) "
+                         "10/10 bit-exact on RS485M (R300_R2VB_QMAC, 31 r300 ALU, boot-stable) "
                          "across the edge-case set (zero, +-1.0, mixed sign, fractional carry, "
                          "near-overflow +/-, accumulate): the conv + >>16 truncation-carry + "
                          "add c run on the fragment ALU, the inherent limb->integer recombine on "
@@ -454,7 +454,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "(CDQuatRotationMatrix.v, on the substrate's CDQuat type) and "
                          "C876_quat_rotation_eq_matrix (C876_QuaternionRotation.v, on the Quat "
                          "type).  HW-confirmed 4/4 by qrotate_vk_probe vs a CPU sandwich on "
-                         "RS482",
+                         "RS485M",
       /* QROTATE is a nested two-Hamilton sandwich. */
       .implementation_label = "r300_nir_detect_qrotate_pattern",
    },
@@ -499,7 +499,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "quaternion inputs, two output halves), the two synthesized FS "
                          "passes (r3v_build_omul_lo/hi_fs_nir) emit the halves, and the "
                          "two-pass dispatch fills the result -- HW-confirmed 4/4 exact on "
-                         "RS482 by omul_vk_probe, the Hurwitz norm holding exactly",
+                         "RS485M by omul_vk_probe, the Hurwitz norm holding exactly",
       .implementation_label = "r300_nir_detect_omul_pattern",
    },
    {
@@ -558,7 +558,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "dispatched in two single-output passes -- the combined MRT form is "
                          "73 ALU ops, over the 64-ALU R300 fragment limit (R300_PFS_MAX_ALU_INST), "
                          "so each pass recomputes inv(y) and emits one half; HW-confirmed 4/4 on "
-                         "RS482 by odiv_vk_probe.  Left division inv(y)*x is the ODIV_L "
+                         "RS485M by odiv_vk_probe.  Left division inv(y)*x is the ODIV_L "
                          "sibling (same detector, is_left).  Division stays DIM-8-ONLY: at dim "
                          "16 conj/N is only a pseudo-inverse (sedenion zero divisors, Moreno G2 / "
                          "de Marrais box-kites; oct_norm_mul holds, sed_norm_fails)",
@@ -578,7 +578,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "OMUL(inv(y),x) -- operands swapped vs right) and same two-pass split "
                          "under the 64-ALU limit; the synthesize step picks odiv_l_lo/hi.  The "
                          "identity is y*out == x (left), vs out*y == x for right.  HW-confirmed "
-                         "4/4 on RS482 by odiv_l_vk_probe.  DIM-8-ONLY (same Hurwitz wall)",
+                         "4/4 on RS485M by odiv_l_vk_probe.  DIM-8-ONLY (same Hurwitz wall)",
       .implementation_label = "r300_nir_detect_odiv_pattern",
    },
    {
@@ -599,7 +599,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "the rotation rows).  Dispatched as four single-output passes "
                          "through a scratch intermediate t (32 DP4s far exceed the 64-ALU "
                          "R300 fragment limit): pass 1 t=x*v, pass 2 t*conj(x).  HW-confirmed "
-                         "4/4 on RS482 by otrans_vk_probe vs a CPU sandwich",
+                         "4/4 on RS485M by otrans_vk_probe vs a CPU sandwich",
       .implementation_label = "r300_nir_detect_otrans_pattern",
    },
    {
@@ -707,7 +707,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "The +c could ride the RB3D COMB_FCN_ADD blend over a c-preloaded "
                          "target (a substrate-native FMA, the blend-acc path already drives "
                          "it); here it is a straightforward ALU add.  HW-confirmed 4/4 on "
-                         "RS482 by qfmadd_vk_probe vs a CPU Hamilton-product-plus-add",
+                         "RS485M by qfmadd_vk_probe vs a CPU Hamilton-product-plus-add",
       .implementation_label = "r300_nir_detect_qfmadd_pattern",
    },
    {
