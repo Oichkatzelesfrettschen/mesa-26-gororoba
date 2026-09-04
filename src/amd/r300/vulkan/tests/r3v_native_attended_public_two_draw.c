@@ -5,7 +5,7 @@
  * each through the application-shaped Vulkan surface -- two images,
  * one render pass, two framebuffers, one pipeline over each admitted
  * fragment module, one vertex buffer, two draws -- and drives the
- * concatenated stream to a live DRM_RADEON_CS on RS482 silicon.  The
+ * concatenated stream to a live DRM_RADEON_CS on RS485M silicon.  The
  * recorder route's two-pass arm proved the appended cell executes; this
  * arm proves the public route records that same stream: before the
  * submission the runner digests the recorded indirect buffer and
@@ -222,7 +222,7 @@ main(int argc, char **argv)
    fflush(stdout);
    if (props.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
        props.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE) {
-      fprintf(stderr, "enumerated chip is not the authorized RS482\n");
+      fprintf(stderr, "enumerated chip is not the authorized RS485M\n");
       return 1;
    }
 

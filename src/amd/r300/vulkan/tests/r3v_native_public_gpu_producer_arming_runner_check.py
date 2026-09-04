@@ -150,9 +150,9 @@ def main():
         wrong_chip = run(runner, evidence_dir, environment)
         if (
             wrong_chip.returncode == 0
-            or "not the authorized RS482 identity" not in wrong_chip.stdout
+            or "not the authorized Dell Vostro 1000 RS485M platform" not in wrong_chip.stdout
         ):
-            return fail("wrong chip did not refuse", wrong_chip)
+            return fail("a board that is not the authorized platform did not refuse", wrong_chip)
         environment.pop("R3V_NATIVE_RUNNER_PCI_DEVICE", None)
 
         # One delivery gate open is the CPU route, so the run refuses

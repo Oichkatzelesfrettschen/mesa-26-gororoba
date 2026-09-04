@@ -31,7 +31,7 @@
  *
  * The fetched producer -- the VAP reading the application's records
  * from the bound vertex BO instead of the CP reading them as packet
- * dwords -- was measured the same way on RS482 silicon as a third arm
+ * dwords -- was measured the same way on RS485M silicon as a third arm
  * beside the two: over twelve three-route rounds the CPU route's
  * 101.7 us median led the fetched route's 114.2 us with all twelve
  * paired differences agreeing in sign, a 0.0913 lead of the CPU

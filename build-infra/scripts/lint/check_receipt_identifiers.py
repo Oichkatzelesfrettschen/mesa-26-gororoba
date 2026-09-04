@@ -31,8 +31,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Receipt names carry the specimen they were measured on.  rs482 is the
+# spelling bundles took before the platform identity resolved; rs485m is
+# the part the option ROM names, and vostro1000_rs485m_5974 is the scheme
+# new bundles use.
 RECEIPT_IDENTIFIER = re.compile(
-    r"\br3v-[a-z0-9-]+?-(?:rs482|workstation|host-model|"
+    r"\br3v-[a-z0-9-]+?-(?:rs482|rs485m|workstation|host-model|"
     r"vostro1000_rs485m_5974)(?![\w-])"
 )
 PENDING_MARKER = "implemented_unreceipted"
@@ -99,11 +103,11 @@ def check(repo_root: Path, evidence: Path) -> list[str]:
 
 
 def self_test() -> int:
-    names = frozenset({"r3v-native-real-receipt-rs482"})
-    good = "the bundle r3v-native-real-receipt-rs482 holds it\n"
-    bad = "the bundle r3v-native-imagined-receipt-rs482 holds it\n"
+    names = frozenset({"r3v-native-real-receipt-rs485m"})
+    good = "the bundle r3v-native-real-receipt-rs485m holds it\n"
+    bad = "the bundle r3v-native-imagined-receipt-rs485m holds it\n"
     pending = ("| row | implemented_unreceipted: the "
-               "r3v-native-imagined-receipt-rs482 name is not reserved |\n")
+               "r3v-native-imagined-receipt-rs485m name is not reserved |\n")
     new_scheme = "r3v-native-flat-receipt-vostro1000_rs485m_5974\n"
     if unresolved(good, "d.md", names):
         raise ReceiptIdentifierError("self-test refused a retained name")

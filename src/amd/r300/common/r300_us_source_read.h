@@ -9,7 +9,7 @@
  * saturate.  This header models a separate execution stage: what the US
  * delivers when an instruction reads a stored value as a source operand.
  *
- * Measured behavior (RS482 silicon, sign-flip mov discriminator on a cold
+ * Measured behavior (RS485M silicon, sign-flip mov discriminator on a cold
  * first-contact boot, byte-for-bit against precommitted models): a negative
  * nonzero source operand read from an input or temporary register arrives
  * one FP24 ULP smaller in magnitude -- the immediately preceding lattice

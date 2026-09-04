@@ -50,6 +50,7 @@ armed_facts(void)
       .cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE,
       .authorized_ib_blake3 = authorized_digest,
       .actual_ib_blake3 = authorized_digest,
+      .platform_id = R3V_NATIVE_ARMING_PLATFORM,
       .pci_vendor_id = R3V_NATIVE_ARMING_PCI_VENDOR,
       .pci_device_id = R3V_NATIVE_ARMING_PCI_DEVICE,
       .authorized_kernel_release = "7.1.3-2-cachyos",
@@ -133,17 +134,58 @@ test_each_factor_refuses(void)
    assert(r3v_native_arming_evaluate(&facts) ==
           R3V_NATIVE_ARMING_UNKNOWN_CELL_KIND);
 
-   /* 1002:5975 (RS482M) is a supported r3v identity but not the
-    * authorized attended-run chip.
+   /* The shared PCI id is not a qualified system.  1002:5974 sits on
+    * desktop Xpress 1100 boards whose memory, display, thermal, and
+    * recovery behavior these campaigns never measured, so a device that
+    * resolves to no named platform refuses before anything else about it
+    * is considered.
     */
+   facts = armed_facts();
+   facts.platform_id = R300_PLATFORM_ID_NONE;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED);
+
+   /* Each field of the platform tuple alone leaves the board unresolved,
+    * which is what the resolver returns and what the gate refuses. */
+   static const struct {
+      uint16_t subsystem_vendor;
+      uint16_t subsystem_device;
+      const char *dmi;
+   } unresolved[] = {
+      { 0x1028, 0x0000, "Vostro 1000" },  /* wrong subsystem device */
+      { 0x0000, 0x022a, "Vostro 1000" },  /* wrong subsystem vendor */
+      { 0x1028, 0x022a, "Inspiron 1501" }, /* wrong DMI product */
+      { 0x1028, 0x022a, NULL },            /* absent DMI product */
+      { 0x0000, 0x0000, "" },              /* generic desktop specimen */
+   };
+   for (unsigned i = 0; i < sizeof(unresolved) / sizeof(unresolved[0]); i++) {
+      const enum r300_platform_id resolved = r300_platform_id_resolve(
+         R3V_NATIVE_ARMING_PCI_VENDOR, R3V_NATIVE_ARMING_PCI_DEVICE,
+         unresolved[i].subsystem_vendor, unresolved[i].subsystem_device,
+         unresolved[i].dmi);
+      assert(resolved == R300_PLATFORM_ID_NONE);
+      facts = armed_facts();
+      facts.platform_id = resolved;
+      assert(r3v_native_arming_evaluate(&facts) ==
+             R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED);
+   }
+
+   /* The complete tuple resolves, and only then does the gate proceed. */
+   assert(r300_platform_id_resolve(R3V_NATIVE_ARMING_PCI_VENDOR,
+                                   R3V_NATIVE_ARMING_PCI_DEVICE, 0x1028,
+                                   0x022a, "Vostro 1000") ==
+          R3V_NATIVE_ARMING_PLATFORM);
+
+   /* 1002:5975 is RS482M, a different part; a resolved platform whose
+    * enumerated id disagrees means the two came from different places. */
    facts = armed_facts();
    facts.pci_device_id = 0x5975;
    assert(r3v_native_arming_evaluate(&facts) ==
-          R3V_NATIVE_ARMING_CHIP_MISMATCH);
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
    facts = armed_facts();
    facts.pci_vendor_id = 0x10de;
    assert(r3v_native_arming_evaluate(&facts) ==
-          R3V_NATIVE_ARMING_CHIP_MISMATCH);
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
 
    facts = armed_facts();
    facts.authorized_kernel_release = NULL;
@@ -206,7 +248,7 @@ test_disarm_is_one_shot(void)
    char kernel[128];
    char module[128];
    struct r3v_native_arming_facts facts;
-   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
+   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PLATFORM, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
                              R3V_NATIVE_CELL_KIND_TRIANGLE,
                              authorized_digest, dir, kernel, sizeof(kernel),
@@ -235,7 +277,7 @@ test_disarm_is_one_shot(void)
       assert(strstr(contents, "unix_time: ") != NULL);
    }
 
-   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
+   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PLATFORM, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
                              R3V_NATIVE_CELL_KIND_TRIANGLE,
                              authorized_digest, dir, kernel, sizeof(kernel),
@@ -249,7 +291,7 @@ test_disarm_is_one_shot(void)
    rmdir(dir);
 
    /* A directory that no longer exists refuses on the evidence factor. */
-   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PCI_VENDOR,
+   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PLATFORM, R3V_NATIVE_ARMING_PCI_VENDOR,
                              R3V_NATIVE_ARMING_PCI_DEVICE,
                              R3V_NATIVE_CELL_KIND_TRIANGLE,
                              authorized_digest, dir, kernel, sizeof(kernel),
@@ -357,7 +399,7 @@ test_serial_env_parse(void)
       char module[128];
       struct r3v_native_arming_facts facts;
       r3v_native_arming_collect(
-         &facts, R3V_NATIVE_ARMING_PCI_VENDOR, R3V_NATIVE_ARMING_PCI_DEVICE,
+         &facts, R3V_NATIVE_ARMING_PLATFORM, R3V_NATIVE_ARMING_PCI_VENDOR, R3V_NATIVE_ARMING_PCI_DEVICE,
          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL, authorized_digest,
          NULL, kernel, sizeof(kernel), module, sizeof(module));
       assert(facts.serial_authorized_submissions == cases[i].parsed);
@@ -419,12 +461,67 @@ test_burst_env_parse(void)
       char module[128];
       struct r3v_native_arming_facts facts;
       r3v_native_arming_collect(
-         &facts, R3V_NATIVE_ARMING_PCI_VENDOR, R3V_NATIVE_ARMING_PCI_DEVICE,
+         &facts, R3V_NATIVE_ARMING_PLATFORM, R3V_NATIVE_ARMING_PCI_VENDOR, R3V_NATIVE_ARMING_PCI_DEVICE,
          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST, authorized_digest,
          NULL, kernel, sizeof(kernel), module, sizeof(module));
       assert(facts.burst_authorized_draws == cases[i].parsed);
    }
    unsetenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS");
+}
+
+/* The identity half of the gate, which plan capture and replay reach
+ * directly.  Those paths declare no bundle digest, no kernel or module
+ * identity, and no token, so the ceremony factors are absent by
+ * construction; this predicate must still refuse a board that is not the
+ * authorized one, and must not depend on any factor a replay omits.
+ */
+static void
+test_platform_verdict_stands_alone(void)
+{
+   struct r3v_native_arming_facts facts = armed_facts();
+   assert(r3v_native_arming_platform_verdict(&facts) ==
+          R3V_NATIVE_ARMING_ARMED);
+
+   /* Every attended-run factor cleared: a replay presents exactly this
+    * shape, and the board identity still decides it.
+    */
+   struct r3v_native_arming_facts replay = armed_facts();
+   replay.hazard_gate = NULL;
+   replay.authorized_ib_blake3 = NULL;
+   replay.actual_ib_blake3 = NULL;
+   replay.authorized_kernel_release = NULL;
+   replay.running_kernel_release = NULL;
+   replay.authorized_module_srcversion = NULL;
+   replay.running_module_srcversion = NULL;
+   replay.evidence_dir_present = false;
+   assert(r3v_native_arming_platform_verdict(&replay) ==
+          R3V_NATIVE_ARMING_ARMED);
+   /* The same shape refuses the full gate, which is why replay may not
+    * simply declare itself armed. */
+   assert(r3v_native_arming_evaluate(&replay) !=
+          R3V_NATIVE_ARMING_ARMED);
+
+   /* Known-bads: the shared id resolving to no qualified board, a
+    * different board, and a resolution disagreeing with the enumerated
+    * device. */
+   struct r3v_native_arming_facts unresolved = replay;
+   unresolved.platform_id = R300_PLATFORM_ID_NONE;
+   assert(r3v_native_arming_platform_verdict(&unresolved) ==
+          R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED);
+
+   struct r3v_native_arming_facts foreign = replay;
+   foreign.platform_id =
+      (enum r300_platform_id)(R3V_NATIVE_ARMING_PLATFORM + 1);
+   assert(r3v_native_arming_platform_verdict(&foreign) ==
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
+
+   struct r3v_native_arming_facts mismatched_id = replay;
+   mismatched_id.pci_device_id = R3V_NATIVE_ARMING_PCI_DEVICE + 1;
+   assert(r3v_native_arming_platform_verdict(&mismatched_id) ==
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
+
+   assert(r3v_native_arming_platform_verdict(NULL) ==
+          R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED);
 }
 
 static void
@@ -451,6 +548,7 @@ main(void)
    test_serial_env_parse();
    test_burst_draws_predicate();
    test_burst_env_parse();
+   test_platform_verdict_stands_alone();
    test_verdict_names_are_distinct();
    printf("r3v_native_arming_test: all checks passed\n");
    return 0;

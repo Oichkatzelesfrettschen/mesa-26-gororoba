@@ -1276,7 +1276,7 @@ void r300_emit_vertex_stream_state(struct r300_context* r300,
 /* SWTCL fetch-conditioning diagnostic gate (R300_SWTCL_PVS_FLUSH_BEFORE_FETCH,
  * exact opt-in values 1-4): emit a conditioning sequence ahead of each SWTCL
  * hardware draw's fresh 3D_LOAD_VBPNTR by dirtying the pvs_flush atom, whose
- * emission the mode selects.  RS482 silicon verdict from the three-pass
+ * emission the mode selects.  RS485M silicon verdict from the three-pass
  * color-seeded cell with a CPU raster oracle: every mode leaves the
  * within-process steady state stale -- the second and third passes truncate
  * the u_blitter clear fan to the top half of the render target while the
@@ -1325,7 +1325,7 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
     END_CS;
 }
 
-/* RS482 silicon law behind R300_SWTCL_US_RESYNC: the first US-dependent
+/* RS485M silicon law behind R300_SWTCL_US_RESYNC: the first US-dependent
  * draw of a submitted CS executes the previous epoch's US fragment program
  * even though the same IB uploads the correct program (US_CONFIG, PIXSIZE,
  * CODE_OFFSET/ADDR, instruction banks, constants) between the previous draw
@@ -1341,7 +1341,7 @@ void r300_emit_pvs_flush(struct r300_context* r300, unsigned size, void* state)
  *      fs_constants (idle first, then a re-upload the idle US must accept).
  *   3  the second fs emission alone (double upload, no wait).
  *
- * RS482 silicon verdict: every mode leaves the first draw of the CS on the
+ * RS485M silicon verdict: every mode leaves the first draw of the CS on the
  * stale program with engagement proven in the patched IBs (mode 1 doubles
  * the WAIT_UNTIL count, mode 3 doubles the US_CODE_ADDR uploads).  In-CS
  * ordering around the upload does not reprogram the US across a CS boundary.

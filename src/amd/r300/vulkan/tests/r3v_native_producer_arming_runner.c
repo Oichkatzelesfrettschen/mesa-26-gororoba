@@ -134,7 +134,8 @@ collect_facts(const char *evidence_dir, const char *digest, bool fixture,
               size_t kernel_size, char *module, size_t module_size)
 {
    if (!fixture) {
-      r3v_native_arming_collect(facts, vendor_id, device_id,
+      r3v_native_arming_collect(facts, R3V_NATIVE_ARMING_PLATFORM,
+                                vendor_id, device_id,
                                 R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, digest,
                                 evidence_dir, kernel, kernel_size, module,
                                 module_size);
@@ -154,7 +155,7 @@ collect_facts(const char *evidence_dir, const char *digest, bool fixture,
       .ctx = &fixture_provider,
    };
    r3v_native_arming_collect_from(
-      &provider, facts, vendor_id, device_id,
+      &provider, facts, R3V_NATIVE_ARMING_PLATFORM, vendor_id, device_id,
       R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, digest, evidence_dir, kernel,
       kernel_size, module, module_size);
 }
@@ -216,7 +217,7 @@ main(int argc, char **argv)
       return 2;
    }
 
-   /* The chip identity an attended run would enumerate is supplied
+   /* The board identity an attended run would resolve is supplied
     * rather than probed, so the runner opens no device node.
     */
    const char *vendor_env = getenv("R3V_NATIVE_RUNNER_PCI_VENDOR");
@@ -253,7 +254,7 @@ main(int argc, char **argv)
           facts.actual_ib_blake3);
    printf("  %-22s declared=0x%04x:0x%04x%-22s observed=0x%04x:0x%04x%-20s "
           "%s\n",
-          "chip identity", R3V_NATIVE_ARMING_PCI_VENDOR,
+          "board identity", R3V_NATIVE_ARMING_PCI_VENDOR,
           R3V_NATIVE_ARMING_PCI_DEVICE, "", vendor_id, device_id, "",
           vendor_id == R3V_NATIVE_ARMING_PCI_VENDOR &&
                 device_id == R3V_NATIVE_ARMING_PCI_DEVICE

@@ -561,7 +561,7 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300,
  * vertex.  Cached on the context. */
 /* Cap on producer model-attribute inputs (application VS inputs feeding the
  * producer FS).  A quaternion rotation and an octonion square need 2 inputs and
- * are HW-confirmed on RS482; the sedenion (CD-4) product of two distinct elements
+ * are HW-confirmed on RS485M; the sedenion (CD-4) product of two distinct elements
  * needs 8 (two 16-component sedenions = 8 FP32x4 velems), which also feeds 8
  * generic interpolators -- exactly the R300 RS texcoord-unit count, the binding
  * limit -- and is HW-confirmed per quarter (each quarter compiles to 41 r300 ALU,

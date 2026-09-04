@@ -110,7 +110,7 @@ r300_hb_tcl_init(struct r300_screen *screen)
     * setup, or another hardware-TCL command-stream fault.  The manual
     * radeon_gpu_reset lever was tested on that wedged RS482 ring and froze the
     * host through the r300_asic_reset VAP/GA soft-reset path, so this harness
-    * remains attended and one physical reboot per wedge on the measured RS482
+    * remains attended and one physical reboot per wedge on the measured RS485M
     * path.  The has_tcl && !has_hardware_tcl state stays the honest
     * "attempting hardware TCL while PVS execution remains unproven"
     * configuration; the only has_hardware_tcl readers gate on !has_tcl, so they

@@ -510,11 +510,31 @@ main(int argc, char **argv)
       return 2;
    }
 
-   /* The chip identity an attended run would enumerate is supplied
+   /* The board identity an attended run would resolve is supplied
     * rather than probed, so the runner opens no device node.
     */
    const char *vendor_env = getenv("R3V_NATIVE_RUNNER_PCI_VENDOR");
    const char *device_env = getenv("R3V_NATIVE_RUNNER_PCI_DEVICE");
+   /* The board is supplied rather than probed, so the two spellings it
+    * accepts are exact and anything else refuses: a value this runner
+    * does not recognize must not resolve to the authorized board.  The
+    * report below prints the supplied board rather than an observed one,
+    * because no device node is opened here; a non-Vostro host carrying
+    * 1002:5974 is presented by naming "none".
+    */
+   const char *platform_env = getenv("R3V_NATIVE_RUNNER_PLATFORM");
+   enum r300_platform_id platform_id = R3V_NATIVE_ARMING_PLATFORM;
+   if (platform_env != NULL) {
+      if (strcmp(platform_env, "none") == 0) {
+         platform_id = R300_PLATFORM_ID_NONE;
+      } else if (strcmp(platform_env, "vostro1000-rs485m") != 0) {
+         fprintf(stderr,
+                 "R3V_NATIVE_RUNNER_PLATFORM accepts \"vostro1000-rs485m\" "
+                 "or \"none\"; got \"%s\"\n",
+                 platform_env);
+         return 2;
+      }
+   }
    uint32_t vendor_id = vendor_env != NULL
                            ? (uint32_t)strtoul(vendor_env, NULL, 0)
                            : R3V_NATIVE_ARMING_PCI_VENDOR;
@@ -525,7 +545,7 @@ main(int argc, char **argv)
    char kernel[128];
    char module[128];
    struct r3v_native_arming_facts facts;
-   r3v_native_arming_collect(&facts, vendor_id, device_id,
+   r3v_native_arming_collect(&facts, platform_id, vendor_id, device_id,
                              cell_msaa
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE
                              : cell_multi_pass
@@ -561,12 +581,18 @@ main(int argc, char **argv)
           facts.actual_ib_blake3);
    printf("  %-22s declared=0x%04x:0x%04x%-22s observed=0x%04x:0x%04x%-20s "
           "%s\n",
-          "chip identity", R3V_NATIVE_ARMING_PCI_VENDOR,
+          "board identity", R3V_NATIVE_ARMING_PCI_VENDOR,
           R3V_NATIVE_ARMING_PCI_DEVICE, "", vendor_id, device_id, "",
           vendor_id == R3V_NATIVE_ARMING_PCI_VENDOR &&
                 device_id == R3V_NATIVE_ARMING_PCI_DEVICE
              ? "match"
              : "MISMATCH");
+   printf("  %-22s declared=%-34s supplied=%-34s %s\n", "board (supplied)",
+          "DELL_VOSTRO1000_RS485M",
+          platform_id == R300_PLATFORM_ID_NONE ? "(none)"
+                                               : "DELL_VOSTRO1000_RS485M",
+          platform_id == R3V_NATIVE_ARMING_PLATFORM ? "match"
+                                                    : "UNRESOLVED");
    report("kernel release", facts.authorized_kernel_release,
           facts.running_kernel_release);
    report("module srcversion", facts.authorized_module_srcversion,

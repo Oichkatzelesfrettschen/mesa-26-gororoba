@@ -121,9 +121,9 @@ def main():
         wrong_chip = run(runner, evidence_dir, environment, "--fixture")
         if (
             wrong_chip.returncode == 0
-            or "not the authorized RS482 identity" not in wrong_chip.stdout
+            or "not the authorized Dell Vostro 1000 RS485M platform" not in wrong_chip.stdout
         ):
-            print("FAIL: wrong chip did not refuse", file=sys.stderr)
+            print("FAIL: a board that is not the authorized platform did not refuse", file=sys.stderr)
             print(wrong_chip.stdout, file=sys.stderr)
             return 1
 

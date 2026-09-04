@@ -136,7 +136,7 @@ for supported NIR.
 
 ## Calibration results
 
-Built and run on ATI RS480 (RS482 IGP) through a surfaceless-EGL FBO harness: a
+Built and run on RS485M (RS4xx-class IGP) through a surfaceless-EGL FBO harness: a
 24-shader corpus covering arithmetic and mul-add, dot2/dot3,
 cross/reflect/normalize/length,
 min/max/clamp/mix/step/smoothstep, floor/fract/mod, abs/sign, mat2 and mat3

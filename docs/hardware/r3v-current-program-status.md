@@ -431,7 +431,7 @@ Delivered prerequisites:
   arm per parameter plus the composed smoke shape earns all three; the
   render-family transfer readback is a host route over the linear color
   BO with no executed change; OPTIMAL admission is a pure admission fact.
-  The attended render-shape session ran on RS482
+  The attended render-shape session ran on RS485M
   (`docs/hardware/r3v-native-attended-render-shape-procedure.md`): seven
   arms in table order (reference control, lanes, pitch, constant,
   extent, composed smoke shape, composed-asym), each armed under its own
@@ -515,7 +515,7 @@ P1 (host-model rungs that move classified rows without a new gate):
   host-planning pass proves no robustness case reaches an IB before it);
 - `pipeline_barrier_executing_route_gap`: the secondary replay, the
   nearest scaling blit, and the sampled-image admission moved the family
-  4 -> 28 Pass under the shim and all three movements hold on RS482
+  4 -> 28 Pass under the shim and all three movements hold on RS485M
   silicon (rungs 1-3 above); the residual walls are the withheld
   storage/all-usage image shapes at `vkCreateImage` (24 cases) and the
   render pipelines outside the qualified draw subset at
@@ -563,7 +563,7 @@ reproduce the locator.
    `r3v_CmdExecuteCommands`
    replays a secondary's recorded host-executed ops (deferred copies,
    event ops, query ops) into the primary in recorded order, and the
-   moved `pipeline_barrier` subgroups meet the RS482 silicon qualification
+   moved `pipeline_barrier` subgroups meet the RS485M silicon qualification
    requirements (8/8 Pass, dmesg delta 0, gates closed, seal `13b4b86a37c2b2`,
    bundle steinmarder-r300
    `r3v-native-secondary-replay-pipeline-barrier-first-silicon-pass-rs482`);
@@ -578,7 +578,7 @@ reproduce the locator.
    with the supplied filter. For positive, zero-origin rectangles, the source
    coordinate reduces to `(d + 0.5) * srcExtent / dstExtent`; the executing
    route supplies `VK_FILTER_NEAREST`, uses distinct images, and refuses flips.
-   The twelve moved subgroups produce valid qualification passes on RS482 silicon
+   The twelve moved subgroups produce valid qualification passes on RS485M silicon
    (12/12 Pass, dmesg delta 0, gates closed, seal `765a0687a232c2`,
    bundle steinmarder-r300
    `r3v-native-scaling-blit-pipeline-barrier-silicon-pass-rs482`);
@@ -586,7 +586,7 @@ reproduce the locator.
    zero and is closed:
    the sampled cell binds a uniform R8G8B8A8 texel through a
    combined-image-sampler descriptor set and a TCL-bypass triangle
-   samples it on TX unit 0; the attended run on RS482 rendered the
+   samples it on TX unit 0; the attended run on RS485M rendered the
    predicted centroid `0xe02060a0` with an empty dmesg delta and gates
    armed one-shot (cell blake3 `4e3d252315fb`, bundle steinmarder-r300
    `r3v-native-sampled-descriptor-cell-silicon-pass-rs482`); the
@@ -655,7 +655,7 @@ reproduce the locator.
    `TX_OFFSET_0` carries the full span.  The sampling family holds the
    silicon receipt: the attended arms `layer`, `row1`, and `wide`
    (`r3v_native_sampled_arms.h`, digests `4afc72c0`, `83063087`, and
-   `575c6747`) each submitted one live `DRM_RADEON_CS` on RS482 and read
+   `575c6747`) each submitted one live `DRM_RADEON_CS` on RS485M and read
    the dword its prediction named, with every dmesg delta empty.  The
    layered arm's two unselected layers hold a decoy texel, so a dropped
    `TX_OFFSET_0` stride reads layer 0 and lands on the named falsifier
@@ -702,7 +702,7 @@ reproduce the locator.
    types alone (`r3v_native_view_type_executes`), which
    `r3v-native-submit-order-sampled-array-view-refused` and the
    attachment arm of `r3v-native-public-surface` pin.  Measured
-   movement on RS482 (steinmarder-r300
+   movement on RS485M (steinmarder-r300
    `r3v-object-management-view-rows-measured-rs482`): `image_3d`,
    `image_view_3d`, `image_view_1d_arr`, and `image_view_2d_arr` each
    read 6 passed, 0 failed, 4 not supported at mesa `f743d0f9bec`;
@@ -910,7 +910,7 @@ reproduce the locator.
    cell followed by a sampling cell in one indirect buffer publishes
    the color writes before the texture fetch reads them; and the
    role-based composer (`r300_pm4_compose.h`) already binds several
-   independently emitted fragments into one submission on RS482
+   independently emitted fragments into one submission on RS485M
    silicon through the fetched producer route.  The composed cell itself
    lands: `r300_tcl_bypass_triangle_composed_render_sample_emit` emits
    the render half, then the sample half whose texture geometry is the
@@ -962,7 +962,7 @@ reproduce the locator.
    sample interior reading it names a texture fetch ahead of the render
    half's publication, so the coherency edge, rather than the coverage,
    carries a deviation there.  The cell holds the silicon
-   receipt: one attended submission on RS482 under the authorization the
+   receipt: one attended submission on RS485M under the authorization the
    arming report matched on all five declarations, `vkQueueSubmit`
    returning 0, both coverage verdicts reading `judged=1
    coverage_exact=1 canary=1` with 1152 interior pixels against 1152

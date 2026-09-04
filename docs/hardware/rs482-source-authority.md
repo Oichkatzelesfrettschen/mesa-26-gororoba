@@ -1,7 +1,7 @@
 # RS482 Source and Release Authority Index
 
 This document is the canonical cross-repository integration index for the
-RS482 (Vostro 1000, PCI 1002:5974) display and GPU stack. Each layer names its
+RS485M (Vostro 1000, PCI 1002:5974) display and GPU stack. Each layer names its
 editable source authority, release or deployment authority, and runtime
 identity. One repository may fill more than one role. A repair routes to the
 lowest layer whose invariant is demonstrably violated.

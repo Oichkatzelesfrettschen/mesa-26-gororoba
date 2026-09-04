@@ -9,7 +9,7 @@ per-case verdicts and fails CI on any `Pass -> not Pass` regression.
 
 ## Run
 
-The harness runs on the host that has the RS482 GPU and the surfaceless
+The harness runs on the host that has the RS485M GPU and the surfaceless
 `deqp-gles2` build (the Vostro). It exercises whatever driver the system loader
 resolves (`/usr/lib/dri/r300_dri.so`); install the build under test first.
 
