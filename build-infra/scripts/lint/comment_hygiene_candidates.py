@@ -36,20 +36,30 @@ from pathlib import Path
 FILTER = "--diff-filter=ACMRT"
 
 
+class GitQueryFailed(Exception):
+    """A git query the denominator depends on did not answer."""
+
+
 def _git(root, *args):
+    """Run one git query; a failure raises so the gate never judges a
+    set it could not build.  An absent base ref, a corrupt index, or a
+    missing repository all reach the caller as a refusal."""
     done = subprocess.run(("git", "-C", str(root)) + args,
                           capture_output=True, text=True)
     if done.returncode != 0:
-        return []
+        raise GitQueryFailed("git %s: %s" % (" ".join(args),
+                                             done.stderr.strip()
+                                             or "exit %d" % done.returncode))
     return [line for line in done.stdout.split("\n") if line]
 
 
 def collect(root, base):
     """Return the four candidate sources, each a sorted path list."""
     merge_base = _git(root, "merge-base", base, "HEAD")
-    anchor = merge_base[0] if merge_base else None
-    committed = (_git(root, "diff", "--name-only", FILTER, anchor, "HEAD")
-                 if anchor else [])
+    if not merge_base:
+        raise GitQueryFailed("merge-base %s HEAD named no commit" % base)
+    committed = _git(root, "diff", "--name-only", FILTER, merge_base[0],
+                     "HEAD")
     return {
         "committed": sorted(committed),
         "staged": sorted(_git(root, "diff", "--cached", "--name-only", FILTER)),
@@ -62,11 +72,14 @@ def collect(root, base):
 def select(sources, mode):
     """Return (files, refusal) for the mode's judged set."""
     if mode == "committed":
-        dirty = sources["unstaged"] + sources["untracked"]
-        if dirty:
-            return [], ("the working tree carries %d file(s) outside the "
-                        "commit: %s" % (len(dirty), ", ".join(dirty[:5])))
-        judged = sources["committed"] + sources["staged"]
+        # index bytes are absent from HEAD, so a populated index unbinds the
+        # verdict from the declared SHA exactly as an unstaged edit does
+        outside = (sources["staged"] + sources["unstaged"]
+                   + sources["untracked"])
+        if outside:
+            return [], ("%d file(s) sit outside HEAD: %s"
+                        % (len(outside), ", ".join(sorted(set(outside))[:5])))
+        judged = sources["committed"]
     else:
         judged = (sources["committed"] + sources["staged"]
                   + sources["unstaged"] + sources["untracked"])
@@ -80,6 +93,15 @@ def contract(root, base, mode, sources, files):
                                    "untracked"))
     return ("candidates base=%s mode=%s %s total=%d digest=%s"
             % (base, mode, counts, len(files), digest))
+
+
+def collect_exits_zero_outside_a_repository(root):
+    """True when collect() answers outside a repository instead of refusing."""
+    try:
+        collect(root, "main")
+        return True
+    except GitQueryFailed:
+        return False
 
 
 def counted(line, name):
@@ -136,12 +158,28 @@ def self_test():
             if counted(line, name) == 0:
                 failures.append("%s: the contract line reports zero" % name)
 
+    # a git query that cannot answer refuses; it never reports an empty set
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _fixture(root)
+        try:
+            collect(root, "refs/heads/absent-base")
+            failures.append("an absent base ref reported a set")
+        except GitQueryFailed:
+            pass
+    with tempfile.TemporaryDirectory() as tmp:
+        if collect_exits_zero_outside_a_repository(Path(tmp)):
+            failures.append("a non-repository reported a set")
+
     # committed mode refuses a populated working tree and judges a clean one
-    for name in ("unstaged", "untracked"):
+    for name in ("staged", "unstaged", "untracked"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _fixture(root)
-            if name == "unstaged":
+            if name == "staged":
+                (root / "tracked.c").write_text("int staged;\n")
+                _run(root, "add", "tracked.c")
+            elif name == "unstaged":
                 (root / "tracked.c").write_text("int dirty;\n")
             else:
                 (root / "extra.c").write_text("int extra;\n")
@@ -192,7 +230,12 @@ def main():
         return self_test()
 
     root = Path(args.repo_root).resolve()
-    sources = collect(root, args.base)
+    try:
+        sources = collect(root, args.base)
+    except GitQueryFailed as failure:
+        print("FAIL  comment-hygiene candidates: %s" % failure,
+              file=sys.stderr)
+        return 1
     files, refusal = select(sources, args.mode)
     print(contract(root, args.base, args.mode, sources, files))
     if refusal:
