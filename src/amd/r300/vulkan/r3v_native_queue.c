@@ -1483,27 +1483,36 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
-   /* gpu_only over a submit no route can serve, taken ahead of the
-    * execution loop.  The one route that claims a command buffer admits a
-    * submit of exactly one, so a wider submit reaches no GPU route at all
-    * and any work it carries whose semantics execute at submission is work
-    * the device does not perform.  Refusing per command buffer would let
-    * the first one run before the second was judged, which is the whole
-    * property the refusal exists to hold; the single-buffer submit's own
-    * verdict follows its route resolution, ahead of that buffer's first
-    * effect.
+   /* Route resolution and the submit's policy verdict, both ahead of the
+    * wait loop below.  A permanent binary wait is consumed where it is
+    * taken, so a refusal behind it leaves the caller's synchronization
+    * partly applied; every gate that can refuse this submit therefore
+    * stands here, ahead of every effect of any kind.
+    *
+    * The route claims a submit of exactly one command buffer, so a wider
+    * submit resolves nothing and every buffer's recorded work is work no
+    * GPU route performs.  A prepared submission commits through its own
+    * transport tail, which the route has no part in.
     */
-   if (device->execution_policy == R3V_EXECUTION_GPU_ONLY &&
-       submit->command_buffer_count > 1) {
+   if (submit->command_buffer_count == 1 && !device->prepared.valid) {
+      struct r3v_native_cmd_buffer *routed_buffer = container_of(
+         submit->command_buffers[0], struct r3v_native_cmd_buffer, vk);
+      const VkResult routed = r3v_native_cmd_buffer_route_deferred_fill(
+         device, routed_buffer, submit->command_buffer_count);
+      if (routed != VK_SUCCESS)
+         return routed;
+   }
+   if (device->execution_policy == R3V_EXECUTION_GPU_ONLY) {
       for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
          const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
             submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
          struct r3v_recorded_work_census census;
          r3v_native_cmd_buffer_work_census(cmd_buffer, &census);
-         if (r3v_recorded_work_census_ordered(&census)) {
+         const uint32_t routed_work = cmd_buffer->fill_route_active ? 1u : 0u;
+         if (r3v_recorded_work_census_total(&census) > routed_work) {
             return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r3v-native: gpu_only: a submit carrying more "
-                             "than one command buffer reaches no GPU route");
+                             "r3v-native: gpu_only: the submit carries "
+                             "recorded work no GPU route performs");
          }
       }
    }
@@ -1606,43 +1615,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          if (gpu_admit == VK_ERROR_MEMORY_MAP_FAILED)
             return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
          return vk_error(device, VK_ERROR_DEVICE_LOST);
-      }
-
-      /* Route resolution precedes the transport classification, and so
-       * precedes both the zero-stream host branch and the arming gate
-       * below it.  A fill this route performs becomes a transport
-       * submission here; one it cannot leaves the command buffer untouched
-       * for the host store loop.  Resolving after the zero-stream branch
-       * would run the host fill the route was to replace, and resolving
-       * after the arming gate would ask a gate about a stream that does
-       * not exist yet.
-       */
-      VkResult routed = r3v_native_cmd_buffer_route_deferred_fill(
-         device, cmd_buffer, submit->command_buffer_count);
-      if (routed != VK_SUCCESS)
-         return routed;
-
-      /* GPU_ONLY is a property of the submit the caller issued, so it is
-       * answered here rather than inside the one route that can claim a
-       * command buffer: a shape no route admits would otherwise reach the
-       * host execution below and produce the result the policy exists to
-       * refuse.  The census counts the work kinds whose semantics execute
-       * at submission, and the fill route's claim covers exactly the one
-       * copy it resolved, so a command buffer holding anything the device
-       * does not perform refuses here -- ahead of the query and event
-       * transitions and ahead of every host execution under them, with
-       * application memory untouched.  A transport-only command buffer
-       * counts no ordered work and submits as it always did.
-       */
-      if (device->execution_policy == R3V_EXECUTION_GPU_ONLY) {
-         struct r3v_recorded_work_census policy_census;
-         r3v_native_cmd_buffer_work_census(cmd_buffer, &policy_census);
-         const uint32_t routed_work = cmd_buffer->fill_route_active ? 1u : 0u;
-         if (r3v_recorded_work_census_total(&policy_census) > routed_work) {
-            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r3v-native: gpu_only: the submit carries "
-                             "recorded work no GPU route performs");
-         }
       }
 
       /* Recorded query transitions publish here, in recorded order:

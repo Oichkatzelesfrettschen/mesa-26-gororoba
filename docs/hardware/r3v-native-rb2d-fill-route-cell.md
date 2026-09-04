@@ -67,6 +67,7 @@ submission rather than being weighed against the others.
 | `r3v-native-fill-route` decline arms leave the command buffer untouched | done |
 | route-local host semantic writes zero, against a known-bad host leg | done |
 | every refusal calibrated by removing it and failing its test | done: 43 rows, 41 refused, 1 internal guard, 1 reached by no fixture |
+| the route observed from `vkQueueSubmit` rather than a direct call | not run |
 | the prepared plan mutated field by field and refused | done |
 | kernel-entering `DRM_RADEON_CS` count zero for a loader-only application | done |
 | `r300-rb2d-linear-span` coverage replay, sweep, and the pinned cell shape | done |

@@ -57,12 +57,13 @@ FIXTURE_GAP = "fixture-gap"
 
 # What each fixture-gap row would need.
 FIXTURE_GAPS = {
-    "queue-gpu-only-multi-buffer":
-        "a submit whose first command buffer carries an installed stream "
-        "and no recorded ordered work, beside a second carrying work: the "
-        "in-loop refusal already covers every multi-buffer shape the public "
-        "surface records, because a buffer with ordered work is refused "
-        "before it runs and a buffer without it produces no effect",
+    "queue-route-precedes-waits":
+        "a submission that reaches the route through vkQueueSubmit rather "
+        "than through a direct call: the arming gate the route asks needs a "
+        "declared evidence directory, a matching kernel release and radeon "
+        "srcversion, and the attended board, none of which the shim fixture "
+        "supplies, so no test in this tree observes the route from the "
+        "submission boundary",
 }
 
 # name, file, exact source, replacement that removes the refusal, test, class
@@ -245,12 +246,12 @@ REFUSALS = [
      RECORDING_TEST, REACHABLE),
     # GPU_ONLY over the whole submit, at the submission boundary.
     ("queue-gpu-only-policy", QUEUE,
-     "         if (r3v_recorded_work_census_total(&policy_census) > routed_work) {",
-     "         if (r3v_recorded_work_census_total(&policy_census) > routed_work &&\n             false) {", POLICY_SUBMIT_TEST, REACHABLE),
-    ("queue-gpu-only-multi-buffer", QUEUE,
-     "   if (device->execution_policy == R3V_EXECUTION_GPU_ONLY &&\n"
-     "       submit->command_buffer_count > 1) {",
-     "   if (false) {", POLICY_SUBMIT_TEST, FIXTURE_GAP),
+     "         if (r3v_recorded_work_census_total(&census) > routed_work) {",
+     "         if (r3v_recorded_work_census_total(&census) > routed_work &&\n"
+     "             false) {", POLICY_SUBMIT_TEST, REACHABLE),
+    ("queue-route-precedes-waits", QUEUE,
+     "   if (submit->command_buffer_count == 1 && !device->prepared.valid) {",
+     "   if (false) {", GLUE_TEST, FIXTURE_GAP),
     # Automatic selection, separate from a route's maturity.
     ("automatic-selection-set", POLICY,
      "   for (uint32_t i = 0; i < count; i++) {\n"
