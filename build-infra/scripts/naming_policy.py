@@ -71,12 +71,18 @@ _CLAUSE = r"[^.;\n]"
 # directly.  A contrastive conjunction ("RS482 is the desktop chip, while
 # the Vostro 1000 carries RS485M") opens a second clause with its own
 # subject that a bare comma does not close, so
-# "while"/"but"/"whereas"/"though"/"although" end the reach outright.  The
-# lookahead runs at every offset, so a forbidden span blocks the reach
+# "while"/"but"/"whereas"/"though"/"although" end the reach outright.  A
+# coordinated family enumeration ("RS482 and RS485 dies of the Vostro 1000
+# generation") names the group the following predicate is about, so "and"
+# directly ahead of another die-class token ends the reach the same way.
+# The lookahead runs at every offset, so a forbidden span blocks the reach
 # wherever it starts, not only at the gap's first character.
 _SAME_AS_COMPARISON = r"\bsame\b[^.;\n]{0,30}?\bas\b"
 _CONTRASTIVE_CONJUNCTION = r"\b(?:while|but|whereas|though|although)\b"
-_NONBINDING_GAP = rf"(?:{_SAME_AS_COMPARISON}|{_CONTRASTIVE_CONJUNCTION})"
+_FAMILY_COORDINATION = r"\band\s+RS48[025]M?\b"
+_NONBINDING_GAP = (
+    rf"(?:{_SAME_AS_COMPARISON}|{_CONTRASTIVE_CONJUNCTION}|{_FAMILY_COORDINATION})"
+)
 _CLAUSE_TO_TARGET = rf"(?:(?!{_NONBINDING_GAP})[^.;\n])"
 MISATTRIBUTED_TARGET_CHIP = re.compile(
     rf"\b{_VOSTRO}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
@@ -93,6 +99,12 @@ MISATTRIBUTED_TARGET_CHIP = re.compile(
     # the second clause's unnegated bind, with "it" continuing "Vostro".
     rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,60}}?;\s*[Ii]t\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b"
     rf"{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    # A possessive or an "of" genitive attributes the part without any
+    # _BINDS verb at all: "the Vostro 1000's RS482 IGP" and "the RS482 IGP
+    # of the Vostro 1000" state the same ownership the bind-verb forms do.
+    rf"|\b{_VOSTRO}'s\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_CLAUSE_TO_TARGET}{{0,24}}?\bof\b{_CLAUSE_TO_TARGET}{{0,24}}?"
+    rf"\b(?:the\s+)?{_VOSTRO}\b"
 )
 # A newly created artifact naming the platform rs482; a token the ledger
 # registers is an existing sealed name and passes.
@@ -208,19 +220,7 @@ HISTORICAL_ARTIFACT_ALIAS_LEDGER = (
 )
 
 
-@functools.lru_cache(maxsize=1)
-def historical_artifact_aliases() -> frozenset[str]:
-    """The exact retained path tokens whose seals fixed the rs482 spelling.
-
-    Registration is the whole exemption: a token absent from the ledger is a
-    new artifact and refuses however its path is spelled."""
-    ledger = Path(__file__).resolve().parents[2] / HISTORICAL_ARTIFACT_ALIAS_LEDGER
-    if not ledger.is_file():
-        return frozenset()
-    rows = ledger.read_text(encoding="utf-8").splitlines()[1:]
-    return frozenset(
-        row.split("\t", 1)[0] for row in rows if row.strip()
-    )
+HISTORICAL_ARTIFACT_LEDGER_SEALED_COLUMN = 3
 
 
 @functools.lru_cache(maxsize=1)
@@ -232,12 +232,39 @@ def historical_artifact_ledger_rows() -> tuple[tuple[str, ...], ...]:
     return tuple(tuple(row.split("\t")) for row in rows if row.strip())
 
 
+def _row_is_sealed(row: tuple[str, ...]) -> bool:
+    """Whether the ledger row's own `sealed` column reads `true`.
+
+    A row the corpus has not yet sealed records a candidate rename still
+    open for revision, not a fixed historical name, so it carries no
+    exemption of its own.  A short row (the column absent entirely) seals
+    nothing."""
+    return (
+        len(row) > HISTORICAL_ARTIFACT_LEDGER_SEALED_COLUMN
+        and row[HISTORICAL_ARTIFACT_LEDGER_SEALED_COLUMN] == "true"
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def historical_artifact_aliases() -> frozenset[str]:
+    """The exact retained path tokens whose seals fixed the rs482 spelling.
+
+    Registration is the whole exemption, and only a sealed row registers:
+    a token absent from the ledger, or present but not yet sealed, is a
+    new or still-open artifact and refuses however its path is spelled."""
+    return frozenset(
+        row[0] for row in historical_artifact_ledger_rows() if _row_is_sealed(row)
+    )
+
+
 @functools.lru_cache(maxsize=1)
 def historical_artifact_bundle_names() -> frozenset[str]:
-    """The registered paths' final segments, which is how a document cites
+    """The sealed rows' final path segments, which is how a document cites
     a retained bundle when the repository prefix is implied."""
     return frozenset(
-        row[1] for row in historical_artifact_ledger_rows() if len(row) > 1
+        row[1]
+        for row in historical_artifact_ledger_rows()
+        if len(row) > 1 and _row_is_sealed(row)
     )
 
 
@@ -250,31 +277,39 @@ def normalize_artifact_path(token: str) -> str:
     return text
 
 
+RECOGNIZED_ARTIFACT_REPOSITORY_PREFIX = "steinmarder-r300"
+
+
 def registered_historical_artifact(line: str, offset: int) -> bool:
     """Whether the token at offset is a registered retained path.
 
-    Registration is exact: the normalized path token, or its tail after a
-    repository prefix, equals a ledger row.  A containment test would admit
-    any new path that merely embeds a registered one."""
+    Registration is exact: the normalized path token equals a ledger row's
+    registered path, optionally with exactly one leading
+    `steinmarder-r300` segment -- the sole external repository this
+    ledger's paths live in -- stripped first.  A containment test would
+    admit any new path that merely embeds a registered one, and an
+    unbounded prefix strip would let any directory (`scratch/results/
+    <bundle>`) inherit a real path's registration by dropping enough
+    segments to reach it; only the one recognized repository name may be
+    dropped.  A bare token -- no path separator at all, the shape an
+    inline `bundle \\`name\\`` citation carries -- has no directory to
+    misrepresent, so it matches a sealed row's bundle name alone instead."""
     ledger = historical_artifact_aliases()
     for candidate in ARTIFACT_PATH_TOKEN.finditer(line):
         if not candidate.start() <= offset < candidate.end():
             continue
         text = normalize_artifact_path(candidate.group(0))
-        if ".." in text.split("/"):
+        parts = text.split("/")
+        if ".." in parts:
             return False
         if text in ledger:
             return True
-        parts = text.split("/")
-        # A citation may carry a repository prefix ahead of the registered
-        # path; every trailing segment run is compared whole.
-        if any("/".join(parts[i:]) in ledger for i in range(1, len(parts))):
-            return True
-        # The bundle name is the registered identity, so a citation is
-        # exact when its last segment equals one whole.  A path that merely
-        # extends a registered name has a different last segment and is a
-        # different bundle.
-        return parts[-1] in historical_artifact_bundle_names()
+        if len(parts) == 1:
+            return parts[0] in historical_artifact_bundle_names()
+        return (
+            parts[0] == RECOGNIZED_ARTIFACT_REPOSITORY_PREFIX
+            and "/".join(parts[1:]) in ledger
+        )
     return False
 
 
@@ -660,6 +695,18 @@ def violations(path: str, text: str, starting_line_number: int = 1) -> list[str]
             f"the attended target is RS485M and only ledger-registered "
             f"retained paths keep the alias: {alias_match.group(0)!r}"
         )
+    # The path itself is an artifact name, and its payload need not repeat
+    # it: a file created at results/vostro1000-rs482-new/data.txt carries
+    # the misattribution in its own directory name whether or not
+    # "vostro1000-rs482-new" appears anywhere inside the file.
+    for name_match in MISATTRIBUTED_TARGET_ARTIFACT.finditer(path):
+        if registered_historical_artifact(path, name_match.start()):
+            continue
+        findings.append(
+            f"{path}: a new artifact names the platform rs482 in its own "
+            f"path; the attended target is RS485M and only ledger-registered "
+            f"retained paths keep the alias: {name_match.group(0)!r}"
+        )
     for artifact_match in RETIRED_INTERNAL_ARTIFACT.finditer(text):
         line_start = text.rfind("\n", 0, artifact_match.start()) + 1
         line_end = text.find("\n", artifact_match.end())
@@ -736,8 +783,17 @@ CANDIDATE_PREFILTER_PATTERN = "|".join(CANDIDATE_PREFILTER_TERMS)
 CANDIDATE_SCAN_EXCLUSIONS = (HISTORICAL_ARTIFACT_ALIAS_LEDGER,)
 
 
+CANDIDATE_SCAN_EXCLUDE_PATHSPECS = (
+    ":(exclude)build-infra/docs/review-thread-frontiers/**",
+    ":(exclude)build-infra/docs/review-thread-classifications/**",
+    ":(exclude)build-infra/docs/review-thread-corpus/**",
+    ":(exclude)build-infra/docs/review-thread-corpus-analysis/**",
+    ":(exclude)build-infra/docs/last-100-pr-review-comment-audit.md",
+)
+
+
 def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
-    result = subprocess.run(
+    content_result = subprocess.run(
         [
             "git",
             "-C",
@@ -750,27 +806,47 @@ def tracked_candidate_files(repository_root: Path) -> tuple[str, ...]:
             CANDIDATE_PREFILTER_PATTERN,
             "--",
             ".",
-            ":(exclude)build-infra/docs/review-thread-frontiers/**",
-            ":(exclude)build-infra/docs/review-thread-classifications/**",
-            ":(exclude)build-infra/docs/review-thread-corpus/**",
-            ":(exclude)build-infra/docs/review-thread-corpus-analysis/**",
-            ":(exclude)build-infra/docs/last-100-pr-review-comment-audit.md",
+            *CANDIDATE_SCAN_EXCLUDE_PATHSPECS,
         ],
         check=False,
         capture_output=True,
         text=True,
     )
-    if result.returncode not in (0, 1):
+    if content_result.returncode not in (0, 1):
         raise subprocess.CalledProcessError(
-            result.returncode,
-            result.args,
-            output=result.stdout,
-            stderr=result.stderr,
+            content_result.returncode,
+            content_result.args,
+            output=content_result.stdout,
+            stderr=content_result.stderr,
         )
+    # git grep reads content only, so a file whose own path names the
+    # misattribution (violations() scans path as well as text) needs its
+    # path matched against every tracked file name too, not only files
+    # whose payload happens to repeat the same term.
+    all_tracked_result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "ls-files",
+            "-z",
+            "--",
+            ".",
+            *CANDIDATE_SCAN_EXCLUDE_PATHSPECS,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    prefilter = re.compile(CANDIDATE_PREFILTER_PATTERN, re.IGNORECASE)
+    path_matches = (
+        entry.decode("utf-8", errors="surrogateescape")
+        for entry in all_tracked_result.stdout.split(b"\0")
+        if entry
+    )
+    candidates = set(content_result.stdout.splitlines())
+    candidates.update(path for path in path_matches if prefilter.search(path))
     return tuple(
-        line
-        for line in result.stdout.splitlines()
-        if line not in CANDIDATE_SCAN_EXCLUSIONS
+        sorted(path for path in candidates if path not in CANDIDATE_SCAN_EXCLUSIONS)
     )
 
 
@@ -988,6 +1064,51 @@ def self_test() -> int:
         ("docs/example.md", "Vostro 1000 (RS482 / K8 / SB600) modules\n", True),
         ("docs/example.md", "`Dell Vostro 1000` (AMD K8 + RS482 + SB600)\n", True),
         ("docs/example.md", "RS482 in the Vostro 1000 northbridge\n", True),
+        # Possessive and "of" genitive attribution carry no _BINDS verb at
+        # all, so they need their own arms alongside the verb-governed and
+        # parenthetical forms above.
+        (
+            "docs/example.md",
+            "The Vostro 1000's RS482 IGP shares the K8 northbridge.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "the RS482 IGP of the Vostro 1000 shares the K8 northbridge.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "the RS482 IGP of Vostro 1000 shares the K8 northbridge.\n",
+            True,
+        ),
+        (
+            "docs/example.md",
+            "The Vostro 1000's RS485M IGP shares the K8 northbridge.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "the RS485M IGP of the Vostro 1000 shares the K8 northbridge.\n",
+            False,
+        ),
+        # The "of" branch's reach must stop before an unrelated "of": the
+        # true governed part sits before the die-class token to its right,
+        # so "of" governing something else entirely -- coordinated with
+        # RS482 by "and", or reached only across a coordinated family
+        # enumeration -- passes.
+        (
+            "docs/example.md",
+            "RS482 is the desktop part, and the RS485M of the Vostro 1000 "
+            "differs.\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "The RS482 and RS485 dies of the Vostro 1000 generation share "
+            "a register file.\n",
+            False,
+        ),
         # A contrast states a fact and passes: the clause boundary ends
         # every arm, so the two parts can be named in one sentence.
         ("docs/example.md",
@@ -1088,16 +1209,80 @@ def self_test() -> int:
         ("docs/example.md", "rs482-vostro1000-capture\n", True),
         ("docs/example.md", "rs480_vostro1000_matrix\n", True),
         ("docs/example.md", "cachyos_vostro1000_rs482_run\n", True),
+        # The rule reads the file's own path as well as its content: a new
+        # artifact named results/vostro1000-rs482-new/data.txt carries the
+        # misattribution in its directory whether or not the payload
+        # repeats it.  A registered, sealed path keeps its exemption even
+        # when the payload never repeats the name either.
+        (
+            "results/vostro1000-rs482-new/data.txt",
+            "unrelated payload that never repeats the path\n",
+            True,
+        ),
+        (
+            "results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-"
+            "deployment-runtime",
+            "unrelated payload that never repeats the path\n",
+            False,
+        ),
         # Registration is exact: a new path that merely embeds a
         # registered one is still new.
         ("docs/example.md",
          "results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-"
          "production-identity-v2/\n", True),
         ("docs/example.md", "results/vostro1000-rs482-new-run/\n", True),
+        # The registered path carries `src/re/r300/results/`, the real
+        # form the corpus cites; a repository-name prefix ahead of the
+        # whole registered path still matches by trailing-segment run.
         ("docs/example.md",
-         "see `steinmarder-r300/results/"
+         "see `steinmarder-r300/src/re/r300/results/"
          "cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/`\n",
          False),
+        # A bare bundle-name citation with no path separator at all --
+        # the shape an inline `bundle \`name\`` reference carries -- still
+        # matches a sealed row's registered bundle name.
+        (
+            "docs/example.md",
+            "bundle "
+            "`cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity`\n",
+            False,
+        ),
+        # A basename that matches a registered bundle only when it stands
+        # alone; a directory ahead of it that is not the registered path
+        # does not inherit the registration, so a bundle name relocated
+        # under an unrelated prefix refuses.
+        (
+            "docs/example.md",
+            "scratch/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-"
+            "deployment-runtime\n",
+            True,
+        ),
+        # The discriminating case: an unrecognized directory ahead of the
+        # complete, otherwise-exact registered path (not just a bare
+        # basename) still refuses, so an unbounded prefix strip cannot
+        # smuggle a relocated bundle through on its tail alone.
+        (
+            "docs/example.md",
+            "scratch/results/cachyos-vostro1000-rs482-radeon-unified-"
+            "0.8.11-1-deployment-runtime\n",
+            True,
+        ),
+        # A row's own `sealed` column gates its exemption: a sealed row
+        # (this exact path_token carries `sealed` = "true") still passes,
+        # and an explicitly unsealed row -- a candidate rename the corpus
+        # has not sealed, 125 of 592 in the ledger -- now refuses like an
+        # unregistered artifact rather than exempting on registration alone.
+        (
+            "docs/example.md",
+            "results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-"
+            "deployment-runtime\n",
+            False,
+        ),
+        (
+            "docs/example.md",
+            "results/r3v-native-fp24-bisect-ceiling-rs482\n",
+            True,
+        ),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba-* worktrees.\n", False),
         ("build-infra/example.md", "Install mesa-gororoba-debug-optimized.\n", False),
@@ -1128,15 +1313,21 @@ def self_test() -> int:
                 file=sys.stderr,
             )
             return 1
-    # The repository scan reads only files matching the prefilter, so a
-    # known-bad the prefilter misses would never be scanned at all.
+    # The repository scan selects a candidate by content match or by path
+    # match (tracked_candidate_files unions both), so a known-bad the
+    # prefilter misses on both its text and its path would never be
+    # scanned at all.
     prefilter = re.compile(CANDIDATE_PREFILTER_PATTERN, re.IGNORECASE)
     for path, text, expected_failure in cases:
-        if expected_failure and not prefilter.search(text):
+        if (
+            expected_failure
+            and not prefilter.search(text)
+            and not prefilter.search(path)
+        ):
             print(
-                f"naming policy self-test: known-bad text for {path} does "
-                f"not match the repository prefilter, so the repository "
-                f"scan would never read it",
+                f"naming policy self-test: known-bad case for {path} "
+                f"matches the repository prefilter in neither its text nor "
+                f"its path, so the repository scan would never read it",
                 file=sys.stderr,
             )
             return 1
@@ -1159,9 +1350,23 @@ def self_test() -> int:
             "RS482.\n",
             encoding="utf-8",
         )
+        # The artifact's own path carries the misattribution and its
+        # payload never repeats it, so git grep's content-only prefilter
+        # must not be the sole path into the candidate set, and
+        # violations() must scan the path as well as the text.
+        named_artifact_probe = root / "results" / "vostro1000-rs482-new" / "data.txt"
+        named_artifact_probe.parent.mkdir(parents=True)
+        named_artifact_probe.write_text(
+            "unrelated payload that never repeats the directory name\n",
+            encoding="utf-8",
+        )
         subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
         scanned = tracked_candidate_files(root)
-        for expected in ("docs/probe.md", "docs/compound_probe.md"):
+        for expected in (
+            "docs/probe.md",
+            "docs/compound_probe.md",
+            "results/vostro1000-rs482-new/data.txt",
+        ):
             if expected not in scanned:
                 print(
                     "naming policy self-test: the repository scan skipped "
@@ -1181,6 +1386,14 @@ def self_test() -> int:
             print(
                 "naming policy self-test: the repository checker admitted "
                 "the compound negated-clause misattribution",
+                file=sys.stderr,
+            )
+            return 1
+        if not candidate_file_violations(root, "results/vostro1000-rs482-new/data.txt"):
+            print(
+                "naming policy self-test: the repository checker admitted "
+                "an artifact whose path names the misattribution and whose "
+                "content never repeats it",
                 file=sys.stderr,
             )
             return 1

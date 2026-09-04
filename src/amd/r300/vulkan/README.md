@@ -62,8 +62,12 @@ silicon has no documented native compute-dispatch packet.
 
 Mesa's PCI table uses the `RS482_` prefix for both device IDs. `0x5975` is the
 RS482M part; `0x5974` is shared by RS482 and RS485, and the specimen this
-repository measures is the mobile RS485M. Source paths and PCI identities control technical claims;
-marketing names remain descriptive only.
+repository measures is the mobile RS485M. `0x5974` alone cannot distinguish
+the two: the part resolves from the PCI device id, the board's PCI subsystem
+id, the DMI product name, and the option-ROM firmware string jointly, with no
+one of the four overriding the others (`r300_platform_identity_lookup`,
+`runtime_match_basis`, `identity_evidence` in
+`src/amd/r300/common/r300_chip_identity.h`).
 
 The current r300g path routes RS480-family vertex-stage execution through
 Gallium Draw software TCL because Mesa classifies the family with
