@@ -62,9 +62,25 @@ _VOSTRO = r"[Vv]ostro(?:[- ]?1000)?"
 _RS482 = r"RS482(?![M/])"
 _BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
 _CLAUSE = r"[^.;\n]"
+# The gap a bind verb reaches into its target crosses two shapes that never
+# state the binding themselves.  A same-as comparison ("has the same PCI
+# device ID as RS482") predicates the verb over the shared property named
+# between "same" and its paired "as", not over the target token, so that
+# whole span ends the reach; "same" alone does not, since "carries the
+# same RS482 northbridge" has no paired "as" and still binds the target
+# directly.  A contrastive conjunction ("RS482 is the desktop chip, while
+# the Vostro 1000 carries RS485M") opens a second clause with its own
+# subject that a bare comma does not close, so
+# "while"/"but"/"whereas"/"though"/"although" end the reach outright.  The
+# lookahead runs at every offset, so a forbidden span blocks the reach
+# wherever it starts, not only at the gap's first character.
+_SAME_AS_COMPARISON = r"\bsame\b[^.;\n]{0,30}?\bas\b"
+_CONTRASTIVE_CONJUNCTION = r"\b(?:while|but|whereas|though|although)\b"
+_NONBINDING_GAP = rf"(?:{_SAME_AS_COMPARISON}|{_CONTRASTIVE_CONJUNCTION})"
+_CLAUSE_TO_TARGET = rf"(?:(?!{_NONBINDING_GAP})[^.;\n])"
 MISATTRIBUTED_TARGET_CHIP = re.compile(
-    rf"\b{_VOSTRO}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE}{{0,40}}?\b{_RS482}\b"
-    rf"|\b{_RS482}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE}{{0,40}}?\b{_VOSTRO}\b"
+    rf"\b{_VOSTRO}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_VOSTRO}\b"
     rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_RS482}\b"
     rf"|\b{_RS482}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_VOSTRO}\b"
     rf"|\b{_VOSTRO}\b\s*/\s*{_RS482}\b"
@@ -76,7 +92,7 @@ MISATTRIBUTED_TARGET_CHIP = re.compile(
     # merely resemble RS482; it contains RS482" names the platform through
     # the second clause's unnegated bind, with "it" continuing "Vostro".
     rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,60}}?;\s*[Ii]t\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b"
-    rf"{_CLAUSE}{{0,40}}?\b{_RS482}\b"
+    rf"{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
 )
 # A newly created artifact naming the platform rs482; a token the ledger
 # registers is an existing sealed name and passes.
@@ -85,6 +101,12 @@ MISATTRIBUTED_TARGET_CHIP = re.compile(
 # "silicon-confirmed on RS482", "the RS482 host" -- so attribution to the
 # Vostro token alone never reaches it.  An observation, capture, receipt, or
 # attended run produced on this board names RS485M.
+#
+# A result-phrased claim carries no observation verb at all: "on the Vostro
+# 1000, RS482 passes ..." states the same specimen-identity claim through
+# the corpus's own PASS/FAIL/regression verdict vocabulary, with the part
+# token as the verdict's subject instead of an "on" object.  A part token
+# that directly governs a verdict verb reads as the same misattribution.
 #
 # A family enumeration keeps its spelling, so RS482 written beside another
 # family member (RS480/RS482/RS485) is excluded, as is RS482M.
@@ -97,10 +119,16 @@ _PART = r"RS48[02](?![M/]|\s*/\s*RS|[- ]family)"
 # A noun that names a board rather than a die: a part token in front of one
 # is this platform, whatever verb the sentence uses.
 _BOARD_NOUN = r"(?:host|board|target|silicon|specimen|machine|system)"
+# The finite third-person-singular form only: "RS482 pass-B capture" names
+# a compiler pass, not a verdict, and the bare noun/imperative "pass" is
+# ambiguous with that sense throughout this corpus, so only the verb form
+# that agrees with a singular chip-token subject qualifies.
+_VERDICT = r"(?i:passes|fails|regresses)"
 MISATTRIBUTED_SPECIMEN_OBSERVATION = re.compile(
     rf"\b{_OBSERVED}\b{_CLAUSE}{{0,32}}?\b(?i:on|against|upon)\b"
     rf"{_CLAUSE}{{0,16}}?\b{_PART}\b"
     rf"|\b{_PART}\s+{_BOARD_NOUN}\b"
+    rf"|\b{_PART}\b{_CLAUSE}{{0,8}}?\b{_VERDICT}\b"
 )
 MISATTRIBUTED_AUTHORIZED_PART = re.compile(
     rf"\b(?i:authorized|attended)\s+{_PART}\b"
@@ -967,6 +995,28 @@ def self_test() -> int:
          "RS485M.\n", False),
         ("docs/example.md",
          "1002:5974 is shared by RS482 and RS485-family products.\n", False),
+        # A same-as comparison predicates the bind verb over the shared
+        # property named between "same" and its paired "as", not over
+        # RS482, so it states the shared-id fact and passes.
+        ("docs/example.md",
+         "The Vostro 1000 has the same PCI device ID as RS482.\n", False),
+        # "same" with no paired "as" names no shared property, so it does
+        # not end the reach: the bind verb still asserts the misattribution.
+        (
+            "docs/example.md",
+            "The Vostro 1000 carries the same RS482 northbridge.\n",
+            True,
+        ),
+        # A contrastive conjunction opens a second clause with its own
+        # subject; a bare comma does not close the first clause, so the
+        # reach from "is" must stop at "while" rather than crossing it to
+        # reach the second clause's "Vostro 1000".
+        ("docs/example.md",
+         "RS482 is the desktop chip, while the Vostro 1000 carries "
+         "RS485M.\n", False),
+        # An unqualified bind verb with neither comparison shape present
+        # still refuses.
+        ("docs/example.md", "the Vostro 1000 uses RS482.\n", True),
         ("docs/example.md",
          "The Vostro 1000 does not carry RS485; it carries RS485M.\n", False),
         ("docs/example.md", "the Vostro 1000 RS480/RS482/RS485 family.\n", False),
@@ -978,6 +1028,23 @@ def self_test() -> int:
          "does an attended RS480-family target submit the known-good "
          "cell.\n", False),
         ("docs/example.md", "the attended RS482 cell is retained\n", True),
+        # A result-phrased specimen claim carries no observation verb: the
+        # part token is the verdict's own subject, in the corpus's
+        # PASS/FAIL/regression vocabulary, rather than an "on" object.
+        (
+            "docs/example.md",
+            "on the Vostro 1000, RS482 passes the smoke case.\n",
+            True,
+        ),
+        ("docs/example.md", "RS482 fails the sampled-array case.\n", True),
+        ("docs/example.md", "RS482 regresses the two-draw receipt.\n", True),
+        # A verdict verb over the qualified family predicates the family,
+        # not this specimen, the same exclusion _PART already carries.
+        (
+            "docs/example.md",
+            "the RS480-family route passes the packed source domain.\n",
+            False,
+        ),
         ("docs/example.md", "the Vostro 1000 carries RS485M silicon.\n", False),
         ("docs/example.md", "1002:5975 is RS482M, not this platform part.\n", False),
         # A new artifact refuses; a ledger-registered retained path passes.
