@@ -1002,10 +1002,36 @@ def selected_build_boundary(
     return matching_namespaces[0]
 
 
+def is_git_worktree_marker(path: Path) -> bool:
+    """Whether a .git entry actually binds a worktree to a repository.
+
+    Git writes one of two shapes: a directory that is itself the
+    repository, or, for a linked worktree, a file whose first line reads
+    "gitdir: <path>".  A symlink resolves to whichever of those it names.
+    An entry of any other shape -- most commonly an empty directory a
+    passing process created under a shared temporary root -- names no
+    repository, so it bounds nothing.
+    """
+    if path.is_dir():
+        return is_git_directory(path)
+    if path.is_file():
+        try:
+            with path.open("r", errors="replace") as marker:
+                return marker.readline().startswith("gitdir:")
+        except OSError:
+            return False
+    return False
+
+
 def containing_git_worktree(path: Path) -> Path | None:
+    """The nearest enclosing worktree, or None.
+
+    The boundary this returns refuses a build root, so a marker that
+    names no repository must not produce one: an empty /tmp/.git would
+    otherwise make every build root under /tmp refuse.
+    """
     for candidate in (path, *path.parents):
-        git_marker = candidate / ".git"
-        if git_marker.exists() or git_marker.is_symlink():
+        if is_git_worktree_marker(candidate / ".git"):
             return candidate
     return None
 
