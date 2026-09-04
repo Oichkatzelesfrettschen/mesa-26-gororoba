@@ -382,7 +382,7 @@ Bare `vostro` retires. It names neither a specific model -- Dell shipped
 the Vostro 1000, 1400, 1500, and 1700 in the same era -- nor consistently
 a kind of thing, and the tree uses it for two different referents:
 
-    | vostro (RS482, r300) |            the target platform
+    | vostro (RS485M, r300) |           the target platform
     "the Vostro may be queried"         the host machine
 
 229 bare occurrences sit under src, build-infra, and docs, in three
