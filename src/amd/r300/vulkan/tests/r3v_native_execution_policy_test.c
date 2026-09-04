@@ -9,12 +9,16 @@
  * performs is exactly that case, so the submit refuses and the destination
  * is left as the application published it.
  *
- * Both legs record the same two buffer fills, which no route admits: this
- * route claims a command buffer whose whole content is one fill.  Under
- * AUTO the host store loop performs them and the destination reads the
- * pattern; under GPU_ONLY the submit refuses and every byte still reads the
- * sentinel.  The AUTO leg is the calibration, so the refusal names the
- * policy rather than a recording the driver would have refused anyway.
+ * Two shapes no route claims, each under both policies.  One command
+ * buffer carrying two fills is refused because this route claims a buffer
+ * whose whole content is one fill; two command buffers carrying one fill
+ * each are refused because the route admits a submit of exactly one, and
+ * that refusal must land ahead of the first buffer's execution rather than
+ * after it.  Under AUTO the host store loop performs both shapes and the
+ * destination reads the pattern; under gpu_only the submit refuses and
+ * every byte still reads the sentinel.  The AUTO legs are the calibration,
+ * so each refusal names the policy rather than a recording the driver would
+ * have refused anyway.
  *
  * Each leg forks, because the policy is read once at device creation from
  * the environment the process started the device with.
@@ -57,10 +61,15 @@ static unsigned failures;
       }                                                                       \
    } while (0)
 
-/* Records two fills into one command buffer and submits.  Returns the
- * submit's result, and writes whether the destination changed. */
+/* Records one fill per command buffer over its own half of the
+ * destination, and submits every buffer in one submit.  One buffer
+ * carrying two fills and two buffers carrying one each are both shapes no
+ * route claims, and the second is the shape whose refusal must land ahead
+ * of the first buffer's execution.  Returns the submit's result and writes
+ * whether the destination changed. */
 static int
-two_fill_submit(bool *filled_out, VkResult *submitted_out)
+fill_submit(unsigned command_buffers, bool *filled_out,
+            VkResult *submitted_out)
 {
    const VkApplicationInfo app = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -142,27 +151,36 @@ two_fill_submit(bool *filled_out, VkResult *submitted_out)
       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
       .commandBufferCount = 1,
    };
-   VkCommandBuffer cmd;
-   REQUIRE(vkAllocateCommandBuffers(device, &cmd_info, &cmd) == VK_SUCCESS,
+   VkCommandBuffer cmd[2];
+   REQUIRE(command_buffers <= 2, "the fixture records at most two buffers");
+   VkCommandBufferAllocateInfo alloc = cmd_info;
+   alloc.commandBufferCount = command_buffers;
+   REQUIRE(vkAllocateCommandBuffers(device, &alloc, cmd) == VK_SUCCESS,
            "command buffer allocation");
 
    const VkCommandBufferBeginInfo begin_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
    };
-   REQUIRE(vkBeginCommandBuffer(cmd, &begin_info) == VK_SUCCESS,
-           "command buffer begin");
-   /* Two fills: no route claims a command buffer carrying more than one. */
-   vkCmdFillBuffer(cmd, buffer, 0, BUFFER_BYTES / 2, FILL_VALUE);
-   vkCmdFillBuffer(cmd, buffer, BUFFER_BYTES / 2, BUFFER_BYTES / 2,
-                   FILL_VALUE);
-   REQUIRE(vkEndCommandBuffer(cmd) == VK_SUCCESS, "command buffer end");
+   for (unsigned i = 0; i < command_buffers; i++) {
+      REQUIRE(vkBeginCommandBuffer(cmd[i], &begin_info) == VK_SUCCESS,
+              "command buffer begin");
+      const unsigned fills = command_buffers == 1 ? 2u : 1u;
+      for (unsigned f = 0; f < fills; f++) {
+         const VkDeviceSize half = BUFFER_BYTES / 2;
+         const VkDeviceSize offset =
+            (command_buffers == 1 ? f : i) * half;
+         vkCmdFillBuffer(cmd[i], buffer, offset, half, FILL_VALUE);
+      }
+      REQUIRE(vkEndCommandBuffer(cmd[i]) == VK_SUCCESS,
+              "command buffer end");
+   }
 
    VkQueue queue;
    vkGetDeviceQueue(device, 0, 0, &queue);
    const VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      .commandBufferCount = 1,
-      .pCommandBuffers = &cmd,
+      .commandBufferCount = command_buffers,
+      .pCommandBuffers = cmd,
    };
    *submitted_out = vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
 
@@ -174,12 +192,12 @@ two_fill_submit(bool *filled_out, VkResult *submitted_out)
 }
 
 static int
-auto_leg(void)
+auto_one_buffer_leg(void)
 {
    unsetenv("R3V_NATIVE_EXECUTION_POLICY");
    bool filled = false;
    VkResult submitted = VK_SUCCESS;
-   if (two_fill_submit(&filled, &submitted) != 0)
+   if (fill_submit(1, &filled, &submitted) != 0)
       return 1;
    CHECK(submitted == VK_SUCCESS, "AUTO submit returns %d", submitted);
    CHECK(filled, "AUTO leaves the destination unwritten");
@@ -187,16 +205,49 @@ auto_leg(void)
 }
 
 static int
-gpu_only_leg(void)
+auto_two_buffers_leg(void)
+{
+   unsetenv("R3V_NATIVE_EXECUTION_POLICY");
+   bool filled = false;
+   VkResult submitted = VK_SUCCESS;
+   if (fill_submit(2, &filled, &submitted) != 0)
+      return 1;
+   CHECK(submitted == VK_SUCCESS,
+         "AUTO two-buffer submit returns %d", submitted);
+   CHECK(filled, "AUTO leaves the destination unwritten");
+   return failures != 0 ? 1 : 0;
+}
+
+static int
+gpu_only_one_buffer_leg(void)
 {
    setenv("R3V_NATIVE_EXECUTION_POLICY", "gpu_only", 1);
    bool filled = false;
    VkResult submitted = VK_SUCCESS;
-   if (two_fill_submit(&filled, &submitted) != 0)
+   if (fill_submit(1, &filled, &submitted) != 0)
       return 1;
    CHECK(submitted != VK_SUCCESS,
          "GPU_ONLY admits a submit no GPU route performs");
    CHECK(!filled, "GPU_ONLY wrote the destination on the host path");
+   return failures != 0 ? 1 : 0;
+}
+
+/* The refusal lands ahead of the first command buffer's execution, so a
+ * refused two-buffer submit leaves both halves of the destination at their
+ * sentinel.  A refusal taken per command buffer would run the first half
+ * and then report the second. */
+static int
+gpu_only_two_buffers_leg(void)
+{
+   setenv("R3V_NATIVE_EXECUTION_POLICY", "gpu_only", 1);
+   bool filled = false;
+   VkResult submitted = VK_SUCCESS;
+   if (fill_submit(2, &filled, &submitted) != 0)
+      return 1;
+   CHECK(submitted != VK_SUCCESS,
+         "GPU_ONLY admits a two-buffer submit no GPU route performs");
+   CHECK(!filled,
+         "GPU_ONLY executed a command buffer before refusing the submit");
    return failures != 0 ? 1 : 0;
 }
 
@@ -220,8 +271,10 @@ int
 main(void)
 {
    unsigned legs = 0;
-   legs += run_leg("auto", auto_leg);
-   legs += run_leg("gpu_only", gpu_only_leg);
+   legs += run_leg("auto-one-buffer", auto_one_buffer_leg);
+   legs += run_leg("auto-two-buffers", auto_two_buffers_leg);
+   legs += run_leg("gpu_only-one-buffer", gpu_only_one_buffer_leg);
+   legs += run_leg("gpu_only-two-buffers", gpu_only_two_buffers_leg);
    if (legs != 0) {
       fprintf(stderr, "r3v-native-execution-policy: %u leg(s) failed\n", legs);
       return 1;

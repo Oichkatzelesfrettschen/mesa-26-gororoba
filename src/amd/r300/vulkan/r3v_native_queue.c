@@ -1483,6 +1483,31 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
+   /* gpu_only over a submit no route can serve, taken ahead of the
+    * execution loop.  The one route that claims a command buffer admits a
+    * submit of exactly one, so a wider submit reaches no GPU route at all
+    * and any work it carries whose semantics execute at submission is work
+    * the device does not perform.  Refusing per command buffer would let
+    * the first one run before the second was judged, which is the whole
+    * property the refusal exists to hold; the single-buffer submit's own
+    * verdict follows its route resolution, ahead of that buffer's first
+    * effect.
+    */
+   if (device->execution_policy == R3V_EXECUTION_GPU_ONLY &&
+       submit->command_buffer_count > 1) {
+      for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+         const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+            submit->command_buffers[i], struct r3v_native_cmd_buffer, vk);
+         struct r3v_recorded_work_census census;
+         r3v_native_cmd_buffer_work_census(cmd_buffer, &census);
+         if (r3v_recorded_work_census_ordered(&census)) {
+            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                             "r3v-native: gpu_only: a submit carrying more "
+                             "than one command buffer reaches no GPU route");
+         }
+      }
+   }
+
    /* r3v_cpu_sync_wait (rg --fixed-strings "r3v_cpu_sync_wait"
     * src/amd/r300/vulkan/r3v_cpu_sync.c) completes each declared dependency
     * before deferred CPU execution below.  The queue path

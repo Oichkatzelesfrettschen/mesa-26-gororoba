@@ -46,8 +46,24 @@ POLICY_SUBMIT_TEST = "r3v-native-execution-policy"
 # already-admitted contracts make impossible: removing it changes no
 # observable behavior, so the test must still pass, and a failure there says
 # the state was reachable after all and the guard is a refusal.
+# FIXTURE_GAP names a refusal a caller can reach and no fixture in this
+# tree reaches: removing it leaves the tests passing, and the row records
+# what a test would have to record to cover it.  It is reported as
+# uncovered rather than credited, so the runner never reads a fixture's
+# limits as a property of the code.
 REACHABLE = "reachable"
 INTERNAL = "internal"
+FIXTURE_GAP = "fixture-gap"
+
+# What each fixture-gap row would need.
+FIXTURE_GAPS = {
+    "queue-gpu-only-multi-buffer":
+        "a submit whose first command buffer carries an installed stream "
+        "and no recorded ordered work, beside a second carrying work: the "
+        "in-loop refusal already covers every multi-buffer shape the public "
+        "surface records, because a buffer with ordered work is refused "
+        "before it runs and a buffer without it produces no effect",
+}
 
 # name, file, exact source, replacement that removes the refusal, test, class
 REFUSALS = [
@@ -226,6 +242,10 @@ REFUSALS = [
     ("queue-gpu-only-policy", QUEUE,
      "         if (r3v_recorded_work_census_total(&policy_census) > routed_work) {",
      "         if (r3v_recorded_work_census_total(&policy_census) > routed_work &&\n             false) {", POLICY_SUBMIT_TEST, REACHABLE),
+    ("queue-gpu-only-multi-buffer", QUEUE,
+     "   if (device->execution_policy == R3V_EXECUTION_GPU_ONLY &&\n"
+     "       submit->command_buffer_count > 1) {",
+     "   if (false) {", POLICY_SUBMIT_TEST, FIXTURE_GAP),
     # Automatic selection, separate from a route's maturity.
     ("automatic-selection-set", POLICY,
      "   for (uint32_t i = 0; i < count; i++) {\n"
@@ -267,6 +287,10 @@ def calibrate(root, builddir, rows):
             if kind == INTERNAL:
                 verdict = ("internal guard held"
                            if not failed else "REACHABLE AFTER ALL")
+            elif kind == FIXTURE_GAP:
+                verdict = ("no fixture reaches it: " +
+                           FIXTURE_GAPS.get(name, "reason unrecorded")
+                           if not failed else "a fixture reaches it")
             else:
                 verdict = "refused" if failed else "STILL PASSES"
             results.append((name, test, verdict,
@@ -322,12 +346,17 @@ def main():
     results = calibrate(Path(args.root).resolve(),
                         Path(args.builddir).resolve(), rows)
     uncovered = 0
+    gaps = 0
     for name, test, verdict, transcript in results:
         print("=== %s (%s): %s" % (name, test, verdict))
         print(transcript.strip())
-        if verdict not in ("refused", "internal guard held"):
+        if not (verdict == "refused" or verdict == "internal guard held" or
+                verdict.startswith("no fixture reaches it")):
             uncovered += 1
-    print("%d refusal(s) calibrated, %d uncovered" % (len(results), uncovered))
+        if verdict.startswith("no fixture reaches it"):
+            gaps += 1
+    print("%d refusal(s) calibrated, %d uncovered, %d reached by no fixture"
+          % (len(results), uncovered, gaps))
     return 1 if uncovered else 0
 
 
