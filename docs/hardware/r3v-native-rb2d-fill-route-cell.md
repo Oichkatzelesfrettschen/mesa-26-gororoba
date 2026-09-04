@@ -72,13 +72,13 @@ submission rather than being weighed against the others.
 | kernel-entering `DRM_RADEON_CS` count zero for a loader-only application | done |
 | `r300-rb2d-linear-span` coverage replay, sweep, and the pinned cell shape | done |
 | `r300-direct-write` golden byte-identical | done |
-| profile-4 ICD sha256, build id, exports, and Gallium separation triple | not run |
-| kernel parser replay at the deployed pin `2be21eaa8927` | done on the host tree at the pin: `r3v-native-rb2d-fill-submit-object-replay`; the board's provenance-bound tool run is not run |
+| profile-4 ICD sha256, build id, exports, and Gallium separation triple | done on the board: reproducible profile-4 build of `168228122665` with `COMPILER_CHAIN=direct`, ICD sha256 `4ad9ce18c20b...987b6`, build-id `063c02b3673e...286e`, builddir and prefix copies identical; retained in `r3v-native-rb2d-const-fill-public-route-prediction-vostro1000_rs485m_5974/build` |
+| kernel parser replay at the deployed pin `2be21eaa8927` | done on the board with the provenance-bound tool (correspondence gate pass, bound to srcversion `46C05689F2C98A526C314F4`): `r3v-native-rb2d-fill-submit-object-replay` and the exact-cell trace in the prediction bundle |
 | CS-track replay | done: the same replay tool walks the parser and the tracker; `Kernel replay classes` below records what each owns |
 | plan capture records the route and its cell kind | unreachable: the device refuses a capture session while the hazard gate is open, and this route runs only with it open |
 | drm-shim submission of this exact cell, with the submit object retained | done: the loader application's armed leg retains ib.bin, relocs.bin, manifest.json, submit_relocs.bin, submit_manifest.json, and the token |
-| a non-submitting arming runner on the attended board | not run |
-| the sealed prediction | not run |
+| a non-submitting arming runner on the attended board | done: `r3v_native_rb2d_fill_arming_runner` on the Vostro resolves `DELL_VOSTRO1000_RS485M` from sysfs, reports ARMED under the full declaration, refuses each wrong fact by name, and leaves the evidence directory untouched |
+| the sealed prediction | done: `r3v-native-rb2d-const-fill-public-route-prediction-vostro1000_rs485m_5974/PREDICTION.txt`, sealed ahead of any attempt; the attempt itself is not run |
 
 The mutation matrix `r3v-fill-route` runs, and the check each mutation
 lands on:
