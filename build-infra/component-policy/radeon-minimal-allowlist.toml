@@ -56,3 +56,13 @@ vulkan-drivers = ["amd_terascale"]
 tag = "debug"
 gallium-drivers = ["r600", "zink", "softpipe", "llvmpipe"]
 vulkan-drivers = ["amd_terascale"]
+
+# The ACO test profile builds no Gallium driver and no ICD for this
+# workspace's hardware: it selects the amd Vulkan driver because
+# build-aco-tests reaches the ACO compiler through it, and it runs the
+# compiler's own unit tests rather than any device path.  The row records
+# that surface so the audit describes every config the tree carries.
+[profile."raven2_aco_test_debug_x86_64v1-clang22"]
+tag = "compiler-test"
+gallium-drivers = []
+vulkan-drivers = ["amd"]
