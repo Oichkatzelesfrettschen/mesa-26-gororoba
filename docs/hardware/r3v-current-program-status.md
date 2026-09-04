@@ -262,7 +262,7 @@ Every submitting graphics case of the command slice refuses at
 `vk.createImage` or `vk.endCommandBuffer`, so the first dEQP transcript
 waited on those elements; the one-case compose, independent plan check,
 drm-shim mutation ladder, and one-attempt silicon replay are done, and
-the case passes on RS482 (bundle
+the case passes on RS485M (bundle
 `r3v-native-smoke-triangle-plan-replay-first-silicon-pass-rs482`).
 
 ## Draw, synchronization, and transfer host-planning pass
