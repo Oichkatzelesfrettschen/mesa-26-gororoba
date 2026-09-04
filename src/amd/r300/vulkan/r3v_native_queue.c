@@ -1520,7 +1520,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          r3v_native_cmd_buffer_work_census(cmd_buffer, &census);
          const uint32_t routed_work = cmd_buffer->fill_route_active ? 1u : 0u;
          if (r3v_recorded_work_census_total(&census) > routed_work) {
-            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+            return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
                              "r3v-native: gpu_only: the submit carries "
                              "recorded work no GPU route performs");
          }

@@ -564,7 +564,7 @@ test_gpu_only_refuses_rather_than_falling_back(const struct reference *ref)
    s.device.submit_hazard_accepted = false;
    const VkResult result =
       r3v_native_cmd_buffer_route_deferred_fill(&s.device, &s.cmd, 1u);
-   CHECK(result == VK_ERROR_FEATURE_NOT_PRESENT,
+   CHECK(result == R3V_NATIVE_REFUSAL_RESULT,
          "GPU_ONLY over a closed submission gate returns %d", result);
    CHECK(!s.cmd.fill_route_active, "the refused route still claimed");
    check_untouched(&s, "GPU_ONLY over a closed submission gate");

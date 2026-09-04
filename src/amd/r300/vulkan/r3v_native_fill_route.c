@@ -146,7 +146,11 @@ decline(struct r3v_native_device *device, enum r3v_execution_policy policy,
 {
    if (policy != R3V_EXECUTION_GPU_ONLY)
       return VK_SUCCESS;
-   return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+   /* The route runs at the submission boundary, so its refusal is a
+    * vkQueueSubmit result and takes the one value the whole native refusal
+    * set is spelled with rather than a command-specific error the registry
+    * entry for that command does not list. */
+   return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
                     "r3v-native: fill route %s: %s", what,
                     reason != NULL ? reason : "unnamed");
 }
@@ -260,7 +264,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    const enum r3v_route_decision decision =
       r3v_route_policy_select(&request, gate_open, &route, &reason);
    if (decision == R3V_ROUTE_DECISION_REFUSE) {
-      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+      return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
                        "r3v-native: fill route refused: %s",
                        reason != NULL ? reason : "no reason recorded");
    }
