@@ -12,6 +12,7 @@
 #include "r3v_entrypoints.h"
 #include "r3v_physical_device.h"
 #include "r3v_private.h"
+#include "r3v_submit_preflight.h"
 
 #include "vk_alloc.h"
 #include "vk_common_entrypoints.h"
@@ -122,6 +123,24 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
 {
    VK_FROM_HANDLE(r3v_physical_device, pdevice, physicalDevice);
    VkResult result;
+
+   /* The device caches one gate value per route identity below, so the route
+    * table decides the shape of that array and the meaning of every entry.
+    * A malformed table refuses the device here, with nothing allocated: a
+    * device created over a table whose identities fall outside the array or
+    * whose gate names no variable would index past its cache or resolve an
+    * opt-in that cannot be read, and the first submission to consult a route
+    * would carry the defect instead of reporting it.
+    */
+   uint32_t route_count = 0;
+   const struct r300_operation_route_row *route_rows =
+      r300_operation_route_rows(&route_count);
+   const char *route_refusal = NULL;
+   if (!r3v_route_table_admits_device(route_rows, route_count,
+                                      &route_refusal)) {
+      return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: route table refused: %s", route_refusal);
+   }
 
    struct r3v_native_device *device =
       vk_zalloc2(&pdevice->vk.instance->alloc, pAllocator, sizeof(*device),
