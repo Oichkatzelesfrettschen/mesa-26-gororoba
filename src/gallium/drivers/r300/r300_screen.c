@@ -812,14 +812,14 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         r300screen->caps.family == CHIP_RS480) {
         if (r300screen->info.rs480_gart_mc.valid) {
             SCREEN_DBG(r300screen, DBG_INFO,
-                       "r300: RS485M GART/MC (%s): AGP_BASE_2=0x%08x GART_FEATURE_ID=0x%08x GART_BASE=0x%08x\n",
+                       "r300: RS480 GART/MC (%s): AGP_BASE_2=0x%08x GART_FEATURE_ID=0x%08x GART_BASE=0x%08x\n",
                        r300screen->info.rs480_gart_mc.from_debugfs ? "debugfs" : "ioctl",
                        r300screen->info.rs480_gart_mc.agp_base_2,
                        r300screen->info.rs480_gart_mc.gart_feature_id,
                        r300screen->info.rs480_gart_mc.gart_base);
         } else {
             SCREEN_DBG(r300screen, DBG_INFO,
-                       "r300: RS485M GART/MC unavailable via ioctl or debugfs fallback.\n");
+                       "r300: RS480 GART/MC unavailable via ioctl or debugfs fallback.\n");
         }
     }
 

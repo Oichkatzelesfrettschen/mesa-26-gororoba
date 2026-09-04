@@ -1697,14 +1697,14 @@ test_hidden_paths(void)
 {
    TEST_CHECK(drm_shim_test_path_is_hidden(
                  "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs"),
-              "RS485M fallback debugfs path is not registered");
+              "RS480 fallback debugfs path is not registered");
    TEST_CHECK(drm_shim_test_path_is_hidden(
                  "/sys/kernel/debug/dri/0/"
                  "radeon_rs480_candidate_gart_mc_regs"),
-              "RS485M per-card debugfs path is not registered");
+              "RS480 per-card debugfs path is not registered");
    TEST_CHECK(!drm_shim_test_path_is_hidden(
                  "/sys/kernel/debug/dri/0/radeon_rs480_visible_neighbor"),
-              "RS485M debugfs neighbor is hidden");
+              "RS480 debugfs neighbor is hidden");
 
    char exact_path[] = "/tmp/radeon-shim-hidden-exact-XXXXXX";
    int fd = mkstemp(exact_path);

@@ -58,7 +58,7 @@ r3v_chip_name_from_pci_device_id(uint32_t pci_device_id)
 {
    switch (pci_device_id) {
    case R3V_PCI_DEVICE_ID_RS48X:
-      return "ATI RS480 (RS485M)";
+      return "ATI RS480 (RS482/RS485)";
    case R3V_PCI_DEVICE_ID_RS482M:
       return "ATI RS480 (RS482M)";
    default:

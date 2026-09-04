@@ -465,7 +465,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "general 4x4 vertex transform out[j] = M * p[j], component i = "
                          "dot(row_i, p_j) -- four DP4s per vertex, one fullscreen invocation, "
                          "the absent vertex FPU's core operation run on the PRESENT FP24 "
-                         "fragment ALU.  RS485M has num_vert_fpus = 0 (r300_chipset.c never sets "
+                         "fragment ALU.  RS480 has num_vert_fpus = 0 (r300_chipset.c never sets "
                          "it for CHIP_RS480, so has_hardware_tcl = num_vert_fpus>0 = false): the "
                          "vertex engine is a breadboard, FPUs ABSENT not gated.  But the MVP "
                          "transform IS a vec4 of four DP4s, and DP4 is HW-confirmed on the "
