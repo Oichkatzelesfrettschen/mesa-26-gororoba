@@ -20,7 +20,7 @@ r3v_submit_refusal_name(enum r3v_submit_refusal refusal)
          "candidate_without_transport",
       [R3V_SUBMIT_REFUSAL_MALFORMED_ROUTE_TABLE] = "malformed_route_table",
       [R3V_SUBMIT_REFUSAL_PHASE_ORDER] = "phase_order",
-      [R3V_SUBMIT_REFUSAL_ABSENT_RECORD] = "absent_record",
+      [R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST] = "malformed_request",
    };
    return (unsigned)refusal < R3V_SUBMIT_REFUSAL_COUNT ? names[refusal]
                                                        : NULL;
@@ -45,7 +45,7 @@ r3v_submit_refusal_result_class(enum r3v_submit_refusal refusal)
    /* An ordering break means a gate ran after a write reached application
     * memory, so the submit is past the point where declining is honest. */
    case R3V_SUBMIT_REFUSAL_PHASE_ORDER:
-   case R3V_SUBMIT_REFUSAL_ABSENT_RECORD:
+   case R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST:
    case R3V_SUBMIT_REFUSAL_COUNT:
    default:
       return R3V_SUBMIT_RESULT_DEVICE_LOST;
@@ -115,7 +115,13 @@ r3v_submit_preflight_check(const struct r3v_submit_census *census,
 
    if (census == NULL) {
       *reason = "submit census is absent";
-      return R3V_SUBMIT_REFUSAL_ABSENT_RECORD;
+      return R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST;
+   }
+   /* The policy decides below, so a value outside its enum would be read as
+    * AUTO and admit a submit whose caller asked for something else. */
+   if ((unsigned)policy > R3V_EXECUTION_CPU_REFERENCE) {
+      *reason = "submit names no execution policy";
+      return R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST;
    }
 
    /* A route candidate names the command buffer whose stream carries it, so

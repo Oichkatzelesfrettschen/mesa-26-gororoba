@@ -68,9 +68,10 @@ enum r3v_submit_refusal {
    /* A transaction applied a device-visible effect outside the commit
     * phase, or refused after one. */
    R3V_SUBMIT_REFUSAL_PHASE_ORDER,
-   /* The caller named no census or no transaction: a defect in the calling
-    * code rather than a shape the driver declines. */
-   R3V_SUBMIT_REFUSAL_ABSENT_RECORD,
+   /* The caller handed the layer something it cannot read: an absent census
+    * or transaction, or a policy outside the policy enum.  A defect in the
+    * calling code rather than a shape the driver declines. */
+   R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST,
    R3V_SUBMIT_REFUSAL_COUNT,
 };
 

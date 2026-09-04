@@ -73,11 +73,12 @@ const char *r3v_execution_policy_name(enum r3v_execution_policy p);
  * The selector reads every field.  element_bytes counts the range: a range
  * that is not a whole number of elements starting on an element boundary
  * describes no operation and refuses for either executor.
- * destination_device_visible gates the device rows: a destination the device
- * cannot reach disqualifies every GPU route ahead of the ledger.  A route's
- * own admission -- the pitch grid, the offset grid, the segment bound a
- * carrier imposes -- belongs to that route and is checked where it is
- * emitted. */
+ * The two reach flags say which executors can touch the destination:
+ * destination_device_visible disqualifies every GPU row ahead of the ledger,
+ * destination_host_mapped closes the host path, and a destination neither
+ * reaches has no answer at all.  A route's own admission -- the pitch grid,
+ * the offset grid, the segment bound a carrier imposes -- belongs to that
+ * route and is checked where it is emitted. */
 struct r3v_route_request {
    enum r300_operation_id operation_id;
    enum r300_operation_route_use use;

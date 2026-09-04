@@ -291,7 +291,20 @@ r3v_route_policy_select(const struct r3v_route_request *request,
       *reason = "route request names a range outside its element grid";
       return R3V_ROUTE_DECISION_REFUSE;
    }
+   /* The two reach flags say which executors can touch the destination.  A
+    * host decision needs the host's own mapping, so a destination neither
+    * executor reaches has no answer at all and refuses here rather than
+    * naming an executor that cannot write it. */
+   if (!request->destination_host_mapped &&
+       !request->destination_device_visible) {
+      *reason = "neither executor reaches the destination";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
    if (request->policy == R3V_EXECUTION_CPU_REFERENCE) {
+      if (!request->destination_host_mapped) {
+         *reason = "cpu_reference: the destination is not host mapped";
+         return R3V_ROUTE_DECISION_REFUSE;
+      }
       *reason = "cpu_reference policy";
       return R3V_ROUTE_DECISION_HOST;
    }
@@ -310,6 +323,9 @@ r3v_route_policy_select(const struct r3v_route_request *request,
                 "carries it";
       return R3V_ROUTE_DECISION_HOST;
    }
+   /* A device-visible destination the host cannot map keeps the host path
+    * closed, so an AUTO request that finds no qualified GPU route below has
+    * nowhere to fall. */
 
    /* A promoted route first: the selector reaches EXECUTING rows only, and
     * one that answers is the route this operation takes with no
@@ -362,6 +378,11 @@ r3v_route_policy_select(const struct r3v_route_request *request,
       return R3V_ROUTE_DECISION_REFUSE;
    }
 
+   if (!request->destination_host_mapped) {
+      *reason = "no qualified GPU route and the destination is not host "
+                "mapped";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
    *reason = "no qualified GPU route; the host path is the default";
    return R3V_ROUTE_DECISION_HOST;
 }

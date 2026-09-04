@@ -47,7 +47,7 @@ fill_request(enum r3v_execution_policy policy)
       .byte_size = 4096u,
       .element_bytes = 4u,
       .destination_device_visible = true,
-      .destination_host_mapped = false,
+      .destination_host_mapped = true,
    };
 }
 
@@ -255,6 +255,36 @@ test_resource_shape_gates_the_gpu_decision(void)
    request.policy = R3V_EXECUTION_CPU_REFERENCE;
    assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
           R3V_ROUTE_DECISION_HOST);
+
+   /* A destination the host cannot map closes the host path: a reference
+    * run that cannot touch the buffer is no reference, and an AUTO request
+    * with no qualified GPU route has nowhere to fall. */
+   request = fill_request(R3V_EXECUTION_CPU_REFERENCE);
+   request.destination_host_mapped = false;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   request.policy = R3V_EXECUTION_AUTO;
+   request.use = R300_ROUTE_USE_RENDER_ATTACHMENT;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   /* The same destination still reaches the open GPU route, because the
+    * device can write it. */
+   request.use = R300_ROUTE_USE_TRANSFER_BUFFER;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_GPU);
+
+   /* A destination neither executor reaches has no answer at all. */
+   request = fill_request(R3V_EXECUTION_AUTO);
+   request.destination_device_visible = false;
+   request.destination_host_mapped = false;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   request.policy = R3V_EXECUTION_CPU_REFERENCE;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   request.policy = R3V_EXECUTION_GPU_ONLY;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
 }
 
 static void

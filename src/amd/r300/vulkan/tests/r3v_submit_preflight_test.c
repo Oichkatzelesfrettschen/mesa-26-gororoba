@@ -230,12 +230,22 @@ test_preflight_refuses_each_shape(void)
                                      &reason) ==
           R3V_SUBMIT_REFUSAL_CANDIDATE_WITHOUT_TRANSPORT);
 
-   /* An absent census is a defect in the calling code, so the verdict names
-    * that rather than a shape the driver declines. */
+   /* An absent census and a policy outside the policy enum are both defects
+    * in the calling code, so the verdict names that rather than a shape the
+    * driver declines.  Without the policy bound the value below would read
+    * as AUTO and admit the submit. */
    assert(r3v_submit_preflight_check(NULL, false, R3V_EXECUTION_AUTO,
                                      &reason) ==
-          R3V_SUBMIT_REFUSAL_ABSENT_RECORD);
-   assert(r3v_submit_refusal_result_class(R3V_SUBMIT_REFUSAL_ABSENT_RECORD) ==
+          R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST);
+   struct r3v_submit_census admitted = { 0 };
+   r3v_submit_census_add(&admitted, &stream, false, false);
+   assert(r3v_submit_preflight_check(&admitted, false, R3V_EXECUTION_AUTO,
+                                     &reason) == R3V_SUBMIT_ADMITTED);
+   assert(r3v_submit_preflight_check(
+             &admitted, false, (enum r3v_execution_policy)7, &reason) ==
+          R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST);
+   assert(r3v_submit_refusal_result_class(
+             R3V_SUBMIT_REFUSAL_MALFORMED_REQUEST) ==
           R3V_SUBMIT_RESULT_DEVICE_LOST);
 
    /* Every verdict spells a name, and the result class separates a declined
