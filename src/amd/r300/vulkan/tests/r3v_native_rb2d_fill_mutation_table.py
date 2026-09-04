@@ -34,7 +34,7 @@ DIRECTORY_STATE = "unspent"
 MUTATIONS = (
     ("closed_gate", "hazard gate",
      {HAZARD_GATE: "@unset"}, {HAZARD_GATE: "@unset"}, {}, {},
-     "hazard gate"),
+     "CLOSED"),
     ("wrong_stream_digest", "authorized IB blake3",
      {IB_BLAKE3: "@stale_digest"}, {IB_BLAKE3: "@stale_digest"}, {}, {},
      "MISMATCH"),
