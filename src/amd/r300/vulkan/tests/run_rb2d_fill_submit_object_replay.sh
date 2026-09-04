@@ -19,17 +19,27 @@
 # ACCEPT verdict on a mutated stream is a verdict on changed bytes and
 # never on a flag the tool ignored.
 #
-# The parser owns three things on this stream: the PACKET0 register
-# admission (r300_packet0_check over the safe-register bitmap), the
-# relocation protocol (a PACKET3 NOP after DST_PITCH_OFFSET), and the
-# stream framing.  The 2D destination geometry -- which buffer object the
-# relocation names, the pitch, the base offset, the rectangles, the
-# scissor, the wait state -- passes the kernel unchecked: r100_cs_track
-# tracks 3D color and depth targets and no 2D destination.  Those
-# mutations therefore replay ACCEPT and are asserted as ACCEPT here, so
-# a kernel that starts refusing one moves its row and this test names it;
-# the Mesa fill plan, memory contract, and submission identity are their
-# sole owners, and r3v-native-fill-route refuses each of them in process.
+# The parser class decides what the kernel owns on this stream, and the
+# qualification declares it through R3V_CS_TRACK_PARSER_CLASS so a green
+# run names its denominator:
+#
+#   legacy-2d   the parser owns the PACKET0 register admission, the
+#               relocation protocol, and the stream framing; r100_cs_track
+#               tracks no 2D destination, so every destination geometry
+#               mutation replays ACCEPT and Mesa's fill plan, memory
+#               contract, and submission identity are its sole owners
+#   strict-2d   the tracker binds the 2D destination to the object the
+#               DST_PITCH_OFFSET relocation consumed and bounds both launch
+#               registers' rectangle against that object, so the wrong
+#               relocation target, the swapped bundle, pitch 0, a base or
+#               rectangle past the object, and an undersized object each
+#               reject in the kernel too; the scissor, the wait state, and
+#               a stream cut before the final wait stay the client's
+#
+# The declared class is probed before any verdict: a two-dword stream
+# launching DST_WIDTH_HEIGHT with no destination state rejects under
+# strict-2d and passes under legacy-2d, and a tool whose answer differs
+# from the declaration fails the run.
 #
 # R3V_CS_TRACK_REPLAY_TOOL names the full CS parser/tracker replay built
 # from the Linux radeon source tree; an unset tool skips the test.
@@ -58,6 +68,15 @@ if [ "$#" -ne 2 ]; then
     echo "usage: $0 <loader-fill-application> <rb2d-fill-arming-runner>" >&2
     exit 2
 fi
+parser_class="${R3V_CS_TRACK_PARSER_CLASS:-}"
+case "${parser_class}" in
+    legacy-2d|strict-2d) ;;
+    *)
+        echo "R3V_CS_TRACK_PARSER_CLASS must declare legacy-2d or" \
+             "strict-2d; got '${parser_class}'" >&2
+        exit 1
+        ;;
+esac
 application="$1"
 runner="$2"
 
@@ -335,10 +354,42 @@ if ! grep -q "reloc -> entry 0" "${workdir}/good.txt"; then
 fi
 echo "admitted: DST_PITCH_OFFSET relocation -> entry 0"
 admitted "scissor registers" 0x16ec 0x16f0 0x16e8
-admitted "brush and master-control registers" 0x146c 0x16c0 0x16cc 0x147c
-admitted "rectangle registers" 0x1438 0x1598
+admitted "walk, mask, and brush registers" 0x16c0 0x16cc 0x147c
 admitted "destination cache flush" 0x1714
 admitted "wait state" 0x1720
+
+# The parser-class probe: DST_WIDTH_HEIGHT launched with no destination
+# state, over the retained bundle.
+python3 -c 'import struct,sys; open(sys.argv[1],"wb").write(struct.pack("<2I", 0x1598 >> 2, 0x00010001))' \
+    "${workdir}/probe-launch-alone.bin"
+probe=$("${R3V_CS_TRACK_REPLAY_TOOL}" "${workdir}/bundle.txt" \
+    "${workdir}/probe-launch-alone.bin" 2>&1 | \
+    sed -n 's/.*\(verdict=[A-Z-]*\).*/\1/p' | head -1)
+case "${parser_class}:${probe}" in
+    strict-2d:verdict=REJECT) ;;
+    legacy-2d:verdict=ACCEPT-NO-DRAW) ;;
+    *)
+        echo "declared parser class ${parser_class} but the launch-alone" \
+             "probe answered '${probe}'" >&2
+        exit 1
+        ;;
+esac
+echo "parser class ${parser_class}: launch-alone probe ${probe}"
+if [ "${parser_class}" = strict-2d ]; then
+    for line in \
+        "DST_PITCH_OFFSET: reloc cursor 2 -> entry 0 (command) size 65536 base 0 pitch 256" \
+        "2D destination 61x1 at (3,0) pitch 256 offset 0 cpp 4: end 256 within 65536" \
+        "2D destination 64x18 at (0,1) pitch 256 offset 0 cpp 4: end 4864 within 65536" \
+        "2D destination 35x1 at (0,19) pitch 256 offset 0 cpp 4: end 5004 within 65536"; do
+        if ! grep -qF "${line}" "${workdir}/good.txt"; then
+            echo "strict-2d trace lacks '${line}'" >&2
+            exit 1
+        fi
+    done
+    echo "admitted: destination bound by the consumed object and three rectangles"
+else
+    admitted "master-control and rectangle registers" 0x146c 0x1438 0x1598
+fi
 
 # rewrite OUT IDX=VAL...: the original stream with the named dwords
 # replaced; truncate OUT NDW: its first NDW dwords; extend OUT: one zero
@@ -405,9 +456,19 @@ rewrite "$W/bad-dp-cntl.bin" "${dp_cntl_header}=0x0000050c"
 expect REJECT "forbidden register in place of DP_CNTL (0x1430)" "$B" \
     "$W/bad-dp-cntl.bin"
 
-echo "kernel-transparent mutations (ACCEPT-NO-DRAW; Mesa-owned refusals):"
-rewrite "$W/wrong-reloc.bin" "${reloc_payload}=1"
-expect ACCEPT-NO-DRAW "wrong relocation target (completion object)" "$B" \
+# Destination geometry: the class decides whether the kernel refuses a
+# mutation or admits it for Mesa to refuse.
+if [ "${parser_class}" = strict-2d ]; then
+    geometry=REJECT
+else
+    geometry=ACCEPT-NO-DRAW
+fi
+echo "destination geometry mutations (${geometry} under ${parser_class}):"
+# The relocation NOP's payload is a dword index into the relocation chunk
+# and the entry is index / 4, so entry 1 is index 4; index 1 still names
+# entry 0 and mutates nothing the parser reads.
+rewrite "$W/wrong-reloc.bin" "${reloc_payload}=4"
+expect "${geometry}" "wrong relocation target (completion object)" "$B" \
     "$W/wrong-reloc.bin"
 {
     echo "family rs480"
@@ -418,19 +479,20 @@ if cmp -s "$B" "$W/swapped-bundle.txt"; then
     echo "bundle swap left the bundle unchanged" >&2
     exit 1
 fi
-expect ACCEPT-NO-DRAW "wrong relocation order (swapped bundle)" \
+expect "${geometry}" "wrong relocation order (swapped bundle)" \
     "$W/swapped-bundle.txt" "${ib}"
 rewrite "$W/pitch-zero.bin" "${pitch_index}=0x00000000"
-expect ACCEPT-NO-DRAW "wrong pitch field (pitch 0)" "$B" "$W/pitch-zero.bin"
+expect "${geometry}" "wrong pitch field (pitch 0)" "$B" "$W/pitch-zero.bin"
 rewrite "$W/base-past.bin" "${pitch_index}=0x0100ffff"
-expect ACCEPT-NO-DRAW "wrong destination base (offset past the object)" \
+expect "${geometry}" "wrong destination base (offset past the object)" \
     "$B" "$W/base-past.bin"
 rewrite "$W/rect-scissor.bin" "${second_rect_y_x}=0x20000000"
-expect ACCEPT-NO-DRAW "rectangle past the safe scissor (y 0x2000)" "$B" \
+expect "${geometry}" "rectangle past the safe scissor (y 0x2000)" "$B" \
     "$W/rect-scissor.bin"
 rewrite "$W/rect-object.bin" "${second_rect_size}=0x00401fff"
-expect ACCEPT-NO-DRAW "rectangle past the object (height 0x1fff)" "$B" \
+expect "${geometry}" "rectangle past the object (height 0x1fff)" "$B" \
     "$W/rect-object.bin"
+echo "client-owned mutations (ACCEPT-NO-DRAW under both classes):"
 rewrite "$W/scissor-wide.bin" "${scissor_index}=0x20002000"
 expect ACCEPT-NO-DRAW "scissor widened past the safe bound" "$B" \
     "$W/scissor-wide.bin"
@@ -445,9 +507,9 @@ if cmp -s "$B" "$W/small-bundle.txt"; then
     echo "bundle resize left the bundle unchanged" >&2
     exit 1
 fi
-expect ACCEPT-NO-DRAW "destination object undersized (1024 bytes)" \
+expect "${geometry}" "destination object undersized (1024 bytes)" \
     "$W/small-bundle.txt" "${ib}"
 
-echo "rb2d fill submit-object replay: retained bytes ACCEPT-NO-DRAW;" \
-     "parser-owned mutations reject; the 2D destination geometry passes" \
-     "the kernel unchecked"
+echo "rb2d fill submit-object replay (${parser_class}): retained bytes" \
+     "ACCEPT-NO-DRAW; parser-owned mutations reject; destination geometry" \
+     "mutations ${geometry}; scissor and wait mutations stay the client's"

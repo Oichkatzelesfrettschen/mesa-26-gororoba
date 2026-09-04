@@ -2597,6 +2597,25 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 300,
       suite : ['r3v'],
     )
+    # The plan-capture contract: capture refuses with the gate open, the
+    # shim retains the exact submit object, an independently assembled
+    # raw-word plan matches it byte for byte, and the relocation table,
+    # buffer roles, domains, and rectangle byte set equal the request.
+    test(
+      'r3v-native-rb2d-fill-capture-contract',
+      prog_python,
+      args : [
+        files('tests/r3v_native_rb2d_fill_capture_contract_check.py'),
+        r3v_native_loader_fill_application,
+        r3v_native_rb2d_fill_arming_runner,
+      ],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                 r3v_native_loader_fill_application,
+                 r3v_native_rb2d_fill_arming_runner],
+      timeout : 300,
+      suite : ['r3v'],
+    )
     if prog_nm_r3v.found()
       test(
         'r3v-native-loader-fill-application-symbol-audit',
