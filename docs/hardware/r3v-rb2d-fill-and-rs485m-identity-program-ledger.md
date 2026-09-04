@@ -23,7 +23,8 @@ dependency), STOP (deliberately not done).
 
 ## Epoch
 
-    mesa main            9b3b84fb945   (#2116 merged)
+    mesa main            70ab2c8fc2f   (#2116, #2122, #2123 merged)
+    vostro main          069c0a36bf9   (#671, #668, #669 merged)
     mesa #2118           2009b159c34, open, rebased on main, profiles 3/4/5
     mesa #2117           superseded, being replaced by two PRs
     stein main           f3627d422
@@ -102,11 +103,11 @@ same strings at 0x86 and 0x1a7.
     pre-existing reasons, each with its own PR. All three gate the
     profile-4 evidence build under REPRODUCIBLE_RUN=1.
 
-    PUSHED #2122 profile-audit: raven2_aco_test_debug_x86_64v1-clang22
+    DONE   #2122 merged 0bb4ad2233e. profile-audit: raven2_aco_test_debug_x86_64v1-clang22
            carried no allowlist row and the gate fails closed on a
            missing row. Calibrated on two known-bads with distinct
            diagnostics. 11 profiles against 11 rows.
-    PUSHED #2123 containing_git_worktree bounded a worktree by the mere
+    DONE   #2123 merged 70ab2c8fc2f. containing_git_worktree bounded a worktree by the mere
            existence of a .git entry, while is_git_directory -- the
            correct predicate -- sits beneath it uncalled. An empty
            /tmp/.git made every build root under /tmp refuse and failed
@@ -120,8 +121,12 @@ same strings at 0x86 and 0x1a7.
            still present.
     AGENT  #2121 review-thread-frontier repair (PRRT_kwDOR3YK5M6Qaw1U,
            evidence owner mesa-gororoba-debug-optimized/PKGBUILD past
-           217378421cb). With #2122 and #2123 applied, the audit reaches
-           this check and stops here. Rebase and merge AFTER #2118.
+           217378421cb). With #2122 and #2123 merged the audit reaches
+           this check and stops here, so it is now the ONLY remaining
+           audit blocker, verified on main with the stray /tmp/.git still
+           present. It merges after #2118, which itself touches packaging,
+           because the frontier regenerates from repository state and
+           #2118 would otherwise invalidate a frontier landed first.
     AGENT  build-infra naming census disposition: profile display names,
            build-dir names, meson options, env files, make targets, package
            recipes and comments, runner names, receipt identifiers,
@@ -218,8 +223,31 @@ same strings at 0x86 and 0x1a7.
 
 ## Lane F -- vostro1000-re
 
-    AGENT  identity migration, ROM filename preserved, canonical metadata
+    DONE   identity migration, ROM filename preserved, canonical metadata
            added. Independent of the mesa and stein ordering.
+    DONE   #671 merged 02d6897167e. documentation_route_policy --check was
+           red on main, so repo-debt-check failed on every open pull
+           request whatever it touched: tools/README.md carried no nav
+           entry, and the platform README linked into an evidence capture
+           mkdocs.yml excludes. Each half calibrated against its own
+           diagnostic.
+    DONE   #668 merged 776734abf55, UMA/GART specimen strings.
+    DONE   #669 merged 069c0a36bf9, option ROM static decomposition, 27
+           facets in four layers. Codex found MM_INDEX and MM_DATA
+           documented at 0x0004 and 0x0008 where radeon_reg.h puts them at
+           0x0000 and 0x0004, with CLOCK_CNTL_INDEX and DATA at 0x0008 and
+           0x000c; corrected against the header, and the cs:0x126 aperture
+           path confirmed by disassembling the image.
+    PUSHED #672 decompose_bios_modules named evidence/firmware/ where the
+           tracked fixture is evidence/.firmware/, so the embedded-versus-
+           live cross-check never ran and the tool still exited 0. It now
+           refuses, because that path names a committed fixture rather
+           than an optional capture. Its three tests fail against the
+           pre-fix source, which is what makes them a regression proof.
+           decode_r300_cp_microcode carries the same wrong path and is
+           left alone: it opens unconditionally and crashes loudly, a
+           different failure mode.
+    PUSHED #670 five-tool coverage and RS485M naming, draft.
 
 ## Lane G -- low priority, read-only until the principal migration lands
 
