@@ -68,7 +68,16 @@ const char *r3v_execution_policy_name(enum r3v_execution_policy p);
 
 /* One operation on one resource shape, in terms the ledger can answer.  The
  * byte range and element width are the operation's, not the route's: a route
- * decides whether it can carry them, and refusing is its answer. */
+ * decides whether it can carry them, and refusing is its answer.
+ *
+ * The selector reads every field.  element_bytes counts the range: a range
+ * that is not a whole number of elements starting on an element boundary
+ * describes no operation and refuses for either executor.
+ * destination_device_visible gates the device rows: a destination the device
+ * cannot reach disqualifies every GPU route ahead of the ledger.  A route's
+ * own admission -- the pitch grid, the offset grid, the segment bound a
+ * carrier imposes -- belongs to that route and is checked where it is
+ * emitted. */
 struct r3v_route_request {
    enum r300_operation_id operation_id;
    enum r300_operation_route_use use;
@@ -170,6 +179,11 @@ struct r3v_execution_provenance {
  * The phase binds to the same facts: device_submission holds exactly at
  * IOCTL_ENTERED and above, and a host route stays at or below its terminal
  * phase, so a record cannot claim a kernel entry its executor never makes.
+ *
+ * A record naming a route identity is held to that route's ledger row --
+ * operation, executor, unit, and maturity -- because the ledger owns those
+ * facts and a record carrying its own copies could describe a delivery no
+ * route performs.  A host record that names no row leaves route_id NONE.
  */
 bool r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
                                     enum r3v_execution_policy policy,
@@ -184,10 +198,11 @@ bool r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
  * the other decisions *route is NULL and *reason names the ground.
  *
  * Selection is fail-closed at every step: a malformed request, a use mask
- * naming other than one defined purpose, an operation with no qualified
- * route under GPU_ONLY, and two eligible GPU routes all refuse rather than
- * picking.  The use check runs ahead of both the promoted selector and the
- * precommitted scan, so a mask spanning two purposes reaches neither.
+ * naming other than one defined purpose, a range outside its element grid,
+ * an operation with no qualified route under GPU_ONLY, and two eligible GPU
+ * routes all refuse rather than picking.  The use and shape checks run ahead
+ * of both the promoted selector and the precommitted scan, so a request that
+ * spans two purposes or counts no elements reaches neither.
  */
 enum r3v_route_decision
 r3v_route_policy_select(const struct r3v_route_request *request,

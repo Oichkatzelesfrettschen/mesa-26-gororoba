@@ -202,6 +202,61 @@ test_use_mask_names_one_purpose(void)
           R3V_ROUTE_DECISION_GPU);
 }
 
+/* The request's resource shape decides before the ledger does.  A range that
+ * is not a whole number of elements describes no operation for either
+ * executor, and a destination the device cannot reach disqualifies every GPU
+ * row: without these the selector would answer GPU for a shape no route can
+ * carry, and the caller would learn that only at emission. */
+static void
+test_resource_shape_gates_the_gpu_decision(void)
+{
+   bool gates[R300_OPERATION_ROUTE_COUNT] = { false };
+   const struct r300_operation_route_row *route = NULL;
+   const char *reason = NULL;
+   struct r3v_route_request request = fill_request(R3V_EXECUTION_GPU_ONLY);
+
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = true;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_GPU);
+
+   /* A zero element width counts nothing. */
+   request = fill_request(R3V_EXECUTION_GPU_ONLY);
+   request.element_bytes = 0;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   request.policy = R3V_EXECUTION_AUTO;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+
+   /* A range that is not a whole number of elements, and one that starts
+    * off the element boundary, each refuse for either executor. */
+   request = fill_request(R3V_EXECUTION_AUTO);
+   request.byte_size = 4094u;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   request = fill_request(R3V_EXECUTION_AUTO);
+   request.byte_offset = 13u;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+
+   /* A destination the device cannot reach: GPU_ONLY refuses, and AUTO
+    * takes the host path with no route named. */
+   request = fill_request(R3V_EXECUTION_GPU_ONLY);
+   request.destination_device_visible = false;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_REFUSE);
+   assert(route == NULL && reason != NULL);
+   request.policy = R3V_EXECUTION_AUTO;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_HOST);
+   assert(route == NULL);
+   /* CPU_REFERENCE reaches the host through its own clause, ahead of the
+    * device-visibility question. */
+   request.policy = R3V_EXECUTION_CPU_REFERENCE;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_HOST);
+}
+
 static void
 test_malformed_requests_refuse(void)
 {
@@ -293,13 +348,39 @@ gpu_provenance(void)
 static struct r3v_execution_provenance
 host_provenance(void)
 {
+   const struct r300_operation_route_row *row =
+      r300_operation_route(R300_OPERATION_ROUTE_HOST_TRANSFER_CONST_FILL);
    return (struct r3v_execution_provenance){
-      .operation_id = R300_OPERATION_ID_CONSTFILL,
-      .route_id = R300_OPERATION_ROUTE_HOST_TRANSFER_CONST_FILL,
-      .executor = R300_OPERATION_ROUTE_EXECUTOR_HOST,
+      .operation_id = row->operation_id,
+      .route_id = row->route_id,
+      .unit = row->unit,
+      .executor = row->executor,
+      .route_state = row->state,
       .phase = R3V_EXECUTION_PHASE_COMMITTED,
       .host_semantic_node = true,
       .device_submission = false,
+   };
+}
+
+/* The one executing GPU route the ledger carries, for the arms that need a
+ * promoted row rather than the precommitted fill route. */
+static struct r3v_execution_provenance
+executing_gpu_provenance(void)
+{
+   const struct r300_operation_route_row *row =
+      r300_operation_route(R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP);
+   return (struct r3v_execution_provenance){
+      .operation_id = row->operation_id,
+      .route_id = row->route_id,
+      .unit = row->unit,
+      .executor = row->executor,
+      .route_state = row->state,
+      .phase = R3V_EXECUTION_PHASE_IOCTL_ACCEPTED,
+      .host_semantic_node = false,
+      .device_submission = true,
+      .experimental_admission = false,
+      .ib_dwords = 231u,
+      .relocation_count = 2u,
    };
 }
 
@@ -333,15 +414,56 @@ test_provenance(void)
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
 
    /* Experimental admission and promotion imply each other in both
-    * directions, so neither can be overstated. */
+    * directions, so neither can be overstated.  The precommitted fill route
+    * reports an experimental admission or refuses; the promoted carrier
+    * route reports none or refuses. */
    p = gpu_provenance();
    p.experimental_admission = false;
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+   struct r3v_execution_provenance promoted = executing_gpu_provenance();
+   assert(r3v_execution_provenance_valid(&promoted, R3V_EXECUTION_AUTO,
+                                         &reason));
+   assert(r3v_execution_provenance_valid(&promoted, R3V_EXECUTION_GPU_ONLY,
+                                         &reason));
+   promoted.experimental_admission = true;
+   assert(!r3v_execution_provenance_valid(&promoted, R3V_EXECUTION_AUTO,
+                                          &reason));
+
+   /* A record naming a route is held to that route's row: a maturity, unit,
+    * executor, or operation of its own describes a delivery the ledger does
+    * not carry. */
    p = gpu_provenance();
    p.route_state = R300_OPERATION_ROUTE_EXECUTING;
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
-   p.experimental_admission = false;
-   assert(r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+   /* A candidate maturity on a precommitted row keeps the experimental
+    * admission consistent, so only the ledger comparison refuses it. */
+   p = gpu_provenance();
+   p.route_state = R300_OPERATION_ROUTE_CANDIDATE;
+   assert(p.experimental_admission);
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+   p = gpu_provenance();
+   p.unit = R300_EXECUTION_UNIT_RB3D_CLEAR;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+   p = gpu_provenance();
+   p.operation_id = R300_OPERATION_ID_IDENTITY_MAP;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+   p = gpu_provenance();
+   p.executor = R300_OPERATION_ROUTE_EXECUTOR_HOST;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+   p = gpu_provenance();
+   p.route_id = R300_OPERATION_ROUTE_COUNT;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
+
+   /* A host record that names no row keeps the ledger's zero values and
+    * stays valid: naming a route is what invites the comparison. */
+   struct r3v_execution_provenance anonymous = {
+      .operation_id = R300_OPERATION_ID_CONSTFILL,
+      .executor = R300_OPERATION_ROUTE_EXECUTOR_HOST,
+      .phase = R3V_EXECUTION_PHASE_PREPARED,
+      .host_semantic_node = true,
+   };
+   assert(r3v_execution_provenance_valid(&anonymous, R3V_EXECUTION_AUTO,
+                                         &reason));
 
    /* The submission flag and the phase state one fact, so a record short of
     * the ioctl entry reporting a submission refuses, and one past it
@@ -433,6 +555,7 @@ main(void)
    test_gate_closed_reaches_the_host();
    test_cached_gate_admits_the_precommitted_route();
    test_use_mask_names_one_purpose();
+   test_resource_shape_gates_the_gpu_decision();
    test_malformed_requests_refuse();
    test_execution_phase_ladder();
    test_provenance();

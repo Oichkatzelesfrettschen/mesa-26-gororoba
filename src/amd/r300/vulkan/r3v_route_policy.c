@@ -103,6 +103,35 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
    const bool entered_kernel =
       p->phase >= R3V_EXECUTION_PHASE_IOCTL_ENTERED;
 
+   /* A record that names a route is held to that route's own row.  The
+    * ledger owns the operation, unit, executor, and maturity a route id
+    * stands for, so a record carrying its own values for them would let a
+    * fabricated identity read as a delivery the ledger never describes. */
+   if (p->route_id != R300_OPERATION_ROUTE_NONE) {
+      const struct r300_operation_route_row *row =
+         r300_operation_route(p->route_id);
+      if (row == NULL) {
+         *reason = "provenance names a route identity the ledger lacks";
+         return false;
+      }
+      if (row->operation_id != p->operation_id) {
+         *reason = "provenance operation disagrees with its route row";
+         return false;
+      }
+      if (row->executor != p->executor) {
+         *reason = "provenance executor disagrees with its route row";
+         return false;
+      }
+      if (row->unit != p->unit) {
+         *reason = "provenance unit disagrees with its route row";
+         return false;
+      }
+      if (row->state != p->route_state) {
+         *reason = "provenance maturity disagrees with its route row";
+         return false;
+      }
+   }
+
    /* The submission flag and the phase state one fact, so they agree in
     * both directions: a record past the ioctl entry made a submission, and
     * a record short of it made none. */
@@ -225,8 +254,36 @@ r3v_route_policy_select(const struct r3v_route_request *request,
       *reason = "route request names other than one defined use";
       return R3V_ROUTE_DECISION_REFUSE;
    }
+   /* The range is a whole number of elements starting on an element
+    * boundary.  A route carries elements rather than loose bytes, so a
+    * request whose range cannot be counted in them describes no operation
+    * for either executor and refuses rather than falling to the host. */
+   if (request->element_bytes == 0) {
+      *reason = "route request names a zero element width";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
+   if (request->byte_size % request->element_bytes != 0 ||
+       request->byte_offset % request->element_bytes != 0) {
+      *reason = "route request names a range outside its element grid";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
    if (request->policy == R3V_EXECUTION_CPU_REFERENCE) {
       *reason = "cpu_reference policy";
+      return R3V_ROUTE_DECISION_HOST;
+   }
+
+   /* A device route writes through the device's own view of the
+    * destination, so a destination the device cannot reach disqualifies
+    * every GPU row before the ledger is consulted.  Under GPU_ONLY that is
+    * the refusal the policy exists to produce; under AUTO the host path
+    * carries the operation. */
+   if (!request->destination_device_visible) {
+      if (request->policy == R3V_EXECUTION_GPU_ONLY) {
+         *reason = "gpu_only: the destination is not device visible";
+         return R3V_ROUTE_DECISION_REFUSE;
+      }
+      *reason = "the destination is not device visible; the host path "
+                "carries it";
       return R3V_ROUTE_DECISION_HOST;
    }
 
