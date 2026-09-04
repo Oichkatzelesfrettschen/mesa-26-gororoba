@@ -479,7 +479,7 @@ def lint_source_text(path: Path, text: str, patterns) -> list[Violation]:
             if pattern.search(line):
                 if (kind == "decorative-comment-border"
                         and line_no in license_header):
-                    break
+                    continue
                 violations.append(
                     Violation(
                         path=path,
@@ -624,6 +624,19 @@ def run_self_test() -> int:
                for violation in lint_source_text(
                    Path("body.c"), body_border, SOURCE_PATTERNS)):
         failures.append("a border below the license header escaped")
+
+    # The exemption covers the border rule on that line and leaves every
+    # later rule reading it.  The project-label rules run after the border
+    # rule, so a preserved header whose own border line also carries a
+    # capture-bundle timestamp still reports the timestamp.
+    labeled_border = upstream_header.replace(
+        "/*****************************************\n",
+        "/***** 20260801T120000Z *****\n")
+    if not any(violation.kind == "bundle-timestamp"
+               for violation in lint_source_text(
+                   Path("labeled.c"), labeled_border,
+                   SOURCE_PATTERNS + PROJECT_LABEL_PATTERNS)):
+        failures.append("a timestamp on an exempt border line escaped")
 
     dated_header = upstream_header.replace(
         " * SPDX-License-Identifier: MIT\n",
