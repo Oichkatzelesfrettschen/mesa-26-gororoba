@@ -1502,6 +1502,16 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       if (routed != VK_SUCCESS)
          return routed;
    }
+   /* The rule is what the host would produce, which is narrower than the
+    * census-level rule r3v_submit_preflight_check holds: that one refuses a
+    * submit carrying command buffers and no route candidate, and would
+    * therefore refuse an empty submit that produces nothing and a
+    * transport-only submit the device performs end to end.  The boundary
+    * enforces the narrower rule because those two are submissions gpu_only
+    * has no reason to decline; the preparation layer's census rule and this
+    * one are the same question answered at two grains, and the coarser one
+    * has no caller.
+    */
    if (device->execution_policy == R3V_EXECUTION_GPU_ONLY) {
       for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
          const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
