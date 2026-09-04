@@ -63,6 +63,22 @@ execute_copy(struct r3v_native_device *device,
    uint64_t src_base_offset, dst_base_offset;
    uint64_t src_pitch, dst_pitch;
 
+   /* A routed record is the device's.  The test stands above every kind
+    * and above every mapping below it, because the map -- not the store
+    * loop under it -- is the observable host side effect a hardware claim
+    * excludes.
+    */
+   if (op->gpu_routed)
+      return VK_SUCCESS;
+
+   /* Every record reaching here produces its result bytes on the host, so
+    * one count lands per record at the one place above all the mappings.
+    * A GPU route's claim is that this counter does not move for the record
+    * it carries, which makes the claim a number a test reads rather than a
+    * property a reader infers from the source.
+    */
+   device->host_semantic_writes++;
+
    switch (op->kind) {
    case R3V_NATIVE_COPY_BUFFER_TO_BUFFER: {
       src_memory = op->src_buffer->memory;

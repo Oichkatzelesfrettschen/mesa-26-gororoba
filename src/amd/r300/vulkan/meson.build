@@ -245,6 +245,7 @@ r3v_native_files = files(
   'r3v_native_compute.c',
   'r3v_native_device.c',
   'r3v_native_draw.c',
+  'r3v_native_fill_route.c',
   'r3v_native_image.c',
   'r3v_native_identity.c',
   'r3v_native_memory.c',
@@ -256,6 +257,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_fill_route.c',
   'r3v_route_policy.c',
   'r3v_submit_preflight.c',
   'r3v_interpolation_lowering.c',
@@ -1534,6 +1536,26 @@ if with_tests
     executable(
       'r3v_native_producer_cell_test',
       files('tests/r3v_native_producer_cell_test.c'),
+      include_directories : [r3v_native_inc, include_directories('.')],
+      dependencies : r3v_native_deps,
+      link_whole : [libr3v_native_impl],
+      link_with : [libradeon_drm_vk],
+      c_args : [no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+  # The public fill route on the host: the attended cell routes with every
+  # gate open, each decline leaves the command buffer with no stream, no
+  # cell kind, no relocation and an unrouted copy, GPU_ONLY refuses where
+  # AUTO declines, and the host-write counter separates the routed leg from
+  # the same record on the host path.  The mapping is the test's own
+  # storage, so no DRM node opens.
+  test(
+    'r3v-native-fill-route',
+    executable(
+      'r3v_native_fill_route_test',
+      files('tests/r3v_native_fill_route_test.c'),
       include_directories : [r3v_native_inc, include_directories('.')],
       dependencies : r3v_native_deps,
       link_whole : [libr3v_native_impl],
