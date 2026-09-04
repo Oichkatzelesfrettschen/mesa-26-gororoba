@@ -24,7 +24,7 @@ dependency), STOP (deliberately not done).
 ## Epoch
 
     mesa main            9b3b84fb945   (#2116 merged)
-    mesa #2118           9cba576645b + 27e0be23d9b, open, mergeable
+    mesa #2118           2009b159c34, open, rebased on main, profiles 3/4/5
     mesa #2117           superseded, being replaced by two PRs
     stein main           f3627d422
     linux-radeon         2be21eaa8927
@@ -66,20 +66,35 @@ same strings at 0x86 and 0x1a7.
            on; board nouns; the authorized-part form
     DONE   six dangling r300_rs480_die_facts doc locators repointed by scope
     DONE   README PCI id inversion corrected
-    AGENT  128 repository-scan findings driven to zero
-    AGENT  defect 1: at_rest values still duplicated in r300_family_facts
-           (h:207-208, c:180-181) -- delete from family, keep in specimen,
-           keep the *_reg addresses in family; 4-row test matrix + calibration
-    AGENT  defect 2: clause_denies is clause-wide; bind negation to the
-           binding verb; 6 calibration sentences; compound known-bad must
-           travel the repository-level scan
-    AGENT  rebase onto 9b3b84fb945; profiles 3, 4, 5
-    QUEUED PR body reconciliation (mine): drop "ROM outranks pci.ids", drop
-           "register header is rs485-scoped", state the joint-resolution
-           formulation, state ledger-exact exemption, add profiles 4 and 5
+    DONE   128 repository-scan findings driven to zero; naming-policy-test
+           passes repository-wide
+    DONE   defect 1: at_rest values live only in r300_specimen_facts; the
+           family record keeps the *_reg addresses and none of the values
+    DONE   defect 2: negation binds to a window around the attribution verb
+           rather than the whole clause
+    DONE   rebase onto 9b3b84fb945; profiles 3 (Ok 492), 4 (Ok 490),
+           5 gcc (Ok 492, zero warnings), each Fail 0. Profile 4 runs two
+           fewer tests because it does not build zink; the difference is
+           mesa:zink alone and touches no r300 or r3v path.
+    DONE   P1 found in review: plan capture and replay declared the arming
+           verdict ARMED outright, and those paths reach DRM_RADEON_CS, so
+           a plan file on any device sharing 1002:5974 submitted without
+           the board ever being compared. r3v_native_arming_platform_
+           verdict() carries the identity half alone and both paths ask it.
+           Board identity now populates outside the hazard-gate branch,
+           where the facts struct had been left zeroed.
+    DONE   each drm-shim harness declares its board at its own device-
+           creation seam; an undeclared shim device resolves to no board
+    DONE   PR body reconciled: joint resolution over pci + subsystem + DMI
+           + firmware, no register-header scope claim, ledger-exact
+           exemption, all three profiles
+    DONE   ten review threads replied to and resolved
+    AGENT  ratchet false positive (accurate shared-id prose rejected) and
+           false negative (receipt-phrased specimen claims undetected);
+           vostro1000-kernel-modules.md line 17; AGENTS.md:326 directive
     QUEUED dev-host + Vostro no-submit platform resolution through the real
            libdrm and DMI path, not synthetic tuples
-    QUEUED resolve every review thread, then merge
+    QUEUED merge once the ratchet arms land
 
 ## Lane B -- mesa build infrastructure
 
@@ -222,6 +237,31 @@ same strings at 0x86 and 0x1a7.
     DELL_VOSTRO1000_RS485M.
     Separate cells, each its own token: 64-byte pitch probe, multi-segment,
     scissor 0x2000 inclusivity, VRAM destination, mixed transfer buffer.
+
+## Findings that outlive their lane
+
+    A gate that forces a verdict for a path has removed that path from
+    every predicate the verdict carries, not only the one the exemption
+    was written for. The plan capture and replay exemption was written to
+    skip the attended-run ceremony -- bundle digest, kernel and module
+    pin, evidence directory, one-shot token -- and it silently also
+    skipped the board comparison, on paths that reach DRM_RADEON_CS. Two
+    classes of check sat in one function and one verdict spoke for both.
+    Split the predicate rather than the caller: identity is a fact about
+    the silicon and holds however the run is dressed.
+
+    A zero-initialized fact struct populated inside a conditional reads
+    as a well-formed refusal from outside it. The board identity fields
+    were filled only inside the hazard-gate branch, so the first version
+    of the fix compared zeros and refused everything that used the very
+    path it was meant to protect. The refusal looked like the gate
+    working.
+
+    A harness that substitutes a fact provider must declare the board it
+    stands in for at the seam where it creates the device, not per arm.
+    The replay harness declared it for its replay device and not for the
+    capture device it builds its own plan with, so half its arms carried
+    an undeclared board.
 
 ## Standing stop lines
 
