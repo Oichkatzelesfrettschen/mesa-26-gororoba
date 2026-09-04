@@ -72,6 +72,13 @@ _VOSTRO = r"[Vv]ostro(?:[- ]?1000(?![0-9])|(?![- ]?[0-9]))"
 _RS482 = r"(?<![\"\x27`])(?<![\"\x27`]ATI )RS48[02](?![M/])"
 _BINDS = r"(?:is|are|was|were|uses?|carr(?:y|ies)|contains?|has|have|ships? with|based on)"
 _CLAUSE = r"[^.;\n]"
+# Markdown wraps a sentence across lines without ending its clause, so a
+# soft line break -- one newline not followed by a blank line -- is clause
+# content where a bind verb reaches its target, and a paragraph break ends
+# it: "the Vostro 1000 carries\nRS480" binds exactly as it reads.  The
+# parenthetical arms keep the single-line clause, because a wrapped aside
+# is a hardware-makeup list rather than an attribution.
+_BIND_CLAUSE = r"(?:[^.;\n]|\n(?!\s*\n))"
 # The gap a bind verb reaches into its target crosses shapes that never
 # state the binding themselves.  A same-as comparison ("has the same PCI
 # device ID as RS482") predicates the verb over the shared property named
@@ -98,14 +105,14 @@ _NONBINDING_GAP = (
     rf"(?:{_SAME_AS_COMPARISON}|{_CONTRASTIVE_CONJUNCTION}|{_FAMILY_COORDINATION}"
     rf"|{_DISTINCTION_PREDICATE})"
 )
-_CLAUSE_TO_TARGET = rf"(?:(?!{_NONBINDING_GAP})[^.;\n])"
+_CLAUSE_TO_TARGET = rf"(?:(?!{_NONBINDING_GAP}){_BIND_CLAUSE})"
 # A straight apostrophe is this project's own typography, but prose can
 # still carry a typographic ("smart") one, so the possessive form reads
 # either byte.
 _POSSESSIVE = "['’]s"
 MISATTRIBUTED_TARGET_CHIP = re.compile(
-    rf"\b{_VOSTRO}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
-    rf"|\b{_RS482}\b{_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_VOSTRO}\b"
+    rf"\b{_VOSTRO}\b{_BIND_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_RS482}\b"
+    rf"|\b{_RS482}\b{_BIND_CLAUSE}{{0,40}}?\b{_BINDS}\b{_CLAUSE_TO_TARGET}{{0,40}}?\b{_VOSTRO}\b"
     rf"|\b{_VOSTRO}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_RS482}\b"
     rf"|\b{_RS482}\b{_CLAUSE}{{0,8}}?[(\[]{_CLAUSE}{{0,48}}?\b{_VOSTRO}\b"
     rf"|\b{_VOSTRO}\b\s*/\s*{_RS482}\b"
@@ -168,7 +175,7 @@ _VERDICT = r"(?i:passes|fails|regresses)"
 # ".;" still ends it.  The windows are wide enough for a detailed clause
 # ("measured under the complete conformance corpus ... on RS482") that a
 # tight cap or a bare newline exclusion would otherwise let escape.
-_SOFT_WRAP_CLAUSE = r"(?:[^.;\n]|\n(?!\s*\n))"
+_SOFT_WRAP_CLAUSE = _BIND_CLAUSE
 # A bare "Vostro 1000" already satisfies the "on" object as the board, so a
 # later parenthetical part token in the same clause (a hardware-makeup
 # aside such as "on the Dell Vostro 1000 (AMD K8 + RS482 + SB600)") names
@@ -1501,6 +1508,13 @@ def self_test() -> int:
             False,
         ),
         ("docs/example.md", "The Vostro 1000 carries ATI RS480.\n", True),
+        ("docs/example.md", "The Vostro 1000 carries\nRS480.\n", True),
+        ("docs/example.md", "The Vostro 1000 carries\nRS482.\n", True),
+        (
+            "docs/example.md",
+            "The Vostro 1000 ships today.\n\nRS482 is a desktop part.\n",
+            False,
+        ),
         ("docs/example.md", "The ATI RS480 host passes.\n", True),
         (
             "docs/example.md",
@@ -1533,7 +1547,8 @@ def self_test() -> int:
         if failed != expected_failure:
             print(
                 f"naming policy self-test mismatch for {path}: "
-                f"expected_failure={expected_failure}, failed={failed}",
+                f"expected_failure={expected_failure}, failed={failed}: "
+                f"{text!r}",
                 file=sys.stderr,
             )
             return 1
