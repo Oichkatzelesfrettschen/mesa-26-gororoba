@@ -1228,7 +1228,7 @@ main(int argc, char **argv)
 
    printf("[verdict] %s\n",
           pass_verdict
-             ? "end-to-end Vulkan Flat (RGBA) delivered through RS482 GA "
+             ? "end-to-end Vulkan Flat (RGBA) delivered through RS485M GA "
                "provoking-vertex selection over color 0: each target is "
                "byte-equal to the CPU replication oracle's expected image"
           : crossed || other_vertex_present || alpha_interpolated

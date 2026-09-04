@@ -1,4 +1,4 @@
-# RS482 R2VB producer ALU compaction (HBTCL-04f.4 design)
+# RS485M R2VB producer ALU compaction (HBTCL-04f.4 design)
 
 An R2VB fragment-ALU vertex producer whose derived position-pass FS exceeds the
 R300 64-slot ALU ceiling declines to gallivm. The split transport (HBTCL-04f.2 /
@@ -66,7 +66,7 @@ reducing the real emitted cost, never by reducing a source-level multiply count.
 
 ### FP24 exactness envelope (corrected)
 
-The RS482 fragment ALU is FP24 in the `s1e7m16` layout: one sign bit, a 7-bit
+The RS485M fragment ALU is FP24 in the `s1e7m16` layout: one sign bit, a 7-bit
 exponent, and a 16-bit stored mantissa, giving **17 significand bits** and an
 exact-integer window of **`|n| <= 2^17 = 131072`**, round-toward-zero on the
 compute side. This is the driver's own numeric-domain model
@@ -87,9 +87,9 @@ scale -- `4*127^2 = 64516 < 2^17`, `5*127^2 = 80645 < 2^17`.
 
 Correction: an earlier draft cited `8*B^2 < 2^24` giving `B <= 1448`, imported
 from `IDCT8DP4ExactBound.v`. That bound is FP32's 24-bit-mantissa envelope and
-does not hold on RS482 FP24, whose mantissa is 16 bits (17 significand). It would
+does not hold on RS485M FP24, whose mantissa is 16 bits (17 significand). It would
 admit arithmetic outside the exact FP24 integer window the driver's own catalog
-defines. The generic inequality `|dp8| <= 8*B^2` is valid; the RS482 refinement
+defines. The generic inequality `|dp8| <= 8*B^2` is valid; the RS485M refinement
 is `2^17`, not `2^24`. PROOF-FP24-01 carried the `2^17`
 correction into the proof, and it has landed: `IDCT8DP4ExactBound.v` now proves
 `dp8_exact_threshold` (`8*B^2 <= 2^17 <-> B <= 128` for nonnegative `B`) and
@@ -117,7 +117,7 @@ the closed form changes operation order, intermediate magnitude, cancellation,
 and rounding points.
 
 `recur90` is a direct counterexample, not the flagship win. Its closed form
-contains `2^90`; RS482 FP24's normal range tops out near `2^65`. The original
+contains `2^90`; RS485M FP24's normal range tops out near `2^65`. The original
 recurrence stays bounded -- at `u = 1` the value sits at the fixed point `a = 1`
 -- while the closed-form terms overflow before they cancel. The transformation
 would convert a bounded original execution into an overflowing compact one. So
@@ -229,7 +229,7 @@ finite-precision proof layer.
 - `FLOAT_OPS` (`proofs/theories/FloatAxioms.v`) is a field signature: it assumes
   associative and commutative add and multiply, distributivity, and additive
   inverses. Those axioms are true for an exact ring and false for finite
-  floating-point. Mapping the abstract ops to OCaml float, Rust f64, or RS482
+  floating-point. Mapping the abstract ops to OCaml float, Rust f64, or RS485M
   FP24 does not discharge the axioms. `FLOAT_OPS` therefore certifies the
   algebraic layer, not the finite-precision layer.
 
@@ -675,7 +675,7 @@ backend resource vector, a semantic reference comparison, exhaustive boundary-
 domain tests where finite, randomized property tests inside the admitted domain,
 negative tests just outside every bound, and deterministic repeated compilation.
 Exact integer rules compare against arbitrary-precision integer or rational
-evaluation; floating rules compare against a software model of RS482 `s1e7m16`
+evaluation; floating rules compare against a software model of RS485M `s1e7m16`
 RTZ / FTZ / saturation, which is currently missing and is a prerequisite.
 
 Route-chain host oracle (04f.3R): F3-R0 was itself a representation-boundary
@@ -759,7 +759,7 @@ External proof and reduction evidence (open_gororoba, cited by name; the proofs
 live there, this document carries the citation):
 `proofs/theories/IDCT8EvenOdd.v` (`idct8_butterfly_eq_dense`, real-algebra 64 ->
 32 multiplies), `proofs/theories/IDCT8DP4ExactBound.v` (generic `|dp8| <= 8*B^2`
-plus the RS482 window: `dp8_exact_threshold` and `fp24_admit_strict_spec`),
+plus the RS485M window: `dp8_exact_threshold` and `fp24_admit_strict_spec`),
 `proofs/theories/FP24Representable.v` (`fp24_int_exact_inclusive`, FLX(17)),
 `proofs/theories/R2VBTransformDP4.v` (`mvp4_rows_exact`),
 `proofs/theories/CDFusedBilinear.v` (`CDFusedBilinearSurface`),

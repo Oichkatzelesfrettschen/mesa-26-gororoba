@@ -70,7 +70,7 @@ relevant focused gate, resolution of the exact GraphQL thread ID, and a final
   recovery journal, generated action frontier, and partial resolution ledger.
   Nineteen exact fixed or superseded rows are closed and re-verified.  Its 29
   actionable rows require merged repairs, while two hardware-evidence rows
-  retain their explicit RS482 observation gates.
+  retain their explicit RS485M observation gates.
 - `merged-review-thread-action-frontier.tsv` and
   `merged-review-thread-resolution-ledger.tsv` remain the stable classified
   views of the closed second batch.  The third, fourth, and fifth batch
@@ -395,7 +395,7 @@ The merged mechanisms cover CSO teardown ownership, distcc volunteer parsing
 and compiler-pair probes, dynamic NIR output spans, opt-scoped Vulkan layers,
 Hybrid-TCL and producer-design evidence contracts, source-domain witness
 semantics, forced-split shadow admission, owned producer BO staging,
-validation-flush reservation, and RS482 stack-manifest payload identity.
+validation-flush reservation, and RS485M stack-manifest payload identity.
 Superseded rows govern retired planning vocabulary, replaced typed-gate and
 source-domain drafts, the rewritten uploader failure oracle, the deleted
 Gallium-backed Vulkan image lane, and the SPDX-only verified-holder policy.
@@ -480,7 +480,7 @@ PR 1904's unchanged CAVLC comments name the independent oracle and exact coeffic
 index bounds; the focused block test passes from the retained qualification
 build.
 
-Two RS482 stack-manifest rows are fixed by PR 1905 merge commit
+Two RS485M stack-manifest rows are fixed by PR 1905 merge commit
 `82b7f3491b25b02063d31952b566c873ca5b2d8e`.  A clean Python 3.14 environment
 installs the pinned `jsonschema` 4.26.0 requirement and passes all four schema
 tests.  The shared identity definitions and mutation corpus reject short,
@@ -576,7 +576,7 @@ declared source owner changes.
 | closed as fixed | 14 | Retain exact merge and post-resolution evidence |
 | closed as superseded | 5 | Retain exact merge and post-resolution evidence |
 | actionable | 29 | Implement, test, merge, synchronize, then resolve |
-| pending RS482 evidence | 2 | Execute the declared hardware oracle |
+| pending RS485M evidence | 2 | Execute the declared hardware oracle |
 
 The closed rows cover DRM-shim exec locators and residue
 calibration, source-header policy, r300 compiler initialization, the qualified
@@ -620,7 +620,7 @@ The actionable rows retain concrete repair gates for native clipping and
 carrier ownership, evidence pins, Terakan state and lifetime checks, runner
 process and input semantics, dispatch analysis, exact producer payload
 identity, and producer replay interpretation.  The intensity-blend and C1C
-packet rows stay pending until their exact RS482 oracles produce retained
+packet rows stay pending until their exact RS485M oracles produce retained
 evidence.
 
 Live GraphQL state reports 19 resolved and 31 unresolved exact IDs.  Each

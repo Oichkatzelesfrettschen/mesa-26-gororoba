@@ -342,7 +342,7 @@ test_bind_refusals(void)
    expect_bind(e_dir_used, R3V_NATIVE_PLAN_BIND_EVIDENCE_DIR);
    expect_bind(e_gate, R3V_NATIVE_PLAN_BIND_GATE_CONTAMINATION);
    /* A plan whose own PCI identity is another chip refuses even against
-    * a matching live identity: the plan authorizes RS482 alone.
+    * a matching live identity: the plan authorizes RS485M alone.
     */
    struct r3v_native_plan g = good_plan();
    struct r3v_native_plan_identity id = good_identity();

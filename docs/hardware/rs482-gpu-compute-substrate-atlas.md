@@ -1,4 +1,4 @@
-# RS482 GPU compute substrate atlas
+# RS485M GPU compute substrate atlas
 
 RS482 (Radeon Xpress 1100/1150, PCI `1002:5974`, `CHIP_RS480`, R300-class
 integrated graphics, vertex engine absent) runs its admitted compute kernels on
@@ -22,7 +22,7 @@ of those algebras contains it.
 
 Every claim below carries one class.
 
-- **silicon**: a retained RS482 hardware run witnesses the exact value.
+- **silicon**: a retained RS485M hardware run witnesses the exact value.
 - **known(source)**: read directly from source, a register definition, or a
   generated table in this repository, the kernel fork, or the register
   databases.
@@ -160,7 +160,7 @@ instructions is unreachable on a production module.
 ### The TCL-bypass width invariant
 
 `r300.c:r300_cs_tcl_bypass_vtx_output_check` runs before the stock bounds check
-and encodes an RS482-observed hang as a static parse rejection: an underfed
+and encodes an RS485M-observed hang as a static parse rejection: an underfed
 TCL-bypass draw leaves the geometry assembler waiting for dwords that never
 arrive and wedges the vertex front end and the ring (known(source), and the
 wedge class is silicon--a VAP/PVS wedge recovers only through a cold power
@@ -220,7 +220,7 @@ with sync-flood on timeout (vostro1000-re
 
 ## VAP and the vertex fetcher
 
-RS482 has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
+RS485M has no vertex ALU. `r300_chipset.c:r300_parse_chipset` never sets
 `num_vert_fpus` for `CHIP_RS480`, so it stays zero and `has_hardware_tcl` is
 false; `r300_chip_identity.c:r300_rs4xx_igp_family_facts` records
 `.vertex_engine_absent = true` (known(source)). A `PVS_NUM_FPUS = 2` readback is
@@ -595,7 +595,7 @@ samples-passed query--is confirmed by a probe ladder
 (`r300_numeric_domain.c`; silicon). `DECR`, `INVERT`, and the wrapping pair have
 no located witness: the carrier-algebra decomposition lists all of them as gaps.
 The driver catalog's `STENCIL_INVERT_NOT` row claims a 0xA5 to 0x5A bit-exact
-RS482 result from a named probe, and neither that probe script nor its bundle is
+RS485M result from a named probe, and neither that probe script nor its bundle is
 locatable in either evidence repository, so `INVERT` reads as hypothesized here
 with its bundle recovery on the probe frontier.
 
@@ -671,7 +671,7 @@ resolve to cache-disabled through PAT index 2 over write-back MTRR; the
 allocation class named coherent is allocation terminology and not an observed
 coherence property (vostro1000-re `uma-gart-cacheability-graph.md`;
 observation). The framebuffer CPU mapping resolves to write-combining. The K8
-host GART is off for the graphics translation path, so the RS482 GTT is the
+host GART is off for the graphics translation path, so the RS485M GTT is the
 active translation.
 
 The rule a host read of device output must invalidate before reading is
@@ -796,7 +796,7 @@ Ordered by what unblocks the most verb routes.
   `BITWISE_LOGICOP_MAP` and `BITWISE_NOT_MAP`, and reconciles the catalog with
   the corpus.
 - **Stencil `INVERT` witness recovery**, then `DECR`, `INCR_WRAP`, and
-  `DECR_WRAP`. The catalog names an RS482 probe and a 0xA5 to 0x5A result whose
+  `DECR_WRAP`. The catalog names an RS485M probe and a 0xA5 to 0x5A result whose
   script and bundle are absent from both evidence repositories; recover the
   bundle or rerun. Unblocks `STENCIL_INVERT`.
 - **DP4 with non-dyadic operands** and the **FMA fusion boundary**: whether the

@@ -89,7 +89,7 @@ void r300_flush(struct pipe_context *pipe,
         rs48x_r2vb_capable) {
         r300->r2vb_probe_dispatch_active = true;
 
-        /* RS482 Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once
+        /* RS485M Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once
          * per process under the exact R300_HB_TCL=1 and R300_R2VB_TIMING
          * transport gates, after a real draw has left its framebuffer and
          * fragment program in this CS.  When the helper returns true it has

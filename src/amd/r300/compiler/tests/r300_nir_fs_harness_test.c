@@ -197,7 +197,7 @@ build_fs_data_ixor(void)
  * is faithful because ntr_fixup_varying_slots remaps only VAR/PNTC/TEX slots,
  * not FOGC, and the vec_to_regs + fsat lowering is downstream of and
  * independent of which input slot the values arrive on.  This reproduces the
- * fog program whose RS482 RC dump read never-written temporaries and wrote the
+ * fog program whose RS485M RC dump read never-written temporaries and wrote the
  * RC sentinel temp[RC_REGISTER_MAX_INDEX - 1]. */
 static nir_shader *
 build_fs_fog(void)
@@ -482,7 +482,7 @@ case_fmad_emits_mad(void)
 /* flrp is the fog / mix() path.  r300_nir_lower_flrp rewrites it into a nested
  * fmad chain, so it compiles cleanly, emits MAD, and leaves no raw flrp for the
  * emitter's defensive case to reject.  Silicon evidence lives in the mixflrp
- * rung of the RS482 EGL/GBM fragment ladder (r300_egl_gbm_render_probe):
+ * rung of the RS485M EGL/GBM fragment ladder (r300_egl_gbm_render_probe):
  * uniform-fed mix(0.25, 0.75, 0.25) renders the FP24-exact 0.375 center pixel,
  * a value a swapped lerp cannot produce, so this harness checks the compile
  * shape only. */
@@ -503,7 +503,7 @@ case_flrp_lowers_to_mad(void)
 
 /* The fog blend (st_nir_lower_fog shape) must compile into a well-formed RC
  * program: no read of an unwritten temporary and no reference to the RC
- * sentinel temp.  Both symptoms appear in the RS482 fog RC dump where the
+ * sentinel temp.  Both symptoms appear in the RS485M fog RC dump where the
  * lowered-flrp / ffma_weak output packing dropped the color term. */
 static void
 case_fog_packing_well_formed(void)

@@ -6,7 +6,7 @@
  * of the reference TCL-bypass consumer at its maximum extent, roles bound
  * CARRIER 0, COLOR 1, SLOT 2, SOURCE 3.  Each pin is the host
  * composition through r300_r2vb_fetched_route_reference_compose and the
- * silicon identity of a retained RS482 delivery (steinmarder-r300
+ * silicon identity of a retained RS485M delivery (steinmarder-r300
  * bundles r3v-native-fetched-gpu-producer-route-first-delivery-rs482
  * for F32_4, -f32-3-delivery-rs482, and -f32-2-delivery-rs482): the
  * armed digest, the offline composition, this pin, and the retained

@@ -27,7 +27,7 @@ The proof-carrying chain is tiered per kernel:
 | Rocq to OCaml/Malfunction | verified for kernels extracted through `rocq-verified-extraction` with safe options |
 | Rocq to Clight/C | verified only for kernels accepted by CertiRocq and recorded with their generated artifact, command, runtime/ABI assumptions, and proof status |
 | Hand C translation | demonstrated by differential test only |
-| Driver integration and RS482 execution | demonstrated or measured, never proven |
+| Driver integration and RS485M execution | demonstrated or measured, never proven |
 
 Do not call a driver C kernel proven merely because the algebra theorem is proven. Call it proven-to-C only when the generated C/Clight artifact is produced by the verified CertiRocq lane and the required assumptions are recorded.
 

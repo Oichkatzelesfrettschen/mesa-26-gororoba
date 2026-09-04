@@ -313,7 +313,7 @@ Distinguish RS480-family IGP architecture from discrete R300:
 
 Structure R300/R3V and RS480/RS482/RS485 reverse-engineering and RCA along this evidence hierarchy:
 
-1. Exact physical measurement: physical RS482/RS485 probe captures, `dmesg` validation logs, BAR/debugfs snapshots, and hardware test executions retained under `steinmarder-r300/results/`.
+1. Exact physical measurement: physical RS485M probe captures, `dmesg` validation logs, BAR/debugfs snapshots, and hardware test executions retained under `steinmarder-r300/results/`.
 2. Exact driver and kernel source: R3V Vulkan (`src/amd/r300/vulkan/`), r300g Gallium (`src/gallium/drivers/r300/`), R300 common core (`src/amd/r300/common/`), Linux kernel DRM radeon (`drivers/gpu/drm/radeon/rs400.c`, `r300.c`, `r300d.h`, `rs400d.h`), and registered out-of-tree Vostro 1000 kernel modules (`docs/hardware/vostro1000-kernel-modules.md`).
 3. Authoritative hardware manuals: AMD `R3xx_3D_Registers.pdf` / `.txt`, AMD K8 Family 0Fh BKDG, and AMD IGP BIOS Developer Guides.
 4. Comparative later-generation manuals: RS690 RRG (`43372_rs690_rrg_3.00o.pdf`), R5xx Acceleration Architecture Guides (`R5xx_Acceleration_v1.1` to `v1.5.pdf`), RV630/M76 RRGs, explicitly labeled as comparative and requiring empirical corroboration.

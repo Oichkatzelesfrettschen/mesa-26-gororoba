@@ -406,7 +406,7 @@ emit_triangle_stream_into(
                        << R300_TX_HEIGHTMASK_SHIFT) |
                       R300_TX_PITCH_EN);
       /* FORMAT1's per-channel selects default to X, so silicon returns
-       * byte X in every lane without them (RS482 readback: 0x20202020
+       * byte X in every lane without them (RS485M readback: 0x20202020
        * for texel 20,60,a0,e0 with selects absent); each lane order
        * takes the select set that routes its memory bytes to R/G/B/A.
        */

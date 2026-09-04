@@ -1,4 +1,4 @@
-# RS482 native delivery route admission and oracle model
+# RS485M native delivery route admission and oracle model
 
 This document is the home for how a vertex-delivery route in the native R3V lane
 earns admission and how a delivered result is decided. It carries the route
@@ -41,7 +41,7 @@ one engine says nothing about the other.
 
 ## The substituted-function problem
 
-RS482 exposes a 3D core whose vertex engine is unusable for the transform: the
+RS485M exposes a 3D core whose vertex engine is unusable for the transform: the
 chip reports `num_vert_fpus = 0`, the PVS ports at `0x2200` and above wedge on
 read, and HW-TCL first draws hang. The VAP still assembles and output-format-maps
 pre-transformed vertices under `R300_VAP_TCL_BYPASS`, so the transform moves off
@@ -75,7 +75,7 @@ with `R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL=1` added, and the fetched GPU
 producer with `R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL=1` added to both;
 the fetched F32_4 route carries the silicon identity `597b762d...` (547
 dwords, split 316, four relocations), pinned in
-`common/tests/r300_fetched_route_digests.h` and delivered on RS482 as the
+`common/tests/r300_fetched_route_digests.h` and delivered on RS485M as the
 steinmarder-r300 bundle
 `r3v-native-fetched-gpu-producer-route-first-delivery-rs482` (carrier
 read-back equal to the delivery identity, target equal to the analytic
@@ -262,7 +262,7 @@ kernel's own arithmetic bounds.
 
 ## Numeric domain
 
-The RS482 shader float is `s1e7m16`: 1 sign, 7 exponent, 16 stored mantissa bits,
+The RS485M shader float is `s1e7m16`: 1 sign, 7 exponent, 16 stored mantissa bits,
 a 17-bit significand with the implicit leading bit. The exact-integer window is
 `2^17`, and the DP4-chain bound is `8*B^2 <= 2^17`, giving `B <= 128` inclusive
 with `127` as the strict production gate. Those thresholds are derived in
@@ -401,7 +401,7 @@ Each item names what it would take to close and what would falsify the current
 model.
 
 - Route default. The CPU route is the default and both routes now time through
-  one declared-route cell on one workload. Closing needs paired timings on RS482
+  one declared-route cell on one workload. Closing needs paired timings on RS485M
   under the same payload; a GPU route slower than the CPU route on the delivered
   workload refutes the premise that the substitution buys throughput.
 - Oracle independence. A second oracle that is genuinely orthogonal to the
@@ -417,7 +417,7 @@ model.
   FLOAT_4 model fetch already pins a kernel fact the widened width exposed.
   The fetched producer emits all three widths and pins their composed
   digests, the resolver opens the fetched route per width under the
-  three exact gates, and each width has its retained RS482 cell
+  three exact gates, and each width has its retained RS485M cell
   (`r3v-native-fetched-gpu-producer-route-first-delivery-rs482`,
   `-f32-3-delivery-rs482`, `-f32-2-delivery-rs482`).
 - Fetched-route closure. The fetched F32_4 route composes at submit time
@@ -425,11 +425,11 @@ model.
   `gpu-fetched-composed` arm proves the digests equal through the arming
   gate), refuses atomically on an injected composition failure, replays
   through the kernel parser as `dwords=547 relocs=4 draws=2 ACCEPT`, and is
-  delivered on RS482 (bundle
+  delivered on RS485M (bundle
   `r3v-native-fetched-gpu-producer-route-first-delivery-rs482`); the
   F32_3 and F32_2 compositions pass the same harness arms
   (`gpu-fetched-composed-f32_3`, `-f32_2`) and kernel replays and are
-  delivered on RS482 (bundles `-f32-3-delivery-rs482`,
+  delivered on RS485M (bundles `-f32-3-delivery-rs482`,
   `-f32-2-delivery-rs482`, same boot and module as the F32_4 cell); the
   remaining open item is a timing cut over the fetched route against the
   measured CPU default.

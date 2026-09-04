@@ -147,7 +147,7 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
     /* A uniform interface is optional: production admission delivers
      * uniform-free producers (a passthrough VS transforms inputs alone), and
      * requiring one here diverged the shadow plan from the memo on exactly
-     * those shaders on RS482. */
+     * those shaders on RS485M. */
     bool has_pos_out = false;
     nir_foreach_variable_in_shader(var, nir) {
         if ((var->data.mode & nir_var_shader_out) &&
@@ -206,7 +206,7 @@ plan_scan_structure(nir_shader *nir, bool allow_computed_varying,
      * consults directly for its position leg (r300_r2vb_producer_fits_budget
      * measures the restaged position producer alone); varyings ride the
      * passthrough re-ingest or the cv=1 varying producer, so a computed
-     * varying leaves the cv=0 cell untouched.  The RS482 shadow-parity
+     * varying leaves the cv=0 cell untouched.  The RS485M shadow-parity
      * corpus caught the cv=0 cell rejecting io_shape on the spill1 reference
      * producer's computed varying while the memo recorded the position pass
      * FITS. */

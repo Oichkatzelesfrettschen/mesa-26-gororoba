@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Submitter-side state machine for the serial status-load cell.  The
- * machine walks each submission through the frozen RS482 status-event
+ * machine walks each submission through the frozen RS485M status-event
  * ladder (PREPARE through REPOISONED), emits one JSONL barrier message
  * per transition, and refuses QUEUE_SUBMIT_ENTER unless the paired census
  * sampler has reached SAMPLER_READY and has not stopped.  Every

@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Carrier-policy contracts for candidate RS482 compute-as-raster paths.
+ * Carrier-policy contracts for candidate RS485M compute-as-raster paths.
  *
  * A carrier policy describes a possible buffer format and stride contract:
  * what an input SSBO would be typed as (value format), what an output SSBO
@@ -9,7 +9,7 @@
  *
  * The DP4 path established the canonical form: R32G32B32A32_FLOAT input
  * (stride 16) -> FP24 DP4 ALU -> RGBA8 integer-encoded uint output (stride 4,
- * max exact result 64516 for U7-magnitude operands).  RS482 has no FP32 render
+ * max exact result 64516 for U7-magnitude operands).  RS485M has no FP32 render
  * target (hardware-confirmed: FP32 color FBO is incomplete, 0x8cdd;
  * EXT_color_buffer_float is absent), so float-domain results that need exact
  * byte readback must be encoded through a byte carrier such as RGBA8.
@@ -98,7 +98,7 @@ struct r300_carrier_policy {
    enum r300_bound_kind        max_exact_result_kind;
    uint64_t                    max_exact_result;
    bool                        pack_alpha_byte;   /* A carries bits 24-31 */
-   bool                        requires_fp32_rt;  /* true = not viable on RS482 */
+   bool                        requires_fp32_rt;  /* true = not viable on RS485M */
 };
 
 /* Compiled carrier-policy objects.

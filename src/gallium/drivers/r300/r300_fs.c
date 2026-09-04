@@ -1541,7 +1541,7 @@ retry:
     }
 
     /* Classic front end, default open; R300_USE_CLASSIC_FS=0 opts out.
-     * Qualified on RS482 against the full deqp-gles2 functional suite with
+     * Qualified on RS485M against the full deqp-gles2 functional suite with
      * zero attributable gate-on deltas: every rejection falls back to
      * nir_to_rc by name, non-plain external state never enters selection,
      * and a post-classic backend error retries the whole translation with
