@@ -8907,6 +8907,23 @@ void
 drm_shim_pci_device_setup(uint16_t vendor_id, uint16_t device_id,
                           const char *pci_slot, const char *driver_name)
 {
+   drm_shim_pci_device_setup_subsystem(vendor_id, device_id, 0x1234, 0x1234,
+                                       pci_slot, driver_name);
+}
+
+/* The subsystem pair is the board identity a driver resolves beside the
+ * PCI id: one die id ships on several boards, and a driver that qualifies
+ * hazardous work per board reads subsystem_vendor and subsystem_device
+ * from sysfs to tell them apart.  The default pair above is the placeholder
+ * board the generic tests expect; a driver shim declares a real board
+ * through this entry point. */
+void
+drm_shim_pci_device_setup_subsystem(uint16_t vendor_id, uint16_t device_id,
+                                    uint16_t subsystem_vendor_id,
+                                    uint16_t subsystem_device_id,
+                                    const char *pci_slot,
+                                    const char *driver_name)
+{
    shim_device.bus_type = DRM_BUS_PCI;
    shim_device.driver_name = driver_name;
    int marker_length =
@@ -8955,17 +8972,25 @@ drm_shim_pci_device_setup(uint16_t vendor_id, uint16_t device_id,
             "DRIVER=%s\n"
             "PCI_CLASS=30000\n"
             "PCI_ID=%04X:%04X\n"
-            "PCI_SUBSYS_ID=1234:1234\n"
+            "PCI_SUBSYS_ID=%04X:%04X\n"
             "PCI_SLOT_NAME=%s\n"
-            "MODALIAS=pci:v%08Xd%08Xsv00001234sd00001234bc03sc00i00\n",
-            driver_name, (unsigned)vendor_id, (unsigned)device_id, pci_slot,
-            (unsigned)vendor_id, (unsigned)device_id);
+            "MODALIAS=pci:v%08Xd%08Xsv%08Xsd%08Xbc03sc00i00\n",
+            driver_name, (unsigned)vendor_id, (unsigned)device_id,
+            (unsigned)subsystem_vendor_id, (unsigned)subsystem_device_id,
+            pci_slot, (unsigned)vendor_id, (unsigned)device_id,
+            (unsigned)subsystem_vendor_id, (unsigned)subsystem_device_id);
    nfasprintf(
       &modalias_content,
-      "pci:v%08Xd%08Xsv00001234sd00001234bc03sc00i00\n",
-      (unsigned)vendor_id, (unsigned)device_id);
+      "pci:v%08Xd%08Xsv%08Xsd%08Xbc03sc00i00\n",
+      (unsigned)vendor_id, (unsigned)device_id,
+      (unsigned)subsystem_vendor_id, (unsigned)subsystem_device_id);
    nfasprintf(&vendor_id_str, "0x%04x\n", (unsigned)vendor_id);
    nfasprintf(&device_id_str, "0x%04x\n", (unsigned)device_id);
+   char *subsystem_vendor_str, *subsystem_device_str;
+   nfasprintf(&subsystem_vendor_str, "0x%04x\n",
+              (unsigned)subsystem_vendor_id);
+   nfasprintf(&subsystem_device_str, "0x%04x\n",
+              (unsigned)subsystem_device_id);
 
    drm_shim_override_file(uevent_content,
                           "/sys/devices/pci0000:00/%s/uevent", pci_slot);
@@ -8977,15 +9002,17 @@ drm_shim_pci_device_setup(uint16_t vendor_id, uint16_t device_id,
                           "/sys/devices/pci0000:00/%s/vendor", pci_slot);
    drm_shim_override_file(device_id_str,
                           "/sys/devices/pci0000:00/%s/device", pci_slot);
-   drm_shim_override_file("0x1234\n",
+   drm_shim_override_file(subsystem_vendor_str,
                           "/sys/devices/pci0000:00/%s/subsystem_vendor", pci_slot);
-   drm_shim_override_file("0x1234\n",
+   drm_shim_override_file(subsystem_device_str,
                           "/sys/devices/pci0000:00/%s/subsystem_device", pci_slot);
 
    free(uevent_content);
    free(modalias_content);
    free(vendor_id_str);
    free(device_id_str);
+   free(subsystem_vendor_str);
+   free(subsystem_device_str);
 }
 
 void

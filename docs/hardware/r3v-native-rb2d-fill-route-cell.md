@@ -67,16 +67,16 @@ submission rather than being weighed against the others.
 | `r3v-native-fill-route` decline arms leave the command buffer untouched | done |
 | route-local host semantic writes zero, against a known-bad host leg | done |
 | every refusal calibrated by removing it and failing its test | done: 43 rows, 41 refused, 1 internal guard, 1 reached by no fixture |
-| the route observed from `vkQueueSubmit` rather than a direct call | not run |
+| the route observed from `vkQueueSubmit` rather than a direct call | done: `r3v-native-loader-fill-application`, under the drm-shim presenting the declared board |
 | the prepared plan mutated field by field and refused | done |
 | kernel-entering `DRM_RADEON_CS` count zero for a loader-only application | done |
 | `r300-rb2d-linear-span` coverage replay, sweep, and the pinned cell shape | done |
 | `r300-direct-write` golden byte-identical | done |
 | profile-4 ICD sha256, build id, exports, and Gallium separation triple | not run |
-| kernel parser replay at the deployed pin `2be21eaa8927` | not run |
-| CS-track replay | not run |
-| plan capture records the route and its cell kind | not run |
-| drm-shim submission of this exact cell, with the submit object retained | not run |
+| kernel parser replay at the deployed pin `2be21eaa8927` | done on the host tree at the pin: `r3v-native-rb2d-fill-submit-object-replay`; the board's provenance-bound tool run is not run |
+| CS-track replay | done: the same replay tool walks the parser and the tracker; `Kernel replay classes` below records what each owns |
+| plan capture records the route and its cell kind | unreachable: the device refuses a capture session while the hazard gate is open, and this route runs only with it open |
+| drm-shim submission of this exact cell, with the submit object retained | done: the loader application's armed leg retains ib.bin, relocs.bin, manifest.json, submit_relocs.bin, submit_manifest.json, and the token |
 | a non-submitting arming runner on the attended board | not run |
 | the sealed prediction | not run |
 
@@ -102,6 +102,105 @@ whichever buffer object the recording bound, so neither the fill value nor
 the destination has a structural owner and the submission identity is the
 only catcher for both. That is the reason the identity covers more than the
 stream digest.
+
+## Loader-path qualification under the drm-shim
+
+`r3v_native_loader_fill_application` links libvulkan and libc alone and
+records the attended cell the way an application does: instance, physical
+device, device, queue, a 64 KiB `TRANSFER_DST` buffer bound at offset zero
+in host-visible GTT, one `vkCmdFillBuffer`, one `vkQueueSubmit` with a
+fence, one wait.  The radeon drm-shim absorbs the one `DRM_RADEON_CS` and
+counts it, so the count its handler exports is the number of submissions
+the process made and a kernel-entering count of zero holds by
+construction.
+
+The shim presents the board the arming gate compares.  Three declared
+facts override the sysfs files the driver reads on a real host:
+`R3V_DRM_SHIM_SUBSYSTEM_ID` the subsystem pair beside the PCI id,
+`R3V_DRM_SHIM_DMI_PRODUCT_NAME` the firmware product name, and
+`R3V_DRM_SHIM_MODULE_SRCVERSION` the radeon module srcversion.  The
+physical device resolves `R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M` from
+the same reads it performs on the Vostro 1000, so the admission the
+loader-path run reaches is the admission the attended run reaches, with
+every ioctl ending in the process.  On the board itself the DMI product
+and the srcversion are real and only the subsystem pair is declared,
+because the shim's placeholder pair would otherwise resolve to no
+platform.
+
+`r3v-native-loader-fill-application` runs each leg in a fresh evidence
+directory:
+
+- closed: the ordinary state.  The route declines the deployment,
+  `GPU_ONLY` refuses the submit, the shim sees no CS, nothing is retained.
+- armed: hazard gate, stream digest, kernel release, module srcversion,
+  and submission identity declared.  The submit returns `VK_SUCCESS`, the
+  fence signals, the shim sees exactly one CS, the read-only destination
+  mapping is byte-for-byte as the initialization phase left it, the
+  retained ib.bin is byte-identical to the arming runner's independent
+  emission, both manifests bind that digest, and the token lands.
+- refusals: every fact the public API can vary, wrong one at a time --
+  fill value, range, destination object, stream digest, kernel release,
+  module srcversion, subsystem pair, DMI product, evidence directory,
+  spent token, and the mapped ICD -- refuses ahead of the shim's CS
+  handler and leaves the directory unspent.  The write domain, the
+  relocation site, and the pitch belong to the route and are mutated in
+  process by `r3v-native-fill-route`.
+- host known-bad: the same record on the host path over the read-only
+  mapping terminates by `SIGSEGV`, so the protection judges stores.
+- host control: the host path over a writable mapping fills exactly the
+  interval and nothing else, so the sweep judges bytes.
+
+The submission identity binds the destination by the name the kernel
+gives it for the submitting process.  The application allocates one
+`VkDeviceMemory` before it submits and objects are named from 1 in
+allocation order, so the destination is object 1 and the completion
+buffer object 2; the wrong-destination arm declares object 2 and refuses
+on the identity.  The retained submit object keeps three counts apart:
+one relocation site in the stream, two relocation entries in the chunk,
+two buffer-object references in the table.
+
+`r3v_native_rb2d_fill_arming_runner` is the non-submitting preview of
+that admission.  It creates no Vulkan object, opens no DRM node, allocates
+nothing, issues no ioctl, and writes nothing into the evidence directory.
+It resolves the board from a sysfs tree (`R3V_NATIVE_RUNNER_SYSFS_ROOT`,
+default `/sys`, and `R3V_NATIVE_RUNNER_PCI_SLOT`, default `0000:01:05.0`),
+builds the same one-segment stream the route builds, and derives the
+stream digest and the submission identity for the declared destination
+name.  Its report carries the platform, kernel release, module srcversion,
+Mesa source, route, geometry, rectangles, dword count, digest, relocation
+sites, buffer-object role schema, identity, directory freshness, and token
+state, then the verdict.  `r3v-native-rb2d-fill-arming-runner` drives a
+fixture tree through the armed leg and every single-fact refusal.
+
+## Kernel replay classes
+
+`r3v-native-rb2d-fill-submit-object-replay` replays the retained 38-dword
+stream through the kernel decision code built from the pinned radeon tree,
+with the retained buffer-object table as the bundle.  The parser admits
+the stream `ACCEPT-NO-DRAW` and its trace names every register class
+admitted: the `DST_PITCH_OFFSET` relocation resolving to entry 0, the
+scissor registers, the brush and master-control registers, the rectangle
+registers, the destination cache flush, and the wait state.
+
+The parser owns three things on this stream, and each rejects when
+mutated: the relocation protocol (a `PACKET3` NOP after
+`DST_PITCH_OFFSET`; its absence rejects), the stream framing (a dropped
+final dword or an appended dword rejects), and the `PACKET0` register
+admission (`0x1430` in place of the destination-cache register or of
+`DP_CNTL` rejects through the safe-register bitmap).
+
+The 2D destination geometry passes the kernel unchecked.  `r100_cs_track`
+tracks 3D color and depth targets and no 2D destination, so a relocation
+naming the four-byte completion object, a swapped relocation order, a
+pitch of zero, a base offset past the object, a rectangle past the safe
+scissor or past the object, a scissor widened past `0x1fff`, a
+`WAIT_UNTIL` of `0xffffffff`, a stream cut before its final wait, and a
+1024-byte destination all replay `ACCEPT-NO-DRAW`.  The replay asserts
+those as the accept they earn, so a kernel that starts refusing one moves
+its row and the test names it.  The consequence for this route is that
+the fill plan's grids, the memory contract's containment rule, and the
+submission identity are the sole owners of where the 2D engine writes;
+the kernel is a grammar check, not a bounds check, for this engine.
 
 ## The oracle
 

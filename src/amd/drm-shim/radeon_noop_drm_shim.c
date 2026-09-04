@@ -393,7 +393,54 @@ drm_shim_driver_init(void)
          "radeon_rs480_candidate_gart_mc_regs");
    }
 
-   drm_shim_pci_device_setup(0x1002, device_id, "0000:01:00.0", "radeon");
+   /* The board the shim presents.  The default subsystem pair is the
+    * generic shim's placeholder.  R3V_DRM_SHIM_SUBSYSTEM_ID=vvvv:dddd
+    * declares a real board's subsystem pair, R3V_DRM_SHIM_DMI_PRODUCT_NAME
+    * the firmware product name the driver reads from
+    * /sys/class/dmi/id/product_name, and R3V_DRM_SHIM_MODULE_SRCVERSION the
+    * radeon srcversion the arming provider reads from
+    * /sys/module/radeon/srcversion.  The driver resolves each through the
+    * sysfs read it performs on a real host, so a loader-only application
+    * under the shim reaches the admission a qualified board reaches while
+    * every ioctl still ends in this process.  A declared value that fails
+    * to parse aborts: a silently defaulted board would admit a run as the
+    * placeholder while the operator believed the declaration held. */
+   uint16_t subsystem_vendor_id = 0x1234;
+   uint16_t subsystem_device_id = 0x1234;
+   const char *subsystem = getenv("R3V_DRM_SHIM_SUBSYSTEM_ID");
+   if (subsystem != NULL && subsystem[0] != '\0') {
+      unsigned vendor_value, device_value;
+      char trailing;
+      if (strlen(subsystem) != 9 ||
+          sscanf(subsystem, "%4x:%4x%c", &vendor_value, &device_value,
+                 &trailing) != 2) {
+         mesa_loge("R3V_DRM_SHIM_SUBSYSTEM_ID \"%s\" is not vvvv:dddd\n",
+                   subsystem);
+         abort();
+      }
+      subsystem_vendor_id = (uint16_t)vendor_value;
+      subsystem_device_id = (uint16_t)device_value;
+   }
+   drm_shim_pci_device_setup_subsystem(0x1002, device_id,
+                                       subsystem_vendor_id,
+                                       subsystem_device_id, "0000:01:00.0",
+                                       "radeon");
+   const char *dmi_product = getenv("R3V_DRM_SHIM_DMI_PRODUCT_NAME");
+   if (dmi_product != NULL && dmi_product[0] != '\0') {
+      char *contents = NULL;
+      if (asprintf(&contents, "%s\n", dmi_product) < 0)
+         abort();
+      drm_shim_override_file(contents, "/sys/class/dmi/id/product_name");
+      free(contents);
+   }
+   const char *module_srcversion = getenv("R3V_DRM_SHIM_MODULE_SRCVERSION");
+   if (module_srcversion != NULL && module_srcversion[0] != '\0') {
+      char *contents = NULL;
+      if (asprintf(&contents, "%s\n", module_srcversion) < 0)
+         abort();
+      drm_shim_override_file(contents, "/sys/module/radeon/srcversion");
+      free(contents);
+   }
 #ifdef DRM_SHIM_TEST
    drm_shim_override_link(
       "/sys/dev/char/226:128/device",
