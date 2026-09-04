@@ -109,7 +109,9 @@ static const struct r300_operation_route_row
             BIT_EXACT, 0.0f, SOURCE_GROUNDED, UNIT_CONTRACT,
             "R3V_NATIVE_COMPUTE_BITWISE_NOT_GPU_EXPERIMENTAL"),
 
-      /* The second route for CONSTFILL, beside the RB3D clear candidate.
+      /* The GPU route for CONSTFILL that writes a linear transfer
+       * destination, beside the RB3D clear candidate that writes a bound
+       * color target.
        * It is precommitted rather than a candidate: r300_rb2d_fill.h holds
        * the linear-surface plan, its emitter, and the admission rules
        * DST_PITCH_OFFSET's own packing imposes, and the retained
@@ -123,6 +125,20 @@ static const struct r300_operation_route_row
             RB2D_LINEAR_SOLID_FILL, RB2D_LINEAR_SURFACE, LINEAR, BIT_EXACT,
             0.0f, SILICON_RETAINED, RASTER_CELL,
             "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL"),
+
+      /* The host route for CONSTFILL over a linear transfer destination.
+       * The transfer path maps the bound memory and stores the 32-bit
+       * pattern across the recorded range, so the host executor realizes
+       * this operation for this use today; the row names that executor so
+       * the ledger answers "what fills a transfer buffer" with a route
+       * rather than with a missing row.  A caller reading an absent row as
+       * "no executor" would treat every host fill as unaccounted work.
+       * Bit-exact: the stored pattern is the caller's dword, and the range
+       * is a byte range rather than an FP24 grid, so no index class beyond
+       * LINEAR applies. */
+      ROUTE(HOST_TRANSFER_CONST_FILL, "host_transfer_const_fill", CONSTFILL,
+            HOST, EXECUTING, HOST, XFER_BUF, NONE, NONE, NONE, LINEAR,
+            BIT_EXACT, 0.0f, HOST, HOST_EXECUTOR, NULL),
 };
 
 #undef ROUTE
