@@ -765,8 +765,10 @@ receipt-identifier-check:
 # diff, the index, the working tree, and the untracked set as four separate
 # counts, so a run that judges nothing states it with every source visible.
 # REPRODUCIBLE_RUN=1 selects committed mode, which binds the verdict to the
-# declared SHA by refusing a populated working tree.  A missing linter fails
-# the gate; it never passes by absence.
+# declared SHA by refusing every file outside HEAD.  The tool invokes the
+# linter itself so each judged path arrives as one argument and a name
+# carrying whitespace cannot split into arguments naming no file.  A missing
+# linter fails the gate; it never passes by absence.
 COMMENT_HYGIENE_LINT := $(CURDIR)/scripts/lint/comment_hygiene_lint.py
 COMMENT_HYGIENE_HOOK := $(CURDIR)/scripts/lint/pre-commit-comment-hygiene
 COMMENT_HYGIENE_CANDIDATES := $(CURDIR)/scripts/lint/comment_hygiene_candidates.py
@@ -780,13 +782,9 @@ comment-hygiene-check:
 		echo "FAIL  comment-hygiene hook missing or not executable: $(COMMENT_HYGIENE_HOOK)" >&2; exit 1; }
 	python3 "$(COMMENT_HYGIENE_LINT)" --self-test
 	python3 "$(COMMENT_HYGIENE_CANDIDATES)" --self-test
-	@cd "$(CURDIR)/.." && \
-	report=$$(python3 "$(COMMENT_HYGIENE_CANDIDATES)" --repo-root . \
-	  --base "$(COMMENT_HYGIENE_BASE)" --mode "$(COMMENT_HYGIENE_MODE)") || exit 1; \
-	echo "$$report" | sed -n '1p'; \
-	files=$$(echo "$$report" | sed -n '2,$$p'); \
-	if [ -z "$$files" ]; then echo "OK    comment hygiene: the judged set is empty"; \
-	else python3 "$(COMMENT_HYGIENE_LINT)" --strict $$files; fi
+	python3 "$(COMMENT_HYGIENE_CANDIDATES)" \
+	  --repo-root "$(CURDIR)/.." --base "$(COMMENT_HYGIENE_BASE)" \
+	  --mode "$(COMMENT_HYGIENE_MODE)" --lint-with "$(COMMENT_HYGIENE_LINT)"
 
 comment-hygiene-check-test:
 	@tmp=$$(mktemp -d); \

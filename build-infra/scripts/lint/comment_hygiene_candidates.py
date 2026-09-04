@@ -20,9 +20,15 @@ The contract line precedes the file list on stdout:
   candidates base=<ref> mode=<mode> committed=<n> staged=<n>
   unstaged=<n> untracked=<n> total=<n> digest=<sha256[:12]>
 
+``--lint-with`` runs the linter over the judged set directly, passing each
+path as one argument.  A path carrying whitespace survives that call, where
+a shell word-split would turn it into arguments naming no file and let the
+linter report clean over a candidate it never opened.
+
 Usage:
   comment_hygiene_candidates.py --repo-root DIR [--base REF]
                                 [--mode working-tree|committed]
+                                [--lint-with LINTER]
   comment_hygiene_candidates.py --self-test
 """
 import argparse
@@ -196,6 +202,23 @@ def self_test():
             failures.append("committed mode failed on a clean tree: "
                             "%r %r" % (files, refusal))
 
+    # a path carrying whitespace stays one candidate through the lint call
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _fixture(root)
+        spaced = "a file with spaces.c"
+        (root / spaced).write_text("int spaced;\n")
+        files, _ = select(collect(root, "main"), "working-tree")
+        if spaced not in files:
+            failures.append("a path with spaces never entered the judged set")
+        probe = root / "argv_probe.py"
+        probe.write_text("import sys\n"
+                         "sys.exit(0 if len(sys.argv) == 3 else 1)\n")
+        done = subprocess.run([sys.executable, str(probe), "--strict",
+                               str(root / spaced)])
+        if done.returncode != 0:
+            failures.append("a path with spaces split into several arguments")
+
     # an empty checkout reports zero through every source, not through one
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -224,6 +247,7 @@ def main():
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--mode", default="working-tree",
                         choices=("working-tree", "committed"))
+    parser.add_argument("--lint-with")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -238,10 +262,19 @@ def main():
         return 1
     files, refusal = select(sources, args.mode)
     print(contract(root, args.base, args.mode, sources, files))
+    sys.stdout.flush()
     if refusal:
         print("FAIL  comment-hygiene candidates: %s" % refusal,
               file=sys.stderr)
         return 1
+    if args.lint_with:
+        if not files:
+            print("OK    comment hygiene: the judged set is empty")
+            return 0
+        # relative names run from the repository root, so a report locates
+        # each file the way every other repository gate spells it
+        return subprocess.run([sys.executable, args.lint_with, "--strict"]
+                              + files, cwd=str(root)).returncode
     for name in files:
         print(name)
     return 0
