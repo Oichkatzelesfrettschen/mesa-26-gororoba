@@ -35,6 +35,7 @@ PURE_TEST = "r3v-fill-route"
 GLUE_TEST = "r3v-native-fill-route"
 POLICY_TEST = "r3v-route-policy"
 RECORDING_TEST = "r3v-native-compute-dispatch"
+POLICY_SUBMIT_TEST = "r3v-native-execution-policy"
 
 # How a row is judged when its check is removed.
 #
@@ -205,6 +206,10 @@ REFUSALS = [
      "   if (false) {\n"
      "      r3v_native_cmd_poison(commandBuffer);\n      return NULL;\n   }",
      RECORDING_TEST, REACHABLE),
+    # GPU_ONLY over the whole submit, at the submission boundary.
+    ("queue-gpu-only-policy", QUEUE,
+     "         if (r3v_recorded_work_census_total(&policy_census) > routed_work) {",
+     "         if (r3v_recorded_work_census_total(&policy_census) > routed_work &&\n             false) {", POLICY_SUBMIT_TEST, REACHABLE),
     # Automatic selection, separate from a route's maturity.
     ("automatic-selection-set", POLICY,
      "   for (uint32_t i = 0; i < count; i++) {\n"

@@ -2293,6 +2293,25 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 120,
       suite : ['r3v'],
     )
+    # What GPU_ONLY refuses.  The policy is the submit's, so a command
+    # buffer carrying recorded work no GPU route performs refuses ahead of
+    # every host execution.  Both legs record two fills, a shape no route
+    # claims: AUTO fills the destination on the host path, GPU_ONLY refuses
+    # the submit and leaves every byte at its sentinel.
+    test(
+      'r3v-native-execution-policy',
+      executable(
+        'r3v_native_execution_policy_test',
+        files('tests/r3v_native_execution_policy_test.c'),
+        include_directories : [inc_include],
+        dependencies : [dep_vulkan_loader],
+        c_args : [no_override_init_args],
+      ),
+      env : r3v_native_loader_env,
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+      timeout : 120,
+      suite : ['r3v'],
+    )
     r3v_native_format_features_test = executable(
       'r3v_native_format_features_test',
       files('tests/r3v_native_format_features_test.c'),

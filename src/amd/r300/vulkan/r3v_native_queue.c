@@ -1554,6 +1554,29 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       if (routed != VK_SUCCESS)
          return routed;
 
+      /* GPU_ONLY is a property of the submit the caller issued, so it is
+       * answered here rather than inside the one route that can claim a
+       * command buffer: a shape no route admits would otherwise reach the
+       * host execution below and produce the result the policy exists to
+       * refuse.  The census counts the work kinds whose semantics execute
+       * at submission, and the fill route's claim covers exactly the one
+       * copy it resolved, so a command buffer holding anything the device
+       * does not perform refuses here -- ahead of the query and event
+       * transitions and ahead of every host execution under them, with
+       * application memory untouched.  A transport-only command buffer
+       * counts no ordered work and submits as it always did.
+       */
+      if (device->execution_policy == R3V_EXECUTION_GPU_ONLY) {
+         struct r3v_recorded_work_census policy_census;
+         r3v_native_cmd_buffer_work_census(cmd_buffer, &policy_census);
+         const uint32_t routed_work = cmd_buffer->fill_route_active ? 1u : 0u;
+         if (r3v_recorded_work_census_total(&policy_census) > routed_work) {
+            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                             "r3v-native: gpu_only: the submit carries "
+                             "recorded work no GPU route performs");
+         }
+      }
+
       /* Recorded query transitions publish here, in recorded order:
        * an end makes its query available with the exact zero count,
        * a reset returns its range to unavailable.
