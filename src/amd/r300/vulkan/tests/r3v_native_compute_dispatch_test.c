@@ -136,13 +136,13 @@ gate_off_leg(void)
 }
 
 static int
-bind_storage_buffer(VkDevice device, VkDeviceSize size, VkBuffer *buffer,
-                    VkDeviceMemory *memory, void **map)
+bind_buffer(VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage,
+            VkBuffer *buffer, VkDeviceMemory *memory, void **map)
 {
    const VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
       .size = size,
-      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      .usage = usage,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
    };
    CHECK(vkCreateBuffer(device, &buffer_info, NULL, buffer) == VK_SUCCESS,
@@ -187,10 +187,10 @@ gate_on_leg(void)
    VkBuffer input_buffer, output_buffer;
    VkDeviceMemory input_memory, output_memory;
    void *input_map = NULL, *output_map = NULL;
-   if (bind_storage_buffer(device, buffer_bytes, &input_buffer,
-                           &input_memory, &input_map) != 0 ||
-       bind_storage_buffer(device, buffer_bytes, &output_buffer,
-                           &output_memory, &output_map) != 0)
+   if (bind_buffer(device, buffer_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                   &input_buffer, &input_memory, &input_map) != 0 ||
+       bind_buffer(device, buffer_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                   &output_buffer, &output_memory, &output_map) != 0)
       return 1;
 
    uint32_t *input = input_map;
@@ -385,6 +385,55 @@ gate_on_leg(void)
    vkCmdDispatch(cmd, DISPATCH_GROUPS + 1, 1, 1);
    CHECK(vkEndCommandBuffer(cmd) != VK_SUCCESS,
          "oversized dispatch poisons the recording");
+
+   /* A recorded dispatch and a recorded copy in one command buffer is a
+    * shape neither executor orders.  r3v_CmdDispatch refuses a buffer that
+    * already carries a copy; the copy side holds the same rule, so the
+    * pair is refused from whichever side arrives second.  The fill below
+    * names a transfer-destination buffer with an admitted range, so the
+    * only rule it can break is the dispatch already recorded.
+    */
+   VkBuffer fill_buffer;
+   VkDeviceMemory fill_memory;
+   void *fill_map = NULL;
+   if (bind_buffer(device, buffer_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                   &fill_buffer, &fill_memory, &fill_map) != 0)
+      return 1;
+
+   /* Calibration: the same fill alone records and ends. */
+   CHECK(vkResetCommandPool(device, cmd_pool, 0) == VK_SUCCESS,
+         "command pool reset before the lone fill");
+   CHECK(vkBeginCommandBuffer(cmd, &begin_info) == VK_SUCCESS,
+         "lone fill begin");
+   vkCmdFillBuffer(cmd, fill_buffer, 0, buffer_bytes, 0x11223344u);
+   CHECK(vkEndCommandBuffer(cmd) == VK_SUCCESS,
+         "a lone transfer-destination fill records");
+
+   CHECK(vkResetCommandPool(device, cmd_pool, 0) == VK_SUCCESS,
+         "command pool reset before the dispatch-then-fill shape");
+   CHECK(vkBeginCommandBuffer(cmd, &begin_info) == VK_SUCCESS,
+         "dispatch-then-fill begin");
+   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0,
+                           1, &set, 0, NULL);
+   vkCmdDispatch(cmd, DISPATCH_GROUPS, 1, 1);
+   vkCmdFillBuffer(cmd, fill_buffer, 0, buffer_bytes, 0x11223344u);
+   CHECK(vkEndCommandBuffer(cmd) != VK_SUCCESS,
+         "a fill recorded after a dispatch poisons the recording");
+
+   /* The mirrored order, which the dispatch side has always refused, so
+    * the pair is refused from both directions. */
+   CHECK(vkResetCommandPool(device, cmd_pool, 0) == VK_SUCCESS,
+         "command pool reset before the fill-then-dispatch shape");
+   CHECK(vkBeginCommandBuffer(cmd, &begin_info) == VK_SUCCESS,
+         "fill-then-dispatch begin");
+   vkCmdFillBuffer(cmd, fill_buffer, 0, buffer_bytes, 0x11223344u);
+   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0,
+                           1, &set, 0, NULL);
+   vkCmdDispatch(cmd, DISPATCH_GROUPS, 1, 1);
+   CHECK(vkEndCommandBuffer(cmd) != VK_SUCCESS,
+         "a dispatch recorded after a fill poisons the recording");
 
    return 0;
 }
