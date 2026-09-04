@@ -216,10 +216,13 @@ r3v_execution_provenance_valid(const struct r3v_execution_provenance *p,
          *reason = "GPU_ONLY: the route runs on the host";
          return false;
       }
-      if (!p->device_submission) {
-         *reason = "GPU_ONLY: no submission reached the device";
-         return false;
-      }
+      /* The submission itself is not asked here.  device_submission and the
+       * phase already agree above, so a record past the ioctl carries the
+       * submission and one short of it carries none; demanding the flag at
+       * every phase refused the prepared record this policy exists to
+       * admit.  GPU_ONLY's own content is the two facts above, and the
+       * refusal that replaces a host fallback lives at the route decision.
+       */
       break;
    case R3V_EXECUTION_CPU_REFERENCE:
       if (gpu) {

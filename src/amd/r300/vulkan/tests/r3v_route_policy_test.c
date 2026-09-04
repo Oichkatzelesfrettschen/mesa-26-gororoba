@@ -399,6 +399,36 @@ gpu_provenance(void)
    };
 }
 
+/* GPU_ONLY owns two facts about a record: the host did not compute it and
+ * the route runs on the device.  The submission flag is not a third: it
+ * tracks the phase, so demanding it at every phase refused the prepared
+ * record the policy exists to admit. */
+static void
+test_gpu_only_admits_a_prepared_record(void)
+{
+   const char *reason = NULL;
+   struct r3v_execution_provenance p = gpu_provenance();
+   p.phase = R3V_EXECUTION_PHASE_PREPARED;
+   p.device_submission = false;
+   assert(r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                         &reason));
+
+   p.host_semantic_node = true;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                          &reason));
+   p.host_semantic_node = false;
+   p.executor = R300_OPERATION_ROUTE_EXECUTOR_HOST;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                          &reason));
+
+   /* The flag still tracks the phase in both directions, whatever the
+    * policy, so a prepared record claiming a submission is refused. */
+   p = gpu_provenance();
+   p.phase = R3V_EXECUTION_PHASE_PREPARED;
+   assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_GPU_ONLY,
+                                          &reason));
+}
+
 static struct r3v_execution_provenance
 host_provenance(void)
 {
@@ -699,6 +729,7 @@ int
 main(void)
 {
    test_policy_values();
+   test_gpu_only_admits_a_prepared_record();
    test_automatic_selection_is_separate_from_maturity();
    test_every_gpu_row_is_gated();
    test_gate_closed_reaches_the_host();

@@ -595,6 +595,27 @@ test_gpu_only_refuses_rather_than_falling_back(const struct reference *ref)
    scene_release(&s);
 }
 
+/* GPU_ONLY on the admitted path: the policy that requires the device must
+ * reach the device.  The prepared record carries device_submission = false
+ * because no ioctl has run yet, so a policy check applied to it would refuse
+ * the very route the policy asks for. */
+static void
+test_gpu_only_reaches_the_admitted_route(const struct reference *ref)
+{
+   struct scene s;
+   if (!scene_init(&s, ref)) {
+      CHECK(false, "the scene does not build");
+      return;
+   }
+   s.device.execution_policy = R3V_EXECUTION_GPU_ONLY;
+   VkResult armed_result = VK_SUCCESS;
+   const bool claimed = route(&s, &armed_result);
+   CHECK(armed_result == VK_SUCCESS,
+         "GPU_ONLY on the admitted path returns %d", armed_result);
+   CHECK(claimed, "GPU_ONLY does not route the admitted cell");
+   scene_release(&s);
+}
+
 /* Host exclusion, as a counter rather than an inspection.  The routed
  * record leaves the destination as it found it and moves nothing; the same
  * record unrouted fills the destination and moves the counter by one. */
@@ -801,6 +822,7 @@ main(void)
    test_attended_cell_routes(&ref);
    test_declines_leave_the_command_buffer_untouched(&ref);
    test_gpu_only_refuses_rather_than_falling_back(&ref);
+   test_gpu_only_reaches_the_admitted_route(&ref);
    test_host_exclusion_counter(&ref);
    test_reset_drops_the_routed_record(&ref);
    test_record_follows_its_transport(&ref);
