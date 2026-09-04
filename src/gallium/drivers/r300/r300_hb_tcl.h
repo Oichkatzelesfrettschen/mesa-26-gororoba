@@ -58,7 +58,7 @@ struct r300_hb_tcl_config {
 
 /*
  * Populate screen->hb_tcl with the default bypass allocation, then, when
- * R300_HB_TCL=1 on an RC410/RS485M part without hardware TCL and
+ * R300_HB_TCL=1 on an RC410/RS480 part without hardware TCL and
  * R300_R2VB_TIMING is unset, mark it enabled and fold in a validated
  * R300_HB_VERT_FPU probe.  R300_R2VB_TIMING reserves the no-TCL shape for the
  * R2VB packet self-test.  Reads getenv once at screen create.  Safe to call on

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # r300 SWTCL point/line/sprite conformance regression harness (deqp-GLES2).
 #
-# WHY: the RS485M point + line + sprite fixes (per-vertex point size via the
+# WHY: the RS480/RS482 point + line + sprite fixes (per-vertex point size via the
 # draw wide-point stage, the aliased-line-width clamp, gl_PointCoord, the
 # point-size cap) each pass on real silicon but are easy to regress because they
 # touch the shared gallium draw module and the GA rasterizer setup. This harness

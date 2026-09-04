@@ -10,7 +10,7 @@ against the r300 driver directory containing this script.  The audit
 reports, per finding class, where the driver header and the documented
 RS480-class register census diverge: documented registers the header
 lacks, name disagreements at an offset, field shifts outside documented
-extents, and consumer emissions of registers no RS485M-reaching evidence
+extents, and consumer emissions of registers no RS480-reaching evidence
 covers.
 
 Exits 0 with a skip message when the registry checkout is absent, so

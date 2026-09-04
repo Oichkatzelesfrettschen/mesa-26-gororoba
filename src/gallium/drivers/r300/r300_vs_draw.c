@@ -424,7 +424,7 @@ r300_draw_init_vertex_shader(struct r300_context *r300,
     nir_variable *wpos_var = NULL;
     NIR_PASS(_, nir, r300_nir_add_wpos, &wpos_var);
 
-    /* RS485M has no hardware TCL, so the vertex shader runs in the direct Draw
+    /* RS480 has no hardware TCL, so the vertex shader runs in the direct Draw
      * NIR executor.  Lower indirect temporary derefs to if-ladders because the
      * executor admits SSA, ALU, control flow, and its explicit I/O intrinsics. */
     NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,

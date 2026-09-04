@@ -42,7 +42,7 @@
  * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT from
  * r3v_get_format_properties for pCreateInfo->format, and one created
  * with VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT needs the matching
- * storage bit, which every format withholds -- the RS485M die lacks the
+ * storage bit, which every format withholds -- the RS480 die lacks the
  * storage-texel-buffer and integer-format routes
  * tests/r3v_conformance_nonpass_ledger.tsv row
  * mandatory_format_feature_absent names, so a storage-usage buffer

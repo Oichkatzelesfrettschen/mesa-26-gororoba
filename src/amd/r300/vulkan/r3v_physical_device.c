@@ -315,7 +315,7 @@ r3v_physical_device_init_properties(struct vk_properties *const props,
    props->vendorID = pci_vendor_id;
    props->deviceID = pci_device_id;
 
-   /* RS485M are integrated graphics in the Radeon Xpress 200M /
+   /* RS482/RS485 are integrated graphics in the Radeon Xpress 200M /
     * Xpress 1100/1150 mobile chipsets.  Vulkan treats this as
     * VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU. */
    props->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
@@ -782,7 +782,7 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
          VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
       properties->optimalTilingFeatures = properties->linearTilingFeatures;
       /* tests/r3v_conformance_nonpass_ledger.tsv row
-       * mandatory_format_feature_absent names the RS485M die's absent
+       * mandatory_format_feature_absent names the RS480 die's absent
        * storage-image and integer-format routes; the same silicon gap
        * withholds VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT, so the
        * grant is the uniform texel-buffer bit alone.

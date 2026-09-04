@@ -552,7 +552,7 @@ create_pipeline(struct r3v_native_device *device,
     * admission above pinned the triangle-list topology, the
     * pass-through fragment binary reads US input 0 -- the RS
     * destination color 0 lands in -- when the module pair carries the
-    * varying without texture sampling, and RS485M's GA_COLOR_CONTROL
+    * varying without texture sampling, and RS480's GA_COLOR_CONTROL
     * carries PROVOKING_VERTEX_FIRST.  The clipping class is deferred:
     * the Flat route judges it per triangle at execution, and the
     * NoPerspective vec4 conjunction takes the adaptive route whose

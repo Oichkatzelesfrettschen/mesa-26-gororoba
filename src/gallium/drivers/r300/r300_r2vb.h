@@ -35,7 +35,7 @@ struct r300_r2vb_runtime_environment {
 };
 
 /* Immutable R2VB route decisions owned by one screen.  The composite
- * standing gate supplies RS485M defaults; explicit member values retain
+ * standing gate supplies RS480 defaults; explicit member values retain
  * exact-value, fail-closed parsing and take precedence over those defaults. */
 struct r300_r2vb_runtime_config {
     bool standing_defaults_enabled;

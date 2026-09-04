@@ -21,7 +21,7 @@ The sample-count row corrects an earlier assumption: RS485M has
 multisample hardware.  steinmarder-r300 finding
 `2026-05-26-r300-default-fb-msaa-readback-not-driver-specific` records
 FBO MSAA depth/stencil at samples 2 and 4 passing 8/8 on the hardware
-X11 session (renderer `ATI RS480`, zero GPU resets), and the RS485M
+X11 session (renderer `ATI RS480`, zero GPU resets), and the RS482
 register database carries `R300_GB_AA_CONFIG` (0x4020),
 `R300_GB_MSPOS0/1` (0x4010/0x4014), and `R300_RB3D_AARESOLVE_OFFSET/
 PITCH/CTL` (0x4E80/0x4E84/0x4E88) as present with at-rest live reads.

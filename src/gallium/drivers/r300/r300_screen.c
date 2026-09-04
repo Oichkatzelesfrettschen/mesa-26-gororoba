@@ -792,7 +792,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
 
-    /* The standing route supplies RS485M-only defaults without changing the
+    /* The standing route supplies RS480-only defaults without changing the
      * process environment.  Each explicit option is parsed before the next
      * environment lookup, so zero, empty, and malformed values stay closed. */
     r300_r2vb_runtime_config_init_from_process(

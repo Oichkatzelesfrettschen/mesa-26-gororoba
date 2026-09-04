@@ -1080,7 +1080,7 @@ static void r300_fs_multipass_draw(struct pipe_context *pipe,
         r300_mp_snapshot(r300, "post-A");
 
     /* Pass A's color writes sit in the CB cache; pass B's texture fetches
-     * do not snoop it.  On RS48x (RS485M, CHIP_RS480 family) the
+     * do not snoop it.  On RS48x (RS480/RS482/RS485, CHIP_RS480 family) the
      * measured path that makes the carry visible is a one-texel read map of
      * each scratch: r300_texture_transfer_map runs detile+blit+flush+BO-wait.
      * Pixel-exact multipass validation relies on that sequence; it is an
@@ -2269,7 +2269,7 @@ static bool r300_render_allocate_vertices(struct vbuf_render* render,
 
     if (!r300->vbo || size + r300->draw_vbo_offset > r300->vbo->size) {
         /* A fresh GTT vertex buffer pins another R300_MAX_DRAW_VBO_SIZE of GART, which
-         * on UMA RS485M is system DRAM.  A single very large SW-TCL primitive (a
+         * on UMA RS480/RS485 is system DRAM.  A single very large SW-TCL primitive (a
          * 2^19-point wide-point draw splits into hundreds of vsplit segments) cycles
          * this path and its companion u_upload index buffers hundreds of times, and the
          * GPU keeps reading each buffer long enough that the pb_cache allocates a fresh

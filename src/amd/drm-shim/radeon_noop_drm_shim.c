@@ -96,7 +96,7 @@ radeon_ioctl_info(int fd, unsigned long request, void *arg)
       return 0;
 
    case RADEON_INFO_READ_REG:
-      /* The noop device models register reads as unsupported.  RS485M GART
+      /* The noop device models register reads as unsupported.  RS480 GART
        * memory-controller state remains a silicon-only observation. */
       return -EINVAL;
 
@@ -361,7 +361,7 @@ drm_shim_driver_init(void)
    shim_device.version_patchlevel = 0;
 
    if (radeon_family == CHIP_RS480) {
-      /* RS485M GART memory-controller state remains a silicon-only
+      /* RS480 GART memory-controller state remains a silicon-only
        * observation under the noop device. */
       drm_shim_hide_path(
          "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs");

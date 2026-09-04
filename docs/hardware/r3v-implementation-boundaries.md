@@ -286,7 +286,7 @@ does not supply missing userspace semantics.
 
 PALM and Terakan provide reusable direct-DRM engineering patterns. Their
 Evergreen register values, packet semantics, cache rules, shader ISA, and
-silicon results are not RS485M authority.
+silicon results are not RS480 authority.
 
 ## Current-source authority
 
@@ -1133,7 +1133,7 @@ and target boot, not current-head runtime or conformance proof.
 | Layer | Authority |
 |---|---|
 | `src/amd/radeon/drm_vk/` | Radeon DRM BO, map, PRIME, relocation, submission, and finite completion transport |
-| `src/amd/r300/common/` | RS485M/R300 device facts, formats, packet fields, state packs, barriers, and validators |
+| `src/amd/r300/common/` | RS480/R300 device facts, formats, packet fields, state packs, barriers, and validators |
 | `src/amd/r300/cpu/` | portable byte-defined vertex execution baseline plus measured per-target tuned paths |
 | `src/amd/r300/vulkan/` | Vulkan objects, command lowering, execution graph, queue policy, images, WSI, and entry points |
 
@@ -1467,12 +1467,12 @@ a narrow source never implies narrow final-delivery support.
 | Repository | Authority |
 |---|---|
 | `mesa-26-gororoba` | the R3V ICD, r300g, compilers, state packs, R2VB, WSI, and tests |
-| `steinmarder-r300` (separate repository; `src/re/r300/` and root `results/`) | RS485M frontier, probes, falsifiers, findings, manifests, and target result bundles |
+| `steinmarder-r300` (separate repository; `src/re/r300/` and root `results/`) | RS480 frontier, probes, falsifiers, findings, manifests, and target result bundles |
 | `vostro1000-re` | K8 and platform behavior plus CPU-executor qualification |
 | `linux-radeon-gororoba` | Radeon parser, GEM, GART, faults, completion, recovery, and containment |
 | `radeon-custom` | source pin, package construction, deployment transition, rollback, and installed runtime identity |
 | Xserver and Radeon DDX repositories | X11 source, package, and installed-image authority |
-| `steinmarder-r600-terakan` | reusable process patterns and PALM evidence, never RS485M hardware facts |
+| `steinmarder-r600-terakan` | reusable process patterns and PALM evidence, never RS480 hardware facts |
 
 Mesa behavior changes land in Mesa. Kernel changes land in the kernel source
 repository. Package policy lands in the package repository. Target evidence and

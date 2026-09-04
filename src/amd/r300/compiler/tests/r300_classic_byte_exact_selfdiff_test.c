@@ -145,7 +145,7 @@ build_fmad(void)
  * set (r300_fragprog_emit.c's translate_alpha_opcode has no case for
  * SIN/COS/POW -- those are R500-only silicon, r500_fragprog_emit.c's
  * translate_alpha_op).  Staying inside this set keeps the corpus on the
- * RS485M target this mission validates. */
+ * RS480/RS482-class target this mission validates. */
 static nir_shader *
 build_transcendentals(void)
 {

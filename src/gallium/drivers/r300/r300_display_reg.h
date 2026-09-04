@@ -34,7 +34,7 @@
  *
  * Register semantics cross-reference (names only, no text copied):
  *   - CRTC timing/offset/pitch: the M56 OEM Register Reference Guide is the
- *     closest published reference for the RS485M IGP display block, and
+ *     closest published reference for the RS480/RS482 IGP display block, and
  *     the RS690 RRG carries the fullest display-controller chapters.
  *   - RADEON_CRTC_OFFSET__GUI_TRIG_OFFSET / __OFFSET_LOCK page-flip
  *     semantics: the kernel implements the flip in r100_page_flip

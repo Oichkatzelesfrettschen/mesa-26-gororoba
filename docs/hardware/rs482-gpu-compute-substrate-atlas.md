@@ -135,7 +135,7 @@ which splits the family gates in `r300_packet0_check` two ways.
   and 16 carry width_11 and height_11 and are decoded only above it. `SC_SCISSOR1`
   additionally subtracts 1440 when deriving `maxy` below that threshold, and
   `r100_cs_track_texture_check` withholds the extra high width and height bits.
-- Admitted because RS485M clears the lower thresholds: `R300_TX_FORMAT_ATI2N`
+- Admitted because RS480 clears the lower thresholds: `R300_TX_FORMAT_ATI2N`
   passes the `>= CHIP_R420` gate, and `GB_Z_PEQ_CONFIG` 0x4028 passes the `>=
   CHIP_RV350` gate once the submitter owns hyperz.
 
@@ -146,7 +146,7 @@ and `HIZ_PITCH` reject any nonzero value, and `RB3D_CCTL` rejects
 `CMASK_ENABLE` (known(source)). A compute route that wants ZMASK or a fast
 depth clear must hold that ownership.
 
-RS485M alone instantiates the R400 extended fragment register file (`US_CODE_BANK`
+RS480 alone instantiates the R400 extended fragment register file (`US_CODE_BANK`
 0x46B8, `US_CODE_EXT` 0x46BC, `US_ALU_EXT_ADDR_0..63` 0x4AC0-0x4BBC) on
 R300-class silicon. The stock bitmap marks those addresses checked with no case
 to accept them, so they reject by default; `reg_srcs/rs480` clears exactly those
@@ -199,7 +199,7 @@ snooping globally (known(source)). Whether a per-PTE snoop bit overrides that
 global disable is unresolved in both evidence repositories and stays
 **hypothesized**; the memory-model document owns that question.
 
-The fork adds an admission epoch around every RS400/RS485M MMIO, aperture, and
+The fork adds an admission epoch around every RS400/RS480 MMIO, aperture, and
 page-table access, keyed on `radeon.h:radeon_rs4xx_hardware_target`. A failed
 reset latches `gpu_parked`, after which every MMIO leaf returns without issuing
 a non-posted HyperTransport transaction and command submission refuses
@@ -562,7 +562,7 @@ is an open item rather than a closed one (steinmarder `rs482-rb3d-zb.4.md`;
 observation, open). What restricts it here is the driver and kernel layer:
 `r300.c:r300_packet0_check` rejects `RB3D_CCTL` `CMASK_ENABLE` unless the
 submitter owns cmask, and the family capability table sets `has_cmask` false for
-RS485M (steinmarder `r300_chip_family_caps.tsv`; known(source)).
+RS480 (steinmarder `r300_chip_family_caps.tsv`; known(source)).
 
 Publication runs through the destination cache control register.
 `RB3D_DSTCACHE_CTLSTAT` 0x4e4c reads `0x00000002` at rest and is read-safe only

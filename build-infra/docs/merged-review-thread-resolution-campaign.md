@@ -360,7 +360,7 @@ evidence commit.
 The merged repairs cover install locking and status propagation, public source
 references, Rust image parity, SFN local-group failure state, package hooks and
 deployment consent, VL plane and vertex-row identity, generator-test isolation,
-RS485M debugfs parsing, package ownership, result visibility, GPUVis child
+RS480 debugfs parsing, package ownership, result visibility, GPUVis child
 failure handling, zscan and IDCT coordinate identity, and Draw output-row
 semantics.  Superseded rows govern removed pair and pump targets, retired
 install.dat parsing, replaced profiles, a relocated build area, and replaced
@@ -527,7 +527,7 @@ fixture pass.  PR 1932 re-audits all four targets at merge commit
 resolved and re-queried.
 
 The final three mechanisms are fixed on merged main and closed.  PR 1934 merge commit
-`3b355908198285831108be57003bdfbd69a796cb` stores the RS485M standing-route
+`3b355908198285831108be57003bdfbd69a796cb` stores the RS480 standing-route
 composite in screen-owned state and covers both mixed-screen creation orders
 plus alternating consumers.  PR 1936 merge commit
 `b058622f9f395c151befc9c0294230cd383815d6` classifies all 39 current

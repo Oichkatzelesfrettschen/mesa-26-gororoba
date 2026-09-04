@@ -51,7 +51,7 @@ check_format_features(
    /* The known-bad targets VK_FORMAT_R32_UINT, an admitted texel
     * format, rather than an unadmitted one: injecting the withheld
     * VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT here is the exact
-    * over-grant r3v_get_format_properties must never make (the RS485M
+    * over-grant r3v_get_format_properties must never make (the RS480
     * die lacks the storage-texel-buffer route, tests/
     * r3v_conformance_nonpass_ledger.tsv row
     * mandatory_format_feature_absent), so this calibration observes

@@ -3534,7 +3534,7 @@ enum {
     (RADEON_CP_PACKET3 | (op) | ((count) << 16))
 
 
-/* RS485M 0x4xxx fragment/pixel-pipe registers identified by the live RS485M
+/* RS480 0x4xxx fragment/pixel-pipe registers identified by the live RS480
  * write-verify-restore survey and named from the verified offsets.  The
  * survey establishes full-32-bit writable storage that the driver leaves
  * unprogrammed.  The survey excludes the

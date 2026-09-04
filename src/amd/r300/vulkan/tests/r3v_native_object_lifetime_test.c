@@ -107,7 +107,7 @@ check_sampler_lifetime(const struct fixture *f)
  * (r3v_get_format_properties), so a view over it refuses whatever the
  * buffer's own usage bits are.  VK_FORMAT_R32_UINT sits in the texel
  * table r3v_native_transfer_texel_bytes names and carries
- * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT alone -- the RS485M die
+ * VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT alone -- the RS480 die
  * withholds the storage-texel-buffer bit on every format
  * (tests/r3v_conformance_nonpass_ledger.tsv row
  * mandatory_format_feature_absent) -- so a uniform-usage view over it

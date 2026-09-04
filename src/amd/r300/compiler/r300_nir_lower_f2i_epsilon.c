@@ -3,7 +3,7 @@
  */
 
 /*
- * RS48x (RS485M, CHIP_RS480 family) delivers an interpolated
+ * RS48x (RS480/RS482/RS485, CHIP_RS480 family) delivers an interpolated
  * varying roughly 2^-17 of the plane's magnitude off its analytic value.
  * Empirical: measured on the SWTCL raster path against host FP32 plane
  * evaluation of the same attributes.  FP24 holds an integer exactly only

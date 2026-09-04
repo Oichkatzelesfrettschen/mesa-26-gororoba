@@ -21,7 +21,7 @@ _Static_assert((R300_PVS_NUM_SLOTS(R300_HB_TCL_DEFAULT_NUM_SLOTS) |
                "HB_TCL default VAP_CNTL drifted from the historical bypass word 0x0014025a");
 
 /*
- * RC410 and RS485M are the RS48x integrated parts Mesa gates here:
+ * RC410 and RS480 are the RS48x integrated parts Mesa gates here:
  * r300_chipset.c leaves num_vert_fpus at 0, so ordinary contexts keep the
  * no-TCL route.  The hybrid-TCL probe is gated to them so it cannot perturb a
  * part that runs the ordinary hardware-TCL route.
