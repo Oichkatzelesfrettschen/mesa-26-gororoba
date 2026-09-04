@@ -278,6 +278,18 @@ def self_test():
         if done.returncode != 0:
             failures.append("a path with spaces split into several arguments")
 
+    # a symlink is dropped before the lint call rather than followed
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _fixture(root)
+        (root / "outside.c").write_text("int outside;\n")
+        (root / "link.c").symlink_to(root / "outside.c")
+        files, _ = select(collect(root, "main"), "working-tree")
+        if "link.c" not in files:
+            failures.append("a symlink never entered the judged set")
+        if not (root / "link.c").is_symlink():
+            failures.append("the fixture symlink did not survive")
+
     # a non-ASCII name reaches the judged set as the path git quotes away
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -340,6 +352,15 @@ def main():
               file=sys.stderr)
         return 1
     if args.lint_with:
+        # a symlink carries no comment bytes of its own, and os.access and
+        # the linter both follow it to content outside the declared commit;
+        # the target is judged on its own row when it changes
+        links = [name for name in files if (root / name).is_symlink()]
+        if links:
+            print("candidates: %d symlink(s) hold no comment bytes and are "
+                  "left to their targets: %s"
+                  % (len(links), ", ".join(links[:5])))
+            files = [name for name in files if name not in set(links)]
         unopenable = [name for name in files
                       if not os.access(str(root / name), os.R_OK)]
         if unopenable:
