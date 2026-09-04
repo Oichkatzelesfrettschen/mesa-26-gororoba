@@ -30,6 +30,7 @@ GLUE = VULKAN / "r3v_native_fill_route.c"
 QUEUE = VULKAN / "r3v_native_queue.c"
 RECORDING = VULKAN / "r3v_native_recording.c"
 POLICY = VULKAN / "r3v_route_policy.c"
+CMD = VULKAN / "r3v_native_cmd.c"
 
 PURE_TEST = "r3v-fill-route"
 GLUE_TEST = "r3v-native-fill-route"
@@ -152,6 +153,21 @@ REFUSALS = [
     ("authority-digest-width", PURE,
      "   return i == BLAKE3_OUT_LEN * 2;",
      "   return true;", PURE_TEST, REACHABLE),
+    ("identity-destination-declared", PURE,
+     '   if (id->destination_handle == 0) {',
+     '   if (false) {', PURE_TEST, REACHABLE),
+    ("identity-destination-hashed", PURE,
+     "   put_u32(&ctx, id->destination_handle);",
+     "   put_u32(&ctx, 0u);", PURE_TEST, REACHABLE),
+    # The routed record's own lifetime.
+    ("cmd-reset-drops-record", CMD,
+     "   cmd_buffer->fill_route_active = false;\n"
+     "   cmd_buffer->fill_route_provenance = (struct r3v_execution_provenance){0};",
+     "   cmd_buffer->fill_route_provenance = cmd_buffer->fill_route_provenance;",
+     GLUE_TEST, REACHABLE),
+    ("queue-record-transport-walk", QUEUE,
+     "   const unsigned reached = completion_retired ? 4u : (ioctl_accepted ? 3u : 2u);",
+     "   const unsigned reached = 0u;", GLUE_TEST, REACHABLE),
     # The route's own admission.
     ("shape-other-work", GLUE,
      "       r3v_native_cmd_buffer_has_other_recorded_work(cmd_buffer))\n"

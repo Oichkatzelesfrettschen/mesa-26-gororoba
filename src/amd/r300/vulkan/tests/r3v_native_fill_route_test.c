@@ -39,6 +39,8 @@
 #include "util/list.h"
 #include "util/mesa-blake3.h"
 
+#include "vk_alloc.h"
+#include "vk_command_pool.h"
 #include "vk_device.h"
 #include "vk_instance.h"
 #include "vk_physical_device.h"
@@ -69,6 +71,7 @@ static unsigned failures;
 #define FIXTURE_KERNEL "6.16.0-fixture"
 #define FIXTURE_SRCVERSION "FIXTURESRCVERSION0000000"
 #define FIXTURE_EVIDENCE_DIR "/fixture-evidence"
+#define SCENE_BO_HANDLE 0x77u
 
 struct fixture {
    const char *hazard_gate;
@@ -128,8 +131,9 @@ fixture_file_present(void *ctx, const char *path)
 struct scene {
    struct r3v_native_memory memory;
    struct r3v_native_buffer buffer;
-   struct r3v_native_deferred_copy copy;
+   struct r3v_native_deferred_copy *copy;
    struct r3v_native_cmd_buffer cmd;
+   struct vk_command_pool pool;
    struct r3v_physical_device pdevice;
    struct r3v_native_device device;
    struct vk_instance instance;
@@ -167,6 +171,11 @@ scene_release(struct scene *s)
    free(s->cmd.references);
    s->cmd.ib = NULL;
    s->cmd.references = NULL;
+   /* The reset path frees the recording storage itself, so the scene
+    * releases whatever is still bound. */
+   vk_free(&s->pool.alloc, s->cmd.deferred_copies);
+   s->cmd.deferred_copies = NULL;
+   s->copy = NULL;
    free(s->storage);
    s->storage = NULL;
 }
@@ -234,6 +243,7 @@ build_reference(struct reference *ref)
       .reloc_sites = sites,
       .read_domains = 0,
       .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .destination_handle = SCENE_BO_HANDLE,
       .kernel_release = FIXTURE_KERNEL,
       .module_srcversion = FIXTURE_SRCVERSION,
    };
@@ -253,7 +263,7 @@ scene_init(struct scene *s, const struct reference *ref)
       return false;
    memset(s->storage, CELL_SENTINEL, CELL_ALLOCATION_BYTES);
 
-   s->memory.bo.handle = 0x77u;
+   s->memory.bo.handle = SCENE_BO_HANDLE;
    s->memory.bo.size = CELL_ALLOCATION_BYTES;
    /* A live application mapping, so the transfer path reuses it and reaches
     * no DRM node while still running its real store loop. */
@@ -265,14 +275,23 @@ scene_init(struct scene *s, const struct reference *ref)
    s->buffer.vk.size = CELL_ALLOCATION_BYTES;
    s->buffer.vk.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-   s->copy = (struct r3v_native_deferred_copy){
+   /* The recording's own storage, from the pool allocator the command
+    * buffer names, so the reset path frees what it is entitled to free. */
+   s->pool.alloc = *vk_default_allocator();
+   s->cmd.vk.pool = &s->pool;
+   s->copy = vk_alloc(&s->pool.alloc, sizeof(*s->copy), 8,
+                      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (s->copy == NULL)
+      return false;
+   *s->copy = (struct r3v_native_deferred_copy){
       .kind = R3V_NATIVE_COPY_FILL_BUFFER,
       .dst_buffer = &s->buffer,
       .dst_offset = CELL_FILL_OFFSET,
       .size = CELL_FILL_BYTES,
       .clear_dword = CELL_FILL_VALUE,
    };
-   s->cmd.deferred_copies = &s->copy;
+   s->cmd.deferred_copies = s->copy;
+   s->cmd.deferred_copy_capacity = 1;
    s->cmd.deferred_copy_count = 1;
 
    s->pdevice.pci_vendor_id = R3V_NATIVE_ARMING_PCI_VENDOR;
@@ -316,7 +335,7 @@ route(struct scene *s, VkResult *result_out)
    if (result_out != NULL)
       *result_out = result;
    const bool claimed = s->cmd.fill_route_active;
-   CHECK(s->copy.gpu_routed == claimed,
+   CHECK(s->copy->gpu_routed == claimed,
          "the routed flag and the active record disagree");
    CHECK(claimed == (s->cmd.ib_size_dwords != 0),
          "the active record and the installed stream disagree");
@@ -335,7 +354,7 @@ check_untouched(const struct scene *s, const char *arm)
          "%s: the declined route installed a relocation", arm);
    CHECK(s->cmd.cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED,
          "%s: the declined route declared a cell kind", arm);
-   CHECK(!s->copy.gpu_routed && !s->cmd.fill_route_active,
+   CHECK(!s->copy->gpu_routed && !s->cmd.fill_route_active,
          "%s: the declined route marked the record", arm);
    CHECK(s->device.host_semantic_writes == 0,
          "%s: the route itself moved the host-write counter", arm);
@@ -395,18 +414,18 @@ test_attended_cell_routes(const struct reference *ref)
       CHECK(r3v_native_cell_geometry_unfrozen(&s.cmd),
             "an unwritten destination reports the cell frozen");
       s.cmd.references[0].write_domain = RADEON_GEM_DOMAIN_GTT;
-      s.copy.gpu_routed = false;
+      s.copy->gpu_routed = false;
       CHECK(r3v_native_cell_geometry_unfrozen(&s.cmd),
             "an unrouted copy under this cell kind reports the cell frozen");
-      s.copy.gpu_routed = true;
+      s.copy->gpu_routed = true;
       s.cmd.reference_count = 2;
       CHECK(r3v_native_cell_geometry_unfrozen(&s.cmd),
             "a second relocation reports the cell frozen");
       s.cmd.reference_count = 1;
-      s.copy.size = CELL_FILL_BYTES + 2;
+      s.copy->size = CELL_FILL_BYTES + 2;
       CHECK(r3v_native_cell_geometry_unfrozen(&s.cmd),
             "a range off the dword grid reports the cell frozen");
-      s.copy.size = CELL_FILL_BYTES;
+      s.copy->size = CELL_FILL_BYTES;
       CHECK(!r3v_native_cell_geometry_unfrozen(&s.cmd),
             "the restored cell no longer reads frozen");
       /* The stream the route built is the one the fixture authorized, so
@@ -477,12 +496,17 @@ test_declines_leave_the_command_buffer_untouched(const struct reference *ref)
    ARM("a declared identity naming another submission",
        s.device.authorized_fill_identity =
           "0000000000000000000000000000000000000000000000000000000000000000");
+   /* The same geometry over a different buffer object is a different
+    * submission, so the declaration built for the scene's own destination
+    * admits nothing else. */
+   ARM("another destination buffer object",
+       s.memory.bo.handle = SCENE_BO_HANDLE + 1u);
 
    /* The memory contract. */
    ARM("a destination without transfer-destination usage",
        s.buffer.vk.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-   ARM("a range off the dword grid", s.copy.size = CELL_FILL_BYTES + 2);
-   ARM("a range past the buffer", s.copy.size = CELL_ALLOCATION_BYTES * 2);
+   ARM("a range off the dword grid", s.copy->size = CELL_FILL_BYTES + 2);
+   ARM("a range past the buffer", s.copy->size = CELL_ALLOCATION_BYTES * 2);
    ARM("a device-local allocation", s.memory.vk.memory_type_index = 1);
 
    /* The submit shape and the command-buffer shape. */
@@ -506,7 +530,7 @@ test_declines_leave_the_command_buffer_untouched(const struct reference *ref)
    CHECK(r3v_native_cmd_buffer_route_deferred_fill(&s.device, &s.cmd, 1u) ==
             VK_SUCCESS,
          "a command buffer with an installed stream refuses under AUTO");
-   CHECK(!s.cmd.fill_route_active && !s.copy.gpu_routed,
+   CHECK(!s.cmd.fill_route_active && !s.copy->gpu_routed,
          "a command buffer with an installed stream still routes");
    CHECK(s.cmd.ib == NULL, "the route replaced an installed stream");
    scene_release(&s);
@@ -576,7 +600,7 @@ test_host_exclusion_counter(const struct reference *ref)
       return;
    }
    CHECK(r3v_native_cmd_buffer_execute_deferred_copies(
-            &s.device, &s.cmd, s.copy.group) == VK_SUCCESS,
+            &s.device, &s.cmd, s.copy->group) == VK_SUCCESS,
          "the routed leg's transfer execution failed");
    CHECK(s.device.host_semantic_writes == 0,
          "the routed leg moved the host-write counter to %llu",
@@ -595,7 +619,7 @@ test_host_exclusion_counter(const struct reference *ref)
    s.device.compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = NULL;
    CHECK(!route(&s, NULL), "the known-bad leg still routes");
    CHECK(r3v_native_cmd_buffer_execute_deferred_copies(
-            &s.device, &s.cmd, s.copy.group) == VK_SUCCESS,
+            &s.device, &s.cmd, s.copy->group) == VK_SUCCESS,
          "the known-bad leg's transfer execution failed");
    CHECK(s.device.host_semantic_writes == 1,
          "the known-bad leg moved the host-write counter to %llu",
@@ -616,6 +640,100 @@ test_host_exclusion_counter(const struct reference *ref)
    scene_release(&s);
 }
 
+/* A reset command buffer carries no routed record.  The record describes
+ * copies the reset drops, so a record surviving it would report the next
+ * recording as one a GPU route performs, and the submission boundary's
+ * policy accounting reads exactly that flag. */
+static void
+test_reset_drops_the_routed_record(const struct reference *ref)
+{
+   struct scene s;
+   if (!scene_init(&s, ref)) {
+      CHECK(false, "the scene does not build");
+      return;
+   }
+   if (!route(&s, NULL)) {
+      CHECK(false, "the routed record does not route");
+      scene_release(&s);
+      return;
+   }
+   r3v_native_cmd_buffer_release_recording(&s.cmd);
+   CHECK(!s.cmd.fill_route_active,
+         "the reset command buffer still carries a routed record");
+   CHECK(s.cmd.fill_route_provenance.route_id == R300_OPERATION_ROUTE_NONE &&
+            s.cmd.fill_route_provenance.operation_id ==
+               R300_OPERATION_ID_NONE,
+         "the reset command buffer still carries a provenance");
+   scene_release(&s);
+}
+
+/* The routed record follows its transport.  The walk stops where the
+ * transport stopped, device_submission moves with the phase, and every
+ * record it produces holds to the policy that admitted it. */
+static void
+test_record_follows_its_transport(const struct reference *ref)
+{
+   static const struct {
+      const char *name;
+      bool ioctl_accepted;
+      bool completion_retired;
+      enum r3v_execution_phase phase;
+   } legs[] = {
+      { "a rejected ioctl", false, false,
+        R3V_EXECUTION_PHASE_IOCTL_ENTERED },
+      { "an accepted ioctl with no completion", true, false,
+        R3V_EXECUTION_PHASE_IOCTL_ACCEPTED },
+      { "a retired completion", true, true,
+        R3V_EXECUTION_PHASE_COMPLETION_RETIRED },
+   };
+
+   for (unsigned i = 0; i < sizeof(legs) / sizeof(legs[0]); i++) {
+      struct scene s;
+      if (!scene_init(&s, ref)) {
+         CHECK(false, "the scene does not build");
+         return;
+      }
+      if (!route(&s, NULL)) {
+         CHECK(false, "%s: the record does not route", legs[i].name);
+         scene_release(&s);
+         return;
+      }
+      CHECK(s.cmd.fill_route_provenance.phase ==
+               R3V_EXECUTION_PHASE_PREPARED,
+            "%s: the route left the record past preparation", legs[i].name);
+      r3v_native_fill_route_record_transport(&s.cmd, legs[i].ioctl_accepted,
+                                             legs[i].completion_retired);
+      CHECK(s.cmd.fill_route_active,
+            "%s: the walk dropped the record", legs[i].name);
+      CHECK(s.cmd.fill_route_provenance.phase == legs[i].phase,
+            "%s: the record reports phase %s", legs[i].name,
+            r3v_execution_phase_name(s.cmd.fill_route_provenance.phase));
+      CHECK(s.cmd.fill_route_provenance.device_submission,
+            "%s: the record reports no submission past the ioctl entry",
+            legs[i].name);
+      const char *reason = NULL;
+      CHECK(r3v_execution_provenance_valid(&s.cmd.fill_route_provenance,
+                                           R3V_EXECUTION_GPU_ONLY, &reason),
+            "%s: the record fails its own policy: %s", legs[i].name,
+            reason != NULL ? reason : "unnamed");
+      scene_release(&s);
+   }
+
+   /* A command buffer no route claimed carries no record to walk. */
+   struct scene s;
+   if (!scene_init(&s, ref)) {
+      CHECK(false, "the scene does not build");
+      return;
+   }
+   s.device.compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = NULL;
+   CHECK(!route(&s, NULL), "the unclaimed leg still routes");
+   r3v_native_fill_route_record_transport(&s.cmd, true, true);
+   CHECK(s.cmd.fill_route_provenance.phase == R3V_EXECUTION_PHASE_PREPARED &&
+            !s.cmd.fill_route_provenance.device_submission,
+         "an unclaimed command buffer's record was walked");
+   scene_release(&s);
+}
+
 int
 main(void)
 {
@@ -629,6 +747,8 @@ main(void)
    test_declines_leave_the_command_buffer_untouched(&ref);
    test_gpu_only_refuses_rather_than_falling_back(&ref);
    test_host_exclusion_counter(&ref);
+   test_reset_drops_the_routed_record(&ref);
+   test_record_follows_its_transport(&ref);
 
    if (failures != 0) {
       fprintf(stderr, "%u check(s) failed\n", failures);

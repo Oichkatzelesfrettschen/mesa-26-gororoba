@@ -171,7 +171,9 @@ struct r3v_fill_route_reloc_site {
  *
  * rects covers every rectangle of every segment in emission order, so a
  * segment boundary that moves changes the value even when the rectangle
- * list does not.  ib is hashed through its own digest, which is the value
+ * list does not.  destination_handle names the buffer object the
+ * relocation carries, so a submission over a different allocation of the
+ * same shape is a different submission.  ib is hashed through its own digest, which is the value
  * the arming gate compares separately, so the identity carries both the
  * stream and the length that stream was sized to.  kernel_release and
  * module_srcversion are the deployment epoch: a stream authorized against
@@ -198,6 +200,15 @@ struct r3v_fill_route_identity {
    const struct r3v_fill_route_reloc_site *reloc_sites;
    uint32_t read_domains;
    uint32_t write_domain;
+   /* The buffer object the relocation names, as the kernel names it for
+    * this open file.  Two allocations of one size, bound at one offset and
+    * filled over one range, are the same submission in every other field,
+    * so the destination's own identity is what keeps an authorization from
+    * opening the route over a different buffer with the same shape.  The
+    * handle is the object's name rather than its address, so a run that
+    * allocates in a different order reports a different identity and
+    * refuses, which is the fail-closed direction. */
+   uint32_t destination_handle;
 
    const char *kernel_release;
    const char *module_srcversion;

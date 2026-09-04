@@ -1115,6 +1115,49 @@ r3v_native_cmd_buffer_requires_inline_ordering(
    return r3v_recorded_work_census_ordered(&census);
 }
 
+/* Walks the routed fill's record along the transport that carried it.
+ *
+ * The route leaves the record at PREPARED: it built a stream and nothing
+ * had reached the kernel.  The submission boundary owns the four states
+ * above that, and the ladder is total and advances one state at a time, so
+ * a reader separates a stream the kernel took from one the device retired.
+ * device_submission holds exactly from the ioctl entry, which
+ * r3v_execution_provenance_valid requires in both directions, so it moves
+ * with the phase rather than beside it.
+ *
+ * The walk stops where the transport stopped, so a rejected submission
+ * records the kernel entry it made and no acceptance.  A refused advance
+ * means the record no longer describes its own transport, and the record
+ * is dropped rather than left saying something the ladder does not admit.
+ */
+void
+r3v_native_fill_route_record_transport(
+   struct r3v_native_cmd_buffer *cmd_buffer, bool ioctl_accepted,
+   bool completion_retired)
+{
+   if (!cmd_buffer->fill_route_active)
+      return;
+
+   struct r3v_execution_provenance *record =
+      &cmd_buffer->fill_route_provenance;
+   static const enum r3v_execution_phase ladder[] = {
+      R3V_EXECUTION_PHASE_COMMITTED,
+      R3V_EXECUTION_PHASE_IOCTL_ENTERED,
+      R3V_EXECUTION_PHASE_IOCTL_ACCEPTED,
+      R3V_EXECUTION_PHASE_COMPLETION_RETIRED,
+   };
+   const unsigned reached = completion_retired ? 4u : (ioctl_accepted ? 3u : 2u);
+   for (unsigned i = 0; i < reached; i++) {
+      if (ladder[i] >= R3V_EXECUTION_PHASE_IOCTL_ENTERED)
+         record->device_submission = true;
+      if (!r3v_execution_phase_advance(&record->phase, ladder[i], NULL)) {
+         cmd_buffer->fill_route_active = false;
+         *record = (struct r3v_execution_provenance){0};
+         return;
+      }
+   }
+}
+
 /* Every recorded work kind besides a transfer copy.  A route admitting a
  * copy-only shape subtracts the copies from the census total rather than
  * enumerating the remaining kinds, so a kind added to the command buffer
@@ -2079,6 +2122,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             trace_result = -EIO;
       }
       device->transport_return_ns = r3v_native_raw_now_ns();
+      r3v_native_fill_route_record_transport(cmd_buffer, ioctl_accepted,
+                                             result == 0);
       if (result == 0 && trace_result != 0)
          result = trace_result;
       if (result == 0) {

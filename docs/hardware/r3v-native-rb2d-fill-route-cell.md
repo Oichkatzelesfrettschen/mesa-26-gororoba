@@ -37,10 +37,12 @@ The declared submission identity is
 `R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3`, over the allocation, the
 buffer binding, the range and its pattern, the carrier pitch and format,
 the segment and rectangle lists, the stream length and digest, the
-relocation sites, the buffer object's domains, and the running kernel
-release and radeon module srcversion. The stream digest alone would admit
-the same registers against a different destination through a different
-relocation, so the identity covers the whole submission.
+relocation sites, the buffer object's name and its domains, and the running
+kernel release and radeon module srcversion. The stream digest alone would
+admit the same registers against a different destination through a
+different relocation, and a shape digest alone would admit a second
+allocation of the same size bound at the same offset, so the identity
+carries the destination buffer object by name.
 
 ## Qualification before arming
 
@@ -78,15 +80,18 @@ lands on:
 | wrong rectangle extent | the fill plan's empty and outside-surface arms |
 | wrong fill value | the submission identity alone |
 | wrong relocation site | the relocation-site validator |
+| wrong destination buffer object | the submission identity alone |
 | wrong buffer-object role | the frozen-cell predicate |
 | wrong write domain | the memory contract |
 | truncated stream | the emitter's capacity |
 | one extra segment | this route's one-segment contract |
 | 32-bit address wrap | the memory contract, and the span's own bound |
 
-`DP_BRUSH_FRGD_CLR` takes any 32-bit pattern, so the fill value has no
-structural owner and the submission identity is its only catcher. That is
-the reason the identity covers more than the stream digest.
+`DP_BRUSH_FRGD_CLR` takes any 32-bit pattern and the relocation names
+whichever buffer object the recording bound, so neither the fill value nor
+the destination has a structural owner and the submission identity is the
+only catcher for both. That is the reason the identity covers more than the
+stream digest.
 
 ## The oracle
 
@@ -150,12 +155,14 @@ A partial fill -- a prefix of the interval correct and a suffix still
 sentinel -- falsifies the decomposition rather than the register contract,
 and names which rectangle stopped short by where the boundary lands.
 
-The provenance the route retains today stops at `prepared` with
-`device_submission` false, which is what a prepared stream is. Reading the
-retired phases the prediction names needs the submission boundary to
-advance the record through `ioctl_entered`, `ioctl_accepted`, and
-`completion_retired` as its own transport runs; that advance is unwritten,
-so the last prediction line is unreadable until it lands.
+The route leaves the record at `prepared` with `device_submission` false,
+which is what a prepared stream is, and the submission boundary walks it
+through `committed`, `ioctl_entered`, `ioctl_accepted`, and
+`completion_retired` as its transport runs, stopping where the transport
+stopped. `r3v-native-fill-route` drives that walk directly over each of
+the three transport outcomes; the wiring at the submission tail runs only
+under an armed submission, so the prediction's provenance line is read for
+the first time on the attended run itself.
 
 ## What this cell does not answer
 

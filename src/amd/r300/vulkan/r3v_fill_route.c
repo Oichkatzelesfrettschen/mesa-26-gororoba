@@ -165,6 +165,10 @@ r3v_fill_route_identity_digest(const struct r3v_fill_route_identity *id,
       *reason = "identity names no relocation site";
       return false;
    }
+   if (id->destination_handle == 0) {
+      *reason = "identity names no destination buffer object";
+      return false;
+   }
    if (id->kernel_release == NULL || id->module_srcversion == NULL) {
       *reason = "identity names no deployment epoch";
       return false;
@@ -208,6 +212,7 @@ r3v_fill_route_identity_digest(const struct r3v_fill_route_identity *id,
    }
    put_u32(&ctx, id->read_domains);
    put_u32(&ctx, id->write_domain);
+   put_u32(&ctx, id->destination_handle);
 
    put_string(&ctx, id->kernel_release);
    put_string(&ctx, id->module_srcversion);

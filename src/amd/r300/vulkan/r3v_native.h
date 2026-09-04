@@ -1556,6 +1556,18 @@ bool r3v_native_cell_geometry_unfrozen(
 bool r3v_native_cmd_buffer_has_other_recorded_work(
    const struct r3v_native_cmd_buffer *cmd_buffer);
 
+/* Walks a routed fill's record along the transport that carried it: the
+ * commit, the ioctl entry, the acceptance the kernel gave, and the
+ * completion the device retired, stopping where the transport stopped.
+ * device_submission moves with the phase, so a record past the entry
+ * reports a submission and one short of it reports none.  A record whose
+ * ladder cannot advance is dropped rather than left describing a transport
+ * it did not take.  Defined in r3v_native_queue.c beside the submission
+ * tail that is its production caller. */
+void r3v_native_fill_route_record_transport(
+   struct r3v_native_cmd_buffer *cmd_buffer, bool ioctl_accepted,
+   bool completion_retired);
+
 /* Prepares one recorded command buffer's transport ahead of
  * vkQueueSubmit: relocation list, completion reference, the single CS
  * build, semantic-cell and submit-object retention, and the arming

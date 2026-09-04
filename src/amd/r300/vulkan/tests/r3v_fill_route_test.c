@@ -67,6 +67,7 @@ static unsigned failures;
 #define CELL_IB_DWORDS R300_RB2D_FILL_DWORDS(CELL_RECTS)
 #define CELL_KERNEL "6.16.0-fixture"
 #define CELL_SRCVERSION "FIXTURESRCVERSION0000000"
+#define CELL_DESTINATION_HANDLE 0x77u
 
 /* Everything one submission of this route is, in the form the route builds
  * it: the destination, the carrier, the decomposition, the stream, and the
@@ -84,6 +85,7 @@ struct prepared_plan {
    uint32_t site_count;
    uint32_t rect_count;
    uint32_t segment_count;
+   uint32_t destination_handle;
    struct r3v_fill_route_cell cell;
 };
 
@@ -109,6 +111,7 @@ plan_identity(const struct prepared_plan *p,
       .reloc_sites = p->sites,
       .read_domains = p->cell.read_domains,
       .write_domain = p->cell.write_domain,
+      .destination_handle = p->destination_handle,
       .kernel_release = CELL_KERNEL,
       .module_srcversion = CELL_SRCVERSION,
    };
@@ -170,6 +173,7 @@ prepare_cell(struct prepared_plan *p)
    }
    p->site_count = emitted.reloc_site_count;
 
+   p->destination_handle = CELL_DESTINATION_HANDLE;
    p->cell = (struct r3v_fill_route_cell){
       .copy_count = 1,
       .reference_count = 1,
@@ -367,6 +371,7 @@ test_identity_and_authority(const struct prepared_plan *reference)
    ABSENT(segment_count, 0u);
    ABSENT(reloc_sites, NULL);
    ABSENT(relocation_count, 0u);
+   ABSENT(destination_handle, 0u);
    ABSENT(kernel_release, NULL);
    ABSENT(module_srcversion, NULL);
 #undef ABSENT
@@ -526,6 +531,16 @@ test_mutation_matrix(const struct prepared_plan *reference)
    CHECK(site_refusal != 0, "a moved relocation site validates");
    report((struct mutation_result){ "wrong relocation site",
                                     "site validator", site_refusal != 0,
+                                    identity_differs(reference, &id) });
+
+   /* Wrong destination buffer object: two allocations of one size, bound
+    * at one offset and filled over one range, agree in every other field,
+    * so the object's own name is what separates them. */
+   p = *reference;
+   p.destination_handle = CELL_DESTINATION_HANDLE + 1u;
+   plan_identity(&p, &id);
+   report((struct mutation_result){ "wrong destination BO",
+                                    "submission identity", false,
                                     identity_differs(reference, &id) });
 
    /* Wrong buffer-object role: the destination is written and never read,

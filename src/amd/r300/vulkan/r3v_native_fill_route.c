@@ -445,6 +445,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       .reloc_sites = build.sites,
       .read_domains = 0,
       .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .destination_handle = memory->bo.handle,
       .kernel_release = facts.running_kernel_release,
       .module_srcversion = facts.running_module_srcversion,
    };
