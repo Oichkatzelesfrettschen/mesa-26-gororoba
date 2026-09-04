@@ -760,12 +760,18 @@ receipt-identifier-check:
 	  $(if $(filter 1,$(REPRODUCIBLE_RUN)),--require-evidence,)
 
 # Comment-hygiene gate: the repository-resident linter must exist and be
-# executable, calibrate on its own fixtures, and pass over every file the
-# branch changes against COMMENT_HYGIENE_BASE plus the staged set.  A missing
-# linter fails the gate; it never passes by absence.
+# executable, calibrate on its own fixtures, and pass over the judged set
+# that comment_hygiene_candidates.py names.  That tool reports the branch
+# diff, the index, the working tree, and the untracked set as four separate
+# counts, so a run that judges nothing states it with every source visible.
+# REPRODUCIBLE_RUN=1 selects committed mode, which binds the verdict to the
+# declared SHA by refusing a populated working tree.  A missing linter fails
+# the gate; it never passes by absence.
 COMMENT_HYGIENE_LINT := $(CURDIR)/scripts/lint/comment_hygiene_lint.py
 COMMENT_HYGIENE_HOOK := $(CURDIR)/scripts/lint/pre-commit-comment-hygiene
+COMMENT_HYGIENE_CANDIDATES := $(CURDIR)/scripts/lint/comment_hygiene_candidates.py
 COMMENT_HYGIENE_BASE ?= origin/main
+COMMENT_HYGIENE_MODE := $(if $(filter 1,$(REPRODUCIBLE_RUN)),committed,working-tree)
 .PHONY: comment-hygiene-check comment-hygiene-check-test
 comment-hygiene-check:
 	@[ -f "$(COMMENT_HYGIENE_LINT)" ] && [ -x "$(COMMENT_HYGIENE_LINT)" ] || { \
@@ -773,10 +779,13 @@ comment-hygiene-check:
 	@[ -f "$(COMMENT_HYGIENE_HOOK)" ] && [ -x "$(COMMENT_HYGIENE_HOOK)" ] || { \
 		echo "FAIL  comment-hygiene hook missing or not executable: $(COMMENT_HYGIENE_HOOK)" >&2; exit 1; }
 	python3 "$(COMMENT_HYGIENE_LINT)" --self-test
-	@cd "$(CURDIR)/.." && base=$$(git merge-base "$(COMMENT_HYGIENE_BASE)" HEAD 2>/dev/null) && \
-	files=$$( { git diff --name-only --diff-filter=ACMRT "$$base" HEAD; \
-	            git diff --cached --name-only --diff-filter=ACMRT; } | sort -u); \
-	if [ -z "$$files" ]; then echo "OK    comment hygiene: no files changed against $(COMMENT_HYGIENE_BASE)"; \
+	python3 "$(COMMENT_HYGIENE_CANDIDATES)" --self-test
+	@cd "$(CURDIR)/.." && \
+	report=$$(python3 "$(COMMENT_HYGIENE_CANDIDATES)" --repo-root . \
+	  --base "$(COMMENT_HYGIENE_BASE)" --mode "$(COMMENT_HYGIENE_MODE)") || exit 1; \
+	echo "$$report" | sed -n '1p'; \
+	files=$$(echo "$$report" | sed -n '2,$$p'); \
+	if [ -z "$$files" ]; then echo "OK    comment hygiene: the judged set is empty"; \
 	else python3 "$(COMMENT_HYGIENE_LINT)" --strict $$files; fi
 
 comment-hygiene-check-test:
