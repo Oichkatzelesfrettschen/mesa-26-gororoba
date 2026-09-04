@@ -219,6 +219,20 @@ struct r3v_native_arming_facts {
 enum r3v_native_arming_verdict
 r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts);
 
+/* The board-identity half of the gate, which is a fact about the silicon a
+ * submission reaches rather than about the ceremony around one attended
+ * run.  Plan capture and replay set aside the attended-run factors -- the
+ * declared bundle digest, kernel release, module srcversion, evidence
+ * directory, and one-shot token -- because a replay is not an attended run
+ * and carries no token; the board underneath is the same question either
+ * way, so every path that reaches DRM_RADEON_CS asks this one.  Returns
+ * R3V_NATIVE_ARMING_ARMED when the resolved platform is the authorized
+ * board and its PCI pair agrees.
+ */
+enum r3v_native_arming_verdict
+r3v_native_arming_platform_verdict(
+   const struct r3v_native_arming_facts *facts);
+
 const char *
 r3v_native_arming_verdict_name(enum r3v_native_arming_verdict verdict);
 

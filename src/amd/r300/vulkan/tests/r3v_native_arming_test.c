@@ -469,6 +469,61 @@ test_burst_env_parse(void)
    unsetenv("R3V_NATIVE_AUTHORIZED_BURST_DRAWS");
 }
 
+/* The identity half of the gate, which plan capture and replay reach
+ * directly.  Those paths declare no bundle digest, no kernel or module
+ * identity, and no token, so the ceremony factors are absent by
+ * construction; this predicate must still refuse a board that is not the
+ * authorized one, and must not depend on any factor a replay omits.
+ */
+static void
+test_platform_verdict_stands_alone(void)
+{
+   struct r3v_native_arming_facts facts = armed_facts();
+   assert(r3v_native_arming_platform_verdict(&facts) ==
+          R3V_NATIVE_ARMING_ARMED);
+
+   /* Every attended-run factor cleared: a replay presents exactly this
+    * shape, and the board identity still decides it.
+    */
+   struct r3v_native_arming_facts replay = armed_facts();
+   replay.hazard_gate = NULL;
+   replay.authorized_ib_blake3 = NULL;
+   replay.actual_ib_blake3 = NULL;
+   replay.authorized_kernel_release = NULL;
+   replay.running_kernel_release = NULL;
+   replay.authorized_module_srcversion = NULL;
+   replay.running_module_srcversion = NULL;
+   replay.evidence_dir_present = false;
+   assert(r3v_native_arming_platform_verdict(&replay) ==
+          R3V_NATIVE_ARMING_ARMED);
+   /* The same shape refuses the full gate, which is why replay may not
+    * simply declare itself armed. */
+   assert(r3v_native_arming_evaluate(&replay) !=
+          R3V_NATIVE_ARMING_ARMED);
+
+   /* Known-bads: the shared id resolving to no qualified board, a
+    * different board, and a resolution disagreeing with the enumerated
+    * device. */
+   struct r3v_native_arming_facts unresolved = replay;
+   unresolved.platform_id = R300_PLATFORM_ID_NONE;
+   assert(r3v_native_arming_platform_verdict(&unresolved) ==
+          R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED);
+
+   struct r3v_native_arming_facts foreign = replay;
+   foreign.platform_id =
+      (enum r300_platform_id)(R3V_NATIVE_ARMING_PLATFORM + 1);
+   assert(r3v_native_arming_platform_verdict(&foreign) ==
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
+
+   struct r3v_native_arming_facts mismatched_id = replay;
+   mismatched_id.pci_device_id = R3V_NATIVE_ARMING_PCI_DEVICE + 1;
+   assert(r3v_native_arming_platform_verdict(&mismatched_id) ==
+          R3V_NATIVE_ARMING_PLATFORM_MISMATCH);
+
+   assert(r3v_native_arming_platform_verdict(NULL) ==
+          R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED);
+}
+
 static void
 test_verdict_names_are_distinct(void)
 {
@@ -493,6 +548,7 @@ main(void)
    test_serial_env_parse();
    test_burst_draws_predicate();
    test_burst_env_parse();
+   test_platform_verdict_stands_alone();
    test_verdict_names_are_distinct();
    printf("r3v_native_arming_test: all checks passed\n");
    return 0;

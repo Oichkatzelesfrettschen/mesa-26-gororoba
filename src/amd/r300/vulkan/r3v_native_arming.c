@@ -25,6 +25,27 @@ declared(const char *value)
 }
 
 enum r3v_native_arming_verdict
+r3v_native_arming_platform_verdict(const struct r3v_native_arming_facts *facts)
+{
+   if (facts == NULL)
+      return R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED;
+
+   /* An unresolved board is the shared-id case: 1002:5974 sits on desktop
+    * Xpress 1100 systems too, and nothing here was qualified on one. */
+   if (facts->platform_id == R300_PLATFORM_ID_NONE)
+      return R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED;
+   if (facts->platform_id != R3V_NATIVE_ARMING_PLATFORM)
+      return R3V_NATIVE_ARMING_PLATFORM_MISMATCH;
+   /* The resolved platform implies its id; a disagreement means the
+    * resolution and the enumerated device came from different places. */
+   if (facts->pci_vendor_id != R3V_NATIVE_ARMING_PCI_VENDOR ||
+       facts->pci_device_id != R3V_NATIVE_ARMING_PCI_DEVICE)
+      return R3V_NATIVE_ARMING_PLATFORM_MISMATCH;
+
+   return R3V_NATIVE_ARMING_ARMED;
+}
+
+enum r3v_native_arming_verdict
 r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
 {
    if (facts == NULL)
@@ -67,17 +88,10 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    if (facts->nonmaximum_extent)
       return R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT;
 
-   /* An unresolved board is the shared-id case: 1002:5974 sits on desktop
-    * Xpress 1100 systems too, and nothing here was qualified on one. */
-   if (facts->platform_id == R300_PLATFORM_ID_NONE)
-      return R3V_NATIVE_ARMING_PLATFORM_UNRESOLVED;
-   if (facts->platform_id != R3V_NATIVE_ARMING_PLATFORM)
-      return R3V_NATIVE_ARMING_PLATFORM_MISMATCH;
-   /* The resolved platform implies its id; a disagreement means the
-    * resolution and the enumerated device came from different places. */
-   if (facts->pci_vendor_id != R3V_NATIVE_ARMING_PCI_VENDOR ||
-       facts->pci_device_id != R3V_NATIVE_ARMING_PCI_DEVICE)
-      return R3V_NATIVE_ARMING_PLATFORM_MISMATCH;
+   const enum r3v_native_arming_verdict platform =
+      r3v_native_arming_platform_verdict(facts);
+   if (platform != R3V_NATIVE_ARMING_ARMED)
+      return platform;
 
    if (!declared(facts->authorized_kernel_release))
       return R3V_NATIVE_ARMING_KERNEL_UNDECLARED;

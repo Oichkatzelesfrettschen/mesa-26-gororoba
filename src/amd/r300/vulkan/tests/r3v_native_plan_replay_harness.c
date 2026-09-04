@@ -125,6 +125,13 @@ create_device(struct scene *s)
       NULL, &s->device);
    if (result != VK_SUCCESS)
       return result;
+
+   /* Every device this harness opens declares the board it stands in for,
+    * capture and replay alike: the shim presents no subsystem or DMI
+    * identity, so an undeclared device resolves to no board and the
+    * identity gate refuses it.
+    */
+   r3v_native_install_shim_arming(r3v_native_device_from_handle(s->device));
 #define LOAD(name) name = (PFN_##name)gdpa(s->device, #name); assert(name);
    DEVICE_COMMANDS(LOAD)
 #undef LOAD
@@ -655,7 +662,6 @@ main(int argc, char **argv)
    assert(created == VK_SUCCESS);
    struct r3v_native_device *native = r3v_native_device_from_handle(rep.device);
    assert(native->plan_replay_active);
-   r3v_native_install_shim_arming(native);
    saved_ops = native->drm.ops;
    injected_ops = *saved_ops;
    injected_ops.command_write_read = injected_command_write_read;
