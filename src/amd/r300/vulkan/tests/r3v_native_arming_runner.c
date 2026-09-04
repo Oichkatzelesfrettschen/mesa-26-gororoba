@@ -515,6 +515,17 @@ main(int argc, char **argv)
     */
    const char *vendor_env = getenv("R3V_NATIVE_RUNNER_PCI_VENDOR");
    const char *device_env = getenv("R3V_NATIVE_RUNNER_PCI_DEVICE");
+   /* The resolved board is supplied on the same footing as the PCI pair,
+    * so a calibration arm can present the shared-id case that resolves to
+    * no qualified board and read the refusal the attended path would
+    * give.  "none" spells the unresolved board; unset supplies the
+    * authorized one.
+    */
+   const char *platform_env = getenv("R3V_NATIVE_RUNNER_PLATFORM");
+   const enum r300_platform_id platform_id =
+      platform_env != NULL && strcmp(platform_env, "none") == 0
+         ? R300_PLATFORM_ID_NONE
+         : R3V_NATIVE_ARMING_PLATFORM;
    uint32_t vendor_id = vendor_env != NULL
                            ? (uint32_t)strtoul(vendor_env, NULL, 0)
                            : R3V_NATIVE_ARMING_PCI_VENDOR;
@@ -525,7 +536,7 @@ main(int argc, char **argv)
    char kernel[128];
    char module[128];
    struct r3v_native_arming_facts facts;
-   r3v_native_arming_collect(&facts, R3V_NATIVE_ARMING_PLATFORM, vendor_id, device_id,
+   r3v_native_arming_collect(&facts, platform_id, vendor_id, device_id,
                              cell_msaa
                                 ? R3V_NATIVE_CELL_KIND_TRIANGLE_MSAA_RESOLVE
                              : cell_multi_pass
@@ -567,6 +578,12 @@ main(int argc, char **argv)
                 device_id == R3V_NATIVE_ARMING_PCI_DEVICE
              ? "match"
              : "MISMATCH");
+   printf("  %-22s declared=%-34s observed=%-34s %s\n", "resolved board",
+          "DELL_VOSTRO1000_RS485M",
+          platform_id == R300_PLATFORM_ID_NONE ? "(none)"
+                                               : "DELL_VOSTRO1000_RS485M",
+          platform_id == R3V_NATIVE_ARMING_PLATFORM ? "match"
+                                                    : "UNRESOLVED");
    report("kernel release", facts.authorized_kernel_release,
           facts.running_kernel_release);
    report("module srcversion", facts.authorized_module_srcversion,
