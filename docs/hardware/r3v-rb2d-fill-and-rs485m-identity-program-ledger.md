@@ -369,6 +369,50 @@ same strings at 0x86 and 0x1a7.
     close it. Evidence builds set distcc off, so this cannot reach a
     qualification verdict either way.
 
+## Platform token: vostro1000, and bare vostro retires
+
+Operator decision. The durable token for the board is `vostro1000`; prose
+keeps `Vostro 1000`, which is the exact DMI product string
+`r300_platform_id_resolve` compares and is spelled the way Dell spells
+it. `vostro1000-re` and its `systems/dell-vostro-1000/` directory stay as
+they are: a repository name and a path are not identifiers in the code,
+and renaming them breaks inbound citations for no mechanical gain.
+
+Bare `vostro` retires. It names neither a specific model -- Dell shipped
+the Vostro 1000, 1400, 1500, and 1700 in the same era -- nor consistently
+a kind of thing, and the tree uses it for two different referents:
+
+    | vostro (RS482, r300) |            the target platform
+    "the Vostro may be queried"         the host machine
+
+229 bare occurrences sit under src, build-infra, and docs, in three
+classes. A first classifier pass mis-sorted the profile-comment labels in
+build-infra/Makefile as host references, so the exact split is the work
+rather than an estimate:
+
+    target label      resolves to vostro1000
+    host machine      resolves to cachyos-vostro1000, or to a role noun
+                      where a specific host is not meant
+    retired config    r300-canonical-vostro-k8, r3v-vostro-*, and the
+                      other superseded profile names cited in
+                      LANE_CONSOLIDATION: historical artifacts, kept
+                      verbatim, exactly as sealed bundle names are
+
+The rename lands WITH its ratchet arm in one change. Correcting naming
+without a gate is what produced the earlier revert, and the arm belongs
+in naming_policy.py, which the identity PR is still moving; the two
+cannot land separately without one undoing the other.
+
+A wrapped `Vostro\n1000` reads as bare `vostro` to a line-oriented
+matcher, which is how the enumeration first mis-flagged
+r300_chip_identity.h. That is the same gap the review raised against the
+specimen-observation rule, met independently from the other side.
+
+Separately: build-infra/tests/test_deploy_mesa.py passes the real
+hostname as a fixture argument in five places. A test that needs a host
+takes a placeholder; this is the one site where the hostname reads as
+environment state rather than a citation.
+
 ## Standing stop lines
 
     No recursive rs482 -> RS485M rename. Four populations: platform claims
