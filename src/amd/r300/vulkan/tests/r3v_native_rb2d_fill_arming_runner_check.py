@@ -15,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import r3v_native_rb2d_fill_mutation_table as table  # noqa: E402
+
 SPECIMEN = {
     "vendor": "0x1002\n",
     "device": "0x5974\n",
@@ -25,6 +28,7 @@ SPECIMEN_DMI = "Vostro   1000 \n"
 SPECIMEN_SLOT = "0000:01:05.0"
 FIXTURE_SRCVERSION = "FIXTURESRCVERSION0000000"
 DESTINATION_HANDLE = "3"
+RUNNER_KEY = table.RUNNER_HANDLE
 
 
 def write_sysfs(root, pci=SPECIMEN, dmi=SPECIMEN_DMI,
@@ -163,7 +167,7 @@ def main():
             return 1
 
         # A declared handle computes the identity; a full declaration arms.
-        base["R3V_NATIVE_RUNNER_DESTINATION_HANDLE"] = DESTINATION_HANDLE
+        base[RUNNER_KEY] = DESTINATION_HANDLE
         probe = run(runner, evidence, base)
         identity = field(probe.stdout, "fill_identity_blake3")
         if identity is None or re.fullmatch(r"[0-9a-f]{64}", identity) is None:
@@ -194,65 +198,83 @@ def main():
                   "distinct digest", file=sys.stderr)
             return 1
 
-        def arm(label, marker, **changes):
+        # Every mutation the canonical table names, the in-process leg:
+        # the runner refuses each by the marker the table declares, so the
+        # loader leg's VK_ERROR_DEVICE_LOST for the same descriptor has a
+        # named cause.
+        wrong_handle = str(int(DESTINATION_HANDLE) + 1)
+        wrong = run(runner, evidence, {**base, RUNNER_KEY: wrong_handle})
+        wrong_identity = field(wrong.stdout, "fill_identity_blake3")
+        if wrong_identity is None or wrong_identity == identity:
+            print("FAIL: the destination handle does not enter the identity",
+                  file=sys.stderr)
+            return 1
+        symbols = {
+            "@stale_digest": table.stale(digest),
+            "@stale_identity": table.stale(identity),
+            "@wrong_identity": wrong_identity,
+            "@handle_plus_one": wrong_handle,
+        }
+        sysfs_variants = {
+            "wrong_subsystem": ({**SPECIMEN, "subsystem_device": "0x0000\n"},
+                                SPECIMEN_DMI),
+            "wrong_dmi": (SPECIMEN, "Latitude D520\n"),
+        }
+        for mutation_id, _field, runner_change, *_rest, marker in \
+                table.MUTATIONS:
             env = dict(armed_env)
-            for key, value in changes.items():
-                if value is None:
+            for key, value in runner_change.items():
+                if key == "@sysfs":
+                    pci, dmi = sysfs_variants[value]
+                    other_root = os.path.join(work, mutation_id)
+                    write_sysfs(other_root, pci=pci, dmi=dmi)
+                    env["R3V_NATIVE_RUNNER_SYSFS_ROOT"] = other_root
+                    continue
+                resolved = table.resolve(value, symbols)
+                if resolved is None:
                     env.pop(key, None)
                 else:
-                    env[key] = value
-            expect_refusal(run(runner, evidence, env), label, marker)
-
-        stale = ("1" if digest[0] != "1" else "0") + digest[1:]
-        arm("wrong cell", "MISMATCH",
-            R3V_NATIVE_AUTHORIZED_IB_BLAKE3=other_digest)
-        arm("stale digest", "MISMATCH", R3V_NATIVE_AUTHORIZED_IB_BLAKE3=stale)
-        arm("wrong kernel", "MISMATCH",
-            R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE="0.0.0-fixture")
-        arm("wrong srcversion", "MISMATCH",
-            R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION="WRONGSRCVERSION000000")
-        arm("wrong identity", "different submission",
-            R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3=stale)
-        arm("undeclared identity", "no submission identity",
-            R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3=None)
-        arm("wrong destination handle", "different submission",
-            R3V_NATIVE_RUNNER_DESTINATION_HANDLE=str(
-                int(DESTINATION_HANDLE) + 1))
-        arm("undeclared destination handle", "UNDECLARED",
-            R3V_NATIVE_RUNNER_DESTINATION_HANDLE=None)
-        missing = os.path.join(work, "no-such-evidence")
-        absent = run(runner, missing, armed_env)
-        expect_refusal(absent, "absent evidence directory", "ABSENT")
-
-        # A spent directory: a token, then each retained name alone.
+                    env[key] = resolved
+            result = run(runner, evidence, env)
+            expect_refusal(result, mutation_id, marker)
+            if "@sysfs" in runner_change and \
+                    field(result.stdout, "platform") != "NONE":
+                print(f"FAIL: {mutation_id}: platform did not resolve to "
+                      f"NONE", file=sys.stderr)
+                return 1
+        arm_count = len(table.MUTATIONS)
+        # The wrong-cell arm stays beside the table: the direct-write
+        # runner's digest names a different stream rather than a mutated
+        # fact of this one.
+        wrong_cell = run(runner, evidence,
+                         {**armed_env, table.IB_BLAKE3: other_digest})
+        expect_refusal(wrong_cell, "wrong cell", "MISMATCH")
+        undeclared_handle = dict(armed_env)
+        undeclared_handle.pop(RUNNER_KEY, None)
+        expect_refusal(run(runner, evidence, undeclared_handle),
+                       "undeclared destination handle", "UNDECLARED")
+        for mutation_id, _field, marker in table.DIRECTORY_MUTATIONS:
+            if mutation_id == "absent_directory":
+                target = os.path.join(work, "no-such-evidence")
+            else:
+                target = os.path.join(work, "spent")
+                os.mkdir(target)
+                open(os.path.join(target, "attempt.token"), "w").close()
+            expect_refusal(run(runner, target, armed_env), mutation_id,
+                           marker)
         spent = os.path.join(work, "spent")
-        os.mkdir(spent)
-        open(os.path.join(spent, "attempt.token"), "w").close()
-        expect_refusal(run(runner, spent, armed_env), "spent token",
-                       "already attempted")
         os.remove(os.path.join(spent, "attempt.token"))
         open(os.path.join(spent, "ib.bin"), "w").close()
         expect_refusal(run(runner, spent, armed_env), "retained ib.bin",
                        "SPENT")
-
-        # The board: a wrong subsystem pair, a wrong DMI product, and a
-        # different die id each resolve to no qualified platform.
-        for label, pci, dmi in (
-            ("wrong subsystem", {**SPECIMEN, "subsystem_device": "0x0000\n"},
-             SPECIMEN_DMI),
-            ("wrong DMI product", SPECIMEN, "Latitude D520\n"),
-            ("wrong die", {**SPECIMEN, "device": "0x5975\n"}, SPECIMEN_DMI),
-        ):
-            other_root = os.path.join(work, label.replace(" ", "-"))
-            write_sysfs(other_root, pci=pci, dmi=dmi)
-            env = dict(armed_env)
-            env["R3V_NATIVE_RUNNER_SYSFS_ROOT"] = other_root
-            result = run(runner, evidence, env)
-            expect_refusal(result, label, "no qualified platform")
-            if field(result.stdout, "platform") != "NONE":
-                print(f"FAIL: {label}: platform did not resolve to NONE",
-                      file=sys.stderr)
-                return 1
+        # A different die id resolves to no qualified platform, beside the
+        # table's subsystem and DMI rows.
+        other_root = os.path.join(work, "wrong-die")
+        write_sysfs(other_root, pci={**SPECIMEN, "device": "0x5975\n"},
+                    dmi=SPECIMEN_DMI)
+        result = run(runner, evidence,
+                     {**armed_env, "R3V_NATIVE_RUNNER_SYSFS_ROOT": other_root})
+        expect_refusal(result, "wrong die", "no qualified platform")
 
         # An unreadable PCI slot reports the tuple as unreadable.
         env = dict(armed_env)
@@ -260,8 +282,10 @@ def main():
         expect_refusal(run(runner, evidence, env), "unreadable slot",
                        "PCI tuple unreadable")
 
-    print("r3v_native_rb2d_fill_arming_runner_check: ARMED under the full "
-          "declaration; every single-fact refusal holds")
+    print(f"r3v_native_rb2d_fill_arming_runner_check: ARMED under the full "
+          f"declaration; {arm_count} table mutations and "
+          f"{len(table.DIRECTORY_MUTATIONS)} directory mutations refused "
+          f"by name")
     return 0
 
 

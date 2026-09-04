@@ -75,7 +75,7 @@ submission rather than being weighed against the others.
 | profile-4 ICD sha256, build id, exports, and Gallium separation triple | done on the board: reproducible profile-4 build of `168228122665` with `COMPILER_CHAIN=direct`, ICD sha256 `4ad9ce18c20b...987b6`, build-id `063c02b3673e...286e`, builddir and prefix copies identical; retained in `r3v-native-rb2d-const-fill-public-route-prediction-vostro1000_rs485m_5974/build` |
 | kernel parser replay at the deployed pin `2be21eaa8927` | done on the board with the provenance-bound tool (correspondence gate pass, bound to srcversion `46C05689F2C98A526C314F4`): `r3v-native-rb2d-fill-submit-object-replay` and the exact-cell trace in the prediction bundle |
 | CS-track replay | done: the same replay tool walks the parser and the tracker; `Kernel replay classes` below records what each owns |
-| plan capture records the route and its cell kind | unreachable: the device refuses a capture session while the hazard gate is open, and this route runs only with it open |
+| plan capture records the route and its cell kind | replaced by the capture contract: `r3v-native-rb2d-fill-capture-contract` requires the capture session to refuse while the hazard gate is open, the shim to retain the exact submit object, an independently assembled raw-word plan to match it byte for byte, and the relocation entries, buffer roles, domains, and rectangle byte set to equal the request; it fails when capture unexpectedly succeeds or the shim artifact is absent |
 | drm-shim submission of this exact cell, with the submit object retained | done: the loader application's armed leg retains ib.bin, relocs.bin, manifest.json, submit_relocs.bin, submit_manifest.json, and the token |
 | a non-submitting arming runner on the attended board | done: `r3v_native_rb2d_fill_arming_runner` on the Vostro resolves `DELL_VOSTRO1000_RS485M` from sysfs, reports ARMED under the full declaration, refuses each wrong fact by name, and leaves the evidence directory untouched |
 | the sealed prediction | done: `r3v-native-rb2d-const-fill-public-route-prediction-vostro1000_rs485m_5974/PREDICTION.txt`, sealed ahead of any attempt; the attempt itself is not run |
@@ -176,31 +176,56 @@ fixture tree through the armed leg and every single-fact refusal.
 
 `r3v-native-rb2d-fill-submit-object-replay` replays the retained 38-dword
 stream through the kernel decision code built from the pinned radeon tree,
-with the retained buffer-object table as the bundle.  The parser admits
-the stream `ACCEPT-NO-DRAW` and its trace names every register class
-admitted: the `DST_PITCH_OFFSET` relocation resolving to entry 0, the
-scissor registers, the brush and master-control registers, the rectangle
-registers, the destination cache flush, and the wait state.
+with the retained buffer-object table as the bundle.  The run declares the
+parser class it qualifies against through `R3V_CS_TRACK_PARSER_CLASS`, and
+a two-dword probe launching `DST_WIDTH_HEIGHT` with no destination state
+must answer the way the declared class answers before any verdict counts:
+`REJECT` under `strict-2d`, `ACCEPT-NO-DRAW` under `legacy-2d`.  A tool
+whose answer differs from the declaration fails the run.
 
-The parser owns three things on this stream, and each rejects when
-mutated: the relocation protocol (a `PACKET3` NOP after
-`DST_PITCH_OFFSET`; its absence rejects), the stream framing (a dropped
-final dword or an appended dword rejects), and the `PACKET0` register
-admission (`0x1430` in place of the destination-cache register or of
-`DP_CNTL` rejects through the safe-register bitmap).
+Under both classes the parser owns the relocation protocol (a `PACKET3`
+NOP after `DST_PITCH_OFFSET`; its absence rejects), the stream framing (a
+dropped final dword or an appended dword rejects), and the `PACKET0`
+register admission (`0x1430` in place of the destination-cache register or
+of `DP_CNTL` rejects through the safe-register bitmap), and the scissor,
+the wait state, and a stream cut before the final wait stay the client's.
 
-The 2D destination geometry passes the kernel unchecked.  `r100_cs_track`
-tracks 3D color and depth targets and no 2D destination, so a relocation
-naming the four-byte completion object, a swapped relocation order, a
-pitch of zero, a base offset past the object, a rectangle past the safe
-scissor or past the object, a scissor widened past `0x1fff`, a
-`WAIT_UNTIL` of `0xffffffff`, a stream cut before its final wait, and a
-1024-byte destination all replay `ACCEPT-NO-DRAW`.  The replay asserts
-those as the accept they earn, so a kernel that starts refusing one moves
-its row and the test names it.  The consequence for this route is that
-the fill plan's grids, the memory contract's containment rule, and the
-submission identity are the sole owners of where the 2D engine writes;
-the kernel is a grammar check, not a bounds check, for this engine.
+`legacy-2d` is the parser of radeon-unified-dkms 0.8.13 and earlier:
+`r100_cs_track` tracks 3D color and depth targets and no 2D destination,
+so the relocation target, the pitch, the base offset, the rectangles, and
+the object size pass the kernel unchecked and replay `ACCEPT-NO-DRAW`,
+with Mesa's fill plan, memory contract, and submission identity their
+sole owners.
+
+`strict-2d` is the parser from linux-radeon-gororoba `b534d1b0a905`
+(radeon-unified-dkms 0.8.14): `r100_reloc_pitch_offset_ex` hands the
+object the `DST_PITCH_OFFSET` relocation consumed to the tracker, which
+records `radeon_bo_size` of it with the decoded pitch and offset,
+`DP_GUI_MASTER_CNTL` fixes the bytes per pixel, `DST_Y_X` the origin, and
+both launch registers (`DST_WIDTH_HEIGHT` width-high, `DST_HEIGHT_WIDTH`
+height-high) run the checked footprint against that object.  The wrong
+relocation target, the swapped bundle, pitch 0, a base or rectangle past
+the object, and an undersized object each reject in the kernel too, and
+the verbose trace names the binding (`reloc cursor 2 -> entry 0 (command)
+size 65536 base 0 pitch 256`) and each rectangle's end byte.
+
+The relocation NOP's payload is a dword index into the relocation chunk
+and the entry is index / 4, so the wrong-target mutation rewrites it to 4
+(entry 1); the earlier rewrite to 1 still resolved entry 0 and mutated
+nothing the parser read, which the strict class exposed.
+
+## Loader-path mutation pairing
+
+`r3v_native_rb2d_fill_mutation_table.py` is the one descriptor set both
+refusal legs consume.  Each row names the mutated field, the runner
+environment change, the loader declaration, application, or shim change,
+the expected internal refusal marker, the public `VK_ERROR_DEVICE_LOST`,
+a shim CS count of 0, and an unspent directory.
+`r3v-native-rb2d-fill-arming-runner` drives the runner leg and requires
+the named marker; `r3v-native-loader-fill-application` drives the same
+rows through the loader and requires the public triple, printing the
+internal marker the in-process leg proved for the same descriptor.  Two
+directory rows (absent directory, spent token) pair the same way.
 
 ## The oracle
 

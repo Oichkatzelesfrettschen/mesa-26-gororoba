@@ -49,6 +49,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import r3v_native_rb2d_fill_mutation_table as table  # noqa: E402
+
 FIXTURE_SRCVERSION = "FIXTURESRCVERSION0000000"
 SPECIMEN_SUBSYSTEM = "1028:022a"
 SPECIMEN_DMI = "Vostro   1000 "
@@ -254,50 +257,63 @@ def main():
                 field(result.stdout, "shim_cs_ioctls") != "0":
             fail("spent directory: the second submission was admitted")
 
-        # Every declared fact the public API can vary, wrong one at a time.
-        stale = ("1" if digest[0] != "1" else "0") + digest[1:]
-        arms = [
-            ("wrong fill value", {}, {"R3V_LOADER_FILL_VALUE": "0x11223345"},
-             {}),
-            ("wrong rectangle", {}, {"R3V_LOADER_FILL_BYTES": "4988"}, {}),
-            ("wrong destination", {
-                "R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3": wrong_identity},
-             {}, {}),
-            ("wrong stream digest", {
-                "R3V_NATIVE_AUTHORIZED_IB_BLAKE3": stale}, {}, {}),
-            ("wrong kernel release", {
-                "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE": "0.0.0-fixture"},
-             {}, {}),
-            ("wrong module srcversion", {
-                "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION": "WRONG0000000"},
-             {}, {}),
-            ("wrong platform", {}, {},
-             {"R3V_DRM_SHIM_SUBSYSTEM_ID": "1028:0000"}),
-            ("wrong DMI product", {}, {},
-             {"R3V_DRM_SHIM_DMI_PRODUCT_NAME": "Latitude D520"}),
-        ]
-        for label, override, extra, shim in arms:
+        # Every mutation the canonical table names, the public leg: the
+        # same descriptor the in-process runner check refuses by name is
+        # driven here through the loader, and each observes the public
+        # VK_ERROR_DEVICE_LOST, a shim CS count of 0, and an unspent
+        # directory.
+        symbols = {
+            "@stale_digest": table.stale(digest),
+            "@stale_identity": table.stale(identity),
+            "@wrong_identity": wrong_identity,
+        }
+        for mutation_id, _field, _runner, declare_change, extra, shim, \
+                marker in table.MUTATIONS:
             declare = dict(declaration)
-            declare.update(override)
-            result, _, present = leg.run(label, "refused", declare=declare,
-                                         extra=extra, shim=shim)
-            require_refused(label, result, present)
+            gate = "1"
+            for key, value in declare_change.items():
+                if key == table.HAZARD_GATE and value == "@unset":
+                    gate = None
+                    continue
+                resolved = table.resolve(value, symbols)
+                if resolved is None:
+                    declare.pop(key, None)
+                else:
+                    declare[key] = resolved
+            if gate is None:
+                result, _, present = leg.run(mutation_id, "refused",
+                                             extra=extra or None,
+                                             shim=shim or None)
+            else:
+                result, _, present = leg.run(mutation_id, "refused",
+                                             declare=declare,
+                                             extra=extra or None,
+                                             shim=shim or None)
+            require_refused(mutation_id, result, present)
+            print(f"  {mutation_id}: public {table.PUBLIC_RESULT}, shim CS "
+                  f"{table.SHIM_CS_COUNT}, directory {table.DIRECTORY_STATE}; "
+                  f"internal refusal '{marker}' per the in-process leg")
 
-        # The evidence directory: absent, and spent by a token alone.
-        missing = os.path.join(work, "no-such-evidence")
-        result, _, present = leg.run("absent evidence directory", "refused",
-                                     evidence=missing, declare=declaration)
-        require_refused("absent evidence directory", result, present)
-        spent = os.path.join(work, "spent-by-token")
-        os.mkdir(spent)
-        open(os.path.join(spent, "attempt.token"), "w").close()
-        result, _, present = leg.run("spent token", "refused",
-                                     evidence=spent, declare=declaration)
-        if result.returncode != 0 or \
-                field(result.stdout, "shim_cs_ioctls") != "0" or \
-                present != ["attempt.token"]:
-            fail("spent token: the submission was admitted or the "
-                 "directory changed")
+        # The evidence directory rows: absent, and spent by a token alone.
+        for mutation_id, _field, marker in table.DIRECTORY_MUTATIONS:
+            if mutation_id == "absent_directory":
+                target = os.path.join(work, "no-such-evidence")
+                result, _, present = leg.run(mutation_id, "refused",
+                                             evidence=target,
+                                             declare=declaration)
+                require_refused(mutation_id, result, present)
+            else:
+                target = os.path.join(work, "spent-by-token")
+                os.mkdir(target)
+                open(os.path.join(target, "attempt.token"), "w").close()
+                result, _, present = leg.run(mutation_id, "refused",
+                                             evidence=target,
+                                             declare=declaration)
+                if result.returncode != 0 or \
+                        field(result.stdout, "shim_cs_ioctls") != "0" or \
+                        present != ["attempt.token"]:
+                    fail("spent token: the submission was admitted or the "
+                         "directory changed")
 
         # A wrong ICD refuses ahead of any recording.
         result, _, present = leg.run(
