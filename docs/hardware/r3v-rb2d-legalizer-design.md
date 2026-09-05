@@ -88,8 +88,15 @@ row names pitch, format, usage, the highest evidence class that exercised
 it, and the retained artifact. Classes ascend PLANNED, HOST_MODEL,
 KERNEL_REPLAY, SILICON_RECEIPT; execution admits SILICON_RECEIPT alone,
 which today is the 256-byte ARGB8888 fill carrier under the sealed attended
-receipt. The dense candidates 1024 through 32704 bytes are PLANNED, and a
-pitch-only silicon qualification promotes one by editing its row.
+receipt. The dense candidates 1024 through 16320 bytes are PLANNED, and a
+pitch-only silicon qualification promotes one by editing its row. 16320 is
+the widest carrier the word can name: `r100_reloc_pitch_offset` rebuilds
+DST_PITCH_OFFSET as `(value & 0x3fc00000) | offset | tile_flags`, so the
+pitch is bits 22-29 and reaches 255 of the 64-byte grid, while bits 30-31
+carry DST_TILE_MACRO and DST_TILE_MICRO and are taken from the relocation.
+A 256-unit pitch reaches the kernel as pitch zero and a 511-unit pitch as
+255 units with the macro-tile bit set; the differential replays both raw
+streams to REJECT.
 
 The chooser legalizes the request on every admitted row and ranks by
 `cost = 64 * windows + 16 * relocation_sites + 8 * rectangles + ib_dwords`,
@@ -188,12 +195,12 @@ The multi-window V2 cell, computed from the legalizer and not yet run:
 * window_count 2, relocation_sites 2, one buffer object.
 
 The dense carrier cell, pinned in `r300_rb2d_legalize_test` at
-`minimum_evidence` PLANNED with pitch 32704:
+`minimum_evidence` PLANNED with pitch 16320:
 
-* 64 KiB object, offset 12, size 65428, rectangles (3, 0, 8173, 1),
-  (0, 1, 8176, 1), (0, 2, 8, 1), height_rows 3.
+* 64 KiB object, offset 12, size 65428, rectangles (3, 0, 4077, 1),
+  (0, 1, 4080, 3), (0, 4, 40, 1), height_rows 5.
 * The footprint is the kernel's `end_byte`, 65440 bytes, so a carrier whose
-  pitch is half the object fits inside it.
+  pitch is a quarter of the object fits inside it.
 
 ## Verification
 

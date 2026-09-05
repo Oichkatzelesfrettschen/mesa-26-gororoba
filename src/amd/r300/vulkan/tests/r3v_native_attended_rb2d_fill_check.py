@@ -131,9 +131,9 @@ def main():
                 ("authorized_fill_identity_blake3",
                  "R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3"),
                 ("manifest_dir", "R3V_NATIVE_MANIFEST_DIR"),
-                ("fill_offset", "differs from the sealed cell"),
-                ("fill_bytes", "differs from the sealed cell"),
-                ("fill_value", "differs from the sealed cell"),
+                ("fill_offset", "differs from cell v1_public"),
+                ("fill_bytes", "differs from cell v1_public"),
+                ("fill_value", "differs from cell v1_public"),
                 ("wait_bound_ns", "wait bound"),
         ):
             bad = dict(declaration)
@@ -158,6 +158,43 @@ def main():
             env_change={"R3V_NATIVE_EXECUTION_POLICY": "auto"},
             expect_marker="R3V_NATIVE_EXECUTION_POLICY")
 
+        # The windowed cell.  cell_name selects the lowering, and the
+        # cell selects the gates: the windowed route open, the receipted
+        # route closed beside it, and the carrier pinned at the pitch the
+        # cell declares.  Each is refused by its own name.
+        v2 = dict(declaration)
+        v2["cell_name"] = "v2_multiwindow_256"
+        v2["fill_bytes"] = "2097012"
+        v2_env = {
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL": None,
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL": "1",
+            "R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES": "256",
+        }
+        bad = dict(v2)
+        bad["cell_name"] = "no_such_cell"
+        run("wrong cell name", bad, env_change=v2_env,
+            expect_marker="names no cell")
+        run("V1 gate beside V2", v2, env_change={
+            **v2_env,
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL": "1"},
+            expect_marker="R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL")
+        run("pinned pitch absent", v2, env_change={
+            **v2_env, "R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES": None},
+            expect_marker="R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES")
+        run("pinned pitch 64", v2, env_change={
+            **v2_env, "R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES": "64"},
+            expect_marker="R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES")
+        # The windowed route's own gate absent, and the sealed cell's
+        # request declared against the windowed cell.
+        run("V2 gate absent", v2, env_change={
+            **v2_env,
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL": None},
+            expect_marker="R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL")
+        bad = dict(v2)
+        bad["fill_bytes"] = "4992"
+        run("v1 request under the v2 cell", bad, env_change=v2_env,
+            expect_marker="differs from cell v2_multiwindow_256")
+
         # The complete declaration reaches the host facts.  On the board
         # every fact holds and the next phase is vkCreateInstance; on a
         # host without the module, or with a different kernel or boot,
@@ -175,8 +212,8 @@ def main():
             fail("wrong boot id: refused by neither the boot id nor the "
                  "absent module")
 
-    print(f"r3v_native_attended_rb2d_fill_check: {count} refusal legs, none "
-          f"reached vkCreateInstance")
+    print(f"r3v_native_attended_rb2d_fill_check: {count} refusal legs over "
+          f"the named cells, none reached vkCreateInstance")
     return 0
 
 

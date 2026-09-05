@@ -73,11 +73,13 @@ def field(text, key):
     return match.group(1) if match else None
 
 
-def runner_report(runner, sysfs, evidence, handle, emit=None):
+def runner_report(runner, sysfs, evidence, handle, emit=None, cell=None):
     env = dict(os.environ)
     env["R3V_NATIVE_RUNNER_SYSFS_ROOT"] = sysfs
     env["R3V_NATIVE_RUNNER_DESTINATION_HANDLE"] = str(handle)
     extra = ["--emit-ib", emit] if emit else []
+    if cell:
+        extra += ["--cell", cell]
     result = subprocess.run([runner, *extra, evidence], env=env,
                             capture_output=True, text=True)
     digest = field(result.stdout, "ib_blake3")
@@ -97,7 +99,8 @@ class Leg:
 
     def run(self, label, expect, *, evidence=None, protect=True,
             declare=None, shim=None, policy="gpu_only", gate="1",
-            extra=None, plan=None):
+            extra=None, plan=None, cell=None, v2_gate=None, pinned=None,
+            qualification=None):
         self.count += 1
         if evidence is None:
             evidence = os.path.join(self.work, f"evidence-{self.count}")
@@ -117,6 +120,13 @@ class Leg:
             env["R3V_NATIVE_EXECUTION_POLICY"] = policy
         if gate:
             env["R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL"] = gate
+        if v2_gate:
+            env["R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL"] = v2_gate
+        if pinned:
+            env["R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES"] = pinned
+        if qualification:
+            env["R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES"] = \
+                qualification
         if declare:
             env["R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED"] = "1"
             env.update(declare)
@@ -126,8 +136,11 @@ class Leg:
         env["R3V_LOADER_FILL_PROTECT"] = "1" if protect else "0"
         if extra:
             env.update(extra)
-        result = subprocess.run([self.application], env=env,
-                                capture_output=True, text=True)
+        argv = [self.application]
+        if cell:
+            argv += ["--cell", cell]
+        result = subprocess.run(argv, env=env, capture_output=True,
+                                text=True)
         present = sorted(name for name in RETAINED
                          if os.path.exists(os.path.join(evidence, name))) \
             if os.path.isdir(evidence) else []
@@ -324,6 +337,97 @@ def main():
             fail("wrong ICD DSO: the application did not refuse on the "
                  "mapped DSO before recording")
 
+        # The windowed cell through the loader.  The route's own gate
+        # opens with the receipted route's closed beside it, the carrier
+        # is pinned at the cell's 256 bytes, and the retained submit
+        # object carries the two-window stream: 58 dwords over two
+        # relocation sites against the 2 MiB allocation.
+        v2_scratch = os.path.join(work, "runner-scratch-v2")
+        os.mkdir(v2_scratch)
+        v2_digest, v2_identity, v2_dwords, v2_sites = runner_report(
+            runner, sysfs, v2_scratch, DESTINATION_HANDLE,
+            cell="v2_multiwindow_256")
+        if (v2_dwords, v2_sites) != (58, 2):
+            fail(f"the windowed cell emits {v2_dwords} dwords over "
+                 f"{v2_sites} sites, not 58 over 2")
+        v2_declaration = {
+            **declaration,
+            "R3V_NATIVE_AUTHORIZED_IB_BLAKE3": v2_digest,
+            "R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3": v2_identity,
+        }
+        v2_arms = dict(cell="v2_multiwindow_256", gate=None, v2_gate="1",
+                       pinned="256")
+        result, evidence, present = leg.run("v2 armed", "submitted",
+                                            declare=v2_declaration,
+                                            **v2_arms)
+        if result.returncode != 0:
+            fail(f"v2 armed: application status {result.returncode}\n"
+                 f"{result.stdout}\n{result.stderr}")
+        if field(result.stdout, "shim_cs_ioctls") != "1":
+            fail("v2 armed: the shim did not observe exactly one CS")
+        if field(result.stdout, "cell") != "v2_multiwindow_256" or \
+                field(result.stdout, "allocation_bytes") != "2097152":
+            fail(f"v2 armed: the application ran cell "
+                 f"{field(result.stdout, 'cell')} over allocation "
+                 f"{field(result.stdout, 'allocation_bytes')}")
+        with open(os.path.join(evidence, "submit_manifest.json"),
+                  encoding="utf-8") as f:
+            v2_submit = json.load(f)
+        if v2_submit.get("ib_blake3") != v2_digest or \
+                v2_submit.get("ib_dwords") != 58:
+            fail(f"v2 armed: submit_manifest.json binds "
+                 f"{v2_submit.get('ib_dwords')} dwords under "
+                 f"{v2_submit.get('ib_blake3')}")
+        v2_rows = v2_submit.get("bo_table")
+        v2_entries = os.path.getsize(
+            os.path.join(evidence, "submit_relocs.bin")) // 16
+        # Two windows bind the destination twice, but both sites name one
+        # buffer object and the winsys merges a handle into one relocation
+        # entry, so the submission carries two entries over two objects --
+        # the destination and the completion -- exactly as the sealed
+        # cell's one-window stream does.  The site count is the stream's
+        # and the entry count is the submission's, and they part company
+        # the moment a stream rebases the same object twice.
+        if v2_sites != 2 or v2_entries != 2 or len(v2_rows) != 2:
+            fail(f"v2 armed: {v2_sites} sites, {v2_entries} relocation "
+                 f"entries, {len(v2_rows)} references")
+        if v2_rows[0].get("size") != 2097152 or \
+                v2_rows[0].get("write_domain") != GTT or \
+                v2_rows[0].get("read_domains") != 0:
+            fail(f"v2 armed: destination row {v2_rows[0]} differs from the "
+                 f"windowed cell's 2 MiB GTT destination")
+
+        # The windowed cell's refusals, one declared fact at a time.
+        result, _, present = leg.run(
+            "v2 wrong pinned pitch", "refused", declare=v2_declaration,
+            **{**v2_arms, "pinned": "64"})
+        require_refused("v2 wrong pinned pitch", result, present)
+        result, _, present = leg.run(
+            "v2 gate absent", "refused", declare=v2_declaration,
+            **{**v2_arms, "v2_gate": None})
+        require_refused("v2 gate absent", result, present)
+
+        # Two refusals the device makes at creation rather than at the
+        # route: a qualification carrier declared without the windowed
+        # route's gate, and both RB2D gates open naming two executors for
+        # one destination.  vkCreateDevice fails, so the application stops
+        # at its own fixture check ahead of any recording.
+        for label, arms in (
+                ("v2 qualification pin without the gate",
+                 {**v2_arms, "v2_gate": None, "qualification": "256"}),
+                ("both RB2D gates open",
+                 {**v2_arms, "gate": "1"}),
+        ):
+            result, _, present = leg.run(label, "refused",
+                                         declare=v2_declaration, **arms)
+            if result.returncode != 2 or \
+                    "vkCreateDevice" not in result.stderr:
+                fail(f"{label}: status {result.returncode}, device creation "
+                     f"was expected to fail\n{result.stdout}\n"
+                     f"{result.stderr}")
+            if present:
+                fail(f"{label}: the refused run retained {present}")
+
         # The host path over the protected mapping faults: the protection
         # judges stores.  The same path over a writable mapping fills the
         # interval and nothing else: the sweep judges bytes.
@@ -339,9 +443,10 @@ def main():
             fail(f"host control: status {result.returncode}\n"
                  f"{result.stdout}\n{result.stderr}")
 
-    print("r3v_native_loader_fill_application_check: the loader-path RB2D "
-          "fill reaches the shim once under the full declaration; every "
-          "refusal and both host controls hold")
+    print("r3v_native_loader_fill_application_check: the sealed and the "
+          "windowed cell each reach the shim once under their own full "
+          "declaration; every refusal, both device-creation refusals, and "
+          "both host controls hold")
     return 0
 
 

@@ -2556,12 +2556,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     # check drives a fixture sysfs tree through the positive ARMED leg and
     # every single-fact refusal, and requires the runner to leave the
     # evidence directory untouched.
+    # The pure cell table and result oracle: no driver symbol, so the
+    # runner, the loader application, the attended binary, and the oracle
+    # tests all read one declaration of every named cell.
+    r3v_public_rb2d_fill_oracle_sources = files(
+      'tests/r3v_public_rb2d_fill_oracle.c')
     r3v_native_rb2d_fill_arming_runner = executable(
       'r3v_native_rb2d_fill_arming_runner',
-      [files('r3v_native_arming.c', 'r3v_fill_route.c',
+      [r3v_public_rb2d_fill_oracle_sources,
+       files('r3v_native_arming.c', 'r3v_fill_route.c',
              'tests/r3v_native_rb2d_fill_arming_runner.c'), sha1_h],
       include_directories : [r3v_native_inc, inc_amd_common,
-                             include_directories('.')],
+                             include_directories('.'),
+                             include_directories('tests')],
       dependencies : [idep_mesautil],
       link_with : [libr300_common],
       gnu_symbol_visibility : 'hidden',
@@ -2577,8 +2584,10 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     # alone; the symbol audit below holds that link surface.
     r3v_native_loader_fill_application = executable(
       'r3v_native_loader_fill_application',
-      files('tests/r3v_native_loader_fill_application.c'),
-      include_directories : [inc_include, inc_src],
+      [r3v_public_rb2d_fill_oracle_sources,
+       files('tests/r3v_native_loader_fill_application.c')],
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
       dependencies : [dep_vulkan_loader, dep_dl],
       c_args : [no_override_init_args],
     )
@@ -2623,8 +2632,6 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     # against the manifest, the ICD, itself, the environment gates, and
     # the host, and judges the destination through the pure oracle.  The
     # scenario and oracle helpers link no driver symbol.
-    r3v_public_rb2d_fill_oracle_sources = files(
-      'tests/r3v_public_rb2d_fill_oracle.c')
     r3v_native_attended_rb2d_fill = executable(
       'r3v_native_attended_rb2d_fill',
       [r3v_public_rb2d_fill_oracle_sources,
@@ -2639,13 +2646,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       'r3v_public_rb2d_fill_oracle_tool',
       [r3v_public_rb2d_fill_oracle_sources,
        files('tests/r3v_public_rb2d_fill_oracle_tool.c')],
-      include_directories : [include_directories('tests')],
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
     )
     r3v_public_rb2d_fill_oracle_test = executable(
       'r3v_public_rb2d_fill_oracle_test',
       [r3v_public_rb2d_fill_oracle_sources,
        files('tests/r3v_public_rb2d_fill_oracle_test.c')],
-      include_directories : [include_directories('tests')],
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
     )
     # Synthetic fixtures through the pure oracle, then each predicate
     # disabled alone must move a fixture; the verdicts live outside
@@ -2745,10 +2754,11 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           files('tests/r3v_native_loader_application_symbol_audit.py'),
           prog_nm_r3v.full_path(),
           r3v_native_attended_rb2d_fill.full_path(),
-          '--forbid', 'r3v_native_',
+          '--forbid', 'r3v_',
           '--forbid', 'r300_',
           '--forbid', 'radeon_drm_vk_',
           '--forbid', 'drm_shim_',
+          '--allow', 'r3v_public_',
         ],
         depends : [r3v_native_attended_rb2d_fill],
         suite : ['r3v'],
@@ -2762,6 +2772,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           files('tests/r3v_native_loader_application_symbol_audit.py'),
           prog_nm_r3v.full_path(),
           r3v_native_loader_fill_application.full_path(),
+          # The application reads its cell from the pure oracle, which
+          # links no driver symbol and answers no Vulkan call, so the
+          # whole driver surface stays forbidden and r3v_public_ alone is
+          # carved out of it.
+          '--forbid', 'r3v_',
+          '--forbid', 'r300_',
+          '--forbid', 'radeon_drm_vk_',
+          '--forbid', 'drm_shim_',
+          '--allow', 'r3v_public_',
         ],
         depends : [r3v_native_loader_fill_application],
         suite : ['r3v'],

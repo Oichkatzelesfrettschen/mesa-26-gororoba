@@ -44,6 +44,18 @@
  * R300_RB2D_PITCH_GRANULARITY in r300_rb2d_fill.h, beside the plan that
  * measures a surface against them. */
 #define RADEON_DST_PITCH_OFFSET 0x142C
+
+/* DST_PITCH_OFFSET's own split, which r100_reloc_pitch_offset fixes: the
+ * offset occupies bits 0-21 in 1 KiB units, the pitch bits 22-29 in 64-byte
+ * units, and bits 30-31 the two tile flags.  That function rebuilds the word
+ * as (value & 0x3fc00000) | offset | tile_flags, so it forwards eight pitch
+ * bits and takes the tile flags from the relocation's tiling; a stream
+ * writing a ninth pitch bit both truncates the pitch and names a tiled
+ * surface the relocation then overwrites. */
+#define RADEON_DST_PITCH_SHIFT 22u
+#define RADEON_DST_PITCH_MASK 0x3fc00000u
+#define RADEON_DST_TILE_MACRO (1u << 30)
+#define RADEON_DST_TILE_MICRO (1u << 31)
 #define RADEON_DST_Y_X 0x1438
 #define RADEON_DST_WIDTH_HEIGHT 0x1598
 

@@ -96,6 +96,8 @@ r3v_native_plan_capture_slot_role(enum r3v_native_cell_kind kind,
       TABLE(direct_write_roles);
       break;
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
+   case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION:
       TABLE(rb2d_fill_roles);
       break;
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:

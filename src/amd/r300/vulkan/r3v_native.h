@@ -1027,6 +1027,23 @@ struct r3v_native_device {
     * and admits nothing, so the windowed route declines under it. */
    bool rb2d_v2_expected_pitch_malformed;
 
+   /* R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES, read on the same pass: the
+    * carrier the operator pins for the windowed contract, which the route
+    * passes to the legalizer in place of the chooser.  Zero runs the
+    * chooser.  The driver never sees a harness cell table, so the pinned
+    * carrier of a cell reaches the lowering through this declaration. */
+   uint32_t rb2d_v2_pinned_pitch_bytes;
+   bool rb2d_v2_pinned_pitch_malformed;
+
+   /* R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES, read on the same
+    * pass: the carrier a qualification run exercises.  Naming exactly the
+    * pinned pitch lowers the carrier's own evidence floor to PLANNED, so
+    * the run qualifies a carrier nothing has run while the contract floor
+    * stays where the replay left it.  Device creation refuses the
+    * declaration unless the windowed route's gate is open. */
+   uint32_t rb2d_carrier_qualification_pitch_bytes;
+   bool rb2d_carrier_qualification_pitch_malformed;
+
    /* What the device asks of every route decision, read once at creation so
     * a policy cannot change under a recorded command buffer. */
    enum r3v_execution_policy execution_policy;

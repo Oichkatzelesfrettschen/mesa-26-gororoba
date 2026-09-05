@@ -31,11 +31,18 @@
 #define R300_RB2D_PITCH_GRANULARITY 64u
 #define R300_RB2D_OFFSET_GRANULARITY 1024u
 
-/* DST_PITCH_OFFSET splits into a 10-bit pitch field above a 22-bit offset
- * field, so a surface counts at most this many 64-byte pitch units and
- * this many 1 KiB offset units.  A caller building a surface reads the
- * bound here rather than restating the field split. */
-#define R300_RB2D_MAX_PITCH_UNITS 0x3ffu
+/* DST_PITCH_OFFSET splits into an 8-bit pitch field at bits 22-29 above a
+ * 22-bit offset field, with bits 30-31 carrying DST_TILE_MACRO and
+ * DST_TILE_MICRO.  r100_reloc_pitch_offset fixes that split: it rebuilds
+ * the word as (value & 0x3fc00000) | offset | tile_flags on the ordinary
+ * path, so the pitch it forwards is bits 22-29 and the two tile bits come
+ * from the relocation's own tiling rather than from the stream.  A ninth
+ * pitch bit therefore both truncates -- 256 units reaches the kernel as
+ * pitch zero -- and sets a tile bit the relocation then overwrites, so the
+ * surface the engine reads is not the surface the caller named.  A caller
+ * building a surface reads the bound here rather than restating the field
+ * split. */
+#define R300_RB2D_MAX_PITCH_UNITS 0xffu
 #define R300_RB2D_MAX_OFFSET_UNITS 0x3fffffu
 
 /* Two facts about the same number, kept apart because one is measured and

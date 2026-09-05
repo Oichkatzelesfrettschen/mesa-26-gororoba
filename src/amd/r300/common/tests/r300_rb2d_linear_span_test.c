@@ -134,25 +134,29 @@ test_layouts(void)
    assert(r300_rb2d_span_layout_check(&l) ==
           R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_GRID);
 
-   /* One unit past the 10-bit pitch field. */
+   /* One unit past the 8-bit pitch field. */
    l.pitch_bytes = (R300_RB2D_MAX_PITCH_UNITS + 1u) *
                    R300_RB2D_PITCH_GRANULARITY;
    assert(r300_rb2d_span_layout_check(&l) ==
           R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_FIELD);
 
-   /* The widest carrier the scissor admits is the largest 64-byte
-    * multiple whose row of dwords stays inside R300_RB2D_SAFE_EXCLUSIVE_END,
-    * and one grid step past it refuses. */
+   /* The widest carrier is the pitch field's own 255 units, 16320 bytes,
+    * and one grid step past it refuses on the field.  That row holds 4080
+    * ARGB8888 pixels and 8160 RGB565 pixels, both inside
+    * R300_RB2D_SAFE_EXCLUSIVE_END, so the pitch field binds ahead of the
+    * scissor on every carrier the word can name and
+    * R300_RB2D_SPAN_REFUSE_LAYOUT_ROW_BEYOND_SCISSOR stands as the guard
+    * that keeps the scissor rule enforced if either bound moves. */
    const uint32_t widest =
-      (R300_RB2D_SAFE_EXCLUSIVE_END / (R300_RB2D_PITCH_GRANULARITY / 4u)) *
-      R300_RB2D_PITCH_GRANULARITY;
+      R300_RB2D_MAX_PITCH_UNITS * R300_RB2D_PITCH_GRANULARITY;
    l.pitch_bytes = widest;
    assert(r300_rb2d_span_layout_check(&l) == R300_RB2D_SPAN_OK);
    assert(r300_rb2d_span_layout_pixels_per_row(&l) == widest / 4u);
    assert(widest / 4u <= R300_RB2D_SAFE_EXCLUSIVE_END);
+   assert(widest / 2u <= R300_RB2D_SAFE_EXCLUSIVE_END);
    l.pitch_bytes = widest + R300_RB2D_PITCH_GRANULARITY;
    assert(r300_rb2d_span_layout_check(&l) ==
-          R300_RB2D_SPAN_REFUSE_LAYOUT_ROW_BEYOND_SCISSOR);
+          R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_FIELD);
 
    /* A format whose pixel is not the span's pattern width. */
    l = tight;
@@ -472,8 +476,7 @@ static void
 test_layout_subsumes_plan_check(void)
 {
    const uint32_t widest =
-      (R300_RB2D_SAFE_EXCLUSIVE_END / (R300_RB2D_PITCH_GRANULARITY / 4u)) *
-      R300_RB2D_PITCH_GRANULARITY;
+      R300_RB2D_MAX_PITCH_UNITS * R300_RB2D_PITCH_GRANULARITY;
    uint32_t admitted = 0;
 
    for (uint32_t pitch = R300_RB2D_PITCH_GRANULARITY;

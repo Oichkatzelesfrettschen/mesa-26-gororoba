@@ -13,23 +13,100 @@
 
 #include <string.h>
 
-static const struct r3v_public_rb2d_fill_cell sealed_cell = {
-   .allocation_bytes = R3V_PUBLIC_RB2D_FILL_ALLOCATION_BYTES,
-   .fill_offset = R3V_PUBLIC_RB2D_FILL_OFFSET,
-   .fill_bytes = R3V_PUBLIC_RB2D_FILL_BYTES,
-   .fill_value = R3V_PUBLIC_RB2D_FILL_VALUE,
-   .tail_bytes = R3V_PUBLIC_RB2D_FILL_TAIL_BYTES,
+/* The named cells.  "v1_public" is the sealed cell the route's silicon
+ * receipt retains and its five destination values never move.
+ * "v2_multiwindow_256" is the windowed contract's own shape: one surface
+ * reaches R300_RB2D_SAFE_EXCLUSIVE_END rows of 256 bytes, just under
+ * 2 MiB, so a 2 MiB interval rebases the destination once and the stream
+ * carries two windows through two relocation sites.
+ */
+static const struct r3v_public_rb2d_fill_cell cells[] = {
+   {
+      .name = "v1_public",
+      .allocation_bytes = R3V_PUBLIC_RB2D_FILL_ALLOCATION_BYTES,
+      .fill_offset = R3V_PUBLIC_RB2D_FILL_OFFSET,
+      .fill_bytes = R3V_PUBLIC_RB2D_FILL_BYTES,
+      .fill_value = R3V_PUBLIC_RB2D_FILL_VALUE,
+      .tail_bytes = R3V_PUBLIC_RB2D_FILL_TAIL_BYTES,
+      .route_id = R300_OPERATION_ROUTE_RB2D_CONST_FILL,
+      .contract = R300_RB2D_CONTRACT_CONST_FILL_V1,
+      .pinned_pitch_bytes = 256u,
+      .expected_pitch_bytes = 256u,
+      .expected_window_count = 1u,
+      .expected_relocation_sites = 1u,
+      .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT,
+   },
+   {
+      .name = "v2_multiwindow_256",
+      .allocation_bytes = 2097152u,
+      .fill_offset = 12u,
+      .fill_bytes = 2097012u,
+      .fill_value = R3V_PUBLIC_RB2D_FILL_VALUE,
+      .tail_bytes = R3V_PUBLIC_RB2D_FILL_TAIL_BYTES,
+      .route_id = R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2,
+      .contract = R300_RB2D_CONTRACT_CONST_FILL_V2,
+      .pinned_pitch_bytes = 256u,
+      .expected_pitch_bytes = 256u,
+      .expected_window_count = 2u,
+      .expected_relocation_sites = 2u,
+      .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT,
+   },
+   {
+      /* The dense carrier: 255 of the 64-byte grid is the widest surface
+       * DST_PITCH_OFFSET's 8-bit pitch field names, so 16320 bytes is one
+       * row of 4080 ARGB8888 pixels.  The interval is the first row's
+       * remainder, three whole rows, and a forty-pixel tail across five
+       * rows of one window, and the footprint ends at 65440 bytes, so a
+       * carrier a quarter the width of the object still fits inside it.
+       * The run qualifies the carrier rather than the route.
+       */
+      .name = "dense_16320_carrier",
+      .allocation_bytes = R3V_PUBLIC_RB2D_FILL_ALLOCATION_BYTES,
+      .fill_offset = 12u,
+      .fill_bytes = 65428u,
+      .fill_value = R3V_PUBLIC_RB2D_FILL_VALUE,
+      .tail_bytes = R3V_PUBLIC_RB2D_FILL_TAIL_BYTES,
+      .route_id = R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2,
+      .contract = R300_RB2D_CONTRACT_CONST_FILL_V2,
+      .pinned_pitch_bytes = 16320u,
+      .expected_pitch_bytes = 16320u,
+      .expected_window_count = 1u,
+      .expected_relocation_sites = 1u,
+      .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION,
+   },
 };
+
+const struct r3v_public_rb2d_fill_cell *
+r3v_public_rb2d_fill_cells(uint32_t *count_out)
+{
+   if (count_out != NULL)
+      *count_out = (uint32_t)(sizeof(cells) / sizeof(cells[0]));
+   return cells;
+}
+
+const struct r3v_public_rb2d_fill_cell *
+r3v_public_rb2d_fill_cell_by_name(const char *name)
+{
+   if (name == NULL)
+      return NULL;
+   for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+      if (strcmp(cells[i].name, name) == 0)
+         return &cells[i];
+   }
+   return NULL;
+}
 
 const struct r3v_public_rb2d_fill_cell *
 r3v_public_rb2d_fill_sealed_cell(void)
 {
-   return &sealed_cell;
+   return &cells[0];
 }
 
 bool
 r3v_public_rb2d_fill_cell_valid(const struct r3v_public_rb2d_fill_cell *cell)
 {
+   if (cell->name == NULL || cell->name[0] == '\0')
+      return false;
    if (cell->allocation_bytes == 0 || cell->fill_bytes == 0 ||
        cell->fill_bytes % 4 != 0 || cell->fill_offset % 4 != 0 ||
        cell->tail_bytes == 0 || cell->tail_bytes >= cell->allocation_bytes)

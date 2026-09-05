@@ -9,6 +9,11 @@ and requires the loader import that proves the Vulkan surface is
 dynamic.  The known-bad meson leg runs the same audit against a harness
 that links the implementation, so a prefix list that stopped matching
 fails there.
+
+A binary that compiles in a pure test helper names it with --allow, which
+carves that one prefix out of a forbidden one.  The carve-out keeps the
+forbidden set at the whole driver surface: dropping "r3v_" to admit
+"r3v_public_" would admit twenty other driver prefixes with it.
 """
 
 import subprocess
@@ -31,22 +36,33 @@ ALLOWED_SYMBOLS = (
 REQUIRED_UNDEFINED = "vkCreateInstance"
 
 
+def parse_prefix_options(args):
+    """--forbid PREFIX replaces the default forbidden set; --allow PREFIX
+    carves a prefix out of it.  Returns (forbidden, allowed) or None when
+    the options are malformed."""
+    forbidden, allowed = [], []
+    i = 0
+    while i < len(args):
+        if i + 1 >= len(args) or args[i] not in ("--forbid", "--allow"):
+            return None
+        (forbidden if args[i] == "--forbid" else allowed).append(args[i + 1])
+        i += 2
+    return (tuple(forbidden) if forbidden else FORBIDDEN_PREFIXES,
+            tuple(allowed))
+
+
 def main() -> int:
     args = sys.argv[1:]
-    forbidden_prefixes = FORBIDDEN_PREFIXES
-    if len(args) > 2:
-        # --forbid PREFIX pairs after the positionals replace the default
-        # prefix set; the attended application admits its r3v_public_
-        # helpers while every driver and shim prefix stays refused.
-        if len(args) % 2 != 0 or any(a != "--forbid" for a in args[2::2]):
-            print(f"usage: {sys.argv[0]} <nm> <binary> [--forbid PREFIX]...",
-                  file=sys.stderr)
-            return 2
-        forbidden_prefixes = tuple(args[3::2])
+    usage = (f"usage: {sys.argv[0]} <nm> <binary> "
+             f"[--forbid PREFIX]... [--allow PREFIX]...")
     if len(args) < 2:
-        print(f"usage: {sys.argv[0]} <nm> <binary> [--forbid PREFIX]...",
-              file=sys.stderr)
+        print(usage, file=sys.stderr)
         return 2
+    parsed = parse_prefix_options(args[2:])
+    if parsed is None:
+        print(usage, file=sys.stderr)
+        return 2
+    forbidden_prefixes, allowed_prefixes = parsed
     nm, binary = args[0], args[1]
     result = subprocess.run(
         [nm, binary], check=False, capture_output=True, text=True
@@ -65,6 +81,7 @@ def main() -> int:
             for line in table.splitlines()
             if (fields := line.split())
             and any(fields[-1].startswith(p) for p in forbidden_prefixes)
+            and not any(fields[-1].startswith(p) for p in allowed_prefixes)
             and fields[-1] not in ALLOWED_SYMBOLS
         }
     )

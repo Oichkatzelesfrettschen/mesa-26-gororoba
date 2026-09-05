@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  *
  * Loader-only application for the public RB2D fill route: one
- * vkCmdFillBuffer over the attended cell, submitted through the installed
+ * vkCmdFillBuffer over a named cell, submitted through the installed
  * Vulkan loader to whichever ICD VK_DRIVER_FILES names.  The binary links
  * libvulkan and libc alone and defines no driver symbol, so every command
  * below reaches the driver the way an application's does.
@@ -27,9 +27,16 @@
  *   R3V_LOADER_FILL_OFFSET     the fill offset (default 12)
  *   R3V_LOADER_FILL_BYTES      the fill size (default 4992)
  *   R3V_EXPECTED_ICD_DSO       the DSO the loader must have mapped
+ *
+ * --cell <name> selects the cell; v1_public when absent.  The cell fixes
+ * the allocation, the offset, the size, and the value, and the three
+ * R3V_LOADER_FILL_ overrides then move the request inside that
+ * allocation, so a mutation leg varies one fact against the cell it
+ * names.
  */
 
 #include "amd/r300/common/r300_chip_identity.h"
+#include "r3v_public_rb2d_fill_oracle.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -42,11 +49,12 @@
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 
-#define CELL_ALLOCATION_BYTES (64u * 1024u)
-#define CELL_FILL_OFFSET 12u
-#define CELL_FILL_BYTES 4992u
-#define CELL_FILL_VALUE 0x11223344u
-#define CELL_TAIL_BYTES 64u
+/* The cell this run names, read once in main before any Vulkan call, so
+ * every size below is that cell's rather than a compiled-in constant. */
+static const struct r3v_public_rb2d_fill_cell *cell;
+
+#define CELL_ALLOCATION_BYTES (cell->allocation_bytes)
+#define CELL_TAIL_BYTES (cell->tail_bytes)
 
 #define PREFIX_CANARY 0xc1u
 #define INTERVAL_SENTINEL 0xa5u
@@ -157,7 +165,7 @@ result_name(VkResult r)
 static uint8_t
 expected_byte(uint64_t i, uint64_t fill_offset, uint64_t fill_bytes)
 {
-   if (i >= CELL_ALLOCATION_BYTES - CELL_TAIL_BYTES)
+   if (i >= (uint64_t)CELL_ALLOCATION_BYTES - CELL_TAIL_BYTES)
       return TAIL_CANARY;
    if (i < fill_offset)
       return PREFIX_CANARY;
@@ -169,10 +177,20 @@ expected_byte(uint64_t i, uint64_t fill_offset, uint64_t fill_bytes)
 int
 main(int argc, char **argv)
 {
-   (void)argv;
-   if (argc != 1) {
-      fprintf(stderr, "usage: %s (fixtures come from the environment)\n",
-              argv[0]);
+   const char *cell_name = "v1_public";
+   for (int i = 1; i < argc; i++) {
+      if (strcmp(argv[i], "--cell") == 0 && i + 1 < argc) {
+         cell_name = argv[++i];
+      } else {
+         fprintf(stderr, "usage: %s [--cell <name>] (the rest of the "
+                         "fixtures come from the environment)\n",
+                 argv[0]);
+         return 2;
+      }
+   }
+   cell = r3v_public_rb2d_fill_cell_by_name(cell_name);
+   if (cell == NULL) {
+      fprintf(stderr, "no cell is named %s\n", cell_name);
       return 2;
    }
 
@@ -191,9 +209,10 @@ main(int argc, char **argv)
    }
    const bool protect = env_flag_set("R3V_LOADER_FILL_PROTECT", true);
    uint64_t fill_value, fill_offset, fill_bytes;
-   if (!env_number("R3V_LOADER_FILL_VALUE", CELL_FILL_VALUE, &fill_value) ||
-       !env_number("R3V_LOADER_FILL_OFFSET", CELL_FILL_OFFSET, &fill_offset) ||
-       !env_number("R3V_LOADER_FILL_BYTES", CELL_FILL_BYTES, &fill_bytes) ||
+   if (!env_number("R3V_LOADER_FILL_VALUE", cell->fill_value, &fill_value) ||
+       !env_number("R3V_LOADER_FILL_OFFSET", cell->fill_offset,
+                   &fill_offset) ||
+       !env_number("R3V_LOADER_FILL_BYTES", cell->fill_bytes, &fill_bytes) ||
        fill_value > UINT32_MAX || fill_offset > CELL_ALLOCATION_BYTES ||
        fill_bytes == 0 || fill_bytes > CELL_ALLOCATION_BYTES - fill_offset) {
       fprintf(stderr, "fill fixture is malformed or outside the cell\n");
@@ -211,6 +230,14 @@ main(int argc, char **argv)
       return 2;
    }
 
+   /* One fact per line: the check script reads each key anchored at the
+    * start of a line. */
+   printf("cell=%s\n", cell->name);
+   printf("allocation_bytes=%u\n", cell->allocation_bytes);
+   printf("expected_pitch=%u\n", cell->expected_pitch_bytes);
+   printf("expected_windows=%u\n", cell->expected_window_count);
+   printf("expected_relocation_sites=%u\n",
+          cell->expected_relocation_sites);
    printf("mode=%s protect=%d fill_offset=%llu fill_bytes=%llu "
           "fill_value=0x%08llx\n",
           expect_env != NULL ? expect_env : "submitted", protect ? 1 : 0,

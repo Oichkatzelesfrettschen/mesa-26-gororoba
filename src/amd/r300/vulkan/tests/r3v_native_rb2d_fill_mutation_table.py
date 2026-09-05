@@ -11,6 +11,11 @@
 # directory's state, so a public arm is never a hand-paired twin of an
 # in-process test.
 #
+# WINDOW_MUTATIONS is the third lane: it mutates the legalized window list
+# of the windowed cell rather than any declared fact, so it runs on the
+# in-process leg alone -- the public API cannot express a malformed stream,
+# because the driver builds it.
+#
 # Symbolic values resolve per leg through resolve(): "@stale_digest" is the
 # armed digest with its first hex digit flipped, "@wrong_identity" the
 # submission identity computed for the wrong destination handle, "@unset"
@@ -67,6 +72,30 @@ MUTATIONS = (
      {"R3V_DRM_SHIM_DMI_PRODUCT_NAME": "Latitude D520"},
      "no qualified platform"),
 )
+
+# Stream-shape mutations of the windowed cell.  Every row above varies a
+# declared fact and is refused by an arming gate; these vary the legalized
+# window list itself and are refused by a check that reads no declaration,
+# so each names the check that owns it.  A multi-window stream can be wrong
+# while every window it still carries is well formed on its own, which is
+# why no single window invariant covers the four: the coverage oracle sees
+# a short list, the emitter's one-site-per-window rule sees an unbound
+# rebase, the in-order cursor sees a reordering, and the window checker
+# sees a base off the 1 KiB grid.
+#
+# mutation_id, mutated field, the check that refuses it.
+WINDOW_MUTATIONS = (
+    ("dropped_second_window", "window count",
+     "coverage oracle"),
+    ("second_window_site_absent", "relocation site count",
+     "one relocation site per window"),
+    ("swapped_window_order", "window emission order",
+     "in-order coverage cursor"),
+    ("second_window_base_off_grid", "second window base offset",
+     "r300_rb2d_window_check"),
+)
+
+WINDOW_MUTATION_CELL = "v2_multiwindow_256"
 
 # Rows the loader leg expresses through the evidence directory rather than
 # the environment; the runner leg names the same state.

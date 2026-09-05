@@ -9,10 +9,12 @@
  * of the public vkCmdFillBuffer route, which emitted one window through one
  * relocation site; its artifact is the same retained bundle the 256-byte
  * ARGB8888 pitch row names, because one run produced both facts.  V2's
- * evidence is the legalization differential, which replays the multi-window
- * decomposition against the kernel CS tracker; no run has emitted a V2
- * stream, so the receipted maxima are zero and execution refuses every
- * width until a receipt lands.
+ * evidence is the legalization differential, which replays the two-window
+ * decomposition of a 2 MiB interval on the 256-byte carrier against the
+ * kernel CS tracker and reads ACCEPT, so the replay state reaches two
+ * windows through two relocation sites.  No silicon run has emitted a V2
+ * stream, so execution, which asks SILICON_RECEIPT, refuses every width
+ * until a receipt lands.
  */
 static const struct r300_rb2d_contract_evidence rows[] = {
    { R300_RB2D_CONTRACT_CONST_FILL_V1,
@@ -21,7 +23,7 @@ static const struct r300_rb2d_contract_evidence rows[] = {
      "r3v-native-rb2d-const-fill-public-route-receipt-"
      "vostro1000_rs485m_5974-strict-2d-cs" },
    { R300_RB2D_CONTRACT_CONST_FILL_V2,
-     R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY, 0u, 0u,
+     R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY, 2u, 2u,
      "r300-rb2d-legalization-differential" },
 };
 

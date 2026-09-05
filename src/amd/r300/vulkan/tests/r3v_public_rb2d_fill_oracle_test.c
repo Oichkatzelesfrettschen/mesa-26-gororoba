@@ -177,6 +177,58 @@ main(void)
    bad.fill_bytes = ALLOC;
    CHECK(!r3v_public_rb2d_fill_cell_valid(&bad),
          "a fill reaching the tail canary was admitted");
+   bad = *cell;
+   bad.name = "";
+   CHECK(!r3v_public_rb2d_fill_cell_valid(&bad),
+         "a cell with no name was admitted");
+
+   /* The table: the sealed cell is the first row and keeps the five
+    * destination values the receipt retains, every row is valid, every
+    * name resolves to its own row and is unique, and a name outside the
+    * table resolves to nothing. */
+   uint32_t cell_count = 0;
+   const struct r3v_public_rb2d_fill_cell *cells =
+      r3v_public_rb2d_fill_cells(&cell_count);
+   CHECK(cell_count >= 2 && cells == cell, "the sealed cell is not row 0");
+   CHECK(strcmp(cell->name, "v1_public") == 0 &&
+            cell->allocation_bytes == ALLOC && cell->fill_offset == 12 &&
+            cell->fill_bytes == 4992 && cell->fill_value == 0x11223344u &&
+            cell->tail_bytes == 64,
+         "the sealed cell's declared destination moved");
+   for (uint32_t i = 0; i < cell_count; i++) {
+      CHECK(r3v_public_rb2d_fill_cell_valid(&cells[i]),
+            "cell %s is malformed", cells[i].name);
+      CHECK(r3v_public_rb2d_fill_cell_by_name(cells[i].name) == &cells[i],
+            "cell %s does not resolve to its own row", cells[i].name);
+      CHECK(cells[i].expected_relocation_sites ==
+               cells[i].expected_window_count,
+            "cell %s expects %u sites for %u windows; the emitter binds "
+            "the destination once per window",
+            cells[i].name, cells[i].expected_relocation_sites,
+            cells[i].expected_window_count);
+   }
+   const struct r3v_public_rb2d_fill_cell *dense =
+      r3v_public_rb2d_fill_cell_by_name("dense_16320_carrier");
+   CHECK(dense != NULL && dense->pinned_pitch_bytes == 16320u &&
+            dense->expected_pitch_bytes == 16320u &&
+            dense->expected_window_count == 1u &&
+            dense->fill_bytes == 65428u &&
+            dense->evidence_scope ==
+               R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION,
+         "the dense carrier cell's declaration moved");
+   CHECK(r3v_public_rb2d_fill_cell_by_name("no_such_cell") == NULL,
+         "an unnamed cell resolved");
+   const struct r3v_public_rb2d_fill_cell *windowed =
+      r3v_public_rb2d_fill_cell_by_name("v2_multiwindow_256");
+   CHECK(windowed != NULL && windowed->allocation_bytes == 2097152u &&
+            windowed->fill_offset == 12u &&
+            windowed->fill_bytes == 2097012u &&
+            windowed->pinned_pitch_bytes == 256u &&
+            windowed->expected_pitch_bytes == 256u &&
+            windowed->expected_window_count == 2u &&
+            windowed->contract == R300_RB2D_CONTRACT_CONST_FILL_V2 &&
+            windowed->route_id == R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2,
+         "the windowed cell's declaration moved");
 
    const size_t count = sizeof(fixtures) / sizeof(fixtures[0]);
    uint8_t *image = malloc(ALLOC);
