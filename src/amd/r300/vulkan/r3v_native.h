@@ -17,6 +17,7 @@
 #include "amd/r300/common/r300_operation_route.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
+#include "amd/r300/common/r300_zb_hyperz_admission.h"
 #include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -907,6 +908,13 @@ struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
    struct radeon_drm_vk_device drm;
+   /* HyperZ ownership as the kernel records it for this file descriptor:
+    * RADEON_INFO_WANT_HYPERZ grants the block to one descriptor at a time
+    * and r300_packet0_check rejects a non-owner's HyperZ writes.  A
+    * submission carrying such a write acquires ownership first through
+    * r3v_native_hyperz_admit and refuses by name when the kernel withholds
+    * it; the descriptor releases the block at device destruction. */
+   enum r300_zb_hyperz_ownership hyperz_ownership;
    struct r3v_native_queue queue;
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
@@ -1921,6 +1929,19 @@ VkResult r3v_native_deferred_dispatch_verify_gpu(
  * so the post-completion read-back decides every slot.  A route other
  * than the GPU producer returns VK_SUCCESS untouched.
  */
+/* Judges a command buffer's IB against HyperZ ownership one layer before
+ * the kernel does.  A stream with no HyperZ write admits.  A stream with
+ * one acquires ownership through RADEON_INFO_WANT_HYPERZ when the device
+ * holds none, admits when the kernel grants it, and otherwise refuses with
+ * the admission row the kernel would have rejected on.  A malformed stream
+ * refuses before any ioctl. */
+VkResult r3v_native_hyperz_admit(struct r3v_native_device *device,
+                                 struct r3v_native_cmd_buffer *cmd_buffer);
+
+/* Releases HyperZ ownership held by the descriptor; a device holding none
+ * returns without an ioctl. */
+void r3v_native_hyperz_release(struct r3v_native_device *device);
+
 VkResult r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);

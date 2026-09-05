@@ -1635,6 +1635,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
+      /* HyperZ admission runs on the admitted IB, after route admission
+       * has settled which stream executes and before the reloc list and
+       * digest bind it: a HyperZ write reaches the kernel only from a
+       * descriptor the kernel already made the owner. */
+      const VkResult hyperz_admit = r3v_native_hyperz_admit(device, cmd_buffer);
+      if (hyperz_admit != VK_SUCCESS)
+         return hyperz_admit;
+
       /* Recorded query transitions publish here, in recorded order:
        * an end makes its query available with the exact zero count,
        * a reset returns its range to unavailable.
@@ -2266,4 +2274,58 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
    return vk_sync_signal_many(&device->vk, submit->signal_count,
                               submit->signals);
+}
+
+VkResult
+r3v_native_hyperz_admit(struct r3v_native_device *device,
+                        struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   struct r300_zb_hyperz_site site;
+   enum r300_zb_hyperz_verdict verdict = r300_zb_hyperz_admit_stream(
+      cmd_buffer->ib, cmd_buffer->ib_size_dwords, device->hyperz_ownership,
+      &site);
+
+   if (verdict == R300_ZB_HYPERZ_ADMIT)
+      return VK_SUCCESS;
+   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM) {
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: HyperZ admission refused: %s",
+                       r300_zb_hyperz_verdict_name(verdict));
+   }
+
+   /* The first HyperZ write on this descriptor: ask the kernel for the
+    * block.  The value is both request and answer, so a returned 1 is
+    * ownership and anything else is the kernel withholding it, typically
+    * because another descriptor holds it. */
+   uint32_t want = 1u;
+   const int r = radeon_drm_vk_device_info_u32(&device->drm,
+                                               RADEON_INFO_WANT_HYPERZ, &want);
+   if (r == 0 && want == 1u) {
+      device->hyperz_ownership = R300_ZB_HYPERZ_OWNED;
+      verdict = r300_zb_hyperz_admit_stream(cmd_buffer->ib,
+                                            cmd_buffer->ib_size_dwords,
+                                            device->hyperz_ownership, &site);
+      if (verdict == R300_ZB_HYPERZ_ADMIT)
+         return VK_SUCCESS;
+   }
+   return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                    "r3v-native: HyperZ admission refused at ib[%u] "
+                    "(%s = 0x%08x): %s; ownership %s (%s)",
+                    site.ib_index, site.row != NULL ? site.row->name : "?",
+                    site.value,
+                    site.row != NULL ? site.row->kernel_rule : "no row",
+                    r == 0 && want == 1u ? "held" : "withheld by the kernel",
+                    r == 0 ? "RADEON_INFO_WANT_HYPERZ answered"
+                           : strerror(-r));
+}
+
+void
+r3v_native_hyperz_release(struct r3v_native_device *device)
+{
+   if (device->hyperz_ownership != R300_ZB_HYPERZ_OWNED)
+      return;
+   uint32_t release = 0u;
+   (void)radeon_drm_vk_device_info_u32(&device->drm, RADEON_INFO_WANT_HYPERZ,
+                                       &release);
+   device->hyperz_ownership = R300_ZB_HYPERZ_UNOWNED;
 }
