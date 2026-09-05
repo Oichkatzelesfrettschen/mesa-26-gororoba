@@ -189,6 +189,136 @@ cell_kind_name(const struct r3v_public_rb2d_fill_cell *declared)
    }
 }
 
+/* The stream-shape mutations the canonical table names, each applied to a
+ * legalized window list and each refused by a different check.  The four
+ * are the ways a multi-window stream can be wrong while every window it
+ * still carries looks well formed on its own, so a single window checker
+ * cannot see them: the coverage oracle, the emitter's one-site-per-window
+ * rule, the in-order cursor, and the window checker each own one.
+ */
+enum window_mutation {
+   WINDOW_MUTATION_NONE = 0,
+   WINDOW_MUTATION_DROPPED_SECOND_WINDOW,
+   WINDOW_MUTATION_SECOND_SITE_ABSENT,
+   WINDOW_MUTATION_SWAPPED_WINDOW_ORDER,
+   WINDOW_MUTATION_SECOND_BASE_OFF_GRID,
+};
+
+static const struct {
+   const char *id;
+   enum window_mutation mutation;
+   const char *refused_by;
+} window_mutations[] = {
+   { "dropped_second_window", WINDOW_MUTATION_DROPPED_SECOND_WINDOW,
+     "coverage oracle" },
+   { "second_window_site_absent", WINDOW_MUTATION_SECOND_SITE_ABSENT,
+     "one relocation site per window" },
+   { "swapped_window_order", WINDOW_MUTATION_SWAPPED_WINDOW_ORDER,
+     "in-order coverage cursor" },
+   { "second_window_base_off_grid", WINDOW_MUTATION_SECOND_BASE_OFF_GRID,
+     "r300_rb2d_window_check" },
+};
+
+/* The byte set the windows cover, walked in emission order against the
+ * interval the cell declares.  A gap, an overlap, a short list, or a
+ * reordering all break the cursor, which is what makes this the check the
+ * per-window invariants cannot replace. */
+static bool
+windows_cover_interval(const struct r300_rb2d_window *windows,
+                       uint32_t window_count, uint64_t begin, uint64_t size,
+                       const char **why)
+{
+   uint64_t cursor = begin;
+   for (uint32_t w = 0; w < window_count; w++) {
+      const struct r300_rb2d_window *win = &windows[w];
+      for (uint32_t i = 0; i < win->rect_count; i++) {
+         const struct r300_rb2d_fill_rect *r = &win->rects[i];
+         for (uint32_t row = 0; row < r->height; row++) {
+            const uint64_t start = win->bo_base +
+                                   (uint64_t)(r->y + row) * win->pitch_bytes +
+                                   (uint64_t)r->x * win->cpp;
+            if (start != cursor) {
+               *why = "a rectangle row does not continue the interval";
+               return false;
+            }
+            cursor += (uint64_t)r->width * win->cpp;
+         }
+      }
+   }
+   if (cursor != begin + size) {
+      *why = "the covered bytes fall short of the interval";
+      return false;
+   }
+   return true;
+}
+
+/* Applies one mutation and returns the check that refuses it, or NULL when
+ * the mutated stream was admitted, which is the defect this lane exists to
+ * catch. */
+static const char *
+refuse_mutated_stream(const struct cell *c, enum window_mutation mutation,
+                      const char **detail)
+{
+   struct r300_rb2d_window windows[RUNNER_MAX_WINDOWS];
+   uint32_t count = c->window_count;
+   memcpy(windows, c->windows, sizeof(windows[0]) * count);
+   *detail = "";
+
+   switch (mutation) {
+   case WINDOW_MUTATION_DROPPED_SECOND_WINDOW:
+      count--;
+      break;
+   case WINDOW_MUTATION_SWAPPED_WINDOW_ORDER: {
+      const struct r300_rb2d_window first = windows[0];
+      windows[0] = windows[count - 1];
+      windows[count - 1] = first;
+      break;
+   }
+   case WINDOW_MUTATION_SECOND_BASE_OFF_GRID:
+      windows[count - 1].bo_base += 4u;
+      break;
+   case WINDOW_MUTATION_SECOND_SITE_ABSENT:
+   case WINDOW_MUTATION_NONE:
+      break;
+   }
+
+   for (uint32_t w = 0; w < count; w++) {
+      const enum r300_rb2d_window_refusal refusal =
+         r300_rb2d_window_check(&windows[w], c->declared->allocation_bytes);
+      if (refusal != R300_RB2D_WINDOW_OK) {
+         *detail = r300_rb2d_window_refusal_name(refusal);
+         return "r300_rb2d_window_check";
+      }
+   }
+
+   uint32_t words[RUNNER_MAX_WINDOWS * 64u];
+   struct r300_rb2d_legalized_ib emitted;
+   if (r300_rb2d_legalize_emit(windows, count, words,
+                               (uint32_t)(sizeof(words) / sizeof(words[0])),
+                               &emitted) != 0) {
+      *detail = "the emitter refused the window list";
+      return "r300_rb2d_legalize_emit";
+   }
+   /* The site count the emitter produces is one per window by
+    * construction, so a stream declaring fewer sites than windows is a
+    * stream whose destination is bound fewer times than it is rebased. */
+   const uint32_t declared_sites =
+      mutation == WINDOW_MUTATION_SECOND_SITE_ABSENT ? count - 1u : count;
+   if (emitted.site_count != declared_sites) {
+      *detail = "the emitted site count differs from the declared one";
+      return "one relocation site per window";
+   }
+
+   const char *why = "";
+   if (!windows_cover_interval(windows, count, c->declared->fill_offset,
+                               c->declared->fill_bytes, &why)) {
+      *detail = why;
+      return count < c->window_count ? "coverage oracle"
+                                     : "in-order coverage cursor";
+   }
+   return NULL;
+}
+
 static void
 read_first_line(const char *path, char *out, size_t size)
 {
@@ -311,11 +441,14 @@ main(int argc, char **argv)
    const char *evidence_dir = NULL;
    const char *emit_path = NULL;
    const char *cell_name = "v1_public";
+   const char *mutation_id = NULL;
    for (int i = 1; i < argc; i++) {
       if (strcmp(argv[i], "--emit-ib") == 0 && i + 1 < argc) {
          emit_path = argv[++i];
       } else if (strcmp(argv[i], "--cell") == 0 && i + 1 < argc) {
          cell_name = argv[++i];
+      } else if (strcmp(argv[i], "--mutate-window") == 0 && i + 1 < argc) {
+         mutation_id = argv[++i];
       } else if (argv[i][0] == '-') {
          fprintf(stderr, "unknown option %s\n", argv[i]);
          return 2;
@@ -328,8 +461,8 @@ main(int argc, char **argv)
    }
    if (evidence_dir == NULL) {
       fprintf(stderr,
-              "usage: %s [--cell <name>] [--emit-ib <path>] "
-              "<evidence-directory>\n",
+              "usage: %s [--cell <name>] [--mutate-window <id>] "
+              "[--emit-ib <path>] <evidence-directory>\n",
               argv[0]);
       return 2;
    }
@@ -347,6 +480,40 @@ main(int argc, char **argv)
    }
    if (emit_path != NULL && write_ib(&c, emit_path) != 0)
       return 2;
+
+   /* The stream-shape lane stops here: it mutates the legalized window
+    * list, names the check that refuses it, and never reads an arming
+    * fact, so it needs no declaration and no board. */
+   if (mutation_id != NULL) {
+      for (size_t i = 0; i < sizeof(window_mutations) /
+                                sizeof(window_mutations[0]);
+           i++) {
+         if (strcmp(mutation_id, window_mutations[i].id) != 0)
+            continue;
+         const char *detail = "";
+         const char *refused_by =
+            refuse_mutated_stream(&c, window_mutations[i].mutation, &detail);
+         printf("cell=%s\n", declared->name);
+         printf("window_mutation=%s\n", window_mutations[i].id);
+         printf("window_mutation_refused_by=%s\n",
+                refused_by != NULL ? refused_by : "(admitted)");
+         printf("window_mutation_detail=%s\n", detail);
+         printf("no submission attempted: this runner stops at the "
+                "authorization boundary\n");
+         if (refused_by == NULL ||
+             strcmp(refused_by, window_mutations[i].refused_by) != 0) {
+            fprintf(stderr,
+                    "mutation %s is refused by %s; the table names %s\n",
+                    window_mutations[i].id,
+                    refused_by != NULL ? refused_by : "nothing",
+                    window_mutations[i].refused_by);
+            return 3;
+         }
+         return 0;
+      }
+      fprintf(stderr, "no window mutation is named %s\n", mutation_id);
+      return 2;
+   }
 
    const char *sysfs_root = getenv("R3V_NATIVE_RUNNER_SYSFS_ROOT");
    if (sysfs_root == NULL || sysfs_root[0] == '\0')

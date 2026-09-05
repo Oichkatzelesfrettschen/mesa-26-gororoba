@@ -350,6 +350,37 @@ def main():
                     field(default.stdout, "ib_blake3"):
                 fail("--cell v1_public builds a different stream from the "
                      "default cell")
+        # The stream-shape lane: each mutation of the windowed cell's
+        # legalized window list is refused by the check the table names,
+        # and a mutation the checks admit exits 3 rather than 0.
+        for mutation_id, mutated, refused_by in table.WINDOW_MUTATIONS:
+            result = subprocess.run(
+                [runner, "--cell", table.WINDOW_MUTATION_CELL,
+                 "--mutate-window", mutation_id, evidence],
+                env=armed_env, capture_output=True, text=True)
+            if result.returncode != 0:
+                fail(f"{mutation_id}: status {result.returncode}\n"
+                     f"{result.stdout}\n{result.stderr}")
+            # The report prints the whole check name, which carries
+            # spaces, so the comparison reads the line rather than the
+            # first whitespace-delimited field.
+            line = re.search(r"^window_mutation_refused_by=(.*)$",
+                             result.stdout, re.MULTILINE)
+            if line is None or line.group(1) != refused_by:
+                fail(f"{mutation_id} ({mutated}) is refused by "
+                     f"{line.group(1) if line else '(nothing)'}; the table "
+                     f"names {refused_by}")
+            detail = re.search(r"^window_mutation_detail=(.*)$",
+                               result.stdout, re.MULTILINE)
+            print(f"  {mutation_id}: refused by {refused_by} -- "
+                  f"{detail.group(1) if detail else ''}")
+        result = subprocess.run(
+            [runner, "--cell", table.WINDOW_MUTATION_CELL,
+             "--mutate-window", "no_such_mutation", evidence],
+            env=armed_env, capture_output=True, text=True)
+        if result.returncode != 2:
+            fail("an unnamed window mutation was accepted")
+
         # The kind spellings the report prints are the plan registry's,
         # so a report and a captured plan name one kind.
         registry = set(re.findall(r'"(rb2d_[a-z0-9_]+)"',
@@ -374,7 +405,8 @@ def main():
           f"declaration; {arm_count} table mutations and "
           f"{len(table.DIRECTORY_MUTATIONS)} directory mutations refused "
           f"by name; {len(cells)} named cells build their declared "
-          f"lowering")
+          f"lowering; {len(table.WINDOW_MUTATIONS)} stream-shape mutations "
+          f"refused by the check each names")
     return 0
 
 
