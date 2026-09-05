@@ -5,9 +5,9 @@ document holds what must pass before a submission is justified, the
 prediction that submission is measured against, and the questions the cell
 does not answer.
 
-The sealed `v1_public` cell and the `v2_multiwindow_256` cell each hold an
-attended CONTROL_PASS. Every other row below is `not run` until its
-transcript exists.
+The sealed `v1_public` cell, the `v2_multiwindow_256` cell, and the
+`dense_16320_carrier` cell each hold an attended CONTROL_PASS. The chooser
+cell is `not run` until its transcript exists.
 
 ## What executes
 
@@ -381,8 +381,8 @@ The sealed cell `v1_public` -- 64 KiB allocation, offset 12, 4992 bytes,
 `0x11223344`, 64-byte tail -- carries the route's silicon receipt and the
 V1 contract's own. Three further cells are designed against the windowed
 V2 contract: `v2_multiwindow_256` and `dense_16320_carrier` are built, and
-the chooser cell is an open design. `v2_multiwindow_256` has run and
-holds a CONTROL_PASS; `dense_16320_carrier` is `not run`.
+the chooser cell is an open design. `v2_multiwindow_256` and
+`dense_16320_carrier` have each run and hold a CONTROL_PASS.
 
 Every cell is addressed by name through
 `r3v_public_rb2d_fill_cell_by_name`, and the harness binaries take
@@ -454,8 +454,9 @@ against prediction bundle
 
 The run promotes contract evidence only. The V2 contract-evidence row now
 reads SILICON_RECEIPT at two windows and two relocation sites, and the route
-row stays PRECOMMITTED: receipt B is the `dense_16320_carrier` cell, receipt
-C is the chooser cell, and the composite rule below is what moves the route.
+row stays PRECOMMITTED: receipt B is the `dense_16320_carrier` cell, which
+holds its own CONTROL_PASS below, receipt C is the chooser cell, and the
+composite rule below is what moves the route.
 
 ### dense_16320_carrier
 
@@ -508,6 +509,33 @@ FILL_BUFFER, from PLANNED to SILICON_RECEIPT, and nothing else. The
 contract row and the route row are untouched, because a carrier receipt
 states nothing about a stream shape.
 
+**Outcome: CONTROL_PASS.** One attended run on the Dell Vostro 1000
+(RS485M, `1002:5974`) under the strict-2d parser epoch --
+radeon-unified-dkms 0.8.14-1, srcversion `F6D858EC31CEB8A5B320781`, kernel
+7.1.8-1-cachyos, boot id `6222574b` -- through the frozen profile-4 ICD at
+mesa `617da12427ad` (sha256 `7ed2966d26a1...`, build-id `a19e8ea1...`).
+The route resolved `R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2` under its gate
+at evidence scope carrier qualification, with the carrier pinned to 16320
+bytes ARGB8888 through
+`R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES`: one window of five
+rows, rectangles (3, 0, 4077, 1), (0, 1, 4080, 3), (0, 4, 40, 1), one
+relocation site, 38 dwords, IB blake3
+`cb9716913623d04c6ca2181b7ef7e01ac9961299bed1e0452f49c8364d5e7120`. All
+16357 interval dwords read `0x11223344`; the prefix, the 96-byte suffix,
+and the tail canary are unchanged, and nothing shifted or landed outside.
+Submit and fence returned `VK_SUCCESS`, the retained submit object is
+byte-identical to the arming runner's emission, the `dmesg` delta is empty,
+and the boot id is unchanged. Receipt bundle `steinmarder-r300
+src/re/r300/results/r3v-native-rb2d-dense-16320-carrier-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+against prediction bundle
+`r3v-native-rb2d-dense-16320-carrier-prediction-vostro1000_rs485m_5974`.
+
+The run promotes the carrier alone. The pitch-evidence registry ranks two
+receipted ARGB8888 carriers, 256 and 16320, so the chooser selects
+between them under execution evidence rather than reading a single row, and
+the chooser-selected cell -- receipt C -- is the remaining member of the
+composite.
+
 ### v2_chooser -- open design
 
 The chooser cell tests the verdict rather than a pin: it runs
@@ -527,9 +555,17 @@ under the default weights at 2 MiB.
 As the chooser's own verdict over the whole registry, 16320 wins only from
 **34467840 bytes**, where 8616960 pixels divide exactly into 2112 rows of
 4080 and the carrier reaches one rectangle while 4096 and 8192 still need
-a tail. Below that the chooser prefers 4096 or 8192, so a receipt cell
-sized under 34467840 bytes would qualify a carrier the chooser does not
-pick.
+a tail. Below that the chooser prefers 4096 or 8192.
+
+Which of the two numbers sizes receipt C follows the floor the route runs
+at. `r3v_native_fill_route` holds the carrier floor at SILICON_RECEIPT for
+a PRECOMMITTED row and drops it to PLANNED only for a declared
+qualification pitch, so the executing chooser ranks the receipted pair
+alone and the pair crossover at 2097152 bytes is the size that qualifies
+the carrier it picks. 34467840 is the PLANNED-floor verdict, where 4096
+and 8192 join the ranking; a cell sized between the two would qualify the
+carrier the executing chooser picks and not the one a PLANNED ranking
+names.
 
 The original design named 32704, which the pitch field refutes. A
 replacement cell names one of the two sizes above and waits on
@@ -542,8 +578,8 @@ all three cells agree -- the windowed stream shape `v2_multiwindow_256`,
 the dense carrier `dense_16320_carrier`, and the chooser's own verdict --
 each with its own CONTROL_PASS and its own retained bundle. One receipt
 promotes one row; the route row is the conjunction. `v2_multiwindow_256`
-holds its CONTROL_PASS, `dense_16320_carrier` is built and `not run`, and
-the chooser cell is an open design.
+holds its CONTROL_PASS, `dense_16320_carrier` holds its own, and the
+chooser cell is an open design.
 
 ## What this cell does not answer
 

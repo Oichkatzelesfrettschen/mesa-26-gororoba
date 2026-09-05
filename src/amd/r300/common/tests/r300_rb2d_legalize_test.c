@@ -81,7 +81,10 @@ legalize_exactly(const struct r300_rb2d_legalize_request *req,
 
 /* The transformation table: each row is a raw rejection class the kernel
  * tracker names, stated as the semantic request whose naive rectangle
- * would have triggered it.  Every row legalizes and covers exactly. */
+ * would have triggered it.  Every row legalizes and covers exactly.  The
+ * table pins the witnessed 256-byte carrier, so each row names the
+ * decomposition of that carrier's 64-pixel row and the x bound below
+ * holds. */
 static void
 test_transformation_table(void)
 {
@@ -120,8 +123,9 @@ test_transformation_table(void)
    };
    for (size_t i = 0; i < ARRAY_LEN(rows); i++) {
       const struct row *r = &rows[i];
-      const struct r300_rb2d_legalize_request req =
+      struct r300_rb2d_legalize_request req =
          request(r->offset, r->size, r->bo_size, r->contract);
+      req.pinned_pitch_bytes = 256u;
       struct r300_rb2d_legalize_result result;
       const uint32_t n = legalize_exactly(&req, &result);
       if (n != r->expect_windows) {
@@ -184,14 +188,17 @@ test_v1_byte_identity(void)
 }
 
 /* V2: a multi-window request emits one stream with one site per window,
- * each window's block byte-identical to its own plan emission. */
+ * each window's block byte-identical to its own plan emission.  The pin
+ * holds the witnessed 256-byte carrier, whose window reach of 0x1fff rows
+ * is what cuts the second window. */
 static void
 test_v2_multi_window_emission(void)
 {
    const uint64_t bo = 256u * 0x1fffu + 8192u;
-   const struct r300_rb2d_legalize_request req =
+   struct r300_rb2d_legalize_request req =
       request(1024u, 256u * 0x1fffu + 2048u, bo,
               R300_RB2D_CONTRACT_CONST_FILL_V2);
+   req.pinned_pitch_bytes = 256u;
    struct r300_rb2d_legalize_result result;
    const uint32_t n = legalize_exactly(&req, &result);
    assert(n == 2u);
@@ -235,8 +242,10 @@ test_v2_multi_window_emission(void)
  *
  * The dense cell is the widest 64-byte pitch under the scissor end times
  * four bytes, cut on a buffer half its own row, which the kernel's end_byte
- * footprint admits.  Both run at PLANNED evidence: they rank shapes rather
- * than claim a receipt. */
+ * footprint admits; it legalizes at SILICON_RECEIPT because the attended
+ * run over this exact geometry receipted the carrier.  The multi-window
+ * cell pins its shape at the PLANNED floor, where the carrier ranks rather
+ * than carries a receipt. */
 static void
 test_designed_cells(void)
 {
@@ -277,7 +286,6 @@ test_designed_cells(void)
     * rows, and a forty-pixel tail. */
    struct r300_rb2d_legalize_request dense =
       request(12u, 65428u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
-   dense.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
    dense.pinned_pitch_bytes = 16320u;
 
    assert(legalize_exactly(&dense, &result) == 1u);
@@ -415,9 +423,9 @@ test_coverage_oracle(void)
    free(counts);
 }
 
-/* Registry: self-consistent, execution admits only the witnessed carrier,
- * a pinned unadmitted pitch refuses, and the lowest class admits every
- * row. */
+/* Registry: self-consistent, execution admits the two receipted ARGB8888
+ * carriers, a pinned pitch below execution evidence refuses, and the
+ * lowest class admits every row. */
 static void
 test_pitch_registry(void)
 {
@@ -426,27 +434,39 @@ test_pitch_registry(void)
    const struct r300_rb2d_pitch_evidence *rows =
       r300_rb2d_pitch_evidence_rows(&n);
    assert(n >= 7u);
+   bool receipted_256 = false, receipted_16320 = false;
    uint32_t silicon = 0u;
    for (uint32_t i = 0; i < n; i++) {
       assert(r300_rb2d_pitch_evidence_class_name(rows[i].evidence) != NULL);
       if (rows[i].evidence == R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT) {
          silicon++;
-         assert(rows[i].pitch_bytes == 256u);
          assert(rows[i].format == R300_RB2D_FORMAT_ARGB8888);
+         receipted_256 |= rows[i].pitch_bytes == 256u;
+         receipted_16320 |= rows[i].pitch_bytes == 16320u;
       }
    }
-   assert(silicon == 1u);
+   assert(silicon == 2u && receipted_256 && receipted_16320);
    assert(r300_rb2d_pitch_evidence_find(512u, R300_RB2D_FORMAT_ARGB8888,
                                         R300_RB2D_USAGE_FILL_BUFFER) == NULL);
 
    struct r300_rb2d_legalize_request req =
       request(0u, 65536u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
    struct r300_rb2d_legalize_result result;
-   req.pinned_pitch_bytes = 16320u;
+   /* 8192 carries no receipt, so execution evidence refuses it and PLANNED
+    * admits it. */
+   req.pinned_pitch_bytes = 8192u;
    assert(r300_rb2d_legalize_linear_span(&req, windows, ARRAY_LEN(windows),
                                          &result) == 0u);
    assert(result.refusal == R300_RB2D_LEGALIZE_REFUSE_PINNED_PITCH_UNADMITTED);
    req.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+   assert(legalize_exactly(&req, &result) == 1u);
+   assert(result.pitch_bytes == 8192u);
+
+   /* The 16320-byte carrier holds its own receipt, so execution evidence
+    * admits it: 65536 bytes are four whole 4080-pixel rows and a
+    * 64-pixel tail. */
+   req.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT;
+   req.pinned_pitch_bytes = 16320u;
    assert(legalize_exactly(&req, &result) == 1u);
    assert(result.pitch_bytes == 16320u);
    assert(windows[0].rect_count == 2u);
@@ -458,10 +478,9 @@ test_pitch_registry(void)
    assert(result.refusal == R300_RB2D_LEGALIZE_REFUSE_CONTRACT);
 }
 
-/* The chooser: under execution evidence the witnessed pitch is the only
- * candidate; under PLANNED a wide dense carrier wins a large interval on
- * the cost model, and the RGB565 row is chosen only for an
- * equal-halves pattern and never under execution evidence. */
+/* The chooser: under execution evidence it ranks the two receipted
+ * ARGB8888 carriers; under PLANNED a wide dense carrier wins a large
+ * interval on the cost model, and the RGB565 row is never chosen. */
 static void
 test_chooser_and_cost(void)
 {
@@ -475,12 +494,14 @@ test_chooser_and_cost(void)
       request(0u, 8u << 20, 8u << 20, R300_RB2D_CONTRACT_CONST_FILL_V2);
    enum r300_rb2d_format format = R300_RB2D_FORMAT_COUNT;
    assert(r300_rb2d_choose_pitch(&req, &r300_rb2d_default_cost_weights,
-                                 &format) == 256u);
+                                 &format) == 16320u);
    assert(format == R300_RB2D_FORMAT_ARGB8888);
    struct r300_rb2d_legalize_result result;
    /* One window reaches 0x1fff rows of 256 bytes, just under 2 MiB, so
-    * eight MiB takes five. */
+    * eight MiB pinned to the witnessed carrier takes five. */
+   req.pinned_pitch_bytes = 256u;
    assert(legalize_exactly(&req, &result) == 5u);
+   req.pinned_pitch_bytes = 0u;
 
    req.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
    const uint32_t dense = r300_rb2d_choose_pitch(
@@ -599,7 +620,9 @@ test_chooser_and_cost(void)
 
    /* RGB565: admitted at KERNEL_REPLAY for an equal-halves pattern on the
     * 256-byte carrier, with the brush carrying the low half; refused for
-    * a pattern whose halves differ; withheld from execution. */
+    * a pattern whose halves differ; withheld from execution.  The chooser
+    * ranks it behind the receipted ARGB8888 carriers, whose widest row
+    * holds the whole 4992-byte interval in one rectangle. */
    struct r300_rb2d_legalize_request half =
       request(12u, 4992u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
    half.pattern = 0xabcdabcdu;
@@ -610,7 +633,7 @@ test_chooser_and_cost(void)
     * ARGB8888 first on a tie-free cost. */
    half.pinned_pitch_bytes = 0u;
    assert(r300_rb2d_choose_pitch(&half, &r300_rb2d_default_cost_weights,
-                                 &format) == 256u);
+                                 &format) == 16320u);
    assert(format == R300_RB2D_FORMAT_ARGB8888);
 
    const struct r300_rb2d_span span565 = {
@@ -637,6 +660,33 @@ test_chooser_and_cost(void)
    assert(!r300_rb2d_pitch_admitted(256u, R300_RB2D_FORMAT_RGB565,
                                     R300_RB2D_USAGE_FILL_BUFFER,
                                     R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT));
+}
+
+/* Two receipted ARGB8888 carriers stand in the registry, so execution
+ * evidence hands the chooser a pair rather than a single row.  The V1
+ * contract admits its own 256-byte carrier alone, and under V2 the pair
+ * crosses where the witnessed carrier needs a second window: one 256-byte
+ * window reaches 0x1fff rows of 64 pixels, 2096896 bytes, and the rebind
+ * past it costs more than the wider carrier's extra rectangle. */
+static void
+test_two_receipted_carriers(void)
+{
+   enum r300_rb2d_format format = R300_RB2D_FORMAT_COUNT;
+   struct r300_rb2d_legalize_request v1 =
+      request(12u, 4992u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V1);
+   assert(r300_rb2d_choose_pitch(&v1, &r300_rb2d_default_cost_weights,
+                                 &format) == 256u);
+   assert(format == R300_RB2D_FORMAT_ARGB8888);
+
+   struct r300_rb2d_legalize_request below =
+      request(0u, 2093056u, 2093056u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   assert(r300_rb2d_choose_pitch(&below, &r300_rb2d_default_cost_weights,
+                                 &format) == 256u);
+   struct r300_rb2d_legalize_request above =
+      request(0u, 2097152u, 2097152u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   assert(r300_rb2d_choose_pitch(&above, &r300_rb2d_default_cost_weights,
+                                 &format) == 16320u);
+   assert(format == R300_RB2D_FORMAT_ARGB8888);
 }
 
 /* Refusals at the request boundary. */
@@ -737,6 +787,7 @@ main(void)
    test_coverage_oracle();
    test_pitch_registry();
    test_chooser_and_cost();
+   test_two_receipted_carriers();
    test_request_refusals();
    test_emitter_epochs();
    printf("r300_rb2d_legalize_test: all checks passed\n");
