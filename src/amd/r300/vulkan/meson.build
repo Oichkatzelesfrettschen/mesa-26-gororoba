@@ -2754,10 +2754,11 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           files('tests/r3v_native_loader_application_symbol_audit.py'),
           prog_nm_r3v.full_path(),
           r3v_native_attended_rb2d_fill.full_path(),
-          '--forbid', 'r3v_native_',
+          '--forbid', 'r3v_',
           '--forbid', 'r300_',
           '--forbid', 'radeon_drm_vk_',
           '--forbid', 'drm_shim_',
+          '--allow', 'r3v_public_',
         ],
         depends : [r3v_native_attended_rb2d_fill],
         suite : ['r3v'],
@@ -2771,6 +2772,15 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           files('tests/r3v_native_loader_application_symbol_audit.py'),
           prog_nm_r3v.full_path(),
           r3v_native_loader_fill_application.full_path(),
+          # The application reads its cell from the pure oracle, which
+          # links no driver symbol and answers no Vulkan call, so the
+          # whole driver surface stays forbidden and r3v_public_ alone is
+          # carved out of it.
+          '--forbid', 'r3v_',
+          '--forbid', 'r300_',
+          '--forbid', 'radeon_drm_vk_',
+          '--forbid', 'drm_shim_',
+          '--allow', 'r3v_public_',
         ],
         depends : [r3v_native_loader_fill_application],
         suite : ['r3v'],

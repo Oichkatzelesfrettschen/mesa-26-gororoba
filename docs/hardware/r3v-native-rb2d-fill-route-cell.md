@@ -379,8 +379,8 @@ the first time on the attended run itself.
 The sealed cell `v1_public` -- 64 KiB allocation, offset 12, 4992 bytes,
 `0x11223344`, 64-byte tail -- carries the route's silicon receipt and the
 V1 contract's own. Three further cells are designed against the windowed
-V2 contract. None of the three has run, and two of them are blocked before
-they can be attempted.
+V2 contract: `v2_multiwindow_256` and `dense_16320_carrier` are built, and
+the chooser cell is an open design. Neither built cell has run.
 
 Every cell is addressed by name through
 `r3v_public_rb2d_fill_cell_by_name`, and the harness binaries take
@@ -430,54 +430,90 @@ windows and two relocation sites at SILICON_RECEIPT. The route row stays
 PRECOMMITTED, because a contract receipt is not a route receipt and the
 composite rule below is what moves the row.
 
-### dense_32704_carrier -- blocked
+### dense_16320_carrier
 
-**Blocker.** `DST_PITCH_OFFSET` carries eight pitch bits at bits 22-29.
-`r100_reloc_pitch_offset` rebuilds the word as
-`(value & 0x3fc00000) | offset | tile_flags`, so bits 30-31 are
-DST_TILE_MACRO and DST_TILE_MICRO and come from the relocation's tiling.
-A 32704-byte pitch is 511 of the 64-byte grid, which reaches the kernel as
-255 units with the macro-tile bit set: the surface the engine reads is not
-the surface the cell names, and the CS-tracker replay rejects the stream.
-The widest carrier the word can name is 255 units, 16320 bytes.
+**What executes.** One `vkCmdFillBuffer` over the sealed 64 KiB
+allocation, offset 12, 65428 bytes, value `0x11223344`, 64-byte tail. The
+route selects `rb2d_const_fill_v2` under its gate and pins the 16320-byte
+carrier, which no run has exercised, so
+`R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES` names that same pitch
+and drops the carrier's evidence floor to PLANNED for it alone. The cell
+kind is `rb2d_carrier_qualification`, so the arming digest carries the
+scope.
 
-The cell as specified cannot be built. The substitute geometry is the
-16320-byte carrier over the same 64 KiB object, offset 12, size 65428:
-one window, rectangles (3, 0, 4077, 1), (0, 1, 4080, 3), (0, 4, 40, 1),
-height_rows 5, one relocation site, footprint 65440 bytes. The
-legalization differential already replays that stream to ACCEPT. Building
-the cell on it is a change of declared geometry and waits on authorization.
+**Why 16320 and not 32704.** `r100_reloc_pitch_offset` rebuilds
+`DST_PITCH_OFFSET` as `(value & 0x3fc00000) | offset | tile_flags`. The
+`0x3fc00000` mask is bits 22-29, an 8-bit pitch field; bits 30-31 are
+`DST_TILE_MACRO` and `DST_TILE_MICRO` and come from the relocation's
+tiling rather than from the stream. The CS-tracker replay measures the
+consequence: 128 units ACCEPT, 255 units ACCEPT, 256 units (16384 bytes)
+decode as pitch zero and REJECT, and 511 units (32704 bytes) decode as 255
+units with the macro-tile bit set and REJECT. A 32704-byte carrier
+therefore names a surface the engine never sees, and 255 units -- 16320
+bytes -- is the widest the word can carry. The differential row
+`pitch past the 8-bit field` retains the first measurement and
+`cell dense_16320_carrier` the acceptance.
 
-**What a CONTROL_PASS would promote.** The pitch-evidence row for the
-qualified carrier, ARGB8888, FILL_BUFFER, from PLANNED to SILICON_RECEIPT,
-and nothing else. The contract row and the route row are untouched,
-because a carrier receipt states nothing about a stream shape.
+**Windows, rectangles, sites.** One row holds 4080 ARGB8888 pixels, so the
+interval is the first row's remainder, three whole rows, and a tail across
+five rows of one window:
 
-### v2_chooser_32704 -- blocked
+* window 0: base 0, height_rows 5, rectangles (3, 0, 4077, 1),
+  (0, 1, 4080, 3), (0, 4, 40, 1), relocation site 0.
+* window_count 1, relocation_sites 1, one buffer object, 38 IB dwords.
+* The footprint is the kernel's `end_byte`, 65440 bytes, so a carrier a
+  quarter the width of the object still ends inside it.
 
-**Blocker.** The cell's premise is that `r300_rb2d_choose_pitch` picks
-32704 under the default weights. 32704 has left the pitch-evidence
-registry as a pitch the word cannot encode, so the chooser can never
-return it.
+**Declaration fields.** The windowed cell's fields, with
+`R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES` = `16320` and
+`R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES` = `16320`. Device
+creation refuses the qualification declaration unless
+`R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL` is `1`.
 
-The chooser's ranking mechanism is unaffected and reaches the same shape
-on the encodable carriers: with one window and one relocation site on
-every candidate, the cost reduces to
-`100 + 14 * rectangles`, so the carrier that holds the interval in the
-fewest rectangles wins and the smaller pitch takes a tie. A substitute
-cell would name the interval and the carrier the corrected registry makes
-the unique minimum, and waits on the same authorization.
+**Prediction.** After one submission the covered bytes are exactly
+[12, 65440): every dword inside reads `0x11223344`, every byte outside is
+unchanged, the tail canary is unchanged, the host writes zero bytes, the
+kernel's strict-2d parser accepts the stream, the `dmesg` delta is empty,
+the boot id is unchanged, and exactly one CS ioctl is observed.
 
-**What a CONTROL_PASS would promote.** The third receipt of the composite
-below: the chooser's verdict executed rather than pinned.
+**What a CONTROL_PASS promotes.** The pitch-evidence row 16320, ARGB8888,
+FILL_BUFFER, from PLANNED to SILICON_RECEIPT, and nothing else. The
+contract row and the route row are untouched, because a carrier receipt
+states nothing about a stream shape.
+
+### v2_chooser -- open design
+
+The chooser cell tests the verdict rather than a pin: it runs
+`rb2d_const_fill_v2` with no pinned carrier and asserts that the carrier
+the cost model picks is the one the run exercises. Its geometry waits on
+one decision -- which carrier the receipt should qualify -- and
+`r300_rb2d_legalize_test` computes the two sizes that decision needs.
+
+Head to head against the witnessed 256-byte carrier, 16320 wins from
+exactly **2097152 bytes**. One 256-byte window reaches `0x1fff` rows of 64
+pixels, 2096896 bytes, so 2 MiB is the first interval needing a second
+window, and that rebind costs more than the wider carrier's extra
+rectangle: cost 228 against 128 under the default weights.
+
+As the chooser's own verdict over the whole registry, 16320 wins only from
+**34467840 bytes**, where 8616960 pixels divide exactly into 2112 rows of
+4080 and the carrier reaches one rectangle while 4096 and 8192 still need
+a tail. Below that the chooser prefers 4096 or 8192, so a receipt cell
+sized under 34467840 bytes would qualify a carrier the chooser does not
+pick.
+
+The original design named 32704, which the pitch field refutes. A
+replacement cell names one of the two sizes above and waits on
+authorization.
 
 ### The composite rule
 
 `rb2d_const_fill_v2` promotes from PRECOMMITTED to EXECUTING only after
-all three cells agree -- the windowed stream shape, the dense carrier, and
-the chooser's own verdict -- each with its own CONTROL_PASS and its own
-retained bundle. One receipt promotes one row; the route row is the
-conjunction. None of the three has run.
+all three cells agree -- the windowed stream shape `v2_multiwindow_256`,
+the dense carrier `dense_16320_carrier`, and the chooser's own verdict --
+each with its own CONTROL_PASS and its own retained bundle. One receipt
+promotes one row; the route row is the conjunction. Two of the three are
+built and neither has run, and the chooser cell is an open design.
 
 ## What this cell does not answer
 

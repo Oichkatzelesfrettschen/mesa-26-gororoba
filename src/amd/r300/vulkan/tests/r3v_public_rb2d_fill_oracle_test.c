@@ -207,6 +207,15 @@ main(void)
             cells[i].name, cells[i].expected_relocation_sites,
             cells[i].expected_window_count);
    }
+   const struct r3v_public_rb2d_fill_cell *dense =
+      r3v_public_rb2d_fill_cell_by_name("dense_16320_carrier");
+   CHECK(dense != NULL && dense->pinned_pitch_bytes == 16320u &&
+            dense->expected_pitch_bytes == 16320u &&
+            dense->expected_window_count == 1u &&
+            dense->fill_bytes == 65428u &&
+            dense->evidence_scope ==
+               R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION,
+         "the dense carrier cell's declaration moved");
    CHECK(r3v_public_rb2d_fill_cell_by_name("no_such_cell") == NULL,
          "an unnamed cell resolved");
    const struct r3v_public_rb2d_fill_cell *windowed =

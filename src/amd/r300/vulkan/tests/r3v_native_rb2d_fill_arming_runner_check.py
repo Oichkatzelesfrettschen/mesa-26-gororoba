@@ -319,11 +319,25 @@ def main():
                 "ib_dwords": "58",
                 "relocation_site_count": "2",
             },
+            "dense_16320_carrier": {
+                "cell_kind": "rb2d_carrier_qualification",
+                "evidence_scope": "carrier_qualification",
+                "route": "rb2d_const_fill_v2",
+                "allocation_bytes": "65536",
+                "fill_bytes": "65428",
+                "pitch_bytes": "16320",
+                "window_count": "1",
+                "rect_count": "3",
+                "ib_dwords": "38",
+                "relocation_site_count": "1",
+            },
         }
         expected_rects = {
             "v1_public": ["3,0,61,1", "0,1,64,18", "0,19,35,1"],
             "v2_multiwindow_256": ["3,0,61,1", "0,1,64,8190",
                                    "0,3,32,1"],
+            "dense_16320_carrier": ["3,0,4077,1", "0,1,4080,3",
+                                    "0,4,40,1"],
         }
         default = run(runner, evidence, armed_env)
         for name, fields in cells.items():

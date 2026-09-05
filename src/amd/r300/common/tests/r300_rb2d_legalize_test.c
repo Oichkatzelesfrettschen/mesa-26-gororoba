@@ -495,6 +495,71 @@ test_chooser_and_cost(void)
           widest_cost);
    req.pinned_pitch_bytes = 0u;
 
+   /* Where the dense carrier starts paying, computed rather than
+    * asserted from a guess, so a receipt cell for the chooser can be
+    * sized from a number this test owns.  Two crossings, and they are far
+    * apart because the chooser ranks every admitted row rather than a
+    * pair.
+    *
+    * Head to head against the witnessed 256-byte carrier, 16320 wins from
+    * exactly 2 MiB: one 256-byte window reaches 0x1fff rows of 64 pixels,
+    * 2096896 bytes, so 2 MiB is the first size needing a second window
+    * and its rebind costs more than the wider carrier's extra rectangle.
+    *
+    * As the chooser's own verdict, 16320 wins only from 34467840 bytes,
+    * where 8616960 pixels divide exactly into 2112 rows of 4080 and the
+    * carrier reaches one rectangle while 4096 and 8192 still need a tail.
+    */
+   {
+      const struct {
+         uint64_t size;
+         uint32_t pinned;
+      } crossing[] = { { 2u << 20, 256u }, { 34467840u, 0u } };
+      for (unsigned k = 0; k < ARRAY_LEN(crossing); k++) {
+         struct r300_rb2d_legalize_request at =
+            request(0u, crossing[k].size, crossing[k].size,
+                    R300_RB2D_CONTRACT_CONST_FILL_V2);
+         at.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+         struct r300_rb2d_legalize_request under = at;
+         under.byte_size = crossing[k].size - 4096u;
+         under.bo_size = under.byte_size;
+
+         if (crossing[k].pinned != 0u) {
+            /* The pair: the dense carrier costs less at the crossing and
+             * no less one page below it. */
+            struct r300_rb2d_legalize_result wide, witnessed;
+            at.pinned_pitch_bytes = 16320u;
+            assert(legalize_exactly(&at, &wide) == 1u);
+            at.pinned_pitch_bytes = crossing[k].pinned;
+            assert(r300_rb2d_legalize_linear_span(&at, windows,
+                                                  ARRAY_LEN(windows),
+                                                  &witnessed) == 2u);
+            assert(r300_rb2d_legalize_cost(&wide,
+                                           &r300_rb2d_default_cost_weights) <
+                   r300_rb2d_legalize_cost(
+                      &witnessed, &r300_rb2d_default_cost_weights));
+            under.pinned_pitch_bytes = 16320u;
+            assert(legalize_exactly(&under, &wide) == 1u);
+            under.pinned_pitch_bytes = crossing[k].pinned;
+            assert(legalize_exactly(&under, &witnessed) == 1u);
+            assert(r300_rb2d_legalize_cost(&wide,
+                                           &r300_rb2d_default_cost_weights) >=
+                   r300_rb2d_legalize_cost(
+                      &witnessed, &r300_rb2d_default_cost_weights));
+         } else {
+            /* The chooser's verdict over the whole registry. */
+            enum r300_rb2d_format chosen = R300_RB2D_FORMAT_COUNT;
+            assert(r300_rb2d_choose_pitch(&at,
+                                          &r300_rb2d_default_cost_weights,
+                                          &chosen) == 16320u);
+            assert(chosen == R300_RB2D_FORMAT_ARGB8888);
+            assert(r300_rb2d_choose_pitch(&under,
+                                          &r300_rb2d_default_cost_weights,
+                                          &chosen) != 16320u);
+         }
+      }
+   }
+
    /* Cost of a refusal is unbounded. */
    struct r300_rb2d_legalize_result bad = { .refusal =
                                                R300_RB2D_LEGALIZE_REFUSE_SPAN };

@@ -159,12 +159,13 @@ ROWS: list[dict] = [
     # the interval the cell declares.
     # DST_PITCH_OFFSET carries eight pitch bits, so 256 units reaches the
     # tracker as pitch zero and 511 units reaches it as 255 units with
-    # DST_TILE_MACRO set; both raw streams are rejected and the legalized
-    # stream on the widest encodable carrier, 255 units, is accepted.
+    # DST_TILE_MACRO set; both raw streams are rejected.  The dense
+    # qualification cell rides the widest encodable carrier, 255 units,
+    # and its legalized stream is accepted.
     {"name": "pitch past the 8-bit field", "bo": 65536, "off": 12,
      "size": 65428, "pitch": 256,
      "raw": dict(pitch=16384, offset=0, rects=[(3, 0, 4093, 1)])},
-    {"name": "widest encodable carrier 16320", "bo": 65536, "off": 12,
+    {"name": "cell dense_16320_carrier", "bo": 65536, "off": 12,
      "size": 65428, "pitch": 16320, "evidence": "planned",
      "raw": dict(pitch=16320, offset=0, rects=[(3, 0, 16357, 1)])},
     {"name": "cell v2_multiwindow_256", "bo": 2097152, "off": 12,

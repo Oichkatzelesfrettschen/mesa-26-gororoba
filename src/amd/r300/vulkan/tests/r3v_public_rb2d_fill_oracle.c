@@ -51,6 +51,29 @@ static const struct r3v_public_rb2d_fill_cell cells[] = {
       .expected_relocation_sites = 2u,
       .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT,
    },
+   {
+      /* The dense carrier: 255 of the 64-byte grid is the widest surface
+       * DST_PITCH_OFFSET's 8-bit pitch field names, so 16320 bytes is one
+       * row of 4080 ARGB8888 pixels.  The interval is the first row's
+       * remainder, three whole rows, and a forty-pixel tail across five
+       * rows of one window, and the footprint ends at 65440 bytes, so a
+       * carrier a quarter the width of the object still fits inside it.
+       * The run qualifies the carrier rather than the route.
+       */
+      .name = "dense_16320_carrier",
+      .allocation_bytes = R3V_PUBLIC_RB2D_FILL_ALLOCATION_BYTES,
+      .fill_offset = 12u,
+      .fill_bytes = 65428u,
+      .fill_value = R3V_PUBLIC_RB2D_FILL_VALUE,
+      .tail_bytes = R3V_PUBLIC_RB2D_FILL_TAIL_BYTES,
+      .route_id = R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2,
+      .contract = R300_RB2D_CONTRACT_CONST_FILL_V2,
+      .pinned_pitch_bytes = 16320u,
+      .expected_pitch_bytes = 16320u,
+      .expected_window_count = 1u,
+      .expected_relocation_sites = 1u,
+      .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION,
+   },
 };
 
 const struct r3v_public_rb2d_fill_cell *
