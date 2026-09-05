@@ -171,6 +171,15 @@ ROWS: list[dict] = [
     {"name": "cell v2_multiwindow_256", "bo": 2097152, "off": 12,
      "size": 2097012, "pitch": 256,
      "raw": dict(pitch=256, offset=0, rects=[(3, 0, 524253 & 0xFFFF, 1)])},
+    # The chooser cell is that same interval with the pitch key omitted,
+    # so the tool passes zero and the cost model picks the carrier at the
+    # executing floor.  The raw stream is the same naive rendering, so the
+    # pair reads as one interval lowered two ways: the kernel rejects the
+    # raw form under either, and the chooser's 16320-byte carrier is
+    # accepted as one window where the pin needs two.
+    {"name": "cell v2_chooser_16320", "bo": 2097152, "off": 12,
+     "size": 2097012,
+     "raw": dict(pitch=256, offset=0, rects=[(3, 0, 524253 & 0xFFFF, 1)])},
 ]
 
 # Rows the kernel accepts and the legalizer keeps accepting: the raw

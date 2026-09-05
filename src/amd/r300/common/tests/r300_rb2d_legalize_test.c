@@ -689,6 +689,56 @@ test_two_receipted_carriers(void)
    assert(format == R300_RB2D_FORMAT_ARGB8888);
 }
 
+/* The chooser cell's geometry, where the verdict is the fact under test.
+ * At the executing floor the registry admits 256 and 16320, and 2 MiB is
+ * the smallest allocation on the 4 KiB grid where the wider carrier's one
+ * window costs less than the narrower carrier's two, so the chooser
+ * returns 16320 there and 256 one 4 KiB step below.  Pinning 256 over the
+ * same interval still legalizes, into the two windows the pinned cell
+ * declares, so the cell discriminates the chooser from the pin. */
+static void
+test_chooser_selected_cell(void)
+{
+   enum r300_rb2d_format format = R300_RB2D_FORMAT_COUNT;
+   struct r300_rb2d_legalize_request chooser =
+      request(12u, 2097012u, 2097152u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   assert(r300_rb2d_choose_pitch(&chooser, &r300_rb2d_default_cost_weights,
+                                 &format) == 16320u);
+   assert(format == R300_RB2D_FORMAT_ARGB8888);
+
+   struct r300_rb2d_legalize_result result;
+   assert(legalize_exactly(&chooser, &result) == 1u);
+   assert(result.pitch_bytes == 16320u);
+   assert(result.window_count == 1u && result.relocation_sites == 1u);
+   assert(result.rect_count == 3u && result.ib_dwords == 38u);
+   assert(windows[0].bo_base == 0u && windows[0].height_rows == 129u);
+   assert(windows[0].rects[0].x == 3u && windows[0].rects[0].y == 0u &&
+          windows[0].rects[0].width == 4077u &&
+          windows[0].rects[0].height == 1u);
+   assert(windows[0].rects[1].x == 0u && windows[0].rects[1].y == 1u &&
+          windows[0].rects[1].width == 4080u &&
+          windows[0].rects[1].height == 127u);
+   assert(windows[0].rects[2].x == 0u && windows[0].rects[2].y == 128u &&
+          windows[0].rects[2].width == 2016u &&
+          windows[0].rects[2].height == 1u);
+
+   /* The same geometry with 16320 withheld by a pin at 256: the interval
+    * still legalizes, and it costs the two windows and two relocation
+    * sites the chooser declined. */
+   struct r300_rb2d_legalize_request pinned = chooser;
+   pinned.pinned_pitch_bytes = 256u;
+   assert(legalize_exactly(&pinned, &result) == 2u);
+   assert(result.pitch_bytes == 256u);
+   assert(result.window_count == 2u && result.relocation_sites == 2u);
+
+   /* One 4 KiB step below the cell, at the cell's own offset, the
+    * narrower carrier wins, so the cell sits at the crossover. */
+   struct r300_rb2d_legalize_request below =
+      request(12u, 2092916u, 2093056u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   assert(r300_rb2d_choose_pitch(&below, &r300_rb2d_default_cost_weights,
+                                 &format) == 256u);
+}
+
 /* Refusals at the request boundary. */
 static void
 test_request_refusals(void)
@@ -788,6 +838,7 @@ main(void)
    test_pitch_registry();
    test_chooser_and_cost();
    test_two_receipted_carriers();
+   test_chooser_selected_cell();
    test_request_refusals();
    test_emitter_epochs();
    printf("r300_rb2d_legalize_test: all checks passed\n");

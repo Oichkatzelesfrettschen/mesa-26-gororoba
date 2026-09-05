@@ -319,6 +319,18 @@ def main():
                 "ib_dwords": "58",
                 "relocation_site_count": "2",
             },
+            "v2_chooser_16320": {
+                "cell_kind": "rb2d_fill_v2_route",
+                "evidence_scope": "route_receipt",
+                "route": "rb2d_const_fill_v2",
+                "allocation_bytes": "2097152",
+                "fill_bytes": "2097012",
+                "pitch_bytes": "16320",
+                "window_count": "1",
+                "rect_count": "3",
+                "ib_dwords": "38",
+                "relocation_site_count": "1",
+            },
             "dense_16320_carrier": {
                 "cell_kind": "rb2d_carrier_qualification",
                 "evidence_scope": "carrier_qualification",
@@ -336,6 +348,8 @@ def main():
             "v1_public": ["3,0,61,1", "0,1,64,18", "0,19,35,1"],
             "v2_multiwindow_256": ["3,0,61,1", "0,1,64,8190",
                                    "0,3,32,1"],
+            "v2_chooser_16320": ["3,0,4077,1", "0,1,4080,127",
+                                 "0,128,2016,1"],
             "dense_16320_carrier": ["3,0,4077,1", "0,1,4080,3",
                                     "0,4,40,1"],
         }
