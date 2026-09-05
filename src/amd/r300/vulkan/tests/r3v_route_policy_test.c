@@ -138,10 +138,9 @@ test_cached_gate_admits_the_executing_route(void)
    assert(route->unit == R300_EXECUTION_UNIT_RB2D_FILL);
 
    /* A gate belongs to one route: opening every other entry admits nothing
-    * more, and closing this one closes the route.  The windowed
-    * precommitted row answers the same operation and use under its own
-    * gate, so it stays closed here and test_both_maturities_admitted_refuses
-    * carries the pair. */
+    * more, and closing this one closes the route.  The windowed row
+    * answers the same operation and use under its own gate, so it stays
+    * closed here and test_two_executing_routes_refuses carries the pair. */
    for (unsigned r = 0; r < R300_OPERATION_ROUTE_COUNT; r++)
       gates[r] = r != R300_OPERATION_ROUTE_RB2D_CONST_FILL &&
                  r != R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2;
@@ -173,12 +172,15 @@ test_cached_gate_admits_the_executing_route(void)
  * against a row's mask; without the hoisted check a request naming two
  * purposes would be refused by the first and admitted by the second, and the
  * open gate would carry a transfer route into a storage-buffer request. */
-/* A promoted route and a precommitted route both admitted for one operation
- * and use name two executors for one fill.  Preferring either would discard
- * the opt-in the operator wrote, so the pair refuses under every policy and
- * closing one gate is the operator's answer. */
+/* Both CONSTFILL RB2D routes execute over the transfer destination, each
+ * behind its own gate, so which one runs is the gate the operator opened.
+ * Two open gates name two contracts for one fill and the selector declines
+ * to rank them: the pair refuses under every policy, and closing one gate
+ * is the operator's answer.  AUTO is the arm that matters -- an empty
+ * selection reads as "no GPU route" and would otherwise carry the fill on
+ * the host with both gates standing open. */
 static void
-test_both_maturities_admitted_refuses(void)
+test_two_executing_routes_refuses(void)
 {
    bool gates[R300_OPERATION_ROUTE_COUNT] = { false };
    const struct r300_operation_route_row *route = NULL;
@@ -196,19 +198,34 @@ test_both_maturities_admitted_refuses(void)
       assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
              R3V_ROUTE_DECISION_REFUSE);
       assert(route == NULL);
-      assert(strcmp(reason, "an executing route and a precommitted route "
-                            "are both admitted for one use") == 0);
+      assert(strcmp(reason,
+                    "two executing routes are admitted for one use") == 0);
    }
 
-   /* The precommitted row alone is the experimental admission it exists to
-    * be, and it names its own route. */
+   /* The windowed row alone names its own route, and so does the
+    * single-window row alone: one open gate is a decidable request. */
    gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = false;
    struct r3v_route_request request = fill_request(R3V_EXECUTION_GPU_ONLY);
    assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
           R3V_ROUTE_DECISION_GPU);
    assert(route ==
           r300_operation_route(R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2));
-   assert(route->state == R300_OPERATION_ROUTE_PRECOMMITTED);
+   assert(route->state == R300_OPERATION_ROUTE_EXECUTING);
+
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = true;
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2] = false;
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_GPU);
+   assert(route == rb2d_fill_row());
+
+   /* Neither gate open under AUTO is no ambiguity at all: no GPU row is
+    * admitted and the host path carries the fill. */
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = false;
+   route = NULL;
+   request = fill_request(R3V_EXECUTION_AUTO);
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_HOST);
+   assert(route == NULL);
 }
 
 static void
@@ -488,8 +505,8 @@ host_provenance(void)
    };
 }
 
-/* The one executing GPU route the ledger carries, for the arms that need a
- * promoted row rather than the precommitted fill route. */
+/* A second executing GPU route on another operation, for the arms that
+ * separate the ledger comparison from the fill route's own row. */
 static struct r3v_execution_provenance
 executing_gpu_provenance(void)
 {
@@ -778,7 +795,7 @@ main(void)
    test_every_gpu_row_is_gated();
    test_gate_closed_reaches_the_host();
    test_cached_gate_admits_the_executing_route();
-   test_both_maturities_admitted_refuses();
+   test_two_executing_routes_refuses();
    test_use_mask_names_one_purpose();
    test_resource_shape_gates_the_gpu_decision();
    test_malformed_requests_refuse();

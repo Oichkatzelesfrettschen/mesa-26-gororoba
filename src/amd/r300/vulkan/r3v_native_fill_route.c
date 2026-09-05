@@ -323,27 +323,28 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    /* The evidence floors the selected row's state names.  An EXECUTING row
     * is the qualified executor, so both authorities are asked for a
     * silicon receipt.  A PRECOMMITTED row is what a run produces rather
-    * than what it consumes: the contract floor drops to the kernel replay
-    * every contract row clears, and the carrier floor stays at
-    * the receipt so an experimental route still writes through a carrier
-    * silicon has exercised.
-    *
-    * A carrier-qualification run is the one exception, and it names itself
-    * exactly: the declared qualification carrier equals the pinned
-    * carrier, so the operator has stated which unexercised pitch this run
-    * is for and the carrier floor drops to PLANNED for that pitch alone.
-    * The cell kind changes with it, so the arming digest carries the
-    * scope and a route authorization never admits a qualification stream.
-    */
+    * than what it consumes, so its contract floor drops to the kernel
+    * replay every contract row clears while the carrier floor stays at the
+    * receipt: an experimental route still writes through a carrier silicon
+    * has exercised. */
    if (route->state != R300_OPERATION_ROUTE_EXECUTING) {
       legalize.minimum_contract_evidence =
          R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY;
-      if (legalize.pinned_pitch_bytes != 0u &&
-          device->rb2d_carrier_qualification_pitch_bytes ==
-             legalize.pinned_pitch_bytes) {
-         legalize.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
-         cell_kind = R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION;
-      }
+   }
+
+   /* A carrier-qualification run is what brings an unexercised pitch its
+    * receipt, so it names itself exactly: the declared qualification
+    * carrier equals the pinned carrier, and the carrier floor drops to
+    * PLANNED for that pitch alone.  It rides the windowed contract, which
+    * is the contract that takes a pinned carrier at all, and the cell kind
+    * changes with it so the arming digest carries the scope and a route
+    * authorization never admits a qualification stream. */
+   if (legalize.contract == R300_RB2D_CONTRACT_CONST_FILL_V2 &&
+       legalize.pinned_pitch_bytes != 0u &&
+       device->rb2d_carrier_qualification_pitch_bytes ==
+          legalize.pinned_pitch_bytes) {
+      legalize.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+      cell_kind = R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION;
    }
 
    struct fill_route_build build = { 0 };

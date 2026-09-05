@@ -280,9 +280,9 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    }
 
    /* Both CONSTFILL RB2D gates open name two executors for one transfer
-    * destination: the receipted single-window contract and the
-    * precommitted windowed one write the same bytes under different
-    * contracts, and the route policy refuses that pair at every request.
+    * destination: the single-window contract and the windowed one write
+    * the same bytes under different contracts, and the route policy
+    * refuses that pair at every request.
     * Refusing at creation reports it once, where the operator can act on
     * it, rather than once per vkCmdFillBuffer. */
    if (device->compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] !=

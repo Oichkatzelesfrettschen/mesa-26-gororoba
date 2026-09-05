@@ -428,9 +428,9 @@ writes zero bytes, the kernel's strict-2d parser accepts the stream, the
 kernel observes exactly one CS ioctl.
 
 **What a CONTROL_PASS promotes.** The V2 contract-evidence row alone: two
-windows and two relocation sites at SILICON_RECEIPT. The route row stays
-PRECOMMITTED, because a contract receipt is not a route receipt and the
-composite rule below is what moves the row.
+windows and two relocation sites at SILICON_RECEIPT. A contract receipt is
+not a route receipt, so the composite rule below is what moves the route
+row.
 
 **Outcome: CONTROL_PASS.** One attended run on the Dell Vostro 1000
 (RS485M, `1002:5974`) under the strict-2d parser epoch -- radeon-unified-dkms
@@ -438,7 +438,7 @@ composite rule below is what moves the row.
 6222574b -- through the frozen profile-4 ICD at mesa 617da12427ad (sha256
 7ed2966d26a1ef65108d0d9475864a811d7838f6b6b771f7a1300d5a03e45d5d, build-id
 a19e8ea16cc89e9877d2b54a90b7e9313d45492f). The route resolved
-`R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2` at PRECOMMITTED on the 256-byte
+`R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2` under its gate on the 256-byte
 ARGB8888 carrier, two rebased windows through two relocation sites into one
 2 MiB destination, 58 dwords, IB blake3
 `226fa08ad663859ab6f8be899ca1bd83a394274032c02ebf014c8f5bdc2743eb`. All
@@ -453,10 +453,10 @@ against prediction bundle
 `r3v-native-rb2d-const-fill-v2-multiwindow-prediction-vostro1000_rs485m_5974`.
 
 The run promotes contract evidence only. The V2 contract-evidence row now
-reads SILICON_RECEIPT at two windows and two relocation sites, and the route
-row stays PRECOMMITTED: receipt B is the `dense_16320_carrier` cell, which
-holds its own CONTROL_PASS below, receipt C is the chooser cell, and the
-composite rule below is what moves the route.
+reads SILICON_RECEIPT at two windows and two relocation sites; receipt B is
+the `dense_16320_carrier` cell and receipt C is the chooser cell, each
+holding its own CONTROL_PASS below, and the composite rule below is what
+moves the route.
 
 ### dense_16320_carrier
 
@@ -533,8 +533,7 @@ against prediction bundle
 The run promotes the carrier alone. The pitch-evidence registry ranks two
 receipted ARGB8888 carriers, 256 and 16320, so the chooser selects
 between them under execution evidence rather than reading a single row, and
-the chooser-selected cell -- receipt C -- is the remaining member of the
-composite.
+the chooser-selected cell -- receipt C -- measures that verdict.
 
 ### v2_chooser_16320 -- the chooser-selected cell
 
@@ -564,8 +563,8 @@ the pin in both directions; `r300_rb2d_legalize_test`'s
 `test_chooser_selected_cell` holds all three.
 
 The executing floor sets the size. `r3v_native_fill_route` holds the
-carrier floor at SILICON_RECEIPT for a PRECOMMITTED row and drops it to
-PLANNED only for a declared qualification pitch, so the executing chooser
+carrier floor at SILICON_RECEIPT and drops it to PLANNED only for a
+declared qualification pitch that equals the pinned carrier, so the chooser
 ranks the receipted pair -- 256 and 16320 -- alone, and the pair crossover
 is the size that qualifies the carrier it picks. The whole-registry
 crossover at 34467840 bytes is the PLANNED-floor verdict, where 4096 and
@@ -590,21 +589,47 @@ windowed gate is open, and the retained stream is byte-identical to the
 armed chooser stream. The refusal therefore lives at the operator boundary
 in the attended application, by name and ahead of `vkCreateInstance`.
 
-Silicon: **not run**. The attended CONTROL_PASS and its retained bundle
-are the outstanding work for this cell.
+**Outcome: CONTROL_PASS.** One attended run on the Dell Vostro 1000
+(RS485M, `1002:5974`) under the same strict-2d parser epoch --
+radeon-unified-dkms 0.8.14-1, srcversion `F6D858EC31CEB8A5B320781`, kernel
+7.1.8-1-cachyos, boot id `6222574b` -- through the frozen profile-4 ICD at
+mesa `4eb6f93c409` (sha256 `3f465307...`, build-id `3dcb3b67...`). The
+public route reached 16320 through its own chooser with no pin declared:
+one window of 129 rows, one relocation site, 38 dwords. The interval reads
+back exactly, the canaries are unchanged, the retained submit object is
+byte-identical to the arming runner's emission, the `dmesg` delta is empty,
+and the boot id is unchanged. Receipt bundle `steinmarder-r300
+src/re/r300/results/r3v-native-rb2d-const-fill-v2-chooser-receipt-vostro1000_rs485m_5974-strict-2d-cs`.
 
 ### The composite rule
 
-`rb2d_const_fill_v2` promotes from PRECOMMITTED to EXECUTING when all
-three cells agree, each with its own CONTROL_PASS and its own retained
-bundle:
+`rb2d_const_fill_v2` executes: all three cells hold, each with its own
+CONTROL_PASS and its own retained bundle under the strict-2d parser epoch.
 
-- A: `v2_multiwindow_256`, the windowed stream shape -- CONTROL_PASS held
-- B: `dense_16320_carrier`, the dense carrier -- CONTROL_PASS held
-- C: `v2_chooser_16320`, the chooser's own verdict -- designed, not run
+- A: `v2_multiwindow_256`, the windowed stream shape -- two rebased windows
+  through two relocation sites on the 256-byte carrier, bundle
+  `r3v-native-rb2d-const-fill-v2-multiwindow-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+- B: `dense_16320_carrier`, the dense carrier -- one window of five rows on
+  the widest pitch `DST_PITCH_OFFSET` encodes, bundle
+  `r3v-native-rb2d-dense-16320-carrier-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+- C: `v2_chooser_16320`, the chooser's own verdict -- the public route
+  reaching 16320 through its cost model, one window of 129 rows, 38 dwords,
+  bundle
+  `r3v-native-rb2d-const-fill-v2-chooser-receipt-vostro1000_rs485m_5974-strict-2d-cs`
 
-One receipt promotes one row; the route row is the conjunction, so A and B
-together leave the row PRECOMMITTED until C lands.
+One receipt promotes one row; the route row is the conjunction, so the
+three together move `R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2` to EXECUTING
+with evidence SILICON_RETAINED at native-GPU-route scope. The gate stays.
+AUTO keeps the host path: automatic selection is withheld until the host is
+measured against V2 at 4 B, 64 B, 256 B, 4 KiB, 64 KiB, 512 KiB, 2 MiB, and
+8 MiB, and the crossover that measurement finds is the threshold any AUTO
+admission would name. Until then the route answers an operator who opens
+its gate or a `GPU_ONLY` caller.
+
+Both RB2D gates open name two executing contracts for one transfer
+destination. `vkCreateDevice` refuses that pair, and the route policy
+refuses it again at every request rather than ranking the two by table
+order or falling to the host.
 
 ## What this cell does not answer
 

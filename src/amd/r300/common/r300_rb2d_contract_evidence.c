@@ -13,9 +13,10 @@
  * the receipted 256-byte carrier decomposed into two rebased windows through
  * two relocation sites, 58 dwords, and the strict-2d parser accepted the
  * stream with every interval dword written, every canary intact, and an
- * empty dmesg delta.  The route stays PRECOMMITTED because a contract
- * receipt is not a route receipt: the dense carrier and the chooser verdict
- * are outstanding.
+ * empty dmesg delta.  The dense-carrier and chooser receipts that promote
+ * the route each emit one window through one relocation site, so the
+ * widest stream silicon has run stays two windows and the registry still
+ * refuses a third.
  */
 static const struct r300_rb2d_contract_evidence rows[] = {
    { R300_RB2D_CONTRACT_CONST_FILL_V1,

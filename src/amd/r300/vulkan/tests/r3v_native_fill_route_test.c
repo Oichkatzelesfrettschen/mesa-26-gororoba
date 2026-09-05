@@ -442,6 +442,67 @@ test_attended_cell_routes(const struct reference *ref)
    scene_release(&s);
 }
 
+/* The windowed contract executes beside the single-window one, so its own
+ * gate selects it and the record it installs names the V2 route cell.  An
+ * executing row reports no experimental admission, which is the promotion's
+ * one visible consequence in a record. */
+static void
+test_windowed_route_routes(const struct reference *ref)
+{
+   struct scene s;
+   if (!scene_init(&s, ref)) {
+      CHECK(false, "the scene does not build");
+      return;
+   }
+   s.device.compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = NULL;
+   s.device.compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2] =
+      "1";
+   /* The receipted 256-byte carrier, pinned, so the arm measures the route
+    * rather than the chooser. */
+   s.device.rb2d_v2_pinned_pitch_bytes = 256u;
+
+   VkResult result = VK_SUCCESS;
+   const bool claimed = route(&s, &result);
+   CHECK(result == VK_SUCCESS, "the windowed cell returns %d", result);
+   CHECK(claimed, "the windowed cell does not route");
+   if (claimed) {
+      CHECK(s.cmd.cell_kind == R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE,
+            "the routed cell kind is %d", (int)s.cmd.cell_kind);
+      CHECK(s.cmd.fill_route_provenance.route_id ==
+               R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2,
+            "the provenance names another route");
+      CHECK(s.cmd.fill_route_provenance.route_state ==
+               R300_OPERATION_ROUTE_EXECUTING,
+            "the provenance reports an unpromoted route");
+      CHECK(!s.cmd.fill_route_provenance.experimental_admission,
+            "an executing route reports an experimental admission");
+   }
+   scene_release(&s);
+}
+
+/* Both RB2D gates open name two executing contracts for one transfer
+ * destination, and the route policy refuses the pair rather than ranking
+ * it.  The refusal reaches the caller as a route refusal, so an AUTO
+ * request does not quietly become a host fill. */
+static void
+test_both_rb2d_gates_open_refuse(const struct reference *ref)
+{
+   struct scene s;
+   if (!scene_init(&s, ref)) {
+      CHECK(false, "the scene does not build");
+      return;
+   }
+   s.device.compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2] =
+      "1";
+   VkResult result = VK_SUCCESS;
+   const bool claimed = route(&s, &result);
+   CHECK(!claimed, "two open gates still route");
+   CHECK(result == R3V_NATIVE_REFUSAL_RESULT,
+         "two open gates return %d", result);
+   check_untouched(&s, "two open RB2D route gates");
+   scene_release(&s);
+}
+
 /* Each way the route declines, with the command buffer read back after
  * every one.  A mutation names one field of the calibrated scene. */
 static void
@@ -858,6 +919,8 @@ main(void)
    }
 
    test_attended_cell_routes(&ref);
+   test_windowed_route_routes(&ref);
+   test_both_rb2d_gates_open_refuse(&ref);
    test_declines_leave_the_command_buffer_untouched(&ref);
    test_gpu_only_refuses_rather_than_falling_back(&ref);
    test_gpu_only_reaches_the_admitted_route(&ref);

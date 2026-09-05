@@ -162,19 +162,40 @@ nothing has run.
 | Executor | GPU |
 | Unit | `R300_EXECUTION_UNIT_RB2D_FILL` |
 | Use | `R300_ROUTE_USE_TRANSFER_BUFFER` |
-| State | PRECOMMITTED |
+| State | EXECUTING |
 | Implementation | `R300_OPERATION_IMPLEMENTATION_RB2D_LINEAR_SOLID_FILL` |
 | Contract | `R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL_V2` |
 | Admission | `R300_ROUTE_ADMISSION_RB2D_WINDOWED_LINEAR_SURFACE` |
 | Exactness | BIT_EXACT |
-| Evidence | SOURCE_GROUNDED at UNIT_CONTRACT |
+| Evidence | SILICON_RETAINED at NATIVE_GPU_ROUTE_CELL |
 | Gate | `R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL` |
 
 The implementation is shared with V1 -- the same RB2D solid brush and the
 same legalizer -- and the contract and admission identities are the route's
 own. Both gates open name two executors for one transfer destination, so
 device creation refuses that pair and the route policy refuses it again at
-every request.
+every request rather than ranking the two or falling to the host.
+
+Three attended CONTROL_PASS runs on the Dell Vostro 1000 (RS485M,
+`1002:5974`) under the strict-2d parser epoch carry the row to EXECUTING,
+each with its own retained bundle in `steinmarder-r300 src/re/r300/results`:
+
+* `r3v-native-rb2d-const-fill-v2-multiwindow-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+  -- two rebased windows through two relocation sites on the 256-byte
+  carrier, which is the stream shape the V2 contract row receipts.
+* `r3v-native-rb2d-dense-16320-carrier-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+  -- one window of five rows on the widest pitch `DST_PITCH_OFFSET`
+  encodes, which is the carrier the 16320 pitch row receipts.
+* `r3v-native-rb2d-const-fill-v2-chooser-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+  -- the public route reaching 16320 through its own chooser, one window of
+  129 rows, 38 dwords, which is the cost model's verdict receipted as the
+  carrier the run exercises.
+
+The gate stays and AUTO keeps the host path. Automatic selection is
+withheld until the host is measured against V2 at 4 B, 64 B, 256 B, 4 KiB,
+64 KiB, 512 KiB, 2 MiB, and 8 MiB; the crossover that measurement finds is
+the threshold any AUTO admission would name, so until it runs the route
+answers an operator who opens its gate or a `GPU_ONLY` caller.
 
 `R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES` is an assertion over the chooser,
 read once at device creation beside the route gates: when it is set, the
