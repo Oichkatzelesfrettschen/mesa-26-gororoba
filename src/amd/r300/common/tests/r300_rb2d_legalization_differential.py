@@ -151,6 +151,15 @@ ROWS: list[dict] = [
      "raw": dict(pitch=256, offset=0, rects=[(0, 0, 64, 64)])},
     {"name": "RGB565 row overflow", "bo": 4096, "off": 0, "size": 260,
      "raw": dict(pitch=256, offset=0, rects=[(0, 0, 130, 1)], fmt=RGB565)},
+    # The three attended-cell intervals.  Each raw stream is the naive
+    # single-rectangle rendering the legalizer replaces -- the whole
+    # interval as one row of the carrier, which overruns the row and the
+    # 16-bit extent field -- so the kernel rejects it and accepts the
+    # legalized decomposition, and the coverage check holds the windows to
+    # the interval the cell declares.
+    {"name": "cell v2_multiwindow_256", "bo": 2097152, "off": 12,
+     "size": 2097012, "pitch": 256,
+     "raw": dict(pitch=256, offset=0, rects=[(3, 0, 524253 & 0xFFFF, 1)])},
 ]
 
 # Rows the kernel accepts and the legalizer keeps accepting: the raw
@@ -164,8 +173,13 @@ ACCEPT_ROWS: list[dict] = [
 ]
 
 
-def coverage(windows_txt: Path, bo_size: int) -> set[int]:
-    touched: set[int] = set()
+def coverage(windows_txt: Path, bo_size: int) -> list[tuple[int, int]]:
+    """The byte intervals the windows touch, merged, computed here from the
+    rectangle geometry alone.  An overlap or a rectangle past the object is
+    fatal; the merged list is compared against the requested interval, so a
+    gap between two windows shows as a second entry rather than as a
+    matching byte count."""
+    spans: list[tuple[int, int]] = []
     for line in windows_txt.read_text().splitlines():
         base, pitch, cpp, x, y, w, h = (int(v) for v in line.split())
         for row in range(h):
@@ -173,11 +187,17 @@ def coverage(windows_txt: Path, bo_size: int) -> set[int]:
             end = start + w * cpp
             if end > bo_size:
                 raise SystemExit(f"rectangle past the object in {windows_txt}")
-            span = set(range(start, end))
-            if touched & span:
-                raise SystemExit(f"overlapping rectangles in {windows_txt}")
-            touched |= span
-    return touched
+            spans.append((start, end))
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            raise SystemExit(f"overlapping rectangles in {windows_txt}")
+        if merged and start == merged[-1][1]:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def main(argv: list[str]) -> int:
@@ -210,7 +230,8 @@ def main(argv: list[str]) -> int:
             contract = "v2"
             proc = subprocess.run(
                 [legalize, str(row["off"]), str(row["size"]), str(row["bo"]), contract,
-                 "silicon", "0", str(leg)],
+                 row.get("evidence", "silicon"), str(row.get("pitch", 0)),
+                 str(leg)],
                 capture_output=True, text=True,
             )
             if proc.returncode != 0:
@@ -218,7 +239,7 @@ def main(argv: list[str]) -> int:
                 failures += 1
                 continue
             got_legal = replay(replay_tool, leg / "bundle.txt", leg / "ib.bin")
-            expected = set(range(row["off"], row["off"] + row["size"]))
+            expected = [(row["off"], row["off"] + row["size"])]
             observed = coverage(leg / "windows.txt", row["bo"])
             ok = got_raw == expect_raw and got_legal == "accept" and observed == expected
             judged += 1
