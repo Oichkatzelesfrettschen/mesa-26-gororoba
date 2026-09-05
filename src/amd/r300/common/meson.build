@@ -34,6 +34,7 @@ r300_common_contract_files = files(
   'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_noperspective_q_lane_plan.c', 'r300_noperspective_mixed_carrier_plan.c',
   'r300_zb_depth_control_cell.c',
   'r300_zb_depth_state.c',
+  'r300_zb_hyperz_admission.c',
 )
 
 r300_common_files = r300_common_contract_files
@@ -371,6 +372,21 @@ r300_zb_depth_state_test = executable(
 test(
   'r300-zb-depth-state',
   r300_zb_depth_state_test,
+  suite : ['r300'],
+)
+
+r300_zb_hyperz_admission_test = executable(
+  'r300_zb_hyperz_admission_test',
+  files('tests/r300_zb_hyperz_admission_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-zb-hyperz-admission',
+  r300_zb_hyperz_admission_test,
   suite : ['r300'],
 )
 
