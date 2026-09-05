@@ -100,7 +100,7 @@ class Leg:
     def run(self, label, expect, *, evidence=None, protect=True,
             declare=None, shim=None, policy="gpu_only", gate="1",
             extra=None, plan=None, cell=None, v2_gate=None, pinned=None,
-            qualification=None):
+            expected=None, qualification=None):
         self.count += 1
         if evidence is None:
             evidence = os.path.join(self.work, f"evidence-{self.count}")
@@ -124,6 +124,8 @@ class Leg:
             env["R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL"] = v2_gate
         if pinned:
             env["R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES"] = pinned
+        if expected:
+            env["R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES"] = expected
         if qualification:
             env["R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES"] = \
                 qualification
@@ -428,6 +430,82 @@ def main():
             if present:
                 fail(f"{label}: the refused run retained {present}")
 
+        # The chooser cell through the loader.  Its interval is the
+        # windowed cell's, so the pin is the only field that moves: with
+        # it withdrawn the cost model returns the 16320-byte carrier, the
+        # stream collapses to one window over one relocation site, and the
+        # declared expectation asserts that verdict.
+        ch_scratch = os.path.join(work, "runner-scratch-chooser")
+        os.mkdir(ch_scratch)
+        ch_digest, ch_identity, ch_dwords, ch_sites = runner_report(
+            runner, sysfs, ch_scratch, DESTINATION_HANDLE,
+            cell="v2_chooser_16320")
+        if (ch_dwords, ch_sites) != (38, 1):
+            fail(f"the chooser cell emits {ch_dwords} dwords over "
+                 f"{ch_sites} sites, not 38 over 1")
+        ch_declaration = {
+            **declaration,
+            "R3V_NATIVE_AUTHORIZED_IB_BLAKE3": ch_digest,
+            "R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3": ch_identity,
+        }
+        ch_arms = dict(cell="v2_chooser_16320", gate=None, v2_gate="1",
+                       expected="16320")
+        result, evidence, present = leg.run("chooser armed", "submitted",
+                                            declare=ch_declaration,
+                                            **ch_arms)
+        if result.returncode != 0:
+            fail(f"chooser armed: application status {result.returncode}\n"
+                 f"{result.stdout}\n{result.stderr}")
+        if field(result.stdout, "shim_cs_ioctls") != "1":
+            fail("chooser armed: the shim did not observe exactly one CS")
+        if field(result.stdout, "expected_pitch") != "16320":
+            fail(f"chooser armed: the application ran expected pitch "
+                 f"{field(result.stdout, 'expected_pitch')}")
+        with open(os.path.join(evidence, "submit_manifest.json"),
+                  encoding="utf-8") as f:
+            ch_submit = json.load(f)
+        if ch_submit.get("ib_blake3") != ch_digest or \
+                ch_submit.get("ib_dwords") != 38:
+            fail(f"chooser armed: submit_manifest.json binds "
+                 f"{ch_submit.get('ib_dwords')} dwords under "
+                 f"{ch_submit.get('ib_blake3')}")
+        with open(os.path.join(evidence, "ib.bin"), "rb") as f:
+            chooser_ib = f.read()
+
+        # The chooser cell's refusals.  A declared expectation of 256
+        # names the carrier the cost model declined, and the route
+        # declines the chosen carrier; a pin at 256 beside it moves the
+        # lowering to two windows, which no longer matches the authorized
+        # stream.
+        result, _, present = leg.run(
+            "chooser expects 256", "refused", declare=ch_declaration,
+            **{**ch_arms, "expected": "256"})
+        require_refused("chooser expects 256", result, present)
+        result, _, present = leg.run(
+            "chooser pinned 256", "refused", declare=ch_declaration,
+            **{**ch_arms, "pinned": "256"})
+        require_refused("chooser pinned 256", result, present)
+
+        # The qualification declaration beside the chooser cell.  The
+        # route reaches the qualification floor only through a pinned
+        # carrier, so with the pin withdrawn the declaration decides
+        # nothing: the device admits it because the windowed gate is
+        # open, and the submission is the byte-identical armed stream.
+        # The attended application is where a route receipt refuses this
+        # declaration, by name and ahead of vkCreateInstance.
+        result, evidence, present = leg.run(
+            "chooser qualification pin inert", "submitted",
+            declare=ch_declaration,
+            **{**ch_arms, "qualification": "16320"})
+        if result.returncode != 0 or \
+                field(result.stdout, "shim_cs_ioctls") != "1":
+            fail(f"chooser qualification pin: status {result.returncode}\n"
+                 f"{result.stdout}\n{result.stderr}")
+        with open(os.path.join(evidence, "ib.bin"), "rb") as f:
+            if f.read() != chooser_ib:
+                fail("chooser qualification pin: the retained stream "
+                     "differs from the armed chooser stream")
+
         # The host path over the protected mapping faults: the protection
         # judges stores.  The same path over a writable mapping fills the
         # interval and nothing else: the sweep judges bytes.
@@ -443,10 +521,10 @@ def main():
             fail(f"host control: status {result.returncode}\n"
                  f"{result.stdout}\n{result.stderr}")
 
-    print("r3v_native_loader_fill_application_check: the sealed and the "
-          "windowed cell each reach the shim once under their own full "
-          "declaration; every refusal, both device-creation refusals, and "
-          "both host controls hold")
+    print("r3v_native_loader_fill_application_check: the sealed, the "
+          "windowed, and the chooser cell each reach the shim once under "
+          "their own full declaration; every refusal, both "
+          "device-creation refusals, and both host controls hold")
     return 0
 
 

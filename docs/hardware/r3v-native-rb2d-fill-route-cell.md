@@ -536,50 +536,75 @@ between them under execution evidence rather than reading a single row, and
 the chooser-selected cell -- receipt C -- is the remaining member of the
 composite.
 
-### v2_chooser -- open design
+### v2_chooser_16320 -- the chooser-selected cell
 
-The chooser cell tests the verdict rather than a pin: it runs
+The chooser cell receipts the verdict rather than a pin: it runs
 `rb2d_const_fill_v2` with no pinned carrier and asserts that the carrier
-the cost model picks is the one the run exercises. Its geometry waits on
-one decision -- which carrier the receipt should qualify -- and
-`r300_rb2d_legalize_test` computes the two sizes that decision needs.
+the cost model picks is the carrier the run exercises. Its interval is the
+windowed cell's, so the pin is the only declared field that moves between
+the two, and the verdict is what the difference measures.
 
-Head to head against the witnessed 256-byte carrier, 16320 wins at the
-tested size of **2097152 bytes** from offset 0 and loses at 2093056. One
-256-byte window reaches `0x1fff` rows of 64 pixels, 2096896 bytes, so an
-offset-zero request of 2096900 bytes is the smallest dword-aligned interval
-that needs a second window on that carrier, and from there the rebind
-costs more than the wider carrier's extra rectangle: cost 228 against 128
-under the default weights at 2 MiB.
+Measured geometry, from `r300_rb2d_choose_pitch` and
+`r300_rb2d_legalize_linear_span` at `minimum_evidence` SILICON_RECEIPT:
 
-As the chooser's own verdict over the whole registry, 16320 wins only from
-**34467840 bytes**, where 8616960 pixels divide exactly into 2112 rows of
-4080 and the carrier reaches one rectangle while 4096 and 8192 still need
-a tail. Below that the chooser prefers 4096 or 8192.
+- allocation 2097152 bytes, fill offset 12, fill bytes 2097012, tail
+  canary 64 bytes, pattern `0x11223344`
+- chooser verdict 16320 bytes, ARGB8888
+- one window at base 0, 129 rows, one relocation site, 38 dwords
+- three rectangles: `(3, 0, 4077, 1)`, `(0, 1, 4080, 127)`,
+  `(0, 128, 2016, 1)`
 
-Which of the two numbers sizes receipt C follows the floor the route runs
-at. `r3v_native_fill_route` holds the carrier floor at SILICON_RECEIPT for
-a PRECOMMITTED row and drops it to PLANNED only for a declared
-qualification pitch, so the executing chooser ranks the receipted pair
-alone and the pair crossover at 2097152 bytes is the size that qualifies
-the carrier it picks. 34467840 is the PLANNED-floor verdict, where 4096
-and 8192 join the ranking; a cell sized between the two would qualify the
-carrier the executing chooser picks and not the one a PLANNED ranking
-names.
+2 MiB is the smallest allocation on the 4 KiB grid where 16320 wins at
+this offset. One 4 KiB step below -- allocation 2093056, offset 12,
+2092916 bytes, the same 64-byte suffix and 64-byte tail -- the chooser
+returns 256. Pinning 256 over the cell's own
+interval still legalizes, into the two windows and two relocation sites
+`v2_multiwindow_256` declares, so the cell discriminates the chooser from
+the pin in both directions; `r300_rb2d_legalize_test`'s
+`test_chooser_selected_cell` holds all three.
 
-The original design named 32704, which the pitch field refutes. A
-replacement cell names one of the two sizes above and waits on
-authorization.
+The executing floor sets the size. `r3v_native_fill_route` holds the
+carrier floor at SILICON_RECEIPT for a PRECOMMITTED row and drops it to
+PLANNED only for a declared qualification pitch, so the executing chooser
+ranks the receipted pair -- 256 and 16320 -- alone, and the pair crossover
+is the size that qualifies the carrier it picks. The whole-registry
+crossover at 34467840 bytes is the PLANNED-floor verdict, where 4096 and
+8192 join the ranking; a cell sized there would qualify the carrier a
+PLANNED ranking names rather than the one the executing chooser picks.
+`DST_PITCH_OFFSET` carries eight pitch bits, which bounds the widest
+carrier at 255 units of the 64-byte grid and refutes the 32704-byte size
+an earlier design named.
+
+Declaration shape. The attended application requires
+`R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES` unset and
+`R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES` equal to `16320`, and it
+requires `R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES` unset for
+every route-receipt cell, the windowed cell included: a route receipt runs
+at the executing carrier floor, and the qualification declaration is the
+one lever that drops a carrier to PLANNED. The driver and the harness draw
+that line at different places, which the loader legs measure. The route
+consumes the qualification declaration only through a pinned carrier
+(`legalize.pinned_pitch_bytes != 0`), so with the pin withdrawn the
+declaration decides nothing: `vkCreateDevice` admits it because the
+windowed gate is open, and the retained stream is byte-identical to the
+armed chooser stream. The refusal therefore lives at the operator boundary
+in the attended application, by name and ahead of `vkCreateInstance`.
+
+Silicon: **not run**. The attended CONTROL_PASS and its retained bundle
+are the outstanding work for this cell.
 
 ### The composite rule
 
-`rb2d_const_fill_v2` promotes from PRECOMMITTED to EXECUTING only after
-all three cells agree -- the windowed stream shape `v2_multiwindow_256`,
-the dense carrier `dense_16320_carrier`, and the chooser's own verdict --
-each with its own CONTROL_PASS and its own retained bundle. One receipt
-promotes one row; the route row is the conjunction. `v2_multiwindow_256`
-holds its CONTROL_PASS, `dense_16320_carrier` holds its own, and the
-chooser cell is an open design.
+`rb2d_const_fill_v2` promotes from PRECOMMITTED to EXECUTING when all
+three cells agree, each with its own CONTROL_PASS and its own retained
+bundle:
+
+- A: `v2_multiwindow_256`, the windowed stream shape -- CONTROL_PASS held
+- B: `dense_16320_carrier`, the dense carrier -- CONTROL_PASS held
+- C: `v2_chooser_16320`, the chooser's own verdict -- designed, not run
+
+One receipt promotes one row; the route row is the conjunction, so A and B
+together leave the row PRECOMMITTED until C lands.
 
 ## What this cell does not answer
 

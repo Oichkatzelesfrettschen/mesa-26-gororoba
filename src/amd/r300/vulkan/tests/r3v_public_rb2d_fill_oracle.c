@@ -19,6 +19,8 @@
  * reaches R300_RB2D_SAFE_EXCLUSIVE_END rows of 256 bytes, just under
  * 2 MiB, so a 2 MiB interval rebases the destination once and the stream
  * carries two windows through two relocation sites.
+ * "v2_chooser_16320" is that same interval with the pin withdrawn, so the
+ * chooser's own verdict is the fact under test.
  */
 static const struct r3v_public_rb2d_fill_cell cells[] = {
    {
@@ -49,6 +51,29 @@ static const struct r3v_public_rb2d_fill_cell cells[] = {
       .expected_pitch_bytes = 256u,
       .expected_window_count = 2u,
       .expected_relocation_sites = 2u,
+      .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT,
+   },
+   {
+      /* The chooser cell: the interval "v2_multiwindow_256" declares,
+       * with the pin withdrawn.  At the executing floor the registry
+       * admits two ARGB8888 carriers, 256 and 16320, and 2 MiB is the
+       * smallest allocation on the 4 KiB grid where one 16320-byte window
+       * costs less than the two windows 256 needs, so the cost model
+       * returns 16320 and the run receipts that verdict.  The two cells
+       * differ in one field, which is what makes the verdict decidable.
+       */
+      .name = "v2_chooser_16320",
+      .allocation_bytes = 2097152u,
+      .fill_offset = 12u,
+      .fill_bytes = 2097012u,
+      .fill_value = R3V_PUBLIC_RB2D_FILL_VALUE,
+      .tail_bytes = R3V_PUBLIC_RB2D_FILL_TAIL_BYTES,
+      .route_id = R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2,
+      .contract = R300_RB2D_CONTRACT_CONST_FILL_V2,
+      .pinned_pitch_bytes = 0u,
+      .expected_pitch_bytes = 16320u,
+      .expected_window_count = 1u,
+      .expected_relocation_sites = 1u,
       .evidence_scope = R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT,
    },
    {

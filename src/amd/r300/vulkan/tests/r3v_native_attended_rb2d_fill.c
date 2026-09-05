@@ -36,9 +36,12 @@
  *
  * The cell decides which route runs the fill, so the binary requires the
  * environment that route needs and refuses each missing or wrong gate by
- * name: v1_public runs the receipted single-window route, and
+ * name: v1_public runs the receipted single-window route,
  * v2_multiwindow_256 runs the windowed route with the V1 gate closed and
- * the 256-byte carrier pinned.
+ * the 256-byte carrier pinned, and v2_chooser_16320 runs it with the pin
+ * withdrawn and the expected carrier declared instead.  A route-receipt
+ * cell runs with the qualification carrier unset, which is the floor it
+ * receipts at.
  *
  * The receipt directory must exist and be empty.  outcome.json and, once
  * a destination exists, destination.bin land there through full writes,
@@ -594,10 +597,29 @@ main(int argc, char **argv)
                         "1");
       require_env_absent("R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL",
                          cell->name);
-      char pinned[32];
-      snprintf(pinned, sizeof(pinned), "%u", cell->pinned_pitch_bytes);
-      require_env_equal("R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES", pinned);
+      char pitch[32];
+      if (cell->pinned_pitch_bytes != 0u) {
+         snprintf(pitch, sizeof(pitch), "%u", cell->pinned_pitch_bytes);
+         require_env_equal("R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES", pitch);
+      } else {
+         /* A chooser cell receipts the cost model's verdict, so the pin
+          * -- the one declaration that selects a carrier instead of
+          * asserting one -- stays unset, and the expected carrier states
+          * the pitch the chooser has to return. */
+         require_env_absent("R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES",
+                            cell->name);
+         snprintf(pitch, sizeof(pitch), "%u", cell->expected_pitch_bytes);
+         require_env_equal("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES", pitch);
+      }
    }
+   /* A route receipt runs at the executing evidence floor.  The
+    * qualification declaration is the one lever that drops a carrier to
+    * PLANNED, so it stays unset for every route-receipt cell and the
+    * operator is refused by its name rather than by a receipt that turns
+    * out to carry a weaker floor than it claims. */
+   if (cell->evidence_scope == R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT)
+      require_env_absent("R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES",
+                         cell->name);
 
    uint64_t offset, bytes, value, type_index, wait_bound;
    if (!parse_number(d.fill_offset, &offset) || !parse_number(d.fill_bytes, &bytes) ||
