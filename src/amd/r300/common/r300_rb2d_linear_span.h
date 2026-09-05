@@ -70,12 +70,18 @@ struct r300_rb2d_span_layout {
    enum r300_rb2d_format format;
 };
 
-/* A dword-aligned byte interval in one buffer, filled with one pattern. */
+/* A dword-aligned byte interval in one buffer, filled with one 32-bit
+ * pattern.  The interval is cut in pixels of the carrier format: four
+ * bytes on ARGB8888, where the pixel is the pattern; two bytes on RGB565,
+ * where the brush color is the pattern's low half and the decomposition
+ * admits the span only when both halves are equal, because that is the
+ * one case in which a repeated 16-bit pixel reproduces the repeated 32-bit
+ * pattern byte for byte.  Dword alignment of offset and size keeps the
+ * pattern phase on either carrier. */
 struct r300_rb2d_span {
    uint64_t byte_offset;
    uint64_t byte_size;
-   /* DP_BRUSH_FRGD_CLR's payload, already in the order the destination
-    * bytes take. */
+   /* The 32-bit pattern in the order the destination bytes take. */
    uint32_t value;
 };
 
@@ -94,6 +100,7 @@ enum r300_rb2d_span_refusal {
    R300_RB2D_SPAN_REFUSE_SIZE_ZERO,
    R300_RB2D_SPAN_REFUSE_OFFSET_ALIGNMENT,
    R300_RB2D_SPAN_REFUSE_SIZE_ALIGNMENT,
+   R300_RB2D_SPAN_REFUSE_PATTERN_WIDTH,
    R300_RB2D_SPAN_REFUSE_RANGE_OVERFLOW,
    R300_RB2D_SPAN_REFUSE_ADDRESS_WIDTH,
    R300_RB2D_SPAN_REFUSE_OUTSIDE_BUFFER,
