@@ -109,18 +109,23 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
    /* The operator's declared carrier for the windowed contract, read on
     * the same pass as the gates so an environment mutation moves no
     * decision under a recorded command buffer.  A value outside the pitch
-    * field or off the 64-byte grid stays undeclared, because a pitch the
-    * hardware cannot name asserts nothing about the chooser. */
+    * field or off the 64-byte grid is recorded as malformed rather than
+    * dropped: a declaration the driver cannot read closes the windowed
+    * route instead of silently asserting nothing. */
    device->rb2d_v2_expected_pitch_bytes = 0u;
+   device->rb2d_v2_expected_pitch_malformed = false;
    const char *expected_pitch =
       getenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES");
-   if (expected_pitch != NULL && expected_pitch[0] != '\0') {
+   if (expected_pitch != NULL) {
       char *end = NULL;
-      const unsigned long value = strtoul(expected_pitch, &end, 10);
-      if (end != NULL && *end == '\0' && value != 0u &&
-          value % R300_RB2D_PITCH_GRANULARITY == 0u &&
+      const unsigned long value =
+         expected_pitch[0] != '\0' ? strtoul(expected_pitch, &end, 10) : 0u;
+      if (expected_pitch[0] != '\0' && end != NULL && *end == '\0' &&
+          value != 0u && value % R300_RB2D_PITCH_GRANULARITY == 0u &&
           value / R300_RB2D_PITCH_GRANULARITY <= R300_RB2D_MAX_PITCH_UNITS)
          device->rb2d_v2_expected_pitch_bytes = (uint32_t)value;
+      else
+         device->rb2d_v2_expected_pitch_malformed = true;
    }
 
    /* The policy is read once, so a route decision cannot change under a

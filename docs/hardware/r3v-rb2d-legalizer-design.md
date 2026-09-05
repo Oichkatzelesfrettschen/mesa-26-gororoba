@@ -167,7 +167,11 @@ every request.
 read once at device creation beside the route gates: when it is set, the
 chosen carrier pitch equals it or the route declines. It never selects a
 carrier, so a value that disagrees with the chooser is a refusal rather than
-a different stream.
+a different stream. The accepted form is a decimal byte count on the 64-byte
+grid inside the `DST_PITCH_OFFSET` pitch field; a declaration of any other
+form (empty, non-numeric, zero, off-grid, or past the field) is recorded as
+malformed at device creation and declines every windowed-route request,
+so a typo closes the route rather than disabling the assertion.
 
 ## Designed cells
 

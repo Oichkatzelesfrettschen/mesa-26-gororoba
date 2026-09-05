@@ -337,6 +337,13 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
     * chooser has already picked, and a declaration that disagrees names a
     * stream the operator did not authorize. */
    if (legalize.contract == R300_RB2D_CONTRACT_CONST_FILL_V2 &&
+       device->rb2d_v2_expected_pitch_malformed) {
+      build_release(&build);
+      return decline(device, policy, "declines the chosen carrier",
+                     "the declared expected pitch is not a pitch the "
+                     "hardware can encode");
+   }
+   if (legalize.contract == R300_RB2D_CONTRACT_CONST_FILL_V2 &&
        device->rb2d_v2_expected_pitch_bytes != 0u &&
        build.pitch_bytes != device->rb2d_v2_expected_pitch_bytes) {
       build_release(&build);

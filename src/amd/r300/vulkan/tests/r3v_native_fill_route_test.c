@@ -810,6 +810,43 @@ test_resubmission_readmits(const struct reference *ref)
    scene_release(&s);
 }
 
+static void
+test_expected_pitch_declaration_parses_fail_closed(void)
+{
+   /* The declaration is read on the gate pass, so a value the driver
+    * cannot read must survive as a recorded refusal rather than as an
+    * absent assertion. */
+   static const struct {
+      const char *value;
+      uint32_t pitch;
+      bool malformed;
+   } arms[] = {
+      { NULL, 0u, false },      { "4096", 4096u, false },
+      { "32704", 32704u, false }, { "", 0u, true },
+      { "257", 0u, true },      { "0", 0u, true },
+      { "abc", 0u, true },      { "64x", 0u, true },
+      { "9999999999", 0u, true },
+   };
+   for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
+      struct r3v_native_device device;
+      memset(&device, 0, sizeof(device));
+      if (arms[i].value != NULL)
+         setenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES", arms[i].value, 1);
+      else
+         unsetenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES");
+      r3v_native_device_refresh_delivery_gates(&device);
+      CHECK(device.rb2d_v2_expected_pitch_bytes == arms[i].pitch,
+            "value %s parses to pitch %u, expected %u",
+            arms[i].value != NULL ? arms[i].value : "(unset)",
+            device.rb2d_v2_expected_pitch_bytes, arms[i].pitch);
+      CHECK(device.rb2d_v2_expected_pitch_malformed == arms[i].malformed,
+            "value %s malformed=%d, expected %d",
+            arms[i].value != NULL ? arms[i].value : "(unset)",
+            device.rb2d_v2_expected_pitch_malformed, arms[i].malformed);
+   }
+   unsetenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES");
+}
+
 int
 main(void)
 {
@@ -827,6 +864,7 @@ main(void)
    test_reset_drops_the_routed_record(&ref);
    test_record_follows_its_transport(&ref);
    test_resubmission_readmits(&ref);
+   test_expected_pitch_declaration_parses_fail_closed();
 
    if (failures != 0) {
       fprintf(stderr, "%u check(s) failed\n", failures);

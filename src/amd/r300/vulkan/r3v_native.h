@@ -1021,6 +1021,11 @@ struct r3v_native_device {
     * verdict and never selects, so a chosen pitch that disagrees declines
     * the route. */
    uint32_t rb2d_v2_expected_pitch_bytes;
+   /* Set when the declaration is present but names no pitch the hardware
+    * can encode: empty, non-numeric, zero, off the 64-byte grid, or past
+    * the pitch field.  A declaration that cannot be read asserts nothing
+    * and admits nothing, so the windowed route declines under it. */
+   bool rb2d_v2_expected_pitch_malformed;
 
    /* What the device asks of every route decision, read once at creation so
     * a policy cannot change under a recorded command buffer. */
