@@ -2616,6 +2616,144 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 300,
       suite : ['r3v'],
     )
+    # The attended silicon application for the same cell, loader-only
+    # like the shim application and separate from it by construction:
+    # it refuses a preloaded library, a mapped drm-shim, or a shim
+    # counter symbol before vkCreateInstance, holds the declaration
+    # against the manifest, the ICD, itself, the environment gates, and
+    # the host, and judges the destination through the pure oracle.  The
+    # scenario and oracle helpers link no driver symbol.
+    r3v_public_rb2d_fill_oracle_sources = files(
+      'tests/r3v_public_rb2d_fill_oracle.c')
+    r3v_native_attended_rb2d_fill = executable(
+      'r3v_native_attended_rb2d_fill',
+      [r3v_public_rb2d_fill_oracle_sources,
+       files('tests/r3v_public_rb2d_fill_scenario.c',
+             'tests/r3v_native_attended_rb2d_fill.c')],
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
+      dependencies : [dep_vulkan_loader, dep_dl],
+      c_args : [no_override_init_args],
+    )
+    r3v_public_rb2d_fill_oracle_tool = executable(
+      'r3v_public_rb2d_fill_oracle_tool',
+      [r3v_public_rb2d_fill_oracle_sources,
+       files('tests/r3v_public_rb2d_fill_oracle_tool.c')],
+      include_directories : [include_directories('tests')],
+    )
+    r3v_public_rb2d_fill_oracle_test = executable(
+      'r3v_public_rb2d_fill_oracle_test',
+      [r3v_public_rb2d_fill_oracle_sources,
+       files('tests/r3v_public_rb2d_fill_oracle_test.c')],
+      include_directories : [include_directories('tests')],
+    )
+    # Synthetic fixtures through the pure oracle, then each predicate
+    # disabled alone must move a fixture; the verdicts live outside
+    # assert() so the release twin judges the same.
+    test(
+      'r3v-public-rb2d-fill-oracle',
+      r3v_public_rb2d_fill_oracle_test,
+      suite : ['r3v'],
+    )
+    r3v_native_attended_vars = {
+      'VK_DRIVER_FILES' : _dev_icd.full_path(),
+    }
+    test(
+      'r3v-native-attended-rb2d-fill-declaration',
+      prog_python,
+      args : [
+        files('tests/r3v_native_attended_rb2d_fill_check.py'),
+        r3v_native_attended_rb2d_fill,
+        _dev_icd,
+        libvulkan_r3v,
+      ],
+      env : environment(r3v_native_attended_vars),
+      depends : [libvulkan_r3v, _dev_icd, r3v_native_attended_rb2d_fill],
+      timeout : 120,
+      suite : ['r3v'],
+    )
+    if prog_nm_r3v.found()
+      # The three-role matrix: the state that sealed a prediction with
+      # only the arming runner and the shim application fails here.
+      test(
+        'r3v-native-rb2d-fill-role-matrix',
+        prog_python,
+        args : [
+          files('tests/r3v_native_rb2d_fill_role_matrix_check.py'),
+          prog_nm_r3v.full_path(),
+          r3v_native_attended_rb2d_fill,
+          r3v_native_loader_fill_application,
+          r3v_native_rb2d_fill_arming_runner,
+          libradeon_noop_drm_shim,
+          r3v_public_rb2d_fill_oracle_tool,
+          libvulkan_r3v,
+        ],
+        env : environment(r3v_native_attended_vars),
+        depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                   r3v_native_attended_rb2d_fill,
+                   r3v_native_loader_fill_application,
+                   r3v_native_rb2d_fill_arming_runner,
+                   r3v_public_rb2d_fill_oracle_tool],
+        timeout : 300,
+        suite : ['r3v'],
+      )
+      # Two known-bads, each asserting the row it must land on: the shim
+      # application in the attended slot shares a digest with the shim
+      # slot and fails distinctness; the triangle loader application in
+      # the attended slot is distinct and loader-only, so it fails on the
+      # preloaded-shim refusal row, which proves that row judges.
+      foreach role_bad : [
+        ['shim-as-attended', r3v_native_loader_fill_application,
+         'not three distinct executables'],
+        ['loader-application-as-attended', r3v_native_loader_application,
+         'attended under a preloaded shim'],
+      ]
+        test(
+          'r3v-native-rb2d-fill-role-matrix-known-bad-@0@'.format(role_bad[0]),
+          find_program('sh'),
+          args : [
+            '-c',
+            'out=$("$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" 2>&1); ' +
+            'status=$?; printf "%s\n" "$out"; test $status -eq 1 && ' +
+            'printf "%s" "$out" | grep -q -F "${10}"',
+            'assert-verdict',
+            prog_python.full_path(),
+            files('tests/r3v_native_rb2d_fill_role_matrix_check.py'),
+            prog_nm_r3v.full_path(),
+            role_bad[1].full_path(),
+            r3v_native_loader_fill_application.full_path(),
+            r3v_native_rb2d_fill_arming_runner.full_path(),
+            libradeon_noop_drm_shim.full_path(),
+            r3v_public_rb2d_fill_oracle_tool.full_path(),
+            libvulkan_r3v.full_path(),
+            role_bad[2],
+          ],
+          env : environment(r3v_native_attended_vars),
+          depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                     r3v_native_loader_fill_application,
+                     r3v_native_loader_application,
+                     r3v_native_rb2d_fill_arming_runner,
+                     r3v_public_rb2d_fill_oracle_tool],
+          timeout : 300,
+          suite : ['r3v'],
+        )
+      endforeach
+      test(
+        'r3v-native-attended-rb2d-fill-symbol-audit',
+        prog_python,
+        args : [
+          files('tests/r3v_native_loader_application_symbol_audit.py'),
+          prog_nm_r3v.full_path(),
+          r3v_native_attended_rb2d_fill.full_path(),
+          '--forbid', 'r3v_native_',
+          '--forbid', 'r300_',
+          '--forbid', 'radeon_drm_vk_',
+          '--forbid', 'drm_shim_',
+        ],
+        depends : [r3v_native_attended_rb2d_fill],
+        suite : ['r3v'],
+      )
+    endif
     if prog_nm_r3v.found()
       test(
         'r3v-native-loader-fill-application-symbol-audit',

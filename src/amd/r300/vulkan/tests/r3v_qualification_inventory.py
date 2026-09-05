@@ -263,6 +263,22 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-compute-frontend",
     "r3v-native-compute-dispatch",
     "r3v-native-submit-object-replay",
+    # Public RB2D fill cell: the arming runner, the shim transport
+    # control, the attended silicon application, the pure oracle, and
+    # the three-role matrix.  A prediction sealed with only the first
+    # two roles registered had no executable that could write the
+    # destination on silicon; the matrix rows make that state fail.
+    "r3v-native-rb2d-fill-arming-runner",
+    "r3v-native-loader-fill-application",
+    "r3v-native-loader-fill-application-symbol-audit",
+    "r3v-native-rb2d-fill-capture-contract",
+    "r3v-native-rb2d-fill-submit-object-replay",
+    "r3v-public-rb2d-fill-oracle",
+    "r3v-native-attended-rb2d-fill-declaration",
+    "r3v-native-attended-rb2d-fill-symbol-audit",
+    "r3v-native-rb2d-fill-role-matrix",
+    "r3v-native-rb2d-fill-role-matrix-known-bad-shim-as-attended",
+    "r3v-native-rb2d-fill-role-matrix-known-bad-loader-application-as-attended",
     "r3v-native-triangle-cell-closed",
     "r3v-native-triangle-cell-open",
     "r3v-native-triangle-cell-unattested",
