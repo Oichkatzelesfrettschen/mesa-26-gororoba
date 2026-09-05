@@ -79,13 +79,31 @@ write.
 
 ### D: fast fill
 
-`ZB_BW_CNTL` gains `FAST_FILL_ENABLE` alone. The cleared ZMASK now
-answers depth reads for tiles whose mask says cleared, so the expected
-observation against A is again an identical image -- this time because a
-zeroed ZMASK means "cleared" and the depth pipe must resolve the same
-values through the compression path that A read out of memory. A
-deviation at D with A, B and C all matching isolates the fast-fill
-resolve.
+`ZB_BW_CNTL` gains `FAST_FILL_ENABLE` alone. FASTFILL performs no fill:
+it tells the depth pipe to consult the ZMASK RAM before fetching from
+depth memory, and a tile whose ZMASK bits are zero is in the cleared
+state, for which the pipe returns `ZB_DEPTHCLEARVALUE` in place of the
+value stored in memory. Stage C cleared the whole ZMASK to zeros, so
+every tile of the surface reads back as `ZB_DEPTHCLEARVALUE` under D.
+
+The prediction follows from that substitution. `R300_ZS_LESS` now
+compares both triangles against `ZB_DEPTHCLEARVALUE` rather than against
+the sentinel the host wrote, so D reproduces A's color image exactly
+when the cell has established `ZB_DEPTHCLEARVALUE` equal to the depth
+sentinel `0x8000`, which sits between the near depth 0.25 and the far
+depth 0.75. With any other clear value the two halves move together:
+a clear value above the far depth colors both halves and one below the
+near depth colors neither. `ZB_DEPTHCLEARVALUE` at 0x4f28 carries no row
+in the kernel's HyperZ table, so the cell writes it outside this append.
+
+The depth oracle reads the surface through the host, which the ZMASK
+resolve does not intercept: `WR_COMP_ENABLE` is off, so passing
+fragments still store uncompressed depth, and the depth image stays A's.
+The color image is the fast-fill resolve's verdict.
+
+Rule 8 of the fast-clear notes in `r300_blit.c` forbids FASTFILL with
+`RD_COMP_ENABLE` off while `WR_COMP_ENABLE` is on. Both are off in C
+and D, so the ladder stays inside that rule.
 
 ## Order after D
 
@@ -95,9 +113,10 @@ sets `FAST_FILL_ENABLE | RD_COMP_ENABLE`, and the in-use path sets
 `FAST_FILL_ENABLE | RD_COMP_ENABLE | WR_COMP_ENABLE`. The order after D
 follows those groups:
 
-1. `RD_COMP_ENABLE` -- the depth pipe reads compressed tiles through the
-   ZMASK. This is the decompression pair the kernel's own path uses, so
-   it stands alone as a stage.
+1. `RD_COMP_ENABLE` -- the depth pipe decompresses tiles whose ZMASK
+   bits say compressed, which is the step past reading the clear value
+   for a zeroed tile. Gallium's decompression path pairs it with
+   FAST_FILL and nothing else, so it stands alone as a stage.
 2. `WR_COMP_ENABLE` -- passing fragments write compressed tiles back and
    the ZMASK stops being read-only. A defect here changes depth memory,
    which the depth oracle reads directly.
