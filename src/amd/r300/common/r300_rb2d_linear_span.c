@@ -8,9 +8,9 @@
 
 #include <string.h>
 
-/* The span carries one 32-bit pattern, so the carrier's pixel is four
- * bytes and the interval is cut in dwords. */
-#define RB2D_SPAN_BYTES_PER_PIXEL 4u
+/* The span carries one 32-bit pattern, so its offset and size sit on the
+ * dword grid whatever the carrier's pixel width. */
+#define RB2D_SPAN_PATTERN_BYTES 4u
 
 const char *
 r300_rb2d_span_refusal_name(enum r300_rb2d_span_refusal r)
@@ -18,7 +18,7 @@ r300_rb2d_span_refusal_name(enum r300_rb2d_span_refusal r)
    static const char *const names[R300_RB2D_SPAN_REFUSAL_COUNT] = {
       "ok",
       "layout pointer is null",
-      "layout format does not carry a 32-bit pattern",
+      "layout format is outside the carrier table",
       "layout pitch is zero",
       "layout pitch is off the 64-byte grid",
       "layout pitch is not a whole number of pixels",
@@ -28,6 +28,7 @@ r300_rb2d_span_refusal_name(enum r300_rb2d_span_refusal r)
       "span size is zero",
       "span offset is not dword aligned",
       "span size is not a dword multiple",
+      "span pattern halves differ on a two-byte carrier",
       "span range overflows",
       "span reaches outside the 32-bit destination address space",
       "span reaches outside the buffer",
@@ -45,16 +46,17 @@ r300_rb2d_span_layout_check(const struct r300_rb2d_span_layout *layout)
 {
    if (layout == NULL)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_NULL;
-   /* ARGB8888 is the one format whose pixel is the span's pattern; a
-    * narrower or wider pixel would make the dword interval and the
-    * rectangle disagree about what one unit covers. */
-   if (layout->format != R300_RB2D_FORMAT_ARGB8888)
+   const uint32_t cpp = r300_rb2d_format_bytes_per_pixel(layout->format);
+   if (cpp == 0u)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_FORMAT;
    if (layout->pitch_bytes == 0u)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_ZERO;
    if (layout->pitch_bytes % R300_RB2D_PITCH_GRANULARITY != 0u)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_GRID;
-   if (layout->pitch_bytes % RB2D_SPAN_BYTES_PER_PIXEL != 0u)
+   /* The pattern is a dword, so a row holds a whole number of patterns
+    * only when its byte count is a dword multiple; on the two-byte carrier
+    * that is also what keeps the pattern phase across rows. */
+   if (layout->pitch_bytes % RB2D_SPAN_PATTERN_BYTES != 0u)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_STRIDE;
    /* DST_PITCH_OFFSET counts the pitch in 64-byte units through a 10-bit
     * field, so the plan checker refuses a wider carrier; the layout
@@ -64,8 +66,7 @@ r300_rb2d_span_layout_check(const struct r300_rb2d_span_layout *layout)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_PITCH_FIELD;
    /* A whole-row rectangle spans the carrier, so the row itself has to
     * fit inside the scissor the emitter opens. */
-   if (layout->pitch_bytes / RB2D_SPAN_BYTES_PER_PIXEL >
-       R300_RB2D_SAFE_EXCLUSIVE_END)
+   if (layout->pitch_bytes / cpp > R300_RB2D_SAFE_EXCLUSIVE_END)
       return R300_RB2D_SPAN_REFUSE_LAYOUT_ROW_BEYOND_SCISSOR;
    return R300_RB2D_SPAN_OK;
 }
@@ -75,7 +76,7 @@ r300_rb2d_span_layout_pixels_per_row(const struct r300_rb2d_span_layout *l)
 {
    if (r300_rb2d_span_layout_check(l) != R300_RB2D_SPAN_OK)
       return 0u;
-   return l->pitch_bytes / RB2D_SPAN_BYTES_PER_PIXEL;
+   return l->pitch_bytes / r300_rb2d_format_bytes_per_pixel(l->format);
 }
 
 /* One segment's working state: the base its DST_PITCH_OFFSET names, the
@@ -99,16 +100,16 @@ struct segment {
  */
 static void
 cut_segment(uint64_t byte_offset, uint64_t dwords_left, uint32_t pitch_bytes,
-            uint32_t value, struct segment *seg)
+            uint32_t cpp, uint32_t value, struct segment *seg)
 {
-   const uint32_t per_row = pitch_bytes / RB2D_SPAN_BYTES_PER_PIXEL;
+   const uint32_t per_row = pitch_bytes / cpp;
 
    memset(seg, 0, sizeof(*seg));
    seg->base = byte_offset & ~(uint64_t)(R300_RB2D_OFFSET_GRANULARITY - 1u);
 
    const uint32_t relative = (uint32_t)(byte_offset - seg->base);
    const uint32_t y0 = relative / pitch_bytes;
-   const uint32_t x0 = (relative % pitch_bytes) / RB2D_SPAN_BYTES_PER_PIXEL;
+   const uint32_t x0 = (relative % pitch_bytes) / cpp;
    uint32_t row = y0;
 
    /* The far edge of every rectangle stays inside the scissor, so the rows
@@ -183,12 +184,20 @@ decompose(const struct r300_rb2d_span *span,
       *refusal = R300_RB2D_SPAN_REFUSE_SIZE_ZERO;
       return 0;
    }
-   if (span->byte_offset % RB2D_SPAN_BYTES_PER_PIXEL != 0u) {
+   if (span->byte_offset % RB2D_SPAN_PATTERN_BYTES != 0u) {
       *refusal = R300_RB2D_SPAN_REFUSE_OFFSET_ALIGNMENT;
       return 0;
    }
-   if (span->byte_size % RB2D_SPAN_BYTES_PER_PIXEL != 0u) {
+   if (span->byte_size % RB2D_SPAN_PATTERN_BYTES != 0u) {
       *refusal = R300_RB2D_SPAN_REFUSE_SIZE_ALIGNMENT;
+      return 0;
+   }
+   /* On a two-byte carrier the brush writes the pattern's low half per
+    * pixel, so the bytes reproduce the dword pattern only when both halves
+    * are equal. */
+   const uint32_t cpp = r300_rb2d_format_bytes_per_pixel(layout->format);
+   if (cpp == 2u && (span->value >> 16) != (span->value & 0xffffu)) {
+      *refusal = R300_RB2D_SPAN_REFUSE_PATTERN_WIDTH;
       return 0;
    }
    if (span->byte_offset > UINT64_MAX - span->byte_size) {
@@ -211,12 +220,15 @@ decompose(const struct r300_rb2d_span *span,
    }
 
    uint64_t offset = span->byte_offset;
-   uint64_t dwords_left = span->byte_size / RB2D_SPAN_BYTES_PER_PIXEL;
+   /* Pixels of the carrier, the unit rectangles are cut in. */
+   uint64_t dwords_left = span->byte_size / cpp;
+   const uint32_t brush = cpp == 2u ? (span->value & 0xffffu) : span->value;
    uint32_t written = 0;
 
    while (dwords_left > 0u) {
       struct segment seg;
-      cut_segment(offset, dwords_left, layout->pitch_bytes, span->value, &seg);
+      cut_segment(offset, dwords_left, layout->pitch_bytes, cpp, brush,
+                  &seg);
 
       /* A segment that consumes nothing would loop.  The base grid makes
        * it unreachable -- y0 is under R300_RB2D_OFFSET_GRANULARITY divided
@@ -232,10 +244,22 @@ decompose(const struct r300_rb2d_span *span,
          *refusal = R300_RB2D_SPAN_REFUSE_BASE_FIELD;
          return 0;
       }
-      /* The surface the plan declares is rows_used rows of the carrier
-       * pitch, and those bytes must be the buffer's. */
-      const uint64_t footprint =
-         (uint64_t)seg.rows_used * layout->pitch_bytes;
+      /* The bytes the segment writes must be the buffer's.  The bound is
+       * the kernel's own, r100_cs_track_2d_dst_check's end_byte: the last
+       * rectangle row's start plus (x + width) * cpp, so a partial last
+       * row is charged to its last written byte rather than to the whole
+       * carrier row.  A dense carrier can therefore end inside a buffer
+       * narrower than its pitch, which is what makes a wide virtual pitch
+       * usable on a small buffer at all. */
+      uint64_t footprint = 0u;
+      for (uint32_t i = 0; i < seg.rect_count; i++) {
+         const struct r300_rb2d_fill_rect *r = &seg.rects[i];
+         const uint64_t end =
+            (uint64_t)(r->y + r->height - 1u) * layout->pitch_bytes +
+            ((uint64_t)r->x + r->width) * cpp;
+         if (end > footprint)
+            footprint = end;
+      }
       if (seg.base + footprint > buffer_bytes) {
          *refusal = R300_RB2D_SPAN_REFUSE_FOOTPRINT_OUTSIDE_BUFFER;
          return 0;
@@ -257,7 +281,7 @@ decompose(const struct r300_rb2d_span *span,
          .surface = {
             .base_offset_bytes = (uint32_t)seg.base,
             .pitch_bytes = layout->pitch_bytes,
-            .width_pixels = layout->pitch_bytes / RB2D_SPAN_BYTES_PER_PIXEL,
+            .width_pixels = layout->pitch_bytes / cpp,
             .height_pixels = seg.rows_used,
             .format = layout->format,
          },
@@ -285,7 +309,7 @@ decompose(const struct r300_rb2d_span *span,
       }
 
       written++;
-      offset += seg.dwords_consumed * RB2D_SPAN_BYTES_PER_PIXEL;
+      offset += seg.dwords_consumed * cpp;
       dwords_left -= seg.dwords_consumed;
    }
 

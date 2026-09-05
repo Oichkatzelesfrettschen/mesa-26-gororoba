@@ -19,6 +19,8 @@ r300_common_contract_files = files(
   'r300_pm4_builder.c',
   'r300_rb2d_fill.c',
   'r300_rb2d_linear_span.c',
+  'r300_rb2d_pitch_evidence.c',
+  'r300_rb2d_legalize.c',
   'r300_pm4_compose.c',
   'r300_r2vb_carrier_delivery.c',
   'r300_r2vb_fetch_pass.c',
@@ -186,6 +188,42 @@ r300_rb2d_linear_span_test = executable(
 test(
   'r300-rb2d-linear-span',
   r300_rb2d_linear_span_test,
+  suite : ['r300'],
+)
+
+r300_rb2d_legalize_test = executable(
+  'r300_rb2d_legalize_test',
+  files('tests/r300_rb2d_legalize_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-rb2d-legalize',
+  r300_rb2d_legalize_test,
+  suite : ['r300'],
+)
+
+# Emits legalized RB2D streams and their relocation bundles for the
+# kernel-replay differential; the differential script assembles the raw
+# rejecting streams itself.
+r300_rb2d_legalize_tool = executable(
+  'r300_rb2d_legalize_tool',
+  files('tests/r300_rb2d_legalize_tool.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-rb2d-legalization-differential',
+  prog_python,
+  args : [files('tests/r300_rb2d_legalization_differential.py'),
+          r300_rb2d_legalize_tool],
+  depends : [r300_rb2d_legalize_tool],
   suite : ['r300'],
 )
 
