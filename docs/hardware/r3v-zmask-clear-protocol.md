@@ -30,13 +30,45 @@ dword count, and the bind stages refuse to build for it, matching
 `r300_fast_zclear_allowed`, which returns false on a zero ZMASK dword
 count.
 
+## The prerequisite: a Z24 macrotiled control cell
+
+The ladder measures every stage against the depth control cell, and the
+cell that exists today cannot carry a ZMASK.
+`r300_zb_depth_control_cell.c` selects `R300_DEPTHFORMAT_16BIT_INT_Z` at
+two bytes per pixel (`R300_ZB_DEPTH_CONTROL_DEPTH_CPP`), and
+`r300_zb_depth_state_emit` writes `ZB_DEPTHPITCH` with
+`R300_DEPTHMACROTILE_DISABLE | R300_DEPTHMICROTILE_LINEAR`. ZMASK admits
+a 32-bit depth format on a microtiled level alone, and 8x8 compression
+needs macrotiling on top of that, so the existing cell's layout reports
+zero dwords and stages C and D refuse it with `-EINVAL`.
+`r300-zmask-clear-plan` pins exactly that, so the gap fails a test rather
+than waiting on a run.
+
+The stages therefore bind to a Z24 variant of the control cell that does
+not exist yet: `R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL` at four bytes
+per pixel on a microtiled, macrotiled surface. Building it means giving
+`r300_zb_depth_control_reference_contract` and
+`r300_zb_depth_control_emit_into` a depth-format and tiling parameter,
+widening `r300_zb_depth_control_depth_oracle` from `uint16_t` to the
+32-bit word Z24 stores, and passing the tiling choice through
+`r300_zb_depth_state_emit`, which hardcodes the linear pair today. The
+allocation grows with the format: `R300_ZB_DEPTH_CONTROL_DEPTH_CPP` of
+four doubles the depth BO, and macrotiling imposes its own pitch
+alignment on top.
+
+Z24 stores depth in the low 24 bits, so the variant's depth sentinel is
+`0x800000`, the same half-scale point `0x8000` marks in Z16: it sits
+between the near depth 0.25 and the far depth 0.75, which is the only
+property `R300_ZS_LESS` reads out of it. Every sentinel named below is
+that 24-bit value.
+
 ## The ladder
 
 | Stage | Mechanism added | Registers and packets the stage appends | HyperZ ownership |
 | --- | --- | --- | --- |
 | A | ordinary depth draw | none | not required |
 | B | ownership acquire | none | required |
-| C | ZMASK bind and clear | `ZB_ZMASK_OFFSET`, `ZB_ZMASK_PITCH`, `ZB_ZMASK_WRINDEX`, `ZB_ZMASK_RDINDEX`, `ZB_BW_CNTL` = 0, PACKET3 `3D_CLEAR_ZMASK` | required |
+| C | ZMASK bind and clear | `ZB_ZMASK_OFFSET`, `ZB_ZMASK_PITCH`, `ZB_ZMASK_WRINDEX`, `ZB_ZMASK_RDINDEX`, `GB_Z_PEQ_CONFIG`, `ZB_BW_CNTL` = 0, PACKET3 `3D_CLEAR_ZMASK` | required |
 | D | fast fill | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE` | required |
 
 ### A: ordinary depth, HyperZ absent
@@ -61,12 +93,15 @@ depth images, since no state changed.
 
 The bind places the level at the base of the ZMASK RAM
 (`ZB_ZMASK_OFFSET` = 0) at the layout's pitch, zeroes both
-autoincrementing RAM access indices, writes `ZB_BW_CNTL` = 0 so
+autoincrementing RAM access indices, writes `GB_Z_PEQ_CONFIG` with the
+tile size the layout decided -- the 64x64 reference level clears four
+dwords at 8x8 and sixteen at 4x4, so a retained setting would describe a
+different surface than the clear covers -- writes `ZB_BW_CNTL` = 0 so
 `FAST_FILL_ENABLE`, `RD_COMP_ENABLE`, `WR_COMP_ENABLE` and `HIZ_ENABLE`
 all stay off, and issues `3D_CLEAR_ZMASK` over exactly
 `layout.dwords` dwords starting at index 0 with value 0.
-`SC_HYPERZ` and `GB_Z_PEQ_CONFIG` stay unwritten: the scan converter's
-HiZ bit and the ZMASK tile size belong to stages past this ladder.
+`SC_HYPERZ` stays unwritten: the scan converter's HiZ bit belongs to the
+HiZ stage past this ladder.
 
 With every compression enable off, the depth pipe reads and writes
 depth memory as it did in A, so the expected observation against A is an
@@ -75,7 +110,10 @@ the clear packet traverse the kernel and the ring without disturbing the
 draw. `ZB_ZMASK_PITCH` is nonzero and `3D_CLEAR_ZMASK` is a gated
 packet3, so this stream admits under ownership and refuses without it --
 `r300_zb_hyperz_admit_stream` reports `REFUSE_OWNERSHIP` at the pitch
-write.
+write, which precedes the tile-size write. `GB_Z_PEQ_CONFIG` is gated
+the same way, and its 8x8 value refuses on its own while its 4x4 value
+of zero admits, so a 4x4 stream's refusal rests on the pitch and the
+clear packet.
 
 ### D: fast fill
 
@@ -90,7 +128,7 @@ The prediction follows from that substitution. `R300_ZS_LESS` now
 compares both triangles against `ZB_DEPTHCLEARVALUE` rather than against
 the sentinel the host wrote, so D reproduces A's color image exactly
 when the cell has established `ZB_DEPTHCLEARVALUE` equal to the depth
-sentinel `0x8000`, which sits between the near depth 0.25 and the far
+sentinel `0x800000`, which sits between the near depth 0.25 and the far
 depth 0.75. With any other clear value the two halves move together:
 a clear value above the far depth colors both halves and one below the
 near depth colors neither. `ZB_DEPTHCLEARVALUE` at 0x4f28 carries no row
