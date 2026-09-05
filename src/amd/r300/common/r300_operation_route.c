@@ -147,16 +147,18 @@ static const struct r300_operation_route_row
        * intervals wider than the single window V1 covers.  The
        * implementation is shared -- the same RB2D solid brush and the same
        * legalizer -- and the contract and admission identities are its
-       * own.  Evidence is source-grounded at the unit: the encoding
-       * follows from the register programming guide and the kernel
-       * tracker's footprint rule, and no retained bundle holds a
-       * multi-window stream, so the row stays PRECOMMITTED behind its own
-       * gate and the contract-evidence registry refuses every width until
-       * a receipt lands. */
+       * own.  Three attended CONTROL_PASS runs on the Vostro 1000
+       * (RS485M, 1002:5974) under the strict-2d parser carry the route:
+       * two rebased windows through two relocation sites on the 256-byte
+       * carrier, one window of five rows on the 16320-byte dense carrier,
+       * and one window of 129 rows the chooser picked for itself.  The
+       * gate stays: automatic selection is withheld until the host path
+       * is measured against V2 across the size range, so the route answers
+       * an operator who names it or a GPU_ONLY caller. */
       ROUTE(RB2D_CONST_FILL_V2, "rb2d_const_fill_v2", CONSTFILL, GPU,
-            PRECOMMITTED, RB2D_FILL, XFER_BUF, RB2D_LINEAR_SOLID_FILL,
+            EXECUTING, RB2D_FILL, XFER_BUF, RB2D_LINEAR_SOLID_FILL,
             RB2D_LINEAR_SOLID_FILL_V2, RB2D_WINDOWED_LINEAR_SURFACE, LINEAR,
-            BIT_EXACT, 0.0f, SOURCE_GROUNDED, UNIT_CONTRACT,
+            BIT_EXACT, 0.0f, SILICON_RETAINED, NATIVE_GPU_ROUTE_CELL,
             "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL"),
 };
 
@@ -573,12 +575,14 @@ r300_operation_route_rows_valid(const struct r300_operation_route_row *t,
 
    /* One executor's eligible set must be decidable without table order.
     * Eligibility is operation, executor, and use together, so two executing
-    * routes collide exactly where their use masks overlap: an RB2D fill
+    * routes contend exactly where their use masks overlap: an RB2D fill
     * serving transfer destinations and an RB3D clear serving bound color
-    * targets both realize CONSTFILL on the GPU and never contend, while two
-    * routes claiming the same use would leave the selector choosing by
-    * position.  The table refuses that shape here rather than at the first
-    * dispatch that meets it. */
+    * targets never meet.  A gate on each row separates a contending pair --
+    * one open gate names one route, and two open gates refuse at the
+    * selector with the operator's own opt-in to withdraw.  A row without a
+    * gate is eligible at every request, so a pair holding one carries no
+    * opt-in that separates them and the operation loses its executor to a
+    * permanent refusal. */
    for (uint32_t i = 0; i < count; i++) {
       if (t[i].state != R300_OPERATION_ROUTE_EXECUTING)
          continue;
@@ -586,9 +590,10 @@ r300_operation_route_rows_valid(const struct r300_operation_route_row *t,
          if (t[j].state == R300_OPERATION_ROUTE_EXECUTING &&
              t[j].operation_id == t[i].operation_id &&
              t[j].executor == t[i].executor &&
-             (t[j].uses & t[i].uses) != 0) {
-            *reason = "two executing routes for one operation, executor, and "
-                      "use";
+             (t[j].uses & t[i].uses) != 0 &&
+             (t[j].gate == NULL || t[i].gate == NULL)) {
+            *reason = "two executing routes for one operation, executor, "
+                      "and use without a gate on each";
             return false;
          }
       }

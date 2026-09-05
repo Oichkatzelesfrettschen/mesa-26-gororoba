@@ -18,9 +18,10 @@
 
 #define MAX_ROUTES (R300_OPERATION_ROUTE_COUNT - 1)
 
-/* The ledger's shape, pinned.  Two executing host routes, one executing GPU
- * route, fourteen candidates, no precommitted route; and the verb-level
- * aggregates the program reports.  A route landing moves these counts. */
+/* The ledger's shape, pinned.  Three executing host routes, three executing
+ * GPU routes, fourteen candidates, no precommitted route; and the
+ * verb-level aggregates the program reports.  A route landing moves these
+ * counts. */
 static void
 test_population(void)
 {
@@ -53,14 +54,14 @@ test_population(void)
    }
 
    assert(host_executing == 3);
-   assert(gpu_executing == 2);
+   assert(gpu_executing == 3);
    assert(candidate == 14);
-   /* Two committed GPU routes have executed -- the R2VB identity carrier
-    * and the RB2D const fill, each carrying a native-route receipt -- and
-    * the windowed RB2D fill is committed without one, which is what
-    * PRECOMMITTED names. */
-   assert(precommitted == 1);
-   assert(retained_at_route_scope == 2);
+   /* Three committed GPU routes have executed -- the R2VB identity
+    * carrier, the RB2D const fill, and its windowed contract -- each
+    * carrying a native-route receipt, so no committed GPU row is waiting
+    * for one and PRECOMMITTED names nothing here. */
+   assert(precommitted == 0);
+   assert(retained_at_route_scope == 3);
    assert(retained_at_raster_scope == 13);
 
    /* The verb-level aggregates the same table yields. */
@@ -261,12 +262,21 @@ test_checker_calibration(void)
    assert(m[2].uses == R300_ROUTE_USE_RENDER_ATTACHMENT);
    assert(r300_operation_route_rows_valid(m, count, &reason));
 
-   /* Give the promoted row the use m[1] already serves and the same shape
-    * refuses: the selector would then be choosing by table position, which
-    * is the rule that makes a second CONST_FILL route safe to add and an
-    * aliased one unsafe. */
+   /* Give the promoted row the use m[1] already serves and the two
+    * contend.  Their gates separate them -- one open gate names one route
+    * -- so the table still accepts the pair, which is what lets the two
+    * RB2D fill contracts execute beside each other. */
    m[2].uses = R300_ROUTE_USE_COMPUTE_STORAGE_BUFFER;
-   REFUSES("two executing routes for one operation, executor, and use");
+   assert(m[1].gate != NULL && m[2].gate != NULL);
+   assert(r300_operation_route_rows_valid(m, count, &reason));
+
+   /* Strip one gate and the pair no longer separates: the ungated row is
+    * eligible at every request, so opening the other gate refuses every one
+    * of them and IDENTITY_MAP loses its GPU executor.  The table refuses
+    * that shape here rather than at the first dispatch that meets it. */
+   m[2].gate = NULL;
+   REFUSES("two executing routes for one operation, executor, and use "
+           "without a gate on each");
 }
 
 #undef REFUSES
@@ -345,10 +355,14 @@ test_selector(void)
    assert(strcmp(reason, "request names other than one defined use") == 0);
 
    /* Every other gate open selects nothing: a gate belongs to one route,
-    * and an open gate on a candidate route opens no execution. */
+    * and an open gate on a candidate route opens no execution.  The
+    * windowed RB2D gate closes beside the identity's, because the two RB2D
+    * fill contracts execute over the same use and the arm below reads the
+    * single-window route rather than the pair. */
    memset(gates, 0, sizeof(gates));
    for (uint32_t r = 0; r < count; r++) {
-      if (rows[r].route_id != R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP)
+      if (rows[r].route_id != R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP &&
+          rows[r].route_id != R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2)
          gates[rows[r].route_id] = true;
    }
    assert(r300_operation_select_route(R300_OPERATION_ID_IDENTITY_MAP,
@@ -388,9 +402,10 @@ test_selector(void)
                                       USE_SSBO, gates, &reason) == NULL);
 
    /* Two eligible routes fail closed rather than letting table order pick.
-    * The shipped table cannot hold that shape, so the arm runs on a mutated
-    * copy through the _rows form.  The mutation must also carry the use the
-    * request names: a second executing route serving another use is not a
+    * The arm runs on a mutated copy through the _rows form so the
+    * contending pair is built from one operation the shipped table gives
+    * one GPU route.  The mutation must also carry the use the request
+    * names: a second executing route serving another use is not a
     * contender, which is the applicability rule stated from the other
     * side. */
    struct r300_operation_route_row m[MAX_ROUTES];
@@ -539,11 +554,10 @@ test_per_verb_gate_array_cannot_represent(void)
              R300_OPERATION_ID_IDENTITY_MAP) == 2);
    assert(r300_operation_route_count_for_operation(
              R300_OPERATION_ID_BITWISE_NOT_MAP) == 2);
-   /* CONSTFILL carries four: the host route and the executing RB2D route
-    * over a linear transfer destination, the precommitted windowed RB2D
-    * route over that same use, and the RB3D clear candidate over a bound
-    * color target.  One route executes per executor and use, so the
-    * checker's one-executing-route rule holds. */
+   /* CONSTFILL carries four: the host route and the two executing RB2D
+    * routes over a linear transfer destination, and the RB3D clear
+    * candidate over a bound color target.  The two RB2D contracts each
+    * carry their own gate, so one open gate names one route. */
    assert(r300_operation_route_count_for_operation(
              R300_OPERATION_ID_CONSTFILL) == 4);
 }

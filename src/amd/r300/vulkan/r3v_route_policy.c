@@ -408,6 +408,21 @@ r3v_route_policy_select(const struct r3v_route_request *request,
                                   R300_OPERATION_ROUTE_EXECUTOR_GPU,
                                   request->use, gate_state, reason);
 
+   /* Two executing routes admitted for one use answer the same request
+    * with two contracts, and the selector declines to rank them.  The
+    * refusal stands ahead of every policy branch: an AUTO request would
+    * otherwise read the empty selection as "no GPU route" and carry the
+    * fill on the host, which is the operator's two open gates producing a
+    * host fill.  Closing one gate is the answer. */
+   if (promoted == NULL &&
+       r300_operation_route_eligible(request->operation_id,
+                                     R300_OPERATION_ROUTE_EXECUTOR_GPU,
+                                     request->use, gate_state, NULL,
+                                     0) > 1) {
+      *reason = "two executing routes are admitted for one use";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
+
    /* A promoted route and a precommitted route both admitted for one use
     * name two executors for one operation, and the receipted stream and
     * the experimental one write the same bytes under different contracts.
