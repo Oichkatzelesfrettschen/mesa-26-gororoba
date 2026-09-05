@@ -18,14 +18,20 @@ const struct r300_zb_depth_surface r300_zb_depth_surface_z16_linear = {
    .height = R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT,
    .pitch_pixels = R300_ZB_DEPTH_CONTROL_PITCH_PIXELS,
    .allocation_rows = R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS,
-   .depth_sentinel = R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL,
-   .host_addressable = true,
+   .depth_sentinel_code = R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL,
+   .raw_allocation_mapping = true,
+   .uniform_packed_initialization = true,
+   .logical_pixel_addressing = true,
+   .logical_image_readback = true,
 };
 
 /* Same geometry as the Z16 surface, so the two differ in format and
  * tiling alone and a ladder that moves from one to the other changes one
- * variable at a time.  0x00800000 is the 24-bit half-depth value in the
- * packed Z24/S8 word's depth field, the Z24 counterpart of 0x8000.
+ * variable at a time.  0x00800000 is the 24-bit half-depth code, the Z24
+ * counterpart of 0x8000; packed against a zero stencil it reaches memory
+ * as 0x80000000.  A uniform allocation of that word is invariant under
+ * the tile permutation, so the host can initialize the surface while the
+ * transform that names a single pixel's byte stays absent.
  */
 const struct r300_zb_depth_surface r300_zb_depth_surface_z24_macrotiled = {
    .name = "z24_macrotiled",
@@ -37,28 +43,12 @@ const struct r300_zb_depth_surface r300_zb_depth_surface_z24_macrotiled = {
    .height = R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT,
    .pitch_pixels = R300_ZB_DEPTH_CONTROL_PITCH_PIXELS,
    .allocation_rows = R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS,
-   .depth_sentinel = 0x00800000u,
-   .host_addressable = false,
+   .depth_sentinel_code = 0x00800000u,
+   .raw_allocation_mapping = true,
+   .uniform_packed_initialization = true,
+   .logical_pixel_addressing = false,
+   .logical_image_readback = false,
 };
-
-uint32_t
-r300_zb_depth_surface_tile_bits(const struct r300_zb_depth_surface *surface)
-{
-   if (surface == NULL)
-      return 0;
-   return R300_DEPTHMACROTILE((uint32_t)surface->macrotile) |
-          R300_DEPTHMICROTILE((uint32_t)surface->microtile);
-}
-
-uint64_t
-r300_zb_depth_surface_bytes(const struct r300_zb_depth_surface *surface)
-{
-   if (surface == NULL)
-      return 0;
-   return (uint64_t)surface->pitch_pixels *
-          (uint64_t)surface->allocation_rows *
-          (uint64_t)surface->bytes_per_pixel;
-}
 
 /* The cpp each ZB_FORMAT encoding stores, the same widths
  * r300_packet0_check reads out of ZB_FORMAT into track->zb.cpp: two bytes
@@ -77,6 +67,95 @@ format_bytes_per_pixel(uint32_t depth_format, bool *known)
       *known = false;
       return 0u;
    }
+}
+
+/* The field widths and the shift each encoding gives depth and stencil.
+ * Either 16-bit encoding stores the code alone and no stencil, so its
+ * stencil mask is zero and any nonzero stencil refuses. */
+static bool
+format_fields(uint32_t depth_format, uint32_t *depth_mask,
+              uint32_t *depth_shift, uint32_t *stencil_mask)
+{
+   switch (depth_format) {
+   case R300_DEPTHFORMAT_16BIT_INT_Z:
+   case R300_DEPTHFORMAT_16BIT_13E3:
+      *depth_mask = 0xffffu;
+      *depth_shift = 0u;
+      *stencil_mask = 0u;
+      return true;
+   case R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL:
+      *depth_mask = 0x00ffffffu;
+      *depth_shift = 8u;
+      *stencil_mask = 0xffu;
+      return true;
+   default:
+      return false;
+   }
+}
+
+int
+r300_zb_depth_pack(const struct r300_zb_depth_surface *surface,
+                   uint32_t depth_code, uint32_t stencil, uint32_t *word_out)
+{
+   uint32_t depth_mask, depth_shift, stencil_mask;
+   if (surface == NULL || word_out == NULL ||
+       !format_fields(surface->depth_format, &depth_mask, &depth_shift,
+                      &stencil_mask))
+      return -EINVAL;
+   if (depth_code > depth_mask || stencil > stencil_mask)
+      return -EINVAL;
+
+   *word_out = (depth_code << depth_shift) | stencil;
+   return 0;
+}
+
+int
+r300_zb_depth_unpack(const struct r300_zb_depth_surface *surface,
+                     uint32_t word, uint32_t *depth_code_out,
+                     uint32_t *stencil_out)
+{
+   uint32_t depth_mask, depth_shift, stencil_mask;
+   if (surface == NULL || depth_code_out == NULL || stencil_out == NULL ||
+       !format_fields(surface->depth_format, &depth_mask, &depth_shift,
+                      &stencil_mask))
+      return -EINVAL;
+   /* A bit outside the two fields belongs to no component the format
+    * stores, so the word came from somewhere else. */
+   if ((word & ~((depth_mask << depth_shift) | stencil_mask)) != 0)
+      return -EINVAL;
+
+   *depth_code_out = (word >> depth_shift) & depth_mask;
+   *stencil_out = word & stencil_mask;
+   return 0;
+}
+
+int
+r300_zb_depth_surface_packed_sentinel(
+   const struct r300_zb_depth_surface *surface, uint32_t *word_out)
+{
+   if (surface == NULL)
+      return -EINVAL;
+   return r300_zb_depth_pack(surface, surface->depth_sentinel_code, 0u,
+                             word_out);
+}
+
+uint32_t
+r300_zb_depth_surface_tile_bits(const struct r300_zb_depth_surface *surface)
+{
+   if (surface == NULL)
+      return 0;
+   return R300_DEPTHMACROTILE((uint32_t)surface->macrotile) |
+          R300_DEPTHMICROTILE((uint32_t)surface->microtile);
+}
+
+uint64_t
+r300_zb_depth_surface_bytes(const struct r300_zb_depth_surface *surface)
+{
+   if (surface == NULL)
+      return 0;
+   return (uint64_t)surface->pitch_pixels *
+          (uint64_t)surface->allocation_rows *
+          (uint64_t)surface->bytes_per_pixel;
 }
 
 int
@@ -107,10 +186,29 @@ r300_zb_depth_surface_check(const struct r300_zb_depth_surface *surface)
    if (surface->allocation_rows < surface->height)
       return -EINVAL;
 
-   /* A tiled surface's bytes follow a transform this tree does not carry,
-    * so a descriptor that claims host addressing over one is refused
-    * rather than trusted. */
-   if (surface->host_addressable &&
+   /* The sentinel is a code, so it fits the format's depth field or the
+    * surface names a value no packed word carries. */
+   uint32_t sentinel_word;
+   if (r300_zb_depth_surface_packed_sentinel(surface, &sentinel_word) != 0)
+      return -EINVAL;
+
+   /* Every capability rests on the ones beneath it: a host that cannot
+    * map the allocation writes nothing into it, and a row-major readback
+    * reads through the same transform that names a single pixel. */
+   if (surface->uniform_packed_initialization &&
+       !surface->raw_allocation_mapping)
+      return -EINVAL;
+   if (surface->logical_pixel_addressing && !surface->raw_allocation_mapping)
+      return -EINVAL;
+   if (surface->logical_image_readback && !surface->logical_pixel_addressing)
+      return -EINVAL;
+
+   /* A tiled surface's byte for a coordinate follows a transform this
+    * tree does not carry, so a descriptor that claims logical addressing
+    * over one is refused rather than trusted.  Uniform initialization
+    * survives tiling, because a constant image is invariant under the
+    * permutation, and it stays admitted here. */
+   if (surface->logical_pixel_addressing &&
        (surface->microtile != R300_ZB_MICROTILE_LINEAR ||
         surface->macrotile != R300_ZB_MACROTILE_LINEAR))
       return -EINVAL;

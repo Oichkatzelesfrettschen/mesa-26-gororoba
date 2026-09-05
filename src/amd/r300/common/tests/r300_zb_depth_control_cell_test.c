@@ -376,13 +376,24 @@ test_surface_parameterization(void)
    r300_zb_depth_control_release(&defaulted);
 
    /* The Z24 macrotiled surface encodes, and the cell still refuses it:
-    * the pre-draw host fill is the comparison's other operand, and no
-    * logical-to-physical transform for R300-class tiling exists to place
-    * it. */
+    * the pre-draw host fill is the comparison's other operand and the
+    * oracle reads the result back row by row, so both halves need the
+    * coordinate transform the surface answers false to. */
    assert(r300_zb_depth_surface_check(
              &r300_zb_depth_surface_z24_macrotiled) == 0);
    params.surface = &r300_zb_depth_surface_z24_macrotiled;
    struct r300_zb_depth_control_ib refused;
+   assert(r300_zb_depth_control_emit(&params, &refused) == -EINVAL);
+   assert(refused.ib == NULL && refused.ib_size_dwords == 0);
+
+   /* The gate reads the capabilities rather than the tile modes: a
+    * linear surface that withholds the two addressing capabilities is
+    * refused by the same branch. */
+   struct r300_zb_depth_surface unaddressed = r300_zb_depth_surface_z16_linear;
+   unaddressed.logical_pixel_addressing = false;
+   unaddressed.logical_image_readback = false;
+   assert(r300_zb_depth_surface_check(&unaddressed) == 0);
+   params.surface = &unaddressed;
    assert(r300_zb_depth_control_emit(&params, &refused) == -EINVAL);
    assert(refused.ib == NULL && refused.ib_size_dwords == 0);
 

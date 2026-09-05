@@ -107,7 +107,10 @@ r300_zb_depth_control_emit_into(
       return -EINVAL;
 
    /* The surface, then the two facts the cell needs of it: it encodes,
-    * and the host can write the pre-draw depth fill the comparison reads.
+    * and the host addresses it by coordinate in both directions.  The
+    * cell writes its pre-draw depth per pixel and reads the result back
+    * as a row-major image, so uniform initialization alone leaves it
+    * without the transform either half needs.
     */
    const struct r300_zb_depth_surface *surface =
       params->surface != NULL ? params->surface
@@ -115,7 +118,7 @@ r300_zb_depth_control_emit_into(
    const int surface_rc = r300_zb_depth_surface_check(surface);
    if (surface_rc != 0)
       return surface_rc;
-   if (!surface->host_addressable)
+   if (!surface->logical_pixel_addressing || !surface->logical_image_readback)
       return -EINVAL;
 
    struct r300_pm4_builder b;
