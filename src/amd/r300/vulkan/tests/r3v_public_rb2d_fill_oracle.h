@@ -10,11 +10,16 @@
 #ifndef R3V_PUBLIC_RB2D_FILL_ORACLE_H
 #define R3V_PUBLIC_RB2D_FILL_ORACLE_H
 
+#include "amd/r300/common/r300_operation_route.h"
+#include "amd/r300/common/r300_rb2d_contract_evidence.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The sealed cell: a 64 KiB destination, the fill interval [12, 5004),
- * pattern 0x11223344, and a 64-byte tail canary. */
+/* The sealed cell "v1_public": a 64 KiB destination, the fill interval
+ * [12, 5004), pattern 0x11223344, and a 64-byte tail canary.  It is the
+ * cell the route's silicon receipt retains, so its five values stay
+ * exactly what ran. */
 #define R3V_PUBLIC_RB2D_FILL_ALLOCATION_BYTES (64u * 1024u)
 #define R3V_PUBLIC_RB2D_FILL_OFFSET 12u
 #define R3V_PUBLIC_RB2D_FILL_BYTES 4992u
@@ -29,13 +34,44 @@
 #define R3V_PUBLIC_RB2D_FILL_SUFFIX_CANARY 0xc2u
 #define R3V_PUBLIC_RB2D_FILL_TAIL_CANARY 0xc3u
 
+/* The evidence a CONTROL_PASS on a cell promotes.  A route receipt moves
+ * the contract's own stream-shape row; a carrier qualification moves one
+ * pitch row and nothing else, because a carrier receipt states nothing
+ * about a stream shape.  The scope rides the cell so the harness, the
+ * arming digest's cell kind, and the promotion the document names all
+ * read one declaration. */
+enum r3v_public_rb2d_fill_evidence_scope {
+   R3V_PUBLIC_RB2D_FILL_SCOPE_ROUTE_RECEIPT = 0,
+   R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION,
+};
+
+/* One attended cell: the destination the application builds, the fill it
+ * records, and the lowering the route is expected to produce for it.  The
+ * expected counts are assertions the harness holds the legalizer to, not
+ * inputs it selects with; pinned_pitch_bytes is the one field that
+ * selects, and zero there runs the chooser. */
 struct r3v_public_rb2d_fill_cell {
+   const char *name;
    uint32_t allocation_bytes;
    uint32_t fill_offset;
    uint32_t fill_bytes;
    uint32_t fill_value;
    uint32_t tail_bytes;
+   enum r300_operation_route_id route_id;
+   enum r300_rb2d_contract contract;
+   uint32_t pinned_pitch_bytes;
+   uint32_t expected_pitch_bytes;
+   uint32_t expected_window_count;
+   uint32_t expected_relocation_sites;
+   enum r3v_public_rb2d_fill_evidence_scope evidence_scope;
 };
+
+/* The cell table, in declaration order, addressed by name. */
+const struct r3v_public_rb2d_fill_cell *
+r3v_public_rb2d_fill_cells(uint32_t *count_out);
+
+const struct r3v_public_rb2d_fill_cell *
+r3v_public_rb2d_fill_cell_by_name(const char *name);
 
 /* Outcome classes in verdict order.  CONTROL_PASS is the only zero exit;
  * the three transport classes come from the wrapper that owns the

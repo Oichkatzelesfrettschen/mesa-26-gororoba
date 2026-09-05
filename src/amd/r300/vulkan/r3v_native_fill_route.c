@@ -295,9 +295,11 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       .minimum_contract_evidence =
          R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT,
    };
+   enum r3v_native_cell_kind cell_kind = R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC;
    /* The contract is the selected row's own, so promoting the windowed
     * route moves the lowering without a second dispatch here.  V1 pins the
-    * 256-byte carrier the receipt retains; V2 runs the chooser. */
+    * 256-byte carrier the receipt retains; V2 takes the operator's pinned
+    * carrier, or the chooser where none is pinned. */
    switch (route->gpu_route_contract_id) {
    case R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL:
       legalize.contract = R300_RB2D_CONTRACT_CONST_FILL_V1;
@@ -305,11 +307,43 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       break;
    case R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL_V2:
       legalize.contract = R300_RB2D_CONTRACT_CONST_FILL_V2;
-      legalize.pinned_pitch_bytes = 0u;
+      if (device->rb2d_v2_pinned_pitch_malformed) {
+         return decline(device, policy, "declines the pinned carrier",
+                        "the declared pinned pitch is not a pitch the "
+                        "hardware can encode");
+      }
+      legalize.pinned_pitch_bytes = device->rb2d_v2_pinned_pitch_bytes;
+      cell_kind = R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE;
       break;
    default:
       return decline(device, policy, "declines the route contract",
                      "the selected route names no RB2D fill contract");
+   }
+
+   /* The evidence floors the selected row's state names.  An EXECUTING row
+    * is the qualified executor, so both authorities are asked for a
+    * silicon receipt.  A PRECOMMITTED row is what a run produces rather
+    * than what it consumes: the contract floor drops to the kernel replay
+    * the legalization differential holds, and the carrier floor stays at
+    * the receipt so an experimental route still writes through a carrier
+    * silicon has exercised.
+    *
+    * A carrier-qualification run is the one exception, and it names itself
+    * exactly: the declared qualification carrier equals the pinned
+    * carrier, so the operator has stated which unexercised pitch this run
+    * is for and the carrier floor drops to PLANNED for that pitch alone.
+    * The cell kind changes with it, so the arming digest carries the
+    * scope and a route authorization never admits a qualification stream.
+    */
+   if (route->state != R300_OPERATION_ROUTE_EXECUTING) {
+      legalize.minimum_contract_evidence =
+         R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY;
+      if (legalize.pinned_pitch_bytes != 0u &&
+          device->rb2d_carrier_qualification_pitch_bytes ==
+             legalize.pinned_pitch_bytes) {
+         legalize.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+         cell_kind = R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION;
+      }
    }
 
    struct fill_route_build build = { 0 };
@@ -450,7 +484,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
                                       : r3v_native_arming_host_provider(),
       &facts, r3v_native_arming_platform(device),
       device->pdevice->pci_vendor_id, device->pdevice->pci_device_id,
-      R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC, ib_digest, device->manifest_dir,
+      cell_kind, ib_digest, device->manifest_dir,
       kernel_release, sizeof(kernel_release), module_srcversion,
       sizeof(module_srcversion));
    facts.nonmaximum_extent = false;
@@ -562,8 +596,8 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                        "r3v-native: fill route transaction: %s", reason);
    }
-   r3v_native_cmd_buffer_install_ib(cmd, R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
-                                    ib, ib_dwords, references, 1u);
+   r3v_native_cmd_buffer_install_ib(cmd, cell_kind, ib, ib_dwords,
+                                    references, 1u);
    /* Both commit together, after the stream installs: a marked record with
     * no installed stream is a fill nobody performs, and the transfer path
     * skips a marked record rather than falling back to the host. */

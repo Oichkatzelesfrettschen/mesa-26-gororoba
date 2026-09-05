@@ -49,21 +49,22 @@ test_v2_reaches_no_silicon_receipt(void)
       r300_rb2d_contract_evidence_find(R300_RB2D_CONTRACT_CONST_FILL_V2);
    assert(v2 != NULL);
    assert(v2->state == R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY);
-   assert(v2->max_windows_receipted == 0u);
-   assert(v2->max_reloc_sites_receipted == 0u);
+   assert(v2->max_windows_receipted == 2u);
+   assert(v2->max_reloc_sites_receipted == 2u);
 
    for (uint32_t windows = 0; windows <= 4u; windows++) {
       assert(!r300_rb2d_contract_admitted(
          R300_RB2D_CONTRACT_CONST_FILL_V2, windows, windows,
          R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT));
    }
-   /* The kernel replay it does hold reaches the empty stream alone, which
-    * is what keeps a width claim out of a replay-only row. */
+   /* The kernel replay it does hold reaches the two-window stream the
+    * legalization differential replays, and the third window is outside
+    * it: a replayed width bounds the widths the row admits. */
    assert(r300_rb2d_contract_admitted(
-      R300_RB2D_CONTRACT_CONST_FILL_V2, 0u, 0u,
+      R300_RB2D_CONTRACT_CONST_FILL_V2, 2u, 2u,
       R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY));
    assert(!r300_rb2d_contract_admitted(
-      R300_RB2D_CONTRACT_CONST_FILL_V2, 1u, 1u,
+      R300_RB2D_CONTRACT_CONST_FILL_V2, 3u, 3u,
       R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY));
 }
 

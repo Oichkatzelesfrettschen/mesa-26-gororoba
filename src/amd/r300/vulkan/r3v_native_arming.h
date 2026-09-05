@@ -63,6 +63,21 @@ enum r3v_native_cell_kind {
     * copy and the one relocation that names the copy's own destination.
     */
    R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
+   /* The windowed RB2D fill: the same recorded copy lowered under the V2
+    * contract, so the carrier is the chooser's and the stream may rebase
+    * the destination once per window.  The geometry contract is the
+    * routed copy and the one buffer object every window relocates
+    * against; the kind is separate so the arming digest binds the
+    * evidence scope a run carries, and a V2 authorization never admits a
+    * V1 stream.
+    */
+   R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE,
+   /* The carrier-qualification RB2D fill: the V2 lowering pinned to one
+    * declared pitch at PLANNED carrier evidence, so the run qualifies the
+    * carrier rather than the route.  A CONTROL_PASS promotes the pitch
+    * row alone, and the kind keeps that scope inside the digest.
+    */
+   R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION,
    R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
    R3V_NATIVE_CELL_KIND_R2VB_REINGEST,
    R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE,

@@ -441,8 +441,15 @@ r3v_native_cell_geometry_unfrozen(
              depth->memory == NULL ||
              depth->memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES;
    }
-   case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC: {
-      /* The public fill's frozen shape is the recorded copy itself rather
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
+   case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION: {
+      /* The three fill kinds share one frozen shape: the contract and the
+       * carrier decide how many windows the stream carries, and every
+       * window relocates against the same destination, so the recorded
+       * copy and its one reference are the geometry whatever the width.
+       *
+       * The public fill's frozen shape is the recorded copy itself rather
        * than a fixed render extent: the route builds one stream from
        * deferred_copies[0], the byte range vkCmdFillBuffer named, so this
        * arm reads that copy and the one relocation installed for it.  A

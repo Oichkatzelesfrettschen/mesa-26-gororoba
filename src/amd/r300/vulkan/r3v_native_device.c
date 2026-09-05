@@ -82,6 +82,30 @@ exact_gate(const char *name)
    return value != NULL && strcmp(value, "1") == 0 ? "1" : NULL;
 }
 
+/* One declared carrier pitch, held to the word's own grids: a decimal
+ * count of bytes on the 64-byte grid inside DST_PITCH_OFFSET's pitch
+ * field.  A present declaration the driver cannot read is recorded
+ * malformed rather than dropped, so it closes the route it governs
+ * instead of silently asserting nothing. */
+static void
+read_declared_pitch(const char *declared, uint32_t *pitch_out,
+                    bool *malformed_out)
+{
+   *pitch_out = 0u;
+   *malformed_out = false;
+   if (declared == NULL)
+      return;
+   char *end = NULL;
+   const unsigned long value =
+      declared[0] != '\0' ? strtoul(declared, &end, 10) : 0u;
+   if (declared[0] != '\0' && end != NULL && *end == '\0' && value != 0u &&
+       value % R300_RB2D_PITCH_GRANULARITY == 0u &&
+       value / R300_RB2D_PITCH_GRANULARITY <= R300_RB2D_MAX_PITCH_UNITS)
+      *pitch_out = (uint32_t)value;
+   else
+      *malformed_out = true;
+}
+
 void
 r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
 {
@@ -112,21 +136,20 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
     * field or off the 64-byte grid is recorded as malformed rather than
     * dropped: a declaration the driver cannot read closes the windowed
     * route instead of silently asserting nothing. */
-   device->rb2d_v2_expected_pitch_bytes = 0u;
-   device->rb2d_v2_expected_pitch_malformed = false;
-   const char *expected_pitch =
-      getenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES");
-   if (expected_pitch != NULL) {
-      char *end = NULL;
-      const unsigned long value =
-         expected_pitch[0] != '\0' ? strtoul(expected_pitch, &end, 10) : 0u;
-      if (expected_pitch[0] != '\0' && end != NULL && *end == '\0' &&
-          value != 0u && value % R300_RB2D_PITCH_GRANULARITY == 0u &&
-          value / R300_RB2D_PITCH_GRANULARITY <= R300_RB2D_MAX_PITCH_UNITS)
-         device->rb2d_v2_expected_pitch_bytes = (uint32_t)value;
-      else
-         device->rb2d_v2_expected_pitch_malformed = true;
-   }
+   read_declared_pitch(getenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES"),
+                       &device->rb2d_v2_expected_pitch_bytes,
+                       &device->rb2d_v2_expected_pitch_malformed);
+   /* The pinned carrier and the qualification carrier are read the same
+    * way and fail closed the same way: the route consumes the pin in place
+    * of the chooser and lowers the carrier's evidence floor only where the
+    * qualification declaration names that exact pin. */
+   read_declared_pitch(getenv("R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES"),
+                       &device->rb2d_v2_pinned_pitch_bytes,
+                       &device->rb2d_v2_pinned_pitch_malformed);
+   read_declared_pitch(
+      getenv("R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES"),
+      &device->rb2d_carrier_qualification_pitch_bytes,
+      &device->rb2d_carrier_qualification_pitch_malformed);
 
    /* The policy is read once, so a route decision cannot change under a
     * command buffer already recorded against it. */
@@ -276,6 +299,29 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                        "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL "
                        "both stand open; one route fills a linear transfer "
                        "destination, so close one gate");
+   }
+
+   /* A carrier-qualification run lowers the carrier's evidence floor to
+    * PLANNED, the one admission the r3v native route set makes for a pitch
+    * nothing has exercised.  It belongs to the windowed route alone,
+    * so the declaration stands only while that route's gate is open and
+    * refuses the device otherwise.  Both spellings are named because the
+    * operator has to see which declaration and which gate disagree.
+    */
+   if ((device->rb2d_carrier_qualification_pitch_bytes != 0u ||
+        device->rb2d_carrier_qualification_pitch_malformed) &&
+       device->compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2] ==
+          NULL) {
+      vk_queue_finish(&device->queue.vk);
+      radeon_drm_vk_device_finish(&device->drm);
+      vk_device_finish(&device->vk);
+      vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+      return vk_errorf(
+         pdevice, VK_ERROR_INITIALIZATION_FAILED,
+         "r3v-native: R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES "
+         "declares a qualification carrier while "
+         "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL is not \"1\"; "
+         "the qualification carrier rides the windowed route alone");
    }
 
    /* Plan capture opens the CS ioctl with the hazard gate closed, so it

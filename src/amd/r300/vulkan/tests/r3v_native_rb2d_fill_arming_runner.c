@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Non-submitting arming runner for the public RB2D fill cell: builds the
- * exact one-segment stream the route submits for the attended fill,
+ * Non-submitting arming runner for the named RB2D fill cells: builds the
+ * exact stream the route submits for the selected cell,
  * derives every arming factor and the declared submission identity, and
  * stops at the authorization boundary.  The runner creates no Vulkan
  * object, opens no DRM node, allocates no buffer object, issues no ioctl,
@@ -25,10 +25,12 @@
 
 #include "r3v_fill_route.h"
 #include "r3v_native_arming.h"
+#include "r3v_public_rb2d_fill_oracle.h"
 
 #include "amd/r300/common/r300_chip_identity.h"
 #include "amd/r300/common/r300_operation_route.h"
 #include "amd/r300/common/r300_rb2d_fill.h"
+#include "amd/r300/common/r300_rb2d_legalize.h"
 #include "amd/r300/common/r300_rb2d_linear_span.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
@@ -44,12 +46,6 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
-/* The attended cell the route's document declares. */
-#define CELL_ALLOCATION_BYTES (64u * 1024u)
-#define CELL_FILL_OFFSET 12u
-#define CELL_FILL_BYTES 4992u
-#define CELL_FILL_VALUE 0x11223344u
-
 #define RUNNER_DEFAULT_SYSFS_ROOT "/sys"
 #define RUNNER_DEFAULT_PCI_SLOT "0000:01:05.0"
 
@@ -60,61 +56,137 @@ static const char *const retained_names[] = {
    "submit_manifest.json", "attempt.token",
 };
 
+/* Windows one cell's stream may carry; the legalizer's own maximum, so
+ * the runner sizes storage the way the route does. */
+#define RUNNER_MAX_WINDOWS R300_RB2D_LEGALIZE_MAX_WINDOWS
+
 struct cell {
-   struct r300_rb2d_fill_plan plan;
-   struct r300_rb2d_fill_rect rects[R300_RB2D_SPAN_MAX_RECTS_PER_SEGMENT];
+   const struct r3v_public_rb2d_fill_cell *declared;
+   struct r300_rb2d_window windows[RUNNER_MAX_WINDOWS];
+   struct r300_rb2d_fill_rect rects[RUNNER_MAX_WINDOWS *
+                                    R300_RB2D_SPAN_MAX_RECTS_PER_SEGMENT];
+   uint32_t window_count;
+   uint32_t rect_count;
+   uint32_t pitch_bytes;
+   enum r300_rb2d_format format;
    uint32_t *ib;
    uint32_t ib_dwords;
-   struct r300_rb2d_fill_reloc_site sites[R300_RB2D_FILL_SLOT_COUNT];
+   struct r3v_fill_route_reloc_site sites[RUNNER_MAX_WINDOWS];
    uint32_t site_count;
    char ib_digest[BLAKE3_OUT_LEN * 2 + 1];
 };
 
-/* The same construction the route performs: one span on the 256-byte
- * carrier, planned, costed, emitted, and validated. */
+/* The same construction the route performs: the legalizer lowers the
+ * cell's interval on the cell's carrier under the cell's contract, and
+ * the emitter writes the stream the submission would carry.  The evidence
+ * floors are the cell's own -- a route-receipt cell asks the carrier for a
+ * silicon receipt, a carrier-qualification cell asks PLANNED for the pitch
+ * it exists to qualify -- and the contract floor is the kernel replay the
+ * legalization differential holds.  The runner then asserts the cell's
+ * declared carrier, window, and site counts against what came out, so a
+ * declaration that disagrees with the lowering refuses here rather than at
+ * the board. */
 static bool
-build_cell(struct cell *c)
+build_cell(struct cell *c, const struct r3v_public_rb2d_fill_cell *declared)
 {
    memset(c, 0, sizeof(*c));
-   const struct r300_rb2d_span span = {
-      .byte_offset = CELL_FILL_OFFSET,
-      .byte_size = CELL_FILL_BYTES,
-      .value = CELL_FILL_VALUE,
+   c->declared = declared;
+   const bool qualification =
+      declared->evidence_scope ==
+      R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION;
+   const struct r300_rb2d_legalize_request request = {
+      .byte_offset = declared->fill_offset,
+      .byte_size = declared->fill_bytes,
+      .pattern = declared->fill_value,
+      .bo_size = declared->allocation_bytes,
+      .usage = R300_RB2D_USAGE_FILL_BUFFER,
+      .contract = declared->contract,
+      .minimum_evidence = qualification
+                             ? R300_RB2D_PITCH_EVIDENCE_PLANNED
+                             : R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT,
+      .minimum_contract_evidence =
+         declared->contract == R300_RB2D_CONTRACT_CONST_FILL_V1
+            ? R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT
+            : R300_RB2D_CONTRACT_EVIDENCE_KERNEL_REPLAY,
+      .pinned_pitch_bytes = declared->pinned_pitch_bytes,
    };
-   const struct r300_rb2d_span_layout layout = {
-      .pitch_bytes = R300_RB2D_SPAN_PITCH_DIRECT_WRITE,
-      .format = R300_RB2D_FORMAT_ARGB8888,
-   };
-   enum r300_rb2d_span_refusal refusal = R300_RB2D_SPAN_OK;
-   if (r300_rb2d_linear_span_plan(&span, &layout, CELL_ALLOCATION_BYTES,
-                                  &c->plan, c->rects, 1, &refusal) != 1) {
-      fprintf(stderr, "span plan refused: %s\n",
-              r300_rb2d_span_refusal_name(refusal));
+   struct r300_rb2d_legalize_result result;
+   c->window_count = r300_rb2d_legalize_linear_span(
+      &request, c->windows, RUNNER_MAX_WINDOWS, &result);
+   if (c->window_count == 0u) {
+      fprintf(stderr, "legalization refused: %s (span %s, window %s)\n",
+              r300_rb2d_legalize_refusal_name(result.refusal),
+              r300_rb2d_span_refusal_name(result.span_refusal),
+              r300_rb2d_window_refusal_name(result.window_refusal));
       return false;
    }
-   if (!r300_rb2d_linear_span_dwords(&c->plan, 1, &c->ib_dwords) ||
-       c->ib_dwords == 0) {
-      fprintf(stderr, "span cost failed\n");
+   c->pitch_bytes = result.pitch_bytes;
+   c->format = result.format;
+   c->ib_dwords = result.ib_dwords;
+   if (c->pitch_bytes != declared->expected_pitch_bytes ||
+       c->window_count != declared->expected_window_count ||
+       result.relocation_sites != declared->expected_relocation_sites) {
+      fprintf(stderr,
+              "cell %s declares pitch %u, %u windows, %u sites; the "
+              "legalization produced pitch %u, %u windows, %u sites\n",
+              declared->name, declared->expected_pitch_bytes,
+              declared->expected_window_count,
+              declared->expected_relocation_sites, c->pitch_bytes,
+              c->window_count, result.relocation_sites);
       return false;
+   }
+   for (uint32_t w = 0; w < c->window_count; w++) {
+      memcpy(c->rects + c->rect_count, c->windows[w].rects,
+             c->windows[w].rect_count * sizeof(c->rects[0]));
+      c->rect_count += c->windows[w].rect_count;
    }
    c->ib = calloc(c->ib_dwords, sizeof(*c->ib));
    if (c->ib == NULL)
       return false;
-   struct r300_rb2d_fill_ib emitted;
-   if (r300_rb2d_fill_emit_into(&c->plan, c->ib, c->ib_dwords, &emitted) != 0 ||
-       r300_rb2d_fill_validate_reloc_sites(&emitted) != 0) {
-      fprintf(stderr, "emission or relocation-site validation failed\n");
+   struct r300_rb2d_legalized_ib emitted;
+   if (r300_rb2d_legalize_emit(c->windows, c->window_count, c->ib,
+                               c->ib_dwords, &emitted) != 0 ||
+       emitted.ib_size_dwords != c->ib_dwords ||
+       emitted.site_count != c->window_count) {
+      fprintf(stderr, "emission did not produce the stream it was sized to\n");
       return false;
    }
-   if (emitted.ib_size_dwords != c->ib_dwords) {
-      fprintf(stderr, "emitted %u dwords into a %u-dword cost\n",
-              emitted.ib_size_dwords, c->ib_dwords);
-      return false;
+   for (uint32_t r = 0; r < emitted.site_count; r++) {
+      c->sites[r].ib_index = emitted.sites[r].ib_index;
+      c->sites[r].slot = emitted.sites[r].slot;
    }
-   c->site_count = emitted.reloc_site_count;
-   memcpy(c->sites, emitted.reloc_sites, sizeof(c->sites));
+   c->site_count = emitted.site_count;
    r300_triangle_ib_digest_hex(c->ib, c->ib_dwords, c->ib_digest);
    return true;
+}
+
+/* The kind the route installs for a cell: the sealed V1 fill, the windowed
+ * route, or the carrier qualification.  The arming digest binds the kind,
+ * so the runner names the same one the route would. */
+static enum r3v_native_cell_kind
+cell_kind(const struct r3v_public_rb2d_fill_cell *declared)
+{
+   if (declared->contract == R300_RB2D_CONTRACT_CONST_FILL_V1)
+      return R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC;
+   if (declared->evidence_scope ==
+       R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION)
+      return R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION;
+   return R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE;
+}
+
+/* The kind's report spelling, held to the plan registry's names by
+ * r3v_native_rb2d_fill_arming_runner_check. */
+static const char *
+cell_kind_name(const struct r3v_public_rb2d_fill_cell *declared)
+{
+   switch (cell_kind(declared)) {
+   case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
+      return "rb2d_fill_v2_route";
+   case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION:
+      return "rb2d_carrier_qualification";
+   default:
+      return "rb2d_fill_public";
+   }
 }
 
 static void
@@ -238,9 +310,12 @@ main(int argc, char **argv)
 {
    const char *evidence_dir = NULL;
    const char *emit_path = NULL;
+   const char *cell_name = "v1_public";
    for (int i = 1; i < argc; i++) {
       if (strcmp(argv[i], "--emit-ib") == 0 && i + 1 < argc) {
          emit_path = argv[++i];
+      } else if (strcmp(argv[i], "--cell") == 0 && i + 1 < argc) {
+         cell_name = argv[++i];
       } else if (argv[i][0] == '-') {
          fprintf(stderr, "unknown option %s\n", argv[i]);
          return 2;
@@ -253,13 +328,20 @@ main(int argc, char **argv)
    }
    if (evidence_dir == NULL) {
       fprintf(stderr,
-              "usage: %s [--emit-ib <path>] <evidence-directory>\n",
+              "usage: %s [--cell <name>] [--emit-ib <path>] "
+              "<evidence-directory>\n",
               argv[0]);
+      return 2;
+   }
+   const struct r3v_public_rb2d_fill_cell *declared =
+      r3v_public_rb2d_fill_cell_by_name(cell_name);
+   if (declared == NULL) {
+      fprintf(stderr, "no cell is named %s\n", cell_name);
       return 2;
    }
 
    struct cell c;
-   if (!build_cell(&c)) {
+   if (!build_cell(&c, declared)) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
@@ -310,8 +392,8 @@ main(int argc, char **argv)
    struct r3v_native_arming_facts facts;
    r3v_native_arming_collect_from(&provider, &facts, platform_id, vendor_id,
                                   device_id,
-                                  R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC,
-                                  c.ib_digest, evidence_dir, kernel,
+                                  cell_kind(declared), c.ib_digest,
+                                  evidence_dir, kernel,
                                   sizeof(kernel), module, sizeof(module));
    facts.nonmaximum_extent = false;
 
@@ -346,11 +428,6 @@ main(int argc, char **argv)
          value <= UINT32_MAX;
       destination_handle = (uint32_t)value;
    }
-   struct r3v_fill_route_reloc_site sites[R300_RB2D_FILL_SLOT_COUNT];
-   for (uint32_t r = 0; r < c.site_count; r++) {
-      sites[r].ib_index = c.sites[r].ib_index;
-      sites[r].slot = c.sites[r].slot;
-   }
    char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE] = "";
    const char *identity_reason = NULL;
    enum r3v_fill_route_refusal identity_verdict =
@@ -359,21 +436,21 @@ main(int argc, char **argv)
       getenv("R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3");
    if (handle_declared) {
       const struct r3v_fill_route_identity id = {
-         .allocation_bytes = CELL_ALLOCATION_BYTES,
-         .buffer_bytes = CELL_ALLOCATION_BYTES,
+         .allocation_bytes = declared->allocation_bytes,
+         .buffer_bytes = declared->allocation_bytes,
          .binding_offset = 0,
-         .fill_offset = CELL_FILL_OFFSET,
-         .fill_bytes = CELL_FILL_BYTES,
-         .fill_value = CELL_FILL_VALUE,
-         .pitch_bytes = R300_RB2D_SPAN_PITCH_DIRECT_WRITE,
-         .format = (uint32_t)R300_RB2D_FORMAT_ARGB8888,
-         .segment_count = 1,
-         .rect_count = c.plan.rect_count,
+         .fill_offset = declared->fill_offset,
+         .fill_bytes = declared->fill_bytes,
+         .fill_value = declared->fill_value,
+         .pitch_bytes = c.pitch_bytes,
+         .format = (uint32_t)c.format,
+         .segment_count = c.window_count,
+         .rect_count = c.rect_count,
          .rects = c.rects,
          .ib_dwords = c.ib_dwords,
          .ib = c.ib,
          .relocation_count = c.site_count,
-         .reloc_sites = sites,
+         .reloc_sites = c.sites,
          .read_domains = 0,
          .write_domain = R3V_FILL_ROUTE_DOMAIN_GTT,
          .destination_handle = destination_handle,
@@ -385,10 +462,16 @@ main(int argc, char **argv)
    }
 
    const struct r300_operation_route_row *route =
-      r300_operation_route(R300_OPERATION_ROUTE_RB2D_CONST_FILL);
+      r300_operation_route(declared->route_id);
 
    printf("r3v native rb2d-fill arming report\n");
-   printf("cell_kind=rb2d_fill_public\n");
+   printf("cell=%s\n", declared->name);
+   printf("cell_kind=%s\n", cell_kind_name(declared));
+   printf("evidence_scope=%s\n",
+          declared->evidence_scope ==
+                R3V_PUBLIC_RB2D_FILL_SCOPE_CARRIER_QUALIFICATION
+             ? "carrier_qualification"
+             : "route_receipt");
    printf("mesa_source=%s\n", MESA_GIT_SHA1);
    printf("route=%s\n", route != NULL ? route->name : "(none)");
    printf("route_state=%s\n",
@@ -401,15 +484,16 @@ main(int argc, char **argv)
                         : "(none)");
    printf("route_gate=%s\n",
           route != NULL && route->gate != NULL ? route->gate : "(none)");
-   printf("allocation_bytes=%u\n", CELL_ALLOCATION_BYTES);
-   printf("fill_offset=%u\n", CELL_FILL_OFFSET);
-   printf("fill_bytes=%u\n", CELL_FILL_BYTES);
-   printf("fill_value=0x%08x\n", CELL_FILL_VALUE);
-   printf("pitch_bytes=%u\n", R300_RB2D_SPAN_PITCH_DIRECT_WRITE);
+   printf("allocation_bytes=%u\n", declared->allocation_bytes);
+   printf("fill_offset=%u\n", declared->fill_offset);
+   printf("fill_bytes=%u\n", declared->fill_bytes);
+   printf("fill_value=0x%08x\n", declared->fill_value);
+   printf("pitch_bytes=%u\n", c.pitch_bytes);
    printf("format=argb8888\n");
-   printf("segment_count=1\n");
-   printf("rect_count=%u\n", c.plan.rect_count);
-   for (uint32_t r = 0; r < c.plan.rect_count; r++) {
+   printf("window_count=%u\n", c.window_count);
+   printf("segment_count=%u\n", c.window_count);
+   printf("rect_count=%u\n", c.rect_count);
+   for (uint32_t r = 0; r < c.rect_count; r++) {
       printf("rect=%u,%u,%u,%u\n", c.rects[r].x, c.rects[r].y,
              c.rects[r].width, c.rects[r].height);
    }
