@@ -29,8 +29,9 @@ static const struct r300_zb_hyperz_row rows[] = {
      "r300_packet0_check case 0x4f54: nonzero rejects for a non-owner" },
    { R300_ZB_HYPERZ_ROW_PACKET0, R300_GB_Z_PEQ_CONFIG, 0xffffffffu,
      R300_ZB_HYPERZ_KERNEL_REJECTS, "GB_Z_PEQ_CONFIG",
-     "r300_packet0_check case 0x4028: nonzero rejects for a non-owner; "
-     "any value rejects below CHIP_RV350" },
+     "r300_packet0_check case 0x4028: nonzero rejects for a non-owner on "
+     "CHIP_RV350 and later, which CHIP_RS480 is; the table carries no "
+     "family gate, so it describes RV350-and-later parts only" },
    { R300_ZB_HYPERZ_ROW_PACKET0, R300_SC_HYPERZ, R300_SC_HYPERZ_ENABLE,
      R300_ZB_HYPERZ_KERNEL_CLEARS_SILENTLY, "SC_HYPERZ enable",
      "r300_packet0_check case 0x43a4: bit 0 cleared in the stream for a "

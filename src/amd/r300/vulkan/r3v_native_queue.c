@@ -1311,6 +1311,14 @@ r3v_native_queue_prepare_submission(VkDevice _device,
       result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       goto prepare_fail;
    }
+   /* HyperZ admission judges the exact IB the CS build binds, on every
+    * path that reaches DRM_RADEON_CS: a HyperZ write reaches the kernel
+    * only from a descriptor the kernel already made the owner. */
+   result = r3v_native_hyperz_admit(device, cmd_buffer);
+   if (result != VK_SUCCESS) {
+      radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
+      goto prepare_fail;
+   }
    /* The one CS build: the argument block lives in the device-resident
     * prepared struct, so its self-referential chunk pointers stay valid
     * until the commit's ioctl consumes them.
@@ -1635,14 +1643,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
-      /* HyperZ admission runs on the admitted IB, after route admission
-       * has settled which stream executes and before the reloc list and
-       * digest bind it: a HyperZ write reaches the kernel only from a
-       * descriptor the kernel already made the owner. */
-      const VkResult hyperz_admit = r3v_native_hyperz_admit(device, cmd_buffer);
-      if (hyperz_admit != VK_SUCCESS)
-         return hyperz_admit;
-
       /* Recorded query transitions publish here, in recorded order:
        * an end makes its query available with the exact zero count,
        * a reset returns its range to unavailable.
@@ -1880,6 +1880,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      /* HyperZ admission judges the exact IB this build binds, the same
+       * gate the prepared path runs before its own build. */
+      const VkResult hyperz_admit = r3v_native_hyperz_admit(device, cmd_buffer);
+      if (hyperz_admit != VK_SUCCESS) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return hyperz_admit;
       }
       /* The one CS build on the inline path: the completion reference
        * above finalized the relocation list, so the argument block binds

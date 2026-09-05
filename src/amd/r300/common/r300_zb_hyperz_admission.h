@@ -12,7 +12,8 @@
  *                 WR_COMP_ENABLE, FAST_FILL_ENABLE   reject
  *    ZB_ZMASK_OFFSET, ZB_ZMASK_PITCH,
  *    ZB_HIZ_OFFSET, ZB_HIZ_PITCH     nonzero        reject
- *    GB_Z_PEQ_CONFIG                 nonzero        reject
+ *    GB_Z_PEQ_CONFIG                 nonzero        reject (RV350 and later;
+ *                                                   every value below it)
  *    SC_HYPERZ    bit 0                             cleared in the stream
  *    PACKET3 3D_CLEAR_HIZ, 3D_CLEAR_ZMASK           reject
  *
