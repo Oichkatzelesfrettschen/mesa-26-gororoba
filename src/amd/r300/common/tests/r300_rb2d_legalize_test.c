@@ -501,10 +501,11 @@ test_chooser_and_cost(void)
     * apart because the chooser ranks every admitted row rather than a
     * pair.
     *
-    * Head to head against the witnessed 256-byte carrier, 16320 wins from
-    * exactly 2 MiB: one 256-byte window reaches 0x1fff rows of 64 pixels,
-    * 2096896 bytes, so 2 MiB is the first size needing a second window
-    * and its rebind costs more than the wider carrier's extra rectangle.
+    * Head to head against the witnessed 256-byte carrier, one 256-byte
+    * window reaches 0x1fff rows of 64 pixels, 2096896 bytes, so 2096900
+    * is the smallest dword-aligned offset-zero size needing a second
+    * window, and 16320 wins at the tested 2 MiB because that rebind costs
+    * more than the wider carrier's extra rectangle.
     *
     * As the chooser's own verdict, 16320 wins only from 34467840 bytes,
     * where 8616960 pixels divide exactly into 2112 rows of 4080 and the
@@ -515,6 +516,19 @@ test_chooser_and_cost(void)
          uint64_t size;
          uint32_t pinned;
       } crossing[] = { { 2u << 20, 256u }, { 34467840u, 0u } };
+      /* The exact second-window boundary on the 256-byte carrier: the
+       * last size one window carries and the first that needs two. */
+      {
+         struct r300_rb2d_legalize_request edge =
+            request(0u, 2096896u, 2096900u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+         edge.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+         edge.pinned_pitch_bytes = 256u;
+         struct r300_rb2d_legalize_result r;
+         assert(legalize_exactly(&edge, &r) == 1u);
+         edge.byte_size = 2096900u;
+         assert(r300_rb2d_legalize_linear_span(&edge, windows,
+                                               ARRAY_LEN(windows), &r) == 2u);
+      }
       for (unsigned k = 0; k < ARRAY_LEN(crossing); k++) {
          struct r300_rb2d_legalize_request at =
             request(0u, crossing[k].size, crossing[k].size,

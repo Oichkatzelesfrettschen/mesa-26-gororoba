@@ -489,11 +489,13 @@ the cost model picks is the one the run exercises. Its geometry waits on
 one decision -- which carrier the receipt should qualify -- and
 `r300_rb2d_legalize_test` computes the two sizes that decision needs.
 
-Head to head against the witnessed 256-byte carrier, 16320 wins from
-exactly **2097152 bytes**. One 256-byte window reaches `0x1fff` rows of 64
-pixels, 2096896 bytes, so 2 MiB is the first interval needing a second
-window, and that rebind costs more than the wider carrier's extra
-rectangle: cost 228 against 128 under the default weights.
+Head to head against the witnessed 256-byte carrier, 16320 wins at the
+tested size of **2097152 bytes** from offset 0 and loses at 2093056. One
+256-byte window reaches `0x1fff` rows of 64 pixels, 2096896 bytes, so an
+offset-zero request of 2096900 bytes is the smallest dword-aligned interval
+that needs a second window on that carrier, and from there the rebind
+costs more than the wider carrier's extra rectangle: cost 228 against 128
+under the default weights at 2 MiB.
 
 As the chooser's own verdict over the whole registry, 16320 wins only from
 **34467840 bytes**, where 8616960 pixels divide exactly into 2112 rows of
