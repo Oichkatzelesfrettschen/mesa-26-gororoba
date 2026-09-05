@@ -115,6 +115,54 @@ reported_relocation_index(void)
    assert(untouched == 0xabcdu);
 }
 
+/* The tile bits ride the pitch word.  A linear caller passes zero and the
+ * word is the pitch alone, which is what the reference stream above pins;
+ * a tiled caller's two ZB_DEPTHPITCH fields land beside the pitch, and a
+ * value outside those fields or naming the reserved microtile encoding is
+ * refused before the first dword.
+ */
+static void
+tile_bits_ride_the_pitch(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   struct r300_zb_depth_state_params params = reference;
+
+   params.pitch_tile_bits =
+      R300_DEPTHMACROTILE_ENABLE | R300_DEPTHMICROTILE_TILED;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+   assert(words[7] == (64u | R300_DEPTHMACROTILE_ENABLE |
+                       R300_DEPTHMICROTILE_TILED));
+
+   params.pitch_tile_bits = R300_DEPTHMICROTILE_TILED_SQUARE;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+   assert(words[7] == (64u | R300_DEPTHMICROTILE_TILED_SQUARE));
+
+   /* Microtile 3 is the reserved encoding. */
+   params.pitch_tile_bits = R300_DEPTHMICROTILE(3u);
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == -EINVAL);
+   assert(b.count == 0);
+
+   /* Bit 18 is the microtile field's high bit, so it alone is the
+    * TILED_SQUARE encoding rather than a stray bit. */
+   assert(R300_DEPTHMICROTILE_TILED_SQUARE == (1u << 18));
+
+   /* A bit outside the two fields would reach the endian field above them
+    * or the pitch below. */
+   params.pitch_tile_bits = 1u << 19;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == -EINVAL);
+   assert(b.count == 0);
+
+   params.pitch_tile_bits = 1u;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == -EINVAL);
+   assert(b.count == 0);
+}
+
 static void
 depth_write_disabled(void)
 {
@@ -288,6 +336,7 @@ main(void)
 {
    exact_reference_stream();
    reported_relocation_index();
+   tile_bits_ride_the_pitch();
    depth_write_disabled();
    every_comparison_encodes();
    every_depth_format_encodes();

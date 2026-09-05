@@ -44,17 +44,39 @@ zero dwords and stages C and D refuse it with `-EINVAL`.
 `r300-zmask-clear-plan` pins exactly that, so the gap fails a test rather
 than waiting on a run.
 
-The stages therefore bind to a Z24 variant of the control cell that does
-not exist yet: `R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL` at four bytes
-per pixel on a microtiled, macrotiled surface. Building it means giving
-`r300_zb_depth_control_reference_contract` and
-`r300_zb_depth_control_emit_into` a depth-format and tiling parameter,
-widening `r300_zb_depth_control_depth_oracle` from `uint16_t` to the
-32-bit word Z24 stores, and passing the tiling choice through
-`r300_zb_depth_state_emit`, which hardcodes the linear pair today. The
-allocation grows with the format: `R300_ZB_DEPTH_CONTROL_DEPTH_CPP` of
-four doubles the depth BO, and macrotiling imposes its own pitch
-alignment on top.
+The stages therefore bind to a Z24 variant of the control cell.
+`r300_zb_depth_surface` carries the two surfaces as data --
+`r300_zb_depth_surface_z16_linear` restates the cell's own constants, and
+`r300_zb_depth_surface_z24_macrotiled` names
+`R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL` at four bytes per pixel,
+microtiled and macrotiled, on the Z16 geometry so the ladder changes
+format and tiling alone. `r300_zb_depth_control_params` takes the
+surface, `r300_zb_depth_state_params` takes the `ZB_DEPTHPITCH` tile bits
+the surface declares, and the Z16 instance emits the retained stream byte
+for byte, which `r300-zb-depth-control-cell` holds.
+
+Emitting the Z24 surface still refuses, and the refusal names the reason:
+the pre-draw host fill is the comparison's other operand, and no
+logical-to-physical address transform for R300-class tiling exists in
+this tree to place it. Gallium never computes one -- `r300_transfer.c`
+routes a tiled map through a linear shadow texture and lets the engine
+move the bytes, and `radeon_surface.c` begins at `CHIP_R600` -- so
+`r300_get_pixel_alignment`'s tile-dimension table is the only tiling fact
+available to cross-check against, and `r300_zmask_layout.c` already
+consumes that much. The transform has to come from its own authority:
+either the R3xx and R5xx acceleration guides' tiling sections, or a
+silicon measurement that fills a one-pixel rectangle at a logical
+coordinate through a tiled `DST_PITCH_OFFSET` and reads the changed byte
+out of the linear object, which is rank-1 evidence on the RB2D engine the
+constant-fill route already receipts. Both are separate work with their
+own evidence record; `host_addressable` on the descriptor is the fact
+that closes the path until one lands.
+
+The allocation grows with the format: four bytes per pixel doubles the
+depth BO, and macrotiling imposes its own pitch alignment on top. The
+depth oracle also widens from `uint16_t` to the 32-bit word Z24 stores,
+and it reads through the address model rather than through
+`y * pitch + x`.
 
 Z24 stores depth in the low 24 bits, so the variant's depth sentinel is
 `0x800000`, the same half-scale point `0x8000` marks in Z16: it sits

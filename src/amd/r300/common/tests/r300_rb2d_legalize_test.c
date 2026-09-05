@@ -16,6 +16,8 @@
 #include "r300_rb2d_legalize.h"
 #include "radeon_legacy_2d_reg.h"
 
+#include "util/macros.h"
+
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
@@ -689,6 +691,63 @@ test_two_receipted_carriers(void)
    assert(format == R300_RB2D_FORMAT_ARGB8888);
 }
 
+/* The exact carrier transition and the stream shape on each side of it.
+ * The crossover campaign brackets its measured sizes on this step, so the
+ * step is pinned here rather than inferred from the 4 KiB grid: 2096896 is
+ * 256 * 8191, the last interval one 256-byte window covers inside the
+ * scissor's safe end, and the first dword past it takes the wider carrier.
+ * The shape on both sides is one window through one relocation site, which
+ * is why a timing difference across the step is engine and ioctl cost
+ * rather than indirect-buffer size.
+ */
+static void
+test_carrier_transition_shape(void)
+{
+   enum r300_rb2d_format format = R300_RB2D_FORMAT_COUNT;
+   struct r300_rb2d_window windows[R300_RB2D_LEGALIZE_MAX_WINDOWS];
+   struct r300_rb2d_legalize_result result;
+
+   struct r300_rb2d_legalize_request last_narrow =
+      request(0u, 2096896u, 2096896u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   assert(r300_rb2d_choose_pitch(&last_narrow,
+                                 &r300_rb2d_default_cost_weights,
+                                 &format) == 256u);
+   assert(r300_rb2d_legalize_linear_span(&last_narrow, windows,
+                                         ARRAY_SIZE(windows), &result) == 1u);
+   assert(result.refusal == R300_RB2D_LEGALIZE_OK);
+   assert(result.pitch_bytes == 256u);
+   assert(result.window_count == 1u && result.rect_count == 1u);
+   assert(result.relocation_sites == 1u && result.ib_dwords == 26u);
+
+   struct r300_rb2d_legalize_request first_wide = last_narrow;
+   first_wide.byte_size = 2096900u;
+   first_wide.bo_size = 2096900u;
+   assert(r300_rb2d_choose_pitch(&first_wide, &r300_rb2d_default_cost_weights,
+                                 &format) == 16320u);
+   assert(r300_rb2d_legalize_linear_span(&first_wide, windows,
+                                         ARRAY_SIZE(windows), &result) == 1u);
+   assert(result.refusal == R300_RB2D_LEGALIZE_OK);
+   assert(result.pitch_bytes == 16320u);
+   assert(result.window_count == 1u && result.rect_count == 2u);
+   assert(result.relocation_sites == 1u && result.ib_dwords == 32u);
+
+   /* Every smaller size in the campaign's sweep sits on the narrow side
+    * and every larger one on the wide side, so the sweep crosses the step
+    * exactly once. */
+   static const uint64_t narrow[] = { 4u, 64u, 256u, 4096u, 65536u, 524288u };
+   for (unsigned i = 0; i < ARRAY_SIZE(narrow); i++) {
+      struct r300_rb2d_legalize_request r =
+         request(0u, narrow[i], narrow[i] + 64u,
+                 R300_RB2D_CONTRACT_CONST_FILL_V2);
+      assert(r300_rb2d_choose_pitch(&r, &r300_rb2d_default_cost_weights,
+                                    &format) == 256u);
+   }
+   struct r300_rb2d_legalize_request largest =
+      request(0u, 8388608u, 8388608u + 64u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   assert(r300_rb2d_choose_pitch(&largest, &r300_rb2d_default_cost_weights,
+                                 &format) == 16320u);
+}
+
 /* The chooser cell's geometry, where the verdict is the fact under test.
  * At the executing floor the registry admits 256 and 16320, and 2 MiB is
  * the smallest allocation on the 4 KiB grid where the wider carrier's one
@@ -838,6 +897,7 @@ main(void)
    test_pitch_registry();
    test_chooser_and_cost();
    test_two_receipted_carriers();
+   test_carrier_transition_shape();
    test_chooser_selected_cell();
    test_request_refusals();
    test_emitter_epochs();

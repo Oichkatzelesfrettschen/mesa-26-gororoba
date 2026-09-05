@@ -35,6 +35,14 @@ struct r300_zb_depth_state_params {
     * inversion, or packed Z24/S8.
     */
    uint32_t depth_format;
+   /* ZB_DEPTHPITCH bits 16 and 17, the macrotile and microtile modes the
+    * surface declares.  The kernel composes these from the relocation's
+    * tiling flags in r300_packet0_check only when RADEON_CS_KEEP_TILING_FLAGS
+    * is clear; a submission that keeps its own flags carries them here, and
+    * a linear surface passes zero.  r300_zb_depth_surface_tile_bits builds
+    * the value from a surface descriptor.
+    */
+   uint32_t pitch_tile_bits;
    /* Depth binding: byte offset within the buffer object and the
     * caller's relocation payload for the NOP-form relocation that
     * follows the offset write.
