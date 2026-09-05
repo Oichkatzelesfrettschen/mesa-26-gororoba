@@ -172,6 +172,76 @@ sites, buffer-object role schema, identity, directory freshness, and token
 state, then the verdict.  `r3v-native-rb2d-fill-arming-runner` drives a
 fixture tree through the armed leg and every single-fact refusal.
 
+## The attended application and the three binary roles
+
+The cell carries three executables, and each holds one role that the
+other two cannot take:
+
+| Binary | Requires shim | May run without shim | Expects destination write |
+| --- | ---: | ---: | ---: |
+| `r3v_native_rb2d_fill_arming_runner` | no | yes | no |
+| `r3v_native_loader_fill_application` | yes | no | no |
+| `r3v_native_attended_rb2d_fill` | no | yes | yes |
+
+`r3v_native_attended_rb2d_fill` is the executable a silicon token runs.
+It links libvulkan and libc alone, takes a declaration file and an empty
+receipt directory, and refuses before `vkCreateInstance` whenever the
+process is not the attended shape: `LD_PRELOAD` set, a drm-shim DSO in
+`/proc/self/maps`, a shim counter symbol resolvable, `VK_DRIVER_FILES`
+other than the declared manifest, a manifest, ICD, or self digest other
+than the declared sha256, an authorization environment gate absent or
+different from the declaration, a fill request other than the sealed
+cell, or a kernel release, module srcversion, or boot id other than the
+declared ones.  It carries no switch into shim mode; the shim
+application is a separate binary and stays the transport control.  The
+public scenario -- instance, physical device, device, queue, buffer,
+memory selection and binding, map, destination initialization, flush
+when the type is not coherent, `mprotect(PROT_READ)`, one
+`vkCmdFillBuffer`, one `vkQueueSubmit`, one bounded wait, invalidate
+when required, inspection, cleanup -- lives in
+`tests/r3v_public_rb2d_fill_scenario.c`, which defines no driver symbol.
+
+The verdict is the pure oracle in `tests/r3v_public_rb2d_fill_oracle.c`:
+tail canary unchanged, some byte changed, no displaced copy of the
+interval, no byte changed outside the interval, every interval dword the
+pattern or the sentinel, no sentinel dword left; the first predicate that
+fails names the class -- `CANARY_CORRUPTION`, `NO_DEVICE_WRITE`,
+`SHIFTED_WRITE`, `OUTSIDE_WRITE`, `PATTERN_MISMATCH`, `PARTIAL_WRITE` --
+and `CONTROL_PASS` needs all six plus the reported counts of exactly 4992
+changed bytes and 1248 changed dwords.  The wrapper adds `SUBMIT_FAILED`,
+`COMPLETION_FAILED`, and `INFRASTRUCTURE_REFUSAL`.  `outcome.json` and
+`destination.bin` reach the receipt directory through full writes,
+`fsync`, atomic rename, and directory `fsync` before the verdict prints;
+exit 0 is `CONTROL_PASS` alone.
+
+`r3v-public-rb2d-fill-oracle` calibrates the oracle on synthetic images
+without a Vulkan object: the exact output (the synthetic positive
+fixture), the unchanged destination, one missing dword, one extra dword
+after byte 5004, the region shifted by four bytes, the byte-swapped
+pattern, prefix, suffix, and tail corruption, one partially changed
+dword, and a missing dword beside a suffix byte, each with its class and
+counts pinned; then each of the six predicates disabled alone must move a
+fixture off its class.  The host known-bad stays in the transport checks:
+it proves host exclusion, not classification.
+
+`r3v-native-rb2d-fill-role-matrix` holds the table above as executable
+facts: the attended binary present and distinct by digest, its dynamic
+section limited to libvulkan and libc, no `r3v_native_`, `r300_`,
+`radeon_drm_vk_`, or `drm_shim_` symbol, the preloaded-shim refusal
+ahead of `vkCreateInstance` with the receipt holding the refusal record
+alone, the shim application refusing a missing shim, the oracle
+classifying the unchanged image the shim leg verifies as
+`NO_DEVICE_WRITE` while expecting 4992 changed bytes, the arming runner
+linking neither libvulkan nor libdrm and naming no DRM node, and the host
+executor over the protected mapping terminating by `SIGSEGV`.  The
+known-bad leg substitutes the shim application for the attended one and
+must fail.  `r3v-native-attended-rb2d-fill-declaration` drives every
+declared fact wrong alone and requires its own refusal without reaching
+`vkCreateInstance`.  The qualification inventory requires all of these
+tests by name, so a build that registers only the first two roles fails
+qualification; that is the state that sealed the v2 prediction without an
+executable able to write the destination on silicon.
+
 ## Kernel replay classes
 
 `r3v-native-rb2d-fill-submit-object-replay` replays the retained 38-dword

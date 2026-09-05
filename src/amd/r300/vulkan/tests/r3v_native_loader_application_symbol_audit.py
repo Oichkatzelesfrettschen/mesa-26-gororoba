@@ -32,10 +32,22 @@ REQUIRED_UNDEFINED = "vkCreateInstance"
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} <nm> <binary>", file=sys.stderr)
+    args = sys.argv[1:]
+    forbidden_prefixes = FORBIDDEN_PREFIXES
+    if len(args) > 2:
+        # --forbid PREFIX pairs after the positionals replace the default
+        # prefix set; the attended application admits its r3v_public_
+        # helpers while every driver and shim prefix stays refused.
+        if len(args) % 2 != 0 or any(a != "--forbid" for a in args[2::2]):
+            print(f"usage: {sys.argv[0]} <nm> <binary> [--forbid PREFIX]...",
+                  file=sys.stderr)
+            return 2
+        forbidden_prefixes = tuple(args[3::2])
+    if len(args) < 2:
+        print(f"usage: {sys.argv[0]} <nm> <binary> [--forbid PREFIX]...",
+              file=sys.stderr)
         return 2
-    nm, binary = sys.argv[1], sys.argv[2]
+    nm, binary = args[0], args[1]
     result = subprocess.run(
         [nm, binary], check=False, capture_output=True, text=True
     )
@@ -52,7 +64,7 @@ def main() -> int:
             fields[-1]
             for line in table.splitlines()
             if (fields := line.split())
-            and any(fields[-1].startswith(p) for p in FORBIDDEN_PREFIXES)
+            and any(fields[-1].startswith(p) for p in forbidden_prefixes)
             and fields[-1] not in ALLOWED_SYMBOLS
         }
     )
