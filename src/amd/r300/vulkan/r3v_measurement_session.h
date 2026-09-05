@@ -1,0 +1,262 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * The bounded measurement session: a declaration that authorizes a finite
+ * number of repetitions of a finite set of fills, bound to the actual
+ * allocations of one live device.
+ *
+ * The one-shot authorization beside it is unchanged and stays the
+ * ordinary path.  It names one submission by a digest over eighteen
+ * fields, among them the destination's GEM handle, and its evidence
+ * directory disarms after one attempt, so it admits exactly one
+ * execution.  A GEM handle is local to the DRM file that created it, so
+ * no operator can declare that digest before the allocation exists, and
+ * a benchmark that needs several hundred identical deliveries cannot be
+ * expressed as several hundred one-shot declarations.
+ *
+ * The session resolves that in two levels.  The declaration is written
+ * before any device exists and names the platform, the deployment epoch,
+ * the route, the destination's role, the exact cases, and the budgets; it is read and hashed once at vkCreateDevice, beside the route
+ * gates, so nothing the environment does later moves a decision under a
+ * recorded command buffer.  The binding happens inside the device: the
+ * first authorized preparation of each case resolves the destination
+ * through the recorded VkBuffer and its bound memory, holds that
+ * resolution to the declared role, and records the buffer object's
+ * handle, its allocation generation, and the concrete fill identity the
+ * ordinary digest covers.  Every later repetition of that case recomputes
+ * the identity and requires it to equal the bound one, so the operator
+ * declares the resource and the operation while the driver records the
+ * handle -- and a self-computed digest never authorizes an operation the
+ * declaration does not name.
+ *
+ * Identity and repetition are separate predicates.  Two submissions that
+ * agree in every field are still two executions, so the session carries
+ * its own budget: one permitted execution is consumed immediately before
+ * the kernel submission boundary and never refunded, an error after that
+ * boundary spends its attempt and closes the session, and a closed
+ * session refuses every further request.
+ *
+ * Two facts have two lifetimes, and the difference decides what a crash
+ * leaves behind.  That a session started is durable: the first admission
+ * writes the evidence directory's attempt token through
+ * r3v_native_arming_disarm, fsynced file and directory, so a second
+ * process against that directory finds the token standing and refuses as
+ * already attempted.  How much a session spent is process-local: the
+ * counters below live in the device and die with it.  A run that stops at
+ * forty of four hundred and one that stops at three hundred and
+ * ninety-nine leave the same durable object, so the token bounds
+ * restarting rather than accounting, and a campaign's own spend is read
+ * out of its published samples.
+ *
+ * The handle is not enough on its own.  A GEM handle is an index into one
+ * DRM file's table and is recycled after the object it named is
+ * destroyed, so the binding carries the allocation's own generation
+ * beside it and a recycled number over a different object refuses.
+ */
+
+#ifndef R3V_MEASUREMENT_SESSION_H
+#define R3V_MEASUREMENT_SESSION_H
+
+#include "r3v_fill_route.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* The declaration schema this file reads.  A manifest naming any other
+ * value is a declaration for a different reader. */
+#define R3V_MEASUREMENT_SESSION_SCHEMA "r3v-measurement-session-v1"
+
+#define R3V_MEASUREMENT_SESSION_MAX_CASES 32u
+/* One arm's whole campaign: ten declared sizes at warmups plus
+ * repetitions apiece, with room to spare.  A declaration above this bound
+ * is refused rather than truncated. */
+#define R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS 4096u
+#define R3V_MEASUREMENT_SESSION_TEXT_MAX 65536u
+#define R3V_MEASUREMENT_SESSION_NAME_MAX 64u
+#define R3V_MEASUREMENT_SESSION_EPOCH_MAX 128u
+
+/* Every rule the session holds a request to, in the order the checks
+ * test them, so a refusal names one fact. */
+enum r3v_measurement_session_refusal {
+   R3V_MEASUREMENT_SESSION_ADMITTED = 0,
+   /* No session is declared, so the ordinary one-shot path decides. */
+   R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE,
+   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+   R3V_MEASUREMENT_SESSION_REFUSE_SCHEMA,
+   /* The declaration names another platform or another deployment. */
+   R3V_MEASUREMENT_SESSION_REFUSE_EPOCH,
+   /* The device resolved another executor for the request. */
+   R3V_MEASUREMENT_SESSION_REFUSE_ROUTE_MISMATCH,
+   /* The request's range, offset, or value matches no declared case. */
+   R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED,
+   /* The destination resolves outside the declared role. */
+   R3V_MEASUREMENT_SESSION_REFUSE_ROLE_MISMATCH,
+   /* The case is bound and this request resolves to another object. */
+   R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND,
+   /* The recomputed submission identity differs from the bound one. */
+   R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH,
+   /* The case or the session has spent its declared executions. */
+   R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED,
+   /* The session terminated and admits nothing further. */
+   R3V_MEASUREMENT_SESSION_REFUSE_CLOSED,
+   R3V_MEASUREMENT_SESSION_REFUSAL_COUNT,
+};
+
+const char *r3v_measurement_session_refusal_name(
+   enum r3v_measurement_session_refusal r);
+
+/* One declared case: the exact fill this session admits, and how many
+ * times.  Warmups and repetitions are counted separately in the report
+ * and identically against the budget, because both enter the kernel. */
+struct r3v_measurement_case {
+   uint32_t case_id;
+   uint64_t fill_offset;
+   uint64_t fill_bytes;
+   uint32_t fill_value;
+   uint32_t warmups;
+   uint32_t repetitions;
+};
+
+/* The destination's declared role.  It names properties an allocation
+ * has, never a handle: a handle is local to a DRM file that does not
+ * exist when the declaration is written. */
+struct r3v_measurement_role {
+   uint64_t allocation_bytes;
+   uint64_t buffer_bytes;
+   uint64_t binding_offset;
+   uint32_t memory_property_flags;
+   uint32_t buffer_usage;
+   uint32_t write_domain;
+};
+
+/* The declaration as read from its file, plus the digest over the whole
+ * text.  A field the parser cannot read refuses the manifest rather than
+ * defaulting. */
+struct r3v_measurement_manifest {
+   char schema[R3V_MEASUREMENT_SESSION_NAME_MAX];
+   char session_nonce[R3V_MEASUREMENT_SESSION_NAME_MAX];
+   char platform[R3V_MEASUREMENT_SESSION_NAME_MAX];
+   /* The route the campaign measures, held against the route the device
+    * resolved for the request: a declaration written for one executor
+    * authorizes no submission another performs. */
+   char route[R3V_MEASUREMENT_SESSION_NAME_MAX];
+   uint32_t pci_vendor_id;
+   uint32_t pci_device_id;
+   char kernel_release[R3V_MEASUREMENT_SESSION_EPOCH_MAX];
+   char module_srcversion[R3V_MEASUREMENT_SESSION_EPOCH_MAX];
+   struct r3v_measurement_role role;
+   uint32_t case_count;
+   struct r3v_measurement_case cases[R3V_MEASUREMENT_SESSION_MAX_CASES];
+   uint32_t max_total_submissions;
+   uint64_t completion_timeout_ns;
+};
+
+/* What one case's first authorized preparation recorded.  handle and
+ * generation together name one object over the device's lifetime;
+ * identity is the ordinary fill digest computed against that object. */
+struct r3v_measurement_binding {
+   bool bound;
+   uint32_t destination_handle;
+   uint64_t memory_generation;
+   char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+   uint32_t executions_consumed;
+};
+
+struct r3v_measurement_session {
+   bool active;
+   bool closed;
+   /* Why the session terminated, for the refusal every later request
+    * carries. */
+   const char *closed_reason;
+   struct r3v_measurement_manifest manifest;
+   char manifest_digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+   struct r3v_measurement_binding bindings[R3V_MEASUREMENT_SESSION_MAX_CASES];
+   /* Claimed once before any sample and decremented at the kernel
+    * boundary; an attempt that entered the ioctl is never refunded. */
+   uint32_t remaining_submissions;
+   uint32_t consumed_submissions;
+};
+
+/* Reads a declaration out of its text.  Returns ADMITTED with *out
+ * filled, or a refusal with *reason naming the first line or field it
+ * cannot read.  The text is key = value, one per line, with # comments;
+ * a `case` line carries id, offset, bytes, value, warmups, repetitions
+ * separated by commas.  Every field the manifest declares is required:
+ * an absent one refuses rather than defaulting.
+ */
+enum r3v_measurement_session_refusal
+r3v_measurement_manifest_parse(const char *text, size_t length,
+                               struct r3v_measurement_manifest *out,
+                               const char **reason);
+
+/* Holds a declaration to the deployment it runs on: the PCI pair, the
+ * running kernel release, and the loaded module srcversion.  A stream
+ * authorized against one radeon build is not authorized against
+ * another. */
+enum r3v_measurement_session_refusal
+r3v_measurement_manifest_epoch_check(
+   const struct r3v_measurement_manifest *manifest, uint32_t pci_vendor_id,
+   uint32_t pci_device_id, const char *kernel_release,
+   const char *module_srcversion, const char **reason);
+
+/* Opens a session over a parsed declaration.  The budget is the sum every
+ * case's warmups and repetitions account for, so a submission the budget
+ * admits is one some case names.  A declared total below that sum cannot
+ * run the campaign it declares and refuses here rather than exhausting
+ * partway through. */
+enum r3v_measurement_session_refusal
+r3v_measurement_session_open(struct r3v_measurement_session *session,
+                             const struct r3v_measurement_manifest *manifest,
+                             const char manifest_digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE],
+                             const char **reason);
+
+/* The declared case one request names, or NULL.  A request matches on
+ * offset, size, and value together: a case is the exact fill, not a
+ * range it falls inside. */
+const struct r3v_measurement_case *
+r3v_measurement_session_find_case(const struct r3v_measurement_session *session,
+                                  uint64_t fill_offset, uint64_t fill_bytes,
+                                  uint32_t fill_value, uint32_t *index_out);
+
+/* Holds the executor the device resolved to the one the declaration
+ * measures.  A campaign written for the windowed route authorizes no
+ * submission the frozen route performs, whatever else agrees. */
+enum r3v_measurement_session_refusal
+r3v_measurement_session_route_check(
+   const struct r3v_measurement_session *session, const char *route_name,
+   const char **reason);
+
+/* Holds an observed destination to the declared role. */
+enum r3v_measurement_session_refusal
+r3v_measurement_session_role_check(
+   const struct r3v_measurement_session *session,
+   const struct r3v_measurement_role *observed, const char **reason);
+
+/* Binds a case to the object this request resolved to, or holds it to
+ * the object it already bound.  The first call for a case records the
+ * handle, the generation, and the identity; every later call requires
+ * all three to match.  It reserves nothing: the execution is consumed
+ * separately, at the kernel boundary.
+ */
+enum r3v_measurement_session_refusal
+r3v_measurement_session_bind(struct r3v_measurement_session *session,
+                             uint32_t case_index, uint32_t destination_handle,
+                             uint64_t memory_generation,
+                             const char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE],
+                             const char **reason);
+
+/* Consumes one permitted execution.  Called immediately before the
+ * kernel submission boundary, so an attempt that entered the ioctl is
+ * counted whatever the ioctl returns. */
+enum r3v_measurement_session_refusal
+r3v_measurement_session_consume(struct r3v_measurement_session *session,
+                                uint32_t case_index, const char **reason);
+
+/* Terminates the session.  Every later request refuses as closed and
+ * names this reason.  Closing a closed session keeps the first reason:
+ * the first failure is the one that ended the run. */
+void r3v_measurement_session_close(struct r3v_measurement_session *session,
+                                   const char *why);
+
+#endif /* R3V_MEASUREMENT_SESSION_H */
