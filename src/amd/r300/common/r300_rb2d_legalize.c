@@ -55,6 +55,7 @@ r300_rb2d_legalize_refusal_name(enum r300_rb2d_legalize_refusal r)
       "contract admits fewer rectangles per window",
       "a window failed its invariant check",
       "window coverage differs from the request interval",
+      "the contract's evidence does not reach this stream shape",
    };
    return (unsigned)r < R300_RB2D_LEGALIZE_REFUSAL_COUNT ? names[r] : NULL;
 }
@@ -374,8 +375,27 @@ r300_rb2d_legalize_linear_span(const struct r300_rb2d_legalize_request *req,
          return 0;
       }
    }
-   return legalize_on_carrier(req, pitch, format, windows, max_windows,
-                              result);
+   const uint32_t n =
+      legalize_on_carrier(req, pitch, format, windows, max_windows, result);
+   if (n == 0u)
+      return 0;
+
+   /* The contract's own evidence, beside the carrier's, and read on the
+    * chosen carrier rather than inside the chooser: the widest stream that
+    * ran under this contract bounds the widest stream it admits, so a
+    * legalization that rebases more windows than the receipt covers refuses
+    * even where the carrier holds a receipt.  The chooser ranks shapes at
+    * the carrier's evidence alone, which is what keeps this refusal the
+    * contract table's and not a missing candidate. */
+   if (req->minimum_contract_evidence >
+          R300_RB2D_CONTRACT_EVIDENCE_PLANNED &&
+       !r300_rb2d_contract_admitted(req->contract, result->window_count,
+                                    result->relocation_sites,
+                                    req->minimum_contract_evidence)) {
+      result->refusal = R300_RB2D_LEGALIZE_REFUSE_CONTRACT_EVIDENCE;
+      return 0;
+   }
+   return n;
 }
 
 uint64_t

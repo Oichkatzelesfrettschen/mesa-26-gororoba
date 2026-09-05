@@ -138,9 +138,13 @@ test_cached_gate_admits_the_executing_route(void)
    assert(route->unit == R300_EXECUTION_UNIT_RB2D_FILL);
 
    /* A gate belongs to one route: opening every other entry admits nothing
-    * more, and closing this one closes the route. */
+    * more, and closing this one closes the route.  The windowed
+    * precommitted row answers the same operation and use under its own
+    * gate, so it stays closed here and test_both_maturities_admitted_refuses
+    * carries the pair. */
    for (unsigned r = 0; r < R300_OPERATION_ROUTE_COUNT; r++)
-      gates[r] = r != R300_OPERATION_ROUTE_RB2D_CONST_FILL;
+      gates[r] = r != R300_OPERATION_ROUTE_RB2D_CONST_FILL &&
+                 r != R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2;
    assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
           R3V_ROUTE_DECISION_REFUSE);
 
@@ -169,6 +173,44 @@ test_cached_gate_admits_the_executing_route(void)
  * against a row's mask; without the hoisted check a request naming two
  * purposes would be refused by the first and admitted by the second, and the
  * open gate would carry a transfer route into a storage-buffer request. */
+/* A promoted route and a precommitted route both admitted for one operation
+ * and use name two executors for one fill.  Preferring either would discard
+ * the opt-in the operator wrote, so the pair refuses under every policy and
+ * closing one gate is the operator's answer. */
+static void
+test_both_maturities_admitted_refuses(void)
+{
+   bool gates[R300_OPERATION_ROUTE_COUNT] = { false };
+   const struct r300_operation_route_row *route = NULL;
+   const char *reason = NULL;
+
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = true;
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2] = true;
+
+   const enum r3v_execution_policy policies[] = {
+      R3V_EXECUTION_AUTO,
+      R3V_EXECUTION_GPU_ONLY,
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(policies); i++) {
+      struct r3v_route_request request = fill_request(policies[i]);
+      assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+             R3V_ROUTE_DECISION_REFUSE);
+      assert(route == NULL);
+      assert(strcmp(reason, "an executing route and a precommitted route "
+                            "are both admitted for one use") == 0);
+   }
+
+   /* The precommitted row alone is the experimental admission it exists to
+    * be, and it names its own route. */
+   gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] = false;
+   struct r3v_route_request request = fill_request(R3V_EXECUTION_GPU_ONLY);
+   assert(r3v_route_policy_select(&request, gates, &route, &reason) ==
+          R3V_ROUTE_DECISION_GPU);
+   assert(route ==
+          r300_operation_route(R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2));
+   assert(route->state == R300_OPERATION_ROUTE_PRECOMMITTED);
+}
+
 static void
 test_use_mask_names_one_purpose(void)
 {
@@ -736,6 +778,7 @@ main(void)
    test_every_gpu_row_is_gated();
    test_gate_closed_reaches_the_host();
    test_cached_gate_admits_the_executing_route();
+   test_both_maturities_admitted_refuses();
    test_use_mask_names_one_purpose();
    test_resource_shape_gates_the_gpu_decision();
    test_malformed_requests_refuse();

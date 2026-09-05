@@ -20,6 +20,7 @@ r300_common_contract_files = files(
   'r300_rb2d_fill.c',
   'r300_rb2d_linear_span.c',
   'r300_rb2d_pitch_evidence.c',
+  'r300_rb2d_contract_evidence.c',
   'r300_rb2d_legalize.c',
   'r300_pm4_compose.c',
   'r300_r2vb_carrier_delivery.c',
@@ -188,6 +189,21 @@ r300_rb2d_linear_span_test = executable(
 test(
   'r300-rb2d-linear-span',
   r300_rb2d_linear_span_test,
+  suite : ['r300'],
+)
+
+r300_rb2d_contract_evidence_test = executable(
+  'r300_rb2d_contract_evidence_test',
+  files('tests/r300_rb2d_contract_evidence_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : r300_format_contract_test_includes,
+  dependencies : [dep_m, idep_mesautil],
+  link_with : libr300_common,
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-rb2d-contract-evidence',
+  r300_rb2d_contract_evidence_test,
   suite : ['r300'],
 )
 

@@ -30,6 +30,7 @@
 #ifndef R300_RB2D_LEGALIZE_H
 #define R300_RB2D_LEGALIZE_H
 
+#include "r300_rb2d_contract_evidence.h"
 #include "r300_rb2d_fill.h"
 #include "r300_rb2d_linear_span.h"
 #include "r300_rb2d_pitch_evidence.h"
@@ -37,19 +38,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The two route contracts.  V1 is the qualified public fill: the 256-byte
- * ARGB8888 carrier, one window, at most three rectangles, and the exact
- * 38-dword stream the silicon receipt retains for the attended cell.  V2
- * admits any carrier the evidence registry admits, several rebased
- * windows in one stream, and one relocation site per window; it is
- * qualified separately and the route selects it only under its own
- * receipt. */
-enum r300_rb2d_contract {
-   R300_RB2D_CONTRACT_CONST_FILL_V1 = 0,
-   R300_RB2D_CONTRACT_CONST_FILL_V2,
-   R300_RB2D_CONTRACT_COUNT,
-};
-
+/* The contract identities and their evidence rows live in
+ * r300_rb2d_contract_evidence.h; the V1 stream bounds below are the
+ * legalizer's own. */
 #define R300_RB2D_CONTRACT_V1_PITCH_BYTES R300_RB2D_SPAN_PITCH_DIRECT_WRITE
 #define R300_RB2D_CONTRACT_V1_MAX_WINDOWS 1u
 #define R300_RB2D_CONTRACT_V1_MAX_RECTS 3u
@@ -68,6 +59,11 @@ struct r300_rb2d_legalize_request {
     * passes SILICON_RECEIPT; the cost-model tests pass PLANNED to rank
     * candidates nothing has run. */
    enum r300_rb2d_pitch_evidence_class minimum_evidence;
+   /* The lowest class the contract's own stream shape needs, read against
+    * the contract-evidence registry.  Above PLANNED the legalization's
+    * window and relocation-site counts stay inside the receipted maxima,
+    * so a receipted contract still refuses a wider stream than ran. */
+   enum r300_rb2d_contract_evidence_state minimum_contract_evidence;
    /* A pitch to use instead of the chooser's, or zero for the chooser.  A
     * pinned pitch still has to be admitted at minimum_evidence. */
    uint32_t pinned_pitch_bytes;
@@ -147,6 +143,7 @@ enum r300_rb2d_legalize_refusal {
    R300_RB2D_LEGALIZE_REFUSE_CONTRACT_RECTS,
    R300_RB2D_LEGALIZE_REFUSE_WINDOW,
    R300_RB2D_LEGALIZE_REFUSE_COVERAGE,
+   R300_RB2D_LEGALIZE_REFUSE_CONTRACT_EVIDENCE,
    R300_RB2D_LEGALIZE_REFUSAL_COUNT,
 };
 

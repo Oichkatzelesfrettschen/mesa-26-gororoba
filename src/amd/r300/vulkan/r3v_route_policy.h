@@ -234,10 +234,11 @@ bool r3v_route_automatic_selection_admitted_in(
  *
  * Selection is fail-closed at every step: a malformed request, a use mask
  * naming other than one defined purpose, a range outside its element grid,
- * an operation with no qualified route under GPU_ONLY, and two eligible GPU
- * routes all refuse rather than picking.  The use and shape checks run ahead
- * of both the promoted selector and the precommitted scan, so a request that
- * spans two purposes or counts no elements reaches neither.
+ * an operation with no qualified route under GPU_ONLY, two eligible GPU
+ * routes, and a promoted route standing beside an admitted precommitted one
+ * for the same use all refuse rather than picking.  The use and shape checks
+ * run ahead of both the promoted selector and the precommitted scan, so a
+ * request that spans two purposes or counts no elements reaches neither.
  */
 enum r3v_route_decision
 r3v_route_policy_select(const struct r3v_route_request *request,

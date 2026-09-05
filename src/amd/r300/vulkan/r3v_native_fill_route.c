@@ -6,11 +6,13 @@
  * when every gate admits it -- emitted as the PM4 the 2D engine performs.
  *
  * The admitted shape is one submit, one command buffer whose whole content
- * is a single vkCmdFillBuffer, one buffer object, one span segment on the
- * 256-byte carrier, at most three rectangles, one relocation entry, and one
- * completion.  Anything wider leaves the command buffer untouched for the
- * host path, so mixed host and device transfer ordering belongs to the
- * execution graph that will own it rather than to this file.
+ * is a single vkCmdFillBuffer, one buffer object, and one completion.  The
+ * carrier, the window count, the rectangles, and the relocation sites are
+ * the legalizer's, bounded by the contract the selected route names: V1 is
+ * the 256-byte carrier in one window through one relocation site.  Anything
+ * wider leaves the command buffer untouched for the host path, so mixed
+ * host and device transfer ordering belongs to the execution graph that
+ * will own it rather than to this file.
  *
  * The order is the whole safety argument, and it is a transaction rather
  * than a convention.  Prepare builds every fallible thing -- shape
@@ -53,7 +55,9 @@
 #include "r3v_route_policy.h"
 #include "r3v_submit_preflight.h"
 
+#include "amd/r300/common/r300_rb2d_contract_evidence.h"
 #include "amd/r300/common/r300_rb2d_fill.h"
+#include "amd/r300/common/r300_rb2d_legalize.h"
 #include "amd/r300/common/r300_rb2d_linear_span.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
@@ -75,15 +79,10 @@ static_assert(R3V_FILL_ROUTE_MEMORY_HOST_VISIBLE ==
 static_assert(R3V_FILL_ROUTE_DOMAIN_GTT == RADEON_GEM_DOMAIN_GTT,
               "the fill route's write domain is RADEON_GEM_DOMAIN_GTT");
 
-/* One IB carries one segment.  A segment covers R300_RB2D_SAFE_EXCLUSIVE_END
- * rows before DST_WIDTH_HEIGHT would ask past the scissor the emitter opens,
- * so on this route's 256-byte carrier a 1 KiB-aligned destination offset
- * reaches 8191 * 256 bytes.  A longer interval decomposes into ordered
- * segments the planner already produces; carrying several in one stream
- * needs the relocation accounting and mid-stream refusal review this
- * contract has not run, so the route declines the range and the host path
- * carries it. */
-#define R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS 1u
+/* Windows one stream carries.  The contract the selected route names is
+ * the real bound -- V1 admits one window, V2 the legalizer's own maximum --
+ * and this sizes the storage the legalization writes into. */
+#define R3V_NATIVE_FILL_ROUTE_MAX_WINDOWS R300_RB2D_LEGALIZE_MAX_WINDOWS
 
 /* One submit, one command buffer: the arming authorization, the retained
  * evidence, and the completion all describe one transport. */
@@ -118,21 +117,26 @@ shape_is_one_fill(const struct r3v_native_cmd_buffer *cmd_buffer,
  * of it.  The stream survives the release when the commit phase takes it,
  * which install_ib does by taking ownership. */
 struct fill_route_build {
-   struct r300_rb2d_fill_plan *plans;
+   struct r300_rb2d_window *windows;
+   /* The windows' rectangles flattened in emission order; the submission
+    * identity hashes this list. */
    struct r300_rb2d_fill_rect *rects;
    uint32_t *ib;
    uint32_t ib_dwords;
-   struct r3v_fill_route_reloc_site sites[R300_RB2D_FILL_SLOT_COUNT];
+   struct r3v_fill_route_reloc_site *sites;
    uint32_t site_count;
    uint32_t rect_count;
-   uint32_t segment_count;
+   uint32_t window_count;
+   uint32_t pitch_bytes;
+   enum r300_rb2d_format format;
 };
 
 static void
 build_release(struct fill_route_build *b)
 {
-   free(b->plans);
+   free(b->windows);
    free(b->rects);
+   free(b->sites);
    free(b->ib);
    memset(b, 0, sizeof(*b));
 }
@@ -274,107 +278,114 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       return VK_SUCCESS;
    }
 
-   /* The relocated base is the buffer's binding inside its memory, so the
-    * span runs from there and the containment rule measures against the
-    * allocation the relocation carries. */
-   const struct r300_rb2d_span span = {
+   /* The legalizer owns the lowering from here.  The route names its
+    * contract and the evidence classes it requires; the legalizer chooses
+    * the carrier, cuts the windows, holds each to the hardware grids and
+    * the kernel's footprint rule, and proves the covered bytes equal the
+    * request interval.  The relocated base is the buffer's binding inside
+    * its memory, so the interval runs from there and containment measures
+    * against the allocation the relocation carries. */
+   struct r300_rb2d_legalize_request legalize = {
       .byte_offset = dst->offset + op->dst_offset,
       .byte_size = op->size,
-      .value = op->clear_dword,
+      .pattern = op->clear_dword,
+      .bo_size = memory->bo.size,
+      .usage = R300_RB2D_USAGE_FILL_BUFFER,
+      .minimum_evidence = R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT,
+      .minimum_contract_evidence =
+         R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT,
    };
-   /* The 256-byte carrier is the row the retained direct-write control
-    * stream exercises, so this route's plan differs from that witnessed
-    * stream in its rectangle list alone; ARGB8888 is the one format whose
-    * pixel is the span's 32-bit pattern. */
-   const struct r300_rb2d_span_layout layout = {
-      .pitch_bytes = R300_RB2D_SPAN_PITCH_DIRECT_WRITE,
-      .format = R300_RB2D_FORMAT_ARGB8888,
-   };
+   /* The contract is the selected row's own, so promoting the windowed
+    * route moves the lowering without a second dispatch here.  V1 pins the
+    * 256-byte carrier the receipt retains; V2 runs the chooser. */
+   switch (route->gpu_route_contract_id) {
+   case R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL:
+      legalize.contract = R300_RB2D_CONTRACT_CONST_FILL_V1;
+      legalize.pinned_pitch_bytes = R300_RB2D_CONTRACT_V1_PITCH_BYTES;
+      break;
+   case R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL_V2:
+      legalize.contract = R300_RB2D_CONTRACT_CONST_FILL_V2;
+      legalize.pinned_pitch_bytes = 0u;
+      break;
+   default:
+      return decline(device, policy, "declines the route contract",
+                     "the selected route names no RB2D fill contract");
+   }
 
    struct fill_route_build build = { 0 };
-   enum r300_rb2d_span_refusal span_refusal = R300_RB2D_SPAN_OK;
-   build.segment_count = r300_rb2d_linear_span_segments(
-      &span, &layout, memory->bo.size, &span_refusal);
-   if (build.segment_count == 0 ||
-       build.segment_count > R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS) {
-      const char *why =
-         build.segment_count == 0
-            ? r300_rb2d_span_refusal_name(span_refusal)
-            : "the range needs more segments than one stream carries";
-      return decline(device, policy, "cannot represent the range", why);
+   build.windows = calloc(R3V_NATIVE_FILL_ROUTE_MAX_WINDOWS,
+                          sizeof(*build.windows));
+   if (build.windows == NULL) {
+      build_release(&build);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   build.plans = calloc(build.segment_count, sizeof(*build.plans));
-   build.rects = calloc((size_t)build.segment_count *
+   struct r300_rb2d_legalize_result legalized;
+   build.window_count = r300_rb2d_legalize_linear_span(
+      &legalize, build.windows, R3V_NATIVE_FILL_ROUTE_MAX_WINDOWS,
+      &legalized);
+   if (build.window_count == 0) {
+      const enum r300_rb2d_legalize_refusal refusal = legalized.refusal;
+      build_release(&build);
+      return decline(device, policy, "cannot legalize the range",
+                     r300_rb2d_legalize_refusal_name(refusal));
+   }
+   build.pitch_bytes = legalized.pitch_bytes;
+   build.format = legalized.format;
+
+   /* The operator's declared carrier, asserted rather than consulted: the
+    * chooser has already picked, and a declaration that disagrees names a
+    * stream the operator did not authorize. */
+   if (legalize.contract == R300_RB2D_CONTRACT_CONST_FILL_V2 &&
+       device->rb2d_v2_expected_pitch_malformed) {
+      build_release(&build);
+      return decline(device, policy, "declines the chosen carrier",
+                     "the declared expected pitch is not a pitch the "
+                     "hardware can encode");
+   }
+   if (legalize.contract == R300_RB2D_CONTRACT_CONST_FILL_V2 &&
+       device->rb2d_v2_expected_pitch_bytes != 0u &&
+       build.pitch_bytes != device->rb2d_v2_expected_pitch_bytes) {
+      build_release(&build);
+      return decline(device, policy, "declines the chosen carrier",
+                     "the chooser picked a pitch the operator did not "
+                     "declare");
+   }
+
+   build.rects = calloc((size_t)build.window_count *
                            R300_RB2D_SPAN_MAX_RECTS_PER_SEGMENT,
                         sizeof(*build.rects));
-   if (build.plans == NULL || build.rects == NULL) {
+   build.sites = calloc(build.window_count, sizeof(*build.sites));
+   build.ib = calloc(legalized.ib_dwords, sizeof(*build.ib));
+   if (build.rects == NULL || build.sites == NULL || build.ib == NULL) {
       build_release(&build);
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
-
-   if (r300_rb2d_linear_span_plan(&span, &layout, memory->bo.size,
-                                  build.plans, build.rects,
-                                  build.segment_count,
-                                  &span_refusal) != build.segment_count) {
-      build_release(&build);
-      return decline(device, policy, "decomposition refused",
-                     r300_rb2d_span_refusal_name(span_refusal));
-   }
-   for (uint32_t s = 0; s < build.segment_count; s++)
-      build.rect_count += build.plans[s].rect_count;
-
-   /* A false return names storage the caller sized from this same segment
-    * count or a rectangle count the fill plan already admitted, so it is an
-    * internal failure rather than a range the carrier cannot name. */
-   if (!r300_rb2d_linear_span_dwords(build.plans, build.segment_count,
-                                     &build.ib_dwords) ||
-       build.ib_dwords == 0) {
-      build_release(&build);
-      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                       "r3v-native: fill route could not cost its own "
-                       "decomposition");
+   build.ib_dwords = legalized.ib_dwords;
+   for (uint32_t w = 0; w < build.window_count; w++) {
+      const struct r300_rb2d_window *window = &build.windows[w];
+      memcpy(build.rects + build.rect_count, window->rects,
+             window->rect_count * sizeof(*build.rects));
+      build.rect_count += window->rect_count;
    }
 
-   build.ib = calloc(build.ib_dwords, sizeof(*build.ib));
-   if (build.ib == NULL) {
-      build_release(&build);
-      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-   }
-
-   /* Each segment emits into its own window of the one stream and names the
-    * destination once, so the relocation sites accumulate across the stream
-    * rather than per plan. */
-   uint32_t at = 0;
-   for (uint32_t s = 0; s < build.segment_count; s++) {
-      struct r300_rb2d_fill_ib segment;
-      if (r300_rb2d_fill_emit_into(&build.plans[s], build.ib + at,
-                                   build.ib_dwords - at, &segment) != 0 ||
-          r300_rb2d_fill_validate_reloc_sites(&segment) != 0) {
-         build_release(&build);
-         return decline(device, policy, "emission refused",
-                        "the plan did not emit its own validated stream");
-      }
-      for (uint32_t r = 0; r < segment.reloc_site_count; r++) {
-         if (build.site_count >= ARRAY_SIZE(build.sites)) {
-            build_release(&build);
-            return decline(device, policy, "emission refused",
-                           "the stream names more relocation sites than one "
-                           "destination takes");
-         }
-         build.sites[build.site_count].ib_index =
-            at + segment.reloc_sites[r].ib_index;
-         build.sites[build.site_count].slot = segment.reloc_sites[r].slot;
-         build.site_count++;
-      }
-      at += segment.ib_size_dwords;
-   }
-   if (at != build.ib_dwords || build.site_count == 0) {
+   struct r300_rb2d_legalized_ib emitted;
+   if (r300_rb2d_legalize_emit(build.windows, build.window_count, build.ib,
+                               build.ib_dwords, &emitted) != 0 ||
+       emitted.ib_size_dwords != build.ib_dwords ||
+       emitted.site_count != build.window_count) {
       build_release(&build);
       return decline(device, policy, "emission refused",
-                     "the emitted stream does not fill the length it was "
+                     "the legalization did not emit the stream it was "
                      "sized to");
    }
+   /* One relocation site per window, translated into the route's own site
+    * type with the index and the slot carried through unchanged. */
+   for (uint32_t r = 0; r < emitted.site_count; r++) {
+      build.sites[r].ib_index = emitted.sites[r].ib_index;
+      build.sites[r].slot = emitted.sites[r].slot;
+   }
+   build.site_count = emitted.site_count;
 
    /* Every fallible construction is behind; the gates run next and the
     * install after them. */
@@ -464,9 +475,9 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       .fill_offset = op->dst_offset,
       .fill_bytes = op->size,
       .fill_value = op->clear_dword,
-      .pitch_bytes = layout.pitch_bytes,
-      .format = (uint32_t)layout.format,
-      .segment_count = build.segment_count,
+      .pitch_bytes = build.pitch_bytes,
+      .format = (uint32_t)build.format,
+      .segment_count = build.window_count,
       .rect_count = build.rect_count,
       .rects = build.rects,
       .ib_dwords = build.ib_dwords,

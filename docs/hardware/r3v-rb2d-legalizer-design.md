@@ -107,7 +107,93 @@ legalization of the attended cell emits those bytes unchanged.
 `R300_RB2D_CONTRACT_CONST_FILL_V2` admits any registry-admitted carrier,
 several rebased windows, and one relocation site per window; the route
 selects it only under its own receipt. The public route in
-`r3v_native_fill_route.c` keeps consuming the V1 shape until then.
+`r3v_native_fill_route.c` lowers through the legalizer and dispatches the
+contract from the selected route's own `gpu_route_contract_id`, so the V1
+row pins the 256-byte carrier and the V2 row runs the chooser. V2's
+contract-evidence row receipts no window, so a selected V2 route declines
+until a receipt lands.
+
+## Contract evidence
+
+Two authorities govern one legalization and answer different questions.
+`r300_rb2d_pitch_evidence.c` holds carrier evidence, one row per (pitch,
+format, usage); `r300_rb2d_contract_evidence.c` holds contract evidence, one
+row per route contract, naming the highest class that exercised the
+contract's own stream shape together with the window and relocation-site
+counts that class reached. Admission requires both: a request clears the
+carrier table on `minimum_evidence` and the contract table on
+`minimum_contract_evidence`, and failing either refuses.
+
+The split is the receipt's own scope. The sealed attended run receipted a
+256-byte ARGB8888 carrier and, on it, a stream of one window through one
+relocation site. Carrier evidence carries the first fact and says nothing
+about a stream that rebases the destination twice, so a legalization wider
+than the receipted shape refuses on `REFUSE_CONTRACT_EVIDENCE` even where
+the carrier holds SILICON_RECEIPT.
+
+| Contract | State | Windows receipted | Sites receipted | Artifact |
+| --- | --- | --- | --- | --- |
+| `CONST_FILL_V1` | SILICON_RECEIPT | 1 | 1 | the sealed attended public-route receipt |
+| `CONST_FILL_V2` | KERNEL_REPLAY | 0 | 0 | `r300-rb2d-legalization-differential` |
+
+A request leaving `minimum_contract_evidence` at PLANNED reads no contract
+row, which is what lets the cost model and the geometry tests rank shapes
+nothing has run.
+
+## V2 route identity
+
+| Field | Value |
+| --- | --- |
+| Route | `R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2`, `rb2d_const_fill_v2` |
+| Operation | `R300_OPERATION_ID_CONSTFILL` |
+| Executor | GPU |
+| Unit | `R300_EXECUTION_UNIT_RB2D_FILL` |
+| Use | `R300_ROUTE_USE_TRANSFER_BUFFER` |
+| State | PRECOMMITTED |
+| Implementation | `R300_OPERATION_IMPLEMENTATION_RB2D_LINEAR_SOLID_FILL` |
+| Contract | `R300_GPU_ROUTE_CONTRACT_RB2D_LINEAR_SOLID_FILL_V2` |
+| Admission | `R300_ROUTE_ADMISSION_RB2D_WINDOWED_LINEAR_SURFACE` |
+| Exactness | BIT_EXACT |
+| Evidence | SOURCE_GROUNDED at UNIT_CONTRACT |
+| Gate | `R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL` |
+
+The implementation is shared with V1 -- the same RB2D solid brush and the
+same legalizer -- and the contract and admission identities are the route's
+own. Both gates open name two executors for one transfer destination, so
+device creation refuses that pair and the route policy refuses it again at
+every request.
+
+`R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES` is an assertion over the chooser,
+read once at device creation beside the route gates: when it is set, the
+chosen carrier pitch equals it or the route declines. It never selects a
+carrier, so a value that disagrees with the chooser is a refusal rather than
+a different stream. The accepted form is a decimal byte count on the 64-byte
+grid inside the `DST_PITCH_OFFSET` pitch field; a declaration of any other
+form (empty, non-numeric, zero, off-grid, or past the field) is recorded as
+malformed at device creation and declines every windowed-route request,
+so a typo closes the route rather than disabling the assertion.
+
+## Designed cells
+
+The multi-window V2 cell, computed from the legalizer and not yet run:
+
+* carrier 256-byte ARGB8888, allocation 2 MiB (2097152 bytes), offset 12,
+  size 2097012, coverage exactly [12, 2097024).
+* window 0: base 0, height_rows 8191, rectangles (x 3, y 0, w 61, h 1) and
+  (x 0, y 1, w 64, h 8190). The row limit is the safe scissor end 0x1fff, so
+  the window stops with the interval unexhausted.
+* window 1: base 2096128, height_rows 4, rectangle (x 0, y 3, w 32, h 1).
+  8191 * 256 = 2096896 is 768 bytes past a 1 KiB boundary, so the rebase
+  leaves a local y of 3 and the tail is one rectangle.
+* window_count 2, relocation_sites 2, one buffer object.
+
+The dense carrier cell, pinned in `r300_rb2d_legalize_test` at
+`minimum_evidence` PLANNED with pitch 32704:
+
+* 64 KiB object, offset 12, size 65428, rectangles (3, 0, 8173, 1),
+  (0, 1, 8176, 1), (0, 2, 8, 1), height_rows 3.
+* The footprint is the kernel's `end_byte`, 65440 bytes, so a carrier whose
+  pitch is half the object fits inside it.
 
 ## Verification
 
