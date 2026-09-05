@@ -2584,8 +2584,10 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     # alone; the symbol audit below holds that link surface.
     r3v_native_loader_fill_application = executable(
       'r3v_native_loader_fill_application',
-      files('tests/r3v_native_loader_fill_application.c'),
-      include_directories : [inc_include, inc_src],
+      [r3v_public_rb2d_fill_oracle_sources,
+       files('tests/r3v_native_loader_fill_application.c')],
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
       dependencies : [dep_vulkan_loader, dep_dl],
       c_args : [no_override_init_args],
     )
