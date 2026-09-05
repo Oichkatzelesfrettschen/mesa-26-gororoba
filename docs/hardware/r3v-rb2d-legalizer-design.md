@@ -132,16 +132,20 @@ carrier table on `minimum_evidence` and the contract table on
 `minimum_contract_evidence`, and failing either refuses.
 
 The split is the receipt's own scope. The sealed attended run receipted a
-256-byte ARGB8888 carrier and, on it, a stream of one window through one
-relocation site. Carrier evidence carries the first fact and says nothing
-about a stream that rebases the destination twice, so a legalization wider
-than the receipted shape refuses on `REFUSE_CONTRACT_EVIDENCE` even where
-the carrier holds SILICON_RECEIPT.
+256-byte ARGB8888 carrier and, on it, the stream shapes that ran: one
+window through one relocation site under V1, and two windows through two
+relocation sites under V2, the latter from the attended `v2_multiwindow_256`
+CONTROL_PASS. Carrier evidence carries the first fact and says nothing about
+how often a stream rebases the destination, so a legalization wider than the
+receipted shape refuses on `REFUSE_CONTRACT_EVIDENCE` even where the carrier
+holds SILICON_RECEIPT. The structural window cap runs first: a V1 stream
+that rebases twice refuses on `REFUSE_CONTRACT_WINDOWS` before this
+authority reads it.
 
 | Contract | State | Windows receipted | Sites receipted | Artifact |
 | --- | --- | --- | --- | --- |
 | `CONST_FILL_V1` | SILICON_RECEIPT | 1 | 1 | the sealed attended public-route receipt |
-| `CONST_FILL_V2` | KERNEL_REPLAY | 0 | 0 | `r300-rb2d-legalization-differential` |
+| `CONST_FILL_V2` | SILICON_RECEIPT | 2 | 2 | the attended `v2_multiwindow_256` receipt |
 
 A request leaving `minimum_contract_evidence` at PLANNED reads no contract
 row, which is what lets the cost model and the geometry tests rank shapes
@@ -182,7 +186,8 @@ so a typo closes the route rather than disabling the assertion.
 
 ## Designed cells
 
-The multi-window V2 cell, computed from the legalizer and not yet run:
+The multi-window V2 cell, computed from the legalizer and carrying the
+attended CONTROL_PASS that receipts the V2 contract row above:
 
 * carrier 256-byte ARGB8888, allocation 2 MiB (2097152 bytes), offset 12,
   size 2097012, coverage exactly [12, 2097024).

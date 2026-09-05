@@ -324,7 +324,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
     * is the qualified executor, so both authorities are asked for a
     * silicon receipt.  A PRECOMMITTED row is what a run produces rather
     * than what it consumes: the contract floor drops to the kernel replay
-    * the legalization differential holds, and the carrier floor stays at
+    * every contract row clears, and the carrier floor stays at
     * the receipt so an experimental route still writes through a carrier
     * silicon has exercised.
     *

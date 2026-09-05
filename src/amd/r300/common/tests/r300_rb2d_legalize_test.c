@@ -297,10 +297,12 @@ test_designed_cells(void)
    }
 }
 
-/* Contract evidence is a second authority beside the carrier's: the
- * receipted V1 shape is admitted at its own width, and V2 receipts no
- * window, so a V2 legalization refuses at SILICON_RECEIPT however strong
- * its carrier's evidence is. */
+/* Contract evidence is a second authority beside the carrier's: each
+ * receipted shape is admitted at its own width, and a stream that rebases
+ * once more than the run that receipted it refuses at SILICON_RECEIPT
+ * however strong its carrier's evidence is.  V1's own second window is out
+ * of reach of this authority, because the structural V1 window cap refuses
+ * it first on REFUSE_CONTRACT_WINDOWS. */
 static void
 test_contract_evidence_admission(void)
 {
@@ -311,19 +313,34 @@ test_contract_evidence_admission(void)
    struct r300_rb2d_legalize_result result;
    assert(legalize_exactly(&v1, &result) == 1u);
 
+   /* The attended multiwindow run receipted two windows through two
+    * relocation sites on the 256-byte carrier, so its own 2 MiB interval
+    * legalizes at SILICON_RECEIPT. */
    struct r300_rb2d_legalize_request v2 =
-      request(12u, 4992u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+      request(12u, 2097012u, 2u * 1024u * 1024u,
+              R300_RB2D_CONTRACT_CONST_FILL_V2);
    v2.minimum_contract_evidence =
       R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT;
-   assert(r300_rb2d_legalize_linear_span(&v2, windows, ARRAY_LEN(windows),
-                                         &result) == 0u);
+   v2.pinned_pitch_bytes = 256u;
+   assert(legalize_exactly(&v2, &result) == 2u);
+   assert(result.relocation_sites == 2u);
+
+   /* One 256-byte window carries 0x1fff rows of 64 pixels, 2096896 bytes,
+    * so a span past twice that needs a third window and leaves the
+    * receipt. */
+   struct r300_rb2d_legalize_request v2_third = v2;
+   v2_third.byte_offset = 0u;
+   v2_third.byte_size = 2u * 2096896u + 4u;
+   v2_third.bo_size = 4u * 1024u * 1024u;
+   assert(r300_rb2d_legalize_linear_span(&v2_third, windows,
+                                         ARRAY_LEN(windows), &result) == 0u);
    assert(result.refusal == R300_RB2D_LEGALIZE_REFUSE_CONTRACT_EVIDENCE);
 
    /* The same request with the contract authority unasked legalizes, which
     * is what keeps the refusal the contract table's and not the
     * carrier's. */
-   v2.minimum_contract_evidence = R300_RB2D_CONTRACT_EVIDENCE_PLANNED;
-   assert(legalize_exactly(&v2, &result) == 1u);
+   v2_third.minimum_contract_evidence = R300_RB2D_CONTRACT_EVIDENCE_PLANNED;
+   assert(legalize_exactly(&v2_third, &result) == 3u);
 
    assert(r300_rb2d_legalize_refusal_name(
              R300_RB2D_LEGALIZE_REFUSE_CONTRACT_EVIDENCE) != NULL);

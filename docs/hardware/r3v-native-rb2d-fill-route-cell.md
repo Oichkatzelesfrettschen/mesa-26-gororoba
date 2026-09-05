@@ -5,7 +5,8 @@ document holds what must pass before a submission is justified, the
 prediction that submission is measured against, and the questions the cell
 does not answer.
 
-Nothing here has run on silicon. Every row below is `not run` until its
+The sealed `v1_public` cell and the `v2_multiwindow_256` cell each hold an
+attended CONTROL_PASS. Every other row below is `not run` until its
 transcript exists.
 
 ## What executes
@@ -380,7 +381,8 @@ The sealed cell `v1_public` -- 64 KiB allocation, offset 12, 4992 bytes,
 `0x11223344`, 64-byte tail -- carries the route's silicon receipt and the
 V1 contract's own. Three further cells are designed against the windowed
 V2 contract: `v2_multiwindow_256` and `dense_16320_carrier` are built, and
-the chooser cell is an open design. Neither built cell has run.
+the chooser cell is an open design. `v2_multiwindow_256` has run and
+holds a CONTROL_PASS; `dense_16320_carrier` is `not run`.
 
 Every cell is addressed by name through
 `r3v_public_rb2d_fill_cell_by_name`, and the harness binaries take
@@ -429,6 +431,31 @@ kernel observes exactly one CS ioctl.
 windows and two relocation sites at SILICON_RECEIPT. The route row stays
 PRECOMMITTED, because a contract receipt is not a route receipt and the
 composite rule below is what moves the row.
+
+**Outcome: CONTROL_PASS.** One attended run on the Dell Vostro 1000
+(RS485M, `1002:5974`) under the strict-2d parser epoch -- radeon-unified-dkms
+0.8.14-1, srcversion F6D858EC31CEB8A5B320781, kernel 7.1.8-1-cachyos, boot
+6222574b -- through the frozen profile-4 ICD at mesa 617da12427ad (sha256
+7ed2966d26a1ef65108d0d9475864a811d7838f6b6b771f7a1300d5a03e45d5d, build-id
+a19e8ea16cc89e9877d2b54a90b7e9313d45492f). The route resolved
+`R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2` at PRECOMMITTED on the 256-byte
+ARGB8888 carrier, two rebased windows through two relocation sites into one
+2 MiB destination, 58 dwords, IB blake3
+`226fa08ad663859ab6f8be899ca1bd83a394274032c02ebf014c8f5bdc2743eb`. All
+524253 interval dwords read `0x11223344`; the prefix, suffix, and tail
+canaries are unchanged, nothing shifted or landed outside, and the seam
+bytes 2096892..2096900 are continuous across the window rebase. Submit and
+fence returned `VK_SUCCESS`, the retained submit object is byte-identical to
+the arming runner's emission, the `dmesg` delta is empty, and the boot id is
+unchanged. Receipt bundle `steinmarder-r300
+src/re/r300/results/r3v-native-rb2d-const-fill-v2-multiwindow-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+against prediction bundle
+`r3v-native-rb2d-const-fill-v2-multiwindow-prediction-vostro1000_rs485m_5974`.
+
+The run promotes contract evidence only. The V2 contract-evidence row now
+reads SILICON_RECEIPT at two windows and two relocation sites, and the route
+row stays PRECOMMITTED: receipt B is the `dense_16320_carrier` cell, receipt
+C is the chooser cell, and the composite rule below is what moves the route.
 
 ### dense_16320_carrier
 
@@ -514,8 +541,9 @@ authorization.
 all three cells agree -- the windowed stream shape `v2_multiwindow_256`,
 the dense carrier `dense_16320_carrier`, and the chooser's own verdict --
 each with its own CONTROL_PASS and its own retained bundle. One receipt
-promotes one row; the route row is the conjunction. Two of the three are
-built and neither has run, and the chooser cell is an open design.
+promotes one row; the route row is the conjunction. `v2_multiwindow_256`
+holds its CONTROL_PASS, `dense_16320_carrier` is built and `not run`, and
+the chooser cell is an open design.
 
 ## What this cell does not answer
 
