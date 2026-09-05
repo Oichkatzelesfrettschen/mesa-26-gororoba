@@ -7,8 +7,9 @@
  * is the one place a submission can arrive, so the count its handler keeps
  * is the number of submissions the process made.  An application that
  * creates an instance, enumerates physical devices, creates a device, takes
- * its queue, and destroys all three submits nothing: the driver's route is
- * PRECOMMITTED, its gate is closed, and no recorded work exists.  The
+ * its queue, and destroys all three submits nothing: the driver's route
+ * runs only under its gate, the gate is closed, and no recorded work
+ * exists.  The
  * loader leg reads that count back as zero.
  *
  * A zero on its own proves nothing, so the calibration leg issues one
