@@ -69,6 +69,11 @@ def run(runner, evidence_dir, environment, extra=()):
     return result
 
 
+def fail(message):
+    print(f"FAIL: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 def field(stdout, key):
     match = re.search(rf"^{re.escape(key)}=(.*)$", stdout, re.MULTILINE)
     return match.group(1) if match else None
@@ -282,10 +287,94 @@ def main():
         expect_refusal(run(runner, evidence, env), "unreadable slot",
                        "PCI tuple unreadable")
 
+        # The named cells.  --cell selects which lowering the runner
+        # builds, so each row below is the legalizer's own verdict read
+        # back through the report: the carrier, the window and
+        # relocation-site counts, the rectangles, the stream length, and
+        # the cell kind the arming digest binds.  The default argument
+        # and an explicit v1_public produce one digest, which is what
+        # keeps the sealed cell's stream unmoved by the cell table.
+        cells = {
+            "v1_public": {
+                "cell_kind": "rb2d_fill_public",
+                "evidence_scope": "route_receipt",
+                "route": "rb2d_const_fill",
+                "allocation_bytes": "65536",
+                "fill_bytes": "4992",
+                "pitch_bytes": "256",
+                "window_count": "1",
+                "rect_count": "3",
+                "ib_dwords": "38",
+                "relocation_site_count": "1",
+            },
+            "v2_multiwindow_256": {
+                "cell_kind": "rb2d_fill_v2_route",
+                "evidence_scope": "route_receipt",
+                "route": "rb2d_const_fill_v2",
+                "allocation_bytes": "2097152",
+                "fill_bytes": "2097012",
+                "pitch_bytes": "256",
+                "window_count": "2",
+                "rect_count": "3",
+                "ib_dwords": "58",
+                "relocation_site_count": "2",
+            },
+        }
+        expected_rects = {
+            "v1_public": ["3,0,61,1", "0,1,64,18", "0,19,35,1"],
+            "v2_multiwindow_256": ["3,0,61,1", "0,1,64,8190",
+                                   "0,3,32,1"],
+        }
+        default = run(runner, evidence, armed_env)
+        for name, fields in cells.items():
+            report = run(runner, evidence, armed_env,
+                         extra=("--cell", name))
+            if field(report.stdout, "cell") != name:
+                fail(f"--cell {name} reported cell "
+                     f"{field(report.stdout, 'cell')}")
+            for key, want in fields.items():
+                got = field(report.stdout, key)
+                if got != want:
+                    fail(f"--cell {name}: {key}={got}, expected {want}")
+            rects = re.findall(r"^rect=(\S+)", report.stdout, re.MULTILINE)
+            if rects != expected_rects[name]:
+                fail(f"--cell {name}: rectangles {rects}, expected "
+                     f"{expected_rects[name]}")
+            sites = re.findall(r"^relocation_site=(\S+)", report.stdout,
+                               re.MULTILINE)
+            if len(sites) != int(fields["relocation_site_count"]):
+                fail(f"--cell {name}: {len(sites)} site lines for "
+                     f"{fields['relocation_site_count']} sites")
+            if name == "v1_public" and \
+                    field(report.stdout, "ib_blake3") != \
+                    field(default.stdout, "ib_blake3"):
+                fail("--cell v1_public builds a different stream from the "
+                     "default cell")
+        # The kind spellings the report prints are the plan registry's,
+        # so a report and a captured plan name one kind.
+        registry = set(re.findall(r'"(rb2d_[a-z0-9_]+)"',
+                                  open(os.path.join(
+                                      os.path.dirname(
+                                          os.path.abspath(__file__)),
+                                      "..", "r3v_native_plan.c"),
+                                      encoding="utf-8").read()))
+        for name, fields in cells.items():
+            if fields["cell_kind"] not in registry:
+                fail(f"--cell {name} prints kind {fields['cell_kind']}, "
+                     f"which r3v_native_plan.c does not name")
+        # A name outside the table builds nothing, so this leg bypasses
+        # run(): there is no report to hold to the no-submission line.
+        result = subprocess.run(
+            [runner, "--cell", "no_such_cell", evidence], env=armed_env,
+            capture_output=True, text=True)
+        if result.returncode != 2 or "no cell is named" not in result.stderr:
+            fail("an unnamed cell was accepted")
+
     print(f"r3v_native_rb2d_fill_arming_runner_check: ARMED under the full "
           f"declaration; {arm_count} table mutations and "
           f"{len(table.DIRECTORY_MUTATIONS)} directory mutations refused "
-          f"by name")
+          f"by name; {len(cells)} named cells build their declared "
+          f"lowering")
     return 0
 
 

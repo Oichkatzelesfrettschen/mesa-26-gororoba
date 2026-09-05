@@ -404,7 +404,9 @@ carrier, and the legalizer cuts two windows because one surface reaches
 * window 1: base 2096128, height_rows 4, rectangle (0, 3, 32, 1),
   relocation site 1. `8191 * 256 = 2096896` sits 768 bytes past a 1 KiB
   boundary, so the rebase leaves a local y of 3.
-* window_count 2, relocation_sites 2, one buffer object, 64 IB dwords.
+* window_count 2, relocation_sites 2, one buffer object, 58 IB dwords:
+  `20 + 6 * rects` per window, so 32 for the two-rectangle window and 26
+  for the one-rectangle window.
 
 **Declaration fields.** `R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL`
 = `1` with `R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL` closed,
