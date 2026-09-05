@@ -233,9 +233,11 @@ alone, the shim application refusing a missing shim, the oracle
 classifying the unchanged image the shim leg verifies as
 `NO_DEVICE_WRITE` while expecting 4992 changed bytes, the arming runner
 linking neither libvulkan nor libdrm and naming no DRM node, and the host
-executor over the protected mapping terminating by `SIGSEGV`.  The
-known-bad leg substitutes the shim application for the attended one and
-must fail.  `r3v-native-attended-rb2d-fill-declaration` drives every
+executor over the protected mapping terminating by `SIGSEGV`.  Two
+known-bad legs assert the row a substitution lands on: the shim
+application in the attended slot fails digest distinctness, and the
+triangle loader application, distinct and loader-only, fails the
+preloaded-shim refusal row.  `r3v-native-attended-rb2d-fill-declaration` drives every
 declared fact wrong alone and requires its own refusal without reaching
 `vkCreateInstance`.  The qualification inventory requires all of these
 tests by name, so a build that registers only the first two roles fails

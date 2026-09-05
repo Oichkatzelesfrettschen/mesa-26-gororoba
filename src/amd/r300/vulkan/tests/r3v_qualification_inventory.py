@@ -278,6 +278,7 @@ REQUIRED_TESTS: tuple[str, ...] = (
     "r3v-native-attended-rb2d-fill-symbol-audit",
     "r3v-native-rb2d-fill-role-matrix",
     "r3v-native-rb2d-fill-role-matrix-known-bad-shim-as-attended",
+    "r3v-native-rb2d-fill-role-matrix-known-bad-loader-application-as-attended",
     "r3v-native-triangle-cell-closed",
     "r3v-native-triangle-cell-open",
     "r3v-native-triangle-cell-unattested",
