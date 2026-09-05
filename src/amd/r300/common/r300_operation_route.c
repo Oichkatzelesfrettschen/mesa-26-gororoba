@@ -139,6 +139,25 @@ static const struct r300_operation_route_row
       ROUTE(HOST_TRANSFER_CONST_FILL, "host_transfer_const_fill", CONSTFILL,
             HOST, EXECUTING, HOST, XFER_BUF, NONE, NONE, NONE, LINEAR,
             BIT_EXACT, 0.0f, HOST, HOST_EXECUTOR, NULL),
+
+      /* The windowed RB2D fill over the same transfer destination.  The
+       * V2 contract lowers a byte interval into several rebased
+       * DST_PITCH_OFFSET windows in one stream, one relocation site per
+       * window, on any carrier the pitch registry admits, so it reaches
+       * intervals wider than the single window V1 covers.  The
+       * implementation is shared -- the same RB2D solid brush and the same
+       * legalizer -- and the contract and admission identities are its
+       * own.  Evidence is source-grounded at the unit: the encoding
+       * follows from the register programming guide and the kernel
+       * tracker's footprint rule, and no retained bundle holds a
+       * multi-window stream, so the row stays PRECOMMITTED behind its own
+       * gate and the contract-evidence registry refuses every width until
+       * a receipt lands. */
+      ROUTE(RB2D_CONST_FILL_V2, "rb2d_const_fill_v2", CONSTFILL, GPU,
+            PRECOMMITTED, RB2D_FILL, XFER_BUF, RB2D_LINEAR_SOLID_FILL,
+            RB2D_LINEAR_SOLID_FILL_V2, RB2D_WINDOWED_LINEAR_SURFACE, LINEAR,
+            BIT_EXACT, 0.0f, SOURCE_GROUNDED, UNIT_CONTRACT,
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL"),
 };
 
 #undef ROUTE
