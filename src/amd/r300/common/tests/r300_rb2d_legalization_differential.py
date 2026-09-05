@@ -157,6 +157,16 @@ ROWS: list[dict] = [
     # 16-bit extent field -- so the kernel rejects it and accepts the
     # legalized decomposition, and the coverage check holds the windows to
     # the interval the cell declares.
+    # DST_PITCH_OFFSET carries eight pitch bits, so 256 units reaches the
+    # tracker as pitch zero and 511 units reaches it as 255 units with
+    # DST_TILE_MACRO set; both raw streams are rejected and the legalized
+    # stream on the widest encodable carrier, 255 units, is accepted.
+    {"name": "pitch past the 8-bit field", "bo": 65536, "off": 12,
+     "size": 65428, "pitch": 256,
+     "raw": dict(pitch=16384, offset=0, rects=[(3, 0, 4093, 1)])},
+    {"name": "widest encodable carrier 16320", "bo": 65536, "off": 12,
+     "size": 65428, "pitch": 16320, "evidence": "planned",
+     "raw": dict(pitch=16320, offset=0, rects=[(3, 0, 16357, 1)])},
     {"name": "cell v2_multiwindow_256", "bo": 2097152, "off": 12,
      "size": 2097012, "pitch": 256,
      "raw": dict(pitch=256, offset=0, rects=[(3, 0, 524253 & 0xFFFF, 1)])},

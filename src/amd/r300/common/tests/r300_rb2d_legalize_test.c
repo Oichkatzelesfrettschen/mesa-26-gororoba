@@ -271,21 +271,23 @@ test_designed_cells(void)
           windows[1].rects[0].width == 32u &&
           windows[1].rects[0].height == 1u);
 
-   /* The dense carrier: one row is 8176 pixels, so the interval is the
-    * first row's remainder, one whole row, and an eight-pixel tail. */
+   /* The dense carrier: DST_PITCH_OFFSET's 8-bit pitch field reaches 255
+    * units, so the widest surface is 16320 bytes and one row is 4080
+    * pixels.  The interval is the first row's remainder, three whole
+    * rows, and a forty-pixel tail. */
    struct r300_rb2d_legalize_request dense =
       request(12u, 65428u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
    dense.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
-   dense.pinned_pitch_bytes = 32704u;
+   dense.pinned_pitch_bytes = 16320u;
 
    assert(legalize_exactly(&dense, &result) == 1u);
-   assert(result.pitch_bytes == 32704u);
-   assert(windows[0].height_rows == 3u);
+   assert(result.pitch_bytes == 16320u);
+   assert(windows[0].height_rows == 5u);
    assert(windows[0].rect_count == 3u);
    static const struct r300_rb2d_fill_rect expect[3] = {
-      { .x = 3u, .y = 0u, .width = 8173u, .height = 1u },
-      { .x = 0u, .y = 1u, .width = 8176u, .height = 1u },
-      { .x = 0u, .y = 2u, .width = 8u, .height = 1u },
+      { .x = 3u, .y = 0u, .width = 4077u, .height = 1u },
+      { .x = 0u, .y = 1u, .width = 4080u, .height = 3u },
+      { .x = 0u, .y = 4u, .width = 40u, .height = 1u },
    };
    for (uint32_t i = 0; i < 3u; i++) {
       assert(windows[0].rects[i].x == expect[i].x);
@@ -406,7 +408,7 @@ test_pitch_registry(void)
    uint32_t n = 0u;
    const struct r300_rb2d_pitch_evidence *rows =
       r300_rb2d_pitch_evidence_rows(&n);
-   assert(n >= 8u);
+   assert(n >= 7u);
    uint32_t silicon = 0u;
    for (uint32_t i = 0; i < n; i++) {
       assert(r300_rb2d_pitch_evidence_class_name(rows[i].evidence) != NULL);
@@ -423,13 +425,13 @@ test_pitch_registry(void)
    struct r300_rb2d_legalize_request req =
       request(0u, 65536u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
    struct r300_rb2d_legalize_result result;
-   req.pinned_pitch_bytes = 32704u;
+   req.pinned_pitch_bytes = 16320u;
    assert(r300_rb2d_legalize_linear_span(&req, windows, ARRAY_LEN(windows),
                                          &result) == 0u);
    assert(result.refusal == R300_RB2D_LEGALIZE_REFUSE_PINNED_PITCH_UNADMITTED);
    req.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
    assert(legalize_exactly(&req, &result) == 1u);
-   assert(result.pitch_bytes == 32704u);
+   assert(result.pitch_bytes == 16320u);
    assert(windows[0].rect_count == 2u);
 
    /* V1 refuses a pinned pitch other than its own. */
@@ -477,7 +479,7 @@ test_chooser_and_cost(void)
    one_mib.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
    assert(r300_rb2d_choose_pitch(&one_mib, &r300_rb2d_default_cost_weights,
                                  &format) == 256u);
-   req.pinned_pitch_bytes = 32704u;
+   req.pinned_pitch_bytes = 16320u;
    assert(legalize_exactly(&req, &result) == 1u);
    assert(result.rect_count == 2u);
    const uint64_t widest_cost =

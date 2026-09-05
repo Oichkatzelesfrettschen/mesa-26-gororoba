@@ -128,37 +128,40 @@ test_plan_rules(void)
     * rectangle still refuses it -- the scissor clips, not the surface.
     */
    {
-      /* The pitch field caps a surface at 0x3ff 64-byte units, 65472 bytes
-       * or 16368 ARGB8888 pixels, which is wider than the reach, so the
-       * scissor bounds both axes.  This surface sits one pixel past the
-       * reach on each axis with its pitch inside the field. */
+      /* The pitch field caps a surface at R300_RB2D_MAX_PITCH_UNITS 64-byte
+       * units, 16320 bytes or 4080 ARGB8888 pixels, which is inside the
+       * reach, so the row bounds x and the scissor bounds y alone.  This
+       * surface carries the widest row the word can name and stands one
+       * row past the reach. */
       struct r300_rb2d_surface wide = p.surface;
-      wide.width_pixels = R300_RB2D_SAFE_EXCLUSIVE_END + 1u;
+      wide.pitch_bytes = R300_RB2D_MAX_PITCH_UNITS *
+                         R300_RB2D_PITCH_GRANULARITY;
+      wide.width_pixels = wide.pitch_bytes / 4u;
       wide.height_pixels = R300_RB2D_SAFE_EXCLUSIVE_END + 1u;
-      wide.pitch_bytes = (R300_RB2D_SAFE_EXCLUSIVE_END + 1u) * 4u;
       struct r300_rb2d_fill_plan big = p;
       big.surface = wide;
-      struct r300_rb2d_fill_rect far = { 0u, 0u, R300_RB2D_SAFE_EXCLUSIVE_END,
-                                         1u, 1u };
+      struct r300_rb2d_fill_rect far = { 0u, 0u, 1u,
+                                         R300_RB2D_SAFE_EXCLUSIVE_END, 1u };
       big.rects = &far;
       big.rect_count = 1u;
       /* Reaching exactly the scissor value is admitted; one past refuses,
        * so the bound is exact rather than generous. */
       assert(r300_rb2d_fill_plan_check(&big) == R300_RB2D_FILL_OK);
-      far.width = R300_RB2D_SAFE_EXCLUSIVE_END + 1u;
+      far.height = R300_RB2D_SAFE_EXCLUSIVE_END + 1u;
       assert(r300_rb2d_fill_plan_check(&big) ==
              R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR);
-      far = (struct r300_rb2d_fill_rect){ 0u, 0u, 1u,
-                                          R300_RB2D_SAFE_EXCLUSIVE_END + 1u,
-                                          1u };
-      assert(r300_rb2d_fill_plan_check(&big) ==
-             R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR);
-      /* An origin at the reach with any extent also passes: the far edge
+      /* An origin at the reach with any extent also refuses: the far edge
        * is what the scissor clips. */
       far = (struct r300_rb2d_fill_rect){ 0u, R300_RB2D_SAFE_EXCLUSIVE_END, 1u,
                                           1u, 1u };
       assert(r300_rb2d_fill_plan_check(&big) ==
              R300_RB2D_FILL_REFUSE_RECT_BEYOND_SCISSOR);
+      /* The widest row the pitch field names stays inside the reach, so a
+       * rectangle spanning it is admitted and the x axis reaches the
+       * scissor rule through no admitted surface. */
+      far = (struct r300_rb2d_fill_rect){ 0u, 0u, wide.width_pixels, 1u, 1u };
+      assert(wide.width_pixels <= R300_RB2D_SAFE_EXCLUSIVE_END);
+      assert(r300_rb2d_fill_plan_check(&big) == R300_RB2D_FILL_OK);
    }
 
    /* The surface extent bounds the rectangle, and the boundary case one

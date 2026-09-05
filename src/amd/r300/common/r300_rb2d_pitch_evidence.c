@@ -9,11 +9,12 @@
  * row is the witnessed direct-write pitch; its receipt is the sealed
  * attended CONTROL_PASS of the public vkCmdFillBuffer route.  The 64-byte
  * row is the tightest DST_PITCH_OFFSET grid and is exercised by the
- * decomposition tests alone.  The dense candidates up to 32704 bytes --
- * the largest 64-byte multiple under the conservative scissor end times
- * four bytes -- are the pitch-only qualification targets and stay
- * PLANNED until one runs.  The RGB565 row records the kernel replay's
- * 128-pixel row acceptance and pixel-129 refusal.
+ * decomposition tests alone.  The dense candidates up to 16320 bytes --
+ * R300_RB2D_MAX_PITCH_UNITS of the 64-byte grid, the widest surface
+ * DST_PITCH_OFFSET's 8-bit pitch field names -- are the pitch-only
+ * qualification targets and stay PLANNED until one runs.  The RGB565 row
+ * records the kernel replay's 128-pixel row acceptance and pixel-129
+ * refusal.
  */
 static const struct r300_rb2d_pitch_evidence rows[] = {
    { 64u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
@@ -30,9 +31,7 @@ static const struct r300_rb2d_pitch_evidence rows[] = {
      R300_RB2D_PITCH_EVIDENCE_PLANNED, "planned" },
    { 8192u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
      R300_RB2D_PITCH_EVIDENCE_PLANNED, "planned" },
-   { 16384u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
-     R300_RB2D_PITCH_EVIDENCE_PLANNED, "planned" },
-   { 32704u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
+   { 16320u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
      R300_RB2D_PITCH_EVIDENCE_PLANNED, "planned" },
    { 256u, R300_RB2D_FORMAT_RGB565, R300_RB2D_USAGE_FILL_BUFFER,
      R300_RB2D_PITCH_EVIDENCE_KERNEL_REPLAY,

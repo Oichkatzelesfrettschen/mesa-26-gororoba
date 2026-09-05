@@ -822,8 +822,9 @@ test_expected_pitch_declaration_parses_fail_closed(void)
       bool malformed;
    } arms[] = {
       { NULL, 0u, false },      { "4096", 4096u, false },
-      { "32704", 32704u, false }, { "", 0u, true },
-      { "257", 0u, true },      { "0", 0u, true },
+      { "16320", 16320u, false }, { "16384", 0u, true },
+      { "", 0u, true },         { "257", 0u, true },
+      { "0", 0u, true },
       { "abc", 0u, true },      { "64x", 0u, true },
       { "9999999999", 0u, true },
    };
