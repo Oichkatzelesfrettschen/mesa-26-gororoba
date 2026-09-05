@@ -112,18 +112,18 @@ static const struct r300_operation_route_row
       /* The GPU route for CONSTFILL that writes a linear transfer
        * destination, beside the RB3D clear candidate that writes a bound
        * color target.
-       * It is precommitted rather than a candidate: r300_rb2d_fill.h holds
-       * the linear-surface plan, its emitter, and the admission rules
-       * DST_PITCH_OFFSET's own packing imposes, and the retained
-       * direct-write control cell is one instance of that plan whose stream
-       * the plan reproduces byte for byte.  Its evidence reaches the RB2D
-       * unit's behavior in that retained cell rather than this generalized
-       * route, so the route executes once a public command selects it and a
-       * current-epoch receipt records it. */
-      ROUTE(RB2D_CONST_FILL, "rb2d_const_fill", CONSTFILL, GPU, PRECOMMITTED,
+       * r300_rb2d_fill.h holds the linear-surface plan, its emitter, and
+       * the admission rules DST_PITCH_OFFSET's own packing imposes.  The
+       * route executes: a public vkCmdFillBuffer selected it on the Vostro
+       * 1000 (RS485M, 1002:5974) under the strict-2d parser and the RB2D
+       * unit wrote exactly the requested interval, so its evidence reaches
+       * this route's own cell.  The gate stays: AUTO keeps the host until a
+       * crossover is measured, and the route answers an operator who names
+       * it or a GPU_ONLY caller. */
+      ROUTE(RB2D_CONST_FILL, "rb2d_const_fill", CONSTFILL, GPU, EXECUTING,
             RB2D_FILL, XFER_BUF, RB2D_LINEAR_SOLID_FILL,
             RB2D_LINEAR_SOLID_FILL, RB2D_LINEAR_SURFACE, LINEAR, BIT_EXACT,
-            0.0f, SILICON_RETAINED, RASTER_CELL,
+            0.0f, SILICON_RETAINED, NATIVE_GPU_ROUTE_CELL,
             "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL"),
 
       /* The host route for CONSTFILL over a linear transfer destination.

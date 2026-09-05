@@ -17,11 +17,15 @@ set to the exact value `1`, the RB2D route answers, the byte interval
 decomposes into ordered fill plans, and one indirect buffer carries them
 through `DRM_IOCTL_RADEON_CS`. The host performs no store for the result.
 
-The route is `PRECOMMITTED`. It runs only under that exact opt-in and
-reports `experimental_admission` in its provenance, so nothing about this
-cell advertises a capability. Automatic selection is the separate fact a
-promotion does not buy: no crossover between the host store loop and any
-GPU route is measured, so `AUTO` reaches this route through its gate alone.
+The route is `EXECUTING`: the receipt
+`r3v-native-rb2d-const-fill-public-route-receipt-vostro1000_rs485m_5974-strict-2d-cs`
+records one public `vkCmdFillBuffer` on the Vostro 1000 writing exactly
+the requested interval through the RB2D unit, and its provenance reports
+a promoted admission. The gate stays: the route answers an operator who
+names it or a `GPU_ONLY` caller. Automatic selection is the separate fact
+a promotion does not buy: no crossover between the host store loop and any
+GPU route is measured, so `AUTO` keeps the host and reaches this route
+through its gate alone.
 
 Every gate runs before the stream installs. The route builds its plan,
 holds the destination to the memory contract, resolves the executor, emits

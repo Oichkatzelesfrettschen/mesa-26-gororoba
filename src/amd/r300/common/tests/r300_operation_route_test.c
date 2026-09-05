@@ -53,13 +53,13 @@ test_population(void)
    }
 
    assert(host_executing == 3);
-   assert(gpu_executing == 1);
+   assert(gpu_executing == 2);
    assert(candidate == 14);
-   /* The RB2D fill: a named plan, contracts, and admission rules, with its
-    * evidence still reaching the unit rather than this route. */
-   assert(precommitted == 1);
-   assert(retained_at_route_scope == 1);
-   assert(retained_at_raster_scope == 14);
+   /* Every committed GPU route has executed: the R2VB identity carrier and
+    * the RB2D const fill each carry a native-route receipt. */
+   assert(precommitted == 0);
+   assert(retained_at_route_scope == 2);
+   assert(retained_at_raster_scope == 13);
 
    /* The verb-level aggregates the same table yields. */
    uint32_t verbs = 0;
@@ -353,15 +353,14 @@ test_selector(void)
                                       R300_OPERATION_ROUTE_EXECUTOR_GPU,
                                       USE_SSBO, gates,
                                       &reason) == NULL);
-   /* CONSTFILL's two GPU routes answer two different callers and neither
-    * executes: the RB2D fill is precommitted for a transfer destination and
-    * the RB3D clear is a candidate for a bound color target, so both uses
-    * refuse with the RB2D gate open. */
+   /* CONSTFILL's two GPU routes answer two different callers: the RB2D
+    * fill executes for a transfer destination under its gate, and the RB3D
+    * clear is a candidate for a bound color target, so the attachment use
+    * refuses with the RB2D gate open. */
    assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
                                       R300_OPERATION_ROUTE_EXECUTOR_GPU,
-                                      USE_XFER, gates,
-                                      &reason) == NULL);
-   assert(strcmp(reason, "no eligible executing route") == 0);
+                                      USE_XFER, gates, &reason) ==
+          r300_operation_route(R300_OPERATION_ROUTE_RB2D_CONST_FILL));
    assert(r300_operation_select_route(R300_OPERATION_ID_CONSTFILL,
                                       R300_OPERATION_ROUTE_EXECUTOR_GPU,
                                       USE_ATTACH, gates,
@@ -469,9 +468,14 @@ test_executing_route_is_use_specific(void)
    assert(!r300_operation_has_executing_route(
       R300_OPERATION_ID_IDENTITY_MAP, R300_OPERATION_ROUTE_EXECUTOR_GPU,
       USE_XFER));
-   assert(!r300_operation_has_executing_route(
+   /* The RB2D fill executes for the transfer destination and answers no
+    * request for a bound color target. */
+   assert(r300_operation_has_executing_route(
       R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_GPU,
       USE_XFER));
+   assert(!r300_operation_has_executing_route(
+      R300_OPERATION_ID_CONSTFILL, R300_OPERATION_ROUTE_EXECUTOR_GPU,
+      USE_ATTACH));
    /* The host route over the same use does execute: the transfer path
     * stores the pattern across the recorded range today. */
    assert(r300_operation_has_executing_route(

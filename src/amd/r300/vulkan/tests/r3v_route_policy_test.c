@@ -34,7 +34,7 @@ rb2d_fill_row(void)
    const struct r300_operation_route_row *row =
       r300_operation_route(R300_OPERATION_ROUTE_RB2D_CONST_FILL);
    assert(row != NULL && row->gate != NULL);
-   assert(row->state == R300_OPERATION_ROUTE_PRECOMMITTED);
+   assert(row->state == R300_OPERATION_ROUTE_EXECUTING);
    return row;
 }
 
@@ -124,7 +124,7 @@ test_gate_closed_reaches_the_host(void)
 }
 
 static void
-test_cached_gate_admits_the_precommitted_route(void)
+test_cached_gate_admits_the_executing_route(void)
 {
    bool gates[R300_OPERATION_ROUTE_COUNT] = { false };
    const struct r300_operation_route_row *route = NULL;
@@ -393,7 +393,7 @@ gpu_provenance(void)
       .phase = R3V_EXECUTION_PHASE_IOCTL_ACCEPTED,
       .host_semantic_node = false,
       .device_submission = true,
-      .experimental_admission = true,
+      .experimental_admission = false,
       .ib_dwords = 26u,
       .relocation_count = 1u,
    };
@@ -498,11 +498,11 @@ test_provenance(void)
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
 
    /* Experimental admission and promotion imply each other in both
-    * directions, so neither can be overstated.  The precommitted fill route
-    * reports an experimental admission or refuses; the promoted carrier
-    * route reports none or refuses. */
+    * directions, so neither can be overstated.  The executing fill route
+    * and the promoted carrier route each report no experimental admission
+    * or refuse. */
    p = gpu_provenance();
-   p.experimental_admission = false;
+   p.experimental_admission = true;
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
    struct r3v_execution_provenance promoted = executing_gpu_provenance();
    assert(r3v_execution_provenance_valid(&promoted, R3V_EXECUTION_AUTO,
@@ -516,14 +516,16 @@ test_provenance(void)
    /* A record naming a route is held to that route's row: a maturity, unit,
     * executor, or operation of its own describes a delivery the ledger does
     * not carry. */
+   /* A precommitted or candidate maturity beside an experimental admission
+    * is consistent with itself, so only the ledger comparison against the
+    * executing row refuses it. */
    p = gpu_provenance();
-   p.route_state = R300_OPERATION_ROUTE_EXECUTING;
+   p.route_state = R300_OPERATION_ROUTE_PRECOMMITTED;
+   p.experimental_admission = true;
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
-   /* A candidate maturity on a precommitted row keeps the experimental
-    * admission consistent, so only the ledger comparison refuses it. */
    p = gpu_provenance();
    p.route_state = R300_OPERATION_ROUTE_CANDIDATE;
-   assert(p.experimental_admission);
+   p.experimental_admission = true;
    assert(!r3v_execution_provenance_valid(&p, R3V_EXECUTION_AUTO, &reason));
    p = gpu_provenance();
    p.unit = R300_EXECUTION_UNIT_RB3D_CLEAR;
@@ -733,7 +735,7 @@ main(void)
    test_automatic_selection_is_separate_from_maturity();
    test_every_gpu_row_is_gated();
    test_gate_closed_reaches_the_host();
-   test_cached_gate_admits_the_precommitted_route();
+   test_cached_gate_admits_the_executing_route();
    test_use_mask_names_one_purpose();
    test_resource_shape_gates_the_gpu_decision();
    test_malformed_requests_refuse();

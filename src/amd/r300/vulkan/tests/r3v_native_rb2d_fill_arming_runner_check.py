@@ -138,7 +138,7 @@ def main():
         for key, value in (
             ("cell_kind", "rb2d_fill_public"),
             ("route", "rb2d_const_fill"),
-            ("route_state", "precommitted"),
+            ("route_state", "executing"),
             ("fill_offset", "12"),
             ("fill_bytes", "4992"),
             ("fill_value", "0x11223344"),

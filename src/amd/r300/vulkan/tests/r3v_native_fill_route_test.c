@@ -397,8 +397,8 @@ test_attended_cell_routes(const struct reference *ref)
             "the provenance names another route");
       CHECK(!s.cmd.fill_route_provenance.host_semantic_node,
             "the provenance reports a host semantic node");
-      CHECK(s.cmd.fill_route_provenance.experimental_admission,
-            "a precommitted route reports a promoted admission");
+      CHECK(!s.cmd.fill_route_provenance.experimental_admission,
+            "an executing route reports an experimental admission");
       CHECK(s.cmd.fill_route_provenance.phase ==
                R3V_EXECUTION_PHASE_PREPARED,
             "the provenance claims a phase past preparation");
