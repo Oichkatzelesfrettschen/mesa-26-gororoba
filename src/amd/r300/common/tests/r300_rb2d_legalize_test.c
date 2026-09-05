@@ -173,7 +173,9 @@ test_v1_byte_identity(void)
    assert(r300_rb2d_fill_emit_into(&plans[0], plain, 64u, &ib) == 0);
    assert(ib.ib_size_dwords == 38u);
    assert(memcmp(legal, plain, 38u * sizeof(uint32_t)) == 0);
+   assert(lib.site_count == ib.reloc_site_count);
    assert(lib.sites[0].ib_index == ib.reloc_sites[0].ib_index);
+   assert(lib.sites[0].slot == ib.reloc_sites[0].slot);
 
    /* The witnessed stream's fixed words. */
    assert(legal[1] == ((4u << 22) | 0u));
@@ -222,6 +224,107 @@ test_v2_multi_window_emission(void)
    /* Storage smaller than the need refuses whole. */
    assert(r300_rb2d_legalize_linear_span(&req, windows, 1u, &result) == 0u);
    assert(result.refusal == R300_RB2D_LEGALIZE_REFUSE_STORAGE);
+}
+
+/* The two cells the design pins.
+ *
+ * The multi-window cell is the V2 shape nothing has run: on the 256-byte
+ * carrier a window reaches the safe scissor end at row 0x1fff, and
+ * 0x1fff * 256 lands 768 bytes past a 1 KiB boundary, so the rebase carries
+ * a local y of 3 and the tail is one rectangle in a second window.
+ *
+ * The dense cell is the widest 64-byte pitch under the scissor end times
+ * four bytes, cut on a buffer half its own row, which the kernel's end_byte
+ * footprint admits.  Both run at PLANNED evidence: they rank shapes rather
+ * than claim a receipt. */
+static void
+test_designed_cells(void)
+{
+   /* window 0 covers 61 + 8190 * 64 pixels, window 1 the 32-pixel tail. */
+   const uint64_t window0_bytes = (61u + 8190u * 64u) * 4u;
+   const uint64_t tail_bytes = 128u;
+   struct r300_rb2d_legalize_request multi =
+      request(12u, window0_bytes + tail_bytes, 2u * 1024u * 1024u,
+              R300_RB2D_CONTRACT_CONST_FILL_V2);
+   multi.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+   multi.pinned_pitch_bytes = 256u;
+
+   struct r300_rb2d_legalize_result result;
+   assert(multi.byte_size == 2097012u);
+   assert(legalize_exactly(&multi, &result) == 2u);
+   assert(result.window_count == 2u && result.relocation_sites == 2u);
+   assert(result.pitch_bytes == 256u);
+
+   assert(windows[0].bo_base == 0u);
+   assert(windows[0].height_rows == 0x1fffu);
+   assert(windows[0].rect_count == 2u);
+   assert(windows[0].rects[0].x == 3u && windows[0].rects[0].y == 0u &&
+          windows[0].rects[0].width == 61u &&
+          windows[0].rects[0].height == 1u);
+   assert(windows[0].rects[1].x == 0u && windows[0].rects[1].y == 1u &&
+          windows[0].rects[1].width == 64u &&
+          windows[0].rects[1].height == 8190u);
+   assert(windows[1].bo_base == 2096128u);
+   assert(windows[1].height_rows == 4u);
+   assert(windows[1].rect_count == 1u);
+   assert(windows[1].rects[0].x == 0u && windows[1].rects[0].y == 3u &&
+          windows[1].rects[0].width == 32u &&
+          windows[1].rects[0].height == 1u);
+
+   /* The dense carrier: one row is 8176 pixels, so the interval is the
+    * first row's remainder, one whole row, and an eight-pixel tail. */
+   struct r300_rb2d_legalize_request dense =
+      request(12u, 65428u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   dense.minimum_evidence = R300_RB2D_PITCH_EVIDENCE_PLANNED;
+   dense.pinned_pitch_bytes = 32704u;
+
+   assert(legalize_exactly(&dense, &result) == 1u);
+   assert(result.pitch_bytes == 32704u);
+   assert(windows[0].height_rows == 3u);
+   assert(windows[0].rect_count == 3u);
+   static const struct r300_rb2d_fill_rect expect[3] = {
+      { .x = 3u, .y = 0u, .width = 8173u, .height = 1u },
+      { .x = 0u, .y = 1u, .width = 8176u, .height = 1u },
+      { .x = 0u, .y = 2u, .width = 8u, .height = 1u },
+   };
+   for (uint32_t i = 0; i < 3u; i++) {
+      assert(windows[0].rects[i].x == expect[i].x);
+      assert(windows[0].rects[i].y == expect[i].y);
+      assert(windows[0].rects[i].width == expect[i].width);
+      assert(windows[0].rects[i].height == expect[i].height);
+   }
+}
+
+/* Contract evidence is a second authority beside the carrier's: the
+ * receipted V1 shape is admitted at its own width, and V2 receipts no
+ * window, so a V2 legalization refuses at SILICON_RECEIPT however strong
+ * its carrier's evidence is. */
+static void
+test_contract_evidence_admission(void)
+{
+   struct r300_rb2d_legalize_request v1 =
+      request(12u, 4992u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V1);
+   v1.minimum_contract_evidence =
+      R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT;
+   struct r300_rb2d_legalize_result result;
+   assert(legalize_exactly(&v1, &result) == 1u);
+
+   struct r300_rb2d_legalize_request v2 =
+      request(12u, 4992u, 65536u, R300_RB2D_CONTRACT_CONST_FILL_V2);
+   v2.minimum_contract_evidence =
+      R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT;
+   assert(r300_rb2d_legalize_linear_span(&v2, windows, ARRAY_LEN(windows),
+                                         &result) == 0u);
+   assert(result.refusal == R300_RB2D_LEGALIZE_REFUSE_CONTRACT_EVIDENCE);
+
+   /* The same request with the contract authority unasked legalizes, which
+    * is what keeps the refusal the contract table's and not the
+    * carrier's. */
+   v2.minimum_contract_evidence = R300_RB2D_CONTRACT_EVIDENCE_PLANNED;
+   assert(legalize_exactly(&v2, &result) == 1u);
+
+   assert(r300_rb2d_legalize_refusal_name(
+             R300_RB2D_LEGALIZE_REFUSE_CONTRACT_EVIDENCE) != NULL);
 }
 
 /* Each window invariant refuses when it alone is broken. */
@@ -530,6 +633,8 @@ main(void)
    test_transformation_table();
    test_v1_byte_identity();
    test_v2_multi_window_emission();
+   test_designed_cells();
+   test_contract_evidence_admission();
    test_window_checker();
    test_coverage_oracle();
    test_pitch_registry();
