@@ -237,12 +237,28 @@ test_refusals(void)
    assert(r300_rb2d_linear_span_segments(&s, &tight, bo, &r) == 0);
    assert(r == R300_RB2D_SPAN_REFUSE_OUTSIDE_BUFFER);
 
-   /* A buffer whose tail stops inside a carrier row: the interval fits,
-    * the surface the segment declares does not, and the decomposition
-    * refuses rather than naming bytes past the allocation. */
+   /* The footprint bound is the kernel's end_byte: the last rectangle's
+    * row start plus (x + width) * cpp.  Sixty-eight bytes on the 64-byte
+    * carrier write one whole row and four bytes of the next, so the
+    * footprint is 68: a 100-byte buffer admits it although the second
+    * carrier row runs past the buffer, and a 66-byte buffer refuses it. */
    s = (struct r300_rb2d_span){ 0u, 68u, 1u };
-   assert(r300_rb2d_linear_span_segments(&s, &tight, 100u, &r) == 0);
-   assert(r == R300_RB2D_SPAN_REFUSE_FOOTPRINT_OUTSIDE_BUFFER);
+   assert(r300_rb2d_linear_span_segments(&s, &tight, 100u, &r) == 1u);
+   assert(r == R300_RB2D_SPAN_OK);
+   s = (struct r300_rb2d_span){ 0u, 68u, 1u };
+   assert(r300_rb2d_linear_span_segments(&s, &tight, 68u, &r) == 1u);
+   /* Sixty-six bytes is off the dword grid for the span size rule, so the
+    * refusal under test is reached through a dword-aligned buffer that is
+    * still short: the interval [0, 68) against 64 bytes. */
+   assert(r300_rb2d_linear_span_segments(&s, &tight, 64u, &r) == 0);
+   assert(r == R300_RB2D_SPAN_REFUSE_OUTSIDE_BUFFER);
+   /* A fill's written bytes are exactly its interval, so an interval inside
+    * the buffer has its last written byte inside it too: the footprint
+    * refusal is the guard that keeps that true if the cut ever writes past
+    * the interval, and a span ending on the buffer's last byte passes. */
+   s = (struct r300_rb2d_span){ 1024u + 4u, 4u, 1u };
+   assert(r300_rb2d_linear_span_segments(&s, &tight, 1032u, &r) == 1u);
+   assert(r == R300_RB2D_SPAN_OK);
 
    /* Storage smaller than the decomposition needs refuses whole, writing
     * nothing, so a caller never fills a prefix and drops the rest. */
@@ -278,7 +294,9 @@ test_all_or_nothing(void)
    const uint64_t window =
       (uint64_t)R300_RB2D_SAFE_EXCLUSIVE_END * tight.pitch_bytes;
    /* The tail is a whole number of dwords that is not a whole number of
-    * rows, so the second segment's surface overruns the buffer. */
+    * rows, so the span needs a second segment, and the write is offered
+    * storage for one: the refusal lands after the first segment was cut
+    * and before anything reaches caller storage. */
    const uint64_t tail_dwords = 78u * per_row + 1u;
    const uint64_t bo = window + tail_dwords * 4u;
    enum r300_rb2d_span_refusal r = R300_RB2D_SPAN_REFUSAL_COUNT;
@@ -291,13 +309,13 @@ test_all_or_nothing(void)
    memset(plans, 0xa5, sizeof(plans));
    memset(rects, 0xa5, sizeof(rects));
 
-   assert(r300_rb2d_linear_span_segments(&s, &tight, bo, &r) == 0u);
-   assert(r == R300_RB2D_SPAN_REFUSE_FOOTPRINT_OUTSIDE_BUFFER);
+   assert(r300_rb2d_linear_span_segments(&s, &tight, bo, &r) == 2u);
+   assert(r == R300_RB2D_SPAN_OK);
 
    r = R300_RB2D_SPAN_REFUSAL_COUNT;
-   assert(r300_rb2d_linear_span_plan(&s, &tight, bo, plans, rects,
-                                     MAX_SEGMENTS, &r) == 0u);
-   assert(r == R300_RB2D_SPAN_REFUSE_FOOTPRINT_OUTSIDE_BUFFER);
+   assert(r300_rb2d_linear_span_plan(&s, &tight, bo, plans, rects, 1u,
+                                     &r) == 0u);
+   assert(r == R300_RB2D_SPAN_REFUSE_SEGMENT_STORAGE);
 
    const uint8_t *bytes = (const uint8_t *)plans;
    for (size_t i = 0; i < sizeof(plans); i++)

@@ -21,6 +21,8 @@
 #ifndef R300_RB2D_FILL_H
 #define R300_RB2D_FILL_H
 
+#include "r300_pm4_builder.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -72,8 +74,16 @@
  * lands here with the row that fills in it. */
 enum r300_rb2d_format {
    R300_RB2D_FORMAT_ARGB8888 = 0,
+   /* Two bytes per pixel.  The kernel replay admits a 128-pixel RGB565 row
+    * on a 256-byte pitch and refuses pixel 129, so the tracker reads the
+    * stride; a fill stream on this carrier has no silicon receipt yet, and
+    * the pitch-evidence registry withholds it from execution. */
+   R300_RB2D_FORMAT_RGB565,
    R300_RB2D_FORMAT_COUNT,
 };
+
+/* Bytes one pixel of a format occupies, or zero outside the table. */
+uint32_t r300_rb2d_format_bytes_per_pixel(enum r300_rb2d_format format);
 
 /* A linear destination the 2D engine writes into.  base_offset_bytes is the
  * distance from the relocated buffer base; pitch_bytes is the row stride;
@@ -173,6 +183,71 @@ r300_rb2d_fill_plan_check(const struct r300_rb2d_fill_plan *plan);
 int r300_rb2d_fill_emit_into(const struct r300_rb2d_fill_plan *plan,
                              uint32_t *words, uint32_t capacity,
                              struct r300_rb2d_fill_ib *out);
+
+/* The emitter as a state machine.  The 2D engine consumes registers in a
+ * fixed dependency order, and the kernel tracker refuses a launch that
+ * precedes its destination, format, or origin:
+ *
+ *    DESTINATION  DST_PITCH_OFFSET + relocation      dst_epoch
+ *    FORMAT       DP_GUI_MASTER_CNTL                 format_epoch
+ *    COMMON       scissor, DP_CNTL, DP_WRITE_MSK
+ *    ORIGIN       DST_Y_X                            origin_epoch
+ *    LAUNCH       DST_WIDTH_HEIGHT                   consumes all three
+ *    EPILOGUE     DSTCACHE flush, WAIT_UNTIL
+ *
+ * Each epoch counts the writes of its register since init.  A new
+ * destination clears the format and origin epochs, so a launch after a
+ * surface rebind requires the format and origin re-established on the new
+ * surface, and a launch with any epoch at zero records -EINVAL in the
+ * builder.  The four r300_rb2d_emit_* helpers are the only writers of these
+ * registers; r300_rb2d_fill_emit_into is their canonical sequence.
+ */
+struct r300_rb2d_emitter {
+   struct r300_pm4_builder builder;
+   struct r300_rb2d_fill_ib *out;
+   uint32_t dst_epoch;
+   uint32_t format_epoch;
+   uint32_t origin_epoch;
+};
+
+/* A typed destination binding: the relocation slot the surface's
+ * DST_PITCH_OFFSET payload names.  DST_PITCH_OFFSET has no emission path
+ * without one, so a stream that names a destination always carries its
+ * relocation site. */
+struct r300_rb2d_relocation {
+   uint32_t slot;
+};
+
+void r300_rb2d_emitter_init(struct r300_rb2d_emitter *e, uint32_t *words,
+                            uint32_t capacity,
+                            struct r300_rb2d_fill_ib *out);
+
+/* DESTINATION: DST_PITCH_OFFSET bound to a relocation.  Refuses a surface
+ * off the pitch or offset grid, a slot outside the plan vocabulary, or a
+ * second site when the output has no room for it. */
+void r300_rb2d_emit_surface_state(struct r300_rb2d_emitter *e,
+                                  const struct r300_rb2d_surface *surface,
+                                  struct r300_rb2d_relocation relocation);
+
+/* FORMAT and COMMON: the 2D scissor opened at its field maximum, the
+ * solid-brush master control carrying the surface format, the raster
+ * direction, and the write mask. */
+void r300_rb2d_emit_common_state(struct r300_rb2d_emitter *e,
+                                 const struct r300_rb2d_surface *surface,
+                                 uint32_t write_mask);
+
+/* ORIGIN and LAUNCH for one rectangle: brush color, DST_Y_X, then the
+ * DST_WIDTH_HEIGHT write that launches the fill.  Refuses while any epoch
+ * is zero. */
+void r300_rb2d_emit_rect(struct r300_rb2d_emitter *e,
+                         const struct r300_rb2d_fill_rect *rect);
+
+/* EPILOGUE: 2D destination-cache flush and the engine-idle wait. */
+void r300_rb2d_emit_epilogue(struct r300_rb2d_emitter *e);
+
+/* Closes the stream: -ENOSPC or -EINVAL from the builder, else the dword
+ * count in out->ib_size_dwords. */
+int r300_rb2d_emitter_finish(struct r300_rb2d_emitter *e);
 
 /* Checks emitted relocation sites against the stream: one site, inside the
  * stream, naming the destination slot at the recorded index, with the
