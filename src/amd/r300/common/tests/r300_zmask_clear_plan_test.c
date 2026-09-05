@@ -49,11 +49,11 @@ rs480_layout(void)
 
 static enum r300_zb_hyperz_verdict
 judge(const struct r300_zmask_clear_plan *plan,
-      enum r300_zb_hyperz_ownership ownership)
+      enum r300_zb_hyperz_ownership ownership,
+      struct r300_zb_hyperz_site *site)
 {
-   struct r300_zb_hyperz_site site;
    return r300_zb_hyperz_admit_stream(plan->words, plan->dword_count,
-                                      ownership, &site);
+                                      ownership, site);
 }
 
 static void
@@ -65,8 +65,10 @@ check_empty_stage(enum r300_zmask_clear_stage stage, bool wants_ownership,
    assert(plan.dword_count == 0);
    assert(!plan.writes_hyperz_registers);
    assert(plan.requires_hyperz_ownership == wants_ownership);
-   assert(judge(&plan, R300_ZB_HYPERZ_UNOWNED) == R300_ZB_HYPERZ_ADMIT);
-   assert(judge(&plan, R300_ZB_HYPERZ_OWNED) == R300_ZB_HYPERZ_ADMIT);
+   struct r300_zb_hyperz_site site;
+   assert(judge(&plan, R300_ZB_HYPERZ_UNOWNED, &site) ==
+          R300_ZB_HYPERZ_ADMIT);
+   assert(judge(&plan, R300_ZB_HYPERZ_OWNED, &site) == R300_ZB_HYPERZ_ADMIT);
 }
 
 static void
@@ -103,9 +105,18 @@ check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
    assert((expected_bw_cntl &
            (R300_HIZ_ENABLE | R300_RD_COMP_ENABLE | R300_WR_COMP_ENABLE)) == 0);
 
-   assert(judge(&plan, R300_ZB_HYPERZ_OWNED) == R300_ZB_HYPERZ_ADMIT);
-   assert(judge(&plan, R300_ZB_HYPERZ_UNOWNED) ==
+   struct r300_zb_hyperz_site site;
+   assert(judge(&plan, R300_ZB_HYPERZ_OWNED, &site) == R300_ZB_HYPERZ_ADMIT);
+
+   /* ZB_ZMASK_OFFSET carries zero against a full gated mask and admits,
+    * so the refusal lands on the pitch write: the third dword of the
+    * bind run, which the walker reports at its payload index.
+    */
+   assert(judge(&plan, R300_ZB_HYPERZ_UNOWNED, &site) ==
           R300_ZB_HYPERZ_REFUSE_OWNERSHIP);
+   assert(site.reg_or_opcode == R300_ZB_ZMASK_PITCH);
+   assert(site.ib_index == 2);
+   assert(site.value == layout->stride_in_pixels);
 }
 
 static void

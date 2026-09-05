@@ -111,10 +111,13 @@ sweep(uint32_t pipes, uint32_t zmask_ram)
       for (size_t w = 0; w < EXTENT_COUNT; w++) {
          for (size_t h = 0; h < EXTENT_COUNT; h++) {
             for (int micro = 0; micro <= 1; micro++) {
-               for (int zcomp = 0; zcomp <= 1; zcomp++) {
-                  /* 8x8 compression needs a macrotiled level, so the
-                   * macrotile flag rides the zcomp8x8 axis. */
-                  const bool macrotile = zcomp != 0;
+               for (int capable = 0; capable <= 1; capable++)
+               for (int macro = 0; macro <= 1; macro++)
+               for (uint32_t samples = 1; samples <= 2; samples++) {
+                  /* The three conjuncts of the 8x8 decision sweep
+                   * independently, so dropping any one of them from the
+                   * model moves a point. */
+                  const bool macrotile = macro != 0;
 
                   struct r300_zmask_layout_params params = {
                      .stride_in_pixels = extents[w],
@@ -123,8 +126,8 @@ sweep(uint32_t pipes, uint32_t zmask_ram)
                      .is_depth_or_stencil = true,
                      .microtile = micro != 0,
                      .macrotile = macrotile,
-                     .num_samples = 1,
-                     .zcomp8x8_capable = zcomp != 0,
+                     .num_samples = samples,
+                     .zcomp8x8_capable = capable != 0,
                      .pipes = pipes,
                      .zmask_ram_dwords_per_pipe = zmask_ram,
                   };
@@ -135,7 +138,8 @@ sweep(uint32_t pipes, uint32_t zmask_ram)
                   gallium_zmask_properties(
                      extents[w], extents[h],
                      formats[f].bytes_per_pixel * 8, true, micro != 0,
-                     macrotile, 1, zcomp != 0, pipes, zmask_ram, &ref);
+                     macrotile, samples, capable != 0, pipes, zmask_ram,
+                     &ref);
 
                   assert(layout.dwords == ref.zmask_dwords);
                   assert(layout.stride_in_pixels ==
