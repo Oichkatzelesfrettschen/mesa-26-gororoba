@@ -26,14 +26,16 @@ enum r300_zmask_clear_stage {
    R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY = 0,
    /* Ownership acquired, HyperZ registers untouched. */
    R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY,
-   /* ZMASK bound and cleared, compression and fast fill off. */
+   /* ZMASK bound at its tile size and cleared, compression and fast
+    * fill off. */
    R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
    /* Stage C plus ZB_BW_CNTL FAST_FILL_ENABLE. */
    R300_ZMASK_CLEAR_STAGE_FAST_FILL,
 };
 
 /* Longest append: the ZMASK_OFFSET and ZMASK_PITCH run, the two index
- * registers, ZB_BW_CNTL, and the four-dword 3D_CLEAR_ZMASK packet.
+ * registers, GB_Z_PEQ_CONFIG, ZB_BW_CNTL, and the four-dword
+ * 3D_CLEAR_ZMASK packet.
  */
 #define R300_ZMASK_CLEAR_PLAN_MAX_DWORDS 16u
 

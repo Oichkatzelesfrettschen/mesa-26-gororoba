@@ -35,6 +35,18 @@ emit_bind_and_clear(struct r300_pm4_builder *b,
    r300_pm4_reg(b, R300_ZB_ZMASK_WRINDEX, 0u);
    r300_pm4_reg(b, R300_ZB_ZMASK_RDINDEX, 0u);
 
+   /* The ZMASK tile size the layout decided.  r300_update_hyperz sets
+    * Z_PEQ_SIZE_8_8 from the level's zcomp8x8 flag before the ZB_BW_CNTL
+    * enables, and the tile size scales the RAM the surface consumes: the
+    * 64x64 reference level clears four dwords at 8x8 and sixteen at 4x4,
+    * so a retained setting from a predecessor describes a different
+    * surface than the one the clear covers.  The 4x4 case writes its
+    * value explicitly rather than leaving the register alone.
+    */
+   r300_pm4_reg(b, R300_GB_Z_PEQ_CONFIG,
+                layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
+                                 : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
+
    r300_pm4_reg(b, R300_ZB_BW_CNTL, zb_bw_cntl);
 
    const uint32_t clear[ZMASK_CLEAR_PAYLOAD_DWORDS] = {0u, layout->dwords,
@@ -69,9 +81,8 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
          return -EINVAL;
       out->requires_hyperz_ownership = true;
       out->writes_hyperz_registers = true;
-      /* SC_HYPERZ and GB_Z_PEQ_CONFIG stay unwritten: the ZMASK tile
-       * size and the scan converter's HiZ bit belong to the stages that
-       * turn compression and HiZ on, which follow this ladder.
+      /* SC_HYPERZ stays unwritten: the scan converter's HiZ bit belongs
+       * to the HiZ stage past this ladder.
        */
       emit_bind_and_clear(&b, layout,
                           stage == R300_ZMASK_CLEAR_STAGE_FAST_FILL
