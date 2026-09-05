@@ -373,13 +373,53 @@ r3v_route_policy_select(const struct r3v_route_request *request,
     * closed, so an AUTO request that finds no qualified GPU route below has
     * nowhere to fall. */
 
-   /* A promoted route first: the selector reaches EXECUTING rows only, and
+   /* The precommitted rows this operation and use reach under their own
+    * cached gates.  Such a row carries an implementation, a route
+    * contract, and an admission contract; what it lacks is a
+    * current-epoch receipt, so it runs only where an operator asked for it
+    * by name at device creation. */
+   const struct r300_operation_route_row *candidate = NULL;
+   uint32_t rows = 0;
+   const struct r300_operation_route_row *all =
+      r300_operation_route_rows(&rows);
+   for (uint32_t i = 0; i < rows; i++) {
+      const struct r300_operation_route_row *r = &all[i];
+      if (r->operation_id != request->operation_id ||
+          r->executor != R300_OPERATION_ROUTE_EXECUTOR_GPU ||
+          r->state != R300_OPERATION_ROUTE_PRECOMMITTED ||
+          (r->uses & (uint32_t)request->use) == 0 || r->gate == NULL)
+         continue;
+      if (gate_state == NULL || !gate_state[r->route_id])
+         continue;
+      if (candidate != NULL) {
+         /* Two open experimental gates for one purpose leave the choice to
+          * table order, which is not a policy here either. */
+         *reason = "two precommitted routes admitted for one use";
+         return R3V_ROUTE_DECISION_REFUSE;
+      }
+      candidate = r;
+   }
+
+   /* Then the promoted route: the selector reaches EXECUTING rows only, and
     * one that answers is the route this operation takes with no
     * experimental admission behind it. */
    const struct r300_operation_route_row *promoted =
       r300_operation_select_route(request->operation_id,
                                   R300_OPERATION_ROUTE_EXECUTOR_GPU,
                                   request->use, gate_state, reason);
+
+   /* A promoted route and a precommitted route both admitted for one use
+    * name two executors for one operation, and the receipted stream and
+    * the experimental one write the same bytes under different contracts.
+    * Choosing between them by maturity would discard the opt-in the
+    * operator wrote, so the refusal stands ahead of every policy branch
+    * and the operator closes one gate. */
+   if (promoted != NULL && candidate != NULL) {
+      *reason = "an executing route and a precommitted route are both "
+                "admitted for one use";
+      return R3V_ROUTE_DECISION_REFUSE;
+   }
+
    if (promoted != NULL) {
       /* An ungated promoted route under AUTO is the one decision nobody
        * named: the ledger says the route delivers, and the caller asked
@@ -402,32 +442,6 @@ r3v_route_policy_select(const struct r3v_route_request *request,
       }
       *route = promoted;
       return R3V_ROUTE_DECISION_GPU;
-   }
-
-   /* Then a precommitted route under its own cached gate.  The row carries
-    * an implementation, a route contract, and an admission contract; what
-    * it lacks is a current-epoch receipt, so it runs only where an operator
-    * asked for it by name at device creation. */
-   const struct r300_operation_route_row *candidate = NULL;
-   uint32_t rows = 0;
-   const struct r300_operation_route_row *all =
-      r300_operation_route_rows(&rows);
-   for (uint32_t i = 0; i < rows; i++) {
-      const struct r300_operation_route_row *r = &all[i];
-      if (r->operation_id != request->operation_id ||
-          r->executor != R300_OPERATION_ROUTE_EXECUTOR_GPU ||
-          r->state != R300_OPERATION_ROUTE_PRECOMMITTED ||
-          (r->uses & (uint32_t)request->use) == 0 || r->gate == NULL)
-         continue;
-      if (gate_state == NULL || !gate_state[r->route_id])
-         continue;
-      if (candidate != NULL) {
-         /* Two open experimental gates for one purpose leave the choice to
-          * table order, which is not a policy here either. */
-         *reason = "two precommitted routes admitted for one use";
-         return R3V_ROUTE_DECISION_REFUSE;
-      }
-      candidate = r;
    }
 
    if (candidate != NULL) {

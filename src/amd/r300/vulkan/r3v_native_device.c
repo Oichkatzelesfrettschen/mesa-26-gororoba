@@ -8,6 +8,7 @@
 #include "r3v_native.h"
 
 #include "amd/r300/common/r300_compute_verb.h"
+#include "amd/r300/common/r300_rb2d_fill.h"
 
 #include "r3v_entrypoints.h"
 #include "r3v_physical_device.h"
@@ -105,6 +106,23 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       if (row->gate != NULL)
          device->compute_route_gates[row->route_id] = exact_gate(row->gate);
    }
+   /* The operator's declared carrier for the windowed contract, read on
+    * the same pass as the gates so an environment mutation moves no
+    * decision under a recorded command buffer.  A value outside the pitch
+    * field or off the 64-byte grid stays undeclared, because a pitch the
+    * hardware cannot name asserts nothing about the chooser. */
+   device->rb2d_v2_expected_pitch_bytes = 0u;
+   const char *expected_pitch =
+      getenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES");
+   if (expected_pitch != NULL && expected_pitch[0] != '\0') {
+      char *end = NULL;
+      const unsigned long value = strtoul(expected_pitch, &end, 10);
+      if (end != NULL && *end == '\0' && value != 0u &&
+          value % R300_RB2D_PITCH_GRANULARITY == 0u &&
+          value / R300_RB2D_PITCH_GRANULARITY <= R300_RB2D_MAX_PITCH_UNITS)
+         device->rb2d_v2_expected_pitch_bytes = (uint32_t)value;
+   }
+
    /* The policy is read once, so a route decision cannot change under a
     * command buffer already recorded against it. */
    device->execution_policy =
@@ -231,6 +249,28 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                        "policy: \"%s\"; the values are auto, gpu_only, and "
                        "cpu_reference",
                        declared != NULL ? declared : "");
+   }
+
+   /* Both CONSTFILL RB2D gates open name two executors for one transfer
+    * destination: the receipted single-window contract and the
+    * precommitted windowed one write the same bytes under different
+    * contracts, and the route policy refuses that pair at every request.
+    * Refusing at creation reports it once, where the operator can act on
+    * it, rather than once per vkCmdFillBuffer. */
+   if (device->compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL] !=
+          NULL &&
+       device->compute_route_gates[R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2] !=
+          NULL) {
+      vk_queue_finish(&device->queue.vk);
+      radeon_drm_vk_device_finish(&device->drm);
+      vk_device_finish(&device->vk);
+      vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+      return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: "
+                       "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL and "
+                       "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL "
+                       "both stand open; one route fills a linear transfer "
+                       "destination, so close one gate");
    }
 
    /* Plan capture opens the CS ioctl with the hazard gate closed, so it

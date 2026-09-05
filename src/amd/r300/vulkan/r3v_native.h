@@ -1015,6 +1015,13 @@ struct r3v_native_device {
     * slot stays NULL. */
    const char *compute_route_gates[R300_OPERATION_ROUTE_COUNT];
 
+   /* R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES, read once beside the gates:
+    * the carrier pitch the operator declares the windowed contract's
+    * chooser will pick.  Zero is undeclared.  It asserts the chooser's
+    * verdict and never selects, so a chosen pitch that disagrees declines
+    * the route. */
+   uint32_t rb2d_v2_expected_pitch_bytes;
+
    /* What the device asks of every route decision, read once at creation so
     * a policy cannot change under a recorded command buffer. */
    enum r3v_execution_policy execution_policy;

@@ -176,15 +176,17 @@ run_arm(enum arm arm, const char *name)
    if (arm == ARM_GATE_TABLE) {
       /* Every route gate but the identity's open, the identity's closed by
        * a value other than the literal.  A gate belongs to one route, so
-       * the thirteen candidate gates standing open must select nothing. */
+       * the candidate gates standing open must select nothing.  The
+       * windowed RB2D fill gate closes with it: both CONSTFILL RB2D gates
+       * open name two executors for one transfer destination, and device
+       * creation refuses that pair. */
       for (uint32_t r = 0; r < route_count; r++) {
          if (routes[r].gate == NULL)
             continue;
-         setenv(routes[r].gate,
-                routes[r].route_id == R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP
-                   ? "yes"
-                   : "1",
-                1);
+         const bool closed =
+            routes[r].route_id == R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP ||
+            routes[r].route_id == R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2;
+         setenv(routes[r].gate, closed ? "yes" : "1", 1);
       }
    } else if (arm != ARM_GATE_OFF_CPU) {
       setenv(verb_gate, "1", 1);
@@ -272,8 +274,10 @@ run_arm(enum arm arm, const char *name)
             continue;
          const bool open =
             native_device->compute_route_gates[routes[r].route_id] != NULL;
-         assert(open == (routes[r].route_id !=
-                         R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP));
+         const bool closed =
+            routes[r].route_id == R300_OPERATION_ROUTE_R2VB_IDENTITY_MAP ||
+            routes[r].route_id == R300_OPERATION_ROUTE_RB2D_CONST_FILL_V2;
+         assert(open == !closed);
       }
       static const char *const closed_values[] = { "0", "", "yes", "1 ",
                                                    "01" };
