@@ -647,6 +647,10 @@ window `R3V_NATIVE_FILL_ROUTE_MAX_SEGMENTS` admits.
 **Performance is unmeasured.** No crossover between the host store loop and
 the RB2D route exists, so `AUTO` keeps the host path. Expect the host to
 win for small fills; a threshold follows measurement, not this receipt.
+`r3v-rb2d-fill-crossover-measurement.md` states the measurement contract:
+the delivery bracket, the three arms, the sweep and its carrier-transition
+bracket at 2096896 and 2096900, and the rule that turns the result into an
+automatic-selection policy.
 
 **One command shape only.** Mixed host and device transfers in one command
 buffer are refused rather than ordered. `vkCmdPipelineBarrier` remains what

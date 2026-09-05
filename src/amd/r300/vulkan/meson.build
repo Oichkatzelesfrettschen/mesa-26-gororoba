@@ -2642,6 +2642,23 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       dependencies : [dep_vulkan_loader, dep_dl],
       c_args : [no_override_init_args],
     )
+    # The crossover harness: one process, one device per arm, and the
+    # delivery interval of one vkCmdFillBuffer over a size sweep.  It
+    # links the legalizer so each timing row records the carrier and
+    # stream shape the interval belongs to without deriving it from a
+    # submission.  Built and never registered as a test, because running
+    # it submits to hardware.
+    r3v_native_rb2d_fill_crossover = executable(
+      'r3v_native_rb2d_fill_crossover',
+      files('tests/r3v_native_rb2d_fill_crossover.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
+      dependencies : [dep_vulkan_loader],
+      link_with : [libr300_common],
+      c_args : [no_override_init_args],
+      build_by_default : true,
+      install : false,
+    )
     r3v_public_rb2d_fill_oracle_tool = executable(
       'r3v_public_rb2d_fill_oracle_tool',
       [r3v_public_rb2d_fill_oracle_sources,
