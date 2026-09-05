@@ -106,6 +106,18 @@ r300_zb_depth_control_emit_into(
    if (params->first_draw_contract == NULL)
       return -EINVAL;
 
+   /* The surface, then the two facts the cell needs of it: it encodes,
+    * and the host can write the pre-draw depth fill the comparison reads.
+    */
+   const struct r300_zb_depth_surface *surface =
+      params->surface != NULL ? params->surface
+                              : &r300_zb_depth_surface_z16_linear;
+   const int surface_rc = r300_zb_depth_surface_check(surface);
+   if (surface_rc != 0)
+      return surface_rc;
+   if (!surface->host_addressable)
+      return -EINVAL;
+
    struct r300_pm4_builder b;
    r300_pm4_builder_init(&b, words, capacity);
 
@@ -173,8 +185,9 @@ r300_zb_depth_control_emit_into(
     * scissor height.
     */
    const struct r300_zb_depth_state_params depth = {
-      .pitch_pixels = R300_ZB_DEPTH_CONTROL_PITCH_PIXELS,
-      .depth_format = R300_DEPTHFORMAT_16BIT_INT_Z,
+      .pitch_pixels = surface->pitch_pixels,
+      .depth_format = surface->depth_format,
+      .pitch_tile_bits = r300_zb_depth_surface_tile_bits(surface),
       .depth_offset_bytes = params->depth_offset_bytes,
       .depth_relocation_payload =
          DEPTH_CONTROL_RELOC_PAYLOAD(R300_ZB_DEPTH_CONTROL_SLOT_DEPTH),

@@ -70,6 +70,14 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
       return -EINVAL;
    if (params->depth_offset_bytes % DEPTH_OFFSET_ALIGNMENT != 0)
       return -EINVAL;
+   /* The tile bits occupy 16 and 17 alone, and microtile 3 is reserved,
+    * so a value outside the two fields or naming the reserved encoding
+    * would land in the pitch word as a mode the hardware does not have. */
+   if ((params->pitch_tile_bits & ~(uint32_t)(R300_DEPTHMACROTILE(1u) |
+                                              R300_DEPTHMICROTILE(3u))) != 0 ||
+       (params->pitch_tile_bits & R300_DEPTHMICROTILE(3u)) ==
+          R300_DEPTHMICROTILE(3u))
+      return -EINVAL;
 
    if (!r300_pm4_builder_reserve(builder, r300_zb_depth_state_dwords()))
       return builder->error;
@@ -86,14 +94,14 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
    if (out_reloc_ib_index != NULL)
       *out_reloc_ib_index = reloc_index;
 
-   /* Linear, unswapped: a first depth cell reads the buffer back on the
-    * host, and a tiled surface would need the detiling the readback
-    * oracle does not carry.
+   /* Unswapped, with the tile modes the caller's surface declares.  A
+    * linear surface passes zero and the word matches the depth cell's
+    * retained stream; a tiled surface carries its bits here because the
+    * submission keeps its own tiling flags.
     */
    r300_pm4_reg(builder, R300_ZB_DEPTHPITCH,
                 (params->pitch_pixels & R300_DEPTHPITCH_MASK) |
-                   R300_DEPTHMACROTILE_DISABLE |
-                   R300_DEPTHMICROTILE_LINEAR |
+                   params->pitch_tile_bits |
                    R300_DEPTHENDIAN(R300_SURF_NO_SWAP));
 
    r300_pm4_reg(builder, R300_ZB_CNTL,

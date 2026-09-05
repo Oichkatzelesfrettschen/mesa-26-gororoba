@@ -343,6 +343,60 @@ test_determinism(void)
    printf("determinism ok\n");
 }
 
+/* The descriptor and the macros emit one stream.  Naming the Z16 linear
+ * surface explicitly produces the bytes the reference emission produces
+ * from its default, so the parameterization moved no word, and a surface
+ * the host cannot address is refused before any dword is written.
+ */
+static void
+test_surface_parameterization(void)
+{
+   struct r300_fragment_binary fs;
+   assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
+   struct r300_first_draw_contract contract;
+   assert(r300_zb_depth_control_reference_contract(&contract) == 0);
+
+   struct r300_zb_depth_control_params params = {
+      .vertex_offset = 0,
+      .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(
+         R300_ZB_DEPTH_CONTROL_PITCH_PIXELS),
+      .depth_offset_bytes = 0,
+      .surface = &r300_zb_depth_surface_z16_linear,
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+   struct r300_zb_depth_control_ib declared, defaulted;
+   assert(r300_zb_depth_control_emit(&params, &declared) == 0);
+   assert(r300_zb_depth_control_reference_emit(&defaulted) == 0);
+   assert(declared.ib_size_dwords == defaulted.ib_size_dwords);
+   assert(memcmp(declared.ib, defaulted.ib,
+                 declared.ib_size_dwords * sizeof(uint32_t)) == 0);
+   assert(declared.reloc_site_count == defaulted.reloc_site_count);
+   r300_zb_depth_control_release(&declared);
+   r300_zb_depth_control_release(&defaulted);
+
+   /* The Z24 macrotiled surface encodes, and the cell still refuses it:
+    * the pre-draw host fill is the comparison's other operand, and no
+    * logical-to-physical transform for R300-class tiling exists to place
+    * it. */
+   assert(r300_zb_depth_surface_check(
+             &r300_zb_depth_surface_z24_macrotiled) == 0);
+   params.surface = &r300_zb_depth_surface_z24_macrotiled;
+   struct r300_zb_depth_control_ib refused;
+   assert(r300_zb_depth_control_emit(&params, &refused) == -EINVAL);
+   assert(refused.ib == NULL && refused.ib_size_dwords == 0);
+
+   /* A malformed descriptor is refused by its own check rather than
+    * reaching the emitter. */
+   struct r300_zb_depth_surface bad = r300_zb_depth_surface_z16_linear;
+   bad.pitch_pixels = 62u;
+   params.surface = &bad;
+   assert(r300_zb_depth_control_emit(&params, &refused) == -EINVAL);
+
+   r300_fragment_binary_finish(&fs);
+   printf("surface parameterization ok\n");
+}
+
 /* Paints the target the way a device honoring the depth test does: the
  * draw color inside near_colored's triangle, the sentinel everywhere
  * else.  `invert` paints the complement a reversed comparison sense
@@ -578,6 +632,7 @@ main(void)
    test_reloc_sites();
    test_refusals();
    test_determinism();
+   test_surface_parameterization();
    test_color_oracle();
    test_depth_oracle();
    test_regions_disjoint();

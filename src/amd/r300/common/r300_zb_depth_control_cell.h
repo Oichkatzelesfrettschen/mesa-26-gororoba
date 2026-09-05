@@ -8,6 +8,8 @@
 #ifndef R300_ZB_DEPTH_CONTROL_CELL_H
 #define R300_ZB_DEPTH_CONTROL_CELL_H
 
+#include "r300_zb_depth_surface.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -55,6 +57,14 @@ struct r300_zb_depth_control_params {
     * encodes bits 31 to 5, so the low five bits stay clear.
     */
    uint32_t depth_offset_bytes;
+   /* The depth surface the cell binds.  NULL takes
+    * r300_zb_depth_surface_z16_linear, the surface the cell has always
+    * emitted, so a caller that names no surface produces the retained
+    * stream.  A surface the cell cannot fill from the host is refused:
+    * the pre-draw depth fill is the comparison's other operand, and a
+    * tiled surface's bytes follow a transform this tree does not carry.
+    */
+   const struct r300_zb_depth_surface *surface;
    const struct r300_fragment_binary *fragment_binary;
    /* The contract establishes every register the draw depends on.  A
     * control whose verdict is the difference between two halves of one
