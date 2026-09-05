@@ -36,6 +36,8 @@ r300_common_contract_files = files(
   'r300_zb_depth_control_cell.c',
   'r300_zb_depth_state.c',
   'r300_zb_hyperz_admission.c',
+  'r300_zmask_clear_plan.c',
+  'r300_zmask_layout.c',
 )
 
 r300_common_files = r300_common_contract_files
@@ -1236,6 +1238,42 @@ r300_noperspective_mixed_carrier_plan_test = executable(
 test(
   'r300-noperspective-mixed-carrier-plan',
   r300_noperspective_mixed_carrier_plan_test,
+  suite : ['r300'],
+)
+# The ZMASK layout: the stride and dword derivation cross-checked point by
+# point against a transcription of r300_setup_hyperz_properties, plus the
+# per-family ZMASK RAM table and the refusals.
+r300_zmask_layout_test = executable(
+  'r300_zmask_layout_test',
+  files('r300_zmask_layout.c', 'tests/r300_zmask_layout_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-zmask-layout',
+  r300_zmask_layout_test,
+  suite : ['r300'],
+)
+# The ZMASK clear ladder: the words each of the four stages appends, the
+# clear payload's dword count, and the HyperZ admission verdict of each
+# stage's stream with and without ownership.
+r300_zmask_clear_plan_test = executable(
+  'r300_zmask_clear_plan_test',
+  files('r300_pm4_builder.c', 'r300_zb_hyperz_admission.c',
+        'r300_zmask_layout.c', 'r300_zmask_clear_plan.c',
+        'tests/r300_zmask_clear_plan_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-zmask-clear-plan',
+  r300_zmask_clear_plan_test,
   suite : ['r300'],
 )
 endif
