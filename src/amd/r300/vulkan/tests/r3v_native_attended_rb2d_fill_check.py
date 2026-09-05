@@ -194,6 +194,41 @@ def main():
         bad["fill_bytes"] = "4992"
         run("v1 request under the v2 cell", bad, env_change=v2_env,
             expect_marker="differs from cell v2_multiwindow_256")
+        # A route receipt runs at the executing carrier floor, so the
+        # qualification declaration -- the one lever that drops a carrier
+        # to PLANNED -- is refused on the pinned windowed cell too.
+        run("qualification pin under a route-receipt cell", v2, env_change={
+            **v2_env,
+            "R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES": "16320"},
+            expect_marker="R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES")
+
+        # The chooser cell.  Its interval is the windowed cell's, so the
+        # pin is the only field that moves: the pin stays unset and the
+        # expected carrier states the verdict the cost model has to
+        # return.  A pin beside it, an absent expectation, and an
+        # expectation naming the carrier the chooser declined are each
+        # refused by their own name.
+        chooser = dict(v2)
+        chooser["cell_name"] = "v2_chooser_16320"
+        chooser_env = {
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL": None,
+            "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL": "1",
+            "R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES": None,
+            "R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES": "16320",
+        }
+        run("chooser cell pinned", chooser, env_change={
+            **chooser_env, "R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES": "256"},
+            expect_marker="R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES")
+        run("chooser cell expectation absent", chooser, env_change={
+            **chooser_env, "R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES": None},
+            expect_marker="R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES")
+        run("chooser cell expects 256", chooser, env_change={
+            **chooser_env, "R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES": "256"},
+            expect_marker="R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES")
+        run("chooser cell qualification pin", chooser, env_change={
+            **chooser_env,
+            "R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES": "16320"},
+            expect_marker="R3V_NATIVE_RB2D_CARRIER_QUALIFICATION_PITCH_BYTES")
 
         # The complete declaration reaches the host facts.  On the board
         # every fact holds and the next phase is vkCreateInstance; on a
