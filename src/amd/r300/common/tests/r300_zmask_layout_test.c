@@ -13,6 +13,8 @@
 #include "amd_family.h"
 #include "r300_chipset.h"
 
+/* The checks are the test; a release build keeps them. */
+#undef NDEBUG
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
