@@ -400,9 +400,11 @@ r300_rb2d_choose_pitch(const struct r300_rb2d_legalize_request *req,
    uint32_t rows = 0u;
    const struct r300_rb2d_pitch_evidence *table =
       r300_rb2d_pitch_evidence_rows(&rows);
-   /* The candidates are legalized into scratch storage; the chooser's
-    * verdict is a pitch, and the caller legalizes again on it. */
-   static struct r300_rb2d_window scratch[R300_RB2D_LEGALIZE_MAX_WINDOWS];
+   /* The candidates are legalized into this call's own storage; the
+    * chooser's verdict is a pitch, and the caller legalizes again on it.
+    * Stack storage keeps concurrent callers -- a submission thread and a
+    * resource thread both choosing a carrier -- from sharing a buffer. */
+   struct r300_rb2d_window scratch[R300_RB2D_LEGALIZE_MAX_WINDOWS];
    uint64_t best_cost = UINT64_MAX;
    uint32_t best_pitch = 0u;
    enum r300_rb2d_format best_format = R300_RB2D_FORMAT_ARGB8888;

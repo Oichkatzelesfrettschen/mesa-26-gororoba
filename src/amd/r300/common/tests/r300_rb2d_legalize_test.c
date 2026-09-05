@@ -490,7 +490,7 @@ test_emitter_epochs(void)
    assert(r300_rb2d_emitter_finish(&e) == -EINVAL);
 
    r300_rb2d_emitter_init(&e, words, 64u, &out);
-   r300_rb2d_emit_common_state(&e, &s, 0xffffffffu);
+   r300_rb2d_emit_common_state(&e, 0xffffffffu);
    assert(r300_rb2d_emitter_finish(&e) == -EINVAL);
 
    r300_rb2d_emitter_init(&e, words, 64u, &out);
@@ -502,14 +502,14 @@ test_emitter_epochs(void)
     * vocabulary carries one, so the rebind refuses at the site bound. */
    r300_rb2d_emitter_init(&e, words, 64u, &out);
    r300_rb2d_emit_surface_state(&e, &s, dst);
-   r300_rb2d_emit_common_state(&e, &s, 0xffffffffu);
+   r300_rb2d_emit_common_state(&e, 0xffffffffu);
    assert(e.dst_epoch == 1u && e.format_epoch == 1u);
    r300_rb2d_emit_surface_state(&e, &s, dst);
    assert(r300_rb2d_emitter_finish(&e) == -EINVAL);
 
    r300_rb2d_emitter_init(&e, words, 64u, &out);
    r300_rb2d_emit_surface_state(&e, &s, dst);
-   r300_rb2d_emit_common_state(&e, &s, 0xffffffffu);
+   r300_rb2d_emit_common_state(&e, 0xffffffffu);
    r300_rb2d_emit_rect(&e, &r);
    r300_rb2d_emit_epilogue(&e);
    assert(e.origin_epoch == 1u);

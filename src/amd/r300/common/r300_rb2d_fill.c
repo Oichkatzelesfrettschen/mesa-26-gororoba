@@ -185,23 +185,22 @@ r300_rb2d_emit_surface_state(struct r300_rb2d_emitter *e,
 
    /* A new destination invalidates the format and origin established on
     * the previous one; a launch needs both re-established here. */
+   e->bound = *surface;
    e->dst_epoch++;
    e->format_epoch = 0u;
    e->origin_epoch = 0u;
 }
 
 void
-r300_rb2d_emit_common_state(struct r300_rb2d_emitter *e,
-                            const struct r300_rb2d_surface *surface,
-                            uint32_t write_mask)
+r300_rb2d_emit_common_state(struct r300_rb2d_emitter *e, uint32_t write_mask)
 {
    struct r300_pm4_builder *b = &e->builder;
 
    if (b->error != 0)
       return;
    const struct rb2d_format_info *format =
-      surface != NULL ? format_info(surface->format) : NULL;
-   if (format == NULL || e->dst_epoch == 0u) {
+      e->dst_epoch != 0u ? format_info(e->bound.format) : NULL;
+   if (format == NULL) {
       b->error = -EINVAL;
       return;
    }
@@ -296,7 +295,7 @@ r300_rb2d_fill_emit_into(const struct r300_rb2d_fill_plan *plan,
    r300_rb2d_emit_surface_state(
       &e, &plan->surface,
       (struct r300_rb2d_relocation){ .slot = R300_RB2D_FILL_SLOT_DST });
-   r300_rb2d_emit_common_state(&e, &plan->surface, plan->write_mask);
+   r300_rb2d_emit_common_state(&e, plan->write_mask);
    for (uint32_t i = 0; i < plan->rect_count; i++)
       r300_rb2d_emit_rect(&e, &plan->rects[i]);
    r300_rb2d_emit_epilogue(&e);

@@ -205,6 +205,10 @@ int r300_rb2d_fill_emit_into(const struct r300_rb2d_fill_plan *plan,
 struct r300_rb2d_emitter {
    struct r300_pm4_builder builder;
    struct r300_rb2d_fill_ib *out;
+   /* The surface the current destination epoch bound; the common state
+    * reads its format from here, so the format written is the bound
+    * surface's and never a caller-supplied other one. */
+   struct r300_rb2d_surface bound;
    uint32_t dst_epoch;
    uint32_t format_epoch;
    uint32_t origin_epoch;
@@ -230,10 +234,10 @@ void r300_rb2d_emit_surface_state(struct r300_rb2d_emitter *e,
                                   struct r300_rb2d_relocation relocation);
 
 /* FORMAT and COMMON: the 2D scissor opened at its field maximum, the
- * solid-brush master control carrying the surface format, the raster
- * direction, and the write mask. */
+ * solid-brush master control carrying the bound surface's format, the
+ * raster direction, and the write mask.  Refuses before a destination is
+ * bound. */
 void r300_rb2d_emit_common_state(struct r300_rb2d_emitter *e,
-                                 const struct r300_rb2d_surface *surface,
                                  uint32_t write_mask);
 
 /* ORIGIN and LAUNCH for one rectangle: brush color, DST_Y_X, then the
