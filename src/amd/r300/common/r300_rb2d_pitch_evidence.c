@@ -7,14 +7,14 @@
 
 /* One row per carrier the legalizer may consider.  The 256-byte ARGB8888
  * row is the witnessed direct-write pitch; its receipt is the sealed
- * attended CONTROL_PASS of the public vkCmdFillBuffer route.  The 64-byte
- * row is the tightest DST_PITCH_OFFSET grid and is exercised by the
- * decomposition tests alone.  The dense candidates up to 16320 bytes --
- * R300_RB2D_MAX_PITCH_UNITS of the 64-byte grid, the widest surface
- * DST_PITCH_OFFSET's 8-bit pitch field names -- are the pitch-only
- * qualification targets and stay PLANNED until one runs.  The RGB565 row
- * records the kernel replay's 128-pixel row acceptance and pixel-129
- * refusal.
+ * attended CONTROL_PASS of the public vkCmdFillBuffer route.  The
+ * 16320-byte row is the widest pitch DST_PITCH_OFFSET encodes, 255 units
+ * of the 64-byte grid, and one attended five-row fill over it reads back
+ * exactly across a sealed 64 KiB object.  The 64-byte row is the tightest
+ * DST_PITCH_OFFSET grid and is exercised by the decomposition tests
+ * alone.  The dense candidates between them rank shapes in the cost model
+ * and carry no receipt.  The RGB565 row records the kernel replay's
+ * 128-pixel row acceptance and pixel-129 refusal.
  */
 static const struct r300_rb2d_pitch_evidence rows[] = {
    { 64u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
@@ -32,7 +32,10 @@ static const struct r300_rb2d_pitch_evidence rows[] = {
    { 8192u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
      R300_RB2D_PITCH_EVIDENCE_PLANNED, "planned" },
    { 16320u, R300_RB2D_FORMAT_ARGB8888, R300_RB2D_USAGE_FILL_BUFFER,
-     R300_RB2D_PITCH_EVIDENCE_PLANNED, "planned" },
+     R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT,
+     "steinmarder-r300 src/re/r300/results/"
+     "r3v-native-rb2d-dense-16320-carrier-receipt-"
+     "vostro1000_rs485m_5974-strict-2d-cs" },
    { 256u, R300_RB2D_FORMAT_RGB565, R300_RB2D_USAGE_FILL_BUFFER,
      R300_RB2D_PITCH_EVIDENCE_KERNEL_REPLAY,
      "linux-radeon-gororoba scripts/run_r300_cs_2d_dst_controls.sh "
@@ -113,6 +116,10 @@ r300_rb2d_pitch_evidence_self_check(void)
       }
    }
    if (!r300_rb2d_pitch_admitted(256u, R300_RB2D_FORMAT_ARGB8888,
+                                 R300_RB2D_USAGE_FILL_BUFFER,
+                                 R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT))
+      return -EINVAL;
+   if (!r300_rb2d_pitch_admitted(16320u, R300_RB2D_FORMAT_ARGB8888,
                                  R300_RB2D_USAGE_FILL_BUFFER,
                                  R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT))
       return -EINVAL;

@@ -87,10 +87,12 @@ requires exactly one touch inside the interval and none outside.
 row names pitch, format, usage, the highest evidence class that exercised
 it, and the retained artifact. Classes ascend PLANNED, HOST_MODEL,
 KERNEL_REPLAY, SILICON_RECEIPT; execution admits SILICON_RECEIPT alone,
-which today is the 256-byte ARGB8888 fill carrier under the sealed attended
-receipt. The dense candidates 1024 through 16320 bytes are PLANNED, and a
-pitch-only silicon qualification promotes one by editing its row. 16320 is
-the widest carrier the word can name: `r100_reloc_pitch_offset` rebuilds
+which two ARGB8888 fill carriers hold: the 256-byte carrier under the
+sealed attended receipt of the public route, and the 16320-byte carrier
+under the attended `dense_16320_carrier` qualification. The dense
+candidates 1024 through 8192 bytes are PLANNED, and a pitch-only silicon
+qualification promotes one by editing its row. 16320 is the widest carrier
+the word can name: `r100_reloc_pitch_offset` rebuilds
 DST_PITCH_OFFSET as `(value & 0x3fc00000) | offset | tile_flags`, so the
 pitch is bits 22-29 and reaches 255 of the 64-byte grid, while bits 30-31
 carry DST_TILE_MACRO and DST_TILE_MICRO and are taken from the relocation.
@@ -200,7 +202,8 @@ attended CONTROL_PASS that receipts the V2 contract row above:
 * window_count 2, relocation_sites 2, one buffer object.
 
 The dense carrier cell, pinned in `r300_rb2d_legalize_test` at
-`minimum_evidence` PLANNED with pitch 16320:
+`minimum_evidence` SILICON_RECEIPT with pitch 16320, the evidence its own
+attended run receipted:
 
 * 64 KiB object, offset 12, size 65428, rectangles (3, 0, 4077, 1),
   (0, 1, 4080, 3), (0, 4, 40, 1), height_rows 5.
