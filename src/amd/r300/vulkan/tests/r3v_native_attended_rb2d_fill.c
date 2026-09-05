@@ -28,8 +28,17 @@
  *   authorized_fill_identity_blake3    R3V_NATIVE_AUTHORIZED_FILL_IDENTITY_BLAKE3
  *   manifest_dir                       R3V_NATIVE_MANIFEST_DIR
  *   memory_type_index                  the memory type the cell binds
- *   fill_offset, fill_bytes, fill_value  the sealed request
+ *   fill_offset, fill_bytes, fill_value  the cell's request
  *   wait_bound_ns                      the sealed completion bound
+ *
+ * One key is optional:
+ *   cell_name                          the named cell; v1_public when absent
+ *
+ * The cell decides which route runs the fill, so the binary requires the
+ * environment that route needs and refuses each missing or wrong gate by
+ * name: v1_public runs the receipted single-window route, and
+ * v2_multiwindow_256 runs the windowed route with the V1 gate closed and
+ * the 256-byte carrier pinned.
  *
  * The receipt directory must exist and be empty.  outcome.json and, once
  * a destination exists, destination.bin land there through full writes,
@@ -205,9 +214,15 @@ sha256_file(const char *path, char hex[65])
    X(fill_value)                                                             \
    X(wait_bound_ns)
 
+/* Keys the declaration may omit.  The sealed cell's declaration predates
+ * the cell table and names no cell, so an absent cell_name is v1_public
+ * and every sealed declaration still parses. */
+#define OPTIONAL_DECLARATION_KEYS(X) X(cell_name)
+
 struct declaration {
 #define FIELD(name) char name[512];
    DECLARATION_KEYS(FIELD)
+   OPTIONAL_DECLARATION_KEYS(FIELD)
 #undef FIELD
 };
 
@@ -240,6 +255,7 @@ read_declaration(const char *path, struct declaration *d, char *why, size_t n)
       known = true;                                                          \
    }
       DECLARATION_KEYS(MATCH)
+      OPTIONAL_DECLARATION_KEYS(MATCH)
 #undef MATCH
       if (!known) {
          snprintf(why, n, "declaration names an unknown key: %s", key);
@@ -354,6 +370,10 @@ maps_name_a_shim(void)
 
 static const char *receipt_dir;
 static char outcome_reason[512];
+/* The cell this run names, resolved from the declaration.  A refusal
+ * before resolution still writes a record, so finish() falls back to the
+ * sealed cell and the record names the cell it was judged against. */
+static const struct r3v_public_rb2d_fill_cell *attended_cell;
 
 /* The outcome record.  Written before the verdict prints so a process
  * that dies between the two still leaves its classification. */
@@ -363,7 +383,8 @@ finish(enum r3v_public_rb2d_fill_outcome outcome,
        const struct r3v_public_rb2d_fill_scenario *s, const uint8_t *image)
 {
    const struct r3v_public_rb2d_fill_cell *cell =
-      r3v_public_rb2d_fill_sealed_cell();
+      attended_cell != NULL ? attended_cell
+                            : r3v_public_rb2d_fill_sealed_cell();
    char json[4096];
    int n = snprintf(
       json, sizeof(json),
@@ -399,8 +420,16 @@ finish(enum r3v_public_rb2d_fill_outcome outcome,
          report->shifted ? "true" : "false", report->shifted_run_start);
    }
    n += snprintf(json + n, sizeof(json) - (size_t)n,
+                 "  \"cell_name\": \"%s\",\n"
+                 "  \"expected_pitch\": %u,\n"
+                 "  \"expected_windows\": %u,\n"
+                 "  \"expected_relocation_sites\": %u,\n"
+                 "  \"allocation_bytes\": %u,\n"
                  "  \"fill_offset\": %u,\n  \"fill_bytes\": %u,\n"
                  "  \"fill_value\": \"0x%08x\"\n}\n",
+                 cell->name, cell->expected_pitch_bytes,
+                 cell->expected_window_count,
+                 cell->expected_relocation_sites, cell->allocation_bytes,
                  cell->fill_offset, cell->fill_bytes, cell->fill_value);
    bool durable = true;
    if (image != NULL)
@@ -434,6 +463,21 @@ require_env_equal(const char *name, const char *declared)
       char why[1024];
       snprintf(why, sizeof(why), "%s is %s; the declaration says %s", name,
                value != NULL ? value : "(unset)", declared);
+      refuse(why);
+   }
+}
+
+/* A gate the cell's route requires to stand closed.  An open gate names a
+ * second executor for the same destination, which the device refuses at
+ * creation; refusing here names which gate and which cell disagree. */
+static void
+require_env_absent(const char *name, const char *why_cell)
+{
+   const char *value = getenv(name);
+   if (value != NULL && value[0] != '\0') {
+      char why[1024];
+      snprintf(why, sizeof(why), "%s is %s; cell %s runs with it unset",
+               name, value, why_cell);
       refuse(why);
    }
 }
@@ -525,11 +569,36 @@ main(int argc, char **argv)
    require_env_equal("R3V_NATIVE_MANIFEST_DIR", d.manifest_dir);
    require_env_equal("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1");
    require_env_equal("R3V_NATIVE_EXECUTION_POLICY", "gpu_only");
-   require_env_equal("R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL", "1");
    if (stat(d.manifest_dir, &st) != 0 || !S_ISDIR(st.st_mode))
       refuse("the declared manifest directory is absent");
 
-   const struct r3v_public_rb2d_fill_cell *cell = r3v_public_rb2d_fill_sealed_cell();
+   /* The cell, then the environment its route needs.  The declaration
+    * selects the cell and the cell selects the gates, so an operator who
+    * declares one cell and arms another is refused by the name of the
+    * gate that disagrees rather than by a fill that lands short. */
+   const char *cell_name =
+      d.cell_name[0] != '\0' ? d.cell_name : "v1_public";
+   const struct r3v_public_rb2d_fill_cell *cell =
+      r3v_public_rb2d_fill_cell_by_name(cell_name);
+   if (cell == NULL) {
+      char why[1024];
+      snprintf(why, sizeof(why), "the declaration names no cell: %s",
+               cell_name);
+      refuse(why);
+   }
+   attended_cell = cell;
+   if (cell->contract == R300_RB2D_CONTRACT_CONST_FILL_V1) {
+      require_env_equal("R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL", "1");
+   } else {
+      require_env_equal("R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL",
+                        "1");
+      require_env_absent("R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL",
+                         cell->name);
+      char pinned[32];
+      snprintf(pinned, sizeof(pinned), "%u", cell->pinned_pitch_bytes);
+      require_env_equal("R3V_NATIVE_RB2D_V2_PINNED_PITCH_BYTES", pinned);
+   }
+
    uint64_t offset, bytes, value, type_index, wait_bound;
    if (!parse_number(d.fill_offset, &offset) || !parse_number(d.fill_bytes, &bytes) ||
        !parse_number(d.fill_value, &value) ||
@@ -537,8 +606,16 @@ main(int argc, char **argv)
        !parse_number(d.wait_bound_ns, &wait_bound))
       refuse("a numeric declaration field is malformed");
    if (offset != cell->fill_offset || bytes != cell->fill_bytes ||
-       value != cell->fill_value)
-      refuse("the declared fill request differs from the sealed cell");
+       value != cell->fill_value) {
+      char why[1024];
+      snprintf(why, sizeof(why),
+               "the declared fill request %llu/%llu/0x%08llx differs from "
+               "cell %s: %u/%u/0x%08x",
+               (unsigned long long)offset, (unsigned long long)bytes,
+               (unsigned long long)value, cell->name, cell->fill_offset,
+               cell->fill_bytes, cell->fill_value);
+      refuse(why);
+   }
    if (wait_bound == 0 || wait_bound > (uint64_t)120 * 1000 * 1000 * 1000)
       refuse("the declared wait bound is outside (0, 120 s]");
 
@@ -559,6 +636,11 @@ main(int argc, char **argv)
    require_host_equal("the boot id", text, d.boot_id);
 
    printf("declaration=%s receipt_dir=%s\n", argv[1], receipt_dir);
+   printf("cell=%s expected_pitch=%u expected_windows=%u "
+          "expected_relocation_sites=%u allocation_bytes=%u\n",
+          cell->name, cell->expected_pitch_bytes,
+          cell->expected_window_count, cell->expected_relocation_sites,
+          cell->allocation_bytes);
    printf("fill_offset=%u fill_bytes=%u fill_value=0x%08x wait_bound_ns=%llu\n",
           cell->fill_offset, cell->fill_bytes, cell->fill_value,
           (unsigned long long)wait_bound);
