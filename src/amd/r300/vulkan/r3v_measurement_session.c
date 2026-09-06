@@ -527,6 +527,43 @@ r3v_measurement_manifest_epoch_check(
    return R3V_MEASUREMENT_SESSION_ADMITTED;
 }
 
+enum r3v_measurement_session_refusal
+r3v_measurement_manifest_platform_check(
+   const struct r3v_measurement_manifest *manifest,
+   enum r300_platform_id resolved, const char **reason)
+{
+   const char *unused = NULL;
+   if (reason == NULL)
+      reason = &unused;
+   *reason = NULL;
+   if (manifest == NULL) {
+      *reason = "the platform check reads an absent declaration";
+      return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
+   }
+   if (!name_terminated(manifest->platform, sizeof(manifest->platform))) {
+      *reason = "the declaration's platform name runs past its field";
+      return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
+   }
+   /* Three facts, three refusals.  Two unresolved names are not a match:
+    * an operator's typo and a board the tables do not carry are separate
+    * defects, and NONE == NONE would admit both. */
+   const enum r300_platform_id declared =
+      r300_platform_id_from_declaration_name(manifest->platform);
+   if (declared == R300_PLATFORM_ID_NONE) {
+      *reason = "the declaration names a platform no board row carries";
+      return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
+   }
+   if (resolved == R300_PLATFORM_ID_NONE) {
+      *reason = "the running board resolved to no qualified platform";
+      return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
+   }
+   if (declared != resolved) {
+      *reason = "the declaration names another board than the one running";
+      return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
+   }
+   return R3V_MEASUREMENT_SESSION_ADMITTED;
+}
+
 void
 r3v_measurement_session_init(struct r3v_measurement_session *session)
 {

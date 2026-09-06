@@ -59,6 +59,8 @@
 
 #include "r3v_fill_route.h"
 
+#include "amd/r300/common/r300_chip_identity.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -233,6 +235,20 @@ r3v_measurement_manifest_epoch_check(
  * first open, because open decides a reopen by reading the struct the
  * caller supplied and an uninitialized read decides nothing. */
 void r3v_measurement_session_init(struct r3v_measurement_session *session);
+
+/* Holds the declaration's platform name to the board the device resolved.
+ * The epoch check compares the PCI pair, the kernel release, and the
+ * module srcversion; a PCI id names a die class shared by boards whose
+ * memory, thermal, and recovery behavior a campaign never qualified, so
+ * the declared platform is resolved to its stable id and required to
+ * equal the running one.  A name no platform row carries resolves to
+ * R300_PLATFORM_ID_NONE and refuses, as does a running board that
+ * resolved to none.
+ */
+enum r3v_measurement_session_refusal
+r3v_measurement_manifest_platform_check(
+   const struct r3v_measurement_manifest *manifest,
+   enum r300_platform_id resolved, const char **reason);
 
 /* Opens a session over a parsed declaration, which
  * r3v_measurement_session_init has brought to a readable state.
