@@ -52,13 +52,14 @@ terminator.
 
 A number is decimal or `0x`- or `0X`-prefixed hexadecimal and nothing
 else. The base is chosen from the prefix and every character after it is
-then held to that base's alphabet, so a sign refuses wherever it appears:
-`strtoull` negates one into the unsigned range and accepts one after a
-stripped prefix too, which would let `0x-1` name 2^64 - 1 on the strength
-of the prefix. A leading zero refuses, because base zero would read
-`0644` as `420`; the rule is about base selection, so a hexadecimal value
-carries leading zeros freely. Magnitude is still decided by the
-conversion, so a value above the field refuses there.
+then held
+to that base's alphabet, so a sign refuses wherever it appears: `strtoull`
+negates one into the unsigned range and accepts one after a stripped
+prefix too, which would let `0x-1` name 2^64 - 1 on the strength of the
+prefix. A leading zero refuses, because base zero would read `0644` as
+`420`; the rule is about base selection, so a hexadecimal value carries
+leading zeros freely. Magnitude is still decided by the conversion, so a
+value above the field refuses there.
 
 | Key | Meaning |
 | --- | --- |
@@ -122,8 +123,26 @@ implementation makes on its own.
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
 | consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site |
-| serialize the calls | one queue family at `queueCount = 1`, so Vulkan's external synchronization on `vkQueueSubmit` orders every bind and consume |
-| close the session on a failed completion or a failed oracle | the queue's transport tail |
+| serialize bind and consume | the queue execution path alone, where Vulkan's external synchronization on `vkQueueSubmit` orders the calls |
+| serialize the generation counter | `vkAllocateMemory`, through an atomic or the allocation lock |
+| claim one session across devices and processes | an exclusive durable claim on the declared arm |
+| close the session on a failed completion | the queue's transport tail |
+| close the session on a failed oracle | the benchmark application, which is where the destination is read |
+
+Vulkan's external synchronization requirement attaches to the queue
+object, so it orders the bind and the consume that sit in one queue's
+execution path and nothing else. It is not a device-wide lock:
+`vkAllocateMemory` takes no queue lock, and two devices carry two queues,
+so the allocation generation and the session claim each carry their own
+serialization above rather than inheriting the queue's. Putting a bind or
+a consume in a command-buffer recording path would leave them unordered,
+because recording distinct command buffers on distinct threads is legal
+Vulkan; the measurement path keeps them at the submission boundary.
+
+The declaration is hashed and parsed from one immutable byte buffer read
+once. Hashing a path and reopening it for parsing would let the bytes
+change between the two, so the digest would name a declaration the
+session never read.
 
 Three rules the predicate enforces itself, rather than trusting the site
 that calls it. A session opens once: a second open over a live session
@@ -181,8 +200,19 @@ campaign's own spend is read out of its published samples.
 | replaced destination or recycled handle over a new allocation | refuse before submission and terminate the session | predicate |
 | recomputed identity differs from the bound one | refuse before submission and terminate the session | predicate |
 | budget exhausted | refuse before submission | predicate |
-| kernel submission failed | consume that attempt; terminate the session | wiring |
-| completion or oracle failed | terminate the session | wiring |
+| kernel submission failed | consume that attempt; terminate the session | queue |
+| completion failed | terminate the session | queue |
+| oracle read a wrong byte | publish no sample; issue no further submit; destroy the device | benchmark application |
+
+The oracle sits with the process that reads the destination. The queue
+observes its own completion result and nothing after it, so a driver-side
+comparison would either measure verification inside the timed interval or
+name a result the queue never saw. The application invalidates and reads
+the destination, verifies the whole interval and its guards, and on a
+wrong byte publishes no sample, issues no further submit, and destroys
+the device; device destruction closes the remaining session state and
+leaves the durable claim standing. One measured operation is outstanding
+at a time, so a repetition is verified before the next one is enqueued.
 
 The budget bound a campaign meets is the case bound. The session
 allowance is the sum of the case allowances, so the session counter
