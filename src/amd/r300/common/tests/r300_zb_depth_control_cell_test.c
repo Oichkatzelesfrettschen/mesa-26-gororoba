@@ -312,6 +312,41 @@ test_refusals(void)
    params.depth_offset_bytes = 16;
    assert(r300_zb_depth_control_emit(&params, &cell) == -EINVAL);
 
+   /* The cell draws one geometry.  A descriptor naming another would
+    * bind its pitch into the stream while the oracle kept reading at
+    * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS, so each field refuses on its
+    * own.
+    */
+   static const struct {
+      const char *what;
+      uint32_t width;
+      uint32_t height;
+      uint32_t pitch_pixels;
+      uint32_t allocation_rows;
+   } elsewhere[] = {
+      { "half the target width", 32u, 64u, 64u,
+        R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS },
+      { "half the target height", 64u, 32u, 64u,
+        R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS },
+      { "a wider pitch", 64u, 64u, 128u,
+        R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS },
+      { "one row fewer", 64u, 64u, 64u,
+        R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS - 1u },
+   };
+   for (size_t i = 0; i < sizeof(elsewhere) / sizeof(elsewhere[0]); i++) {
+      struct r300_zb_depth_surface moved = r300_zb_depth_surface_z16_linear;
+      moved.width = elsewhere[i].width;
+      moved.height = elsewhere[i].height;
+      moved.pitch_pixels = elsewhere[i].pitch_pixels;
+      moved.allocation_rows = elsewhere[i].allocation_rows;
+      /* The descriptor itself stays legal, so the refusal comes from the
+       * cell rather than from the surface check. */
+      assert(r300_zb_depth_surface_check(&moved) == 0);
+      params = good;
+      params.surface = &moved;
+      assert(r300_zb_depth_control_emit(&params, &cell) == -EINVAL);
+   }
+
    /* Storage one dword short of the cell refuses rather than reporting a
     * truncated stream.
     */

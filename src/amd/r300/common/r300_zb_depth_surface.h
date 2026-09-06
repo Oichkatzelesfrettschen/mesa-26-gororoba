@@ -147,11 +147,14 @@ int r300_zb_depth_surface_packed_sentinel(
 uint32_t r300_zb_depth_surface_tile_bits(
    const struct r300_zb_depth_surface *surface);
 
-/* Bytes the allocation carries: pitch * allocation_rows * cpp.  A tiled
- * surface's true footprint is at least this, because tiling aligns the
- * extent up; the value is the kernel's own bound, which
- * r100_cs_track_check computes as pitch * cpp * maxy. */
-uint64_t r300_zb_depth_surface_bytes(
+/* The bound the kernel's parser measures a depth binding against:
+ * pitch * allocation_rows * cpp, the arithmetic r100_cs_track_check
+ * computes as pitch * cpp * maxy.  An allocation meeting it is admitted
+ * by the parser, which is a statement about admission alone.  A tiled
+ * surface addresses beyond this, because tiling aligns the extent up to
+ * whole microtiles and macrotiles, so a tiled allocation is sized from
+ * the address model the surface declares rather than from this value. */
+uint64_t r300_zb_depth_surface_kernel_bound_bytes(
    const struct r300_zb_depth_surface *surface);
 
 /* Holds a surface to what the registers, the kernel, and the host

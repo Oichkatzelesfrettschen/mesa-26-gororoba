@@ -149,7 +149,8 @@ r300_zb_depth_surface_tile_bits(const struct r300_zb_depth_surface *surface)
 }
 
 uint64_t
-r300_zb_depth_surface_bytes(const struct r300_zb_depth_surface *surface)
+r300_zb_depth_surface_kernel_bound_bytes(
+   const struct r300_zb_depth_surface *surface)
 {
    if (surface == NULL)
       return 0;

@@ -40,7 +40,7 @@ test_z16_matches_the_cell(void)
    assert(s->logical_pixel_addressing);
    assert(s->logical_image_readback);
    assert(r300_zb_depth_surface_tile_bits(s) == 0u);
-   assert(r300_zb_depth_surface_bytes(s) ==
+   assert(r300_zb_depth_surface_kernel_bound_bytes(s) ==
           R300_ZB_DEPTH_CONTROL_DEPTH_BYTES);
 
    /* Z16 stores the code itself, so the packed word equals the sentinel

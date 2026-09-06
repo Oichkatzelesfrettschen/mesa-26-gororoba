@@ -120,6 +120,18 @@ r300_zb_depth_control_emit_into(
       return surface_rc;
    if (!surface->logical_pixel_addressing || !surface->logical_image_readback)
       return -EINVAL;
+   /* The cell's vertices, scissor, allocation, and oracle carry the
+    * target extent as constants, and the oracle indexes the readback
+    * with R300_ZB_DEPTH_CONTROL_PITCH_PIXELS while the stream binds
+    * surface->pitch_pixels.  A descriptor naming any other geometry
+    * would emit one layout and be read at another, so the cell takes
+    * exactly the geometry it draws.
+    */
+   if (surface->width != R300_ZB_DEPTH_CONTROL_TARGET_WIDTH ||
+       surface->height != R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT ||
+       surface->pitch_pixels != R300_ZB_DEPTH_CONTROL_PITCH_PIXELS ||
+       surface->allocation_rows != R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS)
+      return -EINVAL;
 
    struct r300_pm4_builder b;
    r300_pm4_builder_init(&b, words, capacity);

@@ -44,8 +44,10 @@ predicted.
 That the bracket contains the submission is read out of the control flow,
 not inferred from a duration. `run_one` opens the bracket after recording,
 fence reset, and destination initialization have all returned, and closes
-it after `vkWaitForFences` and the memory contract's invalidate; the
-submit sits between them with nothing else. A reader checks that
+it after `vkWaitForFences` and the memory contract's invalidate; at
+`--inject-delay-ns=0` the submit sits between them with nothing else, and
+a nonzero injected delay is the one other thing the bracket ever
+contains. A reader checks that
 enclosure by reading the function, which is the only thing that can
 establish it.
 
@@ -151,6 +153,20 @@ stays loaded throughout, because a different module epoch, a reboot, or a
 different memory-management state is a different measurement.
 
 ## What the measurement decides
+
+The campaign decides the selector for the cache state it measures, and the
+selector carries that scope with it. Every repetition writes the sentinel
+across the whole destination before the timed interval, so both arms meet a
+fully dirtied allocation whatever size they then fill, and each pays a
+different consequence for it: the host arm overwrites its range on top of
+those dirty lines, while the GPU arm publishes them before the device reads
+and invalidates the device's output afterward. That conditioning is
+uniform across the arms and constant across the sizes, which is what makes
+the two comparable, and it is not the cache state an application arrives
+in. A threshold measured here selects for a fully dirtied destination; a
+selector for the general case needs the same ladder run over
+production-representative cache-state classes, and until those exist the
+promoted selector names the class it was measured in.
 
 Automatic selection is a measured selector over the operation, the use, the
 byte size, and the legalized carrier and window shape, not a boolean added
