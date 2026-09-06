@@ -286,6 +286,82 @@ validation(void)
    }
 }
 
+/* A macrotiled binding begins on a macrotile boundary.  r300_setup_miptree
+ * places every macrotiled level at a running total of whole 2048-byte
+ * macrotiles, so an offset inside one names a base the layout never
+ * produces.  The rule applies to the macrotile bit alone: a microtiled
+ * or linear binding keeps the DEPTHOFFSET field's own 32-byte
+ * granularity.
+ */
+static void
+macrotiled_binding_needs_a_macrotile_boundary(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   struct r300_zb_depth_state_params params = reference;
+
+   /* 0x2000 is 8192, four macrotiles in. */
+   params.pitch_tile_bits =
+      R300_DEPTHMACROTILE_ENABLE | R300_DEPTHMICROTILE_TILED;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+
+   /* 0x2020 clears the five-bit field and lands inside a macrotile. */
+   params.depth_offset_bytes = 0x2020;
+   refusal_writes_nothing("macrotiled offset inside a macrotile", &params,
+                          -EINVAL);
+
+   /* The same offset without the macrotile bit is admitted, so the rule
+    * follows the tiling rather than the offset. */
+   params.pitch_tile_bits = R300_DEPTHMICROTILE_TILED;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+
+   params.pitch_tile_bits = 0u;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+}
+
+/* Square microtiling has a tile shape at 16 bits per pixel alone, so
+ * packed Z24/S8 selecting it names a layout with no alignment.  The
+ * descriptor path refuses the pair in r300_zb_depth_surface_check; this
+ * closes the same shape arriving as hand-built params.
+ */
+static void
+square_microtile_refuses_packed_z24(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   struct r300_zb_depth_state_params params = reference;
+
+   params.depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL;
+   params.pitch_tile_bits = R300_DEPTHMICROTILE_TILED_SQUARE;
+   refusal_writes_nothing("square microtiling under packed Z24/S8", &params,
+                          -EINVAL);
+
+   params.pitch_tile_bits =
+      R300_DEPTHMACROTILE_ENABLE | R300_DEPTHMICROTILE_TILED_SQUARE;
+   refusal_writes_nothing("square microtiling under macrotiled Z24/S8",
+                          &params, -EINVAL);
+
+   /* Ordinary microtiling under the same format is admitted, so the
+    * refusal names the microtile mode rather than the format. */
+   params.pitch_tile_bits =
+      R300_DEPTHMACROTILE_ENABLE | R300_DEPTHMICROTILE_TILED;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+
+   /* And both 16-bit encodings keep square microtiling. */
+   params.pitch_tile_bits = R300_DEPTHMICROTILE_TILED_SQUARE;
+   params.depth_format = R300_DEPTHFORMAT_16BIT_INT_Z;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+   params.depth_format =
+      R300_DEPTHFORMAT_16BIT_13E3 | R300_INVERT_13E3_LEADING_ONES;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+}
+
 static void
 existing_builder_error_stands(void)
 {
@@ -341,6 +417,8 @@ main(void)
    every_comparison_encodes();
    every_depth_format_encodes();
    validation();
+   macrotiled_binding_needs_a_macrotile_boundary();
+   square_microtile_refuses_packed_z24();
    existing_builder_error_stands();
    capacity_one_short();
    determinism();
