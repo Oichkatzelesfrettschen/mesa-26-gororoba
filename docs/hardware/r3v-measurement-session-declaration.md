@@ -416,3 +416,45 @@ its campaign's cases, and each case stays bound to one realized
 destination and a finite repetition count. It is also not a widening of
 the one-shot path: that path's checks are untouched, its tests are
 unchanged, and a device with no declaration behaves exactly as before.
+
+## What the evidence establishes
+
+Each claim below names the artifact that carries it and the scope it
+reaches, so a later reader does not have to re-derive which experiment
+answered which question.
+
+The allocation generation is checked at the predicate and supplied by the
+queue, and those are separate facts.
+`r3v_measurement_session_test.c` binds a case to one handle and
+generation and refuses a later request that reuses the handle under a new
+generation, which is the generation's discriminating case;
+`r3v_native_memory_concurrency_harness.c execution-resolves-live-values`
+allocates spacers so the destination's generation exceeds its handle,
+records a real `vkCmdFillBuffer`, and holds every field the queue
+resolves against the live value, which is what shows the queue supplies
+the generation rather than a copy. Replacing an allocation so it receives
+a different handle does not discriminate generation checking: the
+handle-bearing identity digest already refuses that request, so such an
+experiment answers about the digest. Forcing a real handle to be recycled
+is not reproducible on demand, and no test here claims it.
+
+The queue closes the session at both evidence-retention failures --
+`r3v_native_queue_write_manifest` and
+`r3v_native_queue_write_submit_object` -- and the terminal state that
+produces is tested directly: the session retains the first reason against
+a later one, and `route_check`, `role_check`, `bind`, and `consume` each
+refuse a closed session. No test claims that removing either close would
+admit a further public submission, because it would not: `vk_queue_set_lost`
+marks the queue lost on any `driver_submit` failure and the runtime then
+refuses every later `vkQueueSubmit` before it reaches the driver, which
+masks the difference inside one process. The durable claim is what
+refuses a restart in another.
+
+Registered-test totals and the difference between two profiles come from
+`r3v_release_verdict_audit.py --summary` and `--difference`, which read
+the profile's own introspection data and testlog rather than a
+transcription. Profiles 3 and 5 register 612 tests and profile 4
+registers 610; the two profile 4 omits are `glsl lower-precision test`
+and `zink_format_test`, named by `--difference` rather than inferred from
+the totals. A difference between two totals is a difference in what was
+registered until that comparison says otherwise.
