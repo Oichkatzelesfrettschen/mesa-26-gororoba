@@ -201,6 +201,13 @@ struct r3v_native_arming_facts {
     */
    bool evidence_dir_present;
    bool attempt_token_present;
+   /* Whether a declared measurement session decides this submission.
+    * The session names its cases and their identities, so the single
+    * authorized bundle digest stands down for it; every other fact this
+    * struct carries is judged the same way either way.  The submission
+    * boundary installs it beside the extent fact.
+    */
+   bool measurement_session_active;
    /* Serial authority: the exact-value declared submission bound
     * (R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS, decimal 1 through 64;
     * 0 is undeclared or malformed and refuses the serial kind), and the

@@ -244,13 +244,34 @@ open_measurement_session(struct r3v_native_device *device)
     * refusal reads a state this function established rather than one the
     * allocator happened to leave. */
    r3v_measurement_session_init(&device->measurement_session);
+   r3v_measurement_claim_init(&device->measurement_claim);
+   memset(device->measurement_case_retained, 0,
+          sizeof(device->measurement_case_retained));
    const char *reason = NULL;
    const char *path = getenv("R3V_NATIVE_MEASUREMENT_DECLARATION");
    switch (r3v_measurement_declaration_open(&device->measurement_session,
                                             path, &deployment, &reason)) {
    case R3V_MEASUREMENT_DECLARATION_ABSENT:
-   case R3V_MEASUREMENT_DECLARATION_OPENED:
       return VK_SUCCESS;
+   case R3V_MEASUREMENT_DECLARATION_OPENED: {
+      /* The claim's location is fixed by the declaration rather than by
+       * the evidence output directory the operator varies per
+       * repetition: a claim that followed the output directory would
+       * replenish the campaign on every rename.  The directory is
+       * pinned here, once, and every later exclusive creation runs
+       * against that descriptor.
+       */
+      const int bound = r3v_measurement_claim_bind(
+         &device->measurement_claim, path,
+         device->measurement_session.manifest.session_nonce,
+         device->measurement_session.manifest.route);
+      if (bound == 0)
+         return VK_SUCCESS;
+      r3v_measurement_session_init(&device->measurement_session);
+      return vk_errorf(device->pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: the declared campaign's claim "
+                       "location cannot be resolved: %s", strerror(-bound));
+   }
    case R3V_MEASUREMENT_DECLARATION_NO_MEMORY:
       return vk_error(device->pdevice, VK_ERROR_OUT_OF_HOST_MEMORY);
    case R3V_MEASUREMENT_DECLARATION_REFUSED:
@@ -409,9 +430,9 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
     * because it is held against the routes this device selected and a
     * device whose gates already disagree reports that disagreement
     * rather than a route refusal derived from it.  The session is a
-    * value inside the device and owns no allocation once the load
-    * returns, so a later construction failure needs no unwind of its
-    * own. */
+    * value inside the device, and the campaign root it pins is a
+    * descriptor, so every later construction failure closes it on the
+    * way out. */
    result = open_measurement_session(device);
    if (result != VK_SUCCESS) {
       vk_queue_finish(&device->queue.vk);
@@ -440,6 +461,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                                                    capture_path)
                     : -EINVAL;
       if (refusal != NULL || init != 0) {
+         r3v_measurement_claim_finish(&device->measurement_claim);
          vk_queue_finish(&device->queue.vk);
          radeon_drm_vk_device_finish(&device->drm);
          vk_device_finish(&device->vk);
@@ -479,6 +501,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                : NULL;
          if (device->plan_capture_active)
             r3v_native_plan_capture_finish(&device->plan_capture);
+         r3v_measurement_claim_finish(&device->measurement_claim);
          vk_queue_finish(&device->queue.vk);
          radeon_drm_vk_device_finish(&device->drm);
          vk_device_finish(&device->vk);
@@ -505,6 +528,9 @@ r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    vk_queue_finish(&device->queue.vk);
    r3v_native_prepared_release(device);
+   /* The pinned campaign root closes with the device.  The claim entry
+    * stays on disk: it is what a restart finds standing. */
+   r3v_measurement_claim_finish(&device->measurement_claim);
    if (device->plan_replay_active) {
       const char *state = r3v_native_plan_replay_close(&device->plan_replay);
       if (strcmp(state, "complete") != 0) {

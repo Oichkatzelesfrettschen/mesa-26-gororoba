@@ -54,11 +54,25 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    if (!declared(facts->hazard_gate) || strcmp(facts->hazard_gate, "1") != 0)
       return R3V_NATIVE_ARMING_HAZARD_GATE_CLOSED;
 
-   if (!declared(facts->authorized_ib_blake3))
-      return R3V_NATIVE_ARMING_BUNDLE_UNDECLARED;
-   if (!declared(facts->actual_ib_blake3) ||
-       strcmp(facts->authorized_ib_blake3, facts->actual_ib_blake3) != 0)
-      return R3V_NATIVE_ARMING_BUNDLE_MISMATCH;
+   /* One authorized bundle digest names one stream, which is the whole
+    * of the one-shot authorization.  A declared campaign names its
+    * streams through the session instead: the declaration is written
+    * before any device exists, and each declared case builds a stream of
+    * its own, so no single digest covers the set.  The session's own
+    * per-case identity carries that weight -- computed over the stream,
+    * the rectangles, the relocation sites, the destination object, and
+    * the deployment, bound at the case's first submission and reproved
+    * at every repetition.  Every other fact holds identically: the
+    * board, the kernel release, the module srcversion, and the evidence
+    * directory are compared below whichever authorization applies.
+    */
+   if (!facts->measurement_session_active) {
+      if (!declared(facts->authorized_ib_blake3))
+         return R3V_NATIVE_ARMING_BUNDLE_UNDECLARED;
+      if (!declared(facts->actual_ib_blake3) ||
+          strcmp(facts->authorized_ib_blake3, facts->actual_ib_blake3) != 0)
+         return R3V_NATIVE_ARMING_BUNDLE_MISMATCH;
+   }
    /* The kind selects the geometry predicate, so a kind outside the set
     * refuses before the extent fact is read: an unrecognized cell has no
     * frozen geometry the fact could describe.

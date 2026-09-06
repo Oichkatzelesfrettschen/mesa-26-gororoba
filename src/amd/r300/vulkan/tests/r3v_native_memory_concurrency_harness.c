@@ -43,6 +43,8 @@ enum arm {
    ARM_ALLOCATION_FAILURE_STAMPS_NOTHING,
    ARM_DEVICES_COUNT_INDEPENDENTLY,
    ARM_GATE_REFRESH_PRESERVES_THE_SESSION,
+   ARM_PREPARE_REFUSES_A_SESSION,
+   ARM_EXECUTION_RESOLVES_LIVE_VALUES,
    /* Known-bad: a lost queue admitting a submission -- the loss
     * classification this harness proves must make this arm fail. */
    ARM_KNOWN_BAD_LOST_QUEUE_SUBMITS,
@@ -89,6 +91,12 @@ static PFN_vkDestroyDevice vkDestroyDevice;
 static PFN_vkCreateBuffer vkCreateBuffer;
 static PFN_vkDestroyBuffer vkDestroyBuffer;
 static PFN_vkBindBufferMemory vkBindBufferMemory;
+static PFN_vkCreateCommandPool vkCreateCommandPool;
+static PFN_vkDestroyCommandPool vkDestroyCommandPool;
+static PFN_vkAllocateCommandBuffers vkAllocateCommandBuffers;
+static PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
+static PFN_vkEndCommandBuffer vkEndCommandBuffer;
+static PFN_vkCmdFillBuffer vkCmdFillBuffer;
 
 struct worker {
    VkDevice device;
@@ -207,6 +215,10 @@ main(int argc, char **argv)
       current_arm = ARM_DEVICES_COUNT_INDEPENDENTLY;
    else if (strcmp(argv[1], "gate-refresh-preserves-the-session") == 0)
       current_arm = ARM_GATE_REFRESH_PRESERVES_THE_SESSION;
+   else if (strcmp(argv[1], "prepare-refuses-a-session") == 0)
+      current_arm = ARM_PREPARE_REFUSES_A_SESSION;
+   else if (strcmp(argv[1], "execution-resolves-live-values") == 0)
+      current_arm = ARM_EXECUTION_RESOLVES_LIVE_VALUES;
    else if (strcmp(argv[1], "known-bad-lost-queue-submits") == 0)
       current_arm = ARM_KNOWN_BAD_LOST_QUEUE_SUBMITS;
    else if (strcmp(argv[1], "known-bad-repeated-generation") == 0)
@@ -262,6 +274,9 @@ main(int argc, char **argv)
    LOAD(vkUnmapMemory) LOAD(vkFlushMappedMemoryRanges) LOAD(vkQueueSubmit)
    LOAD(vkQueueWaitIdle) LOAD(vkGetDeviceQueue) LOAD(vkDestroyDevice)
    LOAD(vkCreateBuffer) LOAD(vkDestroyBuffer) LOAD(vkBindBufferMemory)
+   LOAD(vkCreateCommandPool) LOAD(vkDestroyCommandPool)
+   LOAD(vkAllocateCommandBuffers) LOAD(vkBeginCommandBuffer)
+   LOAD(vkEndCommandBuffer) LOAD(vkCmdFillBuffer)
 #undef LOAD
 
    struct r3v_native_device *native_device =
@@ -598,6 +613,218 @@ main(int argc, char **argv)
       vkFreeMemory(device, first_on_each[0], NULL);
       vkFreeMemory(second, first_on_each[1], NULL);
       vkDestroyDevice(second, NULL);
+      break;
+   }
+   case ARM_EXECUTION_RESOLVES_LIVE_VALUES: {
+      /* The transport boundary names its submission out of the live
+       * objects rather than out of the session's binding, and
+       * r3v_native_fill_route_resolve_execution is where that read
+       * happens.  Every field but the identity digest has to come from
+       * the recorded operation, the bound VkDeviceMemory, and that
+       * allocation's own generation: a constant, a stale copy, or the
+       * binding's stored value in any of them would make the consume
+       * agree with the bind by construction.
+       *
+       * The generation is the field a whole-path test cannot reach on
+       * its own.  The submission identity already hashes the destination
+       * handle, so a replaced allocation that draws a fresh handle
+       * refuses on the digest whatever the generation says; the
+       * generation discriminates only when a handle is recycled onto
+       * another object under an identical stream, which the shim's
+       * handle assignment does not produce on demand.  The predicate
+       * proves that case directly, and this arm proves the value it
+       * judges is the live one. */
+      VkCommandPool pool = VK_NULL_HANDLE;
+      assert(vkCreateCommandPool(
+                device,
+                &(VkCommandPoolCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                   .queueFamilyIndex = 0,
+                },
+                NULL, &pool) == VK_SUCCESS);
+      VkCommandBuffer cmd_handle = VK_NULL_HANDLE;
+      assert(vkAllocateCommandBuffers(
+                device,
+                &(VkCommandBufferAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                   .commandPool = pool,
+                   .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                   .commandBufferCount = 1,
+                },
+                &cmd_handle) == VK_SUCCESS);
+
+      /* Several allocations ahead of the destination, so its generation
+       * is a value no constant in the resolver would happen to equal. */
+      VkDeviceMemory spacers[7];
+      for (int i = 0; i < 7; i++) {
+         assert(vkAllocateMemory(
+                   device,
+                   &(VkMemoryAllocateInfo){
+                      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                      .allocationSize = 4096,
+                      .memoryTypeIndex = 0,
+                   },
+                   NULL, &spacers[i]) == VK_SUCCESS);
+      }
+      VkBuffer buffer = VK_NULL_HANDLE;
+      assert(vkCreateBuffer(device,
+                            &(VkBufferCreateInfo){
+                               .sType =
+                                  VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = 65536,
+                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            },
+                            NULL, &buffer) == VK_SUCCESS);
+      VkDeviceMemory memory = VK_NULL_HANDLE;
+      assert(vkAllocateMemory(
+                device,
+                &(VkMemoryAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                   .allocationSize = 65536,
+                   .memoryTypeIndex = 0,
+                },
+                NULL, &memory) == VK_SUCCESS);
+      assert(vkBindBufferMemory(device, buffer, memory, 0) == VK_SUCCESS);
+      const struct r3v_native_memory *live =
+         r3v_native_memory_from_handle(memory);
+      assert(live->generation > 7u);
+
+      assert(vkBeginCommandBuffer(
+                cmd_handle,
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                }) == VK_SUCCESS);
+      vkCmdFillBuffer(cmd_handle, buffer, 12u, 4992u, 287454020u);
+      assert(vkEndCommandBuffer(cmd_handle) == VK_SUCCESS);
+
+      struct r3v_native_cmd_buffer *cmd =
+         r3v_native_cmd_buffer_from_handle(cmd_handle);
+      struct r3v_measurement_execution execution;
+      /* An unbound command buffer resolves nothing, so the values below
+       * are the bound path's rather than a default. */
+      assert(!r3v_native_fill_route_resolve_execution(cmd, &execution));
+      cmd->measurement_bound = true;
+      cmd->fill_route_active = true;
+      cmd->measurement_case_index = 3u;
+      memcpy(cmd->measurement_identity.hex,
+             "4444444444444444444444444444444444444444444444444444444444444444",
+             sizeof(cmd->measurement_identity.hex));
+      assert(r3v_native_fill_route_resolve_execution(cmd, &execution));
+      assert(execution.case_index == 3u);
+      assert(execution.fill_offset == 12u);
+      assert(execution.fill_bytes == 4992u);
+      assert(execution.fill_value == 287454020u);
+      assert(execution.destination_handle == live->bo.handle);
+      assert(execution.memory_generation == live->generation);
+      assert(strcmp(execution.identity.hex,
+                    cmd->measurement_identity.hex) == 0);
+
+      cmd->measurement_bound = false;
+      cmd->fill_route_active = false;
+      vkDestroyBuffer(device, buffer, NULL);
+      vkFreeMemory(device, memory, NULL);
+      for (int i = 0; i < 7; i++)
+         vkFreeMemory(device, spacers[i], NULL);
+      vkDestroyCommandPool(device, pool, NULL);
+      break;
+   }
+   case ARM_PREPARE_REFUSES_A_SESSION: {
+      /* The private prepare path carries its own transport tail, its own
+       * evidence, and its own consumed authorization.  A declared
+       * campaign that entered it would account for its budget, its
+       * identity, and its arm's ownership in a second place, so the path
+       * refuses an engaged session ahead of every preparation effect --
+       * before the prepared state is claimed, before any allocation, and
+       * before any artifact is retained.
+       *
+       * The session here is opened directly on the device: the shim sits
+       * on no board, so the epoch and platform checks a declaration
+       * passes at vkCreateDevice have nothing to resolve, and what this
+       * arm judges is the queue's refusal rather than the load. */
+      static const char declaration[] =
+         "schema = r3v-measurement-session-v1\n"
+         "session_nonce = 7f3a19c2\n"
+         "platform = vostro1000_rs485m_5974\n"
+         "route = rb2d_const_fill\n"
+         "pci_vendor_id = 0x1002\n"
+         "pci_device_id = 0x5974\n"
+         "kernel_release = 7.1.8-1-cachyos\n"
+         "module_srcversion = 729892A3F3530EB12B8D842\n"
+         "allocation_bytes = 65536\n"
+         "buffer_bytes = 65536\n"
+         "binding_offset = 0\n"
+         "memory_property_flags = 0xf\n"
+         "buffer_usage = 0x2\n"
+         "write_domain = 0x2\n"
+         "max_total_submissions = 4\n"
+         "completion_timeout_ns = 10000000000\n"
+         "case = 0, 12, 4992, 287454020, 1, 3\n";
+      static const struct r3v_measurement_digest digest = {
+         "3333333333333333333333333333333333333333333333333333333333333333"
+      };
+      VkCommandPool pool = VK_NULL_HANDLE;
+      assert(vkCreateCommandPool(
+                device,
+                &(VkCommandPoolCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                   .queueFamilyIndex = 0,
+                },
+                NULL, &pool) == VK_SUCCESS);
+      VkCommandBuffer cmd = VK_NULL_HANDLE;
+      assert(vkAllocateCommandBuffers(
+                device,
+                &(VkCommandBufferAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                   .commandPool = pool,
+                   .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                   .commandBufferCount = 1,
+                },
+                &cmd) == VK_SUCCESS);
+
+      /* An inactive session leaves the path as it was.  This command
+       * buffer carries no transport, so the ordinary shape check refuses
+       * it and reports device loss; the session's refusal below is
+       * spelled with the measurement result instead, so the two are
+       * distinguishable and the arm reads which rule answered. */
+      assert(!native_device->measurement_session.active);
+      assert(r3v_native_queue_prepare_submission(device, cmd) ==
+             VK_ERROR_DEVICE_LOST);
+      assert(!native_device->prepared.valid);
+
+      struct r3v_measurement_manifest manifest;
+      const char *reason = NULL;
+      assert(r3v_measurement_manifest_parse(declaration,
+                                            sizeof(declaration) - 1,
+                                            &manifest, &reason) ==
+             R3V_MEASUREMENT_SESSION_ADMITTED);
+      r3v_measurement_session_init(&native_device->measurement_session);
+      assert(r3v_measurement_session_open(
+                &native_device->measurement_session, &manifest, &digest,
+                &reason) == R3V_MEASUREMENT_SESSION_ADMITTED);
+      const uint32_t remaining_before =
+         native_device->measurement_session.remaining_submissions;
+
+      assert(r3v_native_queue_prepare_submission(device, cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+      assert(!native_device->prepared.valid);
+      /* Nothing moved: no allowance spent, no claim taken, no binding. */
+      assert(native_device->measurement_session.remaining_submissions ==
+             remaining_before);
+      assert(native_device->measurement_session.consumed_submissions == 0u);
+      assert(!native_device->measurement_claim.held);
+      assert(!native_device->measurement_session.bindings[0].bound);
+
+      /* A closed session refuses the same way: a campaign that terminated
+       * does not return the device to the prepared path. */
+      r3v_measurement_session_close(&native_device->measurement_session,
+                                    "closed by the arm");
+      assert(r3v_native_queue_prepare_submission(device, cmd) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+      assert(!native_device->prepared.valid);
+
+      vkDestroyCommandPool(device, pool, NULL);
       break;
    }
    case ARM_GATE_REFRESH_PRESERVES_THE_SESSION: {

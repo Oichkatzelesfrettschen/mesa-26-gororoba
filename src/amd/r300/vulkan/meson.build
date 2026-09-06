@@ -307,6 +307,7 @@ r3v_native_files = files(
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
   'r3v_fill_route.c',
+  'r3v_measurement_claim.c',
   'r3v_measurement_declaration.c',
   'r3v_measurement_session.c',
   'r3v_route_policy.c',
@@ -2676,6 +2677,31 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 300,
       suite : ['r3v'],
     )
+    # The declared measurement campaign through the same loader path:
+    # several repetitions of two declared cases over one allocation, the
+    # durable claim over the arm, the refusals a declaration adds, and the
+    # application-owned oracle stopping the run.
+    r3v_measurement_campaign_application = executable(
+      'r3v_measurement_campaign_application',
+      files('tests/r3v_measurement_campaign_application.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
+      dependencies : [dep_vulkan_loader, dep_dl],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-measurement-campaign',
+      prog_python,
+      args : [
+        files('tests/r3v_measurement_campaign_check.py'),
+        r3v_measurement_campaign_application,
+      ],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                 r3v_measurement_campaign_application],
+      timeout : 300,
+      suite : ['r3v'],
+    )
     # The plan-capture contract: capture refuses with the gate open, the
     # shim retains the exact submit object, an independently assembled
     # raw-word plan matches it byte for byte, and the relocation table,
@@ -3578,7 +3604,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
                              'allocation-generations',
                              'allocation-failure-stamps-nothing',
                              'devices-count-independently',
-                             'gate-refresh-preserves-the-session']
+                             'gate-refresh-preserves-the-session',
+                             'prepare-refuses-a-session',
+                             'execution-resolves-live-values']
     test(
       'r3v-native-memory-concurrency-@0@'.format(concurrency_arm),
       r3v_native_memory_concurrency_harness,
