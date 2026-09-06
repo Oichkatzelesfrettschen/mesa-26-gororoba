@@ -75,9 +75,31 @@
  * repetitions apiece, with room to spare.  A declaration above this bound
  * is refused rather than truncated. */
 #define R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS 4096u
+/* The ceiling on a declared completion wait.  The wait interface reads an
+ * absolute deadline at or above INT64_MAX as unbounded, so a declared
+ * relative interval stays far below it and no campaign declares a wait
+ * that never returns. */
+#define R3V_MEASUREMENT_SESSION_MAX_TIMEOUT_NS 300000000000ull
 #define R3V_MEASUREMENT_SESSION_TEXT_MAX 65536u
 #define R3V_MEASUREMENT_SESSION_NAME_MAX 64u
 #define R3V_MEASUREMENT_SESSION_EPOCH_MAX 128u
+
+/* Every `const char *` this interface takes is a NUL-terminated string,
+ * read with strcmp or strlen and never past its terminator.  The digests
+ * below are the exception the struct exists for: they are scanned to a
+ * fixed width rather than to a terminator, so the width has to be part
+ * of the type rather than a promise the caller makes.
+ */
+
+/* A digest as an object rather than a pointer.  An array parameter
+ * decays to a pointer, so the width a scan walks would be a promise the
+ * caller makes rather than a fact the type carries, and a shorter object
+ * would be read past its end.  A struct carries its size into the type,
+ * so the compiler rejects a caller that passes anything else and a NULL
+ * still refuses at runtime. */
+struct r3v_measurement_digest {
+   char hex[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+};
 
 /* Every rule the session holds a request to, in the order the checks
  * test them, so a refusal names one fact. */
@@ -101,6 +123,8 @@ enum r3v_measurement_session_refusal {
    R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH,
    /* The case or the session has spent its declared executions. */
    R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED,
+   /* A live session already stands over a declaration. */
+   R3V_MEASUREMENT_SESSION_REFUSE_ALREADY_OPEN,
    /* The session terminated and admits nothing further. */
    R3V_MEASUREMENT_SESSION_REFUSE_CLOSED,
    R3V_MEASUREMENT_SESSION_REFUSAL_COUNT,
@@ -162,7 +186,7 @@ struct r3v_measurement_binding {
    bool bound;
    uint32_t destination_handle;
    uint64_t memory_generation;
-   char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+   struct r3v_measurement_digest identity;
    uint32_t executions_consumed;
 };
 
@@ -174,7 +198,7 @@ struct r3v_measurement_session {
     * names a reason that outlives the frame it was formatted in. */
    char closed_reason[R3V_MEASUREMENT_SESSION_REASON_SIZE];
    struct r3v_measurement_manifest manifest;
-   char manifest_digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+   struct r3v_measurement_digest manifest_digest;
    struct r3v_measurement_binding bindings[R3V_MEASUREMENT_SESSION_MAX_CASES];
    /* Claimed once before any sample and decremented at the kernel
     * boundary; an attempt that entered the ioctl is never refunded. */
@@ -204,16 +228,25 @@ r3v_measurement_manifest_epoch_check(
    uint32_t pci_device_id, const char *kernel_release,
    const char *module_srcversion, const char **reason);
 
-/* Opens a session over a parsed declaration.  The budget is the sum every
- * case's warmups and repetitions account for, so a submission the budget
- * admits is one some case names.  A declared total below that sum cannot
- * run the campaign it declares and refuses here rather than exhausting
- * partway through. */
+/* Brings a session to the state open reads: inactive, unclosed, with no
+ * binding and no allowance.  Every session passes through this before its
+ * first open, because open decides a reopen by reading the struct the
+ * caller supplied and an uninitialized read decides nothing. */
+void r3v_measurement_session_init(struct r3v_measurement_session *session);
+
+/* Opens a session over a parsed declaration, which
+ * r3v_measurement_session_init has brought to a readable state.
+ *
+ * The budget is the sum every case's warmups and repetitions account
+ * for, so a submission the budget admits is one some case names.  A
+ * declared total below that sum cannot run the campaign it declares and
+ * refuses here rather than exhausting partway through. */
 enum r3v_measurement_session_refusal
-r3v_measurement_session_open(struct r3v_measurement_session *session,
-                             const struct r3v_measurement_manifest *manifest,
-                             const char manifest_digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE],
-                             const char **reason);
+r3v_measurement_session_open(
+   struct r3v_measurement_session *session,
+   const struct r3v_measurement_manifest *manifest,
+   const struct r3v_measurement_digest *manifest_digest,
+   const char **reason);
 
 /* The declared case one request names, or NULL.  A request matches on
  * offset, size, and value together: a case is the exact fill, not a
@@ -254,19 +287,26 @@ r3v_measurement_session_bind(struct r3v_measurement_session *session,
                              uint64_t fill_bytes, uint32_t fill_value,
                              uint32_t destination_handle,
                              uint64_t memory_generation,
-                             const char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE],
+                             const struct r3v_measurement_digest *identity,
                              const char **reason);
 
 /* Consumes one permitted execution.  Called immediately before the
  * kernel submission boundary, so an attempt that entered the ioctl is
- * counted whatever the ioctl returns.  The operation is held against the
- * named case here too, so the budget a submission spends is the budget
- * of the case that submission runs. */
+ * counted whatever the ioctl returns.
+ *
+ * It names the whole submission again -- the case, the operation, the
+ * object, and the identity -- and holds every field against the binding,
+ * so the execution spent is the execution the bind authorized.  A bind
+ * and a consume that described different submissions would let one
+ * allocation's authorization pay for another's delivery, and the
+ * binding alone cannot see that substitution.  A consumed submission
+ * naming another object or another stream terminates the campaign. */
 enum r3v_measurement_session_refusal
-r3v_measurement_session_consume(struct r3v_measurement_session *session,
-                                uint32_t case_index, uint64_t fill_offset,
-                                uint64_t fill_bytes, uint32_t fill_value,
-                                const char **reason);
+r3v_measurement_session_consume(
+   struct r3v_measurement_session *session, uint32_t case_index,
+   uint64_t fill_offset, uint64_t fill_bytes, uint32_t fill_value,
+   uint32_t destination_handle, uint64_t memory_generation,
+   const struct r3v_measurement_digest *identity, const char **reason);
 
 /* Terminates the session.  Every later request refuses as closed and
  * names this reason.  Closing a closed session keeps the first reason:

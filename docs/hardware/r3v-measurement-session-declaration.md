@@ -46,10 +46,20 @@ refuses as a rebound destination.
 
 Lines of `key = value`, `#` starting a comment, every scalar key
 required. A key this reader does not read refuses the declaration rather
-than being ignored. A number is decimal or `0x`-prefixed hexadecimal and
-nothing else: a leading sign refuses, because `strtoull` would negate it
-into the unsigned range, and a leading zero refuses, because base zero
-would read `0644` as `420`.
+than being ignored. A terminator inside the text refuses, because the
+digest covers the whole byte range while a field stops at its first
+terminator.
+
+A number is decimal or `0x`- or `0X`-prefixed hexadecimal and nothing
+else. The base is chosen from the prefix and every character after it is
+then held
+to that base's alphabet, so a sign refuses wherever it appears: `strtoull`
+negates one into the unsigned range and accepts one after a stripped
+prefix too, which would let `0x-1` name 2^64 - 1 on the strength of the
+prefix. A leading zero refuses, because base zero would read `0644` as
+`420`; the rule is about base selection, so a hexadecimal value carries
+leading zeros freely. Magnitude is still decided by the conversion, so a
+value above the field refuses there.
 
 | Key | Meaning |
 | --- | --- |
@@ -72,6 +82,16 @@ consume an ambiguous budget. A case that runs nothing, one whose range
 counts no whole dword on a dword boundary, and one reaching past the
 declared buffer each refuse.
 
+Reading and meaning are separate. The reader decodes text: line shape,
+key spelling, repeated keys, number grammar, the six fields of a `case`
+row. Every rule about what a declaration means -- name termination and
+non-emptiness, the schema, case count, the buffer's fit in its
+allocation, each case's alignment, size, execution count, and
+containment, case uniqueness, budget arithmetic, and the timeout's
+positive finite bound -- lives in one check both the reader and `open`
+run. A manifest assembled in place, or edited after parsing, therefore
+meets exactly the rules a parsed one meets.
+
 ## Budget
 
 Identity and repetition are separate predicates: two submissions agreeing
@@ -84,8 +104,13 @@ partway through under a refusal that reads as a defect.
 One permitted execution is consumed immediately before the kernel
 submission boundary and never refunded: an attempt that entered the ioctl
 is an execution whatever the ioctl returns. A completion failure, an
-identity mismatch, or an oracle failure closes the session, and a closed
-session refuses every further request.
+oracle failure, and a well-shaped identity differing from the bound one
+each close the session; a request the predicate cannot read at all --
+an identity that is not a digest, an index naming no case, an operation
+the named case does not declare -- refuses and leaves the campaign
+standing, because an unreadable request is not a contradicted
+declaration. A closed session refuses every further request and answers
+each with the reason it closed.
 
 ## What the wiring owes the predicate
 
@@ -102,9 +127,57 @@ implementation makes on its own.
 | stamp an allocation generation the binding can read | `vkAllocateMemory`, from a device-monotonic counter |
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
-| consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site |
-| serialize the calls | one queue family at `queueCount = 1`, so Vulkan's external synchronization on `vkQueueSubmit` orders every bind and consume |
-| close the session on a failed completion or a failed oracle | the queue's transport tail |
+| consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site, naming the same case, operation, object, and identity the bind carried |
+| compute the identity over the bytes the ioctl receives | the submission path, on the immutable command stream, with no mutation between the consume and the ioctl |
+| serialize bind and consume | the queue execution path alone, where Vulkan's external synchronization on `vkQueueSubmit` orders the calls |
+| serialize the generation counter | `vkAllocateMemory`, through an atomic or the allocation lock |
+| claim one session across devices and processes | an exclusive durable claim on the declared arm |
+| close the session on a failed completion | the queue's transport tail |
+| close the session on a failed oracle | the benchmark application, which is where the destination is read |
+
+Vulkan's external synchronization requirement attaches to the queue
+object, so it orders the bind and the consume that sit in one queue's
+execution path and nothing else. It is not a device-wide lock:
+`vkAllocateMemory` takes no queue lock, and two devices carry two queues,
+so the allocation generation and the session claim each carry their own
+serialization above rather than inheriting the queue's. Putting a bind or
+a consume in a command-buffer recording path would leave them unordered,
+because recording distinct command buffers on distinct threads is legal
+Vulkan; the measurement path keeps them at the submission boundary.
+
+The declaration is hashed and parsed from one immutable byte buffer read
+once. Hashing a path and reopening it for parsing would let the bytes
+change between the two, so the digest would name a declaration the
+session never read.
+
+The bind and the consume describe one submission, and the wiring makes
+that description the submission. The predicate holds the two descriptions
+against each other: the bind authorizes an object and a stream, and the
+consume names the case, the operation, the object, and the identity again
+so every field is held against the binding. What the predicate cannot see
+is whether the bytes that reach the ioctl are the bytes the identity
+covers, so the wiring computes that identity over the immutable command
+stream it is about to submit and enters the ioctl with no step between
+that could change it. A consume carrying the
+operation alone would let a bind against one allocation stand while the
+consume and the submission ran against another the role also admits, and
+a standing binding cannot see that substitution. A consumed submission
+naming another object or another stream terminates the campaign; one
+whose identity is not a digest at all refuses the request and leaves the
+campaign open, because an unreadable request is not a contradicted
+declaration.
+
+Digests cross this boundary as `struct r3v_measurement_digest`, not as an
+array parameter. An array parameter decays to a pointer, so the width a
+scan walks would be a promise the caller makes rather than a fact the
+type carries, and a shorter object would be read past its end.
+
+What the predicate does not decide: its counters live in one struct and
+die with it, so a fresh struct over the same declaration receives the
+whole allowance again. Bounding one campaign across devices and processes
+is the durable claim's job, and until that wiring exists the predicate
+bounds a campaign within one live session rather than across every
+session a declaration could open.
 
 Three rules the predicate enforces itself, rather than trusting the site
 that calls it. A session opens once: a second open over a live session
@@ -162,8 +235,19 @@ campaign's own spend is read out of its published samples.
 | replaced destination or recycled handle over a new allocation | refuse before submission and terminate the session | predicate |
 | recomputed identity differs from the bound one | refuse before submission and terminate the session | predicate |
 | budget exhausted | refuse before submission | predicate |
-| kernel submission failed | consume that attempt; terminate the session | wiring |
-| completion or oracle failed | terminate the session | wiring |
+| kernel submission failed | consume that attempt; terminate the session | queue |
+| completion failed | terminate the session | queue |
+| oracle read a wrong byte | publish no sample; issue no further submit; destroy the device | benchmark application |
+
+The oracle sits with the process that reads the destination. The queue
+observes its own completion result and nothing after it, so a driver-side
+comparison would either measure verification inside the timed interval or
+name a result the queue never saw. The application invalidates and reads
+the destination, verifies the whole interval and its guards, and on a
+wrong byte publishes no sample, issues no further submit, and destroys
+the device; device destruction closes the remaining session state and
+leaves the durable claim standing. One measured operation is outstanding
+at a time, so a repetition is verified before the next one is enqueued.
 
 The budget bound a campaign meets is the case bound. The session
 allowance is the sum of the case allowances, so the session counter

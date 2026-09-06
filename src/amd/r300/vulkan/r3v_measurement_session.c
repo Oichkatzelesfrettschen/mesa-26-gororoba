@@ -20,6 +20,7 @@ static const char *const refusal_names[R3V_MEASUREMENT_SESSION_REFUSAL_COUNT] = 
    [R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND] = "destination_rebound",
    [R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH] = "identity_mismatch",
    [R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED] = "budget_exhausted",
+   [R3V_MEASUREMENT_SESSION_REFUSE_ALREADY_OPEN] = "session_already_open",
    [R3V_MEASUREMENT_SESSION_REFUSE_CLOSED] = "session_closed",
 };
 
@@ -90,14 +91,18 @@ next_field(struct line_cursor *c, char *key, size_t key_size, char *value,
 /* Decimal or 0x-prefixed hexadecimal, the whole value and nothing after
  * it.  The base is chosen here rather than passed as zero, because
  * strtoull's base zero reads a leading zero as octal and the declaration
- * grammar has no octal: 0644 would name 420.  A leading sign is rejected
- * before the conversion for the same reason -- strtoull accepts one and
- * negates into the unsigned range, so -1 would name 2^64 - 1 rather than
- * refuse. */
+ * grammar has no octal: 0644 would name 420.  Every character after the
+ * prefix is then held to the chosen base's alphabet before the
+ * conversion runs, so a sign, a space, or any other character strtoull
+ * would consume refuses instead: strtoull accepts a sign and negates
+ * into the unsigned range, and it accepts one after a stripped prefix
+ * too, so 0x-1 would name 2^64 - 1 on the strength of the prefix alone.
+ * The alphabet admits every representable digit and no overflow, so
+ * ERANGE still decides magnitude. */
 static bool
 parse_u64(const char *text, uint64_t *out)
 {
-   if (text == NULL || text[0] == '\0' || text[0] == '-' || text[0] == '+')
+   if (text == NULL || text[0] == '\0')
       return false;
    int base = 10;
    const char *digits = text;
@@ -109,6 +114,13 @@ parse_u64(const char *text, uint64_t *out)
    }
    if (digits[0] == '\0')
       return false;
+   for (const char *c = digits; *c != '\0'; c++) {
+      const bool decimal = *c >= '0' && *c <= '9';
+      const bool hex = base == 16 && ((*c >= 'a' && *c <= 'f') ||
+                                      (*c >= 'A' && *c <= 'F'));
+      if (!decimal && !hex)
+         return false;
+   }
    char *end = NULL;
    errno = 0;
    const unsigned long long value = strtoull(digits, &end, base);
@@ -180,49 +192,114 @@ parse_case(const char *value, struct r3v_measurement_case *out)
        !parse_u32(fields[4], &out->warmups) ||
        !parse_u32(fields[5], &out->repetitions))
       return false;
-   /* A case that runs nothing declares nothing, and vkCmdFillBuffer's
-    * range counts whole dwords on a dword boundary. */
-   if (bytes == 0 || bytes % R3V_FILL_ROUTE_ELEMENT_BYTES != 0 ||
-       offset % R3V_FILL_ROUTE_ELEMENT_BYTES != 0 ||
-       out->warmups + out->repetitions == 0)
-      return false;
+   /* The row decodes here and means something in
+    * manifest_structure_check: alignment, size, and execution count are
+    * rules a case carries however it was assembled, so they hold a
+    * manifest built in place exactly as they hold one read from text. */
    out->fill_offset = offset;
    out->fill_bytes = bytes;
    return true;
 }
 
-/* Every structural rule a declaration carries, independent of the text it
- * came from.  The reader calls it after filling the struct, and the
- * session calls it again on open, so a manifest assembled by any route
- * meets the same rules the reader enforces. */
+/* Lowercase hex of exactly the digest width, the only shape an identity
+ * or a manifest digest takes.  The caller passes a fixed-width array, so
+ * the scan walks that width and requires the terminator in its last
+ * position rather than measuring a length that may not be there. */
+static bool
+digest_shaped(const struct r3v_measurement_digest *digest)
+{
+   if (digest == NULL ||
+       digest->hex[R3V_FILL_ROUTE_DIGEST_HEX_SIZE - 1] != '\0')
+      return false;
+   for (size_t i = 0; i < R3V_FILL_ROUTE_DIGEST_HEX_SIZE - 1; i++) {
+      const char c = digest->hex[i];
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+         return false;
+   }
+   return true;
+}
+
+/* A declared name is nonempty and terminates inside its own array.  The
+ * width is passed rather than measured, so the scan stops at the field's
+ * end even when no terminator is present. */
+static bool
+name_terminated(const char *field, size_t size)
+{
+   const char *nul = memchr(field, '\0', size);
+   return nul != NULL && nul != field;
+}
+
+/* Every rule a declaration carries, independent of the text it came
+ * from.  The reader calls it after decoding, and the session calls it
+ * again on open, so a manifest assembled by any route -- parsed, built
+ * in place, or edited after parsing -- passes one set of rules.  Parsing
+ * supplies syntactic decoding alone.
+ */
 static enum r3v_measurement_session_refusal
 manifest_structure_check(const struct r3v_measurement_manifest *m,
                          const char **reason)
 {
-   if (m == NULL || m->case_count == 0 ||
-       m->case_count > R3V_MEASUREMENT_SESSION_MAX_CASES) {
-      *reason = "the declaration carries no case, or more than the bound";
+   if (m == NULL) {
+      *reason = "the declaration is unreadable";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   /* strcmp reads the schema below and the epoch check reads the release
+    * and srcversion, so termination is established before the first read
+    * rather than after it. */
+   if (!name_terminated(m->schema, sizeof(m->schema)) ||
+       !name_terminated(m->session_nonce, sizeof(m->session_nonce)) ||
+       !name_terminated(m->platform, sizeof(m->platform)) ||
+       !name_terminated(m->route, sizeof(m->route)) ||
+       !name_terminated(m->kernel_release, sizeof(m->kernel_release)) ||
+       !name_terminated(m->module_srcversion,
+                        sizeof(m->module_srcversion))) {
+      *reason = "a declared name is empty or runs past its field";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
    if (strcmp(m->schema, R3V_MEASUREMENT_SESSION_SCHEMA) != 0) {
       *reason = "the declaration names another schema";
       return R3V_MEASUREMENT_SESSION_REFUSE_SCHEMA;
    }
-   /* Two cases agreeing on offset, size, and value are the same case,
-    * and a request matching both would consume an ambiguous budget. */
+   if (m->case_count == 0 ||
+       m->case_count > R3V_MEASUREMENT_SESSION_MAX_CASES) {
+      *reason = "the declaration carries no case, or more than the bound";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   /* The buffer's fit in its allocation is one fact about the role, so
+    * it is decided once and names itself rather than reporting as a
+    * property of whichever case the loop reached first. */
+   if (m->role.binding_offset > m->role.allocation_bytes ||
+       m->role.buffer_bytes >
+          m->role.allocation_bytes - m->role.binding_offset) {
+      *reason = "the declared buffer reaches outside its allocation";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+
    for (uint32_t i = 0; i < m->case_count; i++) {
       const struct r3v_measurement_case *a = &m->cases[i];
-      /* The case closes inside the buffer, and the buffer inside its
-       * allocation, so a declaration names no fill the memory contract
-       * would refuse anyway. */
-      if (a->fill_offset > m->role.buffer_bytes ||
-          a->fill_bytes > m->role.buffer_bytes - a->fill_offset ||
-          m->role.binding_offset > m->role.allocation_bytes ||
-          m->role.buffer_bytes >
-             m->role.allocation_bytes - m->role.binding_offset) {
-         *reason = "a declared case reaches outside the declared role";
+      /* vkCmdFillBuffer counts whole dwords from a dword boundary, and a
+       * case that runs nothing declares nothing.  The count sums in 64
+       * bits, so a pair like {0xffffffff, 1} is read as the four billion
+       * executions it declares rather than wrapping to zero and refusing
+       * here as empty; the session ceiling below refuses it for its
+       * size, which is what is actually wrong with it. */
+      if (a->fill_bytes == 0 ||
+          a->fill_bytes % R3V_FILL_ROUTE_ELEMENT_BYTES != 0 ||
+          a->fill_offset % R3V_FILL_ROUTE_ELEMENT_BYTES != 0) {
+         *reason = "a declared case fills nothing, or off a dword boundary";
          return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
       }
+      if ((uint64_t)a->warmups + (uint64_t)a->repetitions == 0) {
+         *reason = "a declared case runs no warmup and no repetition";
+         return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+      }
+      if (a->fill_offset > m->role.buffer_bytes ||
+          a->fill_bytes > m->role.buffer_bytes - a->fill_offset) {
+         *reason = "a declared case reaches outside the declared buffer";
+         return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+      }
+      /* Two cases agreeing on offset, size, and value are the same case,
+       * and a request matching both would consume an ambiguous budget. */
       for (uint32_t j = i + 1; j < m->case_count; j++) {
          const struct r3v_measurement_case *b = &m->cases[j];
          if (a->case_id == b->case_id ||
@@ -241,10 +318,9 @@ manifest_structure_check(const struct r3v_measurement_manifest *m,
    for (uint32_t i = 0; i < m->case_count; i++)
       case_total += (uint64_t)m->cases[i].warmups +
                     (uint64_t)m->cases[i].repetitions;
-   if (case_total == 0 ||
-       case_total > R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS ||
+   if (case_total > R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS ||
        m->max_total_submissions > R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS) {
-      *reason = "the declared budget is empty or above the session bound";
+      *reason = "the declared budget is above the session bound";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
    /* A declared total below what the cases account for cannot run the
@@ -254,6 +330,15 @@ manifest_structure_check(const struct r3v_measurement_manifest *m,
     * exact rather than advisory. */
    if (m->max_total_submissions < case_total) {
       *reason = "the declared total is below what the declared cases run";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   /* A zero timeout waits for nothing and would report every completion
+    * as late; the ceiling keeps the declared interval inside what the
+    * wait interface represents, which reads an absolute deadline at or
+    * above INT64_MAX as unbounded. */
+   if (m->completion_timeout_ns == 0 ||
+       m->completion_timeout_ns > R3V_MEASUREMENT_SESSION_MAX_TIMEOUT_NS) {
+      *reason = "the declared completion timeout is zero or above the bound";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
    return R3V_MEASUREMENT_SESSION_ADMITTED;
@@ -271,6 +356,14 @@ r3v_measurement_manifest_parse(const char *text, size_t length,
    if (text == NULL || out == NULL ||
        length > R3V_MEASUREMENT_SESSION_TEXT_MAX) {
       *reason = "the declaration is absent or above the text bound";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   /* The digest covers the whole byte range while the field reader stops
+    * a value at its first terminator, so an embedded NUL would leave the
+    * hashed bytes and the read declaration naming different campaigns.
+    * The length is known here and nowhere below it. */
+   if (length > 0 && memchr(text, '\0', length) != NULL) {
+      *reason = "the declaration carries a terminator inside its text";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
    memset(out, 0, sizeof(*out));
@@ -388,8 +481,8 @@ r3v_measurement_manifest_parse(const char *text, size_t length,
       *reason = "a declaration line carries no key and value";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
-   if (seen != SEEN_ALL || out->case_count == 0) {
-      *reason = "the declaration omits a required field or every case";
+   if (seen != SEEN_ALL) {
+      *reason = "the declaration omits a required field";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
    return manifest_structure_check(out, reason);
@@ -410,6 +503,17 @@ r3v_measurement_manifest_epoch_check(
       *reason = "the epoch check reads an absent declaration or fact";
       return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
    }
+   /* The documented wiring order runs this check before the session
+    * opens, so it is the first thing to read the declaration's names and
+    * it establishes their termination itself rather than inheriting a
+    * rule open has not run yet. */
+   if (!name_terminated(manifest->kernel_release,
+                        sizeof(manifest->kernel_release)) ||
+       !name_terminated(manifest->module_srcversion,
+                        sizeof(manifest->module_srcversion))) {
+      *reason = "the declaration's deployment names run past their fields";
+      return R3V_MEASUREMENT_SESSION_REFUSE_EPOCH;
+   }
    if (manifest->pci_vendor_id != pci_vendor_id ||
        manifest->pci_device_id != pci_device_id) {
       *reason = "the declaration names another device";
@@ -423,11 +527,18 @@ r3v_measurement_manifest_epoch_check(
    return R3V_MEASUREMENT_SESSION_ADMITTED;
 }
 
+void
+r3v_measurement_session_init(struct r3v_measurement_session *session)
+{
+   if (session != NULL)
+      memset(session, 0, sizeof(*session));
+}
+
 enum r3v_measurement_session_refusal
 r3v_measurement_session_open(
    struct r3v_measurement_session *session,
    const struct r3v_measurement_manifest *manifest,
-   const char manifest_digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE],
+   const struct r3v_measurement_digest *manifest_digest,
    const char **reason)
 {
    const char *unused = NULL;
@@ -450,7 +561,7 @@ r3v_measurement_session_open(
          return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
       }
       *reason = "the session is already open over a declaration";
-      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+      return R3V_MEASUREMENT_SESSION_REFUSE_ALREADY_OPEN;
    }
 
    /* The declaration is held to every structural rule again here.  The
@@ -467,11 +578,16 @@ r3v_measurement_session_open(
       case_total += (uint64_t)manifest->cases[i].warmups +
                     (uint64_t)manifest->cases[i].repetitions;
 
+   /* The digest is stored whole and compared whole later, so its shape is
+    * established before the copy rather than trusted from the caller. */
+   if (!digest_shaped(manifest_digest)) {
+      *reason = "the declaration digest is not lowercase hex of its width";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+
    memset(session, 0, sizeof(*session));
    session->manifest = *manifest;
-   memcpy(session->manifest_digest, manifest_digest,
-          sizeof(session->manifest_digest));
-   session->manifest_digest[sizeof(session->manifest_digest) - 1] = '\0';
+   session->manifest_digest = *manifest_digest;
    /* The cases account for the whole allowance, so a submission this
     * budget admits is a submission some case names. */
    session->remaining_submissions = (uint32_t)case_total;
@@ -507,8 +623,10 @@ r3v_measurement_session_route_check(
    if (reason == NULL)
       reason = &unused;
    *reason = NULL;
-   if (session == NULL || !session->active)
+   if (session == NULL || !session->active) {
+      *reason = "no session stands over a declaration";
       return R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE;
+   }
    if (session->closed) {
       *reason = session->closed_reason;
       return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
@@ -530,13 +648,22 @@ r3v_measurement_session_role_check(
    if (reason == NULL)
       reason = &unused;
    *reason = NULL;
-   if (session == NULL || observed == NULL)
+   if (session == NULL || !session->active) {
+      *reason = "no session stands over a declaration";
       return R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE;
-   if (!session->active)
-      return R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE;
+   }
+   /* A terminated campaign answers every later question with the reason
+    * it terminated, so the closed check stands ahead of anything that
+    * reads the request. */
    if (session->closed) {
       *reason = session->closed_reason;
       return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
+   }
+   /* An absent observation is a role the caller never resolved, which is
+    * a mismatch with the declared one rather than an absent session. */
+   if (observed == NULL) {
+      *reason = "the destination resolved to no observable role";
+      return R3V_MEASUREMENT_SESSION_REFUSE_ROLE_MISMATCH;
    }
 
    const struct r3v_measurement_role *declared = &session->manifest.role;
@@ -565,33 +692,21 @@ case_matches_operation(const struct r3v_measurement_case *declared,
           declared->fill_value == fill_value;
 }
 
-/* Lowercase hex of the digest width, the only shape an identity takes. */
-static bool
-digest_shaped(const char *digest)
-{
-   if (digest == NULL ||
-       strlen(digest) != R3V_FILL_ROUTE_DIGEST_HEX_SIZE - 1)
-      return false;
-   for (const char *c = digest; *c != '\0'; c++) {
-      if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f')))
-         return false;
-   }
-   return true;
-}
-
 enum r3v_measurement_session_refusal
 r3v_measurement_session_bind(
    struct r3v_measurement_session *session, uint32_t case_index,
    uint64_t fill_offset, uint64_t fill_bytes, uint32_t fill_value,
    uint32_t destination_handle, uint64_t memory_generation,
-   const char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE], const char **reason)
+   const struct r3v_measurement_digest *identity, const char **reason)
 {
    const char *unused = NULL;
    if (reason == NULL)
       reason = &unused;
    *reason = NULL;
-   if (session == NULL || !session->active)
+   if (session == NULL || !session->active) {
+      *reason = "no session stands over a declaration";
       return R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE;
+   }
    if (session->closed) {
       *reason = session->closed_reason;
       return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
@@ -625,8 +740,7 @@ r3v_measurement_session_bind(
       binding->bound = true;
       binding->destination_handle = destination_handle;
       binding->memory_generation = memory_generation;
-      memcpy(binding->identity, identity, sizeof(binding->identity));
-      binding->identity[sizeof(binding->identity) - 1] = '\0';
+      binding->identity = *identity;
       return R3V_MEASUREMENT_SESSION_ADMITTED;
    }
 
@@ -647,7 +761,7 @@ r3v_measurement_session_bind(
       *reason = "the case is bound to another allocation";
       return R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND;
    }
-   if (strcmp(binding->identity, identity) != 0) {
+   if (strcmp(binding->identity.hex, identity->hex) != 0) {
       r3v_measurement_session_close(
          session, "the recomputed submission identity left the binding");
       *reason = "the recomputed submission identity differs from the bound "
@@ -658,17 +772,20 @@ r3v_measurement_session_bind(
 }
 
 enum r3v_measurement_session_refusal
-r3v_measurement_session_consume(struct r3v_measurement_session *session,
-                                uint32_t case_index, uint64_t fill_offset,
-                                uint64_t fill_bytes, uint32_t fill_value,
-                                const char **reason)
+r3v_measurement_session_consume(
+   struct r3v_measurement_session *session, uint32_t case_index,
+   uint64_t fill_offset, uint64_t fill_bytes, uint32_t fill_value,
+   uint32_t destination_handle, uint64_t memory_generation,
+   const struct r3v_measurement_digest *identity, const char **reason)
 {
    const char *unused = NULL;
    if (reason == NULL)
       reason = &unused;
    *reason = NULL;
-   if (session == NULL || !session->active)
+   if (session == NULL || !session->active) {
+      *reason = "no session stands over a declaration";
       return R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE;
+   }
    if (session->closed) {
       *reason = session->closed_reason;
       return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
@@ -688,6 +805,32 @@ r3v_measurement_session_consume(struct r3v_measurement_session *session,
       *reason = "the case consumes an execution before binding its "
                 "destination";
       return R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND;
+   }
+   /* The bind authorized one object and one stream; this call spends the
+    * execution that submission runs, so it names them again and they are
+    * held against the binding.  Splitting the two would let a bind
+    * against one allocation stand while a consume and a submission ran
+    * against another the role also admits, and the binding alone cannot
+    * see that substitution.  Both mismatches terminate the campaign
+    * rather than refusing one request, because a bound case whose
+    * submission resolves elsewhere contradicts the declaration. */
+   if (!digest_shaped(identity)) {
+      *reason = "the consumed submission carries no identity";
+      return R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH;
+   }
+   if (binding->destination_handle != destination_handle ||
+       binding->memory_generation != memory_generation) {
+      r3v_measurement_session_close(
+         session, "the consumed submission resolved to another allocation");
+      *reason = "the consumed submission names another allocation than the "
+                "bound one";
+      return R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND;
+   }
+   if (strcmp(binding->identity.hex, identity->hex) != 0) {
+      r3v_measurement_session_close(
+         session, "the consumed submission left the bound identity");
+      *reason = "the consumed submission differs from the bound one";
+      return R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH;
    }
 
    /* The session allowance is the sum of the case allowances, so the
