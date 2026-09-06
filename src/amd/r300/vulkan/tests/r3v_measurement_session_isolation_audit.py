@@ -34,6 +34,15 @@ ALLOWANCE_ENTRY_POINTS = (
     # wrapper carrying generation zero -- and two such wrappers would be
     # indistinguishable to a binding that compares handle and generation.
     "vk_device_memory_create",
+    # The campaign's accounting, each at exactly one production site: the
+    # fill route binds a case, the queue spends one execution immediately
+    # before the ioctl, and the first submission of an active session
+    # takes the durable claim.  A second site for any of them would be a
+    # second place the budget, the identity, and the arm's ownership
+    # could disagree, which is the defect the pair exists to catch.
+    "r3v_measurement_session_bind",
+    "r3v_measurement_session_consume",
+    "r3v_measurement_claim_acquire",
 )
 
 

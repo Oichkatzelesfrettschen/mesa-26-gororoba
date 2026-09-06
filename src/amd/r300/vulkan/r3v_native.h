@@ -8,6 +8,7 @@
 #define R3V_NATIVE_H
 
 #include "r3v_fill_route.h"
+#include "r3v_measurement_claim.h"
 #include "r3v_measurement_session.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_plan.h"
@@ -718,6 +719,15 @@ struct r3v_native_cmd_buffer {
     * whether the host computed the result. */
    struct r3v_execution_provenance fill_route_provenance;
    bool fill_route_active;
+   /* What the measurement session bound for this command buffer's fill,
+    * valid while measurement_bound.  The case index and the identity
+    * digest are this submission's own computed values, snapshotted
+    * because the digest covers rectangles and relocation sites the route
+    * frees at install; every other field the boundary needs it resolves
+    * again from the live objects rather than reading it here. */
+   bool measurement_bound;
+   uint32_t measurement_case_index;
+   struct r3v_measurement_digest measurement_identity;
    uint32_t deferred_copy_capacity;
    /* The compute recording state: a dispatch-only command buffer binds
     * a compute pipeline and one set-0 descriptor set and records one
@@ -784,6 +794,23 @@ struct r3v_native_submission_trace {
  * relocation storage, so its address stays fixed between prepare and
  * submit.
  */
+/* One measurement execution as the actual prepared submission carries it.
+ * The queue builds this at the transport boundary from the live command
+ * buffer, the live VkBuffer, and the live VkDeviceMemory, so the values
+ * the session consumes are the values the transport is about to send.
+ * Filling it from the session's own binding would make bind and consume
+ * agree by construction and hide exactly the substitution the pair
+ * exists to catch. */
+struct r3v_measurement_execution {
+   uint32_t case_index;
+   uint64_t fill_offset;
+   uint64_t fill_bytes;
+   uint32_t fill_value;
+   uint32_t destination_handle;
+   uint64_t memory_generation;
+   struct r3v_measurement_digest identity;
+};
+
 struct r3v_native_prepared_submission {
    bool valid;
    struct r3v_native_cmd_buffer *cmd_buffer;
@@ -997,9 +1024,22 @@ struct r3v_native_device {
     * R3V_NATIVE_MEASUREMENT_DECLARATION names; a device created without
     * that declaration carries it inactive and takes the ordinary
     * one-shot path.  Opening it authorizes nothing on its own: the
-    * binding, the durable claim, and the budget belong to the submission
-    * path, which is not yet wired to it. */
+    * binding and the budget belong to the submission path, which
+    * resolves the live allocation again for every repetition. */
    struct r3v_measurement_session measurement_session;
+   /* The durable half of the same campaign: one O_EXCL entry in the
+    * declaration's own directory, created before the first submission of
+    * an active session.  The session's counters die with the device, so
+    * this is what a second device or a restarted process finds standing
+    * and refuses against.  `held` records that this device's own openat
+    * created it; observing the entry authorizes nothing. */
+   struct r3v_measurement_claim measurement_claim;
+   /* The cases whose evidence this device already retained.  A campaign
+    * repeats one stream several hundred times, so the manifest and the
+    * submit object retain once per case during its counted warmup and
+    * every measured repetition runs under that retained copy, keeping
+    * the file writes out of the timed transport bracket. */
+   bool measurement_case_retained[R3V_MEASUREMENT_SESSION_MAX_CASES];
    struct r3v_native_prepared_submission prepared;
    /* Test harnesses can refuse semantic-cell retention with a negative errno
     * before any artifact write.  Production devices leave this zero.
@@ -1631,6 +1671,19 @@ VkResult r3v_native_queue_submit(struct vk_queue *queue,
  * every refusal precedes, so a refused route leaves the command buffer as
  * it found it and the host performs the fill it was going to perform.
  */
+/* The measurement execution the actual prepared submission carries,
+ * resolved from the live command buffer, buffer, and memory.  Returns
+ * false when the command buffer carries no bound measurement fill.
+ *
+ * The identity digest and the case index are the snapshot the route left
+ * on the command buffer; every other field is read live, so a submission
+ * that changed its destination, its allocation, or its range between the
+ * bind and the transport differs from the binding by the field that
+ * changed. */
+bool r3v_native_fill_route_resolve_execution(
+   const struct r3v_native_cmd_buffer *cmd,
+   struct r3v_measurement_execution *out);
+
 VkResult r3v_native_cmd_buffer_route_deferred_fill(
    struct r3v_native_device *device, struct r3v_native_cmd_buffer *cmd,
    uint32_t submit_command_buffers);

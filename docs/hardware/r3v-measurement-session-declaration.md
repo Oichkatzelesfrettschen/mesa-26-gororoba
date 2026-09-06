@@ -129,8 +129,14 @@ one declaration open two sessions, each over the declaration's full
 allowance, and nothing in the load prevents that: a session's counters
 live in the device and the load compares no state outside it. Holding one
 campaign to one allowance across devices and processes is the durable
-claim's obligation, listed above and not yet wired. A campaign run before
-that lands is bounded per device, not per declaration.
+claim's job, and the claim is what the second device meets: the first
+submission of an active session creates one `O_EXCL` entry named by the
+session nonce and the arm in the declaration's own directory, and every
+later opener of that arm -- another device, another process, the same
+process restarted -- finds it standing and refuses. The entry lives beside
+the declaration rather than in the evidence output directory, which an
+operator varies per repetition, so a changed output path meets the same
+claim.
 
 An operator who named a declaration asked for a measured campaign, so a
 declaration the driver cannot read refuses the device rather than
@@ -163,9 +169,10 @@ first submission. The standing rule is
 `r3v_measurement_session_route_check` at route admission, which holds the
 executor the device resolved against the declared one for every request;
 the load reports the disagreement at creation, where an operator can act
-on it, instead of once per command. Opening the predicate grants nothing on its own; measurement
-execution becomes available when the claim, the consumption, and the
-transport wiring have landed.
+on it, instead of once per command. Opening the predicate grants nothing
+on its own: an execution reaches the kernel when the case binds, the arm's
+durable claim stands with this device holding it, and one allowance is
+spent immediately before the ioctl.
 
 ## The allocation generation
 
@@ -238,14 +245,16 @@ implementation makes on its own.
 | hold the resolved executor to the declared route | `r3v_measurement_session_route_check`, at route admission |
 | resolve the live destination for every repetition | the fill route, from the recorded `VkBuffer` and its currently bound memory, never from the standing binding |
 | hold the resolved destination to the declared role | `r3v_measurement_session_role_check`, on that resolution |
-| stamp an allocation generation the binding can read | done: `r3v_AllocateMemory` takes it from the device's own counter through `p_atomic_inc_return`, after the buffer object exists and before the handle is published.  The value is produced; no production path reads it yet, because the bind and consume above are unwired |
+| stamp an allocation generation the binding can read | `r3v_AllocateMemory` takes it from the device's own counter through `p_atomic_inc_return`, after the buffer object exists and before the handle is published; the fill route reads it at the bind and the queue reads it again at the boundary |
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
 | consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site, naming the same case, operation, object, and identity the bind carried |
 | compute the identity over the bytes the ioctl receives | the submission path, on the immutable command stream, with no mutation between the consume and the ioctl |
 | serialize bind and consume | the queue execution path alone, where Vulkan's external synchronization on `vkQueueSubmit` orders the calls |
 | serialize the generation counter | done: `r3v_AllocateMemory` takes each value through one atomic increment |
-| claim one session across devices and processes | an exclusive durable claim on the declared arm |
+| claim one session across devices and processes | `r3v_measurement_claim_acquire`, on the first submission of an active session, against a campaign root pinned at device construction |
+| refuse the private prepare path | the top of `r3v_native_queue_prepare_submission`, ahead of every preparation effect, so the accounting has one implementation |
+| key retained evidence by case | the queue's retention directory resolver, which gives each declared case a subdirectory of its own during its counted warmup |
 | close the session on a failed completion | the queue's transport tail |
 | close the session on a failed oracle | the benchmark application, which is where the destination is read |
 
@@ -301,9 +310,10 @@ compares against the binding rather than reusing the values the binding
 already holds. An application that completes one submission, destroys the
 allocation, allocates a replacement, and submits against the standing
 session is then refused even where the replacement's size, role, and
-recycled handle all match, because the generation differs. The predicate
-carries the comparison; nothing in the driver performs that resolution
-until the queue integration lands.
+recycled handle all match, because the generation differs. The fill route
+performs the first resolution and the queue performs the second, out of
+the live command buffer, buffer, and memory; the only value carried
+forward is the identity digest, whose inputs the route frees at install.
 
 Digests cross this boundary as `struct r3v_measurement_digest`, not as an
 array parameter. An array parameter decays to a pointer, so the width a
@@ -313,9 +323,8 @@ type carries, and a shorter object would be read past its end.
 What the predicate does not decide: its counters live in one struct and
 die with it, so a fresh struct over the same declaration receives the
 whole allowance again. Bounding one campaign across devices and processes
-is the durable claim's job, and until that wiring exists the predicate
-bounds a campaign within one live session rather than across every
-session a declaration could open.
+is the durable claim's job, and the predicate itself bounds a campaign
+within one live session.
 
 Three rules the predicate enforces itself, rather than trusting the site
 that calls it. A session opens once: a second open over a live session
@@ -352,11 +361,18 @@ on a caller's stack is valid for every later refusal.
 
 Two facts have two lifetimes.
 
-That a session started is durable, once the wiring reaches the disarm
-site. The first admission writes the evidence directory's attempt token
-through `r3v_native_arming_disarm`, fsynced file and directory, so a
-second process against that directory finds the token standing and
-refuses as already attempted.
+That a session started is durable. The first admission of an active
+session creates `measurement-claim-<nonce>-<arm>.token` in the
+declaration's directory with `O_EXCL`, writing the session nonce, the
+declaration digest, the arm, the resolved platform, the deployment, the
+process and executable identity, and the claim's scope, and fsyncing the
+file and the pinned directory before the ioctl runs. A declared campaign
+spends that claim instead of the one-shot attempt token: the token admits
+exactly one submission through its evidence directory, which is the rule
+a finite allowance replaces, so `r3v_native_arming_disarm` stays with the
+one-shot authorization beside this one. Ownership is the descriptor the
+exclusive creation returned rather than the entry's presence, so a device
+that only observes the file continues nothing.
 
 How much a session spent is process-local. The counters live in the
 device and die with it. A run that stops at forty of four hundred and one

@@ -141,13 +141,57 @@ build_release(struct fill_route_build *b)
    memset(b, 0, sizeof(*b));
 }
 
+
+/* A measurement refusal, which is an error rather than a decline.  The
+ * decline below hands the fill to the host, and a campaign that silently
+ * measured host stores under a declaration naming a GPU route would
+ * publish samples for a route that never ran. */
+static VkResult
+measurement_refuse(struct r3v_native_device *device,
+                   enum r3v_measurement_session_refusal refusal,
+                   const char *reason)
+{
+   return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                    "r3v-native: measurement session refused the fill: "
+                    "%s: %s", r3v_measurement_session_refusal_name(refusal),
+                    reason != NULL ? reason : "unnamed");
+}
+
+/* Whether a declaration decides this device's fills at all.  A closed
+ * session still decides: it terminated mid-campaign and refuses
+ * everything after, rather than returning the device to the one-shot
+ * path with an allowance half spent. */
+static bool
+measurement_engaged(const struct r3v_native_device *device)
+{
+   return device->measurement_session.active ||
+          device->measurement_session.closed;
+}
+
 /* A route this command buffer's shape, range, or deployment does not admit.
  * The host path performs the fill, except under GPU_ONLY, where refusing is
- * the answer the policy exists to give. */
+ * the answer the policy exists to give, and under a declared campaign,
+ * which admits no host executor at all.
+ *
+ * A campaign declares a GPU route and measures its delivery.  Handing the
+ * fill back to the host would return VK_SUCCESS under every policy but
+ * GPU_ONLY, spend no allowance, take no claim, and publish host stores as
+ * routed samples, so every decline an engaged session meets is an error
+ * whatever the policy says. */
 static VkResult
 decline(struct r3v_native_device *device, enum r3v_execution_policy policy,
         const char *what, const char *reason)
 {
+   if (measurement_engaged(device)) {
+      return measurement_refuse(
+         device,
+         device->measurement_session.closed
+            ? R3V_MEASUREMENT_SESSION_REFUSE_CLOSED
+            : R3V_MEASUREMENT_SESSION_REFUSE_ROUTE_MISMATCH,
+         device->measurement_session.closed
+            ? device->measurement_session.closed_reason
+            : reason);
+   }
    if (policy != R3V_EXECUTION_GPU_ONLY)
       return VK_SUCCESS;
    /* The route runs at the submission boundary, so its refusal is a
@@ -179,6 +223,9 @@ retire_previous_submission(struct r3v_native_cmd_buffer *cmd)
       cmd->deferred_copies[i].gpu_routed = false;
    cmd->fill_route_provenance = (struct r3v_execution_provenance){ 0 };
    cmd->fill_route_active = false;
+   cmd->measurement_bound = false;
+   cmd->measurement_case_index = 0;
+   cmd->measurement_identity = (struct r3v_measurement_digest){ 0 };
 }
 
 VkResult
@@ -195,9 +242,34 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    if (cmd == NULL || !shape_is_one_fill(cmd, &op)) {
       /* A shape this route does not admit is not a refusal: GPU_ONLY's
        * refusal belongs to a request the route was asked to answer, not to
-       * every command buffer that reaches the boundary. */
+       * every command buffer that reaches the boundary.
+       *
+       * A declared campaign is the exception.  Its declaration names the
+       * exact fills it measures, so a command buffer carrying anything
+       * else -- a mixed recording, another operation, nothing at all --
+       * is undeclared work, and letting the host perform it would spend
+       * the campaign's wall clock on a route the declaration does not
+       * name.  It refuses here, ahead of every host semantic. */
+      if (measurement_engaged(device)) {
+         return measurement_refuse(
+            device,
+            device->measurement_session.closed
+               ? R3V_MEASUREMENT_SESSION_REFUSE_CLOSED
+               : R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED,
+            device->measurement_session.closed
+               ? device->measurement_session.closed_reason
+               : "the command buffer carries no single declared fill");
+      }
       return VK_SUCCESS;
    }
+   if (device->measurement_session.closed) {
+      return measurement_refuse(device, R3V_MEASUREMENT_SESSION_REFUSE_CLOSED,
+                                device->measurement_session.closed_reason);
+   }
+   /* The submit shape a declared campaign carries is settled before this:
+    * the queue refuses an engaged session any submit but one command
+    * buffer ahead of the route call, so the decline below answers the
+    * ordinary path alone. */
    if (submit_command_buffers != R3V_NATIVE_FILL_ROUTE_COMMAND_BUFFERS) {
       return decline(device, policy, "declines the submit shape",
                      "a routed submit carries one command buffer");
@@ -274,7 +346,15 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    }
    if (decision != R3V_ROUTE_DECISION_GPU) {
       /* The gate is closed or the policy asked for the host, so the route
-       * is not this operation's executor and the host path performs it. */
+       * is not this operation's executor and the host path performs it.
+       * A declared campaign measures the executor it named, so the host
+       * resolution refuses instead. */
+      if (measurement_engaged(device)) {
+         return measurement_refuse(
+            device, R3V_MEASUREMENT_SESSION_REFUSE_ROUTE_MISMATCH,
+            "the device resolved the host executor for a declared "
+            "request");
+      }
       return VK_SUCCESS;
    }
 
@@ -489,6 +569,7 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       kernel_release, sizeof(kernel_release), module_srcversion,
       sizeof(module_srcversion));
    facts.nonmaximum_extent = false;
+   facts.measurement_session_active = device->measurement_session.active;
    const enum r3v_native_arming_verdict arming =
       r3v_native_arming_evaluate(&facts);
    if (arming != R3V_NATIVE_ARMING_ARMED) {
@@ -526,13 +607,84 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
       .module_srcversion = facts.running_module_srcversion,
    };
    char actual_identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
-   admission = r3v_fill_route_authority_check(
-      &identity, device->authorized_fill_identity, actual_identity, &reason);
-   if (admission != R3V_FILL_ROUTE_ADMITTED) {
-      build_release(&build);
-      return decline(device, policy,
-                     r3v_fill_route_refusal_name(admission),
-                     actual_identity[0] != '\0' ? actual_identity : reason);
+   if (measurement_engaged(device)) {
+      /* The declared campaign admits this submission instead of the
+       * one-shot declaration.  The one-shot value stays immutable:
+       * nothing here writes authorized_fill_identity, and the session
+       * proves that this concrete submission belongs to a case the
+       * operator already named rather than adopting whatever digest the
+       * route happened to compute.
+       *
+       * The session records the digest; it never compares against a
+       * declared one, because a declaration written before any device
+       * exists cannot name a GEM handle.  What the operator declares is
+       * the case, the role, and the route; what the driver records is
+       * the object.
+       */
+      struct r3v_measurement_session *session = &device->measurement_session;
+      if (!r3v_fill_route_identity_digest(&identity, actual_identity,
+                                          &reason)) {
+         build_release(&build);
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: fill route cannot compute the "
+                          "submission identity: %s",
+                          reason != NULL ? reason : "unnamed");
+      }
+      uint32_t case_index = 0;
+      if (r3v_measurement_session_find_case(session, op->dst_offset, op->size,
+                                            op->clear_dword,
+                                            &case_index) == NULL) {
+         build_release(&build);
+         return measurement_refuse(
+            device, R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED,
+            "the recorded offset, size, and value match no declared case");
+      }
+      enum r3v_measurement_session_refusal admitted =
+         r3v_measurement_session_route_check(session, route->name, &reason);
+      if (admitted == R3V_MEASUREMENT_SESSION_ADMITTED) {
+         /* The role as the live objects carry it, not as the previous
+          * repetition recorded it: the allocation, the buffer, and the
+          * binding are resolved again for every submission. */
+         const struct r3v_measurement_role observed = {
+            .allocation_bytes = memory->bo.size,
+            .buffer_bytes = dst->vk.size,
+            .binding_offset = dst->offset,
+            .memory_property_flags = property_flags,
+            .buffer_usage = dst->vk.usage,
+            .write_domain = RADEON_GEM_DOMAIN_GTT,
+         };
+         admitted =
+            r3v_measurement_session_role_check(session, &observed, &reason);
+      }
+      struct r3v_measurement_digest bound_identity;
+      memcpy(bound_identity.hex, actual_identity, sizeof(bound_identity.hex));
+      if (admitted == R3V_MEASUREMENT_SESSION_ADMITTED) {
+         admitted = r3v_measurement_session_bind(
+            session, case_index, op->dst_offset, op->size, op->clear_dword,
+            memory->bo.handle, memory->generation, &bound_identity, &reason);
+      }
+      if (admitted != R3V_MEASUREMENT_SESSION_ADMITTED) {
+         build_release(&build);
+         return measurement_refuse(device, admitted, reason);
+      }
+      /* The digest covers rectangles and relocation sites this build
+       * frees at install, so the value travels forward on the command
+       * buffer.  Every other field the transport boundary compares it
+       * resolves again from the live objects. */
+      cmd->measurement_bound = true;
+      cmd->measurement_case_index = case_index;
+      cmd->measurement_identity = bound_identity;
+   } else {
+      admission = r3v_fill_route_authority_check(
+         &identity, device->authorized_fill_identity, actual_identity,
+         &reason);
+      if (admission != R3V_FILL_ROUTE_ADMITTED) {
+         build_release(&build);
+         return decline(device, policy,
+                        r3v_fill_route_refusal_name(admission),
+                        actual_identity[0] != '\0' ? actual_identity
+                                                   : reason);
+      }
    }
 
    /* The record a hardware claim rests on, validated before anything
@@ -607,4 +759,37 @@ r3v_native_cmd_buffer_route_deferred_fill(struct r3v_native_device *device,
    cmd->fill_route_active = true;
 
    return VK_SUCCESS;
+}
+
+bool
+r3v_native_fill_route_resolve_execution(
+   const struct r3v_native_cmd_buffer *cmd,
+   struct r3v_measurement_execution *out)
+{
+   if (cmd == NULL || out == NULL || !cmd->measurement_bound ||
+       !cmd->fill_route_active || cmd->deferred_copy_count != 1)
+      return false;
+
+   /* The recorded operation and the live objects behind it, read again
+    * here rather than carried from the bind: the buffer's bound memory,
+    * its buffer object's handle, and that allocation's generation are
+    * whatever they are at the transport boundary, and a repetition that
+    * replaced any of them differs from the bound case by exactly the
+    * fields this reads. */
+   const struct r3v_native_deferred_copy *op = &cmd->deferred_copies[0];
+   if (op->kind != R3V_NATIVE_COPY_FILL_BUFFER || op->dst_buffer == NULL ||
+       op->dst_buffer->memory == NULL)
+      return false;
+   const struct r3v_native_memory *memory = op->dst_buffer->memory;
+
+   *out = (struct r3v_measurement_execution){
+      .case_index = cmd->measurement_case_index,
+      .fill_offset = op->dst_offset,
+      .fill_bytes = op->size,
+      .fill_value = op->clear_dword,
+      .destination_handle = memory->bo.handle,
+      .memory_generation = memory->generation,
+      .identity = cmd->measurement_identity,
+   };
+   return true;
 }

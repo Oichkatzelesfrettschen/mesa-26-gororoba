@@ -9,6 +9,12 @@
 #include "r300_pm4_builder.h"
 #include "r300_reg.h"
 
+/* The asserts carry this test's verdicts, so they stay live under NDEBUG.
+ * The release profiles set b_ndebug, which discards both the check and
+ * the call inside it, and a verdict spelled assert(emit(...) == 0) would
+ * execute nothing there and still report OK. */
+#undef NDEBUG
+
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>

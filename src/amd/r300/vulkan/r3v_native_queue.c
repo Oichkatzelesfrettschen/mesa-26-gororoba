@@ -652,8 +652,40 @@ r3v_native_serial_semantic_identity_capture(
  * manifest.json binds them by BLAKE3 digest.  Returns 0 or a negative
  * errno; the caller decides whether a failure refuses the submission.
  */
+/* Where one submission retains its evidence.
+ *
+ * The ordinary path retains into R3V_NATIVE_MANIFEST_DIR itself, and the
+ * freshness rule there admits one submission's artifacts under the fixed
+ * names.  A declared campaign carries several distinct cases through one
+ * device, so each case retains into a subdirectory of its own named by
+ * the case: two cases then hold two complete transports rather than
+ * racing for one ib.bin, and each case's own freshness rule still admits
+ * exactly one retention.
+ *
+ * Returns the directory, or NULL when the campaign's subdirectory cannot
+ * be created -- which refuses the submission at the caller rather than
+ * retaining into the shared directory.
+ */
+static const char *
+r3v_native_queue_retention_dir(struct r3v_native_device *device,
+                               const struct r3v_native_cmd_buffer *cmd_buffer,
+                               char *storage, size_t size)
+{
+   if (!cmd_buffer->measurement_bound)
+      return device->manifest_dir;
+   const int length =
+      snprintf(storage, size, "%s/case-%u", device->manifest_dir,
+               cmd_buffer->measurement_case_index);
+   if (length < 0 || (size_t)length >= size)
+      return NULL;
+   if (mkdir(storage, 0755) != 0 && errno != EEXIST)
+      return NULL;
+   return storage;
+}
+
 static int
 r3v_native_queue_write_manifest(struct r3v_native_device *device,
+                                const char *evidence_dir,
                                 const uint32_t *ib, uint32_t ib_size_dwords,
                                 const struct radeon_drm_vk_reloc_list *relocs)
 {
@@ -664,7 +696,7 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
       "ib.bin", "relocs.bin", "manifest.json",
    };
    int result = r3v_native_evidence_require_fresh(
-      device->manifest_dir, names, ARRAY_SIZE(names));
+      evidence_dir, names, ARRAY_SIZE(names));
    if (result != 0)
       return result;
 
@@ -690,14 +722,14 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
    result = ib_bytes == NULL ? -ENOMEM : 0;
    if (result == 0) {
       r300_triangle_ib_serialize(ib, ib_size_dwords, ib_bytes);
-      result = r3v_native_evidence_write_file(device->manifest_dir,
+      result = r3v_native_evidence_write_file(evidence_dir,
                                               "ib.bin", ib_bytes,
                                               ib_byte_size);
    }
    free(ib_bytes);
    if (result == 0) {
       result = r3v_native_evidence_write_file(
-         device->manifest_dir, "relocs.bin", relocs->relocs,
+         evidence_dir, "relocs.bin", relocs->relocs,
          relocs->count * sizeof(relocs->relocs[0]));
    }
    if (result == 0) {
@@ -713,7 +745,7 @@ r3v_native_queue_write_manifest(struct r3v_native_device *device,
                             "}\n",
                             ib_size_dwords, relocs->count, ib_hex, reloc_hex);
       result = length > 0 && (size_t)length < sizeof(manifest)
-                  ? r3v_native_evidence_write_file(device->manifest_dir,
+                  ? r3v_native_evidence_write_file(evidence_dir,
                                                    "manifest.json", manifest,
                                                    (size_t)length)
                   : -EIO;
@@ -775,7 +807,8 @@ r3v_native_queue_append_bo_row(char **table, size_t *length,
  */
 static int
 r3v_native_queue_write_submit_object(
-   struct r3v_native_device *device, const uint32_t *ib,
+   struct r3v_native_device *device, const char *evidence_dir,
+   const uint32_t *ib,
    uint32_t ib_size_dwords, const struct radeon_drm_vk_reloc_list *relocs,
    const struct radeon_drm_vk_cs *cs,
    const struct r3v_native_bo_reference *references,
@@ -805,7 +838,7 @@ r3v_native_queue_write_submit_object(
    }
    const char *const names[] = { relocs_name, manifest_name };
    int result = r3v_native_evidence_require_fresh(
-      device->manifest_dir, names, ARRAY_SIZE(names));
+      evidence_dir, names, ARRAY_SIZE(names));
    if (result != 0)
       return result;
 
@@ -930,11 +963,11 @@ r3v_native_queue_write_submit_object(
           * submit-object group in a fresh evidence directory.
           */
          result = r3v_native_evidence_write_file(
-            device->manifest_dir, relocs_name, relocs->relocs,
+            evidence_dir, relocs_name, relocs->relocs,
             relocs->count * sizeof(relocs->relocs[0]));
          if (result == 0)
             result = r3v_native_evidence_write_file(
-               device->manifest_dir, manifest_name, manifest,
+               evidence_dir, manifest_name, manifest,
                (size_t)length);
       }
 
@@ -1195,6 +1228,24 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    struct r3v_native_prepared_submission *prepared = &device->prepared;
 
+   /* A declared campaign reaches the device through the ordinary public
+    * queue path alone.  The prepared path keeps its own transport tail,
+    * its own evidence, and its own consumed authorization, and a second
+    * implementation of measurement accounting living there would be a
+    * second place for the budget, the claim, and the identity check to
+    * disagree.  The refusal stands ahead of every preparation effect:
+    * nothing is allocated, no artifact is retained, and no claim is
+    * written before it. */
+   if (device->measurement_session.active ||
+       device->measurement_session.closed) {
+      /* The measurement refusal result, which every refusal a declaration
+       * adds is spelled with, so this one is distinguishable from the
+       * device loss the ordinary shape checks below report. */
+      return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                       "r3v-native: a declared measurement session submits "
+                       "through the public queue path; prepared submission "
+                       "carries no measurement accounting");
+   }
    if (prepared->valid) {
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                        "r3v-native: one submission prepares at a time; a "
@@ -1293,7 +1344,8 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    }
 
    if (!(serial_kind && device->serial_submissions_consumed > 0) &&
-       r3v_native_queue_write_manifest(device, cmd_buffer->ib,
+       r3v_native_queue_write_manifest(device, device->manifest_dir,
+                                       cmd_buffer->ib,
                                        cmd_buffer->ib_size_dwords,
                                        &prepared->relocs) != 0) {
       result = vk_errorf(device, VK_ERROR_DEVICE_LOST,
@@ -1335,7 +1387,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                           true);
 
    if (r3v_native_queue_write_submit_object(
-          device, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+          device, device->manifest_dir, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
           &prepared->relocs, &prepared->cs, cmd_buffer->references,
           prepared->reference_indices, cmd_buffer->reference_count,
           prepared->completion_index, prepared->completion.bo.handle,
@@ -1517,6 +1569,19 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
     * GPU route performs.  A prepared submission commits through its own
     * transport tail, which the route has no part in.
     */
+   /* A declared campaign names one command buffer's fill per submission.
+    * A wider submit resolves no route below, so it would reach the host
+    * semantics with the session never consulted; it refuses here, ahead
+    * of the waits and every effect. */
+   if ((device->measurement_session.active ||
+        device->measurement_session.closed) &&
+       (submit->command_buffer_count != 1 || device->prepared.valid)) {
+      return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                       "r3v-native: measurement session refused the "
+                       "submit: a declared submission carries one command "
+                       "buffer through the public queue path");
+   }
+
    if (submit->command_buffer_count == 1 && !device->prepared.valid) {
       struct r3v_native_cmd_buffer *routed_buffer = container_of(
          submit->command_buffers[0], struct r3v_native_cmd_buffer, vk);
@@ -1803,6 +1868,11 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             sizeof(module_srcversion));
          facts.nonmaximum_extent =
             r3v_native_cell_geometry_unfrozen(cmd_buffer);
+         /* The command buffer's own binding rather than the device's
+          * session: what stands the bundle digest down is a submission
+          * the session admitted, so the fact is read where that is
+          * recorded. */
+         facts.measurement_session_active = cmd_buffer->measurement_bound;
          facts.serial_submissions_consumed =
             device->serial_submissions_consumed;
          facts.burst_recorded_draws = cmd_buffer->burst_draws;
@@ -1844,17 +1914,66 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * stream digest against the declared one each admission, so the
        * retained semantic cell stays bound to every admission it covers.
        */
+      /* A campaign repeats one stream several hundred times.  The
+       * manifest and the submit object describe the case rather than the
+       * repetition, so they retain once during the case's counted warmup
+       * and every later repetition runs under that retained copy: the
+       * timed transport bracket then contains the ioctl and the
+       * completion wait alone, and a sample carries no file write.
+       */
+      const bool measurement_case_retained =
+         cmd_buffer->measurement_bound &&
+         cmd_buffer->measurement_case_index <
+            R3V_MEASUREMENT_SESSION_MAX_CASES &&
+         device->measurement_case_retained[cmd_buffer->measurement_case_index];
       const bool semantic_cell_retained =
-         serial_kind && device->serial_submissions_consumed > 0;
-      if (device->manifest_dir != NULL && !semantic_cell_retained &&
-          r3v_native_queue_write_manifest(device, cmd_buffer->ib,
-                                          cmd_buffer->ib_size_dwords,
-                                          &relocs) != 0) {
+         (serial_kind && device->serial_submissions_consumed > 0) ||
+         measurement_case_retained;
+      char retention_storage[1024];
+      const char *retention_dir =
+         device->manifest_dir == NULL
+            ? NULL
+            : r3v_native_queue_retention_dir(device, cmd_buffer,
+                                             retention_storage,
+                                             sizeof(retention_storage));
+      if (device->manifest_dir != NULL && retention_dir == NULL) {
          free(reference_indices);
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: semantic-cell evidence retention "
-                          "failed; refusing before any ioctl");
+                          "r3v-native: the declared case's evidence "
+                          "directory cannot be created; refusing before "
+                          "any ioctl");
+      }
+      if (device->manifest_dir != NULL && !semantic_cell_retained) {
+         if (r3v_native_queue_write_manifest(device, retention_dir,
+                                             cmd_buffer->ib,
+                                             cmd_buffer->ib_size_dwords,
+                                             &relocs) != 0) {
+            /* The session records that it terminated here, so its state
+             * matches what happened rather than showing a live campaign
+             * with an unretained case.  What actually ends the run is
+             * vk_queue_set_lost, which the runtime applies to any
+             * driver_submit failure and which refuses every later submit
+             * before it reaches this path; the durable claim is what
+             * refuses a restart. */
+            r3v_measurement_session_close(
+               &device->measurement_session,
+               "the declared case's evidence retention failed");
+            free(reference_indices);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: semantic-cell evidence retention "
+                             "failed; refusing before any ioctl");
+         }
+         /* The case's transport now stands on disk, so every later
+          * repetition of it skips both writers and the freshness rule
+          * never meets a directory this device itself filled. */
+         if (cmd_buffer->measurement_bound &&
+             cmd_buffer->measurement_case_index <
+                R3V_MEASUREMENT_SESSION_MAX_CASES) {
+            device->measurement_case_retained
+               [cmd_buffer->measurement_case_index] = true;
+         }
       }
       if (serial_kind && !serial_continuation &&
           device->submit_hazard_accepted)
@@ -2033,14 +2152,23 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           r3v_native_arming_verdict_name(arming));
       }
       if (!device->plan_capture_active && !device->plan_replay_active &&
+          !measurement_case_retained &&
           r3v_native_queue_write_submit_object(
-             device, cmd_buffer->ib, cmd_buffer->ib_size_dwords, &relocs,
+             device, retention_dir, cmd_buffer->ib,
+             cmd_buffer->ib_size_dwords, &relocs,
              &cs, cmd_buffer->references, reference_indices,
              cmd_buffer->reference_count, completion_index,
              completion.bo.handle, completion.bo.size, kernel_release,
              module_srcversion,
              serial_kind ? (int)device->serial_submissions_consumed
                          : -1) != 0) {
+         /* The manifest above already retained, so this case's directory
+          * holds artifacts a second retention could not write past.  The
+          * session records its termination here for the same reason as
+          * the manifest failure above. */
+         r3v_measurement_session_close(
+            &device->measurement_session,
+            "the declared case's submit object could not retain");
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -2063,6 +2191,57 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: submission refused: %s",
                           r3v_native_arming_verdict_name(arming));
+      }
+
+      /* The durable claim over the declared arm, taken after every
+       * refusal that can be decided beforehand and ahead of the first
+       * application-memory write below.  The session's counters die with
+       * this device, so the entry is what a second device, a second
+       * process, or a restarted run finds standing.
+       *
+       * Ownership is the descriptor the exclusive creation returned, not
+       * the entry's presence: a repetition continues because this device
+       * created the claim, and observing a file another owner wrote
+       * authorizes nothing.  The entry names the session nonce and the
+       * arm the declaration fixed, so a continuation that still runs
+       * under this session runs under the claim it took.
+       *
+       * A creation or synchronization failure sends nothing and closes
+       * the campaign.  The entry stays wherever the failure left it: it
+       * records that an attempt started, and removing it during cleanup
+       * would hand the arm back to a restart.
+       */
+      if (cmd_buffer->measurement_bound &&
+          !device->measurement_claim.held) {
+         const struct r3v_measurement_manifest *declared =
+            &device->measurement_session.manifest;
+         const struct r3v_measurement_claim_record record = {
+            .session_nonce = declared->session_nonce,
+            .declaration_digest =
+               device->measurement_session.manifest_digest.hex,
+            .arm_name = declared->route,
+            .platform_name = declared->platform,
+            .pci_vendor_id = device->pdevice->pci_vendor_id,
+            .pci_device_id = device->pdevice->pci_device_id,
+            .kernel_release = kernel_release,
+            .module_srcversion = module_srcversion,
+            .claim_scope = "one session nonce and one arm, over every "
+                           "device and every process",
+         };
+         const int claimed = r3v_measurement_claim_acquire(
+            &device->measurement_claim, &record);
+         if (claimed != 0) {
+            char why[R3V_MEASUREMENT_SESSION_REASON_SIZE];
+            snprintf(why, sizeof(why),
+                     "the declared arm's durable claim failed: %s",
+                     strerror(claimed < 0 ? -claimed : claimed));
+            r3v_measurement_session_close(&device->measurement_session, why);
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                             "r3v-native: %s", why);
+         }
       }
 
       /* The pre-draw copies land with the draw's own writes, past every
@@ -2131,8 +2310,13 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * serial bound before the ioctl, so a failed ioctl still consumes
        * its authorization.
        */
+      /* A declared campaign spends the durable claim instead of the
+       * one-shot token: the token admits exactly one submission through
+       * its evidence directory, which is the rule the campaign's finite
+       * allowance replaces, and the claim above is what a second owner
+       * finds standing. */
       if (!device->plan_capture_active && !device->plan_replay_active &&
-          !facts.attempt_token_present &&
+          !cmd_buffer->measurement_bound && !facts.attempt_token_present &&
           r3v_native_arming_disarm(device->manifest_dir, ib_digest) != 0) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -2169,6 +2353,89 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: transport trace refused before "
                           "the submission ioctl");
+      }
+
+      /* The last thing before the transport: the submission names itself
+       * again out of the live objects, the relocation the kernel will
+       * read is held to that same buffer object, and one execution is
+       * spent.
+       *
+       * Every field but the identity digest is resolved again here --
+       * the recorded operation, the bound memory, the buffer object's
+       * handle, that allocation's generation -- so a repetition that
+       * replaced its destination between the bind and this point differs
+       * by the field it replaced.  Reading the session's own binding
+       * instead would make the two agree by construction and spend one
+       * allocation's authorization on another's delivery.
+       *
+       * Nothing fallible stands between this and the ioctl: the
+       * transport trace emitted above, the evidence is written, the
+       * claim is taken, and the cache lines are published.  A crash
+       * inside this window spends the allowance without executing the
+       * work, which is the conservative direction and is never refunded.
+       */
+      if (cmd_buffer->measurement_bound) {
+         struct r3v_measurement_execution execution;
+         const char *why = NULL;
+         if (!r3v_native_fill_route_resolve_execution(cmd_buffer,
+                                                      &execution)) {
+            r3v_measurement_session_close(
+               &device->measurement_session,
+               "the prepared submission carries no resolvable fill");
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                             "r3v-native: measurement session refused the "
+                             "submission: the prepared submission carries "
+                             "no resolvable fill");
+         }
+
+         /* The relocation the kernel rewrites selects the object the
+          * identity names.  The digest binds the stream and the handle
+          * the route saw; this binds the entry the ioctl actually
+          * carries, so a relocation retargeted after the bind refuses
+          * here rather than travelling. */
+         uint32_t written_references = 0;
+         uint32_t destination_slot = UINT32_MAX;
+         for (uint32_t r = 0; r < cmd_buffer->reference_count; r++) {
+            if (cmd_buffer->references[r].write_domain == 0)
+               continue;
+            written_references++;
+            destination_slot = reference_indices != NULL
+                                  ? reference_indices[r]
+                                  : UINT32_MAX;
+         }
+         if (written_references != 1 || destination_slot >= relocs.count ||
+             relocs.relocs[destination_slot].handle !=
+                execution.destination_handle) {
+            why = "the destination relocation names another buffer object "
+                  "than the bound one";
+            r3v_measurement_session_close(&device->measurement_session, why);
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                             "r3v-native: measurement session refused the "
+                             "submission: %s", why);
+         }
+
+         const enum r3v_measurement_session_refusal spent =
+            r3v_measurement_session_consume(
+               &device->measurement_session, execution.case_index,
+               execution.fill_offset, execution.fill_bytes,
+               execution.fill_value, execution.destination_handle,
+               execution.memory_generation, &execution.identity, &why);
+         if (spent != R3V_MEASUREMENT_SESSION_ADMITTED) {
+            free(reference_indices);
+            radeon_drm_vk_completion_finish(&device->drm, &completion);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, R3V_NATIVE_REFUSAL_RESULT,
+                             "r3v-native: measurement session refused the "
+                             "submission: %s: %s",
+                             r3v_measurement_session_refusal_name(spent),
+                             why != NULL ? why : "unnamed");
+         }
       }
 
       /* The transport bracket a route measurement reads: the ioctl and
@@ -2223,6 +2490,18 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       radeon_drm_vk_completion_finish(&device->drm, &completion);
       radeon_drm_vk_reloc_list_finish(&relocs);
       if (result != 0) {
+         /* The allowance is spent and stays spent.  The campaign
+          * terminates here rather than retrying, because a retry would
+          * pay for the same delivery twice and a sample taken after a
+          * failed transport measures neither. */
+         if (cmd_buffer->measurement_bound) {
+            char why[R3V_MEASUREMENT_SESSION_REASON_SIZE];
+            snprintf(why, sizeof(why),
+                     "the %s failed with %d",
+                     ioctl_accepted ? "completion wait" : "submission ioctl",
+                     result);
+            r3v_measurement_session_close(&device->measurement_session, why);
+         }
          device->queue_status =
             r3v_native_queue_status_from_transport(ioctl_accepted, false);
          if (device->plan_replay_active) {
