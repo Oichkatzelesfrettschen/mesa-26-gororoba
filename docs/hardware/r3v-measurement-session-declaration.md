@@ -46,10 +46,19 @@ refuses as a rebound destination.
 
 Lines of `key = value`, `#` starting a comment, every scalar key
 required. A key this reader does not read refuses the declaration rather
-than being ignored. A number is decimal or `0x`-prefixed hexadecimal and
-nothing else: a leading sign refuses, because `strtoull` would negate it
-into the unsigned range, and a leading zero refuses, because base zero
-would read `0644` as `420`.
+than being ignored. A terminator inside the text refuses, because the
+digest covers the whole byte range while a field stops at its first
+terminator.
+
+A number is decimal or `0x`- or `0X`-prefixed hexadecimal and nothing
+else. The base is chosen from the prefix and every character after it is
+then held to that base's alphabet, so a sign refuses wherever it appears:
+`strtoull` negates one into the unsigned range and accepts one after a
+stripped prefix too, which would let `0x-1` name 2^64 - 1 on the strength
+of the prefix. A leading zero refuses, because base zero would read
+`0644` as `420`; the rule is about base selection, so a hexadecimal value
+carries leading zeros freely. Magnitude is still decided by the
+conversion, so a value above the field refuses there.
 
 | Key | Meaning |
 | --- | --- |
@@ -71,6 +80,16 @@ identity refuse the declaration, because a request would match both and
 consume an ambiguous budget. A case that runs nothing, one whose range
 counts no whole dword on a dword boundary, and one reaching past the
 declared buffer each refuse.
+
+Reading and meaning are separate. The reader decodes text: line shape,
+key spelling, repeated keys, number grammar, the six fields of a `case`
+row. Every rule about what a declaration means -- name termination and
+non-emptiness, the schema, case count, the buffer's fit in its
+allocation, each case's alignment, size, execution count, and
+containment, case uniqueness, budget arithmetic, and the timeout's
+positive finite bound -- lives in one check both the reader and `open`
+run. A manifest assembled in place, or edited after parsing, therefore
+meets exactly the rules a parsed one meets.
 
 ## Budget
 

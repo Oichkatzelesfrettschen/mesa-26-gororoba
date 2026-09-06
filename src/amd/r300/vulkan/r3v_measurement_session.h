@@ -75,6 +75,11 @@
  * repetitions apiece, with room to spare.  A declaration above this bound
  * is refused rather than truncated. */
 #define R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS 4096u
+/* The ceiling on a declared completion wait.  The wait interface reads an
+ * absolute deadline at or above INT64_MAX as unbounded, so a declared
+ * relative interval stays far below it and no campaign declares a wait
+ * that never returns. */
+#define R3V_MEASUREMENT_SESSION_MAX_TIMEOUT_NS 300000000000ull
 #define R3V_MEASUREMENT_SESSION_TEXT_MAX 65536u
 #define R3V_MEASUREMENT_SESSION_NAME_MAX 64u
 #define R3V_MEASUREMENT_SESSION_EPOCH_MAX 128u
@@ -204,11 +209,14 @@ r3v_measurement_manifest_epoch_check(
    uint32_t pci_device_id, const char *kernel_release,
    const char *module_srcversion, const char **reason);
 
-/* Opens a session over a parsed declaration.  The budget is the sum every
- * case's warmups and repetitions account for, so a submission the budget
- * admits is one some case names.  A declared total below that sum cannot
- * run the campaign it declares and refuses here rather than exhausting
- * partway through. */
+/* Opens a session over a parsed declaration.  The session is zeroed
+ * before its first open, because a live session refuses a second one and
+ * that decision reads the struct the caller supplied.
+ *
+ * The budget is the sum every case's warmups and repetitions account
+ * for, so a submission the budget admits is one some case names.  A
+ * declared total below that sum cannot run the campaign it declares and
+ * refuses here rather than exhausting partway through. */
 enum r3v_measurement_session_refusal
 r3v_measurement_session_open(struct r3v_measurement_session *session,
                              const struct r3v_measurement_manifest *manifest,

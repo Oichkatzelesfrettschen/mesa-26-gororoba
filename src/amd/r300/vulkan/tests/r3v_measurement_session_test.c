@@ -14,6 +14,7 @@
 
 #include "r3v_measurement_session.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +22,11 @@
    "0000000000000000000000000000000000000000000000000000000000000001"
 #define DIGEST_B                                                              \
    "0000000000000000000000000000000000000000000000000000000000000002"
+/* The digest parameters are fixed-width arrays the predicate scans whole,
+ * so a malformed identity is that width carrying a character outside the
+ * alphabet -- a short literal would be a different defect. */
+#define DIGEST_NOT_HEX                                                        \
+   "00000000000000000000000000000000000000000000000000000000deadbeeZ"
 
 static const char valid_manifest[] =
    "# the windowed route over two sizes on the specimen\n"
@@ -94,10 +100,12 @@ test_manifest_reads_every_field(void)
 }
 
 /* One replacement in the declaration text, so each refusal is isolated
- * to the field it names. */
-static void
-refuse_manifest(const char *find, const char *replace,
-                enum r3v_measurement_session_refusal expected)
+ * to the field it names.  The reason travels back out, because most
+ * semantic rules share one refusal code and the reason is what tells
+ * them apart. */
+static enum r3v_measurement_session_refusal
+parse_edited_text(const char *find, const char *replace,
+                  const char **reason_out)
 {
    char text[sizeof(valid_manifest) + 256];
    const char *at = strstr(valid_manifest, find);
@@ -112,10 +120,22 @@ refuse_manifest(const char *find, const char *replace,
    memcpy(text + head + replace_len, tail, tail_len + 1);
 
    struct r3v_measurement_manifest manifest;
+   return r3v_measurement_manifest_parse(
+      text, head + replace_len + tail_len, &manifest, reason_out);
+}
+
+static void
+refuse_manifest(const char *find, const char *replace,
+                enum r3v_measurement_session_refusal expected)
+{
    const char *reason = NULL;
    const enum r3v_measurement_session_refusal r =
-      r3v_measurement_manifest_parse(text, head + replace_len + tail_len,
-                                     &manifest, &reason);
+      parse_edited_text(find, replace, &reason);
+   if (r != expected)
+      fprintf(stderr, "arm %s -> %s : %s (%s)\n", replace,
+              r3v_measurement_session_refusal_name(r),
+              reason != NULL ? reason : "(none)",
+              r3v_measurement_session_refusal_name(expected));
    assert(r == expected);
    assert((r == R3V_MEASUREMENT_SESSION_ADMITTED) == (reason == NULL));
 }
@@ -213,6 +233,47 @@ test_manifest_refusals(void)
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
    refuse_manifest("pci_vendor_id = 0x1002", "pci_vendor_id = 0x",
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* The sign guard on the original string does not reach past a
+    * stripped prefix.  strtoull reads a sign after 0x as readily as
+    * before it, so 0x-1 would name 2^64 - 1 on the strength of the
+    * prefix alone; the alphabet check after base selection is what
+    * refuses these. */
+   refuse_manifest("allocation_bytes = 8388608", "allocation_bytes = 0x-1",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("allocation_bytes = 8388608", "allocation_bytes = 0x+1",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("allocation_bytes = 8388608", "allocation_bytes = 0x 1",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* Hex digits are hex digits in both cases, and a decimal field reads
+    * no hex letter. */
+   refuse_manifest("memory_property_flags = 0x2",
+                   "memory_property_flags = 0xa",
+                   R3V_MEASUREMENT_SESSION_ADMITTED);
+   refuse_manifest("memory_property_flags = 0x2",
+                   "memory_property_flags = 0xA",
+                   R3V_MEASUREMENT_SESSION_ADMITTED);
+   refuse_manifest("max_total_submissions = 72",
+                   "max_total_submissions = 7a",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* The alphabet admits every representable digit, so magnitude is
+    * still decided by the conversion. */
+   refuse_manifest("allocation_bytes = 8388608",
+                   "allocation_bytes = 99999999999999999999999",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* The digest covers the whole byte range while a field stops at its
+    * first terminator, so a NUL inside the text would leave the hashed
+    * bytes and the read declaration naming different campaigns. */
+   {
+      char text[sizeof(valid_manifest) + 8];
+      memcpy(text, valid_manifest, sizeof(valid_manifest) - 1);
+      const size_t length = sizeof(valid_manifest) - 1;
+      text[length - 1] = '\0';
+      struct r3v_measurement_manifest embedded;
+      assert(r3v_measurement_manifest_parse(text, length, &embedded,
+                                            &reason) ==
+             R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+      assert(reason != NULL);
+   }
    /* A bare zero is still a zero, and hex still reads as hex. */
    refuse_manifest("binding_offset = 0", "binding_offset = 0x0",
                    R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -264,7 +325,7 @@ edit_duplicate_case(struct r3v_measurement_manifest *m)
 static void
 edit_case_past_buffer(struct r3v_measurement_manifest *m)
 {
-   m->cases[0].fill_offset = m->role.buffer_bytes - 1u;
+   m->cases[0].fill_offset = m->role.buffer_bytes;
    m->cases[0].fill_bytes = 4096u;
 }
 
@@ -285,6 +346,7 @@ test_open_budget(void)
 {
    struct r3v_measurement_manifest m = parse_valid();
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
 
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
@@ -362,10 +424,237 @@ test_open_budget(void)
 }
 
 static void
+edit_case_size_unaligned(struct r3v_measurement_manifest *m)
+{
+   m->cases[0].fill_bytes = 4094u;
+}
+
+static void
+edit_case_offset_unaligned(struct r3v_measurement_manifest *m)
+{
+   m->cases[0].fill_offset = 2u;
+}
+
+static void
+edit_case_runs_nothing(struct r3v_measurement_manifest *m)
+{
+   m->cases[0].warmups = 0u;
+   m->cases[0].repetitions = 0u;
+}
+
+/* A count that wraps to zero in 32 bits and does not in 64.  The case
+ * declares four billion executions, which is a size defect, not an empty
+ * one, so the reason it refuses under names its actual fault. */
+static void
+edit_case_count_wraps_in_32_bits(struct r3v_measurement_manifest *m)
+{
+   m->cases[0].warmups = 0xffffffffu;
+   m->cases[0].repetitions = 1u;
+}
+
+static void
+edit_total_below_cases(struct r3v_measurement_manifest *m)
+{
+   m->max_total_submissions = 67u;
+}
+
+static void
+edit_budget_above_bound(struct r3v_measurement_manifest *m)
+{
+   m->max_total_submissions = R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS + 1u;
+}
+
+static void
+edit_timeout_zero(struct r3v_measurement_manifest *m)
+{
+   m->completion_timeout_ns = 0u;
+}
+
+static void
+edit_timeout_above_bound(struct r3v_measurement_manifest *m)
+{
+   m->completion_timeout_ns = R3V_MEASUREMENT_SESSION_MAX_TIMEOUT_NS + 1u;
+}
+
+/* Every rule a declaration carries, reached from the text a reader
+ * decodes and from a manifest struct handed straight to the session.
+ * Both arms are required to name the same reason: most of these rules
+ * share one refusal code, so an arm that only compared the code would
+ * pass while the two paths enforced different things.
+ */
+static void
+test_semantic_rules_hold_on_both_paths(void)
+{
+   static const struct {
+      const char *find;
+      const char *replace;
+      void (*damage)(struct r3v_measurement_manifest *);
+      enum r3v_measurement_session_refusal expected;
+      const char *reason;
+   } rules[] = {
+      { "schema = r3v-measurement-session-v1",
+        "schema = r3v-measurement-session-v2", edit_schema,
+        R3V_MEASUREMENT_SESSION_REFUSE_SCHEMA,
+        "the declaration names another schema" },
+      { "case = 1, 0, 4096, 287454020, 2, 32\n"
+        "case = 2, 0, 65536, 287454020, 2, 32\n",
+        "", edit_no_cases, R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declaration carries no case, or more than the bound" },
+      { "binding_offset = 0", "binding_offset = 4096",
+        edit_buffer_past_allocation,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declared buffer reaches outside its allocation" },
+      { "case = 1, 0, 4096, 287454020, 2, 32",
+        "case = 1, 0, 4094, 287454020, 2, 32", edit_case_size_unaligned,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "a declared case fills nothing, or off a dword boundary" },
+      { "case = 1, 0, 4096, 287454020, 2, 32",
+        "case = 1, 2, 4096, 287454020, 2, 32", edit_case_offset_unaligned,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "a declared case fills nothing, or off a dword boundary" },
+      { "case = 1, 0, 4096, 287454020, 2, 32",
+        "case = 1, 0, 4096, 287454020, 0, 0", edit_case_runs_nothing,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "a declared case runs no warmup and no repetition" },
+      { "case = 1, 0, 4096, 287454020, 2, 32",
+        "case = 1, 8388608, 4096, 287454020, 2, 32", edit_case_past_buffer,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "a declared case reaches outside the declared buffer" },
+      { "case = 2, 0, 65536, 287454020, 2, 32",
+        "case = 9, 0, 4096, 287454020, 2, 32", edit_duplicate_case,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "two declared cases carry one identity" },
+      { "case = 1, 0, 4096, 287454020, 2, 32",
+        "case = 1, 0, 4096, 287454020, 4294967295, 1",
+        edit_case_count_wraps_in_32_bits,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declared budget is above the session bound" },
+      { "max_total_submissions = 72", "max_total_submissions = 67",
+        edit_total_below_cases,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declared total is below what the declared cases run" },
+      { "max_total_submissions = 72", "max_total_submissions = 4097",
+        edit_budget_above_bound,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declared budget is above the session bound" },
+      { "completion_timeout_ns = 10000000000",
+        "completion_timeout_ns = 0", edit_timeout_zero,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declared completion timeout is zero or above the bound" },
+      { "completion_timeout_ns = 10000000000",
+        "completion_timeout_ns = 300000000001", edit_timeout_above_bound,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED,
+        "the declared completion timeout is zero or above the bound" },
+   };
+
+   for (size_t i = 0; i < sizeof(rules) / sizeof(rules[0]); i++) {
+      const char *text_reason = NULL;
+      assert(parse_edited_text(rules[i].find, rules[i].replace,
+                               &text_reason) == rules[i].expected);
+      assert(text_reason != NULL);
+      assert(strcmp(text_reason, rules[i].reason) == 0);
+
+      struct r3v_measurement_manifest edited = parse_valid();
+      struct r3v_measurement_session refused;
+      memset(&refused, 0, sizeof(refused));
+      rules[i].damage(&edited);
+      const char *open_reason = NULL;
+      assert(r3v_measurement_session_open(&refused, &edited, DIGEST_A,
+                                          &open_reason) ==
+             rules[i].expected);
+      assert(open_reason != NULL);
+      assert(strcmp(open_reason, rules[i].reason) == 0);
+      assert(!refused.active);
+   }
+}
+
+/* A parsed declaration terminates every name by construction, so an
+ * unterminated field reaches the session only from a manifest assembled
+ * in place.  The session reads these names with strcmp, so the rule
+ * stands ahead of the first read rather than behind it. */
+static void
+test_names_terminate_inside_their_fields(void)
+{
+   static const size_t offsets[] = {
+      offsetof(struct r3v_measurement_manifest, schema),
+      offsetof(struct r3v_measurement_manifest, session_nonce),
+      offsetof(struct r3v_measurement_manifest, platform),
+      offsetof(struct r3v_measurement_manifest, route),
+   };
+   static const size_t widths[] = {
+      sizeof(((struct r3v_measurement_manifest *)0)->schema),
+      sizeof(((struct r3v_measurement_manifest *)0)->session_nonce),
+      sizeof(((struct r3v_measurement_manifest *)0)->platform),
+      sizeof(((struct r3v_measurement_manifest *)0)->route),
+   };
+
+   for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+      struct r3v_measurement_manifest edited = parse_valid();
+      char *field = (char *)&edited + offsets[i];
+      memset(field, 'a', widths[i]);
+      struct r3v_measurement_session refused;
+      memset(&refused, 0, sizeof(refused));
+      const char *reason = NULL;
+      assert(r3v_measurement_session_open(&refused, &edited, DIGEST_A,
+                                          &reason) ==
+             R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+      assert(strcmp(reason,
+                    "a declared name is empty or runs past its field") == 0);
+      assert(!refused.active);
+
+      /* An empty name is a declared field carrying nothing. */
+      struct r3v_measurement_manifest emptied = parse_valid();
+      *((char *)&emptied + offsets[i]) = '\0';
+      memset(&refused, 0, sizeof(refused));
+      assert(r3v_measurement_session_open(&refused, &emptied, DIGEST_A,
+                                          &reason) ==
+             R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+      assert(!refused.active);
+   }
+}
+
+/* The digest is stored whole and compared whole, so its shape is
+ * established before the copy rather than trusted from the caller. */
+static void
+test_manifest_digest_shape(void)
+{
+   const struct r3v_measurement_manifest m = parse_valid();
+   static const char *const malformed[] = {
+      "",
+      "0000000000000000000000000000000000000000000000000000000000000",
+      "000000000000000000000000000000000000000000000000000000000000000G",
+      "000000000000000000000000000000000000000000000000000000000000000A",
+   };
+   for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); i++) {
+      char digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+      memset(digest, 0, sizeof(digest));
+      memcpy(digest, malformed[i], strlen(malformed[i]));
+      struct r3v_measurement_session refused;
+      memset(&refused, 0, sizeof(refused));
+      const char *reason = NULL;
+      assert(r3v_measurement_session_open(&refused, &m, digest, &reason) ==
+             R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+      assert(reason != NULL);
+      assert(!refused.active);
+   }
+   /* An unterminated digest array carries no width at all. */
+   char unterminated[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
+   memset(unterminated, '0', sizeof(unterminated));
+   struct r3v_measurement_session refused;
+   memset(&refused, 0, sizeof(refused));
+   const char *reason = NULL;
+   assert(r3v_measurement_session_open(&refused, &m, unterminated,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   assert(!refused.active);
+}
+
+static void
 test_route_and_role(void)
 {
    const struct r3v_measurement_manifest m = parse_valid();
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -418,6 +707,7 @@ test_case_lookup(void)
 {
    const struct r3v_measurement_manifest m = parse_valid();
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -449,6 +739,7 @@ test_binding(void)
 {
    const struct r3v_measurement_manifest m = parse_valid();
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -479,6 +770,7 @@ test_binding(void)
    /* The handle recycled over another object: the number matches and the
     * generation does not. */
    struct r3v_measurement_session recycled;
+   memset(&recycled, 0, sizeof(recycled));
    assert(r3v_measurement_session_open(&recycled, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
    assert(r3v_measurement_session_bind(&recycled, CASE_4K, 7u, 101u, DIGEST_A,
@@ -491,6 +783,7 @@ test_binding(void)
 
    /* The same object under a stream that no longer hashes the same. */
    struct r3v_measurement_session drifted;
+   memset(&drifted, 0, sizeof(drifted));
    assert(r3v_measurement_session_open(&drifted, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
    assert(r3v_measurement_session_bind(&drifted, CASE_4K, 7u, 101u, DIGEST_A,
@@ -520,8 +813,7 @@ test_binding(void)
    assert(!session.bindings[1].bound);
    /* A value that is not a digest is not a weaker identity. */
    assert(r3v_measurement_session_bind(&session, CASE_64K, 9u, 103u,
-                                       "0xdeadbeef",
-                                       &reason) ==
+                                       DIGEST_NOT_HEX, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH);
    assert(r3v_measurement_session_bind(&session, CASE_64K, 9u, 103u, NULL,
                                        &reason) ==
@@ -543,6 +835,7 @@ test_index_alone_authorizes_nothing(void)
 {
    const struct r3v_measurement_manifest m = parse_valid();
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    memset(&session, 0, sizeof(session));
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
@@ -609,6 +902,7 @@ test_consume_is_finite_and_never_refunded(void)
    m.max_total_submissions = 4u;
 
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -661,6 +955,7 @@ test_one_case_exhausts_while_another_stays_funded(void)
    m.max_total_submissions = 6u;
 
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -709,6 +1004,7 @@ test_closed_session_admits_nothing(void)
 {
    const struct r3v_measurement_manifest m = parse_valid();
    struct r3v_measurement_session session;
+   memset(&session, 0, sizeof(session));
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
@@ -776,6 +1072,9 @@ main(void)
    test_manifest_refusals();
    test_epoch();
    test_open_budget();
+   test_semantic_rules_hold_on_both_paths();
+   test_names_terminate_inside_their_fields();
+   test_manifest_digest_shape();
    test_route_and_role();
    test_case_lookup();
    test_binding();
