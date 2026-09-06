@@ -118,6 +118,10 @@ struct sample {
    uint32_t repetition;
    bool measured;
    uint8_t arm;
+   /* Where this repetition ran in its own arm order, so the published
+    * stream carries the balance rather than asserting it: over a
+    * completed cycle each arm holds each position equally often. */
+   uint8_t position;
    uint64_t fill_bytes;
    uint64_t allocation_bytes;
    uint64_t delivery_ns;
@@ -1049,6 +1053,7 @@ publish_sample(struct output *out, const struct arm *arm,
       line, sizeof(line),
       "{\"row\":\"sample\",\"arm\":\"%s\",\"executor\":\"%s\","
       "\"case_id\":%u,\"repetition\":%u,\"phase\":\"%s\","
+      "\"position\":%u,"
       "\"fill_bytes\":%" PRIu64 ",\"allocation_bytes\":%" PRIu64
       ",\"delivery_ns\":%" PRIu64 ",\"transport_ns\":%" PRIu64
       ",\"allowance_consumed\":%u,\"submit_result\":%d,"
@@ -1058,7 +1063,7 @@ publish_sample(struct output *out, const struct arm *arm,
       "\"ib_blake3\":\"%s\",\"relocs_blake3\":\"%s\","
       "\"execution_asserted\":%s}\n",
       arm->name, arm->executor, s->case_id, s->repetition,
-      s->measured ? "measured" : "warmup", s->fill_bytes,
+      s->measured ? "measured" : "warmup", s->position, s->fill_bytes,
       s->allocation_bytes, s->delivery_ns, s->transport_ns,
       s->allowance_consumed, s->submit_result, s->completion_result,
       s->oracle_passed ? "pass" : "fail", (uint64_t)arm->buffer,
@@ -1455,6 +1460,7 @@ main(int argc, char **argv)
                .repetition = w,
                .measured = false,
                .arm = (uint8_t)a,
+               .position = (uint8_t)a,
                .fill_bytes = size,
                .allocation_bytes = arms[a].allocated_bytes,
                .delivery_ns = ok ? result.delivery_ns : 0,
@@ -1519,6 +1525,7 @@ main(int argc, char **argv)
                .repetition = rep_index,
                .measured = true,
                .arm = (uint8_t)a,
+               .position = (uint8_t)k,
                .fill_bytes = size,
                .allocation_bytes = arms[a].allocated_bytes,
                .delivery_ns = ok ? result.delivery_ns : 0,

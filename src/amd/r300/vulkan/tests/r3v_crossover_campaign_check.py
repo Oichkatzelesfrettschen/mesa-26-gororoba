@@ -234,6 +234,25 @@ def run_checks(crossover, work):
             fail(f"campaign: arm {arm} spent an allowance that does not "
                  f"match its declared budget")
 
+    # The measured schedule balances position: over a completed cycle
+    # every arm holds every position equally often.  A schedule that
+    # reverses three arms leaves the middle one fixed, which this counts.
+    for case_id in range(len(SIZES)):
+        histogram = {}
+        for s in samples:
+            if s["case_id"] != case_id or s["phase"] != "measured":
+                continue
+            histogram.setdefault(s["arm"], {}).setdefault(s["position"], 0)
+            histogram[s["arm"]][s["position"]] += 1
+        for arm, positions in histogram.items():
+            if sorted(positions) != list(range(len(histogram))):
+                fail(f"campaign: case {case_id} arm {arm} never held every "
+                     f"position; it held {sorted(positions)}")
+            counts = set(positions.values())
+            if len(counts) != 1:
+                fail(f"campaign: case {case_id} arm {arm} held its "
+                     f"positions unequally: {positions}")
+
     # Every sample carries both intervals, and the transport interval is
     # nested inside the delivery interval it belongs to.
     for s in samples:
