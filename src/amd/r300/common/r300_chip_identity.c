@@ -83,6 +83,7 @@ const struct r300_platform_identity r300_platform_vostro1000 = {
    .part_name = "RS485M",
    .product_name = "Radeon Xpress 1150",
    .historical_alias = "rs482",
+   .declaration_name = "vostro1000_rs485m_5974",
    .platform_id = R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
    .runtime_match_basis = R300_PLATFORM_MATCH_PCI_SUBSYSTEM_DMI,
    .identity_evidence = R300_PLATFORM_EVIDENCE_OPTION_ROM_STRING |
@@ -218,4 +219,26 @@ r300_platform_id_resolve(uint16_t pci_vendor, uint16_t pci_device,
                                       dmi_product_name, &row))
       return R300_PLATFORM_ID_NONE;
    return row->platform_id;
+}
+
+enum r300_platform_id
+r300_platform_id_from_declaration_name(const char *name)
+{
+   if (name == NULL || name[0] == '\0')
+      return R300_PLATFORM_ID_NONE;
+   for (size_t i = 0; i < ARRAY_SIZE(r300_platform_rows); i++) {
+      const struct r300_platform_identity *row = r300_platform_rows[i];
+      if (row->declaration_name != NULL &&
+          strcmp(row->declaration_name, name) == 0)
+         return row->platform_id;
+   }
+   return R300_PLATFORM_ID_NONE;
+}
+
+const struct r300_platform_identity *const *
+r300_platform_identity_rows(uint32_t *count)
+{
+   if (count != NULL)
+      *count = (uint32_t)ARRAY_SIZE(r300_platform_rows);
+   return r300_platform_rows;
 }
