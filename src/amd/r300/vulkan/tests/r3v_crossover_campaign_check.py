@@ -314,6 +314,32 @@ def run_checks(crossover, work):
              "declared")
     if not re.fullmatch(r"0x[0-9a-f]{16}", record["stream_fnv1a64"]):
         fail("campaign: the completeness record carries no stream digest")
+    # The digest is recomputed here over the rows the file carries, so a
+    # digest that does not depend on its input fails rather than merely
+    # looking like a hash.
+    digest = 0xcbf29ce484222325
+    with open(ok.samples, encoding="ascii") as handle:
+        for line in handle:
+            if '"row":"completeness"' in line:
+                continue
+            for byte in line.encode("ascii"):
+                digest = ((digest ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    if record["stream_fnv1a64"] != f"0x{digest:016x}":
+        fail(f"campaign: the completeness digest {record['stream_fnv1a64']} "
+             f"does not cover the published rows (0x{digest:016x})")
+
+    # An enrollment that admits a perturbed prediction admits any
+    # prediction, so the known-bad must refuse.
+    perturbed = harness.run("enrollment-perturbed",
+                            extra_args=("--enrollment-perturb-dwords", "1"))
+    expect_refusal("enrollment-perturbed", perturbed, "the device retained")
+
+    # A result file that cannot be written completely refuses the run: a
+    # campaign that spent its budget and truncated its artifact produced
+    # nothing usable.
+    truncated = harness.run("write-fails",
+                            extra_args=("--json", "/dev/full"))
+    expect_refusal("write-fails", truncated, "written completely")
 
     # A declaration whose cases disagree with the requested sweep refuses
     # before any device is created, so no allowance is spent.

@@ -208,6 +208,12 @@ static uint64_t inject_delay_ns;
  * and every cell records that execution was not asserted, and a
  * measuring run leaves this closed. */
 static bool absorbing_transport;
+/* Added to a GPU arm's predicted IB dword count before the enrollment
+ * compares it against the transport the device retained.  A nonzero
+ * value is a known-bad: it makes the comparison's discriminating power
+ * measurable, because an enrollment that admits a perturbed prediction
+ * admits any prediction.  A measuring run leaves it zero. */
+static uint32_t enrollment_perturb_dwords;
 
 static int
 refuse(const char *why)
@@ -946,12 +952,14 @@ enroll_case(struct arm *arm, uint32_t case_index,
    }
    e->actual_ib_dwords = (uint32_t)strtoul(dwords, NULL, 10);
    e->actual_reloc_count = (uint32_t)strtoul(relocs, NULL, 10);
-   if (e->actual_ib_dwords != predicted->ib_dwords) {
+   const uint32_t expected_ib_dwords =
+      predicted->ib_dwords + enrollment_perturb_dwords;
+   if (e->actual_ib_dwords != expected_ib_dwords) {
       snprintf(why, why_size,
                "arm %s case %u: the legalizer predicts a %u-dword stream "
                "over %u window(s) and %u rectangle(s); the device retained "
                "%u dwords",
-               arm->name, case_index, predicted->ib_dwords,
+               arm->name, case_index, expected_ib_dwords,
                predicted->window_count, predicted->rect_count,
                e->actual_ib_dwords);
       return false;
@@ -1209,6 +1217,11 @@ main(int argc, char **argv)
          run_v1 = false;
       } else if (strcmp(argv[i], "--absorbing-transport") == 0) {
          absorbing_transport = true;
+      } else if (strcmp(argv[i], "--enrollment-perturb-dwords") == 0 &&
+                 i + 1 < argc) {
+         if (!parse_u64(argv[++i], UINT32_MAX, &value))
+            return refuse("--enrollment-perturb-dwords is not a dword count");
+         enrollment_perturb_dwords = (uint32_t)value;
       } else if (strcmp(argv[i], "--declaration-v2") == 0 && i + 1 < argc) {
          arms[ARM_V2].declaration_path = argv[++i];
       } else if (strcmp(argv[i], "--declaration-v1") == 0 && i + 1 < argc) {
@@ -1244,7 +1257,9 @@ main(int argc, char **argv)
                  "[--declaration-v2 PATH] [--declaration-v1 PATH] "
                  "[--evidence-v2 DIR] [--evidence-v1 DIR] "
                  "[--inject-delay-ns NS] [--json PATH] [--no-v1] "
-                 "[--absorbing-transport] [--wait-bound-ns NS]\n",
+                 "[--absorbing-transport] "
+                 "[--enrollment-perturb-dwords N] "
+                 "[--wait-bound-ns NS]\n",
                  argv[0]);
          return 2;
       }
