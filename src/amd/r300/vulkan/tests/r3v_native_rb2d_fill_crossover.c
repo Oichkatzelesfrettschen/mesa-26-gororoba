@@ -887,6 +887,24 @@ manifest_field(const char *text, const char *key, char *out, size_t out_size)
    return true;
 }
 
+/* One count out of the retained manifest.  The whole token converts or
+ * the field is refused: a value with trailing characters would otherwise
+ * compare equal to a prediction on its leading digits, and one past
+ * UINT32_MAX would compare equal after the cast truncated it. */
+static bool
+parse_manifest_count(const char *text, uint32_t *out)
+{
+   if (text[0] < '0' || text[0] > '9')
+      return false;
+   errno = 0;
+   char *end = NULL;
+   const unsigned long long value = strtoull(text, &end, 10);
+   if (errno == ERANGE || end == NULL || *end != '\0' || value > UINT32_MAX)
+      return false;
+   *out = (uint32_t)value;
+   return true;
+}
+
 /* Compares this harness's independent legalizer prediction against the
  * transport the device retained for the case's first repetition, and
  * refuses to measure a case whose stream the harness cannot account for.
@@ -929,10 +947,15 @@ enroll_case(struct arm *arm, uint32_t case_index,
    char text[4096];
    const size_t length = fread(text, 1, sizeof(text) - 1, file);
    const bool failed = ferror(file) != 0;
+   /* A manifest the buffer does not reach the end of is a partial view
+    * of the retained transport, and enrolling against a prefix would
+    * give a truncated artifact the verdict a complete one earns. */
+   const bool truncated = !feof(file);
    fclose(file);
-   if (failed) {
-      snprintf(why, why_size, "arm %s case %u: %s is unreadable", arm->name,
-               case_index, path);
+   if (failed || truncated) {
+      snprintf(why, why_size,
+               "arm %s case %u: %s is unreadable or longer than %zu bytes",
+               arm->name, case_index, path, sizeof(text) - 1);
       return false;
    }
    text[length] = '\0';
@@ -950,8 +973,14 @@ enroll_case(struct arm *arm, uint32_t case_index,
                arm->name, case_index, path);
       return false;
    }
-   e->actual_ib_dwords = (uint32_t)strtoul(dwords, NULL, 10);
-   e->actual_reloc_count = (uint32_t)strtoul(relocs, NULL, 10);
+   if (!parse_manifest_count(dwords, &e->actual_ib_dwords) ||
+       !parse_manifest_count(relocs, &e->actual_reloc_count)) {
+      snprintf(why, why_size,
+               "arm %s case %u: %s states a stream shape that is not a "
+               "count: ib_dwords \"%s\", reloc_count \"%s\"",
+               arm->name, case_index, path, dwords, relocs);
+      return false;
+   }
    const uint32_t expected_ib_dwords =
       predicted->ib_dwords + enrollment_perturb_dwords;
    if (e->actual_ib_dwords != expected_ib_dwords) {

@@ -257,6 +257,22 @@ main(void)
             "an incomplete operation set runs no stage");
    }
 
+   /* The refusal reports through failed_stage, so a caller that supplies
+    * none is refused before the sequence writes through it. */
+   {
+      struct harness h;
+      harness_init(&h);
+      struct r3v_crossover_delivery_result result;
+      check(!r3v_crossover_deliver(&harness_ops, &h, &result, NULL, why,
+                                   sizeof(why)),
+            "a repetition with nowhere to report its stage is refused");
+      check(h.event_count == 0,
+            "a repetition with nowhere to report its stage runs no stage");
+      check(!r3v_crossover_deliver(&harness_ops, &h, NULL, &failed, why,
+                                   sizeof(why)),
+            "a repetition with nowhere to report its intervals is refused");
+   }
+
    if (failures != 0) {
       fprintf(stderr, "%d predicate(s) failed\n", failures);
       return 1;

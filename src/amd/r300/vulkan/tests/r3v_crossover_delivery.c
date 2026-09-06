@@ -53,10 +53,15 @@ r3v_crossover_deliver(const struct r3v_crossover_delivery_ops *ops, void *ctx,
                       enum r3v_crossover_delivery_stage *failed_stage,
                       char *why, size_t why_size)
 {
+   /* Every output the sequence writes through is held before it is
+    * written: reporting a refused stage through the pointer whose
+    * absence is the refusal would dereference it first. */
+   if (failed_stage == NULL)
+      return false;
    *failed_stage = R3V_CROSSOVER_STAGE_INITIALIZE;
-   if (ops == NULL || out == NULL || failed_stage == NULL ||
-       ops->read_clock == NULL || ops->initialize == NULL ||
-       ops->record == NULL || ops->delay == NULL || ops->submit == NULL ||
+   if (ops == NULL || out == NULL || ops->read_clock == NULL ||
+       ops->initialize == NULL || ops->record == NULL ||
+       ops->delay == NULL || ops->submit == NULL ||
        ops->await_completion == NULL || ops->make_visible == NULL ||
        ops->verify == NULL) {
       snprintf(why, why_size,
