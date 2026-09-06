@@ -2795,6 +2795,34 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 600,
       suite : ['r3v'],
     )
+    # The calibration pair for the release-verdict audit, built so their
+    # own compile commands reach compile_commands.json.  They differ only
+    # in where NDEBUG is undefined relative to the <assert.h> include,
+    # which decides whether their verdicts survive.
+    r3v_ndebug_fixture_late_undef = executable(
+      'r3v_ndebug_fixture_late_undef',
+      files('tests/r3v_ndebug_fixture_late_undef.c'),
+      build_by_default : true,
+      install : false,
+    )
+    r3v_ndebug_fixture_early_undef = executable(
+      'r3v_ndebug_fixture_early_undef',
+      files('tests/r3v_ndebug_fixture_early_undef.c'),
+      build_by_default : true,
+      install : false,
+    )
+    test(
+      'r3v-release-verdict-audit',
+      prog_python,
+      args : [
+        files('tests/r3v_release_verdict_audit.py'),
+        meson.project_build_root(),
+        meson.project_source_root(),
+      ],
+      depends : [r3v_ndebug_fixture_late_undef, r3v_ndebug_fixture_early_undef],
+      timeout : 600,
+      suite : ['r3v'],
+    )
     r3v_public_rb2d_fill_oracle_tool = executable(
       'r3v_public_rb2d_fill_oracle_tool',
       [r3v_public_rb2d_fill_oracle_sources,
