@@ -32,13 +32,22 @@ test_z16_matches_the_cell(void)
    assert(s->height == R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT);
    assert(s->pitch_pixels == R300_ZB_DEPTH_CONTROL_PITCH_PIXELS);
    assert(s->allocation_rows == R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS);
-   assert(s->depth_sentinel == R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL);
+   assert(s->depth_sentinel_code == R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL);
    assert(s->microtile == R300_ZB_MICROTILE_LINEAR);
    assert(s->macrotile == R300_ZB_MACROTILE_LINEAR);
-   assert(s->host_addressable);
+   assert(s->raw_allocation_mapping);
+   assert(s->uniform_packed_initialization);
+   assert(s->logical_pixel_addressing);
+   assert(s->logical_image_readback);
    assert(r300_zb_depth_surface_tile_bits(s) == 0u);
-   assert(r300_zb_depth_surface_bytes(s) ==
+   assert(r300_zb_depth_surface_kernel_bound_bytes(s) ==
           R300_ZB_DEPTH_CONTROL_DEPTH_BYTES);
+
+   /* Z16 stores the code itself, so the packed word equals the sentinel
+    * and the cell's existing memory writes keep their meaning. */
+   uint32_t word = 0u;
+   assert(r300_zb_depth_surface_packed_sentinel(s, &word) == 0);
+   assert(word == R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL);
 }
 
 /* The surface the ZMASK ladder needs: packed Z24/S8 at four bytes per
@@ -58,13 +67,79 @@ test_z24_macrotiled_shape(void)
    assert(s->bytes_per_pixel == 4u);
    assert(s->microtile == R300_ZB_MICROTILE_TILED);
    assert(s->macrotile == R300_ZB_MACROTILE_TILED);
-   assert(s->depth_sentinel == 0x00800000u);
-   assert(!s->host_addressable);
+   assert(s->depth_sentinel_code == 0x00800000u);
+   /* Raw bytes and a uniform packed fill hold; the coordinate transform
+    * both of the last two need does not exist, so both answer false. */
+   assert(s->raw_allocation_mapping);
+   assert(s->uniform_packed_initialization);
+   assert(!s->logical_pixel_addressing);
+   assert(!s->logical_image_readback);
    assert(s->width == r300_zb_depth_surface_z16_linear.width);
    assert(s->height == r300_zb_depth_surface_z16_linear.height);
    assert(s->pitch_pixels == r300_zb_depth_surface_z16_linear.pitch_pixels);
    assert(r300_zb_depth_surface_tile_bits(s) ==
           (R300_DEPTHMACROTILE_ENABLE | R300_DEPTHMICROTILE_TILED));
+
+   /* The sentinel is a depth code, and R300 packs Z24/S8 with depth in
+    * bits 31:8, so the word a host writes is the code shifted up.  A
+    * code copied straight into memory would name depth 0x008000 under
+    * stencil 0x00 instead. */
+   uint32_t word = 0u;
+   assert(r300_zb_depth_surface_packed_sentinel(s, &word) == 0);
+   assert(word == 0x80000000u);
+}
+
+/* pack and unpack are inverses over both formats, and each refuses a
+ * value wider than the field it would truncate. */
+static void
+test_pack_round_trip(void)
+{
+   const struct r300_zb_depth_surface *z16 =
+      &r300_zb_depth_surface_z16_linear;
+   const struct r300_zb_depth_surface *z24 =
+      &r300_zb_depth_surface_z24_macrotiled;
+   uint32_t word = 0u, depth = 0u, stencil = 0u;
+
+   /* Coordinate-tagged codes rather than one constant: a permutation or
+    * a lost shift shows up only where the values differ. */
+   for (uint32_t i = 0; i < 256u; i++) {
+      const uint32_t d24 = (i * 0x00010101u) & 0x00ffffffu;
+      const uint32_t s8 = (i * 7u) & 0xffu;
+      assert(r300_zb_depth_pack(z24, d24, s8, &word) == 0);
+      assert(word == ((d24 << 8) | s8));
+      assert(r300_zb_depth_unpack(z24, word, &depth, &stencil) == 0);
+      assert(depth == d24 && stencil == s8);
+
+      const uint32_t d16 = (i * 0x0101u) & 0xffffu;
+      assert(r300_zb_depth_pack(z16, d16, 0u, &word) == 0);
+      assert(word == d16);
+      assert(r300_zb_depth_unpack(z16, word, &depth, &stencil) == 0);
+      assert(depth == d16 && stencil == 0u);
+   }
+
+   /* The widest representable pair of each format packs; one more bit
+    * refuses rather than truncating. */
+   assert(r300_zb_depth_pack(z24, 0x00ffffffu, 0xffu, &word) == 0);
+   assert(word == 0xffffffffu);
+   assert(r300_zb_depth_pack(z24, 0x01000000u, 0u, &word) == -EINVAL);
+   assert(r300_zb_depth_pack(z24, 0u, 0x100u, &word) == -EINVAL);
+   assert(r300_zb_depth_pack(z16, 0xffffu, 0u, &word) == 0);
+   assert(r300_zb_depth_pack(z16, 0x10000u, 0u, &word) == -EINVAL);
+   /* A 16-bit surface stores no stencil, so any stencil refuses. */
+   assert(r300_zb_depth_pack(z16, 0u, 1u, &word) == -EINVAL);
+   /* A word carrying a bit outside the format's fields came from
+    * somewhere the format does not describe. */
+   assert(r300_zb_depth_unpack(z16, 0x10000u, &depth, &stencil) == -EINVAL);
+
+   assert(r300_zb_depth_pack(NULL, 0u, 0u, &word) == -EINVAL);
+   assert(r300_zb_depth_pack(z24, 0u, 0u, NULL) == -EINVAL);
+   assert(r300_zb_depth_unpack(z24, 0u, NULL, &stencil) == -EINVAL);
+   assert(r300_zb_depth_surface_packed_sentinel(NULL, &word) == -EINVAL);
+
+   struct r300_zb_depth_surface unknown = *z16;
+   unknown.depth_format = 3u;
+   assert(r300_zb_depth_pack(&unknown, 0u, 0u, &word) == -EINVAL);
+   assert(r300_zb_depth_unpack(&unknown, 0u, &depth, &stencil) == -EINVAL);
 }
 
 /* Each refusal alone: a descriptor differing from a legal one in exactly
@@ -129,11 +204,39 @@ test_check_refusals(void)
    m.allocation_rows = base.height - 1u;
    assert(r300_zb_depth_surface_check(&m) == -EINVAL);
 
-   /* Host addressing over a tiled surface is the claim that would
+   /* Logical addressing over a tiled surface is the claim that would
     * scatter a sentinel across tiles, so it is refused at the
-    * descriptor. */
+    * descriptor.  Row-major readback rides on it and refuses with it. */
    m = r300_zb_depth_surface_z24_macrotiled;
-   m.host_addressable = true;
+   m.logical_pixel_addressing = true;
+   assert(r300_zb_depth_surface_check(&m) == -EINVAL);
+
+   m = r300_zb_depth_surface_z24_macrotiled;
+   m.logical_image_readback = true;
+   assert(r300_zb_depth_surface_check(&m) == -EINVAL);
+
+   /* Each capability needs the one beneath it: nothing is written into
+    * an allocation no host maps, and no image is read back without the
+    * transform that names a pixel. */
+   m = base;
+   m.raw_allocation_mapping = false;
+   assert(r300_zb_depth_surface_check(&m) == -EINVAL);
+
+   m = base;
+   m.logical_pixel_addressing = false;
+   assert(r300_zb_depth_surface_check(&m) == -EINVAL);
+
+   /* Dropping the top two capabilities alone leaves a legal linear
+    * surface a host maps and fills uniformly. */
+   m = base;
+   m.logical_pixel_addressing = false;
+   m.logical_image_readback = false;
+   assert(r300_zb_depth_surface_check(&m) == 0);
+
+   /* A sentinel code wider than the format's depth field names no packed
+    * word. */
+   m = base;
+   m.depth_sentinel_code = 0x10000u;
    assert(r300_zb_depth_surface_check(&m) == -EINVAL);
 
    m = base;
@@ -153,8 +256,9 @@ main(void)
 {
    test_z16_matches_the_cell();
    test_z24_macrotiled_shape();
+   test_pack_round_trip();
    test_check_refusals();
-   printf("r300_zb_depth_surface: z16 identity, z24 shape, and every "
-          "check refusal hold\n");
+   printf("r300_zb_depth_surface: z16 identity, z24 packed shape, "
+          "pack/unpack round trip, and every check refusal hold\n");
    return 0;
 }

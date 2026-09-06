@@ -56,21 +56,42 @@ the surface declares, and the Z16 instance emits the retained stream byte
 for byte, which `r300-zb-depth-control-cell` holds.
 
 Emitting the Z24 surface still refuses, and the refusal names the reason:
-the pre-draw host fill is the comparison's other operand, and no
-logical-to-physical address transform for R300-class tiling exists in
-this tree to place it. Gallium never computes one -- `r300_transfer.c`
-routes a tiled map through a linear shadow texture and lets the engine
-move the bytes, and `radeon_surface.c` begins at `CHIP_R600` -- so
-`r300_get_pixel_alignment`'s tile-dimension table is the only tiling fact
-available to cross-check against, and `r300_zmask_layout.c` already
-consumes that much. The transform has to come from its own authority:
-either the R3xx and R5xx acceleration guides' tiling sections, or a
-silicon measurement that fills a one-pixel rectangle at a logical
-coordinate through a tiled `DST_PITCH_OFFSET` and reads the changed byte
-out of the linear object, which is rank-1 evidence on the RB2D engine the
-constant-fill route already receipts. Both are separate work with their
-own evidence record; `host_addressable` on the descriptor is the fact
-that closes the path until one lands.
+the cell writes its pre-draw depth per pixel and reads the result back as
+a row-major image, so both halves need the coordinate transform, and the
+descriptor answers `false` to `logical_pixel_addressing` and
+`logical_image_readback`. No logical-to-physical address transform for
+R300-class tiling exists in this tree. Gallium never computes one --
+`r300_transfer.c` routes a tiled map through a linear shadow texture and
+lets the engine move the bytes, and `radeon_surface.c` begins at
+`CHIP_R600` -- so `r300_get_pixel_alignment`'s tile-dimension table is
+the only tiling fact available to cross-check against, and
+`r300_zmask_layout.c` already consumes that much.
+
+The transform is derived from documentation and adjudicated on silicon,
+in that order. The AMD R3xx 3D register reference fixes `ZB_DEPTHOFFSET`,
+`ZB_DEPTHPITCH`, `ZB_FORMAT`, and the endian control; AMD Radeon R5xx
+Acceleration revision 1.5 section 2, which states its scope as R3xx
+through R5xx, fixes the 32-byte microblock, the 2 KiB macroblock, the 4x2
+microtile for 32-bit pixels, and the 32x16 macro-tiled block. Those
+constrain block size, alignment, and the legal combinations; they do not
+determine the intra-tile address permutation, which stays a labeled
+hypothesis until measured. The measurement runs through the ZB path
+itself: a uniformly initialized allocation, one tightly scissored logical
+pixel written at depth compare `ALWAYS` with compression and HyperZ off,
+then a raw mapping read to find the changed packed word. A tiled RB2D
+write establishes the RB2D engine's own address interpretation and is
+kept as a separate cross-engine comparison, so it is never promoted to
+`ZB_DEPTHPITCH` authority without an explicit equivalence test. The model
+is keyed on engine, surface format, microtile mode, macrotile mode,
+pitch, sample count, and base alignment, so no key is implicit.
+
+Uniform initialization does not wait on that transform. An uncompressed
+surface whose tiling permutes complete packed pixels carries a constant
+image invariant under the permutation, so a host that writes one repeated
+packed word across the whole allocation, padding included, produces the
+same image whatever the permutation is. The descriptor states that as
+`uniform_packed_initialization` beside `raw_allocation_mapping`, and both
+hold on the Z24 surface while the two addressing capabilities stay false.
 
 The allocation grows with the format: four bytes per pixel doubles the
 depth BO, and macrotiling imposes its own pitch alignment on top. The
@@ -78,11 +99,15 @@ depth oracle also widens from `uint16_t` to the 32-bit word Z24 stores,
 and it reads through the address model rather than through
 `y * pitch + x`.
 
-Z24 stores depth in the low 24 bits, so the variant's depth sentinel is
-`0x800000`, the same half-scale point `0x8000` marks in Z16: it sits
-between the near depth 0.25 and the far depth 0.75, which is the only
-property `R300_ZS_LESS` reads out of it. Every sentinel named below is
-that 24-bit value.
+The sentinel is a depth code and the memory word is its packed form. R300
+stores `S8_UINT_Z24_UNORM` with depth in bits 31:8 and stencil in bits
+7:0, so the half-scale code `0x800000` -- the Z24 counterpart of Z16's
+`0x8000`, sitting between the near depth 0.25 and the far depth 0.75,
+which is the only property `R300_ZS_LESS` reads out of it -- reaches
+memory as `0x80000000` under a zero stencil. `r300_zb_depth_pack` and
+`r300_zb_depth_unpack` carry that conversion and refuse a value wider
+than its field; every sentinel named below is the 24-bit code, never the
+word.
 
 ## The ladder
 
