@@ -14,8 +14,15 @@
  * choice, IB construction, relocation construction, the ioctl, hardware
  * execution, and completion all fall inside it; instance, device,
  * buffer, memory, mapping, command-pool and command-buffer creation,
- * the per-batch destination initialization, and the oracle pass all
- * fall outside.
+ * the per-repetition destination initialization, and the oracle pass all
+ * fall outside.  --inject-delay-ns measures timer sensitivity: a known
+ * interval slept inside the timed region moves the medians, and a run
+ * whose delayed and undelayed medians agree by substantially less than
+ * the interval reports a timer that is not measuring what it brackets.
+ * It says nothing about which work the bracket encloses -- a bracket
+ * holding only the sleep would pass it too -- and that enclosure is read
+ * out of run_one below, where the bracket opens after recording and the
+ * fence reset return and closes after the wait and the invalidate.
  *
  * One process holds one device per arm because the route gates and the
  * execution policy are read once at vkCreateDevice: the environment is
@@ -23,9 +30,14 @@
  * carries that arm's gate state for its lifetime.  A single device
  * could not answer for two routes, and two processes could not
  * interleave.  Trials alternate arm order every repetition so a thermal
- * or load drift lands on both arms equally, and the fill value advances
- * per repetition so a destination that kept an earlier repetition's
- * bytes fails the batch oracle.
+ * or load drift lands on both arms equally.  The fill value is constant
+ * per case, and every repetition restores the sentinel before its
+ * submission and verifies the interval after it, so a repetition that
+ * delivered nothing leaves the sentinel standing and fails on its own
+ * rather than hiding behind a later repetition's successful fill.  An
+ * arm whose contract cannot legalize the interval -- V1 outside its
+ * one-window envelope -- reports NOT_APPLICABLE and the sweep
+ * continues.
  */
 
 #include "amd/r300/common/r300_rb2d_legalize.h"
@@ -39,10 +51,14 @@
 #include <time.h>
 #include <vulkan/vulkan.h>
 
-/* The destination is initialized to the sentinel before every batch and
- * carries a tail past the largest fill, so a write that runs long is a
- * byte whose value decides its origin. */
+/* The destination is initialized to the sentinel before every repetition
+ * and carries a tail past the largest fill, so a write that runs long is
+ * a byte whose value decides its origin.  The fill value is constant per
+ * case and shares no byte with the sentinel, so a repetition that
+ * delivered nothing leaves the sentinel standing and fails on its own --
+ * which an oracle reading only a batch's final value cannot see. */
 #define CROSSOVER_SENTINEL 0xa5u
+#define CROSSOVER_FILL_VALUE 0x11223344u
 #define CROSSOVER_TAIL_CANARY 0xc3u
 #define CROSSOVER_TAIL_BYTES 64u
 #define CROSSOVER_MAX_REPS 4096u
@@ -72,6 +88,10 @@ struct arm {
     * open fill gates are refused at device creation, so each arm names
     * at most one. */
    const char *gate;
+   /* The contract whose envelope decides whether a size is this arm's to
+    * measure at all.  V1 admits one window and at most three rectangles,
+    * so a wider interval is NOT_APPLICABLE rather than a failed sample. */
+   enum r300_rb2d_contract contract;
    bool enabled;
    VkDevice device;
    VkQueue queue;
@@ -87,11 +107,14 @@ struct arm {
 };
 
 static struct arm arms[ARM_COUNT] = {
-   [ARM_HOST] = { .name = "host", .policy = "cpu_reference", .gate = NULL },
+   [ARM_HOST] = { .name = "host", .policy = "cpu_reference", .gate = NULL,
+                  .contract = R300_RB2D_CONTRACT_CONST_FILL_V2 },
    [ARM_V2] = { .name = "v2", .policy = "gpu_only",
-                .gate = "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL" },
+                .gate = "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL",
+                .contract = R300_RB2D_CONTRACT_CONST_FILL_V2 },
    [ARM_V1] = { .name = "v1", .policy = "gpu_only",
-                .gate = "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL" },
+                .gate = "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_EXPERIMENTAL",
+                .contract = R300_RB2D_CONTRACT_CONST_FILL_V1 },
 };
 
 static VkInstance instance;
@@ -100,6 +123,11 @@ static VkPhysicalDeviceProperties device_properties;
 static VkPhysicalDeviceMemoryProperties memory_properties;
 static uint64_t allocation_bytes;
 static uint64_t wait_bound_ns = (uint64_t)10 * 1000 * 1000 * 1000;
+/* A known interval slept inside the timed region.  The bracket's own
+ * oracle: a sweep whose delayed and undelayed medians agree by less than
+ * this proves the timer does not contain the work it names.  Zero for
+ * every measuring run. */
+static uint64_t inject_delay_ns;
 
 static int
 refuse(const char *why)
@@ -158,7 +186,8 @@ median_absolute_deviation(const uint64_t *sorted, uint32_t n, uint64_t median)
  * reads no device, so the harness records the shape a timing row belongs
  * to without deriving it from a submission. */
 static void
-predict(uint64_t size, struct r300_rb2d_legalize_result *result)
+predict(uint64_t size, enum r300_rb2d_contract contract,
+        struct r300_rb2d_legalize_result *result)
 {
    static struct r300_rb2d_window windows[R300_RB2D_LEGALIZE_MAX_WINDOWS];
    const struct r300_rb2d_legalize_request request = {
@@ -167,7 +196,7 @@ predict(uint64_t size, struct r300_rb2d_legalize_result *result)
       .pattern = 0,
       .bo_size = allocation_bytes,
       .usage = R300_RB2D_USAGE_FILL_BUFFER,
-      .contract = R300_RB2D_CONTRACT_CONST_FILL_V2,
+      .contract = contract,
       .minimum_evidence = R300_RB2D_PITCH_EVIDENCE_SILICON_RECEIPT,
       .minimum_contract_evidence = R300_RB2D_CONTRACT_EVIDENCE_SILICON_RECEIPT,
       .pinned_pitch_bytes = 0,
@@ -342,9 +371,10 @@ close_arm(struct arm *arm)
    arm->device = VK_NULL_HANDLE;
 }
 
-/* Restores the whole destination to the sentinel and publishes it, so
- * the batch that follows starts from bytes whose value names their
- * origin.  Runs between batches, never inside a timed interval. */
+/* Restores the whole destination to the sentinel and publishes it under
+ * the memory type's coherence contract, so the repetition that follows
+ * starts from bytes whose value names their origin.  Runs before every
+ * repetition, never inside a timed interval. */
 static bool
 initialize_destination(struct arm *arm, char *why, size_t why_size)
 {
@@ -406,6 +436,15 @@ run_one(struct arm *arm, uint64_t size, uint32_t value, uint64_t *elapsed_ns,
    }
 
    const uint64_t start = now_ns();
+   /* Inside the bracket by construction, so a run with a delay measures
+    * the timer's sensitivity to an interval the bracket encloses. */
+   if (inject_delay_ns != 0) {
+      const struct timespec delay = {
+         .tv_sec = (time_t)(inject_delay_ns / 1000000000u),
+         .tv_nsec = (long)(inject_delay_ns % 1000000000u),
+      };
+      nanosleep(&delay, NULL);
+   }
    r = vkQueueSubmit(arm->queue, 1,
                      &(VkSubmitInfo){
                         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -444,14 +483,14 @@ run_one(struct arm *arm, uint64_t size, uint32_t value, uint64_t *elapsed_ns,
    return true;
 }
 
-/* The batch oracle: every dword of the interval carries the last
- * repetition's value and every byte past it carries the sentinel.  A
- * route that wrote nothing, wrote short, wrote an earlier repetition's
- * value, or wrote past the interval fails here, so a timing row that
- * survives rests on delivered bytes. */
+/* The repetition oracle: every dword of the interval carries the fill
+ * value and every byte past it carries the sentinel this repetition's
+ * own initialization wrote.  A route that wrote nothing, wrote short, or
+ * wrote past the interval fails here, on its own repetition, so every
+ * timing row rests on bytes that repetition delivered. */
 static bool
-verify_batch(const struct arm *arm, uint64_t size, uint32_t value, char *why,
-             size_t why_size)
+verify_repetition(const struct arm *arm, uint64_t size, uint32_t value,
+                  char *why, size_t why_size)
 {
    for (uint64_t i = 0; i < size; i += 4) {
       uint32_t observed;
@@ -459,7 +498,7 @@ verify_batch(const struct arm *arm, uint64_t size, uint32_t value, char *why,
       if (observed != value) {
          snprintf(why, why_size,
                   "arm %s size %" PRIu64 ": dword at %" PRIu64
-                  " is 0x%08x, the batch wrote 0x%08x",
+                  " is 0x%08x, the repetition wrote 0x%08x",
                   arm->name, size, i, observed, value);
          return false;
       }
@@ -474,6 +513,24 @@ verify_batch(const struct arm *arm, uint64_t size, uint32_t value, char *why,
       }
    }
    return true;
+}
+
+/* An arm whose contract cannot represent the interval.  The refusal is
+ * the contract answering, so the cell reports NOT_APPLICABLE and the
+ * campaign continues; counting it as a failed sample would end a
+ * host-against-v2 sweep on a diagnostic arm. */
+static void
+report_not_applicable(FILE *json, const struct arm *arm, uint64_t size,
+                      const struct r300_rb2d_legalize_result *shape)
+{
+   printf("size=%-9" PRIu64 " arm=%-5s NOT_APPLICABLE refusal=%s\n", size,
+          arm->name, r300_rb2d_legalize_refusal_name(shape->refusal));
+   if (json != NULL)
+      fprintf(json,
+              "{\"size_bytes\":%" PRIu64 ",\"arm\":\"%s\","
+              "\"disposition\":\"NOT_APPLICABLE\",\"refusal\":\"%s\"}\n",
+              size, arm->name,
+              r300_rb2d_legalize_refusal_name(shape->refusal));
 }
 
 static void
@@ -555,6 +612,13 @@ main(int argc, char **argv)
          if (!parse_u64(argv[++i], &value) || value == 0 || value % 4 != 0)
             return refuse("--size is not a positive dword multiple");
          sizes[size_count++] = value;
+      } else if (strcmp(argv[i], "--inject-delay-ns") == 0 && i + 1 < argc) {
+         uint64_t value;
+         /* The bracket's calibration arm: a delay this long inside the
+          * timed region must raise every median by at least itself. */
+         if (!parse_u64(argv[++i], &value) || value > 1000000000u)
+            return refuse("--inject-delay-ns is above one second");
+         inject_delay_ns = value;
       } else if (strcmp(argv[i], "--wait-bound-ns") == 0 && i + 1 < argc) {
          uint64_t value;
          if (!parse_u64(argv[++i], &value) || value == 0 ||
@@ -564,6 +628,7 @@ main(int argc, char **argv)
       } else {
          fprintf(stderr,
                  "usage: %s [--reps N] [--warmup N] [--size BYTES ...] "
+                 "[--inject-delay-ns NS] "
                  "[--json PATH] [--no-v1] [--wait-bound-ns NS]\n",
                  argv[0]);
          return 2;
@@ -640,28 +705,33 @@ main(int argc, char **argv)
 
    for (uint32_t s = 0; s < size_count; s++) {
       const uint64_t size = sizes[s];
-      struct r300_rb2d_legalize_result shape;
-      predict(size, &shape);
-
+      /* One shape per arm, because the two GPU contracts legalize the
+       * same interval differently and V1's refusal is what decides
+       * applicability. */
+      struct r300_rb2d_legalize_result shapes[ARM_COUNT];
+      bool applicable[ARM_COUNT];
       for (uint32_t a = 0; a < ARM_COUNT; a++) {
-         if (!arms[a].enabled)
-            continue;
+         predict(size, arms[a].contract, &shapes[a]);
+         applicable[a] = shapes[a].refusal == R300_RB2D_LEGALIZE_OK;
          arms[a].sample_count = 0;
-         if (!initialize_destination(&arms[a], why, sizeof(why))) {
-            status = refuse(why);
-            goto close_json;
-         }
       }
-      /* Warm both routes on this size before any sample: the first
-       * submission on an interval pays page faults and allocator work
-       * that no later one repeats. */
+      /* The host arm measures the store loop whatever a GPU contract
+       * says of the interval, so its applicability follows the sweep
+       * rather than a carrier. */
+      applicable[ARM_HOST] = true;
+
+      /* Warm every applicable arm on this size before any sample: the
+       * first submission on an interval pays page faults and allocator
+       * work that no later one repeats.  The warm-up runs the measured
+       * protocol exactly, constant value and all. */
       for (uint32_t w = 0; w < warmup; w++) {
          for (uint32_t a = 0; a < ARM_COUNT; a++) {
             uint64_t discarded;
-            if (!arms[a].enabled)
+            if (!arms[a].enabled || !applicable[a])
                continue;
-            if (!run_one(&arms[a], size, 0x5a5a0000u + w, &discarded, why,
-                         sizeof(why))) {
+            if (!initialize_destination(&arms[a], why, sizeof(why)) ||
+                !run_one(&arms[a], size, CROSSOVER_FILL_VALUE, &discarded,
+                         why, sizeof(why))) {
                status = refuse(why);
                goto close_json;
             }
@@ -669,17 +739,28 @@ main(int argc, char **argv)
       }
       /* Alternating arm order per repetition, so a drift over the batch
        * falls on each arm in equal measure rather than on whichever ran
-       * last. */
-      uint32_t value = 0;
+       * last.  Each repetition reinitializes, times one submission, and
+       * verifies, with initialization and verification outside the
+       * bracket on every arm. */
       for (uint32_t rep = 0; rep < reps; rep++) {
          for (uint32_t k = 0; k < ARM_COUNT; k++) {
             const uint32_t a = (rep % 2 == 0) ? k : ARM_COUNT - 1 - k;
-            if (!arms[a].enabled)
+            if (!arms[a].enabled || !applicable[a])
                continue;
             uint64_t elapsed;
-            value = 0x11223344u + rep;
-            if (!run_one(&arms[a], size, value, &elapsed, why, sizeof(why))) {
+            if (!initialize_destination(&arms[a], why, sizeof(why))) {
                status = refuse(why);
+               goto close_json;
+            }
+            if (!run_one(&arms[a], size, CROSSOVER_FILL_VALUE, &elapsed, why,
+                         sizeof(why))) {
+               status = refuse(why);
+               goto close_json;
+            }
+            if (!verify_repetition(&arms[a], size, CROSSOVER_FILL_VALUE, why,
+                                   sizeof(why))) {
+               fprintf(stderr, "REPETITION_MISMATCH: %s\n", why);
+               status = 1;
                goto close_json;
             }
             arms[a].samples[arms[a].sample_count++] = elapsed;
@@ -688,12 +769,10 @@ main(int argc, char **argv)
       for (uint32_t a = 0; a < ARM_COUNT; a++) {
          if (!arms[a].enabled)
             continue;
-         if (!verify_batch(&arms[a], size, value, why, sizeof(why))) {
-            fprintf(stderr, "BATCH_MISMATCH: %s\n", why);
-            status = 1;
-            goto close_json;
-         }
-         report_arm(json, &arms[a], size, &shape);
+         if (!applicable[a])
+            report_not_applicable(json, &arms[a], size, &shapes[a]);
+         else
+            report_arm(json, &arms[a], size, &shapes[a]);
       }
       fflush(stdout);
    }

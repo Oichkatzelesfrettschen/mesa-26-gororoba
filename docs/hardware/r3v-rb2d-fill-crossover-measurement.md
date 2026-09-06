@@ -28,10 +28,33 @@ batch oracle, and every line of output. Those are qualification machinery,
 and a timing row that carried them would report the harness rather than the
 route.
 
-The falsifier for the bracket itself is the largest size: an 8 MiB host
-fill is a K8 store loop over 8 MiB and lands in the tens of milliseconds. A
-host arm reporting microseconds there proves the bracket missed the work,
-and every threshold derived from that sweep is void.
+Two separate facts make the bracket trustworthy, and neither substitutes
+for the other.
+
+That the timer reports elapsed wall time at all is measured.
+`--inject-delay-ns N` sleeps a known interval inside the timed region on
+every arm; a sweep whose delayed and undelayed medians differ by
+substantially less than the injected interval reports a timer that is not
+measuring what it brackets. It proves timer sensitivity to an interval
+inside the bracket and nothing more: a bracket containing only the sleep
+would pass it too. The comparison is also one-directional, because the
+measured workload varies between runs and no exact difference is
+predicted.
+
+That the bracket contains the submission is read out of the control flow,
+not inferred from a duration. `run_one` opens the bracket after recording,
+fence reset, and destination initialization have all returned, and closes
+it after `vkWaitForFences` and the memory contract's invalidate; the
+submit sits between them with nothing else. A reader checks that
+enclosure by reading the function, which is the only thing that can
+establish it.
+
+A predicted floor -- "an 8 MiB host fill takes at least this long" -- is a
+performance claim, not a timer oracle, so the duration is whatever the
+hardware reports. Delivered bytes carry the rest: the per-repetition
+verification below fails a repetition that wrote nothing, so no timing row
+survives without its write, though delivery is not by itself evidence that
+the delivery fell inside the timer.
 
 ## Arms
 
@@ -54,7 +77,11 @@ open and an empty admitted set, AUTO performs that same store loop today.
 
 The AUTO decision is host against `v2`. `v1` is a diagnostic control: it
 detects a V2 regression against the route whose stream the legalizer
-reproduces byte for byte, and it never enters the threshold.
+reproduces byte for byte, and it never enters the threshold. `v1` admits
+one window, so a size its contract cannot represent records
+`NOT_APPLICABLE` for that cell and the campaign continues; its refusal is
+the contract answering, and treating it as a failed sample would end a
+host-against-`v2` sweep on a diagnostic arm.
 
 ## Sizes
 
@@ -76,10 +103,12 @@ size, so two measured sizes bracket it exactly:
 | 4 through 2096896 | 256 | 1 | 1 | 1 | 26 |
 | 2096900 through 8388608 | 16320 | 1 | 2 | 1 | 32 |
 
-The stream shape barely moves across the whole sweep -- one window, one
-relocation site, 26 or 32 dwords -- so the GPU arm's cost is the ioctl,
-validation, and engine time, not the indirect buffer. That prediction is
-what the measurement tests.
+The two sides of the step differ in stream shape as well as in carrier:
+six dwords, 24 bytes, and one additional rectangle. Every row records the
+pitch, window count, rectangle count, relocation-site count, and IB dwords
+beside its elapsed time, so a difference measured across the step is
+attributed after the fact against the recorded shape rather than assigned
+to the ioctl and the engine in advance.
 
 Each row records the shape the interval belongs to. The harness derives it
 by calling `r300_rb2d_legalize_linear_span` directly, which reads no
@@ -96,15 +125,22 @@ Report median, median absolute deviation, p10, p90, and the raw samples;
 the median and the MAD are the statistics a single stalled repetition
 cannot move.
 
-Advance the fill value per repetition. A destination that kept an earlier
-repetition's bytes then fails the batch oracle, so a route that stopped
-delivering cannot pass by leaving the previous pattern in place.
+Hold the fill value constant within a case and reinitialize before every
+repetition. Restore the interval and its guards to a sentinel differing
+from every byte of the fill pattern, publish that initialization under the
+memory type's coherence contract, then time one submission, then verify
+the exact interval and the guards -- all of it outside the timer except
+the submission itself. A repetition that delivered nothing leaves the
+sentinel standing and fails on its own, which a batch oracle reading only
+the final value cannot see: an intermediate submission that did no work
+hides behind a successful final fill.
 
-Verify after each batch, outside the timer: every dword of the interval
-carries the last repetition's value and every byte past it carries the
-sentinel the batch initialization wrote. A route that wrote nothing, wrote
-short, wrote an earlier value, or wrote past the interval fails there, and
-every surviving timing row rests on delivered bytes.
+Constant repetition measures performance; it does not cover patterns.
+Pattern independence is a correctness fixture with its own arms. Recording
+the conditioning matters too, because sentinel initialization leaves the
+destination in a written cache state and both arms are measured under it;
+a threshold derived here does not transfer to a different cache or
+memory-visibility workload without measuring that workload.
 
 Repetition is what a timing campaign is; the one-attempt rule that governs
 a receipt cell governs a sealed prediction against an unknown outcome, and
