@@ -28,8 +28,14 @@ import shlex
 import subprocess
 import sys
 
-# The tree this qualification covers.
+# The tree this qualification covers, and inside it the test translation
+# units alone.  A driver source linked into a test binary keeps the
+# NDEBUG setting its profile gives it -- a release driver that aborted on
+# an internal assertion would be a different driver from the one under
+# test -- so the audit judges the files that carry verdicts, which this
+# tree keeps under a tests directory.
 SCOPE = os.path.join("src", "amd", "r300")
+TEST_SOURCE_DIRECTORY = "tests"
 # The calibration pair, audited as fixtures rather than as tests: the
 # late-undef file must be refused and the early-undef file admitted.
 FIXTURE_REFUSED = "r3v_ndebug_fixture_late_undef.c"
@@ -228,6 +234,9 @@ def main():
                     continue
                 if SCOPE not in source:
                     continue
+                parts = os.path.normpath(source).split(os.sep)
+                if TEST_SOURCE_DIRECTORY not in parts[:-1]:
+                    continue
                 audited[source] = target["name"]
 
     fixtures = {}
@@ -256,6 +265,7 @@ def main():
     if not audited:
         fail(f"the audit found no registered test source under {SCOPE}; an "
              f"empty audited set proves nothing")
+    print(f"audited {len(audited)} test translation unit(s) under {SCOPE}")
 
     inert = []
     unreadable = []
