@@ -978,6 +978,20 @@ struct r3v_native_device {
     * supplies this one too; production leaves the provider null and the
     * board resolved at physical-device creation governs. */
    enum r300_platform_id arming_platform;
+   /* Allocations this device has published, and the source of the
+    * generation each one carries.  vkAllocateMemory acquires no queue
+    * lock -- Vulkan orders commands externally only where a command's
+    * own external-synchronization requirement says so, and allocation
+    * carries none -- so two threads allocating at once take their
+    * generations through an atomic increment rather than inheriting a
+    * queue's order.  The increment provides distinct values and nothing
+    * more: it publishes no other driver state.
+    *
+    * The counter does not wrap in practice: a device would have to
+    * publish 2^64 allocations first, which at one allocation per
+    * nanosecond is roughly five hundred years of continuous
+    * allocation. */
+   uint64_t allocation_generation_counter;
    /* The bounded measurement campaign this device was created under.  It
     * is opened once, inside vkCreateDevice, over the declaration
     * R3V_NATIVE_MEASUREMENT_DECLARATION names; a device created without
@@ -1102,6 +1116,24 @@ struct r3v_native_memory {
    struct vk_device_memory vk;
    struct radeon_drm_vk_bo bo;
    void *map;
+   /* Which allocation on this device this is, taken from the device's
+    * counter before the handle is published and never written again.  A
+    * GEM handle indexes one DRM file's object table and is recycled once
+    * the object it named is destroyed, so a binding that recorded the
+    * handle alone would accept a different allocation reusing the
+    * number.  Zero is no allocation: the counter's first value is one,
+    * so a published allocation always carries a nonzero generation and a
+    * zeroed structure carries none.
+    *
+    * The scope is one device.  Every VkDevice a physical device creates
+    * shares that physical device's render-node file descriptor, and so
+    * one GEM handle table, while each device counts its allocations on
+    * its own.  Two devices therefore assign one generation to two
+    * different objects, which decides nothing, because
+    * r3v_BindBufferMemory2 refuses a buffer and a memory object that do
+    * not both belong to the binding device: a session compares handles
+    * and generations its own device stamped. */
+   uint64_t generation;
 };
 
 /* Vulkan bindings and their GEM BOs use one page of alignment. */
