@@ -170,6 +170,29 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # The bounded measurement session: the declaration a campaign is written
+  # against, the late binding that resolves its destination inside one live
+  # device, and the finite budget that separates repetition from identity.
+  # Every refusal arm is reached alone -- malformed declaration, unknown
+  # schema, epoch mismatch, route mismatch, undeclared case, role mismatch,
+  # replaced destination, recycled handle over a new allocation, identity
+  # mismatch, exhausted budget, closed session -- and exactly the declared
+  # number of identical repetitions passes while the next one refuses.
+  test(
+    'r3v-measurement-session',
+    executable(
+      'r3v_measurement_session_test',
+      files('tests/r3v_measurement_session_test.c',
+            'r3v_measurement_session.c', 'r3v_fill_route.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : libr300_common,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Submit preflight: the census reproduces the queue's former field list
   # over all thirty-two combinations of its ordered-work counters, each
   # whole-submit refusal is reachable alone, the transaction admits a
