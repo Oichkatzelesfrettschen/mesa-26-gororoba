@@ -29,15 +29,30 @@ FIXTURE_SRCVERSION = "FIXTURESRCVERSION0000000"
 SPECIMEN_SUBSYSTEM = "1028:022a"
 SPECIMEN_DMI = "Vostro   1000 "
 SPECIMEN_PLATFORM = "vostro1000_rs485m_5974"
-# Two intervals the V1 contract covers in one window, so both arms admit
-# both cases and the schedule is the three-arm cycle throughout.
-SIZES = (256, 4096)
+# Two intervals the V1 contract covers in one window, and one past its
+# one-window envelope.  The third size is what exercises the arm-specific
+# schedule: V1 omits it from its declaration and its cases, so its case
+# numbering skews from the sweep's, its budget is smaller than V2's, and
+# that size runs on the two-arm balancing cycle rather than the
+# three-arm one.
+# The refused interval sits between two admitted ones, so V1's case 1 is
+# the sweep's size 2: an arm that numbered its cases by sweep position
+# would look for a case directory it never retained.
+SIZES = (256, 8388608, 4096)
+# The sizes V1 admits.  The run must report the remainder NOT_APPLICABLE;
+# if the legalizer ever admits one, the declaration disagrees with the
+# schedule and the harness refuses, which is the right way to find out.
+V1_SIZES = (256, 4096)
 FILL_VALUE = 0x11223344
 WAIT_BOUND_NS = 30000000000
 WARMUP = 1
-# The three-arm balancing cycle is 6, so the measured repetition count
-# completes it.
+# The three-arm balancing cycle is 6 and the two-arm cycle is 2, so this
+# repetition count completes both.
 REPS = 6
+
+
+def arm_sizes(arm):
+    return V1_SIZES if arm == "v1" else SIZES
 
 REFUSED = 2
 ORACLE_FAILED = 1
@@ -112,12 +127,17 @@ class Harness:
                 ("v1", "rb2d_const_fill", v1_declaration)):
             if no_v1 and arm == "v1":
                 continue
+            # Each arm declares the cases it admits: V1's declaration
+            # omits the intervals its contract refuses, so its case
+            # numbering and its budget are its own.
+            declared = tuple(s for s in sizes
+                             if arm != "v1" or s in V1_SIZES)
             path = os.path.join(root, f"{arm}.declaration")
             with open(path, "w", encoding="ascii") as handle:
                 handle.write(declaration if declaration is not None else
                              declaration_text(f"{label}-{arm}", self.kernel,
                                               route, self.allocation_bytes,
-                                              sizes=sizes, warmup=warmup,
+                                              sizes=declared, warmup=warmup,
                                               reps=reps))
             directory = os.path.join(root, f"evidence-{arm}")
             os.makedirs(directory)
@@ -210,8 +230,9 @@ def run_checks(crossover, work):
         fail(f"campaign: exit {ok.returncode}\n{ok.stdout}\n{ok.stderr}")
 
     samples = rows(ok, "sample")
-    expected_per_arm = len(SIZES) * (WARMUP + REPS)
     for arm in ("host", "v2", "v1"):
+        sizes = arm_sizes(arm)
+        expected_per_arm = len(sizes) * (WARMUP + REPS)
         arm_rows = [s for s in samples if s["arm"] == arm]
         if len(arm_rows) != expected_per_arm:
             fail(f"campaign: arm {arm} published {len(arm_rows)} samples, "
@@ -231,15 +252,22 @@ def run_checks(crossover, work):
                  f"that absorbs its submissions")
         warmups = [s for s in arm_rows if s["phase"] == "warmup"]
         measured = [s for s in arm_rows if s["phase"] == "measured"]
-        if len(warmups) != len(SIZES) * WARMUP:
+        if len(warmups) != len(sizes) * WARMUP:
             fail(f"campaign: arm {arm} counted {len(warmups)} warmups")
-        if len(measured) != len(SIZES) * REPS:
+        if len(measured) != len(sizes) * REPS:
             fail(f"campaign: arm {arm} counted {len(measured)} measured "
                  f"repetitions")
         # Per case, not merely per arm: an aggregate total lets one case
         # publish another's rows and still sum correctly.
-        for case_id in range(len(SIZES)):
+        for case_id in range(len(sizes)):
             case_rows = [s for s in arm_rows if s["case_id"] == case_id]
+            # The case's own fill size, so V1's case 1 naming the sweep's
+            # size 1 rather than its own would fail here.
+            if case_rows and {s["fill_bytes"] for s in case_rows} != {
+                    sizes[case_id]}:
+                fail(f"campaign: arm {arm} case {case_id} carries "
+                     f"{sorted({s['fill_bytes'] for s in case_rows})}, not "
+                     f"its declared size {sizes[case_id]}")
             if len(case_rows) != WARMUP + REPS:
                 fail(f"campaign: arm {arm} case {case_id} published "
                      f"{len(case_rows)} samples, the run declared "
@@ -260,24 +288,28 @@ def run_checks(crossover, work):
     # The measured schedule balances position: over a completed cycle
     # every arm holds every position equally often.  A schedule that
     # reverses three arms leaves the middle one fixed, which this counts.
-    for case_id in range(len(SIZES)):
+    for size in SIZES:
         histogram = {}
         for s in samples:
-            if s["case_id"] != case_id or s["phase"] != "measured":
+            if s["fill_bytes"] != size or s["phase"] != "measured":
                 continue
             histogram.setdefault(s["arm"], {}).setdefault(s["position"], 0)
             histogram[s["arm"]][s["position"]] += 1
-        if len(histogram) != len(("host", "v2", "v1")):
-            fail(f"campaign: case {case_id} published {len(histogram)} "
-                 f"arms, so its position balance is not over three")
+        # The arms this size admits, and no others: a size V1 refuses
+        # runs the two-arm schedule and must balance over two positions.
+        expected_arms = {a for a in ("host", "v2", "v1") if size in
+                         arm_sizes(a)}
+        if set(histogram) != expected_arms:
+            fail(f"campaign: size {size} published {sorted(histogram)}, "
+                 f"and the contracts admit {sorted(expected_arms)}")
         for arm, positions in histogram.items():
             if sorted(positions) != list(range(len(histogram))):
-                fail(f"campaign: case {case_id} arm {arm} never held every "
+                fail(f"campaign: size {size} arm {arm} never held every "
                      f"position; it held {sorted(positions)}")
             counts = set(positions.values())
             if len(counts) != 1:
-                fail(f"campaign: case {case_id} arm {arm} held its "
-                     f"positions unequally: {positions}")
+                fail(f"campaign: size {size} arm {arm} held its positions "
+                     f"unequally: {positions}")
 
     # Every sample carries both intervals, and the transport interval is
     # nested inside the delivery interval it belongs to.
@@ -307,9 +339,10 @@ def run_checks(crossover, work):
     # Each GPU arm retained exactly one transport per case, into its own
     # evidence directory, and nothing into the shared root.
     for arm in ("v2", "v1"):
+        sizes = arm_sizes(arm)
         directory = ok.evidence[arm]
         entries = sorted(os.listdir(directory))
-        expected = [f"case-{i}" for i in range(len(SIZES))]
+        expected = [f"case-{i}" for i in range(len(sizes))]
         if entries != expected:
             fail(f"campaign: arm {arm} retained {entries}, not {expected}")
         digests = set()
@@ -328,13 +361,29 @@ def run_checks(crossover, work):
             # differs while the bytes do not fails here.
             with open(os.path.join(directory, case, "ib.bin"), "rb") as blob:
                 streams.add(blob.read())
-        if len(digests) != len(SIZES) or len(streams) != len(SIZES):
+        if len(digests) != len(sizes) or len(streams) != len(sizes):
             fail(f"campaign: arm {arm} retained one stream for two cases")
 
     # The two GPU arms are separate campaigns: neither retained into the
     # other's destination, and each opened its own declaration.
     if ok.evidence["v2"] == ok.evidence["v1"]:
         fail("campaign: the two GPU arms share one evidence destination")
+
+    # V1 reports the intervals its contract refuses rather than failing
+    # on them, and measures none of them.
+    refused = [c for c in cells if c["arm"] == "v1" and
+               c.get("disposition") == "NOT_APPLICABLE"]
+    expected_refused = [s for s in SIZES if s not in V1_SIZES]
+    if sorted(c["fill_bytes"] for c in refused) != sorted(expected_refused):
+        fail(f"campaign: v1 reported "
+             f"{sorted(c['fill_bytes'] for c in refused)} not applicable, "
+             f"and its contract refuses {sorted(expected_refused)}")
+    if not all(c.get("refusal") for c in refused):
+        fail("campaign: a NOT_APPLICABLE cell names no refusal")
+    if any(s["arm"] == "v1" and s["fill_bytes"] in expected_refused
+           for s in samples):
+        fail("campaign: v1 published a sample for an interval its "
+             "contract refuses")
 
     # The completeness record accounts for every published row.
     completeness = rows(ok, "completeness")
