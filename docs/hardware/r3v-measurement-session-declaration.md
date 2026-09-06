@@ -16,6 +16,15 @@ exact cases, and the budgets. It is read and hashed once at
 `vkCreateDevice`, beside the route gates, so nothing the environment does
 afterward moves a decision under a recorded command buffer.
 
+Two layers carry that. `r3v_measurement_session.c` is the predicate: it
+parses a declaration, holds a request to it, binds a destination, and
+counts executions, and it reads no device and no file. Everything the
+predicate is called at -- the device-creation read and hash, the epoch
+facts, the route name, the resolved destination, and the consume site
+before the ioctl -- is the driver's, and "What the wiring owes the predicate" names each
+obligation. A rule stated here without a named owner is a rule nothing
+enforces.
+
 The binding happens inside the device. The first authorized preparation
 of each case resolves the destination through the recorded `VkBuffer` and
 its bound memory, holds that resolution to the declared role, and records
@@ -37,7 +46,10 @@ refuses as a rebound destination.
 
 Lines of `key = value`, `#` starting a comment, every scalar key
 required. A key this reader does not read refuses the declaration rather
-than being ignored.
+than being ignored. A number is decimal or `0x`-prefixed hexadecimal and
+nothing else: a leading sign refuses, because `strtoull` would negate it
+into the unsigned range, and a leading zero refuses, because base zero
+would read `0644` as `420`.
 
 | Key | Meaning |
 | --- | --- |
@@ -75,14 +87,39 @@ is an execution whatever the ioctl returns. A completion failure, an
 identity mismatch, or an oracle failure closes the session, and a closed
 session refuses every further request.
 
+## What the wiring owes the predicate
+
+The predicate holds these only when the driver calls it where the table
+says. Each is the wiring's obligation, not a guarantee this file's
+implementation makes on its own.
+
+| Obligation | Site |
+| --- | --- |
+| read the declaration, hash it, parse it, open the session exactly once | `r3v_native_device_refresh_delivery_gates`, at `vkCreateDevice` |
+| hold the declaration to the running deployment | `r3v_measurement_manifest_epoch_check`, against the arming facts |
+| hold the resolved executor to the declared route | `r3v_measurement_session_route_check`, at route admission |
+| resolve the destination and hold it to the role | `r3v_measurement_session_role_check`, in the fill route |
+| stamp an allocation generation the binding can read | `vkAllocateMemory`, from a device-monotonic counter |
+| bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
+| consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site |
+| close the session on a failed completion or a failed oracle | the queue's transport tail |
+
+The predicate closes itself on the two failures it can see: a case that
+resolves to another allocation and a recomputed identity that left its
+binding both terminate the session rather than refusing alone, because a
+refusal would leave the binding standing and admit the next repetition
+against it. Device loss, a failed completion, and a failed oracle are
+outside what a predicate observes, so the wiring closes on those.
+
 ## What survives a crash
 
 Two facts have two lifetimes.
 
-That a session started is durable. The first admission writes the
-evidence directory's attempt token through `r3v_native_arming_disarm`,
-fsynced file and directory, so a second process against that directory
-finds the token standing and refuses as already attempted.
+That a session started is durable, once the wiring reaches the disarm
+site. The first admission writes the evidence directory's attempt token
+through `r3v_native_arming_disarm`, fsynced file and directory, so a
+second process against that directory finds the token standing and
+refuses as already attempted.
 
 How much a session spent is process-local. The counters live in the
 device and die with it. A run that stops at forty of four hundred and one
@@ -92,15 +129,21 @@ campaign's own spend is read out of its published samples.
 
 ## Dispositions
 
-| Condition | Disposition |
-| --- | --- |
-| undeclared case | refuse before submission |
-| role mismatch, route mismatch, epoch mismatch | refuse before submission |
-| replaced destination or recycled handle over a new allocation | refuse before submission |
-| recomputed identity differs from the bound one | refuse before submission |
-| budget exhausted | refuse before submission |
-| kernel submission failed | consume that attempt; terminate the session |
-| completion or oracle failed | terminate the session |
+| Condition | Disposition | Owner |
+| --- | --- | --- |
+| undeclared case | refuse before submission | predicate |
+| role mismatch, route mismatch, epoch mismatch | refuse before submission | predicate |
+| replaced destination or recycled handle over a new allocation | refuse before submission and terminate the session | predicate |
+| recomputed identity differs from the bound one | refuse before submission and terminate the session | predicate |
+| budget exhausted | refuse before submission | predicate |
+| kernel submission failed | consume that attempt; terminate the session | wiring |
+| completion or oracle failed | terminate the session | wiring |
+
+The budget bound a campaign meets is the case bound. The session
+allowance is the sum of the case allowances, so the session counter
+reaches zero only when every case has; session-only exhaustion is
+unreachable under this accounting, and the session bound stands against a
+future declaration form carrying a smaller total.
 
 ## What this is not
 

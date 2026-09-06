@@ -108,7 +108,7 @@ refuse_manifest(const char *find, const char *replace,
       r3v_measurement_manifest_parse(text, head + replace_len + tail_len,
                                      &manifest, &reason);
    assert(r == expected);
-   assert(reason != NULL);
+   assert((r == R3V_MEASUREMENT_SESSION_ADMITTED) == (reason == NULL));
 }
 
 static void
@@ -139,9 +139,15 @@ test_manifest_refusals(void)
    /* A line with no key and value. */
    refuse_manifest("write_domain = 0x2", "write_domain",
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
-   /* Six fields, every one required. */
+   /* Six fields, every one required, and no seventh. */
    refuse_manifest("case = 1, 0, 4096, 287454020, 2, 32",
                    "case = 1, 0, 4096, 287454020, 2",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("case = 1, 0, 4096, 287454020, 2, 32",
+                   "case = 1, 0, 4096, 287454020, 2, 32, 9",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("case = 1, 0, 4096, 287454020, 2, 32",
+                   "case = 1, 0, 4096, 287454020, 2, 32,",
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
    /* A range that counts no whole dword on a dword boundary. */
    refuse_manifest("case = 1, 0, 4096, 287454020, 2, 32",
@@ -170,6 +176,23 @@ test_manifest_refusals(void)
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
    refuse_manifest("pci_vendor_id = 0x1002", "pci_vendor_id = 0x1002x",
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* A sign wraps into the unsigned range under strtoull, so a negative
+    * declaration would name a huge value rather than refuse. */
+   refuse_manifest("allocation_bytes = 8388608", "allocation_bytes = -1",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("max_total_submissions = 72",
+                   "max_total_submissions = +72",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* The grammar is decimal or 0x hex.  strtoull's base zero would read
+    * a leading zero as octal, so 0100 would name 64 rather than 100. */
+   refuse_manifest("max_total_submissions = 72",
+                   "max_total_submissions = 072",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("pci_vendor_id = 0x1002", "pci_vendor_id = 0x",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* A bare zero is still a zero, and hex still reads as hex. */
+   refuse_manifest("binding_offset = 0", "binding_offset = 0x0",
+                   R3V_MEASUREMENT_SESSION_ADMITTED);
 }
 
 static void
@@ -331,19 +354,52 @@ test_binding(void)
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
 
-   /* A replaced destination of the same shape. */
+   /* A replaced destination of the same shape.  It contradicts the
+    * declaration rather than naming a request the session declines, so it
+    * terminates the session: a refusal alone would leave the binding
+    * standing and admit the next repetition against it. */
    assert(r3v_measurement_session_bind(&session, 0u, 8u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND);
+   assert(session.closed);
+   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
+
    /* The handle recycled over another object: the number matches and the
     * generation does not. */
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 102u, DIGEST_A,
+   struct r3v_measurement_session recycled;
+   assert(r3v_measurement_session_open(&recycled, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(r3v_measurement_session_bind(&recycled, 0u, 7u, 101u, DIGEST_A,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(r3v_measurement_session_bind(&recycled, 0u, 7u, 102u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND);
+   assert(recycled.closed);
+
    /* The same object under a stream that no longer hashes the same. */
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_B,
+   struct r3v_measurement_session drifted;
+   assert(r3v_measurement_session_open(&drifted, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(r3v_measurement_session_bind(&drifted, 0u, 7u, 101u, DIGEST_A,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(r3v_measurement_session_bind(&drifted, 0u, 7u, 101u, DIGEST_B,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH);
+   assert(drifted.closed);
+   /* The next repetition finds a closed session rather than a standing
+    * binding. */
+   assert(r3v_measurement_session_consume(&drifted, 0u, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
+
+   memset(&session, 0, sizeof(session));
+   assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
 
    /* A caller that reached the bind without stamping a generation binds
     * nothing. */
@@ -413,6 +469,55 @@ test_consume_is_finite_and_never_refunded(void)
           R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED);
 }
 
+/* One case exhausts while another stays funded, so the case bound is
+ * shown to be the one a campaign meets.  The session allowance is the sum
+ * of the case allowances, so the session counter reaches zero only when
+ * every case has: session-only exhaustion is unreachable under this
+ * accounting, and the second operand of the budget check stands against a
+ * declaration form that would carry a smaller total. */
+static void
+test_one_case_exhausts_while_another_stays_funded(void)
+{
+   struct r3v_measurement_manifest m = parse_valid();
+   m.cases[0].warmups = 1u;
+   m.cases[0].repetitions = 1u;
+   m.cases[1].warmups = 1u;
+   m.cases[1].repetitions = 3u;
+   m.max_total_submissions = 6u;
+
+   struct r3v_measurement_session session;
+   const char *reason = NULL;
+   assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(session.remaining_submissions == 6u);
+   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(r3v_measurement_session_bind(&session, 1u, 8u, 102u, DIGEST_B,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+
+   for (uint32_t i = 0; i < 2u; i++) {
+      assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+             R3V_MEASUREMENT_SESSION_ADMITTED);
+   }
+   /* The first case is spent and the session is not. */
+   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED);
+   assert(session.remaining_submissions == 4u);
+   assert(!session.closed);
+
+   /* The second case still runs its whole declaration. */
+   for (uint32_t i = 0; i < 4u; i++) {
+      assert(r3v_measurement_session_consume(&session, 1u, &reason) ==
+             R3V_MEASUREMENT_SESSION_ADMITTED);
+   }
+   assert(session.remaining_submissions == 0u);
+   assert(r3v_measurement_session_consume(&session, 1u, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED);
+   assert(session.consumed_submissions == 6u);
+}
+
 static void
 test_closed_session_admits_nothing(void)
 {
@@ -480,6 +585,7 @@ main(void)
    test_case_lookup();
    test_binding();
    test_consume_is_finite_and_never_refunded();
+   test_one_case_exhausts_while_another_stays_funded();
    test_closed_session_admits_nothing();
    test_every_refusal_names_itself();
    printf("r3v_measurement_session: the declaration, the late binding, and "

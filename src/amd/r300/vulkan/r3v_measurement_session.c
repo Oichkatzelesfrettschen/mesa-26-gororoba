@@ -87,16 +87,31 @@ next_field(struct line_cursor *c, char *key, size_t key_size, char *value,
    return false;
 }
 
-/* Decimal or 0x-prefixed hexadecimal, the whole value and nothing
- * after it. */
+/* Decimal or 0x-prefixed hexadecimal, the whole value and nothing after
+ * it.  The base is chosen here rather than passed as zero, because
+ * strtoull's base zero reads a leading zero as octal and the declaration
+ * grammar has no octal: 0644 would name 420.  A leading sign is rejected
+ * before the conversion for the same reason -- strtoull accepts one and
+ * negates into the unsigned range, so -1 would name 2^64 - 1 rather than
+ * refuse. */
 static bool
 parse_u64(const char *text, uint64_t *out)
 {
-   if (text == NULL || text[0] == '\0')
+   if (text == NULL || text[0] == '\0' || text[0] == '-' || text[0] == '+')
+      return false;
+   int base = 10;
+   const char *digits = text;
+   if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+      base = 16;
+      digits = text + 2;
+   } else if (text[0] == '0' && text[1] != '\0') {
+      return false;
+   }
+   if (digits[0] == '\0')
       return false;
    char *end = NULL;
    errno = 0;
-   const unsigned long long value = strtoull(text, &end, 0);
+   const unsigned long long value = strtoull(digits, &end, base);
    if (errno != 0 || end == NULL || *end != '\0')
       return false;
    *out = (uint64_t)value;
@@ -136,17 +151,26 @@ parse_case(const char *value, struct r3v_measurement_case *out)
    char *fields[6];
    uint32_t count = 0;
    char *cursor = buffer;
+   /* The sixth field ends the row, so a separator inside it names a
+    * seventh the row does not carry.  It is read before the split
+    * overwrites it, which is what a check after the loop can no longer
+    * see. */
+   bool trailing_separator = false;
    while (count < 6) {
       char *comma = strchr(cursor, ',');
       fields[count++] = cursor;
       if (comma == NULL)
          break;
+      if (count == 6) {
+         trailing_separator = true;
+         break;
+      }
       *comma = '\0';
       cursor = comma + 1;
       while (*cursor == ' ' || *cursor == '\t')
          cursor++;
    }
-   if (count != 6 || strchr(fields[5], ',') != NULL)
+   if (count != 6 || trailing_separator)
       return false;
 
    uint64_t offset, bytes;
@@ -536,12 +560,23 @@ r3v_measurement_session_bind(
    /* The handle alone is a DRM-file index the kernel recycles, so the
     * generation decides whether the number still names the object the
     * case bound. */
+   /* A bound case that resolves elsewhere, or whose stream no longer
+    * hashes the same, contradicts what the campaign declared rather than
+    * naming a request it declines.  Both terminate the session here: a
+    * refusal alone would leave the binding standing and admit the next
+    * repetition against it, which is the failure this check exists to
+    * catch. */
    if (binding->destination_handle != destination_handle ||
        binding->memory_generation != memory_generation) {
+      r3v_measurement_session_close(session,
+                                    "the case resolved to another "
+                                    "allocation");
       *reason = "the case is bound to another allocation";
       return R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND;
    }
    if (strcmp(binding->identity, identity) != 0) {
+      r3v_measurement_session_close(
+         session, "the recomputed submission identity left the binding");
       *reason = "the recomputed submission identity differs from the bound "
                 "one";
       return R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH;
@@ -574,6 +609,11 @@ r3v_measurement_session_consume(struct r3v_measurement_session *session,
       return R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND;
    }
 
+   /* The session allowance is the sum of the case allowances, so the
+    * session counter reaches zero only when every case has, and the case
+    * bound is the one a campaign actually meets.  The session bound is
+    * kept as the second operand because it is what a future declaration
+    * form with a smaller total would trip. */
    const struct r3v_measurement_case *declared =
       &session->manifest.cases[case_index];
    const uint32_t case_budget = declared->warmups + declared->repetitions;
