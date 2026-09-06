@@ -47,6 +47,11 @@
 enum r300_platform_id {
    R300_PLATFORM_ID_NONE = 0,
    R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
+   /* One past the last platform, so a comparison that needs a second
+    * qualified identity has one to name while the table carries a single
+    * row.  It is a bound, never a board: no row publishes it, and
+    * r300_platform_id_resolve never returns it. */
+   R300_PLATFORM_ID_COUNT,
 };
 
 /* What the runtime lookup actually compares.  A row is matched on the

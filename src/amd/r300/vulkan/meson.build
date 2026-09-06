@@ -193,6 +193,32 @@ if with_tests
     suite : ['r3v'],
   )
 
+  # The declaration load: one file read once into one snapshot, hashed and
+  # parsed as the same bytes, held to the deployment, the board, and the
+  # route, and opened into one session.  Each boundary refuses alone --
+  # the absent name, the file that does not open, the file one byte above
+  # the text bound, the refused text allocation, the malformed parse, each
+  # half of the PCI pair and of the deployment epoch, the unresolved
+  # declared board, the unresolved running board, the board that
+  # disagrees, and each of the route's six facts including the opt-in that
+  # stands closed -- and the file of exactly the bound loads.  A reopen
+  # over a spent session restores no allowance.
+  test(
+    'r3v-measurement-declaration',
+    executable(
+      'r3v_measurement_declaration_test',
+      files('tests/r3v_measurement_declaration_test.c',
+            'r3v_measurement_declaration.c', 'r3v_measurement_session.c',
+            'r3v_fill_route.c', 'r3v_submit_preflight.c'),
+      include_directories : [inc_include, inc_src, inc_amd_common,
+                             include_directories('.')],
+      dependencies : [dep_m, idep_mesautil],
+      link_with : libr300_common,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r3v'],
+  )
+
   # Submit preflight: the census reproduces the queue's former field list
   # over all thirty-two combinations of its ordered-work counters, each
   # whole-submit refusal is reachable alone, the transaction admits a
@@ -281,6 +307,8 @@ r3v_native_files = files(
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
   'r3v_fill_route.c',
+  'r3v_measurement_declaration.c',
+  'r3v_measurement_session.c',
   'r3v_route_policy.c',
   'r3v_submit_preflight.c',
   'r3v_interpolation_lowering.c',
@@ -436,6 +464,25 @@ if with_tests
     prog_python,
     args : [files('tests/r3v_submit_transaction_order_audit.py'),
             '--queue', files('r3v_native_queue.c')],
+    suite : ['r3v'],
+  )
+
+  # The gate refresh runs many times over one device.  A session opened or
+  # reset there would restore the allowance the previous pass spent, so its
+  # body names no measurement-session state.
+  test(
+    'r3v-measurement-session-isolation-selftest',
+    prog_python,
+    args : [files('tests/r3v_measurement_session_isolation_audit.py'),
+            '--self-test'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-measurement-session-isolation',
+    prog_python,
+    args : [files('tests/r3v_measurement_session_isolation_audit.py'),
+            files('r3v_native_device.c'),
+            '--single-caller', meson.current_source_dir() / '..'],
     suite : ['r3v'],
   )
 
