@@ -2802,12 +2802,18 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_ndebug_fixture_late_undef = executable(
       'r3v_ndebug_fixture_late_undef',
       files('tests/r3v_ndebug_fixture_late_undef.c'),
+      # NDEBUG comes from the target rather than the source, so the pair
+      # discriminates on a debug profile and a release one alike.
+      c_args : ['-DNDEBUG'],
       build_by_default : true,
       install : false,
     )
     r3v_ndebug_fixture_early_undef = executable(
       'r3v_ndebug_fixture_early_undef',
       files('tests/r3v_ndebug_fixture_early_undef.c'),
+      # NDEBUG comes from the target rather than the source, so the pair
+      # discriminates on a debug profile and a release one alike.
+      c_args : ['-DNDEBUG'],
       build_by_default : true,
       install : false,
     )

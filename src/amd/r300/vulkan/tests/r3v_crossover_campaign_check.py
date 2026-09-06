@@ -153,9 +153,17 @@ def rows(result, kind):
 
 
 def expect_refusal(label, result, needle):
+    """A refusal is the harness declining, not the harness dying.
+
+    The exit status, the harness's own REFUSED prefix, and a phrase only
+    this refusal produces must all hold, so a crash, a missing artifact,
+    or an unrelated exit-2 path does not satisfy an expected refusal."""
     if result.returncode != REFUSED:
         fail(f"{label}: expected the refusal exit {REFUSED}, got "
              f"{result.returncode}\n{result.stdout}\n{result.stderr}")
+    if "REFUSED: " not in result.stderr:
+        fail(f"{label}: the run exited {REFUSED} without refusing; a crash "
+             f"does not satisfy an expected refusal\n{result.stderr}")
     if needle not in result.stderr:
         fail(f"{label}: the refusal does not name {needle!r}\n"
              f"{result.stderr}")
@@ -228,11 +236,26 @@ def run_checks(crossover, work):
         if len(measured) != len(SIZES) * REPS:
             fail(f"campaign: arm {arm} counted {len(measured)} measured "
                  f"repetitions")
-        # The declared budget is exact: the last allowance a case spends
-        # is the sum of every submission the arm performed.
-        if max(s["allowance_consumed"] for s in arm_rows) != expected_per_arm:
-            fail(f"campaign: arm {arm} spent an allowance that does not "
-                 f"match its declared budget")
+        # Per case, not merely per arm: an aggregate total lets one case
+        # publish another's rows and still sum correctly.
+        for case_id in range(len(SIZES)):
+            case_rows = [s for s in arm_rows if s["case_id"] == case_id]
+            if len(case_rows) != WARMUP + REPS:
+                fail(f"campaign: arm {arm} case {case_id} published "
+                     f"{len(case_rows)} samples, the run declared "
+                     f"{WARMUP + REPS}")
+            if len([s for s in case_rows if s["phase"] == "warmup"]) != WARMUP:
+                fail(f"campaign: arm {arm} case {case_id} did not enroll "
+                     f"{WARMUP} counted warmup(s)")
+        # The declared budget is spent one submission at a time: the
+        # allowance values an arm published are exactly 1..N, so a
+        # counter that never advanced or was reported independently of
+        # the work fails here rather than matching on its maximum.
+        spent = sorted(s["allowance_consumed"] for s in arm_rows)
+        if spent != list(range(1, expected_per_arm + 1)):
+            fail(f"campaign: arm {arm} spent {spent}, not one allowance "
+                 f"per submission up to its declared budget "
+                 f"{expected_per_arm}")
 
     # The measured schedule balances position: over a completed cycle
     # every arm holds every position equally often.  A schedule that
@@ -244,6 +267,9 @@ def run_checks(crossover, work):
                 continue
             histogram.setdefault(s["arm"], {}).setdefault(s["position"], 0)
             histogram[s["arm"]][s["position"]] += 1
+        if len(histogram) != len(("host", "v2", "v1")):
+            fail(f"campaign: case {case_id} published {len(histogram)} "
+                 f"arms, so its position balance is not over three")
         for arm, positions in histogram.items():
             if sorted(positions) != list(range(len(histogram))):
                 fail(f"campaign: case {case_id} arm {arm} never held every "
@@ -287,13 +313,22 @@ def run_checks(crossover, work):
         if entries != expected:
             fail(f"campaign: arm {arm} retained {entries}, not {expected}")
         digests = set()
+        streams = set()
         for case in expected:
             manifest = os.path.join(directory, case, "manifest.json")
             if not os.path.exists(manifest):
                 fail(f"campaign: arm {arm} {case} retained no manifest")
             with open(manifest, encoding="ascii") as handle:
-                digests.add(json.load(handle)["ib_blake3"])
-        if len(digests) != len(SIZES):
+                digest = json.load(handle)["ib_blake3"]
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                fail(f"campaign: arm {arm} {case} recorded {digest!r}, "
+                     f"which is not a BLAKE3 digest")
+            digests.add(digest)
+            # The retained streams themselves, so a recorded digest that
+            # differs while the bytes do not fails here.
+            with open(os.path.join(directory, case, "ib.bin"), "rb") as blob:
+                streams.add(blob.read())
+        if len(digests) != len(SIZES) or len(streams) != len(SIZES):
             fail(f"campaign: arm {arm} retained one stream for two cases")
 
     # The two GPU arms are separate campaigns: neither retained into the
@@ -332,14 +367,16 @@ def run_checks(crossover, work):
     # prediction, so the known-bad must refuse.
     perturbed = harness.run("enrollment-perturbed",
                             extra_args=("--enrollment-perturb-dwords", "1"))
-    expect_refusal("enrollment-perturbed", perturbed, "the device retained")
+    expect_refusal("enrollment-perturbed", perturbed,
+                   "-dword stream over 1 window(s)")
 
     # A result file that cannot be written completely refuses the run: a
     # campaign that spent its budget and truncated its artifact produced
     # nothing usable.
     truncated = harness.run("write-fails",
                             extra_args=("--json", "/dev/full"))
-    expect_refusal("write-fails", truncated, "written completely")
+    expect_refusal("write-fails", truncated,
+                   "the result file could not be written completely")
 
     # A declaration whose cases disagree with the requested sweep refuses
     # before any device is created, so no allowance is spent.
@@ -347,27 +384,36 @@ def run_checks(crossover, work):
                                   "rb2d_const_fill_v2", allocation_bytes,
                                   sizes=(512, 4096))
     result = harness.run("size-mismatch", v2_declaration=mismatched)
-    expect_refusal("size-mismatch", result, "the declaration states")
+    expect_refusal("size-mismatch", result,
+                   "the declaration states offset 0 size 512 value "
+                   "0x11223344; the run performs offset 0 size 256")
 
     # A declaration written for the other route refuses this arm.
     wrong_route = declaration_text("route-v2", harness.kernel,
                                    "rb2d_const_fill", allocation_bytes)
     result = harness.run("route-mismatch", v2_declaration=wrong_route)
-    expect_refusal("route-mismatch", result, "measures route")
+    expect_refusal("route-mismatch", result,
+                   'the declaration measures route "rb2d_const_fill"; '
+                   'this arm opens "rb2d_const_fill_v2"')
 
     # A declaration whose repetition count differs from the run refuses.
     wrong_counts = declaration_text("counts-v2", harness.kernel,
                                     "rb2d_const_fill_v2", allocation_bytes,
                                     warmup=WARMUP, reps=REPS + 6)
     result = harness.run("count-mismatch", v2_declaration=wrong_counts)
-    expect_refusal("count-mismatch", result, "repetitions")
+    expect_refusal("count-mismatch", result,
+                   f"the declaration states {WARMUP} warmups and "
+                   f"{REPS + 6} repetitions; the run performs {WARMUP} "
+                   f"and {REPS}")
 
     # A completion bound the run does not wait to refuses.
     wrong_bound = declaration_text("bound-v2", harness.kernel,
                                    "rb2d_const_fill_v2", allocation_bytes,
                                    completion_ns=WAIT_BOUND_NS + 1)
     result = harness.run("bound-mismatch", v2_declaration=wrong_bound)
-    expect_refusal("bound-mismatch", result, "bounds completion")
+    expect_refusal("bound-mismatch", result,
+                   f"bounds completion at {WAIT_BOUND_NS + 1} ns; the "
+                   f"run waits {WAIT_BOUND_NS}")
 
     # A GPU arm without a declaration refuses rather than inheriting
     # whatever the environment carried.
@@ -385,12 +431,16 @@ def run_checks(crossover, work):
     # A repetition count that does not complete the balancing cycle
     # refuses, so no cell rests on a schedule that favors a position.
     result = harness.run("unbalanced", reps=4)
-    expect_refusal("unbalanced", result, "balancing cycle")
+    expect_refusal("unbalanced", result,
+                   "admits 3 arms, whose balancing cycle is 6; --reps 4 "
+                   "does not complete it")
 
     # A zero-warmup configuration refuses: a case that never enrolled has
     # no retained transport to hold its prediction against.
     result = harness.run("zero-warmup", warmup=0)
-    expect_refusal("zero-warmup", result, "enrolls each case")
+    expect_refusal("zero-warmup", result,
+                   "a measured campaign enrolls each case before "
+                   "measuring it")
 
     # Malformed and out-of-range numeric inputs refuse rather than
     # wrapping into a small allocation the oracle would read past.

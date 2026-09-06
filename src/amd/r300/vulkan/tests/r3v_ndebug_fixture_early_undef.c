@@ -1,14 +1,13 @@
 /* SPDX-License-Identifier: MIT
  *
  * The known-good for the release-verdict audit: a test whose verdict
- * stays active under a release build's NDEBUG.
+ * stays active under its build's NDEBUG.
  *
  * Undefining NDEBUG before <assert.h> is included is what reaches
  * assert's expansion, so the verdict below keeps its call and the
- * assertion machinery stays in the translation unit.
+ * translation unit keeps every assertion its source stakes.
  */
 
-#define NDEBUG 1
 #undef NDEBUG
 #include <assert.h>
 
