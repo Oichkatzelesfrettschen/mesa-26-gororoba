@@ -84,6 +84,13 @@
 #define R3V_MEASUREMENT_SESSION_NAME_MAX 64u
 #define R3V_MEASUREMENT_SESSION_EPOCH_MAX 128u
 
+/* Every `const char *` this interface takes is a NUL-terminated string,
+ * read with strcmp or strlen and never past its terminator.  The digests
+ * below are the exception the struct exists for: they are scanned to a
+ * fixed width rather than to a terminator, so the width has to be part
+ * of the type rather than a promise the caller makes.
+ */
+
 /* A digest as an object rather than a pointer.  An array parameter
  * decays to a pointer, so the width a scan walks would be a promise the
  * caller makes rather than a fact the type carries, and a shorter object

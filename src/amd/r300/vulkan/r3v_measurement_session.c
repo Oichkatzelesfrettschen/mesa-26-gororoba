@@ -652,15 +652,18 @@ r3v_measurement_session_role_check(
       *reason = "no session stands over a declaration";
       return R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE;
    }
+   /* A terminated campaign answers every later question with the reason
+    * it terminated, so the closed check stands ahead of anything that
+    * reads the request. */
+   if (session->closed) {
+      *reason = session->closed_reason;
+      return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
+   }
    /* An absent observation is a role the caller never resolved, which is
     * a mismatch with the declared one rather than an absent session. */
    if (observed == NULL) {
       *reason = "the destination resolved to no observable role";
       return R3V_MEASUREMENT_SESSION_REFUSE_ROLE_MISMATCH;
-   }
-   if (session->closed) {
-      *reason = session->closed_reason;
-      return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
    }
 
    const struct r3v_measurement_role *declared = &session->manifest.role;

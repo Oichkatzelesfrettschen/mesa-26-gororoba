@@ -1253,6 +1253,24 @@ test_every_refusal_carries_a_reason(void)
           R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE);
    assert(reason != NULL);
 
+   /* A closed session answers every later question with the reason it
+    * closed, including one whose request the predicate cannot read. */
+   struct r3v_measurement_session terminated;
+   r3v_measurement_session_init(&terminated);
+   assert(r3v_measurement_session_open(&terminated, &m, &digest_a,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   r3v_measurement_session_close(&terminated, "the completion failed");
+   reason = NULL;
+   assert(r3v_measurement_session_role_check(&terminated, NULL, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
+   assert(strcmp(reason, "the completion failed") == 0);
+   reason = NULL;
+   assert(r3v_measurement_session_role_check(&terminated, &observed,
+                                             &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
+   assert(strcmp(reason, "the completion failed") == 0);
+
    /* An observation the caller never resolved is a role mismatch on a
     * live session, not an absent session. */
    struct r3v_measurement_session live;

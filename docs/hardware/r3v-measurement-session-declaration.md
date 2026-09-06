@@ -104,8 +104,13 @@ partway through under a refusal that reads as a defect.
 One permitted execution is consumed immediately before the kernel
 submission boundary and never refunded: an attempt that entered the ioctl
 is an execution whatever the ioctl returns. A completion failure, an
-identity mismatch, or an oracle failure closes the session, and a closed
-session refuses every further request.
+oracle failure, and a well-shaped identity differing from the bound one
+each close the session; a request the predicate cannot read at all --
+an identity that is not a digest, an index naming no case, an operation
+the named case does not declare -- refuses and leaves the campaign
+standing, because an unreadable request is not a contradicted
+declaration. A closed session refuses every further request and answers
+each with the reason it closed.
 
 ## What the wiring owes the predicate
 
@@ -123,6 +128,7 @@ implementation makes on its own.
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
 | consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site, naming the same case, operation, object, and identity the bind carried |
+| compute the identity over the bytes the ioctl receives | the submission path, on the immutable command stream, with no mutation between the consume and the ioctl |
 | serialize bind and consume | the queue execution path alone, where Vulkan's external synchronization on `vkQueueSubmit` orders the calls |
 | serialize the generation counter | `vkAllocateMemory`, through an atomic or the allocation lock |
 | claim one session across devices and processes | an exclusive durable claim on the declared arm |
@@ -144,10 +150,15 @@ once. Hashing a path and reopening it for parsing would let the bytes
 change between the two, so the digest would name a declaration the
 session never read.
 
-The bind and the consume describe one submission. The bind authorizes an
-object and a stream; the consume spends the execution that submission
-runs, and it names the case, the operation, the object, and the identity
-again so every field is held against the binding. A consume carrying the
+The bind and the consume describe one submission, and the wiring makes
+that description the submission. The predicate holds the two descriptions
+against each other: the bind authorizes an object and a stream, and the
+consume names the case, the operation, the object, and the identity again
+so every field is held against the binding. What the predicate cannot see
+is whether the bytes that reach the ioctl are the bytes the identity
+covers, so the wiring computes that identity over the immutable command
+stream it is about to submit and enters the ioctl with no step between
+that could change it. A consume carrying the
 operation alone would let a bind against one allocation stand while the
 consume and the submission ran against another the role also admits, and
 a standing binding cannot see that substitution. A consumed submission
