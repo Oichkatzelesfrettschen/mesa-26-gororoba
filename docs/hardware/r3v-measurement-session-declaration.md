@@ -167,6 +167,44 @@ on it, instead of once per command. Opening the predicate grants nothing on its 
 execution becomes available when the claim, the consumption, and the
 transport wiring have landed.
 
+## The allocation generation
+
+A GEM handle indexes one DRM file's object table and is recycled once the
+object it named is destroyed, so a binding that recorded the handle alone
+would accept a different allocation reusing the number. Each successful
+`r3v_AllocateMemory` therefore stamps `r3v_native_memory.generation` from
+the device's own counter, after the buffer object exists and before the
+handle is published: a caller that receives a `VkDeviceMemory` receives
+one carrying its generation, and a refused allocation publishes neither a
+handle nor a value. Zero is no allocation, because the counter's first
+value is one.
+
+The value comes from the counter alone. The GEM handle is recycled, the
+wrapper's address is recycled, a timestamp repeats at the clock's
+resolution, and a count of live allocations falls when one is freed;
+freeing an allocation moves the counter not at all.
+
+`vkAllocateMemory` acquires no queue lock. Vulkan orders commands
+externally only where a command's own external-synchronization
+requirement says so, and allocation carries none, so two threads
+allocating at once take their generations through `p_atomic_inc_return`
+rather than inheriting a queue's order. The increment provides distinct
+values and nothing more: it publishes no other driver state. The counter
+does not wrap in practice -- a device would have to publish 2^64
+allocations first -- which is a bound on what a device can do rather than
+a proof about the arithmetic.
+
+The scope is one device. Every `VkDevice` a physical device creates shares
+that physical device's render-node file descriptor, and so one GEM handle
+table, while each device counts its allocations on its own. Two devices
+therefore assign one generation to two different objects.
+`r3v_BindBufferMemory2` is what keeps that from deciding anything: it
+refuses a bind whose buffer and memory do not both belong to the binding
+device, so the pair a session compares is one its own device stamped.
+Vulkan's valid usage already requires that, and the driver holds it rather
+than resting on the application, because the pair is what authorizes a
+submission.
+
 ## Budget
 
 Identity and repetition are separate predicates: two submissions agreeing
@@ -200,13 +238,13 @@ implementation makes on its own.
 | hold the resolved executor to the declared route | `r3v_measurement_session_route_check`, at route admission |
 | resolve the live destination for every repetition | the fill route, from the recorded `VkBuffer` and its currently bound memory, never from the standing binding |
 | hold the resolved destination to the declared role | `r3v_measurement_session_role_check`, on that resolution |
-| stamp an allocation generation the binding can read | `vkAllocateMemory`, from a device-monotonic counter |
+| stamp an allocation generation the binding can read | done: `r3v_AllocateMemory` takes it from the device's own counter through `p_atomic_inc_return`, after the buffer object exists and before the handle is published.  The value is produced; no production path reads it yet, because the bind and consume above are unwired |
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
 | consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site, naming the same case, operation, object, and identity the bind carried |
 | compute the identity over the bytes the ioctl receives | the submission path, on the immutable command stream, with no mutation between the consume and the ioctl |
 | serialize bind and consume | the queue execution path alone, where Vulkan's external synchronization on `vkQueueSubmit` orders the calls |
-| serialize the generation counter | `vkAllocateMemory`, through an atomic or the allocation lock |
+| serialize the generation counter | done: `r3v_AllocateMemory` takes each value through one atomic increment |
 | claim one session across devices and processes | an exclusive durable claim on the declared arm |
 | close the session on a failed completion | the queue's transport tail |
 | close the session on a failed oracle | the benchmark application, which is where the destination is read |

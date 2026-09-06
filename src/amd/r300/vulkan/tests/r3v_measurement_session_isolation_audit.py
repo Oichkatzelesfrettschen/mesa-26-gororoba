@@ -5,12 +5,13 @@
 Two rules, both in source.  r3v_native_device_refresh_delivery_gates
 re-reads the environment and runs many times over one device, so its body
 names no measurement-session state; the name invites the reuse, and this
-refuses it.  And the three entry points that can hand a device a
-fresh allowance -- r3v_measurement_session_init, which is the memset that
-clears a spent budget, r3v_measurement_session_open, and the
-r3v_measurement_declaration_open that calls it -- each carry one call site
-across the driver.  A second caller would open a second allowance for one
-device.
+refuses it.  And each entry point the allowance chain rests on carries one call site
+across the driver: r3v_measurement_session_init, which is the memset that
+clears a spent budget, r3v_measurement_session_open, the
+r3v_measurement_declaration_open that calls it, and the
+vk_device_memory_create that every stamped allocation passes through.  A
+second caller would open a second allowance for one device, or publish a
+VkDeviceMemory with no generation on it.
 """
 
 import argparse
@@ -27,6 +28,12 @@ ALLOWANCE_ENTRY_POINTS = (
     "r3v_measurement_session_init",
     "r3v_measurement_session_open",
     "r3v_measurement_declaration_open",
+    # The VkDeviceMemory wrapper's one constructor.  r3v_AllocateMemory
+    # stamps the allocation generation right after this call and before
+    # publishing the handle, so a second construction site would publish a
+    # wrapper carrying generation zero -- and two such wrappers would be
+    # indistinguishable to a binding that compares handle and generation.
+    "vk_device_memory_create",
 )
 
 

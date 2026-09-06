@@ -3574,7 +3574,11 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   foreach concurrency_arm : ['concurrent-map-free',
                              'concurrent-submit-teardown',
                              'teardown-live-frees',
-                             'device-loss-classification']
+                             'device-loss-classification',
+                             'allocation-generations',
+                             'allocation-failure-stamps-nothing',
+                             'devices-count-independently',
+                             'gate-refresh-preserves-the-session']
     test(
       'r3v-native-memory-concurrency-@0@'.format(concurrency_arm),
       r3v_native_memory_concurrency_harness,
@@ -3589,6 +3593,16 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-memory-concurrency-known-bad-lost-queue-submits',
     r3v_native_memory_concurrency_harness,
     args : ['known-bad-lost-queue-submits'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    should_fail : true,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-memory-concurrency-known-bad-repeated-generation',
+    r3v_native_memory_concurrency_harness,
+    args : ['known-bad-repeated-generation'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,

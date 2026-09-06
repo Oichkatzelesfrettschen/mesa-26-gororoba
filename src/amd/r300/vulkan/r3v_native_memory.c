@@ -6,6 +6,8 @@
 
 #include "r3v_native.h"
 
+#include "util/u_atomic.h"
+
 #include "r3v_entrypoints.h"
 
 #include "vk_alloc.h"
@@ -76,6 +78,15 @@ r3v_AllocateMemory(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
    memory->map = NULL;
+   /* Stamped after the object exists and before the handle is published,
+    * so a caller that receives a VkDeviceMemory receives one carrying its
+    * generation, and a failed allocation publishes neither.  The value
+    * comes from the counter alone: the GEM handle is recycled, the
+    * wrapper's address is recycled, a timestamp repeats at the clock's
+    * resolution, and a count of live allocations falls when one is
+    * freed. */
+   memory->generation =
+      p_atomic_inc_return(&device->allocation_generation_counter);
 
    *pMem = r3v_native_memory_to_handle(memory);
    return VK_SUCCESS;
@@ -233,7 +244,16 @@ r3v_BindBufferMemory2(VkDevice _device, uint32_t bindInfoCount,
       VK_FROM_HANDLE(r3v_native_memory, memory, pBindInfos[i].memory);
       const VkDeviceSize offset = pBindInfos[i].memoryOffset;
 
+      /* Both objects belong to this device.  Vulkan's valid usage already
+       * requires it, and the driver holds it because the allocation
+       * generation counts per device over a GEM handle table every
+       * VkDevice of one physical device shares: a buffer bound across
+       * devices could carry a handle and generation pair another device
+       * stamped, which is the substitution the generation exists to
+       * refuse. */
       if (buffer == NULL || memory == NULL || buffer->memory != NULL ||
+          memory->vk.base.device != &device->vk ||
+          buffer->vk.base.device != &device->vk ||
           memory->vk.memory_type_index != 0 ||
           offset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
           offset > memory->bo.size ||
