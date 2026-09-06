@@ -47,6 +47,11 @@
 enum r300_platform_id {
    R300_PLATFORM_ID_NONE = 0,
    R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M,
+   /* One past the last platform, so a comparison that needs a second
+    * qualified identity has one to name while the table carries a single
+    * row.  It is a bound, never a board: no row publishes it, and
+    * r300_platform_id_resolve never returns it. */
+   R300_PLATFORM_ID_COUNT,
 };
 
 /* What the runtime lookup actually compares.  A row is matched on the
@@ -108,6 +113,12 @@ struct r300_platform_identity {
    /* The compatibility token older externally retained artifacts carry.
     * It is not the platform's current part identity. */
    const char *historical_alias;
+   /* How a declaration written before any device exists names this
+    * platform.  An operator writes a name; the driver resolves the board
+    * it is running on to a platform id and compares the two, so the
+    * spelling lives here beside the identity rather than in whatever
+    * file happens to read it. */
+   const char *declaration_name;
    /* The stable name for this platform. */
    enum r300_platform_id platform_id;
    /* What r300_platform_identity_lookup compares to reach this row. */
@@ -265,5 +276,18 @@ enum r300_platform_id
 r300_platform_id_resolve(uint16_t pci_vendor, uint16_t pci_device,
                          uint16_t subsystem_vendor, uint16_t subsystem_device,
                          const char *dmi_product_name);
+
+/* The platform a declaration's name selects, or R300_PLATFORM_ID_NONE for
+ * a name no row carries.  It resolves what an operator wrote, never what
+ * the device is: the caller compares this against the id
+ * r300_platform_id_resolve returned for the running board.
+ */
+enum r300_platform_id
+r300_platform_id_from_declaration_name(const char *name);
+
+/* Every platform row, in table order, for a caller auditing the table
+ * itself rather than resolving one board. */
+const struct r300_platform_identity *const *
+r300_platform_identity_rows(uint32_t *count);
 
 #endif /* R300_CHIP_IDENTITY_H */

@@ -11,6 +11,7 @@
 #include "amd/r300/common/r300_rb2d_fill.h"
 
 #include "r3v_entrypoints.h"
+#include "r3v_measurement_declaration.h"
 #include "r3v_physical_device.h"
 #include "r3v_private.h"
 #include "r3v_submit_preflight.h"
@@ -184,6 +185,86 @@ r3v_GetDeviceProcAddr(VkDevice _device, const char *pName)
    return vk_device_get_proc_addr(device, pName);
 }
 
+/* Opens this device's measurement session over the declaration the
+ * environment names.
+ *
+ * It is static, and r3v_CreateDevice below is its one call site, so one
+ * device opens one session once by linkage rather than by convention.  A
+ * device that names no declaration keeps its session inactive and
+ * succeeds; an explicit declaration that cannot be read, parsed, or held
+ * to this deployment, board, and route refuses the device, because
+ * silently downgrading a declared campaign to ordinary execution would
+ * publish samples the operator never authorized.
+ */
+static VkResult
+open_measurement_session(struct r3v_native_device *device)
+{
+   /* The facts the declaration is held against, collected here so the
+    * load reads the filesystem once and the environment never.  A shim
+    * harness that replaced the fact provider had no device to replace it
+    * on yet, so the production provider answers and a declaration
+    * written for the live deployment is the only one that opens. */
+   char kernel_release[R3V_MEASUREMENT_SESSION_EPOCH_MAX];
+   char module_srcversion[R3V_MEASUREMENT_SESSION_EPOCH_MAX];
+   kernel_release[0] = '\0';
+   module_srcversion[0] = '\0';
+   const struct r3v_native_arming_provider *provider =
+      r3v_native_arming_host_provider();
+   provider->read_kernel_release(provider->ctx, kernel_release,
+                                 sizeof(kernel_release));
+   provider->read_module_srcversion(provider->ctx, module_srcversion,
+                                    sizeof(module_srcversion));
+
+   uint32_t route_count = 0;
+   const struct r300_operation_route_row *routes =
+      r300_operation_route_rows(&route_count);
+   /* The gate cache becomes open-or-closed here, through the one function
+    * that owns the rule that a gate opens on the literal "1" and on
+    * nothing else, so the load consumes a decision rather than reading
+    * the strings a second time. */
+   bool route_gate_open[R300_OPERATION_ROUTE_COUNT];
+   if (!r3v_route_gate_state_from_cache(device->compute_route_gates,
+                                        route_gate_open,
+                                        R300_OPERATION_ROUTE_COUNT))
+      return vk_error(device->pdevice, VK_ERROR_INITIALIZATION_FAILED);
+   const struct r3v_measurement_deployment deployment = {
+      .pci_vendor_id = device->pdevice->pci_vendor_id,
+      .pci_device_id = device->pdevice->pci_device_id,
+      .kernel_release = kernel_release,
+      .module_srcversion = module_srcversion,
+      .platform_id = r3v_native_arming_platform(device),
+      .routes = routes,
+      .route_count = route_count,
+      .route_gate_open = route_gate_open,
+      .route_gate_count = R300_OPERATION_ROUTE_COUNT,
+   };
+
+   /* The device's storage is zeroed at allocation, and the session is
+    * brought to its initial state explicitly here so the load's reopen
+    * refusal reads a state this function established rather than one the
+    * allocator happened to leave. */
+   r3v_measurement_session_init(&device->measurement_session);
+   const char *reason = NULL;
+   const char *path = getenv("R3V_NATIVE_MEASUREMENT_DECLARATION");
+   switch (r3v_measurement_declaration_open(&device->measurement_session,
+                                            path, &deployment, &reason)) {
+   case R3V_MEASUREMENT_DECLARATION_ABSENT:
+   case R3V_MEASUREMENT_DECLARATION_OPENED:
+      return VK_SUCCESS;
+   case R3V_MEASUREMENT_DECLARATION_NO_MEMORY:
+      return vk_error(device->pdevice, VK_ERROR_OUT_OF_HOST_MEMORY);
+   case R3V_MEASUREMENT_DECLARATION_REFUSED:
+      break;
+   }
+   /* An operator who named a declaration asked for a measured campaign.
+    * Running the ordinary path under a declaration the driver could not
+    * read would publish samples against an authorization that never
+    * opened, so the device refuses instead. */
+   return vk_errorf(device->pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                    "r3v-native: R3V_NATIVE_MEASUREMENT_DECLARATION "
+                    "refused: %s", reason != NULL ? reason : "");
+}
+
 VkResult
 r3v_CreateDevice(VkPhysicalDevice physicalDevice,
                  const VkDeviceCreateInfo *pCreateInfo,
@@ -322,6 +403,22 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
          "declares a qualification carrier while "
          "R3V_NATIVE_ROUTE_RB2D_CONST_FILL_V2_EXPERIMENTAL is not \"1\"; "
          "the qualification carrier rides the windowed route alone");
+   }
+
+   /* The measurement declaration reads after the gates and the policy,
+    * because it is held against the routes this device selected and a
+    * device whose gates already disagree reports that disagreement
+    * rather than a route refusal derived from it.  The session is a
+    * value inside the device and owns no allocation once the load
+    * returns, so a later construction failure needs no unwind of its
+    * own. */
+   result = open_measurement_session(device);
+   if (result != VK_SUCCESS) {
+      vk_queue_finish(&device->queue.vk);
+      radeon_drm_vk_device_finish(&device->drm);
+      vk_device_finish(&device->vk);
+      vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+      return result;
    }
 
    /* Plan capture opens the CS ioctl with the hazard gate closed, so it

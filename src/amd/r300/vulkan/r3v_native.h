@@ -8,6 +8,7 @@
 #define R3V_NATIVE_H
 
 #include "r3v_fill_route.h"
+#include "r3v_measurement_session.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_plan.h"
 #include "r3v_route_policy.h"
@@ -977,6 +978,14 @@ struct r3v_native_device {
     * supplies this one too; production leaves the provider null and the
     * board resolved at physical-device creation governs. */
    enum r300_platform_id arming_platform;
+   /* The bounded measurement campaign this device was created under.  It
+    * is opened once, inside vkCreateDevice, over the declaration
+    * R3V_NATIVE_MEASUREMENT_DECLARATION names; a device created without
+    * that declaration carries it inactive and takes the ordinary
+    * one-shot path.  Opening it authorizes nothing on its own: the
+    * binding, the durable claim, and the budget belong to the submission
+    * path, which is not yet wired to it. */
+   struct r3v_measurement_session measurement_session;
    struct r3v_native_prepared_submission prepared;
    /* Test harnesses can refuse semantic-cell retention with a negative errno
     * before any artifact write.  Production devices leave this zero.

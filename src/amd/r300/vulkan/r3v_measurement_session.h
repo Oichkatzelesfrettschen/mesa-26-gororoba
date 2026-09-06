@@ -37,16 +37,21 @@
  * session refuses every further request.
  *
  * Two facts have two lifetimes, and the difference decides what a crash
- * leaves behind.  That a session started is durable: the first admission
- * writes the evidence directory's attempt token through
- * r3v_native_arming_disarm, fsynced file and directory, so a second
- * process against that directory finds the token standing and refuses as
- * already attempted.  How much a session spent is process-local: the
- * counters below live in the device and die with it.  A run that stops at
+ * leaves behind.  How much a session spent is process-local: the counters
+ * below live in the device and die with it, so one declaration opened on
+ * two devices carries two allowances and a restarted process starts over.
+ * That a session started has to be durable, and the object that makes it
+ * durable is the wiring's to write: the first admission is to claim the
+ * declared arm exclusively, so a second device or a second process
+ * against that arm finds the claim standing and refuses as already
+ * attempted.  Nothing here writes that claim, and no path from this file
+ * reaches r3v_native_arming_disarm, which serves the one-shot
+ * authorization beside this one.  Until the claim lands, a campaign is
+ * bounded per device rather than per declaration.  A run that stops at
  * forty of four hundred and one that stops at three hundred and
- * ninety-nine leave the same durable object, so the token bounds
- * restarting rather than accounting, and a campaign's own spend is read
- * out of its published samples.
+ * ninety-nine will leave the same claim, so it bounds restarting rather
+ * than accounting, and a campaign's own spend is read out of its
+ * published samples.
  *
  * The handle is not enough on its own.  A GEM handle is an index into one
  * DRM file's table and is recycled after the object it named is
@@ -58,6 +63,8 @@
 #define R3V_MEASUREMENT_SESSION_H
 
 #include "r3v_fill_route.h"
+
+#include "amd/r300/common/r300_chip_identity.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -233,6 +240,20 @@ r3v_measurement_manifest_epoch_check(
  * first open, because open decides a reopen by reading the struct the
  * caller supplied and an uninitialized read decides nothing. */
 void r3v_measurement_session_init(struct r3v_measurement_session *session);
+
+/* Holds the declaration's platform name to the board the device resolved.
+ * The epoch check compares the PCI pair, the kernel release, and the
+ * module srcversion; a PCI id names a die class shared by boards whose
+ * memory, thermal, and recovery behavior a campaign never qualified, so
+ * the declared platform is resolved to its stable id and required to
+ * equal the running one.  A name no platform row carries resolves to
+ * R300_PLATFORM_ID_NONE and refuses, as does a running board that
+ * resolved to none.
+ */
+enum r3v_measurement_session_refusal
+r3v_measurement_manifest_platform_check(
+   const struct r3v_measurement_manifest *manifest,
+   enum r300_platform_id resolved, const char **reason);
 
 /* Opens a session over a parsed declaration, which
  * r3v_measurement_session_init has brought to a readable state.

@@ -92,6 +92,81 @@ positive finite bound -- lives in one check both the reader and `open`
 run. A manifest assembled in place, or edited after parsing, therefore
 meets exactly the rules a parsed one meets.
 
+## Loading the declaration
+
+`r3v_measurement_declaration_open` reads one file into one buffer, hashes
+those bytes, parses those same bytes, and opens one session over them. It
+takes no device: every fact it compares arrives in a deployment struct, so
+each of its boundaries -- the open, the bounded read, the text allocation,
+the parse, the epoch, the board, the route, and the session open -- is
+reachable from a test with a temporary file and no Vulkan. The buffer
+holds one byte more than the text bound, so a read that reaches that byte
+establishes the file is above the bound rather than truncating it into a
+shorter declaration that parses; a file of exactly the bound loads.
+
+The load stands apart from `r3v_native_device_refresh_delivery_gates`.
+That function re-reads the environment and runs many times over one
+device, and a session that reopened on each pass would clear its bindings
+and restore the allowance the previous pass spent. One device opens one
+session, once, at creation. `r3v_measurement_session_open` refuses a
+reopen over a live session on its own, and
+`r3v_measurement_session_isolation_audit.py` holds the gate refresh's body
+to naming no session state.
+
+An absent declaration and a defective one are separate outcomes:
+
+| Declaration condition | Device creation |
+| --- | --- |
+| no declaration named | ordinary behavior, session inactive |
+| named declaration does not open | refuse |
+| declaration above the text bound | refuse |
+| parse, epoch, board, or route refuses | refuse |
+| text allocation fails | refuse as out of host memory |
+| valid declaration | one device-local session opens |
+
+One session belongs to one device. Two `VkDevice` objects created under
+one declaration open two sessions, each over the declaration's full
+allowance, and nothing in the load prevents that: a session's counters
+live in the device and the load compares no state outside it. Holding one
+campaign to one allowance across devices and processes is the durable
+claim's obligation, listed above and not yet wired. A campaign run before
+that lands is bounded per device, not per declaration.
+
+An operator who named a declaration asked for a measured campaign, so a
+declaration the driver cannot read refuses the device rather than
+downgrading to ordinary execution and publishing samples against an
+authorization that never opened. A failed allocation is a shortage of
+memory rather than a defect in what the operator wrote, so it carries
+`VK_ERROR_OUT_OF_HOST_MEMORY` where every declaration defect carries
+`VK_ERROR_INITIALIZATION_FAILED`.
+
+The declared board is resolved through `r300_platform_id_from_declaration_name`
+and required to equal the board the device resolved. Three facts decide
+it and each refuses on its own: a name no platform row carries, a running
+board that resolved to no qualified platform, and a resolved pair that
+disagrees. Two unresolved names are not a match. The resolver compares
+exactly -- it folds no case and strips no space -- because DMI
+normalization belongs to the platform resolver and a declaration is text
+an operator wrote for one row.
+
+The declared route is held to four facts, each refusing alone: the route
+exists in this build's registry, its state is executing, its evidence
+reaches its own delivery rather than a unit its family shares, and it
+serves a linear transfer destination. Where the route carries an opt-in,
+that opt-in must already stand open on this device. The load reads the
+device's gate cache and never writes it: reading a declaration opens no
+gate, lowers no evidence floor, and resolves no competing pair by
+preference. The gate reading is a diagnostic rather than an invariant:
+`r3v_native_device_refresh_delivery_gates` rewrites that cache from the
+environment after creation, so a gate open at load can be closed by the
+first submission. The standing rule is
+`r3v_measurement_session_route_check` at route admission, which holds the
+executor the device resolved against the declared one for every request;
+the load reports the disagreement at creation, where an operator can act
+on it, instead of once per command. Opening the predicate grants nothing on its own; measurement
+execution becomes available when the claim, the consumption, and the
+transport wiring have landed.
+
 ## Budget
 
 Identity and repetition are separate predicates: two submissions agreeing
@@ -120,10 +195,11 @@ implementation makes on its own.
 
 | Obligation | Site |
 | --- | --- |
-| read the declaration, hash it, parse it, open the session | `r3v_native_device_refresh_delivery_gates`, at `vkCreateDevice` |
+| read the declaration, hash it, parse it, open the session | one static helper inside `r3v_native_device.c`, called once from `r3v_CreateDevice`; `r3v_measurement_session_isolation_audit.py` holds `r3v_measurement_declaration_open` to that one call site |
 | hold the declaration to the running deployment | `r3v_measurement_manifest_epoch_check`, against the arming facts |
 | hold the resolved executor to the declared route | `r3v_measurement_session_route_check`, at route admission |
-| resolve the destination and hold it to the role | `r3v_measurement_session_role_check`, in the fill route |
+| resolve the live destination for every repetition | the fill route, from the recorded `VkBuffer` and its currently bound memory, never from the standing binding |
+| hold the resolved destination to the declared role | `r3v_measurement_session_role_check`, on that resolution |
 | stamp an allocation generation the binding can read | `vkAllocateMemory`, from a device-monotonic counter |
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
@@ -166,6 +242,30 @@ naming another object or another stream terminates the campaign; one
 whose identity is not a digest at all refuses the request and leaves the
 campaign open, because an unreadable request is not a contradicted
 declaration.
+
+The binding is values, never a pointer. It carries the destination's GEM
+handle, its allocation generation, and the concrete fill identity, and no
+`VkDeviceMemory` wrapper pointer: `r3v_AllocateMemory` creates the GEM
+buffer object inside that wrapper and `r3v_FreeMemory` unmaps it, frees
+it, and destroys the wrapper, so a retained owner would change that
+lifetime model rather than increment an existing count. Vulkan's own
+resource-lifetime contract is what makes the values enough. An application
+completes a submitted use before freeing the memory or destroying the
+buffer, which keeps the resource valid across its pending submission --
+and says nothing about the interval between completed submissions, so a
+session that outlives a destroyed allocation holds identity data rather
+than a live object.
+
+Two obligations follow, and the submission wiring owes both. Every
+repetition resolves its own live `VkBuffer` and bound `VkDeviceMemory`,
+reads the current handle and generation, recomputes the identity, and
+compares against the binding rather than reusing the values the binding
+already holds. An application that completes one submission, destroys the
+allocation, allocates a replacement, and submits against the standing
+session is then refused even where the replacement's size, role, and
+recycled handle all match, because the generation differs. The predicate
+carries the comparison; nothing in the driver performs that resolution
+until the queue integration lands.
 
 Digests cross this boundary as `struct r3v_measurement_digest`, not as an
 array parameter. An array parameter decays to a pointer, so the width a
