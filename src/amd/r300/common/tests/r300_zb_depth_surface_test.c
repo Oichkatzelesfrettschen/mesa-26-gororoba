@@ -50,12 +50,98 @@ test_z16_matches_the_cell(void)
    assert(word == R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL);
 }
 
+/* The Z24 linear rung: the Z16 geometry and tiling under a packed
+ * Z24/S8 format, so it moves the format alone.  Linear addressing is the
+ * same arithmetic at four bytes per pixel as at two, so every host
+ * capability holds and the sentinel code reaches memory shifted into the
+ * depth field.
+ */
+static void
+test_z24_linear_moves_the_format_alone(void)
+{
+   const struct r300_zb_depth_surface *z16 =
+      &r300_zb_depth_surface_z16_linear;
+   const struct r300_zb_depth_surface *s =
+      &r300_zb_depth_surface_z24_linear;
+   assert(r300_zb_depth_surface_check(s) == 0);
+
+   /* Geometry, tiling, and every capability equal the Z16 rung. */
+   assert(s->width == z16->width);
+   assert(s->height == z16->height);
+   assert(s->pitch_pixels == z16->pitch_pixels);
+   assert(s->allocation_rows == z16->allocation_rows);
+   assert(s->microtile == z16->microtile);
+   assert(s->macrotile == z16->macrotile);
+   assert(s->raw_allocation_mapping == z16->raw_allocation_mapping);
+   assert(s->uniform_packed_initialization ==
+          z16->uniform_packed_initialization);
+   assert(s->logical_pixel_addressing == z16->logical_pixel_addressing);
+   assert(s->logical_image_readback == z16->logical_image_readback);
+   assert(s->logical_pixel_addressing);
+   assert(s->logical_image_readback);
+
+   /* The format and its consequences are what differ. */
+   assert(s->depth_format == R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL);
+   assert(s->bytes_per_pixel == 4u);
+   assert(s->depth_sentinel_code == 0x00800000u);
+   assert(r300_zb_depth_surface_tile_bits(s) == 0u);
+   assert(r300_zb_depth_surface_kernel_bound_bytes(s) ==
+          2u * (uint64_t)R300_ZB_DEPTH_CONTROL_DEPTH_BYTES);
+
+   uint32_t word = 0u;
+   assert(r300_zb_depth_surface_packed_sentinel(s, &word) == 0);
+   assert(word == 0x80000000u);
+
+   /* The three Z24 rungs carry one format and one sentinel and differ in
+    * tiling, one class per step: the microtiled rung changes the
+    * microtile and the macrotiled rung changes the macrotile. */
+   const struct r300_zb_depth_surface *t =
+      &r300_zb_depth_surface_z24_microtiled;
+   const struct r300_zb_depth_surface *m =
+      &r300_zb_depth_surface_z24_macrotiled;
+   assert(t->depth_format == s->depth_format);
+   assert(m->depth_format == s->depth_format);
+   assert(t->depth_sentinel_code == s->depth_sentinel_code);
+   assert(m->depth_sentinel_code == s->depth_sentinel_code);
+   assert(r300_zb_depth_surface_check(t) == 0);
+   assert(t->microtile != s->microtile && t->macrotile == s->macrotile);
+   assert(m->microtile == t->microtile && m->macrotile != t->macrotile);
+}
+
+/* Square microtiling has a tile shape at 16 bits per pixel alone, so a
+ * four-byte pixel declaring it names a mode r300_get_pixel_alignment
+ * reports as {0, 0}.
+ */
+static void
+test_square_microtile_needs_a_two_byte_pixel(void)
+{
+   struct r300_zb_depth_surface s = r300_zb_depth_surface_z24_linear;
+   s.microtile = R300_ZB_MICROTILE_TILED_SQUARE;
+   s.logical_pixel_addressing = false;
+   s.logical_image_readback = false;
+   assert(r300_zb_depth_surface_check(&s) == -EINVAL);
+
+   /* Ordinary microtiling under the same format is admitted, so the
+    * refusal names the microtile mode. */
+   s.microtile = R300_ZB_MICROTILE_TILED;
+   assert(r300_zb_depth_surface_check(&s) == 0);
+
+   /* Both 16-bit encodings keep square microtiling. */
+   struct r300_zb_depth_surface z = r300_zb_depth_surface_z16_linear;
+   z.microtile = R300_ZB_MICROTILE_TILED_SQUARE;
+   z.logical_pixel_addressing = false;
+   z.logical_image_readback = false;
+   assert(r300_zb_depth_surface_check(&z) == 0);
+   z.depth_format = R300_DEPTHFORMAT_16BIT_13E3;
+   assert(r300_zb_depth_surface_check(&z) == 0);
+}
+
 /* The surface the ZMASK ladder needs: packed Z24/S8 at four bytes per
  * pixel, microtiled and macrotiled, which is the configuration
  * r300_zmask_layout admits and the only one its 8x8 case accepts.  It
- * carries the Z16 geometry, so a ladder moving between the two changes
- * format and tiling alone.  It is not host-addressable, and the tile bits
- * it declares are the two ZB_DEPTHPITCH fields.
+ * carries the Z16 geometry and adds macrotiling to the Z24 microtiled
+ * rung.  It is not host-addressable, and the tile bits it declares are
+ * the two ZB_DEPTHPITCH fields.
  */
 static void
 test_z24_macrotiled_shape(void)
@@ -255,10 +341,13 @@ int
 main(void)
 {
    test_z16_matches_the_cell();
+   test_z24_linear_moves_the_format_alone();
+   test_square_microtile_needs_a_two_byte_pixel();
    test_z24_macrotiled_shape();
    test_pack_round_trip();
    test_check_refusals();
-   printf("r300_zb_depth_surface: z16 identity, z24 packed shape, "
-          "pack/unpack round trip, and every check refusal hold\n");
+   printf("r300_zb_depth_surface: z16 identity, all three z24 rungs, the "
+          "square-microtile pixel width, pack/unpack round trip, and "
+          "every check refusal hold\n");
    return 0;
 }

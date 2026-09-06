@@ -5,14 +5,18 @@
  * host capabilities of one depth surface, so a depth cell states its
  * surface as data instead of carrying it as constants.
  *
- * Two surfaces stand.  The Z16 linear surface is the one the depth
- * control cell has always emitted, and its fields equal that cell's
- * macros exactly, so an emission taken from the descriptor produces the
- * stream the retained cell produced.  The Z24 macrotiled surface is the
- * one the ZMASK protocol needs -- r300_zmask_layout admits a 32-bit
- * microtiled surface and its 8x8 compression case additionally requires
- * macrotiling -- and it is defined here as the target the ladder aims
- * at.
+ * Four surfaces stand, one per rung of the ladder, and each rung moves
+ * one variable: Z16 linear, Z24 linear, Z24 microtiled, Z24 microtiled
+ * and macrotiled.  The Z16 linear surface is the one the depth control cell has always emitted, and its
+ * fields equal that cell's macros exactly, so an emission taken from the
+ * descriptor produces the stream the retained cell produced.  The Z24
+ * linear surface changes the format alone, which establishes packed
+ * depth behavior under addressing that already holds.  The Z24
+ * microtiled surface changes the microtile, which is where a permutation
+ * first separates a logical coordinate from a row-major byte.  The Z24
+ * macrotiled surface adds macrotiling to it, and is the one the ZMASK
+ * protocol needs: r300_zmask_layout admits a 32-bit microtiled surface
+ * and its 8x8 compression case additionally requires macrotiling.
  *
  * The sentinel is a depth code, never a memory word.  R300 packs Z24/S8
  * with depth in bits 31:8 and stencil in bits 7:0, so the 24-bit
@@ -37,8 +41,10 @@
  * routes a tiled map through a linear shadow texture and lets the engine
  * move the bytes, and radeon_surface.c begins at CHIP_R600 -- so no
  * logical-to-physical transform for R300-class tiling exists in this
- * tree, and the Z24 surface answers false to the last two until one
- * backed by its own authority exists.
+ * tree, and both tiled Z24 surfaces answer false to the last two until
+ * one backed by its own authority exists.  The Z24 linear surface
+ * holds all four, because linear addressing is the same arithmetic at
+ * four bytes per pixel as at two.
  *
  * ZB_DEPTHPITCH carries the macrotile bit at 16 and the two-bit
  * microtile field at 17-18.  The kernel composes them from
@@ -109,6 +115,17 @@ struct r300_zb_depth_surface {
  * held. */
 extern const struct r300_zb_depth_surface r300_zb_depth_surface_z16_linear;
 
+/* The Z24 rung that keeps linear addressing: packed Z24/S8 on the Z16
+ * surface's geometry, every host capability held, sentinel code
+ * 0x00800000 reaching memory as 0x80000000. */
+extern const struct r300_zb_depth_surface r300_zb_depth_surface_z24_linear;
+
+/* The third rung: packed Z24/S8 microtiled on a macrotile-linear
+ * surface, 4x2 pixels to a 32-byte tile.  Raw mapping and uniform
+ * initialization hold; logical addressing and row-major readback answer
+ * false, because the microtile permutes pixels within a row pair. */
+extern const struct r300_zb_depth_surface r300_zb_depth_surface_z24_microtiled;
+
 /* The surface the ZMASK ladder needs: packed Z24/S8, microtiled and
  * macrotiled, which is the configuration r300_zmask_layout admits at all
  * and the only one its 8x8 compression case accepts.  Sentinel code
@@ -165,7 +182,9 @@ uint64_t r300_zb_depth_surface_kernel_bound_bytes(
  * members imply their prerequisites -- uniform initialization and
  * logical addressing each need raw mapping, row-major readback needs
  * logical addressing, and logical addressing needs a linear surface in
- * both tile dimensions.  Returns 0 or -EINVAL. */
+ * both tile dimensions.  Square microtiling additionally requires a
+ * two-byte pixel: r300_get_pixel_alignment carries its tile shape at 16
+ * bits per pixel alone.  Returns 0 or -EINVAL. */
 int r300_zb_depth_surface_check(const struct r300_zb_depth_surface *surface);
 
 #endif /* R300_ZB_DEPTH_SURFACE_H */

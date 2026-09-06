@@ -29,6 +29,29 @@
  */
 #define DEPTH_OFFSET_ALIGNMENT 32u
 
+/* A macrotiled surface begins on a macrotile boundary.  Two facts in the
+ * R300 tree establish it.  r300_setup_cbzb_flags records the ZB unit's
+ * own behavior on one path: the midpoint offset the CBZB fast clear
+ * hands it returns garbage at certain surface sizes unless it is
+ * 2048-aligned, and macrotiling is what supplies the alignment.  And
+ * r300_setup_miptree places every macrotiled level on that grid, because
+ * r300_texture_macro_switch compares u_minify(dim, level) against a
+ * level-independent threshold, so macrotiled levels form a prefix and no
+ * macrotiled offset ever follows a 32-byte-granular linear level.
+ *
+ * This bounds the surface-relative offset alone, which is what reaches
+ * the register.  The address the hardware sees is that offset plus the
+ * buffer object's own base, and radeon_bo_create rounds a GEM object's
+ * placement alignment up to PAGE_SIZE, so the object base carries at
+ * least 4096-byte granularity and the sum stays on the macrotile grid.
+ */
+#define DEPTH_MACROTILE_OFFSET_ALIGNMENT 2048u
+
+/* The four encodings the emitter admits.  Exactly one of them stores four
+ * bytes per pixel, which is what lets the square-microtile refusal below
+ * name that encoding rather than derive a pixel width: a fifth entry at
+ * four bytes per pixel would need the refusal widened with it.
+ */
 static bool
 depth_format_supported(uint32_t format)
 {
@@ -77,6 +100,21 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
                                               R300_DEPTHMICROTILE(3u))) != 0 ||
        (params->pitch_tile_bits & R300_DEPTHMICROTILE(3u)) ==
           R300_DEPTHMICROTILE(3u))
+      return -EINVAL;
+   /* Square microtiling has a tile shape at 16 bits per pixel alone --
+    * r300_get_pixel_alignment reports {0, 0} at every other width and
+    * asserts on it -- so packed Z24/S8 selecting that mode names a
+    * layout with no alignment the pitch rounds to.  The descriptor path
+    * refuses the pair in r300_zb_depth_surface_check; this closes the
+    * same shape reaching the emitter as hand-built params. */
+   if ((params->pitch_tile_bits & R300_DEPTHMICROTILE(3u)) ==
+          R300_DEPTHMICROTILE(2u) &&
+       params->depth_format == R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL)
+      return -EINVAL;
+   /* The tile word is well formed by here, so the macrotile bit reads as
+    * the mode it names. */
+   if ((params->pitch_tile_bits & R300_DEPTHMACROTILE(1u)) != 0 &&
+       params->depth_offset_bytes % DEPTH_MACROTILE_OFFSET_ALIGNMENT != 0)
       return -EINVAL;
 
    if (!r300_pm4_builder_reserve(builder, r300_zb_depth_state_dwords()))

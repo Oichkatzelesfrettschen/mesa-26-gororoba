@@ -25,12 +25,65 @@ const struct r300_zb_depth_surface r300_zb_depth_surface_z16_linear = {
    .logical_image_readback = true,
 };
 
-/* Same geometry as the Z16 surface, so the two differ in format and
- * tiling alone and a ladder that moves from one to the other changes one
- * variable at a time.  0x00800000 is the 24-bit half-depth code, the Z24
- * counterpart of 0x8000; packed against a zero stencil it reaches memory
- * as 0x80000000.  A uniform allocation of that word is invariant under
- * the tile permutation, so the host can initialize the surface while the
+/* The Z24 linear surface: the same geometry, tiling, and host
+ * capabilities as the Z16 surface, differing in format alone.  It is the
+ * first rung of the ladder, and the one rung that moves a single
+ * variable: linear addressing holds at four bytes per pixel exactly as
+ * it does at two, so a(x, y) = base + 4 * (y * pitch + x) names every
+ * pixel and a host packs, initializes, and reads the surface back
+ * without any transform.  What it establishes is packed-depth behavior:
+ * where the depth and stencil components sit inside a 32-bit word, and
+ * which words a passing fragment writes.
+ *
+ * 0x00800000 is the 24-bit half-depth code, the Z24 counterpart of the
+ * Z16 cell's 0x8000; packed against a zero stencil it reaches memory as
+ * 0x80000000.
+ */
+const struct r300_zb_depth_surface r300_zb_depth_surface_z24_linear = {
+   .name = "z24_linear",
+   .depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL,
+   .bytes_per_pixel = 4u,
+   .microtile = R300_ZB_MICROTILE_LINEAR,
+   .macrotile = R300_ZB_MACROTILE_LINEAR,
+   .width = R300_ZB_DEPTH_CONTROL_TARGET_WIDTH,
+   .height = R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT,
+   .pitch_pixels = R300_ZB_DEPTH_CONTROL_PITCH_PIXELS,
+   .allocation_rows = R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS,
+   .depth_sentinel_code = 0x00800000u,
+   .raw_allocation_mapping = true,
+   .uniform_packed_initialization = true,
+   .logical_pixel_addressing = true,
+   .logical_image_readback = true,
+};
+
+/* The third rung: packed Z24/S8 microtiled and macrotile-linear, which
+ * moves the microtile alone.  Its tile is 4x2 pixels, 32 bytes, the one
+ * r300_get_pixel_alignment reports for a four-byte pixel, so this is
+ * where a permutation first separates a logical coordinate from a
+ * row-major byte and the last two capabilities go false.
+ */
+const struct r300_zb_depth_surface r300_zb_depth_surface_z24_microtiled = {
+   .name = "z24_microtiled",
+   .depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL,
+   .bytes_per_pixel = 4u,
+   .microtile = R300_ZB_MICROTILE_TILED,
+   .macrotile = R300_ZB_MACROTILE_LINEAR,
+   .width = R300_ZB_DEPTH_CONTROL_TARGET_WIDTH,
+   .height = R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT,
+   .pitch_pixels = R300_ZB_DEPTH_CONTROL_PITCH_PIXELS,
+   .allocation_rows = R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS,
+   .depth_sentinel_code = 0x00800000u,
+   .raw_allocation_mapping = true,
+   .uniform_packed_initialization = true,
+   .logical_pixel_addressing = false,
+   .logical_image_readback = false,
+};
+
+/* The fourth rung: the microtiled surface above with macrotiling added,
+ * so it too moves one variable.  This is the configuration
+ * r300_zmask_layout admits and the only one its 8x8 compression case
+ * accepts.  A uniform allocation of the sentinel word is invariant under
+ * the tile permutation, so the host initializes this surface while the
  * transform that names a single pixel's byte stays absent.
  */
 const struct r300_zb_depth_surface r300_zb_depth_surface_z24_macrotiled = {
@@ -173,6 +226,15 @@ r300_zb_depth_surface_check(const struct r300_zb_depth_surface *surface)
    if (surface->microtile != R300_ZB_MICROTILE_LINEAR &&
        surface->microtile != R300_ZB_MICROTILE_TILED &&
        surface->microtile != R300_ZB_MICROTILE_TILED_SQUARE)
+      return -EINVAL;
+   /* Square microtiling applies to a two-byte pixel alone.  Its entries
+    * in r300_get_pixel_alignment are {4, 4} and {32, 32} at 16 bits per
+    * pixel and {0, 0} at every other width, and that function asserts on
+    * a zero tile, so the mode has no alignment a wider pixel rounds to.
+    * Packed Z24/S8 stores four bytes and refuses it here; both 16-bit
+    * depth encodings keep it. */
+   if (surface->microtile == R300_ZB_MICROTILE_TILED_SQUARE &&
+       surface->bytes_per_pixel != 2u)
       return -EINVAL;
    if (surface->macrotile != R300_ZB_MACROTILE_LINEAR &&
        surface->macrotile != R300_ZB_MACROTILE_TILED)
