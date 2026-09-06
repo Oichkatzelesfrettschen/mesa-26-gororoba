@@ -14,6 +14,12 @@
 #include "amd/r300/common/r300_chip_identity.h"
 #include "amd/r300/common/r300_operation_route.h"
 
+/* The asserts carry this test's verdicts, so they stay live under NDEBUG.
+ * The release profiles set b_ndebug, which discards both the check and
+ * the call inside it, and a test whose whole body is assert(load(...))
+ * would execute nothing there and still report OK. */
+#undef NDEBUG
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
