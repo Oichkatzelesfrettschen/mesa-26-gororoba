@@ -122,7 +122,7 @@ implementation makes on its own.
 | stamp an allocation generation the binding can read | `vkAllocateMemory`, from a device-monotonic counter |
 | resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
-| consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site |
+| consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site, naming the same case, operation, object, and identity the bind carried |
 | serialize bind and consume | the queue execution path alone, where Vulkan's external synchronization on `vkQueueSubmit` orders the calls |
 | serialize the generation counter | `vkAllocateMemory`, through an atomic or the allocation lock |
 | claim one session across devices and processes | an exclusive durable claim on the declared arm |
@@ -143,6 +143,30 @@ The declaration is hashed and parsed from one immutable byte buffer read
 once. Hashing a path and reopening it for parsing would let the bytes
 change between the two, so the digest would name a declaration the
 session never read.
+
+The bind and the consume describe one submission. The bind authorizes an
+object and a stream; the consume spends the execution that submission
+runs, and it names the case, the operation, the object, and the identity
+again so every field is held against the binding. A consume carrying the
+operation alone would let a bind against one allocation stand while the
+consume and the submission ran against another the role also admits, and
+a standing binding cannot see that substitution. A consumed submission
+naming another object or another stream terminates the campaign; one
+whose identity is not a digest at all refuses the request and leaves the
+campaign open, because an unreadable request is not a contradicted
+declaration.
+
+Digests cross this boundary as `struct r3v_measurement_digest`, not as an
+array parameter. An array parameter decays to a pointer, so the width a
+scan walks would be a promise the caller makes rather than a fact the
+type carries, and a shorter object would be read past its end.
+
+What the predicate does not decide: its counters live in one struct and
+die with it, so a fresh struct over the same declaration receives the
+whole allowance again. Bounding one campaign across devices and processes
+is the durable claim's job, and until that wiring exists the predicate
+bounds a campaign within one live session rather than across every
+session a declaration could open.
 
 Three rules the predicate enforces itself, rather than trusting the site
 that calls it. A session opens once: a second open over a live session
