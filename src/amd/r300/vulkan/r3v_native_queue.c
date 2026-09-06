@@ -1929,20 +1929,28 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       const bool semantic_cell_retained =
          (serial_kind && device->serial_submissions_consumed > 0) ||
          measurement_case_retained;
+      /* Resolved for the writers that will run: the semantic manifest below
+       * and the submit object further down.  A campaign's case creates its
+       * subdirectory when it composes the path, so a repetition that has
+       * both writers behind it -- every repetition after the case's first
+       * -- resolves nothing and the measured submission carries no mkdir.
+       * A serial continuation still reaches the submit-object writer, so
+       * the directory it names stays resolved for it. */
       char retention_storage[1024];
-      const char *retention_dir =
-         device->manifest_dir == NULL
-            ? NULL
-            : r3v_native_queue_retention_dir(device, cmd_buffer,
-                                             retention_storage,
-                                             sizeof(retention_storage));
-      if (device->manifest_dir != NULL && retention_dir == NULL) {
-         free(reference_indices);
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: the declared case's evidence "
-                          "directory cannot be created; refusing before "
-                          "any ioctl");
+      const char *retention_dir = NULL;
+      if (device->manifest_dir != NULL &&
+          (!semantic_cell_retained || !measurement_case_retained)) {
+         retention_dir = r3v_native_queue_retention_dir(
+            device, cmd_buffer, retention_storage,
+            sizeof(retention_storage));
+         if (retention_dir == NULL) {
+            free(reference_indices);
+            radeon_drm_vk_reloc_list_finish(&relocs);
+            return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                             "r3v-native: the declared case's evidence "
+                             "directory cannot be created; refusing before "
+                             "any ioctl");
+         }
       }
       if (device->manifest_dir != NULL && !semantic_cell_retained) {
          if (r3v_native_queue_write_manifest(device, retention_dir,
