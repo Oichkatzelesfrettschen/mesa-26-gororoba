@@ -2744,9 +2744,30 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     # stream shape the interval belongs to without deriving it from a
     # submission.  Built and never registered as a test, because running
     # it submits to hardware.
+    # The delivery sequence the crossover runs, and the harness that holds
+    # its stage order and its two intervals.  Both link the same
+    # translation unit, so a mutation that moves a stage across a
+    # timestamp moves the campaign's bracket and the harness's exact sums
+    # together.
+    r3v_crossover_delivery_test = executable(
+      'r3v_crossover_delivery_test',
+      files('tests/r3v_crossover_delivery.c',
+            'tests/r3v_crossover_delivery_test.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('tests')],
+      c_args : [no_override_init_args],
+    )
+    test(
+      'r3v-crossover-delivery',
+      r3v_crossover_delivery_test,
+      suite : ['r3v'],
+    )
     r3v_native_rb2d_fill_crossover = executable(
       'r3v_native_rb2d_fill_crossover',
-      files('tests/r3v_native_rb2d_fill_crossover.c'),
+      files('tests/r3v_native_rb2d_fill_crossover.c',
+            'tests/r3v_crossover_delivery.c',
+            'r3v_measurement_session.c',
+            'r3v_fill_route.c'),
       include_directories : [inc_include, inc_src,
                              include_directories('tests')],
       dependencies : [dep_vulkan_loader],
@@ -2754,6 +2775,59 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       c_args : [no_override_init_args],
       build_by_default : true,
       install : false,
+    )
+    # The crossover harness against the campaign contract, under the shim
+    # that absorbs the submission.  A shim run's intervals measure the
+    # shim, so this check judges the mechanism around them: per-arm
+    # declarations, verified warmups, the balanced schedule, retention
+    # once per case, the exact budget, bounded inputs, and complete
+    # publication.
+    test(
+      'r3v-crossover-campaign',
+      prog_python,
+      args : [
+        files('tests/r3v_crossover_campaign_check.py'),
+        r3v_native_rb2d_fill_crossover,
+      ],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                 r3v_native_rb2d_fill_crossover],
+      timeout : 600,
+      suite : ['r3v'],
+    )
+    # The calibration pair for the release-verdict audit, built so their
+    # own compile commands reach compile_commands.json.  They differ only
+    # in where NDEBUG is undefined relative to the <assert.h> include,
+    # which decides whether their verdicts survive.
+    r3v_ndebug_fixture_late_undef = executable(
+      'r3v_ndebug_fixture_late_undef',
+      files('tests/r3v_ndebug_fixture_late_undef.c'),
+      # NDEBUG comes from the target rather than the source, so the pair
+      # discriminates on a debug profile and a release one alike.
+      c_args : ['-DNDEBUG'],
+      build_by_default : true,
+      install : false,
+    )
+    r3v_ndebug_fixture_early_undef = executable(
+      'r3v_ndebug_fixture_early_undef',
+      files('tests/r3v_ndebug_fixture_early_undef.c'),
+      # NDEBUG comes from the target rather than the source, so the pair
+      # discriminates on a debug profile and a release one alike.
+      c_args : ['-DNDEBUG'],
+      build_by_default : true,
+      install : false,
+    )
+    test(
+      'r3v-release-verdict-audit',
+      prog_python,
+      args : [
+        files('tests/r3v_release_verdict_audit.py'),
+        meson.project_build_root(),
+        meson.project_source_root(),
+      ],
+      depends : [r3v_ndebug_fixture_late_undef, r3v_ndebug_fixture_early_undef],
+      timeout : 600,
+      suite : ['r3v'],
     )
     r3v_public_rb2d_fill_oracle_tool = executable(
       'r3v_public_rb2d_fill_oracle_tool',

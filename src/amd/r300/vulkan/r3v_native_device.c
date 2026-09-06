@@ -66,11 +66,23 @@ r3v_native_plan_nonce(void)
    return value != NULL && value[0] != '\0' ? value : NULL;
 }
 
-static const char *
-r3v_native_manifest_dir(void)
+/* Copies the declared evidence destination into the device.  Returns false
+ * for a path at or past R3V_NATIVE_MANIFEST_DIR_MAX, which refuses the
+ * device: a truncated directory names a destination the operator did not
+ * declare, and the queue would retain a campaign's evidence into it. */
+static bool
+r3v_native_manifest_dir_copy(struct r3v_native_device *device)
 {
+   device->manifest_dir = NULL;
    const char *value = getenv("R3V_NATIVE_MANIFEST_DIR");
-   return value != NULL && value[0] != '\0' ? value : NULL;
+   if (value == NULL || value[0] == '\0')
+      return true;
+   const size_t length = strlen(value);
+   if (length >= sizeof(device->manifest_dir_storage))
+      return false;
+   memcpy(device->manifest_dir_storage, value, length + 1);
+   device->manifest_dir = device->manifest_dir_storage;
+   return true;
 }
 
 /* An R2VB gate opens on the exact value "1" alone; the cached literal
@@ -362,7 +374,17 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->queue.vk.driver_submit = r3v_native_queue_submit;
 
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
-   device->manifest_dir = r3v_native_manifest_dir();
+   if (!r3v_native_manifest_dir_copy(device)) {
+      vk_queue_finish(&device->queue.vk);
+      radeon_drm_vk_device_finish(&device->drm);
+      vk_device_finish(&device->vk);
+      vk_free2(&pdevice->vk.instance->alloc, pAllocator, device);
+      return vk_errorf(pdevice, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: R3V_NATIVE_MANIFEST_DIR is longer than "
+                       "%u bytes; refusing the device rather than retaining "
+                       "into a truncated destination",
+                       R3V_NATIVE_MANIFEST_DIR_MAX);
+   }
    r3v_native_device_refresh_delivery_gates(device);
 
    /* A value naming no policy refuses the device.  Reading it as AUTO would

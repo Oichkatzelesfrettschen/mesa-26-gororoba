@@ -779,8 +779,15 @@ struct r3v_native_submission_trace {
  * render-node fd; no winsys, pipe_screen, or pipe_context exists in this
  * implementation.  submit_hazard_accepted mirrors the exact-value
  * R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED=1 gate read once at device creation;
- * manifest_dir carries R3V_NATIVE_MANIFEST_DIR when set.
+ * manifest_dir carries a copy of R3V_NATIVE_MANIFEST_DIR when set.
  */
+/* The longest evidence destination a device holds.  A path at this
+ * bound leaves room for the campaign's "%s/case-%u" subdirectory
+ * inside the queue's own 1024-byte retention buffer, and a longer
+ * declaration refuses the device rather than retaining into a
+ * truncated directory. */
+#define R3V_NATIVE_MANIFEST_DIR_MAX 512u
+
 /* One submission prepared ahead of vkQueueSubmit: the relocation list,
  * the completion reference, the single CS build, the retained evidence
  * (semantic cell and submit object), and the arming disarm all complete
@@ -946,7 +953,14 @@ struct r3v_native_device {
    struct r3v_native_queue queue;
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
+   /* The evidence destination, copied from R3V_NATIVE_MANIFEST_DIR at device
+    * creation.  A getenv result stays valid until the next mutation of that
+    * name, and this device dereferences the directory on every submission it
+    * ever performs, so a process that creates one device and then sets the
+    * variable for the next would leave the first device retaining through a
+    * freed string.  The copy makes the destination the device's own. */
    const char *manifest_dir;
+   char manifest_dir_storage[R3V_NATIVE_MANIFEST_DIR_MAX];
    /* Plan capture, read once at device creation from
     * R3V_NATIVE_PLAN_CAPTURE_FILE: with a path set, the device runs only
     * under the preloaded drm-shim, keeps the hazard gate closed, and

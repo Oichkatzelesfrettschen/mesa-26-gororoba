@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Holds the crossover harness to the campaign contract, under the shim.
+
+The harness is the instrument the crossover measurement runs on, so its
+mechanism is checked where a shim absorbs the submission and no timing
+claim is made: the numbers a shim run produces measure the shim.  What
+this check judges is the mechanism around them -- that each arm opens its
+own declaration, that the host arm opens none, that every warmup and
+every measured repetition is verified, that a case retains its evidence
+once and no later repetition writes, that the declared budget is exact,
+that a run whose request disagrees with its declaration is refused before
+any device exists, and that every requested row survives publication.
+
+Each negative row states the exact verdict it expects, so a crashed
+runner or a missing artifact does not satisfy an expected refusal.
+"""
+
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+FIXTURE_SRCVERSION = "FIXTURESRCVERSION0000000"
+SPECIMEN_SUBSYSTEM = "1028:022a"
+SPECIMEN_DMI = "Vostro   1000 "
+SPECIMEN_PLATFORM = "vostro1000_rs485m_5974"
+# Two intervals the V1 contract covers in one window, and one past its
+# one-window envelope.  The third size is what exercises the arm-specific
+# schedule: V1 omits it from its declaration and its cases, so its case
+# numbering skews from the sweep's, its budget is smaller than V2's, and
+# that size runs on the two-arm balancing cycle rather than the
+# three-arm one.
+# The refused interval sits between two admitted ones, so V1's case 1 is
+# the sweep's size 2: an arm that numbered its cases by sweep position
+# would look for a case directory it never retained.
+SIZES = (256, 8388608, 4096)
+# The sizes V1 admits.  The run must report the remainder NOT_APPLICABLE;
+# if the legalizer ever admits one, the declaration disagrees with the
+# schedule and the harness refuses, which is the right way to find out.
+V1_SIZES = (256, 4096)
+FILL_VALUE = 0x11223344
+WAIT_BOUND_NS = 30000000000
+WARMUP = 1
+# The three-arm balancing cycle is 6 and the two-arm cycle is 2, so this
+# repetition count completes both.
+REPS = 6
+
+
+def arm_sizes(arm):
+    return V1_SIZES if arm == "v1" else SIZES
+
+REFUSED = 2
+ORACLE_FAILED = 1
+
+
+def fail(message):
+    print(f"FAIL: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def declaration_text(nonce, kernel, route, allocation_bytes, *, sizes=SIZES,
+                     warmup=WARMUP, reps=REPS, value=FILL_VALUE,
+                     completion_ns=WAIT_BOUND_NS):
+    lines = [
+        "schema = r3v-measurement-session-v1",
+        f"session_nonce = {nonce}",
+        f"platform = {SPECIMEN_PLATFORM}",
+        f"route = {route}",
+        "pci_vendor_id = 0x1002",
+        "pci_device_id = 0x5974",
+        f"kernel_release = {kernel}",
+        f"module_srcversion = {FIXTURE_SRCVERSION}",
+        f"allocation_bytes = {allocation_bytes}",
+        f"buffer_bytes = {allocation_bytes}",
+        "binding_offset = 0",
+        "memory_property_flags = 0xf",
+        "buffer_usage = 0x2",
+        "write_domain = 0x2",
+        f"max_total_submissions = {len(sizes) * (warmup + reps)}",
+        f"completion_timeout_ns = {completion_ns}",
+    ]
+    for case_id, size in enumerate(sizes):
+        lines.append(f"case = {case_id}, 0, {size}, 0x{value:08x}, "
+                     f"{warmup}, {reps}")
+    return "\n".join(lines) + "\n"
+
+
+class Harness:
+    def __init__(self, crossover, work, allocation_bytes):
+        self.crossover = crossover
+        self.work = work
+        self.allocation_bytes = allocation_bytes
+        self.kernel = platform.release()
+        self.count = 0
+
+    def environment(self):
+        env = dict(os.environ)
+        for key in list(env):
+            if key.startswith(("R3V_NATIVE_", "R3V_DRM_SHIM_")):
+                del env[key]
+        env["R3V_DRM_SHIM_SUBSYSTEM_ID"] = SPECIMEN_SUBSYSTEM
+        env["R3V_DRM_SHIM_DMI_PRODUCT_NAME"] = SPECIMEN_DMI
+        env["R3V_DRM_SHIM_MODULE_SRCVERSION"] = FIXTURE_SRCVERSION
+        env["R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE"] = self.kernel
+        env["R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION"] = FIXTURE_SRCVERSION
+        return env
+
+    def run(self, label, *, sizes=SIZES, warmup=WARMUP, reps=REPS,
+            v2_declaration=None, v1_declaration=None, extra_args=(),
+            no_v1=False, absorbing=True):
+        self.count += 1
+        root = os.path.join(self.work, f"run-{self.count}")
+        os.makedirs(root)
+        evidence = {}
+        args = [self.crossover, "--warmup", str(warmup), "--reps", str(reps),
+                "--wait-bound-ns", str(WAIT_BOUND_NS),
+                "--json", os.path.join(root, "samples.json")]
+        for size in sizes:
+            args += ["--size", str(size)]
+        for arm, route, declaration in (
+                ("v2", "rb2d_const_fill_v2", v2_declaration),
+                ("v1", "rb2d_const_fill", v1_declaration)):
+            if no_v1 and arm == "v1":
+                continue
+            # Each arm declares the cases it admits: V1's declaration
+            # omits the intervals its contract refuses, so its case
+            # numbering and its budget are its own.
+            declared = tuple(s for s in sizes
+                             if arm != "v1" or s in V1_SIZES)
+            path = os.path.join(root, f"{arm}.declaration")
+            with open(path, "w", encoding="ascii") as handle:
+                handle.write(declaration if declaration is not None else
+                             declaration_text(f"{label}-{arm}", self.kernel,
+                                              route, self.allocation_bytes,
+                                              sizes=declared, warmup=warmup,
+                                              reps=reps))
+            directory = os.path.join(root, f"evidence-{arm}")
+            os.makedirs(directory)
+            evidence[arm] = directory
+            args += [f"--declaration-{arm}", path,
+                     f"--evidence-{arm}", directory]
+        if no_v1:
+            args.append("--no-v1")
+        if absorbing:
+            args.append("--absorbing-transport")
+        args += list(extra_args)
+        result = subprocess.run(args, env=self.environment(),
+                                capture_output=True, text=True, timeout=600)
+        result.root = root
+        result.evidence = evidence
+        result.samples = os.path.join(root, "samples.json")
+        return result
+
+
+def rows(result, kind):
+    if not os.path.exists(result.samples):
+        return []
+    out = []
+    with open(result.samples, encoding="ascii") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if record.get("row") == kind:
+                out.append(record)
+    return out
+
+
+def expect_refusal(label, result, needle):
+    """A refusal is the harness declining, not the harness dying.
+
+    The exit status, the harness's own REFUSED prefix, and a phrase only
+    this refusal produces must all hold, so a crash, a missing artifact,
+    or an unrelated exit-2 path does not satisfy an expected refusal."""
+    if result.returncode != REFUSED:
+        fail(f"{label}: expected the refusal exit {REFUSED}, got "
+             f"{result.returncode}\n{result.stdout}\n{result.stderr}")
+    if "REFUSED: " not in result.stderr:
+        fail(f"{label}: the run exited {REFUSED} without refusing; a crash "
+             f"does not satisfy an expected refusal\n{result.stderr}")
+    if needle not in result.stderr:
+        fail(f"{label}: the refusal does not name {needle!r}\n"
+             f"{result.stderr}")
+
+
+def main():
+    if len(sys.argv) != 2:
+        fail("usage: r3v_crossover_campaign_check.py <crossover>")
+    crossover = sys.argv[1]
+    work = tempfile.mkdtemp(prefix="r3v-crossover-check-")
+    try:
+        run_checks(crossover, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("crossover campaign harness: every row holds")
+
+
+def run_checks(crossover, work):
+    allocation_bytes = max(SIZES) + 64
+    harness = Harness(crossover, work, allocation_bytes)
+
+    # The oracle runs on the first warmup and its verdict governs.  The
+    # shim absorbs the submission without executing it, so the GPU arm's
+    # destination still carries the sentinel; without the fixture flag
+    # the campaign ends there, at warmup 0, on the verify stage.  A
+    # warmup that only submitted would have reached the measured
+    # repetitions instead.
+    unexecuted = harness.run("warmup-oracle", absorbing=False)
+    if unexecuted.returncode != ORACLE_FAILED:
+        fail(f"warmup-oracle: expected the oracle exit {ORACLE_FAILED}, got "
+             f"{unexecuted.returncode}\n{unexecuted.stderr}")
+    if "REPETITION_MISMATCH: warmup 0 at verify" not in unexecuted.stderr:
+        fail("warmup-oracle: the run did not stop on the first warmup's "
+             f"oracle\n{unexecuted.stderr}")
+    warm_samples = rows(unexecuted, "sample")
+    if any(s["phase"] == "measured" for s in warm_samples):
+        fail("warmup-oracle: a measured sample was published after a "
+             "warmup whose oracle failed")
+
+    # The whole campaign: every arm runs, every case enrolls against the
+    # transport the device retained, and every requested row is published.
+    ok = harness.run("campaign")
+    if ok.returncode != 0:
+        fail(f"campaign: exit {ok.returncode}\n{ok.stdout}\n{ok.stderr}")
+
+    samples = rows(ok, "sample")
+    for arm in ("host", "v2", "v1"):
+        sizes = arm_sizes(arm)
+        expected_per_arm = len(sizes) * (WARMUP + REPS)
+        arm_rows = [s for s in samples if s["arm"] == arm]
+        if len(arm_rows) != expected_per_arm:
+            fail(f"campaign: arm {arm} published {len(arm_rows)} samples, "
+                 f"the run declared {expected_per_arm}")
+        # The host arm executes on the host, so its oracle governs.  The
+        # GPU arms run under a transport that absorbs the submission, so
+        # every one of their rows records that execution was not asserted
+        # rather than claiming a fill it never received.
+        if arm == "host":
+            if any(s["oracle"] != "pass" for s in arm_rows):
+                fail(f"campaign: arm {arm} published a sample whose oracle "
+                     f"did not pass")
+            if any(not s["execution_asserted"] for s in arm_rows):
+                fail(f"campaign: arm {arm} executes and must assert it")
+        elif any(s["execution_asserted"] for s in arm_rows):
+            fail(f"campaign: arm {arm} claims execution under a transport "
+                 f"that absorbs its submissions")
+        warmups = [s for s in arm_rows if s["phase"] == "warmup"]
+        measured = [s for s in arm_rows if s["phase"] == "measured"]
+        if len(warmups) != len(sizes) * WARMUP:
+            fail(f"campaign: arm {arm} counted {len(warmups)} warmups")
+        if len(measured) != len(sizes) * REPS:
+            fail(f"campaign: arm {arm} counted {len(measured)} measured "
+                 f"repetitions")
+        # Per case, not merely per arm: an aggregate total lets one case
+        # publish another's rows and still sum correctly.
+        for case_id in range(len(sizes)):
+            case_rows = [s for s in arm_rows if s["case_id"] == case_id]
+            # The case's own fill size, so V1's case 1 naming the sweep's
+            # size 1 rather than its own would fail here.
+            if case_rows and {s["fill_bytes"] for s in case_rows} != {
+                    sizes[case_id]}:
+                fail(f"campaign: arm {arm} case {case_id} carries "
+                     f"{sorted({s['fill_bytes'] for s in case_rows})}, not "
+                     f"its declared size {sizes[case_id]}")
+            if len(case_rows) != WARMUP + REPS:
+                fail(f"campaign: arm {arm} case {case_id} published "
+                     f"{len(case_rows)} samples, the run declared "
+                     f"{WARMUP + REPS}")
+            if len([s for s in case_rows if s["phase"] == "warmup"]) != WARMUP:
+                fail(f"campaign: arm {arm} case {case_id} did not enroll "
+                     f"{WARMUP} counted warmup(s)")
+        # The declared budget is spent one submission at a time: the
+        # allowance values an arm published are exactly 1..N, so a
+        # counter that never advanced or was reported independently of
+        # the work fails here rather than matching on its maximum.
+        spent = sorted(s["allowance_consumed"] for s in arm_rows)
+        if spent != list(range(1, expected_per_arm + 1)):
+            fail(f"campaign: arm {arm} spent {spent}, not one allowance "
+                 f"per submission up to its declared budget "
+                 f"{expected_per_arm}")
+
+    # The measured schedule balances position: over a completed cycle
+    # every arm holds every position equally often.  A schedule that
+    # reverses three arms leaves the middle one fixed, which this counts.
+    for size in SIZES:
+        histogram = {}
+        for s in samples:
+            if s["fill_bytes"] != size or s["phase"] != "measured":
+                continue
+            histogram.setdefault(s["arm"], {}).setdefault(s["position"], 0)
+            histogram[s["arm"]][s["position"]] += 1
+        # The arms this size admits, and no others: a size V1 refuses
+        # runs the two-arm schedule and must balance over two positions.
+        expected_arms = {a for a in ("host", "v2", "v1") if size in
+                         arm_sizes(a)}
+        if set(histogram) != expected_arms:
+            fail(f"campaign: size {size} published {sorted(histogram)}, "
+                 f"and the contracts admit {sorted(expected_arms)}")
+        for arm, positions in histogram.items():
+            if sorted(positions) != list(range(len(histogram))):
+                fail(f"campaign: size {size} arm {arm} never held every "
+                     f"position; it held {sorted(positions)}")
+            counts = set(positions.values())
+            if len(counts) != 1:
+                fail(f"campaign: size {size} arm {arm} held its positions "
+                     f"unequally: {positions}")
+
+    # Every sample carries both intervals, and the transport interval is
+    # nested inside the delivery interval it belongs to.
+    for s in samples:
+        if s["transport_ns"] > s["delivery_ns"]:
+            fail("campaign: a sample reports a transport interval longer "
+                 "than the delivery interval that encloses it")
+
+    # The host arm reports its executor as host and carries no executed
+    # GPU stream shape.
+    cells = rows(ok, "cell")
+    host_cells = [c for c in cells if c["arm"] == "host"]
+    if not host_cells:
+        fail("campaign: the host arm published no cell")
+    for cell in host_cells:
+        if cell.get("executor") != "host":
+            fail("campaign: a host cell does not report the host executor")
+        if cell.get("executed_gpu_shape") != "not_applicable":
+            fail("campaign: a host cell claims an executed GPU shape")
+        if "retained_ib_dwords" in cell:
+            fail("campaign: a host cell claims a retained GPU transport")
+    for cell in (c for c in cells if c["arm"] in ("v1", "v2")):
+        if cell.get("predicted_ib_dwords") != cell.get("retained_ib_dwords"):
+            fail("campaign: a GPU cell publishes a prediction the retained "
+                 "transport does not match")
+
+    # Each GPU arm retained exactly one transport per case, into its own
+    # evidence directory, and nothing into the shared root.
+    for arm in ("v2", "v1"):
+        sizes = arm_sizes(arm)
+        directory = ok.evidence[arm]
+        entries = sorted(os.listdir(directory))
+        expected = [f"case-{i}" for i in range(len(sizes))]
+        if entries != expected:
+            fail(f"campaign: arm {arm} retained {entries}, not {expected}")
+        digests = set()
+        streams = set()
+        for case in expected:
+            manifest = os.path.join(directory, case, "manifest.json")
+            if not os.path.exists(manifest):
+                fail(f"campaign: arm {arm} {case} retained no manifest")
+            with open(manifest, encoding="ascii") as handle:
+                digest = json.load(handle)["ib_blake3"]
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                fail(f"campaign: arm {arm} {case} recorded {digest!r}, "
+                     f"which is not a BLAKE3 digest")
+            digests.add(digest)
+            # The retained streams themselves, so a recorded digest that
+            # differs while the bytes do not fails here.
+            with open(os.path.join(directory, case, "ib.bin"), "rb") as blob:
+                streams.add(blob.read())
+        if len(digests) != len(sizes) or len(streams) != len(sizes):
+            fail(f"campaign: arm {arm} retained one stream for two cases")
+
+    # The two GPU arms are separate campaigns: neither retained into the
+    # other's destination, and each opened its own declaration.
+    if ok.evidence["v2"] == ok.evidence["v1"]:
+        fail("campaign: the two GPU arms share one evidence destination")
+
+    # V1 reports the intervals its contract refuses rather than failing
+    # on them, and measures none of them.
+    refused = [c for c in cells if c["arm"] == "v1" and
+               c.get("disposition") == "NOT_APPLICABLE"]
+    expected_refused = [s for s in SIZES if s not in V1_SIZES]
+    if sorted(c["fill_bytes"] for c in refused) != sorted(expected_refused):
+        fail(f"campaign: v1 reported "
+             f"{sorted(c['fill_bytes'] for c in refused)} not applicable, "
+             f"and its contract refuses {sorted(expected_refused)}")
+    if not all(c.get("refusal") for c in refused):
+        fail("campaign: a NOT_APPLICABLE cell names no refusal")
+    if any(s["arm"] == "v1" and s["fill_bytes"] in expected_refused
+           for s in samples):
+        fail("campaign: v1 published a sample for an interval its "
+             "contract refuses")
+
+    # The completeness record accounts for every published row.
+    completeness = rows(ok, "completeness")
+    if len(completeness) != 1:
+        fail("campaign: the run published no single completeness record")
+    record = completeness[0]
+    if record["observed_samples"] != len(samples):
+        fail("campaign: the completeness record counts samples the file "
+             "does not carry")
+    if record["declared_samples"] != record["observed_samples"]:
+        fail("campaign: the campaign published fewer samples than it "
+             "declared")
+    if not re.fullmatch(r"0x[0-9a-f]{16}", record["stream_fnv1a64"]):
+        fail("campaign: the completeness record carries no stream digest")
+    # The digest is recomputed here over the rows the file carries, so a
+    # digest that does not depend on its input fails rather than merely
+    # looking like a hash.
+    digest = 0xcbf29ce484222325
+    with open(ok.samples, encoding="ascii") as handle:
+        for line in handle:
+            if '"row":"completeness"' in line:
+                continue
+            for byte in line.encode("ascii"):
+                digest = ((digest ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    if record["stream_fnv1a64"] != f"0x{digest:016x}":
+        fail(f"campaign: the completeness digest {record['stream_fnv1a64']} "
+             f"does not cover the published rows (0x{digest:016x})")
+
+    # An enrollment that admits a perturbed prediction admits any
+    # prediction, so the known-bad must refuse.
+    perturbed = harness.run("enrollment-perturbed",
+                            extra_args=("--enrollment-perturb-dwords", "1"))
+    expect_refusal("enrollment-perturbed", perturbed,
+                   "-dword stream over 1 window(s)")
+
+    # A result file that cannot be written completely refuses the run: a
+    # campaign that spent its budget and truncated its artifact produced
+    # nothing usable.
+    truncated = harness.run("write-fails",
+                            extra_args=("--json", "/dev/full"))
+    expect_refusal("write-fails", truncated,
+                   "the result file could not be written completely")
+
+    # A declaration whose cases disagree with the requested sweep refuses
+    # before any device is created, so no allowance is spent.
+    mismatched = declaration_text("mismatch-v2", harness.kernel,
+                                  "rb2d_const_fill_v2", allocation_bytes,
+                                  sizes=(512, 4096))
+    result = harness.run("size-mismatch", v2_declaration=mismatched)
+    expect_refusal("size-mismatch", result,
+                   "the declaration states offset 0 size 512 value "
+                   "0x11223344; the run performs offset 0 size 256")
+
+    # A declaration written for the other route refuses this arm.
+    wrong_route = declaration_text("route-v2", harness.kernel,
+                                   "rb2d_const_fill", allocation_bytes)
+    result = harness.run("route-mismatch", v2_declaration=wrong_route)
+    expect_refusal("route-mismatch", result,
+                   'the declaration measures route "rb2d_const_fill"; '
+                   'this arm opens "rb2d_const_fill_v2"')
+
+    # A declaration whose repetition count differs from the run refuses.
+    wrong_counts = declaration_text("counts-v2", harness.kernel,
+                                    "rb2d_const_fill_v2", allocation_bytes,
+                                    warmup=WARMUP, reps=REPS + 6)
+    result = harness.run("count-mismatch", v2_declaration=wrong_counts)
+    expect_refusal("count-mismatch", result,
+                   f"the declaration states {WARMUP} warmups and "
+                   f"{REPS + 6} repetitions; the run performs {WARMUP} "
+                   f"and {REPS}")
+
+    # A completion bound the run does not wait to refuses.
+    wrong_bound = declaration_text("bound-v2", harness.kernel,
+                                   "rb2d_const_fill_v2", allocation_bytes,
+                                   completion_ns=WAIT_BOUND_NS + 1)
+    result = harness.run("bound-mismatch", v2_declaration=wrong_bound)
+    expect_refusal("bound-mismatch", result,
+                   f"bounds completion at {WAIT_BOUND_NS + 1} ns; the "
+                   f"run waits {WAIT_BOUND_NS}")
+
+    # A GPU arm without a declaration refuses rather than inheriting
+    # whatever the environment carried.
+    result = subprocess.run(
+        [crossover, "--warmup", str(WARMUP), "--reps", str(REPS),
+         "--size", str(SIZES[0])],
+        env=harness.environment(), capture_output=True, text=True,
+        timeout=600)
+    if result.returncode != REFUSED:
+        fail(f"undeclared-arm: expected {REFUSED}, got {result.returncode}")
+    if "needs --declaration" not in result.stderr:
+        fail(f"undeclared-arm: the refusal does not name the missing "
+             f"declaration\n{result.stderr}")
+
+    # A repetition count that does not complete the balancing cycle
+    # refuses, so no cell rests on a schedule that favors a position.
+    result = harness.run("unbalanced", reps=4)
+    expect_refusal("unbalanced", result,
+                   "admits 3 arms, whose balancing cycle is 6; --reps 4 "
+                   "does not complete it")
+
+    # A zero-warmup configuration refuses: a case that never enrolled has
+    # no retained transport to hold its prediction against.
+    result = harness.run("zero-warmup", warmup=0)
+    expect_refusal("zero-warmup", result,
+                   "a measured campaign enrolls each case before "
+                   "measuring it")
+
+    # Malformed and out-of-range numeric inputs refuse rather than
+    # wrapping into a small allocation the oracle would read past.
+    for argument, value, needle in (
+            ("--size", "-4", "dword multiple"),
+            ("--size", "18446744073709551615", "dword multiple"),
+            ("--reps", "0", "--reps"),
+            ("--reps", "99999999999999999999999", "--reps"),
+            ("--wait-bound-ns", "0", "--wait-bound-ns"),
+            ("--inject-delay-ns", "2000000000", "--inject-delay-ns")):
+        result = subprocess.run(
+            [crossover, argument, value, "--size", "256"],
+            env=harness.environment(), capture_output=True, text=True,
+            timeout=600)
+        if result.returncode != REFUSED:
+            fail(f"input {argument}={value}: expected {REFUSED}, got "
+                 f"{result.returncode}\n{result.stderr}")
+        if needle not in result.stderr:
+            fail(f"input {argument}={value}: the refusal does not name "
+                 f"{needle!r}\n{result.stderr}")
+
+    # One interval named twice refuses, so a case index never names two
+    # declarations.
+    result = subprocess.run(
+        [crossover, "--size", "256", "--size", "256"],
+        env=harness.environment(), capture_output=True, text=True,
+        timeout=600)
+    if result.returncode != REFUSED or "twice" not in result.stderr:
+        fail(f"duplicate-size: expected a refusal naming the repeat\n"
+             f"{result.stderr}")
+
+
+if __name__ == "__main__":
+    main()
