@@ -191,6 +191,74 @@ parse_case(const char *value, struct r3v_measurement_case *out)
    return true;
 }
 
+/* Every structural rule a declaration carries, independent of the text it
+ * came from.  The reader calls it after filling the struct, and the
+ * session calls it again on open, so a manifest assembled by any route
+ * meets the same rules the reader enforces. */
+static enum r3v_measurement_session_refusal
+manifest_structure_check(const struct r3v_measurement_manifest *m,
+                         const char **reason)
+{
+   if (m == NULL || m->case_count == 0 ||
+       m->case_count > R3V_MEASUREMENT_SESSION_MAX_CASES) {
+      *reason = "the declaration carries no case, or more than the bound";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   if (strcmp(m->schema, R3V_MEASUREMENT_SESSION_SCHEMA) != 0) {
+      *reason = "the declaration names another schema";
+      return R3V_MEASUREMENT_SESSION_REFUSE_SCHEMA;
+   }
+   /* Two cases agreeing on offset, size, and value are the same case,
+    * and a request matching both would consume an ambiguous budget. */
+   for (uint32_t i = 0; i < m->case_count; i++) {
+      const struct r3v_measurement_case *a = &m->cases[i];
+      /* The case closes inside the buffer, and the buffer inside its
+       * allocation, so a declaration names no fill the memory contract
+       * would refuse anyway. */
+      if (a->fill_offset > m->role.buffer_bytes ||
+          a->fill_bytes > m->role.buffer_bytes - a->fill_offset ||
+          m->role.binding_offset > m->role.allocation_bytes ||
+          m->role.buffer_bytes >
+             m->role.allocation_bytes - m->role.binding_offset) {
+         *reason = "a declared case reaches outside the declared role";
+         return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+      }
+      for (uint32_t j = i + 1; j < m->case_count; j++) {
+         const struct r3v_measurement_case *b = &m->cases[j];
+         if (a->case_id == b->case_id ||
+             (a->fill_offset == b->fill_offset &&
+              a->fill_bytes == b->fill_bytes &&
+              a->fill_value == b->fill_value)) {
+            *reason = "two declared cases carry one identity";
+            return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+         }
+      }
+   }
+
+   /* What the cases themselves account for, summed in a width no case
+    * count can overflow. */
+   uint64_t case_total = 0;
+   for (uint32_t i = 0; i < m->case_count; i++)
+      case_total += (uint64_t)m->cases[i].warmups +
+                    (uint64_t)m->cases[i].repetitions;
+   if (case_total == 0 ||
+       case_total > R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS ||
+       m->max_total_submissions > R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS) {
+      *reason = "the declared budget is empty or above the session bound";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   /* A declared total below what the cases account for cannot run the
+    * campaign it declares, and would exhaust partway through with a
+    * budget refusal that reads as a defect.  The declaration is refused
+    * instead, which is the fail-closed direction and keeps the case rows
+    * exact rather than advisory. */
+   if (m->max_total_submissions < case_total) {
+      *reason = "the declared total is below what the declared cases run";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+   return R3V_MEASUREMENT_SESSION_ADMITTED;
+}
+
 enum r3v_measurement_session_refusal
 r3v_measurement_manifest_parse(const char *text, size_t length,
                                struct r3v_measurement_manifest *out,
@@ -238,56 +306,57 @@ r3v_measurement_manifest_parse(const char *text, size_t length,
    while (next_field(&cursor, key, sizeof(key), value, sizeof(value),
                      &malformed)) {
       bool ok = true;
+      uint32_t bit = 0;
       if (strcmp(key, "schema") == 0) {
          ok = copy_name(out->schema, sizeof(out->schema), value);
-         seen |= SEEN_SCHEMA;
+         bit = SEEN_SCHEMA;
       } else if (strcmp(key, "session_nonce") == 0) {
          ok = copy_name(out->session_nonce, sizeof(out->session_nonce), value);
-         seen |= SEEN_NONCE;
+         bit = SEEN_NONCE;
       } else if (strcmp(key, "platform") == 0) {
          ok = copy_name(out->platform, sizeof(out->platform), value);
-         seen |= SEEN_PLATFORM;
+         bit = SEEN_PLATFORM;
       } else if (strcmp(key, "route") == 0) {
          ok = copy_name(out->route, sizeof(out->route), value);
-         seen |= SEEN_ROUTE;
+         bit = SEEN_ROUTE;
       } else if (strcmp(key, "pci_vendor_id") == 0) {
          ok = parse_u32(value, &out->pci_vendor_id);
-         seen |= SEEN_VENDOR;
+         bit = SEEN_VENDOR;
       } else if (strcmp(key, "pci_device_id") == 0) {
          ok = parse_u32(value, &out->pci_device_id);
-         seen |= SEEN_DEVICE;
+         bit = SEEN_DEVICE;
       } else if (strcmp(key, "kernel_release") == 0) {
          ok = copy_name(out->kernel_release, sizeof(out->kernel_release),
                         value);
-         seen |= SEEN_KERNEL;
+         bit = SEEN_KERNEL;
       } else if (strcmp(key, "module_srcversion") == 0) {
          ok = copy_name(out->module_srcversion,
                         sizeof(out->module_srcversion), value);
-         seen |= SEEN_MODULE;
+         bit = SEEN_MODULE;
       } else if (strcmp(key, "allocation_bytes") == 0) {
          ok = parse_u64(value, &out->role.allocation_bytes);
-         seen |= SEEN_ALLOCATION;
+         bit = SEEN_ALLOCATION;
       } else if (strcmp(key, "buffer_bytes") == 0) {
          ok = parse_u64(value, &out->role.buffer_bytes);
-         seen |= SEEN_BUFFER;
+         bit = SEEN_BUFFER;
       } else if (strcmp(key, "binding_offset") == 0) {
          ok = parse_u64(value, &out->role.binding_offset);
-         seen |= SEEN_BINDING;
+         bit = SEEN_BINDING;
       } else if (strcmp(key, "memory_property_flags") == 0) {
          ok = parse_u32(value, &out->role.memory_property_flags);
-         seen |= SEEN_MEMORY_FLAGS;
+         bit = SEEN_MEMORY_FLAGS;
       } else if (strcmp(key, "buffer_usage") == 0) {
          ok = parse_u32(value, &out->role.buffer_usage);
-         seen |= SEEN_USAGE;
+         bit = SEEN_USAGE;
       } else if (strcmp(key, "write_domain") == 0) {
          ok = parse_u32(value, &out->role.write_domain);
-         seen |= SEEN_WRITE_DOMAIN;
+         bit = SEEN_WRITE_DOMAIN;
       } else if (strcmp(key, "max_total_submissions") == 0) {
          ok = parse_u32(value, &out->max_total_submissions);
-         seen |= SEEN_MAX_SUBMISSIONS;
+         bit = SEEN_MAX_SUBMISSIONS;
       } else if (strcmp(key, "completion_timeout_ns") == 0) {
          ok = parse_u64(value, &out->completion_timeout_ns);
-         seen |= SEEN_TIMEOUT;
+         bit = SEEN_TIMEOUT;
       } else if (strcmp(key, "case") == 0) {
          if (out->case_count == R3V_MEASUREMENT_SESSION_MAX_CASES) {
             *reason = "more cases than the declaration bound admits";
@@ -304,6 +373,16 @@ r3v_measurement_manifest_parse(const char *text, size_t length,
          *reason = "a declared value is unreadable or outside its field";
          return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
       }
+      /* A scalar key declares one value.  Two lines carrying the same key
+       * leave the declaration's meaning to the reader's order, so the
+       * second one refuses rather than overwriting the first. */
+      if (bit != 0) {
+         if ((seen & bit) != 0) {
+            *reason = "the declaration carries one key twice";
+            return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+         }
+         seen |= bit;
+      }
    }
    if (malformed) {
       *reason = "a declaration line carries no key and value";
@@ -313,38 +392,7 @@ r3v_measurement_manifest_parse(const char *text, size_t length,
       *reason = "the declaration omits a required field or every case";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
-   if (strcmp(out->schema, R3V_MEASUREMENT_SESSION_SCHEMA) != 0) {
-      *reason = "the declaration names another schema";
-      return R3V_MEASUREMENT_SESSION_REFUSE_SCHEMA;
-   }
-
-   /* Two cases agreeing on offset, size, and value are the same case,
-    * and a request matching both would consume an ambiguous budget. */
-   for (uint32_t i = 0; i < out->case_count; i++) {
-      const struct r3v_measurement_case *a = &out->cases[i];
-      /* The case closes inside the buffer, and the buffer inside its
-       * allocation, so a declaration names no fill the memory contract
-       * would refuse anyway. */
-      if (a->fill_offset > out->role.buffer_bytes ||
-          a->fill_bytes > out->role.buffer_bytes - a->fill_offset ||
-          out->role.binding_offset > out->role.allocation_bytes ||
-          out->role.buffer_bytes >
-             out->role.allocation_bytes - out->role.binding_offset) {
-         *reason = "a declared case reaches outside the declared role";
-         return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
-      }
-      for (uint32_t j = i + 1; j < out->case_count; j++) {
-         const struct r3v_measurement_case *b = &out->cases[j];
-         if (a->case_id == b->case_id ||
-             (a->fill_offset == b->fill_offset &&
-              a->fill_bytes == b->fill_bytes &&
-              a->fill_value == b->fill_value)) {
-            *reason = "two declared cases carry one identity";
-            return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
-         }
-      }
-   }
-   return R3V_MEASUREMENT_SESSION_ADMITTED;
+   return manifest_structure_check(out, reason);
 }
 
 enum r3v_measurement_session_refusal
@@ -386,36 +434,38 @@ r3v_measurement_session_open(
    if (reason == NULL)
       reason = &unused;
    *reason = NULL;
-   if (session == NULL || manifest == NULL || manifest_digest == NULL ||
-       manifest->case_count == 0 ||
-       manifest->case_count > R3V_MEASUREMENT_SESSION_MAX_CASES) {
+   if (session == NULL || manifest == NULL || manifest_digest == NULL) {
       *reason = "the session opens over an unreadable declaration";
       return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
    }
 
-   /* What the cases themselves account for, summed in a width no case
-    * count can overflow. */
+   /* A second open over a live session would clear its bindings and
+    * restore the allowance the first one spent, which is the budget
+    * bypass this predicate exists to refuse.  A closed session stays
+    * closed for the life of the process; the declaration names one
+    * campaign and the campaign runs once. */
+   if (session->active) {
+      if (session->closed) {
+         *reason = session->closed_reason;
+         return R3V_MEASUREMENT_SESSION_REFUSE_CLOSED;
+      }
+      *reason = "the session is already open over a declaration";
+      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
+   }
+
+   /* The declaration is held to every structural rule again here.  The
+    * reader enforces them on the text it parses, and a manifest that
+    * reached this call by another route -- assembled in place, or edited
+    * after parsing -- meets the same rules before it opens anything. */
+   enum r3v_measurement_session_refusal structure =
+      manifest_structure_check(manifest, reason);
+   if (structure != R3V_MEASUREMENT_SESSION_ADMITTED)
+      return structure;
+
    uint64_t case_total = 0;
    for (uint32_t i = 0; i < manifest->case_count; i++)
       case_total += (uint64_t)manifest->cases[i].warmups +
                     (uint64_t)manifest->cases[i].repetitions;
-   if (case_total == 0 ||
-       case_total > R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS ||
-       manifest->max_total_submissions >
-          R3V_MEASUREMENT_SESSION_MAX_SUBMISSIONS) {
-      *reason = "the declared budget is empty or above the session bound";
-      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
-   }
-
-   /* A declared total below what the cases account for cannot run the
-    * campaign it declares, and would exhaust partway through with a
-    * budget refusal that reads as a defect.  The declaration is refused
-    * instead, which is the fail-closed direction and keeps the case rows
-    * exact rather than advisory. */
-   if (manifest->max_total_submissions < case_total) {
-      *reason = "the declared total is below what the declared cases run";
-      return R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED;
-   }
 
    memset(session, 0, sizeof(*session));
    session->manifest = *manifest;
@@ -502,6 +552,19 @@ r3v_measurement_session_role_check(
    return R3V_MEASUREMENT_SESSION_ADMITTED;
 }
 
+/* The operation a case declares: offset, size, and value together.  The
+ * three are the case's identity in find_case, so holding a request to
+ * them keeps the index and the operation naming one row. */
+static bool
+case_matches_operation(const struct r3v_measurement_case *declared,
+                       uint64_t fill_offset, uint64_t fill_bytes,
+                       uint32_t fill_value)
+{
+   return declared->fill_offset == fill_offset &&
+          declared->fill_bytes == fill_bytes &&
+          declared->fill_value == fill_value;
+}
+
 /* Lowercase hex of the digest width, the only shape an identity takes. */
 static bool
 digest_shaped(const char *digest)
@@ -519,6 +582,7 @@ digest_shaped(const char *digest)
 enum r3v_measurement_session_refusal
 r3v_measurement_session_bind(
    struct r3v_measurement_session *session, uint32_t case_index,
+   uint64_t fill_offset, uint64_t fill_bytes, uint32_t fill_value,
    uint32_t destination_handle, uint64_t memory_generation,
    const char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE], const char **reason)
 {
@@ -534,6 +598,15 @@ r3v_measurement_session_bind(
    }
    if (case_index >= session->manifest.case_count) {
       *reason = "the request names no declared case";
+      return R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED;
+   }
+   /* The index selects a row; the operation decides whether that row is
+    * the one this request runs.  A request that names one case and fills
+    * another is undeclared, whatever its digest hashes to. */
+   if (!case_matches_operation(&session->manifest.cases[case_index],
+                               fill_offset, fill_bytes, fill_value)) {
+      *reason = "the request fills something the named case does not "
+                "declare";
       return R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED;
    }
    if (!digest_shaped(identity)) {
@@ -586,7 +659,9 @@ r3v_measurement_session_bind(
 
 enum r3v_measurement_session_refusal
 r3v_measurement_session_consume(struct r3v_measurement_session *session,
-                                uint32_t case_index, const char **reason)
+                                uint32_t case_index, uint64_t fill_offset,
+                                uint64_t fill_bytes, uint32_t fill_value,
+                                const char **reason)
 {
    const char *unused = NULL;
    if (reason == NULL)
@@ -600,6 +675,12 @@ r3v_measurement_session_consume(struct r3v_measurement_session *session,
    }
    if (case_index >= session->manifest.case_count) {
       *reason = "the request names no declared case";
+      return R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED;
+   }
+   if (!case_matches_operation(&session->manifest.cases[case_index],
+                               fill_offset, fill_bytes, fill_value)) {
+      *reason = "the request fills something the named case does not "
+                "declare";
       return R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED;
    }
    struct r3v_measurement_binding *binding = &session->bindings[case_index];
@@ -639,5 +720,11 @@ r3v_measurement_session_close(struct r3v_measurement_session *session,
    if (session == NULL || !session->active || session->closed)
       return;
    session->closed = true;
-   session->closed_reason = why != NULL ? why : "unnamed";
+   const char *text = why != NULL ? why : "unnamed";
+   size_t room = sizeof(session->closed_reason) - 1;
+   size_t length = strlen(text);
+   if (length > room)
+      length = room;
+   memcpy(session->closed_reason, text, length);
+   session->closed_reason[length] = '\0';
 }

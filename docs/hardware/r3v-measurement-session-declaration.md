@@ -95,14 +95,28 @@ implementation makes on its own.
 
 | Obligation | Site |
 | --- | --- |
-| read the declaration, hash it, parse it, open the session exactly once | `r3v_native_device_refresh_delivery_gates`, at `vkCreateDevice` |
+| read the declaration, hash it, parse it, open the session | `r3v_native_device_refresh_delivery_gates`, at `vkCreateDevice` |
 | hold the declaration to the running deployment | `r3v_measurement_manifest_epoch_check`, against the arming facts |
 | hold the resolved executor to the declared route | `r3v_measurement_session_route_check`, at route admission |
 | resolve the destination and hold it to the role | `r3v_measurement_session_role_check`, in the fill route |
 | stamp an allocation generation the binding can read | `vkAllocateMemory`, from a device-monotonic counter |
+| resolve the recorded operation to a case row | `r3v_measurement_session_find_case`, on the offset, size, and value the command carries |
 | bind the case before entering the ioctl | `r3v_measurement_session_bind`, after the identity is computed |
 | consume one execution immediately before the kernel boundary | `r3v_measurement_session_consume`, at the submission site |
+| serialize the calls | one queue family at `queueCount = 1`, so Vulkan's external synchronization on `vkQueueSubmit` orders every bind and consume |
 | close the session on a failed completion or a failed oracle | the queue's transport tail |
+
+Three rules the predicate enforces itself, rather than trusting the site
+that calls it. A session opens once: a second open over a live session
+refuses instead of clearing its bindings and restoring the allowance the
+first one spent, and a closed session stays closed and names why. Every
+structural rule the reader enforces on declaration text, `open` enforces
+again on the struct, so a manifest assembled without the reader or edited
+after parsing meets the same rules. And `bind` and `consume` carry the
+offset, size, and value the recorded operation fills, held against the
+case the index names: the index selects a row, the operation decides
+whether that row is the one the request runs, so a self-computed digest
+never authorizes an operation the declaration does not name.
 
 The predicate closes itself on the two failures it can see: a case that
 resolves to another allocation and a recomputed identity that left its
@@ -110,6 +124,18 @@ binding both terminate the session rather than refusing alone, because a
 refusal would leave the binding standing and admit the next repetition
 against it. Device loss, a failed completion, and a failed oracle are
 outside what a predicate observes, so the wiring closes on those.
+
+A role names a shape, not an object, so a second allocation matching the
+declared role passes the role check and then terminates the campaign at
+`bind` when its handle and generation differ from the bound ones. A
+substitution and a caller that routed the wrong buffer are the same
+observation here and carry the same terminal disposition, which is the
+fail-closed direction: the campaign ends and the operator reads why,
+rather than the samples continuing against an object the declaration did
+not bind.
+
+The termination reason is copied into the session, so a reason formatted
+on a caller's stack is valid for every later refusal.
 
 ## What survives a crash
 

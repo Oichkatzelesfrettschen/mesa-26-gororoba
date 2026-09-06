@@ -43,6 +43,15 @@ static const char valid_manifest[] =
    "case = 1, 0, 4096, 287454020, 2, 32\n"
    "case = 2, 0, 65536, 287454020, 2, 32\n";
 
+/* The two rows valid_manifest declares, as a call site names them: the
+ * index the request cites and the operation it fills.  The predicate
+ * holds the two against each other, so a test that passes one without
+ * the other is not testing what the driver will call. */
+#define CASE_4K_OPERATION 0u, 4096u, 287454020u
+#define CASE_64K_OPERATION 0u, 65536u, 287454020u
+#define CASE_4K 0u, CASE_4K_OPERATION
+#define CASE_64K 1u, CASE_64K_OPERATION
+
 static struct r3v_measurement_manifest
 parse_valid(void)
 {
@@ -133,6 +142,20 @@ test_manifest_refusals(void)
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
    refuse_manifest("platform = vostro1000_rs485m_5974\n", "",
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* A scalar key declares one value.  A second line carrying it leaves
+    * the meaning to the reader's order, so it refuses. */
+   refuse_manifest("write_domain = 0x2\n",
+                   "write_domain = 0x2\nwrite_domain = 0x4\n",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   refuse_manifest("route = rb2d_const_fill_v2\n",
+                   "route = rb2d_const_fill_v2\nroute = rb2d_const_fill\n",
+                   R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   /* A repeated `case` line is a further case, not a repeated key. */
+   assert(r3v_measurement_manifest_parse(valid_manifest,
+                                         sizeof(valid_manifest) - 1,
+                                         &manifest, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(manifest.case_count == 2u);
    /* A key this reader does not read is a declaration it cannot honor. */
    refuse_manifest("write_domain = 0x2", "write_domains = 0x2",
                    R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
@@ -226,6 +249,38 @@ test_epoch(void)
 }
 
 static void
+edit_schema(struct r3v_measurement_manifest *m)
+{
+   strcpy(m->schema, "r3v-measurement-session-v2");
+}
+
+static void
+edit_duplicate_case(struct r3v_measurement_manifest *m)
+{
+   m->cases[1] = m->cases[0];
+   m->cases[1].case_id = 9u;
+}
+
+static void
+edit_case_past_buffer(struct r3v_measurement_manifest *m)
+{
+   m->cases[0].fill_offset = m->role.buffer_bytes - 1u;
+   m->cases[0].fill_bytes = 4096u;
+}
+
+static void
+edit_buffer_past_allocation(struct r3v_measurement_manifest *m)
+{
+   m->role.binding_offset = 4096u;
+}
+
+static void
+edit_no_cases(struct r3v_measurement_manifest *m)
+{
+   m->case_count = 0u;
+}
+
+static void
 test_open_budget(void)
 {
    struct r3v_measurement_manifest m = parse_valid();
@@ -239,15 +294,71 @@ test_open_budget(void)
    assert(session.remaining_submissions == 68u);
    assert(session.consumed_submissions == 0u);
 
-   /* A declared total below what the cases run cannot run the campaign
-    * it declares. */
-   m.max_total_submissions = 67u;
+   /* A second open over a live session would clear its bindings and
+    * hand back the allowance the first one spent. */
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
-   m.max_total_submissions = 68u;
-   assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
-          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(reason != NULL);
    assert(session.remaining_submissions == 68u);
+
+   /* A closed session stays closed, and names why. */
+   struct r3v_measurement_session spent;
+   memset(&spent, 0, sizeof(spent));
+   assert(r3v_measurement_session_open(&spent, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   r3v_measurement_session_close(&spent, "the oracle read a wrong byte");
+   assert(r3v_measurement_session_open(&spent, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
+   assert(strcmp(reason, "the oracle read a wrong byte") == 0);
+
+   /* A declared total below what the cases run cannot run the campaign
+    * it declares. */
+   struct r3v_measurement_session underfunded;
+   memset(&underfunded, 0, sizeof(underfunded));
+   m.max_total_submissions = 67u;
+   assert(r3v_measurement_session_open(&underfunded, &m, DIGEST_A,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED);
+   m.max_total_submissions = 68u;
+   assert(r3v_measurement_session_open(&underfunded, &m, DIGEST_A,
+                                       &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(underfunded.remaining_submissions == 68u);
+
+   /* Every structural rule the reader enforces on text, the session
+    * enforces again on the struct: a manifest edited after parsing, or
+    * assembled without the reader, opens nothing the reader would have
+    * refused. */
+   static const struct {
+      const char *what;
+      void (*damage)(struct r3v_measurement_manifest *);
+      enum r3v_measurement_session_refusal expected;
+   } edits[] = {
+      { "another schema",
+        edit_schema, R3V_MEASUREMENT_SESSION_REFUSE_SCHEMA },
+      { "two cases at one identity",
+        edit_duplicate_case,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED },
+      { "a case outside its buffer",
+        edit_case_past_buffer,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED },
+      { "a buffer outside its allocation",
+        edit_buffer_past_allocation,
+        R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED },
+      { "no case at all",
+        edit_no_cases, R3V_MEASUREMENT_SESSION_REFUSE_MANIFEST_MALFORMED },
+   };
+   for (size_t i = 0; i < sizeof(edits) / sizeof(edits[0]); i++) {
+      struct r3v_measurement_manifest edited = parse_valid();
+      struct r3v_measurement_session refused;
+      memset(&refused, 0, sizeof(refused));
+      edits[i].damage(&edited);
+      reason = NULL;
+      assert(r3v_measurement_session_open(&refused, &edited, DIGEST_A,
+                                          &reason) == edits[i].expected);
+      assert(reason != NULL);
+      assert(!refused.active);
+   }
 }
 
 static void
@@ -344,13 +455,13 @@ test_binding(void)
 
    /* The first authorized preparation records the object and the
     * identity; a second identical one is admitted against them. */
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
    assert(session.bindings[0].bound);
    assert(session.bindings[0].destination_handle == 7u);
    assert(session.bindings[0].memory_generation == 101u);
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
 
@@ -358,11 +469,11 @@ test_binding(void)
     * declaration rather than naming a request the session declines, so it
     * terminates the session: a refusal alone would leave the binding
     * standing and admit the next repetition against it. */
-   assert(r3v_measurement_session_bind(&session, 0u, 8u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 8u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND);
    assert(session.closed);
-   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
 
    /* The handle recycled over another object: the number matches and the
@@ -370,10 +481,10 @@ test_binding(void)
    struct r3v_measurement_session recycled;
    assert(r3v_measurement_session_open(&recycled, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&recycled, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&recycled, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&recycled, 0u, 7u, 102u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&recycled, CASE_4K, 7u, 102u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND);
    assert(recycled.closed);
@@ -382,44 +493,108 @@ test_binding(void)
    struct r3v_measurement_session drifted;
    assert(r3v_measurement_session_open(&drifted, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&drifted, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&drifted, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&drifted, 0u, 7u, 101u, DIGEST_B,
+   assert(r3v_measurement_session_bind(&drifted, CASE_4K, 7u, 101u, DIGEST_B,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH);
    assert(drifted.closed);
    /* The next repetition finds a closed session rather than a standing
     * binding. */
-   assert(r3v_measurement_session_consume(&drifted, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&drifted, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
 
    memset(&session, 0, sizeof(session));
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
 
    /* A caller that reached the bind without stamping a generation binds
     * nothing. */
-   assert(r3v_measurement_session_bind(&session, 1u, 9u, 0u, DIGEST_B,
+   assert(r3v_measurement_session_bind(&session, CASE_64K, 9u, 0u, DIGEST_B,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND);
    assert(!session.bindings[1].bound);
    /* A value that is not a digest is not a weaker identity. */
-   assert(r3v_measurement_session_bind(&session, 1u, 9u, 103u, "0xdeadbeef",
+   assert(r3v_measurement_session_bind(&session, CASE_64K, 9u, 103u,
+                                       "0xdeadbeef",
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH);
-   assert(r3v_measurement_session_bind(&session, 1u, 9u, 103u, NULL,
+   assert(r3v_measurement_session_bind(&session, CASE_64K, 9u, 103u, NULL,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_IDENTITY_MISMATCH);
    assert(!session.bindings[1].bound);
 
    /* A case index outside the declaration. */
-   assert(r3v_measurement_session_bind(&session, 2u, 9u, 103u, DIGEST_B,
+   assert(r3v_measurement_session_bind(&session, 2u, CASE_4K_OPERATION, 9u,
+                                       103u, DIGEST_B,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED);
+}
+
+/* The index selects a row; the operation decides whether that row is the
+ * one the request runs.  Neither binding nor consumption takes the index
+ * on its own word. */
+static void
+test_index_alone_authorizes_nothing(void)
+{
+   const struct r3v_measurement_manifest m = parse_valid();
+   struct r3v_measurement_session session;
+   const char *reason = NULL;
+   memset(&session, 0, sizeof(session));
+   assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+
+   /* Case 0 declares 4096 bytes at offset 0 with one value.  Each field
+    * refuses on its own, so no single substitution slips through. */
+   static const struct {
+      uint64_t offset;
+      uint64_t bytes;
+      uint32_t value;
+   } wrong[] = {
+      { 4096u, 4096u, 287454020u },
+      { 0u, 65536u, 287454020u },
+      { 0u, 4096u, 287454021u },
+   };
+   for (size_t i = 0; i < sizeof(wrong) / sizeof(wrong[0]); i++) {
+      reason = NULL;
+      assert(r3v_measurement_session_bind(&session, 0u, wrong[i].offset,
+                                          wrong[i].bytes, wrong[i].value, 7u,
+                                          101u, DIGEST_A, &reason) ==
+             R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED);
+      assert(reason != NULL);
+      assert(!session.bindings[0].bound);
+   }
+
+   /* Case 1's operation under case 0's index is the substitution the
+    * index-only contract would have admitted. */
+   assert(r3v_measurement_session_bind(&session, 0u, 0u, 65536u, 287454020u,
+                                       7u, 101u, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED);
+
+   assert(r3v_measurement_session_bind(&session, CASE_4K,
+                                       7u, 101u, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+
+   /* Consumption holds the same line, so the budget a submission spends
+    * is the budget of the case that submission runs. */
+   assert(r3v_measurement_session_consume(&session, 0u, 0u, 65536u,
+                                          287454020u, &reason) ==
+          R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED);
+   assert(session.bindings[0].executions_consumed == 0u);
+   assert(session.remaining_submissions == 68u);
+   assert(r3v_measurement_session_consume(&session, 0u, 0u, 4096u,
+                                          287454020u, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   assert(session.bindings[0].executions_consumed == 1u);
+
+   /* The session stays open: a mismatched request names a submission the
+    * declaration does not carry, which is a refusal, not evidence that
+    * the campaign was tampered with. */
+   assert(!session.closed);
 }
 
 static void
@@ -440,32 +615,32 @@ test_consume_is_finite_and_never_refunded(void)
    assert(session.remaining_submissions == 4u);
 
    /* A case consumes nothing before it binds its destination. */
-   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_DESTINATION_REBOUND);
    assert(session.consumed_submissions == 0u);
 
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
 
    /* Exactly the declared number passes. */
    for (uint32_t i = 0; i < 4u; i++) {
-      assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+      assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
              R3V_MEASUREMENT_SESSION_ADMITTED);
       assert(session.consumed_submissions == i + 1u);
       assert(session.remaining_submissions == 4u - (i + 1u));
    }
    /* The next one refuses. */
-   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED);
    assert(session.consumed_submissions == 4u);
    /* Binding again does not replenish it. */
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED);
-   assert(r3v_measurement_session_consume(&session, 1u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_64K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CASE_UNDECLARED);
 }
 
@@ -490,32 +665,43 @@ test_one_case_exhausts_while_another_stays_funded(void)
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
    assert(session.remaining_submissions == 6u);
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&session, 1u, 8u, 102u, DIGEST_B,
+   assert(r3v_measurement_session_bind(&session, CASE_64K, 8u, 102u, DIGEST_B,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
 
    for (uint32_t i = 0; i < 2u; i++) {
-      assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+      assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
              R3V_MEASUREMENT_SESSION_ADMITTED);
    }
    /* The first case is spent and the session is not. */
-   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED);
    assert(session.remaining_submissions == 4u);
    assert(!session.closed);
 
    /* The second case still runs its whole declaration. */
    for (uint32_t i = 0; i < 4u; i++) {
-      assert(r3v_measurement_session_consume(&session, 1u, &reason) ==
+      assert(r3v_measurement_session_consume(&session, CASE_64K, &reason) ==
              R3V_MEASUREMENT_SESSION_ADMITTED);
    }
    assert(session.remaining_submissions == 0u);
-   assert(r3v_measurement_session_consume(&session, 1u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_64K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_BUDGET_EXHAUSTED);
    assert(session.consumed_submissions == 6u);
+}
+
+/* Writes the reason into a frame that returns before the reason is read,
+ * which is the shape a queue-tail helper takes. */
+static void
+close_with_a_stack_reason(struct r3v_measurement_session *session,
+                          unsigned case_id)
+{
+   char why[64];
+   snprintf(why, sizeof(why), "case %u read a wrong byte", case_id);
+   r3v_measurement_session_close(session, why);
 }
 
 static void
@@ -526,7 +712,7 @@ test_closed_session_admits_nothing(void)
    const char *reason = NULL;
    assert(r3v_measurement_session_open(&session, &m, DIGEST_A, &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_ADMITTED);
 
@@ -536,16 +722,25 @@ test_closed_session_admits_nothing(void)
    r3v_measurement_session_close(&session, "a later reason");
    assert(strcmp(session.closed_reason, "the completion failed") == 0);
 
+   /* The session copies the characters, so a reason formatted on a
+    * caller's stack survives the frame it was written in. */
+   struct r3v_measurement_session formatted;
+   memset(&formatted, 0, sizeof(formatted));
+   assert(r3v_measurement_session_open(&formatted, &m, DIGEST_A, &reason) ==
+          R3V_MEASUREMENT_SESSION_ADMITTED);
+   close_with_a_stack_reason(&formatted, 7);
+   assert(strcmp(formatted.closed_reason, "case 7 read a wrong byte") == 0);
+
    const struct r3v_measurement_role role = declared_role(&m);
    assert(r3v_measurement_session_route_check(
              &session, "rb2d_const_fill_v2", &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
    assert(r3v_measurement_session_role_check(&session, &role, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
-   assert(r3v_measurement_session_bind(&session, 0u, 7u, 101u, DIGEST_A,
+   assert(r3v_measurement_session_bind(&session, CASE_4K, 7u, 101u, DIGEST_A,
                                        &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
-   assert(r3v_measurement_session_consume(&session, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&session, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_CLOSED);
 
    /* An unopened session is inactive rather than closed, so the ordinary
@@ -554,7 +749,7 @@ test_closed_session_admits_nothing(void)
    memset(&inactive, 0, sizeof(inactive));
    assert(r3v_measurement_session_role_check(&inactive, &role, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE);
-   assert(r3v_measurement_session_consume(&inactive, 0u, &reason) ==
+   assert(r3v_measurement_session_consume(&inactive, CASE_4K, &reason) ==
           R3V_MEASUREMENT_SESSION_REFUSE_INACTIVE);
    assert(r3v_measurement_session_find_case(&inactive, 0, 4096u, 287454020u,
                                             NULL) == NULL);
@@ -584,6 +779,7 @@ main(void)
    test_route_and_role();
    test_case_lookup();
    test_binding();
+   test_index_alone_authorizes_nothing();
    test_consume_is_finite_and_never_refunded();
    test_one_case_exhausts_while_another_stays_funded();
    test_closed_session_admits_nothing();

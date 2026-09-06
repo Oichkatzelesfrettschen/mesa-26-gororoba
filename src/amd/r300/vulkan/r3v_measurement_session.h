@@ -67,6 +67,9 @@
  * value is a declaration for a different reader. */
 #define R3V_MEASUREMENT_SESSION_SCHEMA "r3v-measurement-session-v1"
 
+/* The stored termination reason, truncated at this width. */
+#define R3V_MEASUREMENT_SESSION_REASON_SIZE 128u
+
 #define R3V_MEASUREMENT_SESSION_MAX_CASES 32u
 /* One arm's whole campaign: ten declared sizes at warmups plus
  * repetitions apiece, with room to spare.  A declaration above this bound
@@ -167,8 +170,9 @@ struct r3v_measurement_session {
    bool active;
    bool closed;
    /* Why the session terminated, for the refusal every later request
-    * carries. */
-   const char *closed_reason;
+    * carries.  The characters are copied in, so a caller's stack buffer
+    * names a reason that outlives the frame it was formatted in. */
+   char closed_reason[R3V_MEASUREMENT_SESSION_REASON_SIZE];
    struct r3v_measurement_manifest manifest;
    char manifest_digest[R3V_FILL_ROUTE_DIGEST_HEX_SIZE];
    struct r3v_measurement_binding bindings[R3V_MEASUREMENT_SESSION_MAX_CASES];
@@ -238,24 +242,39 @@ r3v_measurement_session_role_check(
  * handle, the generation, and the identity; every later call requires
  * all three to match.  It reserves nothing: the execution is consumed
  * separately, at the kernel boundary.
+ *
+ * The offset, size, and value are the ones the recorded operation
+ * carries, and they are held against the case the index names.  The
+ * index alone authorizes nothing: a request that names one case and
+ * fills another refuses as undeclared.
  */
 enum r3v_measurement_session_refusal
 r3v_measurement_session_bind(struct r3v_measurement_session *session,
-                             uint32_t case_index, uint32_t destination_handle,
+                             uint32_t case_index, uint64_t fill_offset,
+                             uint64_t fill_bytes, uint32_t fill_value,
+                             uint32_t destination_handle,
                              uint64_t memory_generation,
                              const char identity[R3V_FILL_ROUTE_DIGEST_HEX_SIZE],
                              const char **reason);
 
 /* Consumes one permitted execution.  Called immediately before the
  * kernel submission boundary, so an attempt that entered the ioctl is
- * counted whatever the ioctl returns. */
+ * counted whatever the ioctl returns.  The operation is held against the
+ * named case here too, so the budget a submission spends is the budget
+ * of the case that submission runs. */
 enum r3v_measurement_session_refusal
 r3v_measurement_session_consume(struct r3v_measurement_session *session,
-                                uint32_t case_index, const char **reason);
+                                uint32_t case_index, uint64_t fill_offset,
+                                uint64_t fill_bytes, uint32_t fill_value,
+                                const char **reason);
 
 /* Terminates the session.  Every later request refuses as closed and
  * names this reason.  Closing a closed session keeps the first reason:
- * the first failure is the one that ended the run. */
+ * the first failure is the one that ended the run.
+ *
+ * The characters are copied into the session and truncated at
+ * R3V_MEASUREMENT_SESSION_REASON_SIZE, so a formatted stack buffer is a
+ * valid reason and no storage obligation reaches the caller. */
 void r3v_measurement_session_close(struct r3v_measurement_session *session,
                                    const char *why);
 
