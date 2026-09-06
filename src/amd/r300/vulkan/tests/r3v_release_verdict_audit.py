@@ -24,6 +24,7 @@ where a run's totals come from.
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -48,6 +49,12 @@ FIXTURE_ADMITTED = "r3v_ndebug_fixture_early_undef.c"
 # assertion is spelled -- "assert (x)" with a space, a CHECK(x) wrapper
 # whose macro lives in a header, or a stray extern declaration of
 # __assert_fail that a search for the bare symbol would accept.
+#
+# The count is attributed to the file the preprocessor's line markers
+# name, and only the audited source's own regions are counted.  An
+# inline function in a driver or utility header carries its own
+# assertions, and those follow the profile's NDEBUG by design; counting
+# them would report every test that includes such a header.
 ASSERT_MACHINERY = "__assert_fail"
 
 
@@ -110,6 +117,66 @@ def preprocess(entry, builddir, override_source=None, extra=None):
     return result.stdout, None
 
 
+# An assert call spelled any way C allows: "assert(x)", "assert (x)", or
+# a wrapper macro defined in the same translation unit, whose definition
+# carries the call this matches.
+ASSERT_CALL = re.compile(r"\bassert\s*\(")
+
+
+def code_text(text):
+    """The source with comments and string literals removed, so a
+    mention of assert in prose is not read as a call.  Several files in
+    this tree describe assert in their comments and stake no verdict on
+    it."""
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        pair = text[index:index + 2]
+        if pair == "/*":
+            end = text.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            out.append(" ")
+        elif pair == "//":
+            end = text.find("\n", index + 2)
+            index = length if end < 0 else end
+            out.append(" ")
+        elif char in "\"'":
+            quote = char
+            index += 1
+            while index < length and text[index] != quote:
+                index += 2 if text[index] == "\\" else 1
+            index += 1
+            out.append(" ")
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def count_in_source(preprocessed, source, directory):
+    """Occurrences of the assertion machinery inside the audited file's
+    own regions of the preprocessed output.
+
+    The preprocessor emits `# <line> "<file>"` markers as it enters and
+    leaves each file, so the region a line belongs to is the file the
+    most recent marker named."""
+    target = os.path.realpath(source)
+    current = None
+    total = 0
+    for line in preprocessed.splitlines():
+        if line.startswith("# "):
+            fields = line.split('"')
+            if len(fields) >= 2:
+                current = os.path.realpath(
+                    os.path.join(directory, fields[1]))
+            continue
+        if current == target:
+            total += line.count(ASSERT_MACHINERY)
+    return total
+
+
 def verdicts_are_active(source, entry, builddir, override_source=None):
     """True when this compile command discards no assertion the same
     translation unit would carry with NDEBUG undefined.
@@ -119,6 +186,7 @@ def verdicts_are_active(source, entry, builddir, override_source=None):
     counted in each.  A command that leaves fewer discarded assertions,
     whatever their spelling; equal counts mean the build kept every
     verdict the source stakes."""
+    path = override_source if override_source is not None else source
     output, error = preprocess(entry, builddir, override_source)
     if output is None:
         return None, f"the compile command did not preprocess: {error}"
@@ -126,10 +194,23 @@ def verdicts_are_active(source, entry, builddir, override_source=None):
                                 extra=["-UNDEBUG"])
     if control is None:
         return None, f"the control preprocess failed: {error}"
-    live = output.count(ASSERT_MACHINERY)
-    available = control.count(ASSERT_MACHINERY)
+    directory = entry.get("directory", builddir)
+    live = count_in_source(output, path, directory)
+    available = count_in_source(control, path, directory)
     if live >= available:
         return True, f"keeps every assertion its source stakes ({live})"
+    # A macro from a header expands at its call site, and the line
+    # markers attribute that expansion to the file that called it.  Such
+    # an assertion belongs to the header's inline code and follows the
+    # profile's NDEBUG by design, so the source must itself spell a call
+    # before a discarded expansion is read as a discarded verdict.  A
+    # wrapper macro defined in another header and called here is the
+    # residual this leaves.
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        source_text = code_text(handle.read())
+    if ASSERT_CALL.search(source_text) is None:
+        return True, (f"stakes no verdict on assert; the {available - live} "
+                      f"discarded expansion(s) come from headers it calls")
     return False, (f"NDEBUG discards {available - live} assertion(s): they "
                    f"expand to ((void)0), so the calls inside them never "
                    f"run and the test judges nothing")
