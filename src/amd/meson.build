@@ -53,7 +53,7 @@ endif
 inc_amd_r300_common = include_directories('r300/common')
 
 # The R300 common object library is built before either API consumer; its
-# source census separately ratchets the three pending P2 ownership moves.
+# source census separately holds the three pending P2 ownership moves.
 # Its tests remain gated inside the subdirectory, so a production-only build
 # still gets the one object owner without registering host proof binaries.
 if with_gallium_r300 or with_ati_r300_vk
