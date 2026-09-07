@@ -179,6 +179,155 @@ test_every_scenario_emits(void)
 /* Known-bads for the state checker.  Each mutates one dword of a stream
  * the checker admitted, so a checker that stopped reading a register is
  * caught by the arm that names it. */
+/* The surface origin the stream programs, against an expectation stated
+ * here rather than taken from the emitter.
+ *
+ * ZB_DEPTHOFFSET carries a byte offset inside the buffer object and the
+ * kernel adds the object's address, so the register is what decides
+ * where the device's surface begins.  The host initializes storage at
+ * the layout's base and the observation reads it there; a stream
+ * programming a different origin binds the device somewhere else.  For
+ * the campaign's linear scenario the two candidate origins are 2048 and
+ * 0 bytes, and at the coordinate (37, 21) on a 64-pixel row of four-byte
+ * pixels they place the write at
+ *
+ *   2048 + 21 * 256 + 37 * 4 = 7572 = 0x1d94   the declared surface
+ *          21 * 256 + 37 * 4 = 5524 = 0x1594   a surface based at zero
+ *
+ * Both lie inside the declared storage envelope [2048, 18688), so a
+ * write at the wrong origin leaves both guards intact and satisfies the
+ * observation's one-changed-slot condition.  A clean observation
+ * therefore carries no evidence about the origin, and the binding is
+ * checked against these literals instead.
+ */
+static void
+test_surface_origin_binding(void)
+{
+   const struct r300_zb_depth_discovery_scenario *scenario =
+      &r300_zb_depth_discovery_z24_linear;
+
+   /* The two addresses above, computed here from the coordinate and the
+    * surface geometry, with no call into the layout helper. */
+   const uint32_t row_bytes = 64u * 4u;
+   const uint32_t declared_base = 2048u;
+   const uint32_t declared_address =
+      declared_base + 21u * row_bytes + 37u * 4u;
+   const uint32_t zero_based_address = 21u * row_bytes + 37u * 4u;
+   assert(declared_address == 0x1d94u);
+   assert(zero_based_address == 0x1594u);
+   assert(scenario->pixel_x == 37u && scenario->pixel_y == 21u);
+
+   /* Both candidates fall inside the declared envelope, which is why a
+    * one-changed-slot observation cannot separate them. */
+   struct r300_zb_depth_layout layout;
+   assert(r300_zb_depth_discovery_layout(scenario, &layout) == 0);
+   assert(layout.base_offset_bytes == declared_base);
+   assert(declared_address >= layout.base_offset_bytes &&
+          declared_address < layout.base_offset_bytes + layout.storage_bytes);
+   assert(zero_based_address >= layout.base_offset_bytes &&
+          zero_based_address <
+             layout.base_offset_bytes + layout.storage_bytes);
+
+   /* Every scenario programs its own layout's base, and the checker
+    * agrees. */
+   const struct r300_zb_depth_discovery_scenario *scenarios[] = {
+      &r300_zb_depth_discovery_z24_linear,
+      &r300_zb_depth_discovery_z24_linear_seed_5a,
+      &r300_zb_depth_discovery_z24_linear_seed_a5,
+      &r300_zb_depth_discovery_z24_microtiled,
+      &r300_zb_depth_discovery_z24_macrotiled,
+   };
+   for (size_t i = 0; i < sizeof(scenarios) / sizeof(*scenarios); i++) {
+      struct r300_zb_depth_discovery_ib ib;
+      assert(r300_zb_depth_discovery_reference_emit(scenarios[i],
+                                                    R300_ZS_ALWAYS, true,
+                                                    &ib) == 0);
+      struct r300_zb_depth_discovery_state state;
+      assert(r300_zb_depth_discovery_read_state(ib.ib, ib.ib_size_dwords,
+                                                &state) == 0);
+      struct r300_zb_depth_layout own;
+      assert(r300_zb_depth_discovery_layout(scenarios[i], &own) == 0);
+      assert(state.zb_depthoffset_writes == 1u);
+      assert(state.zb_depthoffset == own.base_offset_bytes);
+      assert(state.zb_depthoffset == declared_base);
+      /* The macrotiled rung needs its base on a 2048-byte macrotile, and
+       * every rung needs the low five bits ZB_DEPTHOFFSET does not
+       * encode left clear. */
+      assert(state.zb_depthoffset % own.base_alignment_bytes == 0u);
+      assert((state.zb_depthoffset & 0x1fu) == 0u);
+
+      /* The pitch word carries the row width, both tile fields, and the
+       * endian selector, so a tiled rung differs from the linear one
+       * here and not only in an offset. */
+      assert(state.zb_depthpitch_writes == 1u);
+      assert((state.zb_depthpitch & R300_DEPTHPITCH_MASK) == 64u);
+      assert((state.zb_depthpitch & (7u << 16)) ==
+             r300_zb_depth_surface_tile_bits(scenarios[i]->surface));
+      r300_zb_depth_discovery_release(&ib);
+   }
+}
+
+/* The known-bad the repair exists for: a stream identical to the
+ * reference except that the depth base is zero.  It is built through the
+ * emitter's parameter rather than by editing a dword, so it is the
+ * stream the pre-repair reference emitter produced, and the checker must
+ * refuse it.  Comparing the recorder against the reference emitter would
+ * not have caught this, because both named the same wrong origin.
+ */
+static void
+test_zero_depth_base_refused(void)
+{
+   struct r300_fragment_binary fs;
+   assert(r300_tcl_bypass_triangle_reference_fs(&fs) == 0);
+   struct r300_first_draw_contract contract;
+   assert(r300_zb_depth_discovery_reference_contract(
+             &r300_zb_depth_discovery_z24_linear, &contract) == 0);
+
+   const struct r300_zb_depth_discovery_params zero_base = {
+      .scenario = &r300_zb_depth_discovery_z24_linear,
+      .vertex_offset = 0,
+      .color_pitch_format =
+         r300_rb3d_colorpitch0_pack_argb8888(R300_ZB_DISCOVERY_PITCH_PIXELS),
+      .depth_offset_bytes = 0,
+      .depth_function = R300_ZS_ALWAYS,
+      .depth_write = true,
+      .fragment_binary = &fs,
+      .first_draw_contract = &contract,
+   };
+   uint32_t words[R300_ZB_DISCOVERY_MAX_DWORDS];
+   struct r300_zb_depth_discovery_ib ib;
+   assert(r300_zb_depth_discovery_emit_into(&zero_base, words,
+                                            sizeof(words) / 4u, &ib) == 0);
+
+   struct r300_zb_depth_discovery_state state;
+   assert(r300_zb_depth_discovery_read_state(ib.ib, ib.ib_size_dwords,
+                                             &state) == 0);
+   assert(state.zb_depthoffset == 0u);
+   assert(r300_zb_depth_discovery_check_state(&zero_base, ib.ib,
+                                              ib.ib_size_dwords) != 0);
+
+   /* The same parameters at the resolved base are admitted, so the
+    * refusal above names the origin and not some other difference. */
+   struct r300_zb_depth_discovery_params good_base = zero_base;
+   good_base.depth_offset_bytes = 2048u;
+   assert(r300_zb_depth_discovery_emit_into(&good_base, words,
+                                            sizeof(words) / 4u, &ib) == 0);
+   assert(r300_zb_depth_discovery_check_state(&good_base, ib.ib,
+                                              ib.ib_size_dwords) == 0);
+
+   /* A base one macrotile past the declared one is inside the
+    * allocation and still refused: the check is equality with the
+    * layout, not a range test. */
+   struct r300_zb_depth_discovery_params shifted = zero_base;
+   shifted.depth_offset_bytes = 4096u;
+   assert(r300_zb_depth_discovery_emit_into(&shifted, words,
+                                            sizeof(words) / 4u, &ib) == 0);
+   assert(r300_zb_depth_discovery_check_state(&shifted, ib.ib,
+                                              ib.ib_size_dwords) != 0);
+
+   r300_fragment_binary_finish(&fs);
+}
+
 static void
 test_state_checker_refusals(void)
 {
@@ -206,7 +355,7 @@ test_state_checker_refusals(void)
    const uint32_t watched[] = {
       R300_ZB_BW_CNTL,    R300_GB_Z_PEQ_CONFIG, R300_SC_SCREENDOOR,
       R300_SC_SCISSORS_BR, R300_ZB_CNTL,        R300_ZB_ZSTENCILCNTL,
-      R300_ZB_FORMAT,
+      R300_ZB_FORMAT,     R300_ZB_DEPTHOFFSET,  R300_ZB_DEPTHPITCH,
    };
    for (size_t w = 0; w < sizeof(watched) / sizeof(*watched); w++) {
       uint32_t found = UINT32_MAX;
@@ -309,6 +458,50 @@ test_state_checker_refusals(void)
           (dwords - draw_index) * sizeof(uint32_t));
    assert(r300_zb_depth_discovery_check_state(&good, extended,
                                               dwords + 3u) != 0);
+
+   /* The pitch word's fields are judged apart from its numeric row
+    * width.  Each mutation keeps the pitch at 64 pixels and moves one
+    * other field, which is the class a width-only comparison would
+    * admit: a stream agreeing on pixels per row and disagreeing on how
+    * those pixels are arranged in memory. */
+   const uint32_t pitch_index = index_of[8];
+   assert((ib.ib[pitch_index] & R300_DEPTHPITCH_MASK) == 64u);
+   const uint32_t pitch_field_mutations[] = {
+      R300_DEPTHMACROTILE_ENABLE,
+      R300_DEPTHMICROTILE(1u),
+      R300_DEPTHMICROTILE(2u),
+      R300_DEPTHENDIAN(1u),
+   };
+   for (size_t m = 0;
+        m < sizeof(pitch_field_mutations) / sizeof(*pitch_field_mutations);
+        m++) {
+      memcpy(stream, ib.ib, dwords * sizeof(uint32_t));
+      stream[pitch_index] |= pitch_field_mutations[m];
+      assert((stream[pitch_index] & R300_DEPTHPITCH_MASK) == 64u);
+      assert(r300_zb_depth_discovery_check_state(&good, stream, dwords) != 0);
+   }
+
+   /* A second write to either resource register ahead of the draw leaves
+    * the surface the draw resolves ambiguous, the same way a second
+    * ZB_FORMAT write does. */
+   const uint32_t resource_registers[] = { R300_ZB_DEPTHOFFSET,
+                                           R300_ZB_DEPTHPITCH };
+   for (size_t m = 0;
+        m < sizeof(resource_registers) / sizeof(*resource_registers); m++) {
+      memcpy(extended, ib.ib, draw_index * sizeof(uint32_t));
+      extended[draw_index] =
+         (0u << 30) | ((resource_registers[m] >> 2) & 0x1fffu);
+      extended[draw_index + 1u] =
+         resource_registers[m] == R300_ZB_DEPTHOFFSET
+            ? 2048u
+            : ib.ib[pitch_index];
+      memcpy(extended + draw_index + 2u, ib.ib + draw_index,
+             (dwords - draw_index) * sizeof(uint32_t));
+      /* The repeated value is the admitted one, so the refusal names the
+       * second write rather than a wrong payload. */
+      assert(r300_zb_depth_discovery_check_state(&good, extended,
+                                                 dwords + 2u) != 0);
+   }
 
    /* A type-1 packet has no R300 encoding, and a payload running past
     * the stream is malformed; neither yields a state to judge. */
@@ -414,6 +607,8 @@ main(void)
    test_emits_and_checks_its_own_state();
    test_contract_departure();
    test_every_scenario_emits();
+   test_surface_origin_binding();
+   test_zero_depth_base_refused();
    test_state_checker_refusals();
    test_emit_refusals();
    printf("r300_zb_depth_discovery_cell_test: ok\n");

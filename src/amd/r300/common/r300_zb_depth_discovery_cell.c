@@ -320,12 +320,38 @@ r300_zb_depth_discovery_reference_emit(
       return rc;
    }
 
+   /* The surface origin the stream programs is the storage base the
+    * layout resolved, which is the base the host initializes and the
+    * observation reads.  ZB_DEPTHOFFSET carries a byte offset inside the
+    * buffer object and the kernel adds the object's address, so a zero
+    * here would bind the device's surface at the allocation's first byte
+    * -- overlapping the prefix guard and displaced one guard from the
+    * bytes the experiment declares.  A single-pixel write under that
+    * binding still lands inside the declared envelope for most
+    * coordinates, leaves both guards intact, and satisfies the
+    * observation's one-changed-slot condition, so the run would report a
+    * clean result for a surface bound somewhere other than where it was
+    * initialized. */
+   struct r300_zb_depth_layout layout;
+   rc = r300_zb_depth_discovery_layout(scenario, &layout);
+   if (rc != 0) {
+      r300_fragment_binary_finish(&fs);
+      return rc;
+   }
+   /* ZB_DEPTHOFFSET is a 32-bit register, and the depth-state emitter
+    * refuses an offset the low five bits reach.  A base past either
+    * bound refuses here rather than reaching the register truncated. */
+   if (layout.base_offset_bytes > UINT32_MAX) {
+      r300_fragment_binary_finish(&fs);
+      return -EINVAL;
+   }
+
    const struct r300_zb_depth_discovery_params params = {
       .scenario = scenario,
       .vertex_offset = 0,
       .color_pitch_format =
          r300_rb3d_colorpitch0_pack_argb8888(R300_ZB_DISCOVERY_PITCH_PIXELS),
-      .depth_offset_bytes = 0,
+      .depth_offset_bytes = (uint32_t)layout.base_offset_bytes,
       .depth_function = depth_function,
       .depth_write = depth_write,
       .fragment_binary = &fs,
@@ -379,6 +405,14 @@ apply_write(struct r300_zb_depth_discovery_state *out, uint32_t reg,
    case R300_ZB_FORMAT:
       out->zb_format = value;
       out->zb_format_writes++;
+      break;
+   case R300_ZB_DEPTHOFFSET:
+      out->zb_depthoffset = value;
+      out->zb_depthoffset_writes++;
+      break;
+   case R300_ZB_DEPTHPITCH:
+      out->zb_depthpitch = value;
+      out->zb_depthpitch_writes++;
       break;
    case R300_ZB_CNTL:
       out->zb_cntl = value;
@@ -506,6 +540,53 @@ r300_zb_depth_discovery_check_state(
    if (state.zb_format_writes != 1u)
       return -EINVAL;
    if (state.zb_format != params->scenario->surface->depth_format)
+      return -EINVAL;
+
+   /* The surface the draw resolves is the surface the experiment
+    * declares.  ZB_DEPTHOFFSET and ZB_DEPTHPITCH are what place and
+    * shape it, and nothing else in the run ties them to the layout the
+    * host initialized and the observation reads: a stream naming a
+    * different origin still writes inside the declared envelope for most
+    * coordinates, leaves both guards intact, and satisfies the
+    * one-changed-slot condition, so the binding is checked here rather
+    * than inferred from a clean observation. */
+   const struct r300_zb_depth_surface *surface = params->scenario->surface;
+   struct r300_zb_depth_layout layout;
+   const int layout_rc =
+      r300_zb_depth_discovery_layout(params->scenario, &layout);
+   if (layout_rc != 0)
+      return layout_rc;
+
+   if (state.zb_depthoffset_writes != 1u ||
+       state.zb_depthpitch_writes != 1u)
+      return -EINVAL;
+   if (layout.base_offset_bytes > UINT32_MAX)
+      return -EINVAL;
+   /* Equality with the resolved base carries the alignment too:
+    * r300_zb_depth_layout_compute places the storage base at a guard
+    * size it refuses unless that size is a multiple of the base
+    * alignment, so a base reaching here already sits on the macrotile a
+    * macrotiled surface demands and clear of the low five bits
+    * ZB_DEPTHOFFSET does not encode, and r300_zb_depth_state_emit
+    * refuses an unencodable offset on its own path.  A separate
+    * alignment arm here is unreachable -- a mutation deleting it
+    * survives every known-bad -- so it stays out rather than reading as
+    * a protection it does not provide. */
+   if (state.zb_depthoffset != (uint32_t)layout.base_offset_bytes)
+      return -EINVAL;
+
+   /* The pitch word is compared whole: the row width in bits 2 to 13,
+    * the macrotile bit at 16, the two-bit microtile field at 17 and 18,
+    * and the endian selector at 19.  Comparing the numeric row width
+    * alone would admit a stream that agreed on pixels per row and
+    * disagreed on how those pixels are arranged, which is the exact
+    * variable the tiled rungs move.  The expected word is built from the
+    * surface descriptor rather than read back from the stream. */
+   const uint32_t expected_pitch =
+      (surface->pitch_pixels & R300_DEPTHPITCH_MASK) |
+      r300_zb_depth_surface_tile_bits(surface) |
+      R300_DEPTHENDIAN(R300_SURF_NO_SWAP);
+   if (state.zb_depthpitch != expected_pitch)
       return -EINVAL;
 
    /* The depth test is armed and the write follows the parameter, so the
