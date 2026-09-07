@@ -58,6 +58,15 @@ inc_amd_r300_common = include_directories('r300/common')
 # still gets the one object owner without registering host proof binaries.
 if with_gallium_r300 or with_ati_r300_vk
   subdir('r300/common')
+  if with_tests
+    test(
+      'r300-zb-stencil-pair',
+      prog_python,
+      args : files('r300/common/tests/r300_zb_stencil_pair_test.py'),
+      suite : ['r300'],
+      timeout : 120,
+    )
+  endif
 
   # The R300 shader compiler is a Gallium/NIR consumer of common contracts;
   # the pure Vulkan lane does not link it.
