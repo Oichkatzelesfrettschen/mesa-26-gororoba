@@ -389,7 +389,39 @@ main(int argc, char **argv)
    printf("[oracle] stencil observed=%d range=[0x%02x,0x%02x]\n",
           depth_verdict.stencil_observed, depth_verdict.stencil_min,
           depth_verdict.stencil_max);
+   /* The distinct near codes and their sample counts.  A range admits
+    * two populations between its bounds, and a stored depth code is the
+    * marker a later cell reads back, so the run retains the partition
+    * rather than the interval. */
+   printf("[oracle] near codes=%u overflow=%d", depth_verdict.near_distinct_count,
+          depth_verdict.near_distinct_overflow);
+   for (uint32_t i = 0; i < depth_verdict.near_distinct_count; i++)
+      printf(" 0x%08x:%u", depth_verdict.near_distinct[i],
+             depth_verdict.near_distinct_counts[i]);
+   printf("\n");
    fflush(stdout);
+
+   /* The distribution as a JSON array of [code, count] pairs.  The
+    * buffer holds eight pairs of a hexadecimal 32-bit code and a decimal
+    * count with their separators, which is what
+    * R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES bounds, and the composition
+    * refuses rather than truncating. */
+   char near_codes_json[512];
+   size_t near_codes_used = 0;
+   near_codes_json[0] = '\0';
+   for (uint32_t i = 0; i < depth_verdict.near_distinct_count; i++) {
+      const int written = snprintf(
+         near_codes_json + near_codes_used,
+         sizeof(near_codes_json) - near_codes_used, "%s[\"0x%08x\", %u]",
+         i == 0 ? "" : ", ", depth_verdict.near_distinct[i],
+         depth_verdict.near_distinct_counts[i]);
+      if (written <= 0 ||
+          (size_t)written >= sizeof(near_codes_json) - near_codes_used) {
+         fprintf(stderr, "near-code distribution does not compose\n");
+         return finish(OUTCOME_RETENTION_FAILURE);
+      }
+      near_codes_used += (size_t)written;
+   }
 
    /* Classification order: a write past either surface's render extent
     * stops the sequence whatever else passed; then the transport's own
@@ -418,7 +450,7 @@ main(int argc, char **argv)
    int length = snprintf(
       outcome_json, sizeof(outcome_json),
       "{\n"
-      "  \"schema\": \"r3v-native-zb-depth-control-outcome/1\",\n"
+      "  \"schema\": \"r3v-native-zb-depth-control-outcome/2\",\n"
       "  \"verdict\": \"%s\",\n"
       "  \"submit_result\": %d,\n"
       "  \"queue_status\": \"%s\",\n"
@@ -436,8 +468,14 @@ main(int argc, char **argv)
       "  \"depth_far_pass\": %s,\n"
       "  \"depth_exterior_pass\": %s,\n"
       "  \"depth_canary_pass\": %s,\n"
-      "  \"depth_near_min\": \"0x%04x\",\n"
-      "  \"depth_near_max\": \"0x%04x\"\n"
+      "  \"depth_near_min\": \"0x%08x\",\n"
+      "  \"depth_near_max\": \"0x%08x\",\n"
+      "  \"depth_near_distinct_count\": %u,\n"
+      "  \"depth_near_distinct_overflow\": %s,\n"
+      "  \"depth_near_distinct\": [%s],\n"
+      "  \"depth_stencil_observed\": %s,\n"
+      "  \"depth_stencil_min\": \"0x%02x\",\n"
+      "  \"depth_stencil_max\": \"0x%02x\"\n"
       "}\n",
       outcome_names[outcome], submit_result,
       r3v_native_queue_status_name(queue_status),
@@ -453,7 +491,10 @@ main(int argc, char **argv)
       depth_verdict.far_pass ? "true" : "false",
       depth_verdict.exterior_pass ? "true" : "false",
       depth_verdict.canary_pass ? "true" : "false", depth_verdict.near_min,
-      depth_verdict.near_max);
+      depth_verdict.near_max, depth_verdict.near_distinct_count,
+      depth_verdict.near_distinct_overflow ? "true" : "false", near_codes_json,
+      depth_verdict.stencil_observed ? "true" : "false",
+      depth_verdict.stencil_min, depth_verdict.stencil_max);
    if (length <= 0 || (size_t)length >= sizeof(outcome_json) ||
        r3v_native_evidence_write_file(evidence_dir,
                                       "zb_depth_control_outcome.json",
