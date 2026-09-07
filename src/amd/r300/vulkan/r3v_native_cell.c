@@ -2808,16 +2808,29 @@ r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
    return VK_SUCCESS;
 }
 
-/* Fills a live mapping of memory with a repeated 16-bit sentinel and
- * publishes it for the unsnooped GART.  The allocation is whole 16-bit
- * units by the recorder's size contract, so no partial unit trails the
- * fill.
+/* Fills a live mapping of memory with one repeated little-endian value
+ * of unit_bytes and publishes it for the unsnooped GART.  The bytes are
+ * placed low-first whatever the host's own order, because the surfaces
+ * declare R300_SURF_NO_SWAP and the device reads the allocation in that
+ * order.  The allocation is a whole number of units by the recorder's
+ * size contract, so no partial unit trails the fill.
  */
 static VkResult
-zb_depth_control_fill_u16(struct r3v_native_device *device,
-                          struct r3v_native_memory *memory, uint16_t value,
-                          const char *role)
+zb_depth_control_fill_units(struct r3v_native_device *device,
+                            struct r3v_native_memory *memory, uint32_t value,
+                            uint32_t unit_bytes, const char *role)
 {
+   /* unit_bytes is two or four for every call this recorder makes: the
+    * color role passes four, and the depth role passes a catalogue
+    * descriptor's width, which r3v-native-zb-depth-surface-catalogue
+    * holds to those two values for every selectable surface.  The stack
+    * object below is sized for the wider of them. */
+   if (memory->bo.size % unit_bytes != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: depth control %s memory is not whole "
+                       "%u-byte units", role, unit_bytes);
+   }
+
    bool owns_map = memory->map == NULL;
    if (owns_map &&
        radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
@@ -2825,15 +2838,53 @@ zb_depth_control_fill_u16(struct r3v_native_device *device,
                        "r3v-native: depth control %s memory is not "
                        "CPU-mappable", role);
    }
-   uint16_t *units = memory->map;
-   for (uint64_t i = 0; i < memory->bo.size / 2; i++)
-      units[i] = value;
+
+   uint8_t unit[4];
+   for (uint32_t i = 0; i < unit_bytes; i++)
+      unit[i] = (uint8_t)(value >> (8u * i));
+
+   uint8_t *bytes = memory->map;
+   for (uint64_t i = 0; i < memory->bo.size; i += unit_bytes)
+      memcpy(bytes + i, unit, unit_bytes);
+
    radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
    if (owns_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
       memory->map = NULL;
    }
    return VK_SUCCESS;
+}
+
+const struct r300_zb_depth_surface *
+r3v_native_zb_depth_surface_descriptor(
+   enum r3v_native_zb_depth_surface selection)
+{
+   /* No default arm, so -Wswitch reports a selector added to the
+    * catalogue without a descriptor beside it.  A value cast in from
+    * outside the enumeration reaches the return below. */
+   switch (selection) {
+#define R3V_NATIVE_ZB_DEPTH_SURFACE_CASE(suffix, descriptor)                  \
+   case R3V_NATIVE_ZB_DEPTH_SURFACE_##suffix:                                 \
+      return &r300_zb_depth_surface_##descriptor;
+      R3V_NATIVE_ZB_DEPTH_SURFACES(R3V_NATIVE_ZB_DEPTH_SURFACE_CASE)
+#undef R3V_NATIVE_ZB_DEPTH_SURFACE_CASE
+   }
+   return NULL;
+}
+
+uint32_t
+r3v_native_zb_depth_surface_bytes(enum r3v_native_zb_depth_surface selection)
+{
+   const struct r300_zb_depth_surface *surface =
+      r3v_native_zb_depth_surface_descriptor(selection);
+   if (surface == NULL)
+      return 0u;
+   /* Both selectable surfaces are linear in both tile classes, so the
+    * storage extent equals the parser footprint and one product names
+    * the allocation.  A tiled selector would take
+    * r300_zb_depth_layout_compute instead, whose envelope exceeds this. */
+   return surface->pitch_pixels * surface->allocation_rows *
+          surface->bytes_per_pixel;
 }
 
 #define R3V_ZB_DEPTH_CONTROL_VERTEX_BYTES \
@@ -2853,6 +2904,17 @@ r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
                                    VkDeviceMemory colorMemory,
                                    VkDeviceMemory depthMemory)
 {
+   return r3v_native_record_zb_depth_control_surface(
+      commandBuffer, vertexMemory, colorMemory, depthMemory,
+      R3V_NATIVE_ZB_DEPTH_SURFACE_Z16_LINEAR);
+}
+
+VkResult
+r3v_native_record_zb_depth_control_surface(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r3v_native_zb_depth_surface surface_selection)
+{
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
    VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
@@ -2865,19 +2927,38 @@ r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
 
-   /* Exact declared footprints: the arming gate's frozen-geometry fact
-    * compares these sizes, so a larger allocation would record a cell
-    * the gate then refuses, and the recorder names that here instead.
+   const struct r300_zb_depth_surface *surface =
+      r3v_native_zb_depth_surface_descriptor(surface_selection);
+   if (surface == NULL) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: depth control names no surface for "
+                       "selector %d", (int)surface_selection);
+   }
+   /* Every descriptor the selector can name comes from the fixed
+    * catalogue, and r3v-native-zb-depth-surface-catalogue holds each of
+    * them to r300_zb_depth_surface_check, so the width below and the
+    * fill it drives act on a validated descriptor.  A selector outside
+    * the enumeration was refused above. */
+   const uint32_t depth_bytes =
+      r3v_native_zb_depth_surface_bytes(surface_selection);
+
+   /* Exact declared footprints, the depth allocation sized from the
+    * surface the caller selected.  The queue's frozen-geometry
+    * predicate derives the same size from the selection this recording
+    * stores, so a shape the recorder admits is a shape the predicate
+    * admits; on a release build a mismatch between the two would reach
+    * the application as VK_ERROR_DEVICE_LOST with no reason attached,
+    * because vk_queue_set_lost rewrites the driver's result.
     */
    if (vertex_memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
        color_memory->bo.size != R300_ZB_DEPTH_CONTROL_COLOR_BYTES ||
-       depth_memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES) {
+       depth_memory->bo.size != depth_bytes) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r3v-native: depth control needs exactly %u vertex, "
-                       "%u color, and %u depth bytes",
+                       "r3v-native: depth control on %s needs exactly %u "
+                       "vertex, %u color, and %u depth bytes",
+                       surface->name,
                        R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION,
-                       R300_ZB_DEPTH_CONTROL_COLOR_BYTES,
-                       R300_ZB_DEPTH_CONTROL_DEPTH_BYTES);
+                       R300_ZB_DEPTH_CONTROL_COLOR_BYTES, depth_bytes);
    }
 
    /* Three distinct GEM objects: radeon_drm_vk_reloc_list_add folds
@@ -2916,21 +2997,32 @@ r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
 
    /* Both surfaces are sentinel-filled whole and published, so each
     * oracle reads a deterministic pre-draw state and any device write is
-    * detectable.  The color sentinel repeats per 16-bit half, so one
-    * fill routine covers both fills without a second publication path.
+    * detectable.  The color target takes its B8G8R8A8 sentinel as a
+    * four-byte unit; the depth surface takes the word its own packer
+    * makes of the descriptor's sentinel code against a zero stencil, so
+    * a Z24 surface stores the code shifted into the depth field rather
+    * than the code itself.
     */
-   VkResult fill_result = zb_depth_control_fill_u16(
-      device, color_memory, (uint16_t)(R300_TRIANGLE_COLOR_SENTINEL & 0xffff),
-      "color");
+   uint32_t depth_sentinel_word = 0;
+   if (r300_zb_depth_surface_packed_sentinel(surface, &depth_sentinel_word) !=
+       0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: depth control surface %s names a "
+                       "sentinel its format cannot pack", surface->name);
+   }
+
+   VkResult fill_result = zb_depth_control_fill_units(
+      device, color_memory, R300_TRIANGLE_COLOR_SENTINEL, 4u, "color");
    if (fill_result != VK_SUCCESS)
       return fill_result;
-   fill_result = zb_depth_control_fill_u16(
-      device, depth_memory, R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL, "depth");
+   fill_result =
+      zb_depth_control_fill_units(device, depth_memory, depth_sentinel_word,
+                                  surface->bytes_per_pixel, "depth");
    if (fill_result != VK_SUCCESS)
       return fill_result;
 
    struct r300_zb_depth_control_ib cell;
-   int emit_result = r300_zb_depth_control_reference_emit(&cell);
+   int emit_result = r300_zb_depth_control_reference_emit_surface(surface, &cell);
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -2975,6 +3067,9 @@ r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
                                     R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL,
                                     cell.ib, cell.ib_size_dwords, references,
                                     R300_ZB_DEPTH_CONTROL_SLOT_COUNT);
+   /* The selection travels with the recording, so the queue judges the
+    * shape this recorder admitted. */
+   cmd_buffer->zb_depth_surface = surface_selection;
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_zb_depth_control_release(&cell);

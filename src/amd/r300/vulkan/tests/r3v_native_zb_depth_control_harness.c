@@ -24,6 +24,7 @@
 #include <radeon_drm.h>
 #include <vulkan/vulkan.h>
 
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "r3v_native.h"
@@ -139,15 +140,19 @@ read_whole_file(const char *dir, const char *name, void **data_out,
    return 0;
 }
 
-/* The retained ib.bin against the in-tree reference emitter, byte for
- * byte in the canonical little-endian encoding, so file identity holds
- * without an external hasher.
+/* The retained ib.bin against the in-tree reference emitter bound to the
+ * surface this run recorded, byte for byte in the canonical
+ * little-endian encoding, so file identity holds without an external
+ * hasher.  The Z16 arm compares against the stream the retained cell has
+ * always produced.
  */
 static void
-check_retained_ib(const char *manifest_dir)
+check_retained_ib(const char *manifest_dir,
+                  const struct r300_zb_depth_surface *surface)
 {
    struct r300_zb_depth_control_ib reference = {0};
-   int emit_result = r300_zb_depth_control_reference_emit(&reference);
+   int emit_result =
+      r300_zb_depth_control_reference_emit_surface(surface, &reference);
    CHECK(emit_result == 0, "reference depth-control emission: %d",
          emit_result);
    if (emit_result != 0)
@@ -179,12 +184,66 @@ check_retained_ib(const char *manifest_dir)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2 ||
-       (strcmp(argv[1], "closed") != 0 && strcmp(argv[1], "open") != 0)) {
-      fprintf(stderr, "usage: %s closed|open\n", argv[0]);
+   /* One submission per process.  vk_QueueSubmit returns
+    * VK_ERROR_DEVICE_LOST without reaching the driver once the device is
+    * lost, and a refused submission loses it, so a second submission in
+    * the same process observes the runtime's short circuit rather than
+    * the gate under test.  Each refusal mode therefore builds its own
+    * device and submits exactly once.
+    */
+   const char *const modes[] = { "closed", "open", "refuse-unnamed-selector",
+                                 "refuse-format-disagreement",
+                                 "refuse-altered-stream" };
+   /* The argument count is established before any argument is read, so
+    * an invocation with none reports the usage rather than reading past
+    * the vector. */
+   bool mode_known = false;
+   if (argc >= 2) {
+      for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); m++)
+         mode_known = mode_known || strcmp(argv[1], modes[m]) == 0;
+   }
+   if (argc < 2 || argc > 3 || !mode_known ||
+       (argc == 3 && strcmp(argv[2], "z24_linear") != 0)) {
+      fprintf(stderr,
+              "usage: %s closed|open|refuse-unnamed-selector|"
+              "refuse-format-disagreement|refuse-altered-stream "
+              "[z24_linear]\n",
+              argv[0]);
       return 2;
    }
-   const bool open_gate = strcmp(argv[1], "open") == 0;
+   const bool refuse_unnamed =
+      strcmp(argv[1], "refuse-unnamed-selector") == 0;
+   const bool refuse_format =
+      strcmp(argv[1], "refuse-format-disagreement") == 0;
+   const bool refuse_stream = strcmp(argv[1], "refuse-altered-stream") == 0;
+   const bool refusal_mode = refuse_unnamed || refuse_format || refuse_stream;
+   /* Every refusal mode arms the gate exactly as the open mode does, so
+    * the alteration is the one difference between a submission that
+    * reaches the shim and one that does not. */
+   const bool open_gate = strcmp(argv[1], "open") == 0 || refusal_mode;
+   /* The depth surface this run records against.  The Z24 arm is what
+    * proves the recorder's footprint and the queue's frozen-geometry
+    * predicate derive the same size from one selection: a recorder that
+    * admitted a shape the predicate then refused would reach the
+    * application as VK_ERROR_DEVICE_LOST with no reason, because
+    * vk_queue_set_lost rewrites every driver result. */
+   const enum r3v_native_zb_depth_surface depth_selection =
+      argc == 3 ? R3V_NATIVE_ZB_DEPTH_SURFACE_Z24_LINEAR
+                : R3V_NATIVE_ZB_DEPTH_SURFACE_Z16_LINEAR;
+   const struct r300_zb_depth_surface *depth_surface =
+      r3v_native_zb_depth_surface_descriptor(depth_selection);
+   const uint32_t depth_allocation_bytes =
+      r3v_native_zb_depth_surface_bytes(depth_selection);
+   CHECK(depth_surface != NULL && depth_allocation_bytes != 0,
+         "depth selection %d names a surface", (int)depth_selection);
+   if (depth_surface == NULL || depth_allocation_bytes == 0)
+      return 1;
+   const enum r3v_native_zb_depth_surface other_selection =
+      depth_selection == R3V_NATIVE_ZB_DEPTH_SURFACE_Z16_LINEAR
+         ? R3V_NATIVE_ZB_DEPTH_SURFACE_Z24_LINEAR
+         : R3V_NATIVE_ZB_DEPTH_SURFACE_Z16_LINEAR;
+   const uint32_t other_allocation_bytes =
+      r3v_native_zb_depth_surface_bytes(other_selection);
 
    unsetenv("R3V_NATIVE_SHIM_CS_REFUSE");
    unsetenv("R3V_NATIVE_SHIM_COMPLETION_FAIL");
@@ -205,10 +264,13 @@ main(int argc, char **argv)
    if (open_gate) {
       setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
       /* The arming gate admits this shim run only under the cell's own
-       * IB digest; no other stream's digest authorizes it.
+       * IB digest; no other stream's digest authorizes it.  The surface
+       * selection moves ZB_FORMAT, so each arm authorizes the stream it
+       * actually records rather than sharing one digest.
        */
       struct r300_zb_depth_control_ib authorized;
-      if (r300_zb_depth_control_reference_emit(&authorized) != 0) {
+      if (r300_zb_depth_control_reference_emit_surface(depth_surface,
+                                                       &authorized) != 0) {
          fprintf(stderr, "reference depth-control emission failed\n");
          return 2;
       }
@@ -302,10 +364,15 @@ main(int argc, char **argv)
    struct { VkDeviceSize size; VkDeviceMemory memory; } allocations[] = {
       { R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION, VK_NULL_HANDLE },
       { R300_ZB_DEPTH_CONTROL_COLOR_BYTES, VK_NULL_HANDLE },
-      { R300_ZB_DEPTH_CONTROL_DEPTH_BYTES, VK_NULL_HANDLE },
+      { depth_allocation_bytes, VK_NULL_HANDLE },
       { 4096, VK_NULL_HANDLE },
+      /* The other catalogue surface's footprint, so a metadata-only
+       * mismatch can present a depth allocation the queue's size test
+       * accepts and leave the format comparison as the one condition
+       * that fails. */
+      { other_allocation_bytes, VK_NULL_HANDLE },
    };
-   for (unsigned i = 0; i < 4; i++) {
+   for (unsigned i = 0; i < 5; i++) {
       result = vkAllocateMemory(
          device,
          &(VkMemoryAllocateInfo){
@@ -322,6 +389,7 @@ main(int argc, char **argv)
    VkDeviceMemory color_memory = allocations[1].memory;
    VkDeviceMemory depth_memory = allocations[2].memory;
    VkDeviceMemory wrong_size_memory = allocations[3].memory;
+   VkDeviceMemory other_depth_memory = allocations[4].memory;
 
    VkCommandPool pool = VK_NULL_HANDLE;
    result = vkCreateCommandPool(
@@ -362,19 +430,34 @@ main(int argc, char **argv)
     * role and an aliased depth role each refuse without touching the
     * command buffer.
     */
-   result = r3v_native_record_zb_depth_control(cmd, vertex_memory,
-                                               wrong_size_memory,
-                                               depth_memory);
+   result = r3v_native_record_zb_depth_control_surface(
+      cmd, vertex_memory, wrong_size_memory, depth_memory, depth_selection);
    CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
          "wrong-size color memory refuses recording: %d", result);
-   result = r3v_native_record_zb_depth_control(cmd, vertex_memory,
-                                               color_memory, color_memory);
+   result = r3v_native_record_zb_depth_control_surface(
+      cmd, vertex_memory, color_memory, color_memory, depth_selection);
    CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
          "aliased color and depth roles refuse recording: %d", result);
 
-   result = r3v_native_record_zb_depth_control(cmd, vertex_memory,
-                                               color_memory, depth_memory);
-   CHECK(result == VK_SUCCESS, "depth-control recording: %d", result);
+   /* The depth allocation belongs to one surface.  Recording the other
+    * surface against it refuses at the recorder, which is where a
+    * footprint mismatch carries a reason. */
+   result = r3v_native_record_zb_depth_control_surface(
+      cmd, vertex_memory, color_memory, depth_memory, other_selection);
+   CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
+         "the other surface's footprint refuses this allocation: %d", result);
+
+   /* A selector outside the enumeration names no surface. */
+   result = r3v_native_record_zb_depth_control_surface(
+      cmd, vertex_memory, color_memory, depth_memory,
+      (enum r3v_native_zb_depth_surface)7);
+   CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
+         "an unnamed surface selector refuses recording: %d", result);
+
+   result = r3v_native_record_zb_depth_control_surface(
+      cmd, vertex_memory, color_memory, depth_memory, depth_selection);
+   CHECK(result == VK_SUCCESS, "depth-control recording on %s: %d",
+         depth_surface->name, result);
 
    result = vkEndCommandBuffer(cmd);
    CHECK(result == VK_SUCCESS, "vkEndCommandBuffer: %d", result);
@@ -389,6 +472,50 @@ main(int argc, char **argv)
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0, 0, &queue);
 
+   /* The refusal modes alter one recorded fact and leave everything else
+    * as the open mode built it, so the open mode is the positive control
+    * for all three: same device, same recording, same arming, one
+    * difference, opposite outcome.
+    */
+   if (refusal_mode) {
+      struct r3v_native_cmd_buffer *recorded =
+         r3v_native_cmd_buffer_from_handle(cmd);
+      if (refuse_unnamed) {
+         /* A selector cast in from outside the catalogue names no
+          * descriptor.  The recorder refuses one, so only an alteration
+          * after recording presents it. */
+         recorded->zb_depth_surface = (enum r3v_native_zb_depth_surface)7;
+      } else if (refuse_format) {
+         /* The selection and the stream disagreeing about the format,
+          * with the depth allocation matching the new selection so the
+          * size test passes and the stream unaltered so its digest still
+          * matches.  The comparison between the two records is then the
+          * one remaining failed condition. */
+         VK_FROM_HANDLE(r3v_native_memory, other_memory, other_depth_memory);
+         recorded->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH] =
+            (struct r3v_native_bo_reference){
+               .handle = other_memory->bo.handle,
+               .read_domains = RADEON_GEM_DOMAIN_GTT,
+               .write_domain = RADEON_GEM_DOMAIN_GTT,
+               .memory = other_memory,
+            };
+         recorded->zb_depth_surface = other_selection;
+      } else {
+         /* A stream altered after recording.  The arming gate recomputes
+          * the IB digest, so this observes that the altered bytes cannot
+          * submit without attributing the refusal to one gate. */
+         for (uint32_t i = 0; i + 1u < recorded->ib_size_dwords; i++) {
+            if (recorded->ib[i + 1u] == depth_surface->depth_format) {
+               recorded->ib[i + 1u] =
+                  depth_surface->depth_format == R300_DEPTHFORMAT_16BIT_INT_Z
+                     ? R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL
+                     : R300_DEPTHFORMAT_16BIT_INT_Z;
+               break;
+            }
+         }
+      }
+   }
+
    result = vkQueueSubmit(queue, 1,
                           &(VkSubmitInfo){
                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -398,7 +525,19 @@ main(int argc, char **argv)
                           VK_NULL_HANDLE);
    enum r3v_native_queue_status queue_status =
       r3v_native_queue_submission_status(device);
-   if (open_gate) {
+   if (refusal_mode) {
+      CHECK(result == VK_ERROR_DEVICE_LOST, "%s refuses submission: %d",
+            argv[1], result);
+      CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED,
+            "%s refuses before the ioctl: %s", argv[1],
+            r3v_native_queue_status_name(queue_status));
+      /* radeon_drm_vk_cs_submit snapshots this immediately before
+       * DRM_RADEON_CS, so a zero here says the refusal landed ahead of
+       * the ioctl rather than after it. */
+      CHECK(native_device->drm.submit_boundary_sync_count == 0,
+            "%s reaches no command submission: %" PRIu64, argv[1],
+            (uint64_t)native_device->drm.submit_boundary_sync_count);
+   } else if (open_gate) {
       CHECK(result == VK_SUCCESS,
             "open-gate submission through the shim: %d", result);
       CHECK(queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED,
@@ -420,7 +559,7 @@ main(int argc, char **argv)
             "(%zu bytes)", submit_relocs_size);
       free(submit_relocs);
 
-      check_retained_ib(manifest_dir);
+      check_retained_ib(manifest_dir, depth_surface);
 
       /* The shim absorbs the submission without executing it, so the
        * honest verdict of each oracle is its sentinel intact: no
@@ -452,8 +591,9 @@ main(int argc, char **argv)
             "depth memory maps after completion: %d", result);
       if (depth_map != NULL) {
          struct r300_zb_depth_control_depth_verdict depth_verdict;
-         r300_zb_depth_control_depth_oracle(
-            depth_map, R300_ZB_DEPTH_CONTROL_DEPTH_BYTES, &depth_verdict);
+         r300_zb_depth_control_depth_oracle_surface(
+            depth_surface, &r300_zb_depth_address_linear, 0u, depth_map,
+            depth_allocation_bytes, &depth_verdict);
          CHECK(!depth_verdict.written && !depth_verdict.near_pass &&
                   depth_verdict.far_pass && depth_verdict.exterior_pass &&
                   depth_verdict.canary_pass,
@@ -470,7 +610,7 @@ main(int argc, char **argv)
             "closed gate reports refusal before the ioctl: %s",
             r3v_native_queue_status_name(queue_status));
 
-      check_retained_ib(manifest_dir);
+      check_retained_ib(manifest_dir, depth_surface);
 
       /* The relocation chunk carries exactly the three role references
        * in slot order.
@@ -490,7 +630,7 @@ main(int argc, char **argv)
    }
 
    vkDestroyCommandPool(device, pool, NULL);
-   for (unsigned i = 0; i < 4; i++)
+   for (unsigned i = 0; i < 5; i++)
       vkFreeMemory(device, allocations[i].memory, NULL);
    vkDestroyDevice(device, NULL);
    vkDestroyInstance(instance, NULL);

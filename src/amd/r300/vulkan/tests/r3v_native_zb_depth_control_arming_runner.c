@@ -24,12 +24,15 @@
  * authorization declares through R3V_NATIVE_AUTHORIZED_IB_BLAKE3.  The
  * reference emission is the same construction the recorder installs and
  * the queue recomputes, so the armed digest names the submitted bytes.
+ * The surface selection moves ZB_FORMAT, so each surface carries its own
+ * digest and an authorization declared for one does not admit the other.
  */
 static int
-cell_digest(char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
+cell_digest(const struct r300_zb_depth_surface *surface,
+            char out[BLAKE3_OUT_LEN * 2 + 1], uint32_t *ib_dwords)
 {
    struct r300_zb_depth_control_ib cell;
-   if (r300_zb_depth_control_reference_emit(&cell) != 0)
+   if (r300_zb_depth_control_reference_emit_surface(surface, &cell) != 0)
       return 1;
    if (r300_zb_depth_control_validate_reloc_sites(&cell) != 0) {
       r300_zb_depth_control_release(&cell);
@@ -61,15 +64,29 @@ main(int argc, char **argv)
    /* The runner takes the evidence directory an attended run would use;
     * its freshness is itself an arming factor.
     */
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   if (argc < 2 || argc > 3 ||
+       (argc == 3 && strcmp(argv[2], "z24_linear") != 0 &&
+        strcmp(argv[2], "z16_linear") != 0)) {
+      fprintf(stderr,
+              "usage: %s <evidence-directory> [z16_linear|z24_linear]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+   /* The runner links the common cell alone, so it names the descriptor
+    * directly rather than through the driver's selector; both resolve to
+    * the same two constants. */
+   const struct r300_zb_depth_surface *depth_surface =
+      (argc == 3 && strcmp(argv[2], "z24_linear") == 0)
+         ? &r300_zb_depth_surface_z24_linear
+         : &r300_zb_depth_surface_z16_linear;
+   printf("depth surface: %s (%u bytes)\n", depth_surface->name,
+          depth_surface->pitch_pixels * depth_surface->allocation_rows *
+             depth_surface->bytes_per_pixel);
 
    char digest[BLAKE3_OUT_LEN * 2 + 1];
    uint32_t ib_dwords = 0;
-   if (cell_digest(digest, &ib_dwords) != 0) {
+   if (cell_digest(depth_surface, digest, &ib_dwords) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }

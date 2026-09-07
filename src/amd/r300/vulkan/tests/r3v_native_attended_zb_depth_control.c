@@ -87,11 +87,36 @@ same_directory(const char *a, const char *b)
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   if (argc < 2 || argc > 3 ||
+       (argc == 3 && strcmp(argv[2], "z24_linear") != 0 &&
+        strcmp(argv[2], "z16_linear") != 0)) {
+      fprintf(stderr,
+              "usage: %s <evidence-directory> [z16_linear|z24_linear]\n",
+              argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
+   /* The depth surface this run binds.  Z16 linear is the retained cell
+    * and stays the default, so an invocation that names no surface
+    * produces the stream every prior attended run produced.  Z24 linear
+    * moves the format alone: the same geometry, the same tiling, the
+    * same host addressing, packed depth in bits 31:8 under a stencil the
+    * run observes rather than tests. */
+   const enum r3v_native_zb_depth_surface depth_selection =
+      (argc == 3 && strcmp(argv[2], "z24_linear") == 0)
+         ? R3V_NATIVE_ZB_DEPTH_SURFACE_Z24_LINEAR
+         : R3V_NATIVE_ZB_DEPTH_SURFACE_Z16_LINEAR;
+   const struct r300_zb_depth_surface *depth_surface =
+      r3v_native_zb_depth_surface_descriptor(depth_selection);
+   const uint32_t depth_bytes =
+      r3v_native_zb_depth_surface_bytes(depth_selection);
+   if (depth_surface == NULL || depth_bytes == 0) {
+      fprintf(stderr, "depth selection names no surface\n");
+      return 2;
+   }
+   printf("[surface] depth=%s cpp=%u bytes=%u sentinel_code=0x%08x\n",
+          depth_surface->name, depth_surface->bytes_per_pixel, depth_bytes,
+          depth_surface->depth_sentinel_code);
 
    /* A silicon result binds to the real libc entry points.  A preloaded
     * interposer -- the drm-shim fixture or any other -- would let the
@@ -213,7 +238,7 @@ main(int argc, char **argv)
    struct { VkDeviceSize size; VkDeviceMemory memory; } allocations[] = {
       { R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION, VK_NULL_HANDLE },
       { R300_ZB_DEPTH_CONTROL_COLOR_BYTES, VK_NULL_HANDLE },
-      { R300_ZB_DEPTH_CONTROL_DEPTH_BYTES, VK_NULL_HANDLE },
+      { depth_bytes, VK_NULL_HANDLE },
    };
    for (unsigned i = 0; i < 3; i++) {
       if (vkAllocateMemory(device,
@@ -269,8 +294,8 @@ main(int argc, char **argv)
       fprintf(stderr, "vkBeginCommandBuffer: %d\n", result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   result = r3v_native_record_zb_depth_control(cmd, vertex_memory,
-                                               color_memory, depth_memory);
+   result = r3v_native_record_zb_depth_control_surface(
+      cmd, vertex_memory, color_memory, depth_memory, depth_selection);
    if (result != VK_SUCCESS) {
       fprintf(stderr, "cell recording failed: %d\n", result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -331,9 +356,7 @@ main(int argc, char **argv)
       return finish(OUTCOME_RETENTION_FAILURE);
    }
    if (r3v_native_evidence_write_file(evidence_dir, "depth_surface.bin",
-                                      depth_map,
-                                      R300_ZB_DEPTH_CONTROL_DEPTH_BYTES) !=
-       0) {
+                                      depth_map, depth_bytes) != 0) {
       fprintf(stderr, "depth surface retention failed\n");
       return finish(OUTCOME_RETENTION_FAILURE);
    }
@@ -343,8 +366,9 @@ main(int argc, char **argv)
    r300_zb_depth_control_color_oracle(
       color_map, R300_ZB_DEPTH_CONTROL_COLOR_BYTES, &color_verdict);
    struct r300_zb_depth_control_depth_verdict depth_verdict;
-   r300_zb_depth_control_depth_oracle(
-      depth_map, R300_ZB_DEPTH_CONTROL_DEPTH_BYTES, &depth_verdict);
+   r300_zb_depth_control_depth_oracle_surface(
+      depth_surface, &r300_zb_depth_address_linear, 0u, depth_map,
+      depth_bytes, &depth_verdict);
    printf("[oracle] color executed=%d near=%d far=%d exterior=%d canary=%d "
           "near_colored=%u/%u far_colored=%u/%u\n",
           color_verdict.executed, color_verdict.near_pass,
@@ -353,11 +377,18 @@ main(int argc, char **argv)
           color_verdict.near_samples, color_verdict.far_colored,
           color_verdict.far_samples);
    printf("[oracle] depth written=%d near=%d far=%d exterior=%d canary=%d "
-          "near_range=[0x%04x,0x%04x]\n",
+          "near_range=[0x%08x,0x%08x]\n",
           depth_verdict.written, depth_verdict.near_pass,
           depth_verdict.far_pass, depth_verdict.exterior_pass,
           depth_verdict.canary_pass, depth_verdict.near_min,
           depth_verdict.near_max);
+   /* The stencil the depth write left, reported and never judged: the
+    * stencil test and stencil writes are disabled, so what the part does
+    * to the low byte of a packed word is a measurement this run records
+    * for the first time on this silicon. */
+   printf("[oracle] stencil observed=%d range=[0x%02x,0x%02x]\n",
+          depth_verdict.stencil_observed, depth_verdict.stencil_min,
+          depth_verdict.stencil_max);
    fflush(stdout);
 
    /* Classification order: a write past either surface's render extent

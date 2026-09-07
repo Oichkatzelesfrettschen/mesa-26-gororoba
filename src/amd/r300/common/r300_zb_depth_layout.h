@@ -201,6 +201,41 @@ int r300_zb_depth_layout_tile_pixels(uint32_t bytes_per_pixel,
                                      uint32_t *width_out,
                                      uint32_t *height_out);
 
+/* Resolves the byte a logical pixel names inside a depth allocation.
+ *
+ * An oracle reads a surface it did not write, so it needs the inverse of
+ * whatever placed the bytes.  A linear surface has one in closed form; a
+ * tiled surface's is the permutation this tree does not yet carry.
+ * Passing the resolver in keeps the oracle's region logic identical
+ * across surfaces and confines the addressing to one replaceable object,
+ * so a tiled resolver arrives as a new instance rather than as a second
+ * oracle.
+ *
+ * byte_offset resolves the pixel at (x, y) of surface, whose storage
+ * begins at base_offset_bytes inside the allocation, and returns 0 with
+ * the offset written, or -EINVAL when the surface is one this resolver
+ * does not address, the coordinate falls outside the render extent, or
+ * the offset leaves the 64-bit range.  A refused call writes nothing.
+ */
+struct r300_zb_depth_address_resolver {
+   const char *name;
+   int (*byte_offset)(const struct r300_zb_depth_surface *surface,
+                      uint64_t base_offset_bytes, uint32_t x, uint32_t y,
+                      uint64_t *byte_offset_out);
+};
+
+/* The row-major resolver: a(x, y) = base + cpp * (y * pitch + x).  It
+ * addresses a surface linear in both tile classes and refuses any other,
+ * so a tiled surface reaching it is a refusal rather than a wrong byte.
+ *
+ * The arithmetic is written here from the addressing rule rather than
+ * taken from r300_zb_depth_layout_compute, so an oracle checking a
+ * device's bytes and the calculation sizing the allocation cannot agree
+ * through a shared mistake.
+ */
+extern const struct r300_zb_depth_address_resolver
+   r300_zb_depth_address_linear;
+
 /* True when byte_offset falls inside one of the layout's two guard
  * ranges.  A discovery oracle scans the whole allocation and separates
  * guard bytes from envelope bytes through this. */

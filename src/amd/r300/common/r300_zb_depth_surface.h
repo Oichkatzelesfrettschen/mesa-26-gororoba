@@ -159,6 +159,13 @@ int r300_zb_depth_unpack(const struct r300_zb_depth_surface *surface,
 int r300_zb_depth_surface_packed_sentinel(
    const struct r300_zb_depth_surface *surface, uint32_t *word_out);
 
+/* True when the surface's format stores a stencil component: packed
+ * Z24/S8 does, and either 16-bit depth encoding stores the code alone.
+ * An oracle reads it to decide whether a stencil observation exists to
+ * make. */
+bool r300_zb_depth_surface_stores_stencil(
+   const struct r300_zb_depth_surface *surface);
+
 /* The ZB_DEPTHPITCH tile bits the surface declares, for the submission
  * that keeps its own tiling flags. */
 uint32_t r300_zb_depth_surface_tile_bits(
