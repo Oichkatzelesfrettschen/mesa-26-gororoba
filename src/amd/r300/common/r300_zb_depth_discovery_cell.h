@@ -225,8 +225,8 @@ int r300_zb_depth_discovery_read_state(
 /* Holds a stream to the state a discovery run requires: exactly one
  * ZB_FORMAT write carrying the scenario's format, a draw reached, one
  * ZB_DEPTHOFFSET write placing the surface at the storage base the
- * layout resolved -- on that layout's alignment and clear of the low
- * five bits ZB_DEPTHOFFSET does not encode -- one ZB_DEPTHPITCH write
+ * layout resolved, which carries that layout's alignment with it, one
+ * ZB_DEPTHPITCH write
  * whose row width, macrotile bit, microtile field, and endian selector
  * all match the surface descriptor, Z_ENABLE set and STENCIL_ENABLE
  * clear,

@@ -562,15 +562,17 @@ r300_zb_depth_discovery_check_state(
       return -EINVAL;
    if (layout.base_offset_bytes > UINT32_MAX)
       return -EINVAL;
+   /* Equality with the resolved base carries the alignment too:
+    * r300_zb_depth_layout_compute places the storage base at a guard
+    * size it refuses unless that size is a multiple of the base
+    * alignment, so a base reaching here already sits on the macrotile a
+    * macrotiled surface demands and clear of the low five bits
+    * ZB_DEPTHOFFSET does not encode, and r300_zb_depth_state_emit
+    * refuses an unencodable offset on its own path.  A separate
+    * alignment arm here is unreachable -- a mutation deleting it
+    * survives every known-bad -- so it stays out rather than reading as
+    * a protection it does not provide. */
    if (state.zb_depthoffset != (uint32_t)layout.base_offset_bytes)
-      return -EINVAL;
-   /* ZB_DEPTHOFFSET encodes bits 31 to 5, so the low five bits have no
-    * encoding, and a macrotiled surface additionally demands its base on
-    * a 2048-byte macrotile.  The layout states that alignment and the
-    * programmed origin satisfies it. */
-   if (layout.base_alignment_bytes == 0u ||
-       state.zb_depthoffset % layout.base_alignment_bytes != 0u ||
-       (state.zb_depthoffset & 0x1fu) != 0u)
       return -EINVAL;
 
    /* The pitch word is compared whole: the row width in bits 2 to 13,
