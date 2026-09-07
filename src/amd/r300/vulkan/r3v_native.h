@@ -627,6 +627,47 @@ struct r3v_native_deferred_draw {
    X(Z16_LINEAR, z16_linear)                                                  \
    X(Z24_LINEAR, z24_linear)
 
+/* The address-discovery scenarios a discovery recording can name, one
+ * entry per declared experiment: the enumerator suffix and the common
+ * scenario it names.  The enum, the scenario lookup, and the catalogue
+ * test are generated from this list, so a rung joins all three at once.
+ *
+ * The three linear entries differ in their stencil seed alone and emit
+ * byte-identical streams, which is the reason the seed is a scenario
+ * rather than a stream parameter: an IB digest cannot separate them, so
+ * the experiment identity has to name the initial image.
+ */
+#define R3V_NATIVE_ZB_DISCOVERY_SCENARIOS(X)                                  \
+   X(Z24_LINEAR, z24_linear)                                                  \
+   X(Z24_LINEAR_SEED_5A, z24_linear_seed_5a)                                  \
+   X(Z24_LINEAR_SEED_A5, z24_linear_seed_a5)                                  \
+   X(Z24_MICROTILED, z24_microtiled)                                          \
+   X(Z24_MACROTILED, z24_macrotiled)
+
+enum r3v_native_zb_discovery_scenario {
+#define R3V_NATIVE_ZB_DISCOVERY_SCENARIO_ENUMERATOR(suffix, descriptor)       \
+   R3V_NATIVE_ZB_DISCOVERY_SCENARIO_##suffix,
+   R3V_NATIVE_ZB_DISCOVERY_SCENARIOS(
+      R3V_NATIVE_ZB_DISCOVERY_SCENARIO_ENUMERATOR)
+#undef R3V_NATIVE_ZB_DISCOVERY_SCENARIO_ENUMERATOR
+};
+
+/* The three arms one discovery apparatus runs.  The measurement arm
+ * writes; the two controls establish that the apparatus reports nothing
+ * when nothing should move, so a run that finds no address is separated
+ * from a run whose observation path is broken.
+ */
+enum r3v_native_zb_discovery_arm {
+   /* Comparison ALWAYS, depth writes enabled: the run that locates the
+    * physical byte. */
+   R3V_NATIVE_ZB_DISCOVERY_ARM_MEASURE,
+   /* Comparison ALWAYS, depth writes disabled: the color must move and
+    * no depth code may. */
+   R3V_NATIVE_ZB_DISCOVERY_ARM_WRITES_DISABLED,
+   /* Comparison NEVER: nothing may move. */
+   R3V_NATIVE_ZB_DISCOVERY_ARM_NEVER,
+};
+
 enum r3v_native_zb_depth_surface {
 #define R3V_NATIVE_ZB_DEPTH_SURFACE_ENUMERATOR(suffix, descriptor)            \
    R3V_NATIVE_ZB_DEPTH_SURFACE_##suffix,
@@ -635,6 +676,7 @@ enum r3v_native_zb_depth_surface {
 };
 
 struct r300_zb_depth_surface;
+struct r300_zb_depth_discovery_scenario;
 
 /* Native command buffer: one fixed IB dword vector plus its BO references,
  * installed whole by a device-internal emitter or by the public triangle
@@ -721,6 +763,15 @@ struct r3v_native_cmd_buffer {
     * allocation, so the shape the recorder admitted is the shape the
     * predicate judges. */
    enum r3v_native_zb_depth_surface zb_depth_surface;
+   /* The declared experiment and arm a recorded discovery cell carries,
+    * meaningful exactly when cell_kind is
+    * R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY.  The discovery recorder is
+    * the only writer and the queue's frozen-geometry predicate the only
+    * reader.  The scenario names the surface, the pixel, the marker, and
+    * the stencil seed; the arm names the comparison and the write
+    * enable, and the predicate holds the recorded stream to both. */
+   enum r3v_native_zb_discovery_scenario zb_discovery_scenario;
+   enum r3v_native_zb_discovery_arm zb_discovery_arm;
    /* The multisample resolve cell's sample-expanded color surface,
     * allocated at that recording and released with the buffer.  It
     * takes RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU
@@ -2187,6 +2238,50 @@ VkResult r3v_native_record_zb_depth_control_surface(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
    enum r3v_native_zb_depth_surface surface);
+
+/* The scenario a selector names, or NULL for a value outside the
+ * enumeration. */
+const struct r300_zb_depth_discovery_scenario *
+r3v_native_zb_discovery_scenario_descriptor(
+   enum r3v_native_zb_discovery_scenario selection);
+
+/* The depth comparison and write enable one arm names.  The recorder
+ * emits from this and the queue's predicate checks against it, so the
+ * arm a recording declares and the arm a stream carries are one
+ * mapping.  Returns false for a value outside the enumeration and
+ * writes neither output; a true return writes both, so an arm never
+ * contributes half a state. */
+bool r3v_native_zb_discovery_arm_state(enum r3v_native_zb_discovery_arm arm,
+                                       uint32_t *depth_function,
+                                       bool *depth_write);
+
+/* Depth address-discovery recorder: lowers the single-pixel discovery
+ * cell (src/amd/r300/common/r300_zb_depth_discovery_cell.h) into the
+ * command buffer from three live memories.  The recorder writes the
+ * six-vertex covering payload, fills the color target with the color
+ * sentinel, initializes the depth allocation as the scenario declares --
+ * the guard ranges at the guard fill and the storage envelope at the
+ * scenario's packed initial word -- publishes each for the unsnooped
+ * GART, and installs the cell with the vertex read, color write, and
+ * depth read-write GTT references in slot order.
+ *
+ * The depth allocation is R300_ZB_DISCOVERY_ALLOCATION_BYTES for every
+ * scenario, held constant so the transport, the queue predicate, and the
+ * retained artifact do not move between tiling rungs.  It is not
+ * r3v_native_zb_depth_surface_bytes, which names the parser footprint of
+ * a linear surface and carries no guards.
+ *
+ * A tiled scenario records here where the depth control refuses it: the
+ * control reads the surface back as a row-major image and needs an
+ * address transform, and this cell reads it as an unordered set of words
+ * and needs none.  Recording is submit-free; the queue's hazard gate
+ * guards execution.
+ */
+VkResult r3v_native_record_zb_depth_discovery(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r3v_native_zb_discovery_scenario scenario,
+   enum r3v_native_zb_discovery_arm arm);
 
 /* Producer-only recorder: poisons the whole carrier allocation, emits the
  * reference R2VB producer pass
