@@ -2208,6 +2208,47 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     )
   endforeach
 
+  # Depth address-discovery harness: drives the single-pixel cell through
+  # the same recorder/queue/retention path, armed by the cell's own
+  # digest in the open leg.  The linear arm leaves 3840 unclaimed bytes
+  # past its layout and the macrotiled arm leaves none, so both exercise
+  # the three-class partition at its two extremes; the macrotiled arm is
+  # also the one the ordinary depth control's addressing gate refuses.
+  r3v_native_zb_depth_discovery_harness = executable(
+    'r3v_native_zb_depth_discovery_harness',
+    files('tests/r3v_native_zb_depth_discovery_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach discovery_mode : ['closed', 'open', 'refuse-unnamed-scenario',
+                            'refuse-unnamed-arm', 'refuse-arm-disagreement',
+                            'refuse-compression-enabled',
+                            'refuse-altered-stream']
+    test(
+      'r3v-native-zb-depth-discovery-@0@'.format(discovery_mode),
+      r3v_native_zb_depth_discovery_harness,
+      args : [discovery_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-zb-depth-discovery-@0@-z24-macrotiled'.format(
+        discovery_mode),
+      r3v_native_zb_depth_discovery_harness,
+      args : [discovery_mode, 'z24_macrotiled'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+
   test(
     'r3v-native-queue-transport-status',
     r3v_native_queue_status_test,
