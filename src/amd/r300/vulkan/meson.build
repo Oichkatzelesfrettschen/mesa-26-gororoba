@@ -1130,23 +1130,23 @@ if with_tests
     suite : ['r3v'],
   )
 
-  # Rename and identity ratchet: every surviving pre-rename or lane-identity
+  # Retired name and identity check: every surviving pre-rename or lane-identity
   # spelling is a ledger row (path, token, replacement, owner, removal
   # condition) and a row leaves with its spelling, so the count only falls.
   test(
-    'r3v-rename-ratchet',
+    'r3v-retired-name-check',
     prog_python,
-    args : [files('tests/r3v_rename_ratchet.py'),
+    args : [files('tests/r3v_retired_name_check.py'),
             meson.project_source_root()],
     suite : ['r3v'],
-    # The ratchet walks every scan root of the source tree; the RS485M host
+    # The check walks every scan root of the source tree; the RS485M host
     # (K8) needs past the default 30 s for that walk.
     timeout : 600,
   )
   test(
-    'r3v-rename-ratchet-selftest',
+    'r3v-retired-name-check-selftest',
     prog_python,
-    args : [files('tests/r3v_rename_ratchet.py'), '--selftest'],
+    args : [files('tests/r3v_retired_name_check.py'), '--selftest'],
     suite : ['r3v'],
   )
   foreach header_defect : ['missing-spdx', 'invented-copyright',

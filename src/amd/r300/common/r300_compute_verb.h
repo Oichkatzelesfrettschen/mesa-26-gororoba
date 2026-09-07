@@ -129,8 +129,8 @@ const struct r300_compute_verb_row *r300_compute_verb_rows(uint32_t *count);
 
 /* The compute-queue claim.  VK_QUEUE_COMPUTE_BIT asserts the full
  * compute contract, so the ledger advertises it unconditionally only
- * when every row executes on both routes -- the dual-route coverage predicate, the
- * ratchet that closes the gate as rows land.  That predicate measures
+ * when every row executes on both routes -- the dual-route coverage predicate that
+ * closes the gate as rows land.  That predicate measures
  * this ledger's dual-route matrix and nothing wider: the Vulkan compute
  * contract also spans the SPIR-V execution model, the descriptor and
  * memory models, workgroup shared memory, barriers, general atomics, and

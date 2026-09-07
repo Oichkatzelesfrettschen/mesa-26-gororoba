@@ -109,7 +109,7 @@ test_queue_projection(void)
     * table over identity_map is fully covered, because that operation owns
     * both an executing host route and an executing GPU route, so the claim
     * stands there without a gate -- which is exactly what makes coverage
-    * over the whole fifteen-row ledger the ratchet it is. */
+    * over the whole fifteen-row ledger the condition it is. */
    struct r300_compute_verb_row one = rows[R300_COMPUTE_VERB_IDENTITY_MAP];
    assert(r300_compute_dual_route_coverage_complete_rows(&one, 1));
    assert(r300_compute_verb_queue_claim_rows(&one, 1, false));

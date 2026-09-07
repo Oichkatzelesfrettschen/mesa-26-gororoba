@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Rename and identity ratchet over the r3v tree.
+"""Retired name and identity check over the r3v tree.
 
 Two renames left deliberate survivors: r300vk -> r3v (driver, env-var, and
 artifact names) and the dual-backend lane identity -> the one r3v ICD
 (`libvulkan_r3v_native`, `r3v_native_icd`, the two lane options, the two
 lane macros, the "r3v-native" driver identity).  The ledger
 docs/r3v-rename-allowlist.txt names every surviving spelling as a row --
-path, token, replacement, owner, removal condition -- and this ratchet
+path, token, replacement, owner, removal condition -- and this check
 holds the tree to it: a token hit outside the ledger fails, a ledger row
 with no remaining hit fails (the row leaves with the spelling), so the
 row count only falls.  Internal mechanism names (`r3v_native_*` files,
@@ -45,8 +45,8 @@ TOKENS = {
 
 SCAN_ROOTS = ("meson.build", "meson.options", "src", "build-infra", "docs")
 LEDGER = "docs/r3v-rename-allowlist.txt"
-# The ratchet names the tokens it scans for.
-SELF = "src/amd/r300/vulkan/tests/r3v_rename_ratchet.py"
+# The check names the tokens it scans for.
+SELF = "src/amd/r300/vulkan/tests/r3v_retired_name_check.py"
 # The historical-artifact ledger records retained bundle names in the exact
 # spelling their seals fixed, so it quotes retired tokens by design; it is a
 # registry of past names rather than a use of them.
@@ -54,7 +54,7 @@ ARTIFACT_ALIAS_LEDGER = "build-infra/docs/historical-artifact-aliases.tsv"
 SKIP_DIRS = {".git", "__pycache__"}
 # Retained review evidence: forge responses recorded verbatim and the
 # tables derived from them, which quote whatever spelling a pull request
-# carried at the time.  The ratchet governs maintained source and
+# carried at the time.  The check governs maintained source and
 # documentation, so these bytes leave the token scan and take an
 # integrity check instead.  Membership in a manifest decides, with no
 # path prefix in the rule: the nearest ancestor directory holding a
@@ -74,7 +74,7 @@ COLUMNS = ("path", "token", "replacement", "owner", "removal_condition",
            "occurrence_count", "location_sha256")
 # The baseline is intentionally an append-only boundary: a compatible spelling
 # may leave the ledger after its removal, while a new path/token pair requires
-# a reviewed ratchet change rather than a routine allowlist edit.
+# a reviewed change to this check rather than a routine allowlist edit.
 BASELINE_KEYS = frozenset({
     ("build-infra/docs/last-100-pr-review-comment-audit.md", "r300vk"),
     ("build-infra/docs/last-100-pr-review-comment-audit.md", "R300VK"),
@@ -309,7 +309,7 @@ def run(root: Path) -> int:
         print("\n".join(failures))
         return STATUS_FAIL
     rows = read_ledger(ledger.read_text(encoding="utf-8"))
-    print(f"r3v_rename_ratchet: {len(rows)} ledger rows, every token "
+    print(f"r3v_retired_name_check: {len(rows)} ledger rows, every token "
           f"spelling ledgered, every row live")
     return STATUS_OK
 
@@ -333,7 +333,7 @@ def selftest() -> int:
         if not ok:
             print(f"selftest {label}: got {failures!r}")
 
-    with tempfile.TemporaryDirectory(prefix="r3v-rename-ratchet-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="r3v-retired-name-check-") as tmp:
         root = Path(tmp)
         (root / "src").mkdir()
         (root / "docs").mkdir()
@@ -530,7 +530,7 @@ def main(argv: list[str]) -> int:
         return list_hits(Path(argv[2]))
     if len(argv) == 2:
         return run(Path(argv[1]))
-    print("usage: r3v_rename_ratchet.py <repo-root> | --hits <repo-root> | "
+    print("usage: r3v_retired_name_check.py <repo-root> | --hits <repo-root> | "
           "--selftest", file=sys.stderr)
     return STATUS_USAGE
 
