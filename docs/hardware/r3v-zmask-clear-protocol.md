@@ -23,7 +23,12 @@ It opens only for a depth or stencil format of 32 bits per pixel on a
 microtiled level, aligns the row pitch to 16 pixels, picks an 8x8
 compression block when the level is macrotiled, single-sample, and the
 part is RV350-or-later (`CHIP_RS480` is), and divides the block-aligned
-pixel area by the pixels one ZMASK dword covers. The result fits when
+pixel area by the pixels one ZMASK dword covers.
+`r300_zmask_layout_compute_at_block` takes the block as an argument
+instead: `R300_ZCOMP_4X4` pins the smaller block whatever the level
+would have chosen, and `R300_ZCOMP_8X8` asks for the larger one and
+yields the level's own decision. Every stage in this ladder consumes the
+4x4 form, for the reason stated under stage C. The result fits when
 the dword count stays within `zmask_ram * pipes`, which is 5120 on one
 RS480 pipe. A level that does not fit yields a zero pitch and a zero
 dword count, and the bind stages refuse to build for it, matching
@@ -141,14 +146,38 @@ depth images, since no state changed.
 The bind places the level at the base of the ZMASK RAM
 (`ZB_ZMASK_OFFSET` = 0) at the layout's pitch, zeroes both
 autoincrementing RAM access indices, writes `GB_Z_PEQ_CONFIG` with the
-tile size the layout decided -- the 64x64 reference level clears four
-dwords at 8x8 and sixteen at 4x4, so a retained setting would describe a
-different surface than the clear covers -- writes `ZB_BW_CNTL` = 0 so
+block size the layout was computed at -- the 64x64 reference level clears
+four dwords at 8x8 and sixteen at 4x4, so a register and a coverage taken
+from different blocks describe different surfaces -- writes
+`ZB_BW_CNTL` = 0 so
 `FAST_FILL_ENABLE`, `RD_COMP_ENABLE`, `WR_COMP_ENABLE` and `HIZ_ENABLE`
 all stay off, and issues `3D_CLEAR_ZMASK` over exactly
 `layout.dwords` dwords starting at index 0 with value 0.
 `SC_HYPERZ` stays unwritten: the scan converter's HiZ bit belongs to the
 HiZ stage past this ladder.
+
+The block this stage programs is `R300_ZCOMP_4X4`, whatever the level's
+own decision would be. The R5xx acceleration guide requires 4x4 plane
+equations while compression is disabled, so the GA and the ZB agree on
+the plane-equation format, and `ZB_BW_CNTL` = 0 leaves both
+`RD_COMP_ENABLE` and `WR_COMP_ENABLE` clear here and through stage D,
+whose `FAST_FILL_ENABLE` enables no compression either. So both binding
+stages answer `R300_ZCOMP_4X4` from
+`r300_zmask_clear_stage_block`, and the 64x64 macrotiled reference level
+binds sixteen dwords rather than the four its 8x8 decision would name.
+`r300_zmask_clear_plan_build` refuses a layout resolved at the other
+block, so the plane-equation register and the clear coverage cannot come
+apart.
+
+In-tree `r300_update_hyperz` disagrees: it sets `Z_PEQ_SIZE_8_8` from
+`tex.zcomp8x8[level]` whenever HyperZ is enabled, before deciding which
+enables `ZB_BW_CNTL` carries, so the Gallium path programs 8x8 plane
+equations in configurations where the guide asks for 4x4. The guide is
+the higher-ranked authority and decides the value the ladder emits. No
+retained silicon observation of either configuration exists, so the
+disagreement is a recorded conflict rather than a settled question, and
+a stage that enables compression is where 8x8 first becomes admissible.
+That stage is not in this ladder.
 
 With every compression enable off, the depth pipe reads and writes
 depth memory as it did in A, so the expected observation against A is an
@@ -159,7 +188,7 @@ packet3, so this stream admits under ownership and refuses without it --
 `r300_zb_hyperz_admit_stream` reports `REFUSE_OWNERSHIP` at the pitch
 write, which precedes the tile-size write. `GB_Z_PEQ_CONFIG` is gated
 the same way, and its 8x8 value refuses on its own while its 4x4 value
-of zero admits, so a 4x4 stream's refusal rests on the pitch and the
+of zero admits, so this ladder's refusal rests on the pitch and the
 clear packet.
 
 ### D: fast fill

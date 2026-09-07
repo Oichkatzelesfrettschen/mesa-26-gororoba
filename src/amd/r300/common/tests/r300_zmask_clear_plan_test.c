@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 /* CP_PACKET0 and CP_PACKET3 as the builder encodes them: a type-0 header
  * carrying the register dword address and the payload count minus one,
@@ -28,12 +29,13 @@
 #define PACKET3_HEADER(op, count) \
    (0xC0000000u | (op) | (((count) - 1u) << 16))
 
-/* The 64x64 Z24 reference level on one RS480 pipe.  Macrotiling is the
- * 8x8 compression conjunct, so the two calls differ in tile size alone:
- * 8x8 covers the level in four dwords and 4x4 in sixteen.
+/* The 64x64 Z24 reference level on one RS480 pipe at a requested
+ * compression block.  Macrotiling is the 8x8 conjunct, so a macrotiled
+ * level asked for the larger block takes it and covers the level in four
+ * dwords; every other combination lands at 4x4 and sixteen.
  */
 static struct r300_zmask_layout
-rs480_layout(bool macrotile)
+rs480_layout_at(bool macrotile, enum r300_zmask_compression block)
 {
    const struct r300_zmask_layout_params params = {
       .stride_in_pixels = 64,
@@ -48,10 +50,34 @@ rs480_layout(bool macrotile)
       .zmask_ram_dwords_per_pipe = RV3xx_ZMASK_SIZE,
    };
    struct r300_zmask_layout layout;
-   assert(r300_zmask_layout_compute(&params, &layout) == 0);
+   assert(r300_zmask_layout_compute_at_block(&params, block, &layout) == 0);
    assert(layout.fits_zmask_ram);
    assert(layout.dwords > 0);
-   assert(layout.zcomp8x8 == macrotile);
+   assert(layout.zcomp8x8 == (macrotile && block == R300_ZCOMP_8X8));
+   return layout;
+}
+
+/* The level at whatever block it would take on its own, which is what
+ * r300_zmask_layout_compute answers. */
+static struct r300_zmask_layout
+rs480_layout(bool macrotile)
+{
+   struct r300_zmask_layout layout = rs480_layout_at(macrotile, R300_ZCOMP_8X8);
+   struct r300_zmask_layout unrequested;
+   const struct r300_zmask_layout_params params = {
+      .stride_in_pixels = 64,
+      .height = 64,
+      .depth_bytes_per_pixel = 4,
+      .is_depth_or_stencil = true,
+      .microtile = true,
+      .macrotile = macrotile,
+      .num_samples = 1,
+      .zcomp8x8_capable = true,
+      .pipes = 1,
+      .zmask_ram_dwords_per_pipe = RV3xx_ZMASK_SIZE,
+   };
+   assert(r300_zmask_layout_compute(&params, &unrequested) == 0);
+   assert(memcmp(&layout, &unrequested, sizeof(layout)) == 0);
    return layout;
 }
 
@@ -219,33 +245,109 @@ check_refusals(void)
                                       &unfit, &plan) == 0);
 }
 
+
+/* GB_Z_PEQ_CONFIG and the 3D_CLEAR_ZMASK count both follow the block
+ * size, so a layout resolved at one block and a stage that programs the
+ * other describe different surfaces: a 4x4 plane-equation register over
+ * a clear sized for 8x8 leaves three quarters of the level's metadata
+ * untouched.  The builder refuses the pair rather than emitting it.
+ */
+static void
+check_block_disagreement_refused(void)
+{
+   struct r300_zmask_clear_plan plan;
+   const struct r300_zmask_layout eight = rs480_layout_at(true, R300_ZCOMP_8X8);
+   const struct r300_zmask_layout four = rs480_layout_at(true, R300_ZCOMP_4X4);
+   assert(eight.zcomp8x8 && !four.zcomp8x8);
+   assert(eight.dwords == 4 && four.dwords == 16);
+
+   /* Every stage in this ladder programs 4x4, so the 8x8 layout is the
+    * known-bad at both binding stages. */
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+                                      &eight, &plan) == -EINVAL);
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL,
+                                      &eight, &plan) == -EINVAL);
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+                                      &four, &plan) == 0);
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL,
+                                      &four, &plan) == 0);
+
+   /* The refusal reads the layout's block, not its dword count: an 8x8
+    * layout carrying a 4x4 count is still an 8x8 plane-equation
+    * register, and a 4x4 layout carrying an 8x8 count still programs
+    * 4x4 over a coverage that names four dwords.  Both are refused or
+    * admitted by the block alone, which is what makes the register and
+    * the count travel together. */
+   struct r300_zmask_layout mismatched = eight;
+   mismatched.dwords = four.dwords;
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+                                      &mismatched, &plan) == -EINVAL);
+
+   /* A block outside the enumeration refuses at the layout. */
+   struct r300_zmask_layout layout;
+   const struct r300_zmask_layout_params params = {
+      .stride_in_pixels = 64,
+      .height = 64,
+      .depth_bytes_per_pixel = 4,
+      .is_depth_or_stencil = true,
+      .microtile = true,
+      .macrotile = true,
+      .num_samples = 1,
+      .zcomp8x8_capable = true,
+      .pipes = 1,
+      .zmask_ram_dwords_per_pipe = RV3xx_ZMASK_SIZE,
+   };
+   assert(r300_zmask_layout_compute_at_block(
+             &params, (enum r300_zmask_compression)6, &layout) == -EINVAL);
+}
+
 int
 main(void)
 {
    assert(r300_zb_hyperz_rows_self_check() == 0);
 
+   /* The level's own decision, which the 8x8 conjunct macrotiling
+    * satisfies: four dwords at 8x8 against sixteen at 4x4. */
    const struct r300_zmask_layout layout = rs480_layout(true);
    const struct r300_zmask_layout layout_4x4 = rs480_layout(false);
    assert(layout.dwords == 4 && layout_4x4.dwords == 16);
 
+   /* Every stage in the ladder leaves read and write compression off, so
+    * every stage programs 4x4 plane equations and takes a layout
+    * resolved at that block.  The macrotiled level asked for its
+    * stage's block reports the 4x4 coverage, which is the same sixteen
+    * dwords the untiled level takes and not the four its own 8x8
+    * decision would have named. */
+   for (int s = R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY;
+        s <= R300_ZMASK_CLEAR_STAGE_FAST_FILL; s++)
+      assert(r300_zmask_clear_stage_block((enum r300_zmask_clear_stage)s) ==
+             R300_ZCOMP_4X4);
+   const struct r300_zmask_layout bound = rs480_layout_at(
+      true, r300_zmask_clear_stage_block(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR));
+   assert(!bound.zcomp8x8);
+   assert(bound.dwords == 16);
+   assert(bound.dwords == layout_4x4.dwords);
+   assert(bound.stride_in_pixels == layout_4x4.stride_in_pixels);
+
    check_empty_stage(R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY, false, &layout);
    check_empty_stage(R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY, true, &layout);
    for (int mode = 0; mode <= 1; mode++) {
-      const struct r300_zmask_layout *l = mode == 0 ? &layout : &layout_4x4;
+      const struct r300_zmask_layout *l = mode == 0 ? &bound : &layout_4x4;
       check_bind_stage(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR, 0u, l);
       check_bind_stage(R300_ZMASK_CLEAR_STAGE_FAST_FILL,
                        R300_FAST_FILL_ENABLE, l);
    }
    check_refusals();
+   check_block_disagreement_refused();
    check_z16_linear_cell_gap();
 
    printf("r300 zmask clear plan: four stages, ZMASK %u dwords at pitch %u\n",
-          layout.dwords, layout.stride_in_pixels);
+          bound.dwords, bound.stride_in_pixels);
    for (int s = R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY;
         s <= R300_ZMASK_CLEAR_STAGE_FAST_FILL; s++) {
       struct r300_zmask_clear_plan plan;
       assert(r300_zmask_clear_plan_build((enum r300_zmask_clear_stage)s,
-                                         &layout, &plan) == 0);
+                                         &bound, &plan) == 0);
       printf("  %-38s %2u dwords, ownership %s\n",
              r300_zmask_clear_stage_name((enum r300_zmask_clear_stage)s),
              plan.dword_count,

@@ -39,6 +39,16 @@ int
 r300_zmask_layout_compute(const struct r300_zmask_layout_params *params,
                           struct r300_zmask_layout *out)
 {
+   return r300_zmask_layout_compute_at_block(params, R300_ZCOMP_8X8, out);
+}
+
+int
+r300_zmask_layout_compute_at_block(
+   const struct r300_zmask_layout_params *params,
+   enum r300_zmask_compression block, struct r300_zmask_layout *out)
+{
+   if (block != R300_ZCOMP_4X4 && block != R300_ZCOMP_8X8)
+      return -EINVAL;
    if (params == NULL || out == NULL)
       return -EINVAL;
    if (params->pipes == 0u || params->pipes > R300_ZMASK_MAX_PIPES)
@@ -58,9 +68,13 @@ r300_zmask_layout_compute(const struct r300_zmask_layout_params *params,
       return 0;
 
    const uint32_t index = params->pipes - 1u;
+   /* The level's own decision, taken when the caller asks for the larger
+    * block.  A request for R300_ZCOMP_4X4 pins it, so the block size the
+    * metadata count and the plane-equation register are both derived
+    * from is one value rather than two. */
    const uint32_t zcompsize =
-      (params->zcomp8x8_capable && params->macrotile &&
-       params->num_samples <= 1u)
+      (block == R300_ZCOMP_8X8 && params->zcomp8x8_capable &&
+       params->macrotile && params->num_samples <= 1u)
          ? 8u
          : 4u;
    const uint32_t xblock = zmask_blocks_x_per_dw[index] * zcompsize;
