@@ -222,6 +222,73 @@ calibrated depth ramp owns it.
 
 ## Status
 
-Every row above is `not run`. The apparatus, its oracles, its controls,
-its arming runner, and its qualification tests are built and registered;
-no discovery cell has reached silicon.
+Rungs 1 and 2 are executed on RS485M. Rungs 3 through 7 are `not run`.
+
+| Rung | State |
+|---|---|
+| 1 Frozen Z24-linear depth control | executed, `CONTROL_PASS` |
+| 2 Discovery in linear mode | executed, `CONTROL_PASS` on all three arms |
+| 3 Nonzero stencil seeds | not run |
+| 4 Microtiled discovery | not run |
+| 5 Macrotiled discovery | not run |
+| 6 Held-out coordinates, pitch, base | not run |
+| 7 Coordinate-mask campaign | not run |
+
+Both executions ran under one epoch: mesa `b2a1459d7ff`, profile 4
+box-built, kernel `7.1.8-1-cachyos`, `radeon-unified-dkms 0.8.14-1`,
+srcversion `F6D858EC31CEB8A5B320781`, boot `6222574b`, `lockup_timeout`
+0. The attended applications link the driver whole, so each application
+binary is the driver under test and no ICD manifest participates.
+
+### Rung 1: the frozen depth control
+
+Receipt
+`r3v-native-zb-depth-control-frozen-linear-receipt-vostro1000_rs485m_5974`.
+Both surfaces `CONTROL_PASS`, every predicted field matched: 360 of 360
+near samples colored, 0 of 360 far, all four passes on both oracles, one
+distinct near code over all 360 samples.
+
+The freeze pin holds on silicon. The two retained streams are 245 dwords
+each and differ in exactly one dword, whose preceding single-register
+PACKET0 header names `R300_ZB_FORMAT`; the payload moves `0x00000000` to
+`0x00000002`. Color targets byte-identical, allocations 8320 against
+16640.
+
+Measured rather than predicted: the near depth code is `0x00004000` at
+Z16 and `0x00400000` at Z24, each window-space 0.25 scaled by the
+format's full range. This discriminates no rounding mode, because 0.25
+is exactly representable in both formats; a depth ramp at inexact
+window depths owns that question.
+
+### Rung 2: the apparatus recovers a known address
+
+Receipt
+`r3v-native-zb-depth-discovery-linear-address-receipt-vostro1000_rs485m_5974`.
+Three arms, three attempts, all `CONTROL_PASS`.
+
+The measure arm changed exactly one depth slot, at byte offset 7572
+(`0x1d94`) -- the offset the addressing rule names and the offset
+`r300_zb_depth_address_linear` returns. The oracle scanned all 4160
+storage slots in offset order with no resolver, so the apparatus
+recovered an address it did not compute.
+
+An independent byte scan of the retained images finds exactly one
+changed byte in the 24576-byte allocation, the top byte of the word at
+7572, and one colored pixel at the declared coordinate `(37, 21)`.
+
+The controls carry the result. The writes-disabled arm colored the
+declared pixel while no depth code moved; the NEVER arm moved nothing at
+all, so a single reported location is not what the apparatus produces
+regardless of what it submits.
+
+The three-class partition holds on silicon: 4096 guard bytes, 3840
+unclaimed, 4160 slots of 16640 bytes, summing to 24576 on every arm,
+with nothing written outside the envelope.
+
+### The stencil question is still open
+
+No stencil byte moved in either receipt. Neither establishes
+preservation: both surfaces are stencil zero-initialized, so an
+unchanged stencil is equally consistent with the depth write preserving
+the byte and with it writing zero. Rung 3 exists for that
+discrimination and is the next execution.
