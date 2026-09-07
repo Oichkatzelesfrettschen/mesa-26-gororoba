@@ -663,6 +663,32 @@ read_depth_word(const struct r300_zb_depth_surface *surface,
    return r300_zb_depth_unpack(surface, word, depth_code_out, stencil_out) == 0;
 }
 
+/* Records one near-region depth code against the distinct-code table.
+ * The table is a first-seen list rather than a sorted one, so the order
+ * a manifest publishes is the order the scan met the codes, and the
+ * search is linear over a capacity of eight.  A ninth distinct code
+ * sets the overflow flag and leaves the recorded entries alone, so the
+ * published counts stay true of the codes they name.
+ */
+static void
+record_near_code(struct r300_zb_depth_control_depth_verdict *verdict,
+                 uint32_t code)
+{
+   for (uint32_t i = 0; i < verdict->near_distinct_count; i++) {
+      if (verdict->near_distinct[i] == code) {
+         verdict->near_distinct_counts[i]++;
+         return;
+      }
+   }
+   if (verdict->near_distinct_count >= R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES) {
+      verdict->near_distinct_overflow = true;
+      return;
+   }
+   verdict->near_distinct[verdict->near_distinct_count] = code;
+   verdict->near_distinct_counts[verdict->near_distinct_count] = 1u;
+   verdict->near_distinct_count++;
+}
+
 void
 r300_zb_depth_control_depth_oracle_surface(
    const struct r300_zb_depth_surface *surface,
@@ -765,6 +791,7 @@ r300_zb_depth_control_depth_oracle_surface(
                verdict->near_min = code;
             if (code > verdict->near_max)
                verdict->near_max = code;
+            record_near_code(verdict, code);
             /* R300_ZS_LESS with Z_WRITE_ENABLE stores a value that
              * compared below the sentinel and above the near plane's
              * floor, so two one-sided bounds are the predicate and no

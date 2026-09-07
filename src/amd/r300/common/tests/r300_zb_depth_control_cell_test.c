@@ -805,6 +805,37 @@ test_stencil_is_observed(void)
  * and no other word moves; a second differing dword would mean the
  * surface reached something beyond the depth binding.
  */
+/* True when two streams of equal length differ in exactly one dword and
+ * that dword is the payload of a one-value ZB_FORMAT write in both.  The
+ * predecessor test is what separates the depth format from a word that
+ * happens to carry the same small integer, and the two format readbacks
+ * agree with the differing payload, so the grammar walk and the index
+ * arithmetic have to name the same dword.
+ */
+static bool
+differs_only_at_zb_format(const uint32_t *a, const uint32_t *b,
+                          uint32_t dwords)
+{
+   uint32_t differing = 0, where = 0;
+   for (uint32_t i = 0; i < dwords; i++) {
+      if (a[i] != b[i]) {
+         differing++;
+         where = i;
+      }
+   }
+   if (differing != 1u || where == 0u)
+      return false;
+   if (a[where - 1u] != CP_PACKET0(R300_ZB_FORMAT, 0) ||
+       b[where - 1u] != CP_PACKET0(R300_ZB_FORMAT, 0))
+      return false;
+
+   uint32_t read_a = 0, read_b = 0;
+   if (r300_zb_depth_control_ib_depth_format(a, dwords, &read_a) != 0 ||
+       r300_zb_depth_control_ib_depth_format(b, dwords, &read_b) != 0)
+      return false;
+   return read_a == a[where] && read_b == b[where];
+}
+
 static void
 test_surface_selection_moves_one_dword(void)
 {
@@ -833,6 +864,66 @@ test_surface_selection_moves_one_dword(void)
    assert(golden.ib[where] == R300_DEPTHFORMAT_16BIT_INT_Z);
    assert(from_z24.ib[where] ==
           R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL);
+
+   /* The changed dword is the payload of the ZB_FORMAT run, not a word
+    * that happens to carry the same small integer.  r300_pm4_reg writes
+    * the header immediately before its value, so the preceding dword
+    * names the register, and the stream reader resolves the same value
+    * by walking the packet grammar.  Both hold in both streams, which is
+    * what makes "one changed word" a statement about the depth format
+    * rather than about a coincidence. */
+   assert(where >= 1u);
+   assert(differs_only_at_zb_format(golden.ib, from_z24.ib,
+                                    golden.ib_size_dwords));
+
+   /* The pin refuses each way it could pass on a stream that does not
+    * carry the property.  A second changed dword, a changed dword whose
+    * predecessor names another register, and two identical streams each
+    * fail it, so a stream that satisfies it satisfies it for the stated
+    * reason. */
+   uint32_t *mutated = malloc(golden.ib_size_dwords * sizeof(uint32_t));
+   assert(mutated != NULL);
+   memcpy(mutated, from_z24.ib, golden.ib_size_dwords * sizeof(uint32_t));
+   mutated[0] ^= 1u;
+   assert(!differs_only_at_zb_format(golden.ib, mutated,
+                                     golden.ib_size_dwords));
+
+   memcpy(mutated, golden.ib, golden.ib_size_dwords * sizeof(uint32_t));
+   assert(!differs_only_at_zb_format(golden.ib, mutated,
+                                     golden.ib_size_dwords));
+
+   /* One changed dword sitting behind a header for another register.
+    * ZB_DEPTHPITCH is the neighbor the depth binding writes, so the
+    * known-bad is the shape a tile-bit change would produce. */
+   uint32_t off_format[4] = { CP_PACKET0(R300_ZB_FORMAT, 0),
+                              R300_DEPTHFORMAT_16BIT_INT_Z,
+                              CP_PACKET0(R300_ZB_DEPTHPITCH, 0), 0x00000040u };
+   uint32_t off_format_b[4] = { off_format[0], off_format[1], off_format[2],
+                                0x00030040u };
+   assert(!differs_only_at_zb_format(off_format, off_format_b, 4u));
+   /* The same fixture with the format payload moved instead passes, so
+    * the refusal above is the predecessor test rather than the fixture's
+    * shape. */
+   off_format_b[3] = off_format[3];
+   off_format_b[1] = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL;
+   assert(differs_only_at_zb_format(off_format, off_format_b, 4u));
+   free(mutated);
+
+   /* One changed word does not make the two cells interchangeable.  The
+    * format the word carries is what the kernel reads as track->zb.cpp,
+    * so it doubles the depth bytes the parser measures the binding
+    * against and doubles the allocation the host has to supply: 64
+    * pixels by 65 rows at two bytes is 8320, at four bytes 16640.  An
+    * authorization covering one stream covers neither the other stream
+    * nor the other allocation. */
+   assert(r300_zb_depth_surface_kernel_bound_bytes(
+             &r300_zb_depth_surface_z16_linear) == 8320u);
+   assert(r300_zb_depth_surface_kernel_bound_bytes(
+             &r300_zb_depth_surface_z24_linear) == 16640u);
+   assert(r300_zb_depth_surface_kernel_bound_bytes(
+             &r300_zb_depth_surface_z24_linear) ==
+          2u * r300_zb_depth_surface_kernel_bound_bytes(
+                  &r300_zb_depth_surface_z16_linear));
 
    /* The relocation sites are unmoved, so the depth binding still
     * relocates at the same index. */
@@ -1148,6 +1239,108 @@ test_regions_disjoint(void)
    printf("regions disjoint ok\n");
 }
 
+
+/* A minimum and a maximum admit two populations between them, and a
+ * stored depth code becomes a marker a later cell reads back, so the
+ * verdict carries the distinct codes and their sample counts.  The
+ * counts sum to near_samples exactly while the table has room, which is
+ * what makes the distribution a partition of the region rather than a
+ * sample of it.
+ */
+static void
+test_near_depth_distribution(void)
+{
+   uint32_t *depth = malloc(PIXELS * sizeof(uint32_t));
+   assert(depth != NULL);
+   struct r300_zb_depth_control_depth_verdict v;
+   const uint64_t bytes = (uint64_t)PIXELS * sizeof(uint32_t);
+
+   /* One plane at one depth stores one code, and its count is the whole
+    * region. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_pass);
+   assert(v.near_distinct_count == 1u);
+   assert(!v.near_distinct_overflow);
+   assert(v.near_distinct[0] == 0x00400000u);
+   assert(v.near_distinct_counts[0] == v.near_samples);
+
+   /* Two populations inside one range.  The range alone reports
+    * [0x00300000, 0x00500000] and hides that nothing stored anything
+    * between them; the distribution names both codes and splits the
+    * samples between them. */
+   const uint32_t near_samples = v.near_samples;
+   for (uint32_t y = 0; y < R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT; y++) {
+      for (uint32_t x = 0; x < R300_ZB_DEPTH_CONTROL_TARGET_WIDTH; x++) {
+         uint32_t *q = &depth[y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS + x];
+         if (*q != (0x00400000u << 8))
+            continue;
+         *q = ((y & 1u) == 0u ? 0x00300000u : 0x00500000u) << 8;
+      }
+   }
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_pass);
+   assert(v.near_min == 0x00300000u && v.near_max == 0x00500000u);
+   assert(v.near_distinct_count == 2u);
+   assert(!v.near_distinct_overflow);
+   /* The two entries partition the same region the uniform paint filled:
+    * both codes appear, neither is empty, and together they account for
+    * every near sample.  Nothing between the bounds was stored, which is
+    * exactly what the range alone cannot say. */
+   assert(v.near_samples == near_samples);
+   assert(v.near_distinct_counts[0] + v.near_distinct_counts[1] ==
+          near_samples);
+   assert(v.near_distinct_counts[0] > 0 && v.near_distinct_counts[1] > 0);
+   assert(v.near_distinct[0] != v.near_distinct[1]);
+   for (uint32_t i = 0; i < v.near_distinct_count; i++)
+      assert(v.near_distinct[i] == 0x00300000u ||
+             v.near_distinct[i] == 0x00500000u);
+
+   /* More distinct codes than the table holds: the recorded entries stay
+    * true of the codes they name, the overflow flag says the table is no
+    * longer the whole region, and the counts no longer sum to the sample
+    * count. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   uint32_t painted = 0;
+   for (uint32_t y = 0; y < R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT; y++) {
+      for (uint32_t x = 0; x < R300_ZB_DEPTH_CONTROL_TARGET_WIDTH; x++) {
+         uint32_t *q = &depth[y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS + x];
+         if (*q != (0x00400000u << 8))
+            continue;
+         *q = (0x00100000u + painted * 0x1000u) << 8;
+         painted++;
+      }
+   }
+   assert(painted > R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES);
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_distinct_count == R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES);
+   assert(v.near_distinct_overflow);
+   uint32_t sum = 0;
+   for (uint32_t i = 0; i < v.near_distinct_count; i++) {
+      assert(v.near_distinct_counts[i] == 1u);
+      sum += v.near_distinct_counts[i];
+   }
+   assert(sum < v.near_samples);
+
+   /* A verdict with no near sample publishes an empty distribution
+    * rather than a stale one. */
+   z24_oracle(depth, 4u, &v);
+   assert(v.near_samples == 0 && v.near_distinct_count == 0 &&
+          !v.near_distinct_overflow);
+
+   /* The Z16 reading records codes through the same table. */
+   uint16_t *z16 = malloc(PIXELS * sizeof(uint16_t));
+   assert(z16 != NULL);
+   paint_depth(z16, 0x4000, false);
+   r300_zb_depth_control_depth_oracle(z16, PIXELS * sizeof(uint16_t), &v);
+   assert(v.near_distinct_count == 1u && v.near_distinct[0] == 0x4000u);
+   assert(v.near_distinct_counts[0] == v.near_samples);
+   free(z16);
+
+   free(depth);
+   printf("near depth distribution ok\n");
+}
+
 int
 main(void)
 {
@@ -1162,6 +1355,7 @@ main(void)
    test_color_oracle();
    test_depth_oracle();
    test_z24_linear_depth_oracle();
+   test_near_depth_distribution();
    test_stencil_is_observed();
    test_surface_selection_moves_one_dword();
    test_linear_resolver();

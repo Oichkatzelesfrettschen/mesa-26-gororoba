@@ -280,6 +280,18 @@ void r300_zb_depth_control_color_oracle(
  * the 24-bit value rather than the packed word, and a verdict with no
  * near sample reports zero for both rather than the scan's seed.
  *
+ * The near distribution carries what the range cannot.  A minimum and a
+ * maximum admit two populations between them -- half the region at one
+ * depth code and half at another -- which matters the moment a stored
+ * code becomes a marker a later cell reads back.  near_distinct holds
+ * the distinct codes the near region stored and near_distinct_counts the
+ * samples at each, in first-seen order, so the counts sum to
+ * near_samples exactly when near_distinct_overflow is clear.  The
+ * capacity is small because the near triangle draws at one window-space
+ * depth: a second code is already the finding, and a region beyond the
+ * capacity sets the overflow flag and stops recording rather than
+ * dropping codes silently.
+ *
  * The stencil fields observe rather than assert.  ZB_CNTL leaves the
  * stencil test and stencil writes disabled, so whether a depth write
  * preserves the low byte of a packed Z24/S8 word is a property of the
@@ -291,6 +303,11 @@ void r300_zb_depth_control_color_oracle(
  * finding to record, not a depth result to reject -- and a 16-bit
  * surface reports stencil_observed false with both bounds zero.
  */
+/* Distinct near-region depth codes one verdict records before it stops
+ * distinguishing them.  One plane at one depth stores one code, so this
+ * carries a wide margin over the expected population. */
+#define R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES 8u
+
 struct r300_zb_depth_control_depth_verdict {
    bool written;
    bool near_pass;
@@ -302,6 +319,10 @@ struct r300_zb_depth_control_depth_verdict {
    uint32_t exterior_samples;
    uint32_t near_min;
    uint32_t near_max;
+   uint32_t near_distinct[R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES];
+   uint32_t near_distinct_counts[R300_ZB_DEPTH_CONTROL_MAX_NEAR_CODES];
+   uint32_t near_distinct_count;
+   bool near_distinct_overflow;
    bool stencil_observed;
    uint32_t stencil_min;
    uint32_t stencil_max;
