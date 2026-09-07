@@ -74,6 +74,42 @@ write wins.
 | `SC_SCREENDOOR` | `0x00ffffff` | a zero screendoor drops every sample |
 | `SC_SCISSORS_TL/BR` | the declared pixel | the register that confines the write |
 | `SC_CLIPRECT_TL/BR_0` | the full extent | no narrower than the scissor, so one register names the confined region |
+| `ZB_DEPTHOFFSET` | the layout's storage base, written once | places the device's surface where the host initialized it |
+| `ZB_DEPTHPITCH` | row width, both tile fields, endian, written once | shapes it the way the descriptor declares |
+
+## Where the surface begins
+
+`ZB_DEPTHOFFSET` carries a byte offset inside the buffer object and the
+kernel adds the object's address, so that register decides where the
+device's surface starts. The host initializes storage at the layout's
+base and the observation reads it there, so the stream has to name the
+same origin.
+
+A stream that named zero instead would bind the device's surface at the
+allocation's first byte, overlapping the prefix guard and displaced one
+guard from the declared bytes. For the campaign coordinate on the linear
+rung the two origins place the write at
+
+```text
+2048 + 21 * 256 + 37 * 4 = 7572 = 0x1d94   the declared surface
+       21 * 256 + 37 * 4 = 5524 = 0x1594   a surface based at zero
+```
+
+Both lie inside the declared storage envelope `[2048, 18688)`. A write
+at the wrong origin therefore leaves both guards intact and satisfies
+the observation's one-changed-slot condition, and the kernel's own bound
+-- `pitch * cpp * maxy + offset` in `r100_cs_track_check` -- passes at
+either. A clean observation carries no evidence about the origin, so the
+binding between the resolved layout and the emitted stream is checked
+directly, against those literals rather than against the emitter.
+
+The pitch word is compared whole. Its row width sits in bits 2 through
+13, the macrotile bit at 16, the microtile field at 17 and 18, and the
+endian selector at 19, and comparing the numeric row width alone would
+admit a stream that agreed on pixels per row while disagreeing on how
+those pixels are arranged -- which is the exact variable the tiled rungs
+move. A macrotiled surface additionally needs its base on a 2048-byte
+macrotile, which the layout states and the programmed origin satisfies.
 
 `ZB_CB_CLEAR` matters beyond compression. The R3xx reference describes its
 set state as cache-line-granular write-only operation and warns that a

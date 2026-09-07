@@ -179,6 +179,15 @@ int r300_zb_depth_discovery_validate_reloc_sites(
 struct r300_zb_depth_discovery_state {
    uint32_t zb_format_writes;
    uint32_t zb_format;
+   /* The surface the draw resolves: the byte offset inside the buffer
+    * object the kernel relocates, and the pitch word carrying the row
+    * width, the two tile-mode fields, and the endian selector.  Both are
+    * counted like ZB_FORMAT, so the grammar stays one write per resource
+    * register ahead of the draw. */
+   uint32_t zb_depthoffset_writes;
+   uint32_t zb_depthoffset;
+   uint32_t zb_depthpitch_writes;
+   uint32_t zb_depthpitch;
    uint32_t zb_cntl;
    uint32_t zb_zstencilcntl;
    uint32_t zb_bw_cntl;
@@ -214,8 +223,13 @@ int r300_zb_depth_discovery_read_state(
    struct r300_zb_depth_discovery_state *out);
 
 /* Holds a stream to the state a discovery run requires: exactly one
- * ZB_FORMAT write carrying the scenario's format, a draw reached,
- * Z_ENABLE set and STENCIL_ENABLE clear,
+ * ZB_FORMAT write carrying the scenario's format, a draw reached, one
+ * ZB_DEPTHOFFSET write placing the surface at the storage base the
+ * layout resolved -- on that layout's alignment and clear of the low
+ * five bits ZB_DEPTHOFFSET does not encode -- one ZB_DEPTHPITCH write
+ * whose row width, macrotile bit, microtile field, and endian selector
+ * all match the surface descriptor, Z_ENABLE set and STENCIL_ENABLE
+ * clear,
  * Z_WRITE_ENABLE matching depth_write, the declared comparison,
  * ZB_BW_CNTL zero so HiZ, fast fill, read and write compression, and
  * ZB_CB_CLEAR are all clear, GB_Z_PEQ_CONFIG zero so the plane equations
