@@ -1444,6 +1444,25 @@ r3v_native_attended_zb_depth_control = executable(
   install : false,
 )
 
+# Attended depth address discovery: performs a live DRM_RADEON_CS on
+# RS485M silicon, writing one logical pixel of a uniformly initialized
+# depth surface and retaining the allocation before and after the draw,
+# so the physical byte a logical coordinate reaches is read out of the
+# difference rather than out of an address model.  The measurement arm
+# and its two controls are one executable at three parameter values.
+r3v_native_attended_zb_depth_discovery = executable(
+  'r3v_native_attended_zb_depth_discovery',
+  files('tests/r3v_native_attended_zb_depth_discovery.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended producer-only cell: performs a live DRM_RADEON_CS on RS485M
 # silicon, writing the vertex carrier alone -- no visible target and no
 # re-ingest -- so the CPU read-back of the carrier against the delivery
@@ -2182,6 +2201,47 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       'r3v-native-zb-depth-control-@0@-z24-linear'.format(cell_mode),
       r3v_native_zb_depth_control_harness,
       args : [cell_mode, 'z24_linear'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+
+  # Depth address-discovery harness: drives the single-pixel cell through
+  # the same recorder/queue/retention path, armed by the cell's own
+  # digest in the open leg.  The linear arm leaves 3840 unclaimed bytes
+  # past its layout and the macrotiled arm leaves none, so both exercise
+  # the three-class partition at its two extremes; the macrotiled arm is
+  # also the one the ordinary depth control's addressing gate refuses.
+  r3v_native_zb_depth_discovery_harness = executable(
+    'r3v_native_zb_depth_discovery_harness',
+    files('tests/r3v_native_zb_depth_discovery_harness.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach discovery_mode : ['closed', 'open', 'refuse-unnamed-scenario',
+                            'refuse-unnamed-arm', 'refuse-arm-disagreement',
+                            'refuse-compression-enabled',
+                            'refuse-altered-stream']
+    test(
+      'r3v-native-zb-depth-discovery-@0@'.format(discovery_mode),
+      r3v_native_zb_depth_discovery_harness,
+      args : [discovery_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-zb-depth-discovery-@0@-z24-macrotiled'.format(
+        discovery_mode),
+      r3v_native_zb_depth_discovery_harness,
+      args : [discovery_mode, 'z24_macrotiled'],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
@@ -3979,6 +4039,45 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       r3v_native_zb_depth_control_arming_runner,
       r3v_native_attended_zb_depth_control,
     ],
+    suite : ['r3v'],
+  )
+
+  # Non-submitting depth address-discovery arming runner: builds the
+  # single-pixel cell for one scenario and one arm, reports its stream
+  # digest beside the initial-image digest that names the experiment,
+  # then stops at the authorization boundary.
+  r3v_native_zb_depth_discovery_arming_runner = executable(
+    'r3v_native_zb_depth_discovery_arming_runner',
+    files('r3v_native_arming.c',
+          'tests/r3v_native_zb_depth_discovery_arming_runner.c',
+          '../common/r300_first_draw_state.c',
+          '../common/r300_fragment_binary.c',
+          '../common/r300_pm4_builder.c',
+          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_flat_color0_plan.c',
+          '../common/r300_rs_tex_adj_probe.c',
+          '../common/r300_noperspective_reciprocal_plan.c',
+          '../common/r300_noperspective_q_lane_plan.c',
+          '../common/r300_noperspective_mixed_carrier_plan.c',
+          '../common/r300_zb_depth_discovery.c',
+          '../common/r300_zb_depth_discovery_cell.c',
+          '../common/r300_zb_depth_state.c',
+          '../common/r300_zb_depth_surface.c',
+          '../common/r300_zb_depth_layout.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : [idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r3v-native-zb-depth-discovery-arming-runner',
+    prog_python,
+    args : [
+      files('tests/r3v_native_zb_depth_discovery_arming_runner_check.py'),
+      r3v_native_zb_depth_discovery_arming_runner,
+      r3v_native_zb_depth_control_arming_runner,
+      r3v_native_attended_zb_depth_discovery,
+    ],
+    depends : [r3v_native_attended_zb_depth_discovery],
     suite : ['r3v'],
   )
 

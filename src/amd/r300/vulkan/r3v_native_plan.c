@@ -52,6 +52,7 @@ static const struct {
    {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC,
     "r2vb_gpu_producer_public"},
    {R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL, "zb_depth_control"},
+   {R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY, "zb_depth_discovery"},
    {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED,
     "r2vb_gpu_producer_fetched"},
    {R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER,

@@ -22,6 +22,8 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_zb_depth_discovery_cell.h"
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
@@ -3073,6 +3075,247 @@ r3v_native_record_zb_depth_control_surface(
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_zb_depth_control_release(&cell);
+
+   return VK_SUCCESS;
+}
+
+const struct r300_zb_depth_discovery_scenario *
+r3v_native_zb_discovery_scenario_descriptor(
+   enum r3v_native_zb_discovery_scenario selection)
+{
+   /* No default arm, so -Wswitch reports a selector added to the
+    * catalogue without a scenario beside it.  A value cast in from
+    * outside the enumeration reaches the return below. */
+   switch (selection) {
+#define R3V_NATIVE_ZB_DISCOVERY_SCENARIO_CASE(suffix, descriptor)             \
+   case R3V_NATIVE_ZB_DISCOVERY_SCENARIO_##suffix:                            \
+      return &r300_zb_depth_discovery_##descriptor;
+      R3V_NATIVE_ZB_DISCOVERY_SCENARIOS(R3V_NATIVE_ZB_DISCOVERY_SCENARIO_CASE)
+#undef R3V_NATIVE_ZB_DISCOVERY_SCENARIO_CASE
+   }
+   return NULL;
+}
+
+bool
+r3v_native_zb_discovery_arm_state(enum r3v_native_zb_discovery_arm arm,
+                                  uint32_t *depth_function, bool *depth_write)
+{
+   switch (arm) {
+   case R3V_NATIVE_ZB_DISCOVERY_ARM_MEASURE:
+      *depth_function = R300_ZS_ALWAYS;
+      *depth_write = true;
+      return true;
+   case R3V_NATIVE_ZB_DISCOVERY_ARM_WRITES_DISABLED:
+      *depth_function = R300_ZS_ALWAYS;
+      *depth_write = false;
+      return true;
+   case R3V_NATIVE_ZB_DISCOVERY_ARM_NEVER:
+      *depth_function = R300_ZS_NEVER;
+      *depth_write = true;
+      return true;
+   }
+   return false;
+}
+
+/* Initializes the discovery depth allocation through the common
+ * constructor and publishes it for the unsnooped GART. */
+static VkResult
+zb_discovery_fill_depth(struct r3v_native_device *device,
+                        struct r3v_native_memory *memory,
+                        const struct r300_zb_depth_discovery_scenario *scenario,
+                        const struct r300_zb_depth_layout *layout)
+{
+   bool owns_map = memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: discovery depth memory is not "
+                       "CPU-mappable");
+   }
+
+   /* The one construction the arming runner hashes and the harness
+    * compares against, so the image an operator armed on is the image
+    * that reaches the device. */
+   if (r300_zb_depth_discovery_fill_initial(scenario, layout,
+                                            memory->map) != 0) {
+      if (owns_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+         memory->map = NULL;
+      }
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery scenario %s builds no initial "
+                       "image", scenario->name);
+   }
+
+   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+      memory->map = NULL;
+   }
+   return VK_SUCCESS;
+}
+
+#define R3V_ZB_DISCOVERY_VERTEX_BYTES \
+   (R300_ZB_DISCOVERY_VERTEX_DWORDS * sizeof(uint32_t))
+
+VkResult
+r3v_native_record_zb_depth_discovery(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r3v_native_zb_discovery_scenario scenario_selection,
+   enum r3v_native_zb_discovery_arm arm)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, depth_memory, depthMemory);
+
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL ||
+       depth_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   const struct r300_zb_depth_discovery_scenario *scenario =
+      r3v_native_zb_discovery_scenario_descriptor(scenario_selection);
+   if (scenario == NULL) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery names no scenario for selector "
+                       "%d", (int)scenario_selection);
+   }
+
+   uint32_t depth_function = 0;
+   bool depth_write = false;
+   if (!r3v_native_zb_discovery_arm_state(arm, &depth_function,
+                                          &depth_write)) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery names no arm for selector %d",
+                       (int)arm);
+   }
+
+   /* The layout the fill and the observation both read.  It is computed
+    * once here from the scenario, so the bytes the host initializes and
+    * the bytes an oracle classifies come from one calculation. */
+   struct r300_zb_depth_layout layout;
+   if (r300_zb_depth_discovery_layout(scenario, &layout) != 0) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery scenario %s resolves no "
+                       "layout", scenario->name);
+   }
+
+   /* The depth allocation is the campaign constant, not the surface's
+    * parser footprint: it carries both guards and holds one size across
+    * every tiling rung.  The scenario check already proved the layout
+    * fits inside it. */
+   if (vertex_memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
+       color_memory->bo.size != R300_ZB_DISCOVERY_COLOR_BYTES ||
+       depth_memory->bo.size != scenario->allocation_bytes) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery on %s needs exactly %u vertex, "
+                       "%u color, and %llu depth bytes", scenario->name,
+                       R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION,
+                       R300_ZB_DISCOVERY_COLOR_BYTES,
+                       (unsigned long long)scenario->allocation_bytes);
+   }
+
+   /* Three distinct GEM objects: radeon_drm_vk_reloc_list_add folds
+    * duplicate handles into one relocation slot, which would leave a
+    * slot payload outside the relocation chunk. */
+   if (vertex_memory->bo.handle == color_memory->bo.handle ||
+       vertex_memory->bo.handle == depth_memory->bo.handle ||
+       color_memory->bo.handle == depth_memory->bo.handle) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery roles require three distinct "
+                       "GEM objects");
+   }
+
+   bool owns_map = vertex_memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &vertex_memory->bo,
+                            &vertex_memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: discovery vertex memory is not "
+                       "CPU-mappable");
+   }
+   memcpy(vertex_memory->map, r300_zb_depth_discovery_vertices,
+          R3V_ZB_DISCOVERY_VERTEX_BYTES);
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                               R3V_ZB_DISCOVERY_VERTEX_BYTES);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                             vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+
+   /* The shared unit fill names the role in its diagnostics, and a
+    * hardware run's log is the only record of a failure, so the
+    * discovery cell names itself rather than reporting a depth-control
+    * fault. */
+   VkResult fill_result = zb_depth_control_fill_units(
+      device, color_memory, R300_TRIANGLE_COLOR_SENTINEL, 4u,
+      "discovery color");
+   if (fill_result != VK_SUCCESS)
+      return fill_result;
+   fill_result =
+      zb_discovery_fill_depth(device, depth_memory, scenario, &layout);
+   if (fill_result != VK_SUCCESS)
+      return fill_result;
+
+   struct r300_zb_depth_discovery_ib cell;
+   int emit_result = r300_zb_depth_discovery_reference_emit(
+      scenario, depth_function, depth_write, &cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+   if (r300_zb_depth_discovery_validate_reloc_sites(&cell) != 0) {
+      r300_zb_depth_discovery_release(&cell);
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+
+   struct r3v_native_bo_reference *references =
+      calloc(R300_ZB_DISCOVERY_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_zb_depth_discovery_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[R300_ZB_DISCOVERY_SLOT_VERTEX] =
+      (struct r3v_native_bo_reference){
+         .handle = vertex_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = 0,
+         .memory = vertex_memory,
+      };
+   references[R300_ZB_DISCOVERY_SLOT_COLOR] =
+      (struct r3v_native_bo_reference){
+         .handle = color_memory->bo.handle,
+         .read_domains = 0,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color_memory,
+      };
+   /* The depth surface crosses both directions: the host initialization
+    * is the state the observation reads back against, and the device
+    * writes the marker, so the relocation carries the GTT domain on both
+    * sides. */
+   references[R300_ZB_DISCOVERY_SLOT_DEPTH] =
+      (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+
+   r3v_native_cmd_buffer_install_ib(cmd_buffer,
+                                    R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    R300_ZB_DISCOVERY_SLOT_COUNT);
+   /* The declaration travels with the recording, so the queue judges the
+    * experiment this recorder admitted. */
+   cmd_buffer->zb_discovery_scenario = scenario_selection;
+   cmd_buffer->zb_discovery_arm = arm;
+   /* install_ib took ownership of cell.ib; only the descriptor resets. */
+   cell.ib = NULL;
+   r300_zb_depth_discovery_release(&cell);
 
    return VK_SUCCESS;
 }

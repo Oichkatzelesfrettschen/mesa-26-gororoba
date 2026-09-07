@@ -16,6 +16,7 @@
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_zb_depth_discovery_cell.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
@@ -470,6 +471,67 @@ r3v_native_cell_geometry_unfrozen(
              depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
              depth->memory == NULL ||
              depth->memory->bo.size != depth_bytes;
+   }
+   case R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY: {
+      /* The discovery cell binds the same three roles as the depth
+       * control, with the depth allocation held at the campaign constant
+       * rather than at the surface's parser footprint: it carries a
+       * guard on each side, and it does not move between tiling rungs.
+       */
+      if (cmd_buffer->reference_count != R300_ZB_DISCOVERY_SLOT_COUNT)
+         return true;
+      const struct r300_zb_depth_discovery_scenario *scenario =
+         r3v_native_zb_discovery_scenario_descriptor(
+            cmd_buffer->zb_discovery_scenario);
+      /* A selector cast in from outside the enumeration names no
+       * scenario, and the recorder refuses one, so a command buffer
+       * carrying it was altered after recording. */
+      if (scenario == NULL)
+         return true;
+      if (r300_zb_depth_discovery_scenario_check(scenario) != 0)
+         return true;
+
+      const struct r3v_native_bo_reference *vertex =
+         &cmd_buffer->references[R300_ZB_DISCOVERY_SLOT_VERTEX];
+      const struct r3v_native_bo_reference *color =
+         &cmd_buffer->references[R300_ZB_DISCOVERY_SLOT_COLOR];
+      const struct r3v_native_bo_reference *depth =
+         &cmd_buffer->references[R300_ZB_DISCOVERY_SLOT_DEPTH];
+      if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          vertex->write_domain != 0 || vertex->memory == NULL ||
+          vertex->memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION)
+         return true;
+      if (color->read_domains != 0 ||
+          color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          color->memory == NULL ||
+          color->memory->bo.size != R300_ZB_DISCOVERY_COLOR_BYTES)
+         return true;
+      if (depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          depth->memory == NULL ||
+          depth->memory->bo.size != scenario->allocation_bytes)
+         return true;
+
+      /* The recorded declaration and the recorded stream must name one
+       * experiment.  r300_zb_depth_discovery_check_state holds the
+       * stream to exactly one ZB_FORMAT write carrying the scenario's
+       * format, to the arm's comparison and write enable, to
+       * compression and ZB_CB_CLEAR clear with 4x4 plane equations, and
+       * to a scissor at the declared pixel, so two records of one
+       * experiment agree by check rather than by the recorder having
+       * set them in the right order. */
+      uint32_t depth_function = 0;
+      bool depth_write = false;
+      if (!r3v_native_zb_discovery_arm_state(cmd_buffer->zb_discovery_arm,
+                                             &depth_function, &depth_write))
+         return true;
+      const struct r300_zb_depth_discovery_params declared = {
+         .scenario = scenario,
+         .depth_function = depth_function,
+         .depth_write = depth_write,
+      };
+      return r300_zb_depth_discovery_check_state(
+                &declared, cmd_buffer->ib, cmd_buffer->ib_size_dwords) != 0;
    }
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:

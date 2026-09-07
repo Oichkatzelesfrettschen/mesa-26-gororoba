@@ -91,6 +91,16 @@ enum r3v_native_cell_kind {
     * with the depth surface's read-write GTT relocation.
     */
    R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL,
+   /* The depth address-discovery cell: one covering primitive confined
+    * by the scissor to a single logical pixel, over a uniformly
+    * initialized depth surface whose physical byte for that pixel is
+    * what the run establishes.  The geometry contract is the same 64x64
+    * target and three-slot reference layout as the depth control, with
+    * a depth allocation held constant across tiling modes at
+    * R300_ZB_DISCOVERY_ALLOCATION_BYTES so the transport does not move
+    * between rungs.
+    */
+   R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY,
    /* The fetched GPU-producer route: the fetched producer composed ahead
     * of the recorded consumer triangle, the producer reading the
     * application's vertex BO and a driver-owned slot BO through the
