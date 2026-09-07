@@ -14,6 +14,8 @@
 #ifndef R300_ZMASK_LAYOUT_H
 #define R300_ZMASK_LAYOUT_H
 
+#include "r300_capabilities.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -68,13 +70,43 @@ struct r300_zmask_layout {
    bool zcomp8x8;
 };
 
-/* Computes the layout.  pipes outside [1, R300_ZMASK_MAX_PIPES] or a
- * zero height is -EINVAL; a level ZMASK never covers -- a non-depth
+/* Computes the layout at the largest compression block the level admits:
+ * R300_ZCOMP_8X8 on a macrotiled single-sample level on a capable part,
+ * and R300_ZCOMP_4X4 otherwise.  pipes outside [1, R300_ZMASK_MAX_PIPES]
+ * or a zero height is -EINVAL; a level ZMASK never covers -- a non-depth
  * format, a format other than 32 bits per pixel, or an untiled level --
  * yields a zeroed layout and returns 0.
  */
 int r300_zmask_layout_compute(const struct r300_zmask_layout_params *params,
                               struct r300_zmask_layout *out);
+
+/* The layout at a requested compression block.  R300_ZCOMP_4X4 pins the
+ * smaller block whatever the level would have taken, so the metadata
+ * dword count, the ZMASK pitch, and the GB_Z_PEQ_CONFIG value a stream
+ * programs all follow one block size; R300_ZCOMP_8X8 asks for the larger
+ * one and yields the level's own decision, which falls back to 4x4 on a
+ * level that cannot take 8x8.  A block outside the enumeration is
+ * -EINVAL.
+ *
+ * Halving the block in each dimension quadruples the dwords a level
+ * consumes, so a level that fits the ZMASK RAM at 8x8 can report
+ * fits_zmask_ram false here.  That is the fit the pinned block actually
+ * has, not a regression in the level.
+ *
+ * The compression-disabled configuration is what pins 4x4.  The R5xx
+ * acceleration guide requires 4x4 plane equations while compression is
+ * disabled, so the GA and the ZB agree on the plane-equation format.
+ * In-tree r300_update_hyperz sets Z_PEQ_SIZE_8_8 from
+ * tex.zcomp8x8[level] whenever HyperZ is enabled, before it decides
+ * which enables ZB_BW_CNTL carries, so the Gallium path and the guide
+ * describe the compression-disabled case differently.  The guide is the
+ * higher-ranked authority and decides the value; no retained silicon
+ * observation of either configuration exists, and the disagreement is
+ * recorded rather than settled here.
+ */
+int r300_zmask_layout_compute_at_block(
+   const struct r300_zmask_layout_params *params,
+   enum r300_zmask_compression block, struct r300_zmask_layout *out);
 
 /* The per-pipe ZMASK RAM budget r300_parse_chipset assigns a family:
  * R300_ZMASK_SIZE_PER_PIPE on R300, R350 and R4xx and later, and

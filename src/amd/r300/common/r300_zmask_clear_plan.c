@@ -35,13 +35,13 @@ emit_bind_and_clear(struct r300_pm4_builder *b,
    r300_pm4_reg(b, R300_ZB_ZMASK_WRINDEX, 0u);
    r300_pm4_reg(b, R300_ZB_ZMASK_RDINDEX, 0u);
 
-   /* The ZMASK tile size the layout decided.  r300_update_hyperz sets
-    * Z_PEQ_SIZE_8_8 from the level's zcomp8x8 flag before the ZB_BW_CNTL
-    * enables, and the tile size scales the RAM the surface consumes: the
-    * 64x64 reference level clears four dwords at 8x8 and sixteen at 4x4,
-    * so a retained setting from a predecessor describes a different
-    * surface than the one the clear covers.  The 4x4 case writes its
-    * value explicitly rather than leaving the register alone.
+   /* The plane-equation format the block size names.  It and the
+    * 3D_CLEAR_ZMASK payload below are read off one layout, so the
+    * register and the coverage describe one surface: the 64x64 reference
+    * level clears four dwords at 8x8 and sixteen at 4x4, and the builder
+    * refuses a layout whose block disagrees with the stage before
+    * reaching here.  The 4x4 case writes its value explicitly rather
+    * than leaving the register at whatever a predecessor left.
     */
    r300_pm4_reg(b, R300_GB_Z_PEQ_CONFIG,
                 layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
@@ -79,6 +79,12 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
       if (!layout->fits_zmask_ram || layout->dwords == 0u ||
           layout->stride_in_pixels == 0u)
          return -EINVAL;
+      /* The block the layout was computed at is the block this stage
+       * programs.  A layout resolved at the other one is refused rather
+       * than emitted at a coverage its register contradicts. */
+      if (layout->zcomp8x8 !=
+          (r300_zmask_clear_stage_block(stage) == R300_ZCOMP_8X8))
+         return -EINVAL;
       out->requires_hyperz_ownership = true;
       out->writes_hyperz_registers = true;
       /* SC_HYPERZ stays unwritten: the scan converter's HiZ bit belongs
@@ -99,6 +105,16 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
       return err;
    }
    return 0;
+}
+
+enum r300_zmask_compression
+r300_zmask_clear_stage_block(enum r300_zmask_clear_stage stage)
+{
+   /* Neither binding stage sets RD_COMP_ENABLE or WR_COMP_ENABLE, so
+    * depth reads and writes stay uncompressed through the whole ladder,
+    * and the two non-binding stages establish no ZMASK state at all. */
+   (void)stage;
+   return R300_ZCOMP_4X4;
 }
 
 const char *

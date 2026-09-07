@@ -53,11 +53,35 @@ struct r300_zmask_clear_plan {
    bool writes_hyperz_registers;
 };
 
+/* The compression block a stage's configuration admits.  Neither ZMASK
+ * stage sets RD_COMP_ENABLE or WR_COMP_ENABLE in ZB_BW_CNTL: the bind
+ * and clear stage writes zero and the fast fill stage writes
+ * FAST_FILL_ENABLE alone, so depth reads and writes stay uncompressed
+ * across the whole ladder and every stage answers R300_ZCOMP_4X4, the
+ * block the R5xx acceleration guide requires while compression is
+ * disabled.  A stage that enables compression is what R300_ZCOMP_8X8
+ * waits for, and this ladder carries none.
+ */
+enum r300_zmask_compression r300_zmask_clear_stage_block(
+   enum r300_zmask_clear_stage stage);
+
 /* Builds the append for one stage.  A stage that binds ZMASK refuses
  * with -EINVAL when the layout does not fit, matching
  * r300_fast_zclear_allowed, which returns false on a zero ZMASK dword
  * count; a pitch and a clear count of zero would otherwise describe a
  * bind of nothing.  An unknown stage is -EINVAL.
+ *
+ * A binding stage additionally refuses a layout whose block size
+ * disagrees with r300_zmask_clear_stage_block.  GB_Z_PEQ_CONFIG and the
+ * 3D_CLEAR_ZMASK dword count both follow the block size, so a layout
+ * computed at one block paired with a stage that programs the other
+ * writes a plane-equation format the clear coverage contradicts: the
+ * 64x64 reference level clears four dwords at 8x8 and sixteen at 4x4,
+ * and a 4x4 register over an 8x8-sized clear leaves three quarters of
+ * the metadata the surface needs untouched.  Resolving the layout
+ * through r300_zmask_layout_compute_at_block with the stage's own block
+ * makes the pair agree by construction, and this refusal holds the two
+ * together for a caller that assembles them another way.
  */
 int r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
                                 const struct r300_zmask_layout *layout,
