@@ -403,8 +403,24 @@ r300_zb_depth_discovery_color_observe(
       }
    }
 
+   /* Everything the allocation holds past the render extent: the
+    * padding band inside each rendered row's pitch, and every row the
+    * allocation carries beyond the extent.  The scissor confines the
+    * write to one pixel, so any change out here is a write past the
+    * target. */
+   const uint64_t total_pixels = size_bytes / 4u;
+   for (uint64_t i = 0; i < total_pixels; i++) {
+      const uint64_t x = i % pitch_pixels;
+      const uint64_t y = i / pitch_pixels;
+      if (x < width && y < height)
+         continue;
+      out->beyond_samples++;
+      if (pixels[i] != sentinel)
+         out->beyond_changed++;
+   }
+
    out->exact = out->inside_samples > 0u &&
                 out->inside_colored == out->inside_samples &&
-                out->outside_colored == 0u;
+                out->outside_colored == 0u && out->beyond_changed == 0u;
    out->judged = true;
 }

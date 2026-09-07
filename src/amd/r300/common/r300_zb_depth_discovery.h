@@ -268,7 +268,15 @@ struct r300_zb_discovery_color_verdict {
     * many carried the draw color.  A correct run reports zero. */
    uint32_t outside_samples;
    uint32_t outside_colored;
-   /* Every declared pixel colored and no other pixel touched. */
+   /* Pixels of the allocation outside the render extent -- the padding
+    * band inside each row's pitch and every row past the extent -- and
+    * how many left the sentinel.  A correct run reports zero: the
+    * scissor confines the write to one pixel, so a changed byte out here
+    * is a write past the target rather than a wrong pixel inside it. */
+   uint32_t beyond_samples;
+   uint32_t beyond_changed;
+   /* Every declared pixel colored, no other in-extent pixel touched, and
+    * nothing beyond the extent changed. */
    bool exact;
 };
 

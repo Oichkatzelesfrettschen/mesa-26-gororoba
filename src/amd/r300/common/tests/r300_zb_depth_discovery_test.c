@@ -542,6 +542,21 @@ test_color_oracle(void)
    assert(v.judged && v.exact);
    assert(v.inside_samples == 1u && v.inside_colored == 1u);
    assert(v.outside_samples == width * height - 1u && v.outside_colored == 0u);
+   /* The allocation carries one row past the extent and no sub-pitch
+    * padding, since the pitch equals the width. */
+   assert(v.beyond_samples == pitch && v.beyond_changed == 0u);
+
+   /* A write into the row past the render extent: every in-extent
+    * verdict still holds, and the run is not exact. */
+   for (uint64_t i = 0; i < bytes / 4u; i++)
+      pixels[i] = sentinel;
+   pixels[21u * pitch + 37u] = draw;
+   pixels[height * pitch] = draw;
+   r300_zb_depth_discovery_color_observe(pixels, bytes, pitch, width, height,
+                                         37u, 21u, 1u, 1u, sentinel, draw, &v);
+   assert(v.judged && !v.exact);
+   assert(v.inside_colored == 1u && v.outside_colored == 0u);
+   assert(v.beyond_changed == 1u);
 
    /* The device colored a different pixel.  The expectation comes from
     * the declaration, so this fails rather than relocating itself. */
