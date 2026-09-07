@@ -32,6 +32,7 @@
 #include <radeon_drm.h>
 #include <vulkan/vulkan.h>
 
+#include "amd/r300/common/r300_first_draw_state.h"
 #include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
@@ -593,22 +594,42 @@ main(int argc, char **argv)
             }
          }
       } else {
-         /* A second ZB_FORMAT write appended after the stream the
-          * recorder installed.  The one-write grammar is what makes the
-          * effective format unambiguous, and the state check refuses a
-          * stream carrying two rather than reading its first or its
-          * last. */
+         /* A second ZB_FORMAT write inserted ahead of the draw.  The
+          * one-write grammar is what makes the effective format
+          * unambiguous, and the check reads the state standing when the
+          * draw is reached, so the alteration has to land where the draw
+          * would execute under it.  The same write placed after the draw
+          * is admitted, and the common test carries that positive
+          * half. */
+         uint32_t draw_index = 0;
+         for (uint32_t i = 0; i < recorded->ib_size_dwords;) {
+            const uint32_t header = recorded->ib[i];
+            if (r300_first_draw_is_draw_packet(header)) {
+               draw_index = i;
+               break;
+            }
+            if ((header >> 30) == 2u) {
+               i += 1u;
+               continue;
+            }
+            i += ((header >> 16) & 0x3fffu) + 2u;
+         }
+         CHECK(draw_index != 0, "the recorded stream carries a draw packet");
          uint32_t *extended =
             realloc(recorded->ib,
                     (recorded->ib_size_dwords + 2u) * sizeof(uint32_t));
          CHECK(extended != NULL, "extended stream allocation");
-         if (extended != NULL) {
-            extended[recorded->ib_size_dwords] =
+         if (extended != NULL && draw_index != 0) {
+            memmove(extended + draw_index + 2u, extended + draw_index,
+                    (recorded->ib_size_dwords - draw_index) *
+                       sizeof(uint32_t));
+            extended[draw_index] =
                (0u << 30) | ((R300_ZB_FORMAT >> 2) & 0x1fffu);
-            extended[recorded->ib_size_dwords + 1u] =
-               scenario->surface->depth_format;
+            extended[draw_index + 1u] = scenario->surface->depth_format;
             recorded->ib = extended;
             recorded->ib_size_dwords += 2u;
+         } else if (extended != NULL) {
+            recorded->ib = extended;
          }
       }
    }

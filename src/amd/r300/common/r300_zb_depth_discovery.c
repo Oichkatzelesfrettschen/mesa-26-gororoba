@@ -418,7 +418,6 @@ r300_zb_depth_discovery_color_observe(
    for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
          const uint32_t pixel = pixels[(uint64_t)y * pitch_pixels + x];
-         const bool colored = pixel == draw_color;
          /* Membership comes from the declared rectangle alone.  Reading
           * the emitted scissor back and calling its region correct
           * would check the emitter against itself. */
@@ -426,11 +425,17 @@ r300_zb_depth_discovery_color_observe(
                              y >= rect_y && y - rect_y < rect_height;
          if (inside) {
             out->inside_samples++;
-            if (colored)
+            if (pixel == draw_color)
                out->inside_colored++;
          } else {
+            /* An outside pixel is judged against the sentinel it was
+             * filled with, not against the draw color.  A pixel the
+             * device moved to some third value carries no draw color and
+             * would leave a draw-color count at zero, which would read
+             * as containment while the scissor had in fact admitted
+             * it. */
             out->outside_samples++;
-            if (colored)
+            if (pixel != sentinel)
                out->outside_colored++;
          }
       }

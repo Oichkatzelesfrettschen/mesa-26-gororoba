@@ -188,19 +188,34 @@ struct r300_zb_depth_discovery_state {
    uint32_t sc_cliprect_tl;
    uint32_t sc_cliprect_br;
    uint32_t sc_screendoor;
+   /* A draw packet ended the walk.  The state a draw executes under is
+    * the state standing when the draw is reached, so the walk stops
+    * there and a stream carrying no draw reports this clear -- which
+    * the checker refuses, since a cell that never draws executes no
+    * state at all. */
+   bool draw_reached;
 };
 
-/* Replays the stream's PACKET0 writes and reports the last value each
- * register received.  Returns 0, or -EINVAL for a null argument or a
- * malformed packet.  A register the stream never writes reports zero
- * with its write count, where one exists, left at zero. */
+/* Replays the stream's PACKET0 writes up to the first draw packet and
+ * reports the value each register held when that draw was reached.  A
+ * write placed after the draw restores a value the draw never executed
+ * under, so the walk stops rather than reporting the stream's terminal
+ * state.
+ *
+ * RADEON_ONE_REG_WR holds the base register across every payload dword
+ * instead of advancing it, and the walk honors that: a repeated-register
+ * run writes one register count times.
+ *
+ * Returns 0, or -EINVAL for a null argument, a type-1 packet, or a
+ * payload that runs past the stream.  A register the stream never writes
+ * reports zero with its write count, where one exists, left at zero. */
 int r300_zb_depth_discovery_read_state(
    const uint32_t *ib, uint32_t dwords,
    struct r300_zb_depth_discovery_state *out);
 
 /* Holds a stream to the state a discovery run requires: exactly one
- * ZB_FORMAT write carrying the scenario's format, Z_ENABLE set and
- * STENCIL_ENABLE clear,
+ * ZB_FORMAT write carrying the scenario's format, a draw reached,
+ * Z_ENABLE set and STENCIL_ENABLE clear,
  * Z_WRITE_ENABLE matching depth_write, the declared comparison,
  * ZB_BW_CNTL zero so HiZ, fast fill, read and write compression, and
  * ZB_CB_CLEAR are all clear, GB_Z_PEQ_CONFIG zero so the plane equations

@@ -369,6 +369,49 @@ r300_zb_depth_discovery_validate_reloc_sites(
    return seen == (1u << R300_ZB_DISCOVERY_SLOT_COUNT) - 1u ? 0 : -EINVAL;
 }
 
+/* Records one register write into the state, in stream order, so the
+ * last write before the boundary is the value the read reports. */
+static void
+apply_write(struct r300_zb_depth_discovery_state *out, uint32_t reg,
+            uint32_t value)
+{
+   switch (reg) {
+   case R300_ZB_FORMAT:
+      out->zb_format = value;
+      out->zb_format_writes++;
+      break;
+   case R300_ZB_CNTL:
+      out->zb_cntl = value;
+      break;
+   case R300_ZB_ZSTENCILCNTL:
+      out->zb_zstencilcntl = value;
+      break;
+   case R300_ZB_BW_CNTL:
+      out->zb_bw_cntl = value;
+      break;
+   case R300_GB_Z_PEQ_CONFIG:
+      out->gb_z_peq_config = value;
+      break;
+   case R300_SC_SCISSORS_TL:
+      out->sc_scissors_tl = value;
+      break;
+   case R300_SC_SCISSORS_BR:
+      out->sc_scissors_br = value;
+      break;
+   case R300_SC_CLIPRECT_TL_0:
+      out->sc_cliprect_tl = value;
+      break;
+   case R300_SC_CLIPRECT_BR_0:
+      out->sc_cliprect_br = value;
+      break;
+   case R300_SC_SCREENDOOR:
+      out->sc_screendoor = value;
+      break;
+   default:
+      break;
+   }
+}
+
 int
 r300_zb_depth_discovery_read_state(const uint32_t *ib, uint32_t dwords,
                                    struct r300_zb_depth_discovery_state *out)
@@ -382,60 +425,44 @@ r300_zb_depth_discovery_read_state(const uint32_t *ib, uint32_t dwords,
    for (uint32_t i = 0; i < dwords;) {
       const uint32_t header = ib[i];
       const uint32_t type = header >> 30;
-      const uint32_t count = ((header >> 16) & 0x3fffu) + 1u;
-
-      if (type == 0) {
-         const uint32_t reg = (header & 0x1fffu) << 2;
-         if (count > dwords - i - 1u)
-            return -EINVAL;
-         for (uint32_t j = 0; j < count; j++) {
-            const uint32_t value = ib[i + 1u + j];
-            switch (reg + 4u * j) {
-            case R300_ZB_FORMAT:
-               out->zb_format = value;
-               out->zb_format_writes++;
-               break;
-            case R300_ZB_CNTL:
-               out->zb_cntl = value;
-               break;
-            case R300_ZB_ZSTENCILCNTL:
-               out->zb_zstencilcntl = value;
-               break;
-            case R300_ZB_BW_CNTL:
-               out->zb_bw_cntl = value;
-               break;
-            case R300_GB_Z_PEQ_CONFIG:
-               out->gb_z_peq_config = value;
-               break;
-            case R300_SC_SCISSORS_TL:
-               out->sc_scissors_tl = value;
-               break;
-            case R300_SC_SCISSORS_BR:
-               out->sc_scissors_br = value;
-               break;
-            case R300_SC_CLIPRECT_TL_0:
-               out->sc_cliprect_tl = value;
-               break;
-            case R300_SC_CLIPRECT_BR_0:
-               out->sc_cliprect_br = value;
-               break;
-            case R300_SC_SCREENDOOR:
-               out->sc_screendoor = value;
-               break;
-            default:
-               break;
-            }
-         }
-         i += count + 1u;
-      } else if (type == 3) {
-         if (count > dwords - i - 1u)
-            return -EINVAL;
-         i += count + 1u;
-      } else if (type == 2) {
-         i += 1u;
-      } else {
+      /* A type-1 packet has no R300 encoding, so a stream carrying one
+       * is malformed rather than something to step over. */
+      if (type == 1u)
          return -EINVAL;
+
+      if (type == 2u) {
+         i += 1u;
+         continue;
       }
+
+      const uint32_t count = ((header >> 16) & 0x3fffu) + 1u;
+      /* The payload lies inside the stream, in a form that cannot
+       * wrap. */
+      if (count > dwords - 1u - i)
+         return -EINVAL;
+
+      if (type == 0u) {
+         const uint32_t base = (header & 0x1fffu) << 2;
+         /* RADEON_ONE_REG_WR holds the base across every payload dword
+          * instead of advancing it, so a repeated-register run writes
+          * one register count times.  Ignoring the flag would assign
+          * later payloads to registers the stream never named and keep
+          * a stale value for the one it did.  The same decode appears in
+          * r300_zb_hyperz_admission.c and r300_fragment_binary.c. */
+         const bool one_reg = (header & RADEON_ONE_REG_WR) != 0u;
+         for (uint32_t j = 0; j < count; j++)
+            apply_write(out, one_reg ? base : base + 4u * j,
+                        ib[i + 1u + j]);
+      } else if (r300_first_draw_is_draw_packet(header)) {
+         /* The state a draw executes under is the state standing when
+          * the draw is reached, not the state the stream ends in.  A
+          * write after the draw restores a value the draw never saw, so
+          * the walk stops at the first draw boundary and the caller
+          * judges what that draw executed under. */
+         out->draw_reached = true;
+         return 0;
+      }
+      i += count + 1u;
    }
    return 0;
 }
@@ -467,8 +494,15 @@ r300_zb_depth_discovery_check_state(
    if (rc != 0)
       return rc;
 
-   /* One ZB_FORMAT write, so the format the parser reads and the format
-    * the last write leaves are the same dword by construction. */
+   /* The walk reached a draw.  A stream that establishes state and never
+    * draws executes none of it, so its register values describe nothing
+    * the hardware acted on. */
+   if (!state.draw_reached)
+      return -EINVAL;
+
+   /* One ZB_FORMAT write before the draw, so the format the parser reads
+    * and the format the draw executes under are the same dword by
+    * construction. */
    if (state.zb_format_writes != 1u)
       return -EINVAL;
    if (state.zb_format != params->scenario->surface->depth_format)

@@ -664,6 +664,19 @@ test_color_oracle(void)
    assert(v.judged && !v.exact);
    assert(v.inside_colored == 0u && v.outside_colored == 1u);
 
+   /* A pixel the device moved to some third value, neither the sentinel
+    * nor the draw color.  Counting outside pixels against the draw color
+    * would leave this uncounted and the run exact, so the count is
+    * against the sentinel the host filled. */
+   for (uint64_t i = 0; i < bytes / 4u; i++)
+      pixels[i] = sentinel;
+   pixels[21u * pitch + 37u] = draw;
+   pixels[30u * pitch + 12u] = 0xdeadbeefu;
+   r300_zb_depth_discovery_color_observe(pixels, bytes, pitch, width, height,
+                                         37u, 21u, 1u, 1u, sentinel, draw, &v);
+   assert(v.judged && !v.exact);
+   assert(v.inside_colored == 1u && v.outside_colored == 1u);
+
    /* Nothing colored at all. */
    for (uint64_t i = 0; i < bytes / 4u; i++)
       pixels[i] = sentinel;

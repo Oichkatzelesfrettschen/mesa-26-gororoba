@@ -281,8 +281,12 @@ struct r300_zb_discovery_color_verdict {
     * draw color. */
    uint32_t inside_samples;
    uint32_t inside_colored;
-   /* Pixels inside the render extent and outside the rectangle, and how
-    * many carried the draw color.  A correct run reports zero. */
+   /* Pixels inside the render extent and outside the declared
+    * rectangle, and how many left the sentinel they were filled with.
+    * A correct run reports zero.  The count is against the sentinel
+    * rather than against the draw color, so a pixel the device moved to
+    * some third value is a containment failure rather than an
+    * uncounted one. */
    uint32_t outside_samples;
    uint32_t outside_colored;
    /* Pixels of the allocation outside the render extent -- the padding

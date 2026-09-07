@@ -197,7 +197,7 @@ test_state_checker_refusals(void)
 
    uint32_t stream[R300_ZB_DISCOVERY_MAX_DWORDS];
    const uint32_t dwords = ib.ib_size_dwords;
-   assert(dwords <= R300_ZB_DISCOVERY_MAX_DWORDS);
+   assert(dwords + 3u <= R300_ZB_DISCOVERY_MAX_DWORDS);
 
    /* Finds the payload dword of the single-register PACKET0 write to
     * reg, so a mutation names a register rather than an offset. */
@@ -235,16 +235,89 @@ test_state_checker_refusals(void)
    stream[index_of[1]] = R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8;
    assert(r300_zb_depth_discovery_check_state(&good, stream, dwords) != 0);
 
-   /* A second ZB_FORMAT write.  The one-write grammar is what makes the
-    * effective format unambiguous, so a stream carrying two is refused
-    * rather than read as its first or its last. */
+   /* The dword index of the draw packet, which is where the state the
+    * hardware executes under stops being written. */
+   uint32_t draw_index = UINT32_MAX;
+   for (uint32_t i = 0; i < dwords;) {
+      const uint32_t header = ib.ib[i];
+      if (r300_first_draw_is_draw_packet(header)) {
+         draw_index = i;
+         break;
+      }
+      if ((header >> 30) == 2u) {
+         i += 1u;
+         continue;
+      }
+      i += ((header >> 16) & 0x3fffu) + 2u;
+   }
+   assert(draw_index != UINT32_MAX);
+
+   /* A second ZB_FORMAT write ahead of the draw.  The one-write grammar
+    * is what makes the effective format unambiguous, so a stream
+    * carrying two before the draw is refused rather than read as its
+    * first or its last. */
    uint32_t extended[R300_ZB_DISCOVERY_MAX_DWORDS + 2u];
+   memcpy(extended, ib.ib, draw_index * sizeof(uint32_t));
+   extended[draw_index] = (0u << 30) | ((R300_ZB_FORMAT >> 2) & 0x1fffu);
+   extended[draw_index + 1u] =
+      r300_zb_depth_discovery_z24_linear.surface->depth_format;
+   memcpy(extended + draw_index + 2u, ib.ib + draw_index,
+          (dwords - draw_index) * sizeof(uint32_t));
+   assert(r300_zb_depth_discovery_check_state(&good, extended,
+                                              dwords + 2u) != 0);
+
+   /* The same write placed after the draw is admitted, because the draw
+    * executed under the state standing when it was reached.  This is the
+    * positive half of the draw-boundary rule: without it, a checker that
+    * simply refused every second write would pass the arm above for a
+    * reason that has nothing to do with when the write lands. */
    memcpy(extended, ib.ib, dwords * sizeof(uint32_t));
    extended[dwords] = (0u << 30) | ((R300_ZB_FORMAT >> 2) & 0x1fffu);
    extended[dwords + 1u] =
       r300_zb_depth_discovery_z24_linear.surface->depth_format;
    assert(r300_zb_depth_discovery_check_state(&good, extended,
+                                              dwords + 2u) == 0);
+
+   /* A compression enable set before the draw and cleared after it.  The
+    * terminal state is the admitted zero and the draw executed under
+    * ZB_CB_CLEAR, which is exactly what a terminal-state reader would
+    * miss. */
+   memcpy(extended, ib.ib, draw_index * sizeof(uint32_t));
+   extended[draw_index] = (0u << 30) | ((R300_ZB_BW_CNTL >> 2) & 0x1fffu);
+   extended[draw_index + 1u] = R300_ZB_CB_CLEAR_CACHE_LINE_WRITE_ONLY;
+   memcpy(extended + draw_index + 2u, ib.ib + draw_index,
+          (dwords - draw_index) * sizeof(uint32_t));
+   assert(r300_zb_depth_discovery_check_state(&good, extended,
                                               dwords + 2u) != 0);
+
+   /* A stream that establishes every register and never draws executes
+    * none of it. */
+   assert(r300_zb_depth_discovery_check_state(&good, ib.ib, draw_index) != 0);
+
+   /* RADEON_ONE_REG_WR holds the base register across every payload
+    * dword.  A two-dword repeated run at ZB_BW_CNTL writes that register
+    * twice and reaches no other, so a walk that advanced the base would
+    * assign the second payload to GB_Z_PEQ_CONFIG's neighbor and leave
+    * ZB_BW_CNTL at the first value.  The compression enable is in the
+    * second payload, so only a walk that honors the flag sees it. */
+   memcpy(extended, ib.ib, draw_index * sizeof(uint32_t));
+   extended[draw_index] = (0u << 30) | (1u << 16) | RADEON_ONE_REG_WR |
+                          ((R300_ZB_BW_CNTL >> 2) & 0x1fffu);
+   extended[draw_index + 1u] = 0u;
+   extended[draw_index + 2u] = R300_ZB_CB_CLEAR_CACHE_LINE_WRITE_ONLY;
+   memcpy(extended + draw_index + 3u, ib.ib + draw_index,
+          (dwords - draw_index) * sizeof(uint32_t));
+   assert(r300_zb_depth_discovery_check_state(&good, extended,
+                                              dwords + 3u) != 0);
+
+   /* A type-1 packet has no R300 encoding, and a payload running past
+    * the stream is malformed; neither yields a state to judge. */
+   struct r300_zb_depth_discovery_state state_out;
+   const uint32_t type1 = 1u << 30;
+   assert(r300_zb_depth_discovery_read_state(&type1, 1u, &state_out) != 0);
+   const uint32_t overrun = (0u << 30) | (7u << 16) |
+                            ((R300_ZB_BW_CNTL >> 2) & 0x1fffu);
+   assert(r300_zb_depth_discovery_read_state(&overrun, 1u, &state_out) != 0);
 
    /* The declared arm and the emitted arm disagree. */
    struct r300_zb_depth_discovery_params wrong = good;
