@@ -286,22 +286,19 @@ r300_zb_depth_discovery_reference_contract(
     * keeps the full extent the contract resolved.  One register confines
     * the write and the other stays wider, so the color readback names
     * the scissor rather than the intersection of two narrowings. */
+   /* SC_SCISSORS_BR is inclusive -- the contract resolves the full
+    * extent as (width - 1, height - 1) -- so one pixel is the corner
+    * repeated in both registers. */
    uint32_t word = 0;
-   const int tl_rc =
+   const int word_rc =
       r300_first_draw_scissor_word(scenario->pixel_x, scenario->pixel_y,
                                    &word);
-   if (tl_rc != 0)
-      return tl_rc;
+   if (word_rc != 0)
+      return word_rc;
    const int set_tl =
       r300_first_draw_contract_set_entry(out, R300_SC_SCISSORS_TL, word);
    if (set_tl != 0)
       return set_tl;
-
-   const int br_rc =
-      r300_first_draw_scissor_word(scenario->pixel_x, scenario->pixel_y,
-                                   &word);
-   if (br_rc != 0)
-      return br_rc;
    return r300_first_draw_contract_set_entry(out, R300_SC_SCISSORS_BR, word);
 }
 
