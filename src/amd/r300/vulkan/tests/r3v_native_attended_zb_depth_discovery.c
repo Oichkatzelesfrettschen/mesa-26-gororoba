@@ -137,28 +137,21 @@ initialization_is_declared(
    const struct r300_zb_depth_discovery_scenario *scenario,
    const struct r300_zb_depth_layout *layout, const uint8_t *bytes)
 {
-   uint32_t initial_word = 0;
-   if (r300_zb_depth_discovery_initial_word(scenario, &initial_word) != 0)
+   uint8_t *declared = malloc((size_t)scenario->allocation_bytes);
+   if (declared == NULL)
       return false;
-
-   const uint32_t bpp = layout->bytes_per_pixel;
-   for (uint64_t off = 0; off < scenario->allocation_bytes; off++) {
-      if (r300_zb_depth_discovery_region_of(
-             layout, scenario->allocation_bytes, off) ==
-          R300_ZB_DISCOVERY_REGION_STORAGE)
-         continue;
-      if (bytes[off] != R300_ZB_DISCOVERY_GUARD_FILL)
-         return false;
+   /* The same constructor the recorder filled the device allocation
+    * with and the arming runner hashed, so this compares the image that
+    * reached the device against the image the operator armed on. */
+   if (r300_zb_depth_discovery_fill_initial(scenario, layout, declared) !=
+       0) {
+      free(declared);
+      return false;
    }
-   for (uint64_t off = layout->base_offset_bytes;
-        off < layout->base_offset_bytes + layout->storage_bytes; off += bpp) {
-      uint32_t word = 0;
-      for (uint32_t i = 0; i < bpp; i++)
-         word |= (uint32_t)bytes[off + i] << (8u * i);
-      if (word != initial_word)
-         return false;
-   }
-   return true;
+   const bool equal =
+      memcmp(declared, bytes, (size_t)scenario->allocation_bytes) == 0;
+   free(declared);
+   return equal;
 }
 
 int

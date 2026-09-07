@@ -3117,27 +3117,14 @@ r3v_native_zb_discovery_arm_state(enum r3v_native_zb_discovery_arm arm,
    return false;
 }
 
-/* Initializes the discovery depth allocation as the scenario declares:
- * the guard ranges at the guard fill and the storage envelope at the
- * packed initial word.  The unclaimed slack past a smaller envelope
- * takes the guard fill too, so every byte outside the envelope holds one
- * known value and a change in any of them is visible; the observation
- * still counts guard and unclaimed bytes apart, because a guard verdict
- * is a claim the layout states and the slack carries no such claim.
- */
+/* Initializes the discovery depth allocation through the common
+ * constructor and publishes it for the unsnooped GART. */
 static VkResult
 zb_discovery_fill_depth(struct r3v_native_device *device,
                         struct r3v_native_memory *memory,
                         const struct r300_zb_depth_discovery_scenario *scenario,
                         const struct r300_zb_depth_layout *layout)
 {
-   uint32_t initial_word = 0;
-   if (r300_zb_depth_discovery_initial_word(scenario, &initial_word) != 0) {
-      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r3v-native: discovery scenario %s names an initial "
-                       "pair its format cannot pack", scenario->name);
-   }
-
    bool owns_map = memory->map == NULL;
    if (owns_map &&
        radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
@@ -3146,16 +3133,19 @@ zb_discovery_fill_depth(struct r3v_native_device *device,
                        "CPU-mappable");
    }
 
-   uint8_t *bytes = memory->map;
-   memset(bytes, R300_ZB_DISCOVERY_GUARD_FILL, memory->bo.size);
-
-   const uint32_t bpp = layout->bytes_per_pixel;
-   uint8_t unit[4];
-   for (uint32_t i = 0; i < bpp; i++)
-      unit[i] = (uint8_t)(initial_word >> (8u * i));
-   for (uint64_t off = layout->base_offset_bytes;
-        off < layout->base_offset_bytes + layout->storage_bytes; off += bpp)
-      memcpy(bytes + off, unit, bpp);
+   /* The one construction the arming runner hashes and the harness
+    * compares against, so the image an operator armed on is the image
+    * that reaches the device. */
+   if (r300_zb_depth_discovery_fill_initial(scenario, layout,
+                                            memory->map) != 0) {
+      if (owns_map) {
+         radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+         memory->map = NULL;
+      }
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: discovery scenario %s builds no initial "
+                       "image", scenario->name);
+   }
 
    radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
    if (owns_map) {
@@ -3258,8 +3248,13 @@ r3v_native_record_zb_depth_discovery(
       vertex_memory->map = NULL;
    }
 
+   /* The shared unit fill names the role in its diagnostics, and a
+    * hardware run's log is the only record of a failure, so the
+    * discovery cell names itself rather than reporting a depth-control
+    * fault. */
    VkResult fill_result = zb_depth_control_fill_units(
-      device, color_memory, R300_TRIANGLE_COLOR_SENTINEL, 4u, "color");
+      device, color_memory, R300_TRIANGLE_COLOR_SENTINEL, 4u,
+      "discovery color");
    if (fill_result != VK_SUCCESS)
       return fill_result;
    fill_result =

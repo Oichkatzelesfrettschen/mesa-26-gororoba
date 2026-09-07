@@ -526,34 +526,33 @@ main(int argc, char **argv)
                            &initial_map);
       CHECK(result == VK_SUCCESS && initial_map != NULL,
             "depth memory maps after recording: %d", result);
-      uint32_t initial_word = 0;
-      CHECK(r300_zb_depth_discovery_initial_word(scenario,
-                                                 &initial_word) == 0,
-            "scenario %s packs its initial word", scenario->name);
-      if (initial_map != NULL) {
-         const uint8_t *bytes = initial_map;
+      uint8_t *declared_image = malloc((size_t)depth_allocation_bytes);
+      CHECK(declared_image != NULL, "declared image buffer");
+      CHECK(declared_image == NULL ||
+               r300_zb_depth_discovery_fill_initial(scenario, &layout,
+                                                    declared_image) == 0,
+            "scenario %s builds its declared image", scenario->name);
+      if (initial_map != NULL && declared_image != NULL) {
          uint64_t wrong_guard = 0;
          uint64_t wrong_slot = 0;
-         for (uint64_t off = 0; off < depth_allocation_bytes; off++)
+         const uint8_t *bytes = initial_map;
+         for (uint64_t off = 0; off < depth_allocation_bytes; off++) {
+            if (bytes[off] == declared_image[off])
+               continue;
             if (r300_zb_depth_discovery_region_of(
-                   &layout, depth_allocation_bytes, off) !=
-                   R300_ZB_DISCOVERY_REGION_STORAGE &&
-                bytes[off] != R300_ZB_DISCOVERY_GUARD_FILL)
-               wrong_guard++;
-         for (uint64_t off = layout.base_offset_bytes;
-              off < layout.base_offset_bytes + layout.storage_bytes;
-              off += layout.bytes_per_pixel) {
-            uint32_t word = 0;
-            for (uint32_t i = 0; i < layout.bytes_per_pixel; i++)
-               word |= (uint32_t)bytes[off + i] << (8u * i);
-            if (word != initial_word)
+                   &layout, depth_allocation_bytes, off) ==
+                R300_ZB_DISCOVERY_REGION_STORAGE)
                wrong_slot++;
+            else
+               wrong_guard++;
          }
          CHECK(wrong_guard == 0 && wrong_slot == 0,
                "the recorder wrote the declared initial image (%llu guard "
-               "bytes, %llu slots differ)", (unsigned long long)wrong_guard,
+               "bytes, %llu storage bytes differ)",
+               (unsigned long long)wrong_guard,
                (unsigned long long)wrong_slot);
       }
+      free(declared_image);
    }
 
    VkQueue queue = VK_NULL_HANDLE;
@@ -668,16 +667,9 @@ main(int argc, char **argv)
       uint8_t *reference_image = malloc((size_t)depth_allocation_bytes);
       CHECK(reference_image != NULL, "reference image buffer");
       if (depth_map != NULL && reference_image != NULL) {
-         uint32_t initial_word = 0;
-         r300_zb_depth_discovery_initial_word(scenario, &initial_word);
-         memset(reference_image, R300_ZB_DISCOVERY_GUARD_FILL,
-                (size_t)depth_allocation_bytes);
-         for (uint64_t off = layout.base_offset_bytes;
-              off < layout.base_offset_bytes + layout.storage_bytes;
-              off += layout.bytes_per_pixel)
-            for (uint32_t i = 0; i < layout.bytes_per_pixel; i++)
-               reference_image[off + i] =
-                  (uint8_t)(initial_word >> (8u * i));
+         CHECK(r300_zb_depth_discovery_fill_initial(
+                  scenario, &layout, reference_image) == 0,
+               "the declared image builds for the shim comparison");
 
          struct r300_zb_discovery_observation observation;
          r300_zb_depth_discovery_observe(scenario, &layout, reference_image,

@@ -156,6 +156,23 @@ int r300_zb_depth_discovery_initial_word(
    const struct r300_zb_depth_discovery_scenario *scenario,
    uint32_t *word_out);
 
+/* Writes the initial depth image the experiment declares into bytes,
+ * which must hold scenario->allocation_bytes: every byte outside the
+ * storage envelope at R300_ZB_DISCOVERY_GUARD_FILL, every storage slot
+ * at the scenario's packed initial word.
+ *
+ * The recorder fills the device allocation from here, the arming runner
+ * hashes the result to name the experiment, and the harness compares the
+ * recorded allocation against it.  One construction serves all three, so
+ * the digest an operator arms on and the digest a retained artifact
+ * carries cannot drift apart through separate copies of one loop.
+ *
+ * Returns 0, or the refusal the scenario check or the packing produced.
+ */
+int r300_zb_depth_discovery_fill_initial(
+   const struct r300_zb_depth_discovery_scenario *scenario,
+   const struct r300_zb_depth_layout *layout, void *bytes);
+
 /* Which class one allocation byte falls in. */
 enum r300_zb_discovery_region {
    /* Inside one of the layout's two guard ranges. */

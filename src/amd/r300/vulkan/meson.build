@@ -4075,7 +4075,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       files('tests/r3v_native_zb_depth_discovery_arming_runner_check.py'),
       r3v_native_zb_depth_discovery_arming_runner,
       r3v_native_zb_depth_control_arming_runner,
+      r3v_native_attended_zb_depth_discovery,
     ],
+    depends : [r3v_native_attended_zb_depth_discovery],
     suite : ['r3v'],
   )
 

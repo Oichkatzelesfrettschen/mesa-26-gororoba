@@ -6,6 +6,7 @@
 #undef NDEBUG
 
 #include "r300_zb_depth_discovery.h"
+#include "r300_zb_depth_discovery_cell.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -98,6 +99,101 @@ test_expected_layouts(void)
  * packed words are pinned against literals here: an experiment whose
  * initial image is wrong emits the same stream as one whose image is
  * right. */
+/* The marker code every scenario declares against the window-space depth
+ * the cell's covering primitive carries.  The two live in different
+ * translation units and nothing else relates them, so an edit to the
+ * vertex Z would leave the scenarios declaring a marker the draw no
+ * longer writes: the scenario check would still pass, since the marker
+ * differs from the initial code, and a run would still report one depth
+ * location, since no arm expectation compares a stored code against the
+ * declaration.  The experiment would stay green while the marker became
+ * a fiction.
+ *
+ * This pins the declaration to the geometry.  It asserts nothing about
+ * the device's window-space-to-depth-code rounding rule, which stays out
+ * of every pass condition. */
+static void
+test_marker_matches_geometry(void)
+{
+   const uint32_t from_geometry =
+      (uint32_t)(R300_ZB_DISCOVERY_MARKER_Z * 16777216.0f);
+   const struct r300_zb_depth_discovery_scenario *scenarios[] = {
+      &r300_zb_depth_discovery_z24_linear,
+      &r300_zb_depth_discovery_z24_linear_seed_5a,
+      &r300_zb_depth_discovery_z24_linear_seed_a5,
+      &r300_zb_depth_discovery_z24_microtiled,
+      &r300_zb_depth_discovery_z24_macrotiled,
+   };
+   for (size_t i = 0; i < sizeof(scenarios) / sizeof(*scenarios); i++)
+      assert(scenarios[i]->marker_depth_code == from_geometry);
+
+   /* The vertex payload carries that depth at every position, so the
+    * covering primitive is one plane and a second stored code in the
+    * envelope is a finding rather than a gradient. */
+   for (uint32_t v = 0; v < R300_ZB_DISCOVERY_VERTEX_DWORDS; v += 4u)
+      assert(r300_zb_depth_discovery_vertices[v + 2u] ==
+             R300_ZB_DISCOVERY_MARKER_Z);
+}
+
+/* One construction serves the recorder, the arming runner, the harness,
+ * and the attended program, so the image an operator arms on is the
+ * image that reaches the device.  This holds it to the region partition
+ * it claims to fill. */
+static void
+test_fill_initial(void)
+{
+   const struct r300_zb_depth_discovery_scenario *scenario =
+      &r300_zb_depth_discovery_z24_linear_seed_a5;
+   struct r300_zb_depth_layout layout;
+   assert(r300_zb_depth_discovery_layout(scenario, &layout) == 0);
+
+   uint8_t *bytes = malloc((size_t)scenario->allocation_bytes);
+   assert(bytes != NULL);
+   assert(r300_zb_depth_discovery_fill_initial(scenario, &layout, bytes) ==
+          0);
+
+   uint32_t word = 0;
+   assert(r300_zb_depth_discovery_initial_word(scenario, &word) == 0);
+   for (uint64_t off = 0; off < scenario->allocation_bytes; off++) {
+      if (r300_zb_depth_discovery_region_of(&layout,
+                                            scenario->allocation_bytes,
+                                            off) ==
+          R300_ZB_DISCOVERY_REGION_STORAGE)
+         continue;
+      assert(bytes[off] == R300_ZB_DISCOVERY_GUARD_FILL);
+   }
+   for (uint64_t off = layout.base_offset_bytes;
+        off < layout.base_offset_bytes + layout.storage_bytes; off += 4u) {
+      uint32_t slot = 0;
+      for (uint32_t i = 0; i < 4u; i++)
+         slot |= (uint32_t)bytes[off + i] << (8u * i);
+      assert(slot == word);
+   }
+
+   /* An image the constructor produced reads back as unchanged against
+    * itself, which is the relation the observation rests on. */
+   uint8_t *copy = malloc((size_t)scenario->allocation_bytes);
+   assert(copy != NULL);
+   memcpy(copy, bytes, (size_t)scenario->allocation_bytes);
+   struct r300_zb_discovery_observation obs;
+   r300_zb_depth_discovery_observe(scenario, &layout, bytes, copy,
+                                   scenario->allocation_bytes, &obs);
+   assert(obs.judged && obs.change_count == 0u &&
+          obs.guard_bytes_changed == 0u && obs.unclaimed_bytes_changed == 0u);
+
+   /* Refusals: a null destination, and a layout that does not describe
+    * the allocation. */
+   assert(r300_zb_depth_discovery_fill_initial(scenario, &layout, NULL) ==
+          -EINVAL);
+   struct r300_zb_depth_layout wrong = layout;
+   wrong.base_offset_bytes = 0u;
+   assert(r300_zb_depth_discovery_fill_initial(scenario, &wrong, bytes) !=
+          0);
+
+   free(copy);
+   free(bytes);
+}
+
 static void
 test_seed_words(void)
 {
@@ -609,6 +705,8 @@ int
 main(void)
 {
    test_expected_layouts();
+   test_marker_matches_geometry();
+   test_fill_initial();
    test_seed_words();
    test_scenario_refusals();
    test_layout_validate_refusals();

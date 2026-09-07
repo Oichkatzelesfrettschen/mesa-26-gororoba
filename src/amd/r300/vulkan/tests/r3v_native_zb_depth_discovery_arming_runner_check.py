@@ -37,11 +37,12 @@ def field(text, name):
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 4:
         print("usage: r3v_native_zb_depth_discovery_arming_runner_check.py "
-              "<discovery-runner> <depth-control-runner>", file=sys.stderr)
+              "<discovery-runner> <depth-control-runner> <attended>",
+              file=sys.stderr)
         return 2
-    runner, control_runner = sys.argv[1], sys.argv[2]
+    runner, control_runner, attended = sys.argv[1:4]
 
     environment = dict(os.environ)
     for declaration in (
@@ -203,6 +204,27 @@ def main():
             if usage.returncode != 2:
                 print("FAIL: unknown %s did not report a usage error"
                       % str(bad), file=sys.stderr)
+                return 1
+
+        # The attended program performs the live ioctl, so its argument
+        # handling is checked here: a bad scenario or arm name is a usage
+        # error that reports before any Vulkan call, and it never claims
+        # a verdict.
+        for bad in (
+            [evidence_dir],
+            [evidence_dir, "z24_octiled", "measure"],
+            [evidence_dir, "z24_linear", "sometimes"],
+        ):
+            result = subprocess.run([attended] + bad, env=environment,
+                                    capture_output=True, text=True)
+            if result.returncode != 2:
+                print("FAIL: attended %s did not report a usage error (%d)"
+                      % (bad, result.returncode), file=sys.stderr)
+                print(result.stdout + result.stderr, file=sys.stderr)
+                return 1
+            if "verdict:" in result.stdout:
+                print("FAIL: attended usage error reported a verdict",
+                      file=sys.stderr)
                 return 1
 
         # No run may claim a submission happened.

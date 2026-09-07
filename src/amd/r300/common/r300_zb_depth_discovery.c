@@ -202,6 +202,39 @@ r300_zb_depth_discovery_initial_word(
                              scenario->initial_stencil, word_out);
 }
 
+int
+r300_zb_depth_discovery_fill_initial(
+   const struct r300_zb_depth_discovery_scenario *scenario,
+   const struct r300_zb_depth_layout *layout, void *bytes)
+{
+   if (layout == NULL || bytes == NULL)
+      return -EINVAL;
+   uint32_t initial_word = 0;
+   const int rc = r300_zb_depth_discovery_initial_word(scenario,
+                                                       &initial_word);
+   if (rc != 0)
+      return rc;
+   const int layout_rc = r300_zb_depth_discovery_layout_validate(
+      layout, scenario->allocation_bytes);
+   if (layout_rc != 0)
+      return layout_rc;
+
+   /* The guard fill covers the whole allocation first, so the slack past
+    * a smaller envelope holds a known value too and a change in it is
+    * visible.  The observation still counts guard and unclaimed bytes
+    * apart: a guard verdict is a claim the layout states, and the slack
+    * carries no such claim. */
+   uint8_t *out = bytes;
+   memset(out, R300_ZB_DISCOVERY_GUARD_FILL,
+          (size_t)scenario->allocation_bytes);
+   const uint32_t bpp = layout->bytes_per_pixel;
+   for (uint64_t off = layout->base_offset_bytes;
+        off < layout->base_offset_bytes + layout->storage_bytes; off += bpp)
+      for (uint32_t i = 0; i < bpp; i++)
+         out[off + i] = (uint8_t)(initial_word >> (8u * i));
+   return 0;
+}
+
 enum r300_zb_discovery_region
 r300_zb_depth_discovery_region_of(const struct r300_zb_depth_layout *layout,
                                   uint64_t size_bytes, uint64_t byte_offset)

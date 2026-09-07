@@ -90,10 +90,11 @@ cell_digest(const struct r300_zb_depth_discovery_scenario *scenario,
    return 0;
 }
 
-/* The initial depth image the recorder would write, hashed here so the
+/* The initial depth image the recorder writes, hashed here so the
  * operator can compare a retained artifact against the experiment that
- * was armed.  It is built from the scenario alone, which is what makes
- * it an independent record of the declaration rather than a readback. */
+ * was armed.  It comes from the same constructor the recorder fills the
+ * device allocation with, so the armed digest and the artifact's digest
+ * are one construction rather than two loops that happen to agree. */
 static int
 initial_image_digest(const struct r300_zb_depth_discovery_scenario *scenario,
                      char out[BLAKE3_OUT_LEN * 2 + 1])
@@ -101,20 +102,13 @@ initial_image_digest(const struct r300_zb_depth_discovery_scenario *scenario,
    struct r300_zb_depth_layout layout;
    if (r300_zb_depth_discovery_layout(scenario, &layout) != 0)
       return 1;
-   uint32_t initial_word = 0;
-   if (r300_zb_depth_discovery_initial_word(scenario, &initial_word) != 0)
-      return 1;
-
    uint8_t *bytes = malloc((size_t)scenario->allocation_bytes);
    if (bytes == NULL)
       return 1;
-   memset(bytes, R300_ZB_DISCOVERY_GUARD_FILL,
-          (size_t)scenario->allocation_bytes);
-   const uint32_t bpp = layout.bytes_per_pixel;
-   for (uint64_t off = layout.base_offset_bytes;
-        off < layout.base_offset_bytes + layout.storage_bytes; off += bpp)
-      for (uint32_t i = 0; i < bpp; i++)
-         bytes[off + i] = (uint8_t)(initial_word >> (8u * i));
+   if (r300_zb_depth_discovery_fill_initial(scenario, &layout, bytes) != 0) {
+      free(bytes);
+      return 1;
+   }
 
    struct mesa_blake3 ctx;
    blake3_hash digest;
