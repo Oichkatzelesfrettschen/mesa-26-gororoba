@@ -270,6 +270,17 @@ r300_first_draw_contract_resolve(const struct r300_first_draw_params *params,
 }
 
 int
+r300_first_draw_scissor_word(uint32_t x, uint32_t y, uint32_t *word_out)
+{
+   if (word_out == NULL)
+      return -EINVAL;
+   if (x >= R300_FDS_MAX_EXTENT || y >= R300_FDS_MAX_EXTENT)
+      return -EINVAL;
+   *word_out = scissor_word(x, y);
+   return 0;
+}
+
+int
 r300_first_draw_contract_set_entry(struct r300_first_draw_contract *contract,
                                    uint32_t reg, uint32_t value)
 {

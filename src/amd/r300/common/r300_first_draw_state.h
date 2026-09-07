@@ -130,6 +130,17 @@ r300_first_draw_state_dwords(const struct r300_first_draw_contract *contract)
 int r300_first_draw_contract_set_entry(struct r300_first_draw_contract *contract,
                                        uint32_t reg, uint32_t value);
 
+/* The scissor and clip-rectangle word for one coordinate.  Both axes
+ * carry a 1440 bias on non-R500 silicon and the packed word is
+ * x | (y << 13), each field thirteen bits wide, so the largest
+ * unbiased coordinate is 6751.  A cell confining a draw to a rectangle
+ * narrower than its target takes the encoding from here rather than
+ * rebuilding the bias, so the contract and the cell cannot disagree
+ * through a shared arithmetic mistake.  Returns 0, or -EINVAL when
+ * either coordinate leaves the field.
+ */
+int r300_first_draw_scissor_word(uint32_t x, uint32_t y, uint32_t *word_out);
+
 /* True for a type-3 header whose opcode is one of the 3D draw packets
  * the checkers treat as a draw boundary. */
 bool r300_first_draw_is_draw_packet(uint32_t header);
