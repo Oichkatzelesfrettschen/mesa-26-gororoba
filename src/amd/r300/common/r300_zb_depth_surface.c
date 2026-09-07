@@ -192,6 +192,18 @@ r300_zb_depth_surface_packed_sentinel(
                              word_out);
 }
 
+bool
+r300_zb_depth_surface_stores_stencil(
+   const struct r300_zb_depth_surface *surface)
+{
+   uint32_t depth_mask, depth_shift, stencil_mask;
+   if (surface == NULL ||
+       !format_fields(surface->depth_format, &depth_mask, &depth_shift,
+                      &stencil_mask))
+      return false;
+   return stencil_mask != 0u;
+}
+
 uint32_t
 r300_zb_depth_surface_tile_bits(const struct r300_zb_depth_surface *surface)
 {

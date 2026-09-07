@@ -436,10 +436,40 @@ r3v_native_cell_geometry_unfrozen(
           color->memory == NULL ||
           color->memory->bo.size != R300_ZB_DEPTH_CONTROL_COLOR_BYTES)
          return true;
-      return depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+      /* The depth footprint follows the surface the recording selected,
+       * so this reads the same descriptor the recorder sized the
+       * allocation from.  A selector outside the enumeration reports
+       * zero bytes, which no allocation matches, so an unrecognized
+       * selection refuses here rather than admitting an unsized shape. */
+      const struct r300_zb_depth_surface *depth_surface =
+         r3v_native_zb_depth_surface_descriptor(cmd_buffer->zb_depth_surface);
+      const uint32_t depth_bytes =
+         r3v_native_zb_depth_surface_bytes(cmd_buffer->zb_depth_surface);
+      /* A selector cast in from outside the enumeration names no
+       * descriptor, and the recorder refuses one, so a command buffer
+       * carrying it was altered after recording.  Every catalogue
+       * descriptor has a positive extent, which the catalogue test
+       * holds, so a successful lookup needs no second size test. */
+      if (depth_surface == NULL)
+         return true;
+      /* The recorded selection and the recorded stream must name one
+       * format.  ZB_FORMAT is what r300_packet0_check reads into
+       * track->zb.cpp and sizes its own depth bound from, so comparing
+       * the stream against the selection holds the allocation this
+       * predicate admits to the format the parser will measure.  Two
+       * records of one fact agree by check here rather than by the
+       * recorder having set them in the right order. */
+      uint32_t emitted_format = 0;
+      if (r300_zb_depth_control_ib_depth_format(cmd_buffer->ib,
+                                                cmd_buffer->ib_size_dwords,
+                                                &emitted_format) != 0 ||
+          emitted_format != depth_surface->depth_format)
+         return true;
+      return
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
              depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
              depth->memory == NULL ||
-             depth->memory->bo.size != R300_ZB_DEPTH_CONTROL_DEPTH_BYTES;
+             depth->memory->bo.size != depth_bytes;
    }
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:

@@ -8,6 +8,7 @@
 #ifndef R300_ZB_DEPTH_CONTROL_CELL_H
 #define R300_ZB_DEPTH_CONTROL_CELL_H
 
+#include "r300_zb_depth_layout.h"
 #include "r300_zb_depth_surface.h"
 
 #include <assert.h>
@@ -194,6 +195,31 @@ int r300_zb_depth_control_reference_contract(
 int r300_zb_depth_control_reference_emit(
    struct r300_zb_depth_control_ib *out);
 
+/* The reference cell bound to a named depth surface: everything above
+ * with the surface substituted, so the stream differs from the retained
+ * one in ZB_FORMAT and the DEPTHPITCH tile bits alone.  NULL takes the
+ * Z16 linear surface and reproduces that stream exactly.  Returns 0 or a
+ * negative errno; the caller owns the returned IB.
+ */
+int r300_zb_depth_control_reference_emit_surface(
+   const struct r300_zb_depth_surface *surface,
+   struct r300_zb_depth_control_ib *out);
+
+/* The ZB_FORMAT value the emitted stream carries, read back out of the
+ * one-dword PACKET0 run that writes it.  The kernel's r300_packet0_check
+ * reads the same dword into track->zb.cpp and sizes its depth bound from
+ * it, so this is the format the hardware and the parser will act on
+ * rather than the one a caller believes it selected.
+ *
+ * Returns 0 with the value written, or -EINVAL when ib is null, dwords
+ * is short, or the stream carries no such run.  A consumer holding a
+ * separate record of the surface compares the two and refuses a
+ * disagreement, which turns the agreement between a recorded selection
+ * and a recorded stream into a check rather than a convention.
+ */
+int r300_zb_depth_control_ib_depth_format(const uint32_t *ib, uint32_t dwords,
+                                          uint32_t *format_out);
+
 /* The dword index of the draw packet's header, which a replay names when
  * it reports a verdict at a packet index.
  */
@@ -236,19 +262,34 @@ void r300_zb_depth_control_color_oracle(
    const uint32_t *pixels, uint32_t size_bytes,
    struct r300_zb_depth_control_color_verdict *verdict);
 
-/* Depth verdict over a sentinel-initialized 16-bit depth surface at the
- * cell's pitch.  written reports any deviation from the depth sentinel;
- * near_pass demands a stored value strictly below the sentinel and above
- * zero inside the near triangle, which is what R300_ZS_LESS with
- * Z_WRITE_ENABLE stores for a near plane inside the range; far_pass,
- * exterior_pass, and canary_pass demand the sentinel exactly.
+/* Depth verdict over a sentinel-initialized depth surface at the cell's
+ * pitch.  written reports any deviation from the packed depth sentinel;
+ * near_pass demands a stored depth code strictly below the sentinel code
+ * and above zero inside the near triangle, which is what R300_ZS_LESS
+ * with Z_WRITE_ENABLE stores for a near plane inside the range;
+ * far_pass, exterior_pass, and canary_pass demand the sentinel word
+ * exactly.
  *
  * Both near bounds are one-sided, so the comparison's own ordering is the
- * predicate and no window-space-Z to Z16 rounding rule enters a pass
- * condition.  The lower bound separates the near depth from a surface
- * nothing wrote: zero clears the upper bound under any rounding rule.
- * near_min and near_max carry the observed range as data, which a
- * manifest retains and a later run compares against.
+ * predicate and no window-space-Z to depth-code rounding rule enters a
+ * pass condition.  The lower bound separates the near depth from a
+ * surface nothing wrote: an allocation of zeros clears the upper bound
+ * under any rounding rule, at either pixel width.  near_min and near_max
+ * carry the observed range as data, which a manifest retains and a later
+ * run compares against.  They are depth codes, so a Z24 surface reports
+ * the 24-bit value rather than the packed word, and a verdict with no
+ * near sample reports zero for both rather than the scan's seed.
+ *
+ * The stencil fields observe rather than assert.  ZB_CNTL leaves the
+ * stencil test and stencil writes disabled, so whether a depth write
+ * preserves the low byte of a packed Z24/S8 word is a property of the
+ * part that nothing in this tree establishes.  stencil_observed says the
+ * format stores a stencil component at all, which the surface decides
+ * and no sample can change; stencil_min and stencil_max carry the range
+ * seen across the near triangle, where the depth write lands, and report
+ * zero when no sample filled them.  A verdict never fails on them -- a stencil surprise is a
+ * finding to record, not a depth result to reject -- and a 16-bit
+ * surface reports stencil_observed false with both bounds zero.
  */
 struct r300_zb_depth_control_depth_verdict {
    bool written;
@@ -259,10 +300,37 @@ struct r300_zb_depth_control_depth_verdict {
    uint32_t near_samples;
    uint32_t far_samples;
    uint32_t exterior_samples;
-   uint16_t near_min;
-   uint16_t near_max;
+   uint32_t near_min;
+   uint32_t near_max;
+   bool stencil_observed;
+   uint32_t stencil_min;
+   uint32_t stencil_max;
 };
 
+/* The depth verdict over any surface the resolver addresses.  The
+ * surface supplies the format, the geometry, and the sentinel code; the
+ * resolver supplies the byte each logical pixel occupies; bytes and
+ * size_bytes are the raw allocation as the host mapped it, read from
+ * base_offset_bytes.
+ *
+ * Every read is bound-checked against size_bytes through the resolved
+ * offset rather than against a precomputed pixel count, so a descriptor
+ * naming a pitch the allocation does not carry produces a failed verdict
+ * instead of a read past the mapping.  A resolver that refuses a
+ * coordinate, an allocation too short to hold the surface, or a null
+ * argument yields the zeroed verdict, whose passes are all false with
+ * zero samples.
+ */
+void r300_zb_depth_control_depth_oracle_surface(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zb_depth_address_resolver *resolver,
+   uint64_t base_offset_bytes, const void *bytes, uint64_t size_bytes,
+   struct r300_zb_depth_control_depth_verdict *verdict);
+
+/* The Z16 linear reading of the same verdict: the retained cell's
+ * surface, the row-major resolver, and an allocation whose storage
+ * begins at byte zero.  The reference cell's expected verdicts are
+ * stated against this entry point and do not move. */
 void r300_zb_depth_control_depth_oracle(
    const uint16_t *depth, uint32_t size_bytes,
    struct r300_zb_depth_control_depth_verdict *verdict);

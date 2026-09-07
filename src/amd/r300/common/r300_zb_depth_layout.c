@@ -185,6 +185,43 @@ r300_zb_depth_layout_compute(const struct r300_zb_depth_surface *surface,
    return 0;
 }
 
+static int
+linear_byte_offset(const struct r300_zb_depth_surface *surface,
+                   uint64_t base_offset_bytes, uint32_t x, uint32_t y,
+                   uint64_t *byte_offset_out)
+{
+   if (surface == NULL || byte_offset_out == NULL)
+      return -EINVAL;
+   if (surface->microtile != R300_ZB_MICROTILE_LINEAR ||
+       surface->macrotile != R300_ZB_MACROTILE_LINEAR)
+      return -EINVAL;
+   /* The render extent bounds the coordinate, not the allocation: a
+    * caller reading the canary row addresses it as a byte range rather
+    * than as a pixel. */
+   if (x >= surface->width || y >= surface->height)
+      return -EINVAL;
+   if (surface->pitch_pixels == 0 || surface->bytes_per_pixel == 0)
+      return -EINVAL;
+
+   const uint64_t pixel_index =
+      (uint64_t)y * (uint64_t)surface->pitch_pixels + (uint64_t)x;
+   const uint64_t offset = pixel_index * (uint64_t)surface->bytes_per_pixel;
+   /* Every term is bounded by the descriptor the validator admitted --
+    * a pitch inside DEPTHPITCH, a height inside 32 bits, a pixel of at
+    * most four bytes -- so the product cannot approach the 64-bit range
+    * and only the caller's base can carry the sum out of it. */
+   if (offset > UINT64_MAX - base_offset_bytes)
+      return -EINVAL;
+
+   *byte_offset_out = base_offset_bytes + offset;
+   return 0;
+}
+
+const struct r300_zb_depth_address_resolver r300_zb_depth_address_linear = {
+   .name = "linear",
+   .byte_offset = linear_byte_offset,
+};
+
 bool
 r300_zb_depth_layout_is_guard_byte(const struct r300_zb_depth_layout *layout,
                                    uint64_t byte_offset)

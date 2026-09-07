@@ -373,6 +373,17 @@ r300_zb_depth_control_reference_contract(struct r300_first_draw_contract *out)
 int
 r300_zb_depth_control_reference_emit(struct r300_zb_depth_control_ib *out)
 {
+   /* NULL takes the Z16 linear surface inside the emitter, which is the
+    * surface the retained cell was built from, so this stream stays
+    * byte-identical to it. */
+   return r300_zb_depth_control_reference_emit_surface(NULL, out);
+}
+
+int
+r300_zb_depth_control_reference_emit_surface(
+   const struct r300_zb_depth_surface *surface,
+   struct r300_zb_depth_control_ib *out)
+{
    struct r300_fragment_binary fs;
    int rc = r300_tcl_bypass_triangle_reference_fs(&fs);
    if (rc != 0)
@@ -390,6 +401,7 @@ r300_zb_depth_control_reference_emit(struct r300_zb_depth_control_ib *out)
       .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(
          R300_ZB_DEPTH_CONTROL_PITCH_PIXELS),
       .depth_offset_bytes = 0,
+      .surface = surface,
       .fragment_binary = &fs,
       .first_draw_contract = &contract,
    };
@@ -579,25 +591,146 @@ r300_zb_depth_control_color_oracle(
       verdict->exterior_pass = false;
 }
 
+int
+r300_zb_depth_control_ib_depth_format(const uint32_t *ib, uint32_t dwords,
+                                      uint32_t *format_out)
+{
+   if (ib == NULL || format_out == NULL || dwords < 2u)
+      return -EINVAL;
+
+   /* Walk the packet stream by its grammar rather than scanning for a
+    * header value: a payload dword can equal any header, and ZB_FORMAT's
+    * own one-dword header is 0x000013c4, a value an ordinary register
+    * write could carry.  A type-0 header names a base register and a
+    * run of count + 1 dwords; a type-3 header names count + 1 payload
+    * dwords; a type-2 header is a single-dword filler.
+    */
+   uint32_t i = 0;
+   while (i < dwords) {
+      const uint32_t header = ib[i];
+      const uint32_t type = header >> 30;
+      const uint32_t count = ((header >> 16) & 0x3fffu) + 1u;
+
+      if (type == 0u) {
+         const uint32_t base = (header & 0x1fffu) << 2;
+         /* ONE_REG_WR writes every payload dword to the base register
+          * rather than walking the run, so the register a slot names
+          * differs.  r300_pm4_packet0 never sets it, so no stream this
+          * tree builds carries one; the walk refuses rather than
+          * reporting a slot under the wrong rule. */
+         if ((header & RADEON_ONE_REG_WR) != 0)
+            return -EINVAL;
+         if (R300_ZB_FORMAT >= base && R300_ZB_FORMAT < base + count * 4u) {
+            const uint32_t slot = (R300_ZB_FORMAT - base) / 4u;
+            if (i + 1u + slot >= dwords)
+               return -EINVAL;
+            *format_out = ib[i + 1u + slot];
+            return 0;
+         }
+         i += 1u + count;
+      } else if (type == 3u) {
+         i += 1u + count;
+      } else if (type == 2u) {
+         i += 1u;
+      } else {
+         /* Type 1 has no encoding in this stream, so the walk cannot
+          * establish where the next header sits. */
+         return -EINVAL;
+      }
+   }
+   return -EINVAL;
+}
+
+/* Reads one packed word from the allocation at a resolved offset and
+ * unpacks it, bound-checking the read against the mapping the caller
+ * supplied.  The depth binding writes R300_DEPTHENDIAN(R300_SURF_NO_SWAP)
+ * into ZB_DEPTHPITCH, so the device stores the word low byte first and
+ * the bytes assemble low-first here regardless of the host's own order.
+ */
+static bool
+read_depth_word(const struct r300_zb_depth_surface *surface,
+                const uint8_t *bytes, uint64_t size_bytes, uint64_t offset,
+                uint32_t *depth_code_out, uint32_t *stencil_out)
+{
+   const uint32_t cpp = surface->bytes_per_pixel;
+   if (offset > size_bytes || size_bytes - offset < cpp)
+      return false;
+
+   uint32_t word = 0;
+   for (uint32_t i = 0; i < cpp; i++)
+      word |= (uint32_t)bytes[offset + i] << (8u * i);
+
+   return r300_zb_depth_unpack(surface, word, depth_code_out, stencil_out) == 0;
+}
+
 void
-r300_zb_depth_control_depth_oracle(
-   const uint16_t *depth, uint32_t size_bytes,
+r300_zb_depth_control_depth_oracle_surface(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zb_depth_address_resolver *resolver,
+   uint64_t base_offset_bytes, const void *bytes, uint64_t size_bytes,
    struct r300_zb_depth_control_depth_verdict *verdict)
 {
+   if (verdict == NULL)
+      return;
    *verdict = (struct r300_zb_depth_control_depth_verdict){ 0 };
-   if (depth == NULL ||
-       size_bytes < DEPTH_CONTROL_ORACLE_PIXELS * sizeof(uint16_t))
+   if (surface == NULL || resolver == NULL || resolver->byte_offset == NULL ||
+       bytes == NULL)
+      return;
+   if (r300_zb_depth_surface_check(surface) != 0)
+      return;
+   /* The cell's regions are stated in its own geometry, so a surface of
+    * another shape names pixels the region test does not describe. */
+   if (surface->width != R300_ZB_DEPTH_CONTROL_TARGET_WIDTH ||
+       surface->height != R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT ||
+       surface->pitch_pixels != R300_ZB_DEPTH_CONTROL_PITCH_PIXELS ||
+       surface->allocation_rows != R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS)
+      return;
+
+   uint32_t sentinel_word = 0;
+   if (r300_zb_depth_surface_packed_sentinel(surface, &sentinel_word) != 0)
+      return;
+
+   const uint8_t *raw = bytes;
+   const uint32_t cpp = surface->bytes_per_pixel;
+   /* Every rendered row at the surface's pitch plus the row past the
+    * render extent, which carries the canary.  A shorter allocation
+    * holds no canary, so the verdict fails closed with zero samples
+    * rather than leaving canary_pass vacuously true. */
+   const uint64_t oracle_bytes =
+      (uint64_t)surface->pitch_pixels * (uint64_t)surface->allocation_rows *
+      (uint64_t)cpp;
+   if (size_bytes < base_offset_bytes ||
+       size_bytes - base_offset_bytes < oracle_bytes)
       return;
 
    verdict->near_pass = true;
    verdict->far_pass = true;
    verdict->exterior_pass = true;
    verdict->canary_pass = true;
-   verdict->near_min = UINT16_MAX;
+   verdict->near_min = UINT32_MAX;
    verdict->near_max = 0;
+   /* The format decides whether a stencil component exists to observe;
+    * the region loop decides what its range is.  Setting the flag here
+    * keeps it a statement about the surface even when no sample is
+    * taken, which is what the field's contract says it is. */
+   verdict->stencil_observed = r300_zb_depth_surface_stores_stencil(surface);
+   verdict->stencil_min = UINT32_MAX;
+   verdict->stencil_max = 0;
 
-   for (uint32_t i = 0; i < DEPTH_CONTROL_ORACLE_PIXELS; i++) {
-      if (depth[i] != R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL) {
+   /* Any deviation from the packed sentinel anywhere in the surface's
+    * own storage, read as a byte range rather than through the resolver,
+    * so a permutation the resolver does not model still reports that
+    * something was written. */
+   for (uint64_t i = 0; i < oracle_bytes; i += cpp) {
+      uint32_t code = 0, stencil = 0;
+      if (!read_depth_word(surface, raw, size_bytes, base_offset_bytes + i,
+                           &code, &stencil)) {
+         verdict->written = true;
+         break;
+      }
+      uint32_t word = 0;
+      if (r300_zb_depth_pack(surface, code, stencil, &word) != 0 ||
+          word != sentinel_word) {
          verdict->written = true;
          break;
       }
@@ -605,29 +738,52 @@ r300_zb_depth_control_depth_oracle(
 
    for (uint32_t y = 0; y < R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT; y++) {
       for (uint32_t x = 0; x < R300_ZB_DEPTH_CONTROL_TARGET_WIDTH; x++) {
-         const uint16_t stored =
-            depth[y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS + x];
-         const bool preserved =
-            stored == R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL;
+         uint64_t offset = 0;
+         uint32_t code = 0, stencil = 0;
+         if (resolver->byte_offset(surface, base_offset_bytes, x, y,
+                                   &offset) != 0 ||
+             !read_depth_word(surface, raw, size_bytes, offset, &code,
+                              &stencil)) {
+            /* A pixel the resolver cannot place or the mapping cannot
+             * hold leaves every region unproven. */
+            verdict->near_pass = false;
+            verdict->far_pass = false;
+            verdict->exterior_pass = false;
+            verdict->canary_pass = false;
+            continue;
+         }
+
+         uint32_t word = 0;
+         const bool packs =
+            r300_zb_depth_pack(surface, code, stencil, &word) == 0;
+         const bool preserved = packs && word == sentinel_word;
 
          switch (region_of(x, y)) {
          case DEPTH_CONTROL_REGION_NEAR:
             verdict->near_samples++;
-            if (stored < verdict->near_min)
-               verdict->near_min = stored;
-            if (stored > verdict->near_max)
-               verdict->near_max = stored;
+            if (code < verdict->near_min)
+               verdict->near_min = code;
+            if (code > verdict->near_max)
+               verdict->near_max = code;
             /* R300_ZS_LESS with Z_WRITE_ENABLE stores a value that
              * compared below the sentinel and above the near plane's
              * floor, so two one-sided bounds are the predicate and no
-             * window-Z to Z16 rounding rule enters it.  Zero passes the
-             * upper bound under any rounding rule, so a surface a device
-             * never wrote and a host fill that landed as zeros would
-             * satisfy that bound alone.
+             * window-Z to depth-code rounding rule enters it.  Zero
+             * passes the upper bound under any rounding rule, so a
+             * surface a device never wrote and a host fill that landed
+             * as zeros would satisfy that bound alone.
              */
-            if (stored >= R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL ||
-                stored == 0)
+            if (code >= surface->depth_sentinel_code || code == 0)
                verdict->near_pass = false;
+            /* The stencil the depth write left, observed across the
+             * region the write covers.  Stencil writes are disabled, so
+             * this records what the part did rather than testing it. */
+            if (verdict->stencil_observed) {
+               if (stencil < verdict->stencil_min)
+                  verdict->stencil_min = stencil;
+               if (stencil > verdict->stencil_max)
+                  verdict->stencil_max = stencil;
+            }
             break;
          case DEPTH_CONTROL_REGION_FAR:
             verdict->far_samples++;
@@ -644,18 +800,38 @@ r300_zb_depth_control_depth_oracle(
          }
       }
 
+      /* Sub-pitch padding band of this rendered row, addressed as bytes
+       * because it holds no logical pixel the resolver names.  The cell
+       * renders its full pitch, so the band is empty at this geometry
+       * and the row past the render extent carries the canary alone; the
+       * loop covers a pitch wider than the extent if one appears. */
       for (uint32_t x = R300_ZB_DEPTH_CONTROL_TARGET_WIDTH;
            x < R300_ZB_DEPTH_CONTROL_PITCH_PIXELS; x++) {
-         if (depth[y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS + x] !=
-             R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL)
+         uint32_t code = 0, stencil = 0, word = 0;
+         const uint64_t offset =
+            base_offset_bytes +
+            ((uint64_t)y * surface->pitch_pixels + x) * cpp;
+         if (!read_depth_word(surface, raw, size_bytes, offset, &code,
+                              &stencil) ||
+             r300_zb_depth_pack(surface, code, stencil, &word) != 0 ||
+             word != sentinel_word)
             verdict->canary_pass = false;
       }
    }
 
+   /* The row past the render extent. */
    for (uint32_t x = 0; x < R300_ZB_DEPTH_CONTROL_PITCH_PIXELS; x++) {
-      if (depth[R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT *
-                   R300_ZB_DEPTH_CONTROL_PITCH_PIXELS +
-                x] != R300_ZB_DEPTH_CONTROL_DEPTH_SENTINEL)
+      uint32_t code = 0, stencil = 0, word = 0;
+      const uint64_t offset =
+         base_offset_bytes +
+         ((uint64_t)R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT *
+             surface->pitch_pixels +
+          x) *
+            cpp;
+      if (!read_depth_word(surface, raw, size_bytes, offset, &code,
+                           &stencil) ||
+          r300_zb_depth_pack(surface, code, stencil, &word) != 0 ||
+          word != sentinel_word)
          verdict->canary_pass = false;
    }
 
@@ -665,8 +841,27 @@ r300_zb_depth_control_depth_oracle(
       verdict->far_pass = false;
    if (verdict->exterior_samples == 0)
       verdict->exterior_pass = false;
+
+   /* A range no sample filled reports zero rather than the sentinel the
+    * scan started from.  Both pairs seed their minimum at UINT32_MAX, so
+    * a surface storing no stencil and a region the resolver placed no
+    * pixel in would otherwise publish 4294967295 as an observed value. */
    if (verdict->near_min > verdict->near_max) {
       verdict->near_min = 0;
       verdict->near_max = 0;
    }
+   if (verdict->stencil_min > verdict->stencil_max) {
+      verdict->stencil_min = 0;
+      verdict->stencil_max = 0;
+   }
+}
+
+void
+r300_zb_depth_control_depth_oracle(
+   const uint16_t *depth, uint32_t size_bytes,
+   struct r300_zb_depth_control_depth_verdict *verdict)
+{
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z16_linear, &r300_zb_depth_address_linear, 0u,
+      depth, size_bytes, verdict);
 }

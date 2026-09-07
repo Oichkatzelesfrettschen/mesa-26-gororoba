@@ -1415,6 +1415,22 @@ r3v_native_attended_direct_write = executable(
 # first run is the B14 depth-control workload debut, unobserved by any
 # reader.  Built and never registered as a test, because running it is
 # a hardware authorization rather than a build-graph result.
+r3v_native_zb_depth_surface_catalogue_test = executable(
+  'r3v_native_zb_depth_surface_catalogue_test',
+  files('tests/r3v_native_zb_depth_surface_catalogue_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r3v-native-zb-depth-surface-catalogue',
+  r3v_native_zb_depth_surface_catalogue_test,
+  suite : ['r3v'],
+)
+
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',
   files('tests/r3v_native_attended_zb_depth_control.c'),
@@ -2146,11 +2162,26 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     c_args : [no_override_init_args],
     gnu_symbol_visibility : 'hidden',
   )
-  foreach cell_mode : ['closed', 'open']
+  # One submission per process: vk_QueueSubmit short-circuits to
+  # VK_ERROR_DEVICE_LOST once the device is lost, so a second submission
+  # in one process would observe the runtime rather than the gate under
+  # test.  The open mode is the positive control for the three refusal
+  # modes, which differ from it by one altered recorded fact each.
+  foreach cell_mode : ['closed', 'open', 'refuse-unnamed-selector',
+                       'refuse-format-disagreement', 'refuse-altered-stream']
     test(
       'r3v-native-zb-depth-control-@0@'.format(cell_mode),
       r3v_native_zb_depth_control_harness,
       args : [cell_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-zb-depth-control-@0@-z24-linear'.format(cell_mode),
+      r3v_native_zb_depth_control_harness,
+      args : [cell_mode, 'z24_linear'],
       env : r3v_native_cell_env,
       depends : [libradeon_noop_drm_shim],
       timeout : 60,
@@ -3928,11 +3959,29 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
             '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c',
           '../common/r300_zb_depth_control_cell.c',
           '../common/r300_zb_depth_state.c',
-          '../common/r300_zb_depth_surface.c'),
+          '../common/r300_zb_depth_surface.c',
+          '../common/r300_zb_depth_layout.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
   )
+  test(
+    'r3v-native-zb-depth-usage',
+    prog_python,
+    args : [
+      files('tests/r3v_native_zb_depth_usage_check.py'),
+      r3v_native_zb_depth_control_harness.full_path() + ':mode',
+      r3v_native_zb_depth_control_arming_runner.full_path() + ':directory',
+      r3v_native_attended_zb_depth_control.full_path() + ':directory',
+    ],
+    depends : [
+      r3v_native_zb_depth_control_harness,
+      r3v_native_zb_depth_control_arming_runner,
+      r3v_native_attended_zb_depth_control,
+    ],
+    suite : ['r3v'],
+  )
+
   test(
     'r3v-native-zb-depth-control-arming-runner',
     prog_python,

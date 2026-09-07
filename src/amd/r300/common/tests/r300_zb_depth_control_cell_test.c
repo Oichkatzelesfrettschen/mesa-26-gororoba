@@ -640,6 +640,486 @@ test_depth_oracle(void)
    printf("depth oracle ok\n");
 }
 
+/* Paints a packed Z24/S8 image: the sentinel word everywhere, the near
+ * triangle's pixels carrying near_code under near_stencil.  Written from
+ * the shift rule rather than through r300_zb_depth_pack, so a packer
+ * mistake and an oracle mistake cannot agree.
+ */
+static void
+paint_depth_z24(uint32_t *depth, uint32_t near_code, uint32_t near_stencil)
+{
+   const uint32_t sentinel =
+      (r300_zb_depth_surface_z24_linear.depth_sentinel_code << 8);
+   for (uint32_t i = 0; i < PIXELS; i++)
+      depth[i] = sentinel;
+
+   const float *v = r300_zb_depth_control_vertices;
+   for (uint32_t y = 0; y < R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT; y++) {
+      for (uint32_t x = 0; x < R300_ZB_DEPTH_CONTROL_TARGET_WIDTH; x++) {
+         const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+         const float ax = v[0], ay = v[1];
+         const float bx = v[4], by = v[5];
+         const float cx = v[8], cy = v[9];
+         const float e0 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+         const float e1 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
+         const float e2 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
+         if (e0 > 0.0f && e1 > 0.0f && e2 > 0.0f)
+            depth[y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS + x] =
+               (near_code << 8) | near_stencil;
+      }
+   }
+}
+
+static void
+z24_oracle(const uint32_t *depth, uint64_t size_bytes,
+           struct r300_zb_depth_control_depth_verdict *v)
+{
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_linear, &r300_zb_depth_address_linear, 0u,
+      depth, size_bytes, v);
+}
+
+/* The Z24 linear surface reaches the same verdicts on the same geometry,
+ * with depth codes rather than packed words as the reported range.
+ */
+static void
+test_z24_linear_depth_oracle(void)
+{
+   uint32_t *depth = malloc(PIXELS * sizeof(uint32_t));
+   assert(depth != NULL);
+   struct r300_zb_depth_control_depth_verdict v;
+   const uint64_t bytes = (uint64_t)PIXELS * sizeof(uint32_t);
+
+   /* Known-good: a 24-bit code below the half-depth sentinel. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   z24_oracle(depth, bytes, &v);
+   assert(v.written && v.near_pass && v.far_pass && v.exterior_pass &&
+          v.canary_pass);
+   assert(v.near_min == 0x00400000u && v.near_max == 0x00400000u);
+   assert(v.near_samples > 0 && v.far_samples > 0 && v.exterior_samples > 0);
+
+   /* The range is the depth code, not the packed word: a Z16 reading of
+    * the same memory would report the low half. */
+   assert(v.near_max != (0x00400000u << 8));
+
+   /* A code one below the sentinel still passes; the code equal to it
+    * does not, because the comparison stores strictly below. */
+   paint_depth_z24(depth, 0x007fffffu, 0u);
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_pass && v.near_min == 0x007fffffu);
+   paint_depth_z24(depth, r300_zb_depth_surface_z24_linear.depth_sentinel_code,
+                   0u);
+   z24_oracle(depth, bytes, &v);
+   assert(!v.near_pass);
+
+   /* Known-bad, a surface nothing wrote: zeros clear the upper bound at
+    * four bytes a pixel exactly as at two, so the lower bound refuses. */
+   paint_depth_z24(depth, 0u, 0u);
+   z24_oracle(depth, bytes, &v);
+   assert(v.written && !v.near_pass && v.far_pass);
+
+   /* Known-bad, no depth write. */
+   for (uint32_t i = 0; i < PIXELS; i++)
+      depth[i] = 0x80000000u;
+   z24_oracle(depth, bytes, &v);
+   assert(!v.written && !v.near_pass && v.far_pass);
+
+   /* Known-bad, the far triangle wrote. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   for (uint32_t y = 0; y < R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT; y++) {
+      for (uint32_t x = 32; x < R300_ZB_DEPTH_CONTROL_TARGET_WIDTH; x++) {
+         uint32_t *q = &depth[y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS + x];
+         if (*q == 0x80000000u)
+            *q = 0x00c00000u << 8;
+      }
+   }
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_pass && !v.far_pass);
+
+   /* Known-bad, canary past the render extent. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   depth[R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT *
+         R300_ZB_DEPTH_CONTROL_PITCH_PIXELS] = 0;
+   z24_oracle(depth, bytes, &v);
+   assert(!v.canary_pass);
+
+   /* An allocation one word short holds no canary, so every pass fails
+    * closed with zero samples rather than leaving one vacuously true. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   z24_oracle(depth, bytes - 4u, &v);
+   assert(!v.written && !v.near_pass && !v.far_pass && !v.canary_pass &&
+          v.near_samples == 0);
+
+   /* A Z16 allocation's length under a Z24 descriptor is half what the
+    * surface needs, which is the mismatch a wrong footprint produces. */
+   z24_oracle(depth, bytes / 2u, &v);
+   assert(!v.near_pass && v.near_samples == 0);
+
+   free(depth);
+   printf("z24 linear depth oracle ok\n");
+}
+
+/* Stencil is observed and never asserted: stencil writes are disabled,
+ * so what the part leaves in the low byte is a recorded range rather
+ * than a pass condition.
+ */
+static void
+test_stencil_is_observed(void)
+{
+   uint32_t *depth = malloc(PIXELS * sizeof(uint32_t));
+   assert(depth != NULL);
+   struct r300_zb_depth_control_depth_verdict v;
+   const uint64_t bytes = (uint64_t)PIXELS * sizeof(uint32_t);
+
+   /* A preserved zero stencil across the near region. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_pass);
+   assert(v.stencil_observed);
+   assert(v.stencil_min == 0u && v.stencil_max == 0u);
+
+   /* A part that disturbed the low byte reports the range and still
+    * passes the depth verdict, so the surprise is a finding rather than
+    * a depth failure. */
+   paint_depth_z24(depth, 0x00400000u, 0x5au);
+   z24_oracle(depth, bytes, &v);
+   assert(v.near_pass && v.far_pass && v.exterior_pass);
+   assert(v.stencil_observed);
+   assert(v.stencil_min == 0x5au && v.stencil_max == 0x5au);
+
+   /* A 16-bit surface stores no stencil, so it reports none. */
+   uint16_t *z16 = malloc(PIXELS * sizeof(uint16_t));
+   assert(z16 != NULL);
+   paint_depth(z16, 0x4000, false);
+   r300_zb_depth_control_depth_oracle(z16, PIXELS * sizeof(uint16_t), &v);
+   assert(v.near_pass);
+   assert(!v.stencil_observed && v.stencil_min == 0u && v.stencil_max == 0u);
+
+   free(z16);
+   free(depth);
+   printf("stencil observation ok\n");
+}
+
+/* The Z24 stream differs from the retained Z16 one in ZB_FORMAT alone.
+ * Both surfaces are linear, so the DEPTHPITCH tile bits are zero on each
+ * and no other word moves; a second differing dword would mean the
+ * surface reached something beyond the depth binding.
+ */
+static void
+test_surface_selection_moves_one_dword(void)
+{
+   struct r300_zb_depth_control_ib golden, from_z16, from_z24;
+   assert(r300_zb_depth_control_reference_emit(&golden) == 0);
+   assert(r300_zb_depth_control_reference_emit_surface(
+             &r300_zb_depth_surface_z16_linear, &from_z16) == 0);
+   assert(r300_zb_depth_control_reference_emit_surface(
+             &r300_zb_depth_surface_z24_linear, &from_z24) == 0);
+
+   /* Naming the Z16 surface explicitly reproduces the retained stream
+    * byte for byte. */
+   assert(from_z16.ib_size_dwords == golden.ib_size_dwords);
+   assert(memcmp(from_z16.ib, golden.ib,
+                 golden.ib_size_dwords * sizeof(uint32_t)) == 0);
+
+   assert(from_z24.ib_size_dwords == golden.ib_size_dwords);
+   uint32_t differing = 0, where = 0;
+   for (uint32_t i = 0; i < golden.ib_size_dwords; i++) {
+      if (from_z24.ib[i] != golden.ib[i]) {
+         differing++;
+         where = i;
+      }
+   }
+   assert(differing == 1);
+   assert(golden.ib[where] == R300_DEPTHFORMAT_16BIT_INT_Z);
+   assert(from_z24.ib[where] ==
+          R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL);
+
+   /* The relocation sites are unmoved, so the depth binding still
+    * relocates at the same index. */
+   assert(from_z24.reloc_site_count == golden.reloc_site_count);
+   for (uint32_t i = 0; i < golden.reloc_site_count; i++) {
+      assert(from_z24.reloc_sites[i].ib_index == golden.reloc_sites[i].ib_index);
+      assert(from_z24.reloc_sites[i].slot == golden.reloc_sites[i].slot);
+   }
+
+   r300_zb_depth_control_release(&golden);
+   r300_zb_depth_control_release(&from_z16);
+   r300_zb_depth_control_release(&from_z24);
+   printf("surface selection moves one dword ok\n");
+}
+
+/* The resolver addresses a linear surface and refuses everything else,
+ * so a tiled surface reaching an oracle is a refusal rather than a wrong
+ * byte.
+ */
+static void
+test_linear_resolver(void)
+{
+   const struct r300_zb_depth_surface *s = &r300_zb_depth_surface_z24_linear;
+   uint64_t off = 0;
+
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 0u, 0u, &off) == 0);
+   assert(off == 0u);
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 1u, 0u, &off) == 0);
+   assert(off == 4u);
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 0u, 1u, &off) == 0);
+   assert(off == 256u);
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 63u, 63u, &off) == 0);
+   assert(off == 4u * (63u * 64u + 63u));
+
+   /* The base displaces every pixel by the same amount. */
+   assert(r300_zb_depth_address_linear.byte_offset(s, 2048u, 0u, 0u, &off) ==
+          0);
+   assert(off == 2048u);
+
+   /* The Z16 surface halves every offset, which is the only thing the
+    * pixel width changes. */
+   assert(r300_zb_depth_address_linear.byte_offset(
+             &r300_zb_depth_surface_z16_linear, 0u, 0u, 1u, &off) == 0);
+   assert(off == 128u);
+
+   /* Outside the render extent, a tiled surface, and a null output each
+    * refuse. */
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 64u, 0u, &off) ==
+          -EINVAL);
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 0u, 64u, &off) ==
+          -EINVAL);
+   assert(r300_zb_depth_address_linear.byte_offset(
+             &r300_zb_depth_surface_z24_microtiled, 0u, 0u, 0u, &off) ==
+          -EINVAL);
+   assert(r300_zb_depth_address_linear.byte_offset(
+             &r300_zb_depth_surface_z24_macrotiled, 0u, 0u, 0u, &off) ==
+          -EINVAL);
+   assert(r300_zb_depth_address_linear.byte_offset(s, 0u, 0u, 0u, NULL) ==
+          -EINVAL);
+   assert(r300_zb_depth_address_linear.byte_offset(NULL, 0u, 0u, 0u, &off) ==
+          -EINVAL);
+   /* A base one byte below the 64-bit ceiling carries the sum out of
+    * range, which refuses rather than wrapping to a low offset. */
+   assert(r300_zb_depth_address_linear.byte_offset(s, UINT64_MAX, 1u, 0u,
+                                                   &off) == -EINVAL);
+
+   /* An oracle handed a tiled surface reaches no pixel, so every pass
+    * fails closed. */
+   uint32_t *depth = malloc(PIXELS * sizeof(uint32_t));
+   assert(depth != NULL);
+   struct r300_zb_depth_control_depth_verdict v;
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_microtiled, &r300_zb_depth_address_linear, 0u,
+      depth, (uint64_t)PIXELS * sizeof(uint32_t), &v);
+   assert(!v.near_pass && !v.far_pass && !v.exterior_pass && !v.canary_pass);
+   /* No sample filled either range, so both report zero rather than the
+    * UINT32_MAX the scan seeds its minimum with. */
+   assert(v.near_samples == 0 && v.near_min == 0u && v.near_max == 0u);
+   assert(v.stencil_min == 0u && v.stencil_max == 0u);
+   /* The flag still names what the format stores, which no absent sample
+    * changes. */
+   assert(v.stencil_observed);
+   free(depth);
+
+   printf("linear resolver ok\n");
+}
+
+/* The format the emitted stream carries, read back from the stream
+ * itself.  A consumer holding a separate record of the surface compares
+ * the two, so the recorded selection and the recorded bytes agree by
+ * check rather than by the order a recorder set them in.
+ */
+static void
+test_ib_depth_format_readback(void)
+{
+   struct r300_zb_depth_control_ib z16, z24;
+   assert(r300_zb_depth_control_reference_emit_surface(
+             &r300_zb_depth_surface_z16_linear, &z16) == 0);
+   assert(r300_zb_depth_control_reference_emit_surface(
+             &r300_zb_depth_surface_z24_linear, &z24) == 0);
+
+   uint32_t format = 0;
+   assert(r300_zb_depth_control_ib_depth_format(z16.ib, z16.ib_size_dwords,
+                                                &format) == 0);
+   assert(format == R300_DEPTHFORMAT_16BIT_INT_Z);
+   assert(format == r300_zb_depth_surface_z16_linear.depth_format);
+
+   assert(r300_zb_depth_control_ib_depth_format(z24.ib, z24.ib_size_dwords,
+                                                &format) == 0);
+   assert(format == R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL);
+   assert(format == r300_zb_depth_surface_z24_linear.depth_format);
+
+   /* A stream carrying no such run, a stream too short to hold a
+    * one-dword write, and null arguments each refuse. */
+   uint32_t stray[4] = { 0u, 1u, 2u, 3u };
+   assert(r300_zb_depth_control_ib_depth_format(stray, 4u, &format) ==
+          -EINVAL);
+   assert(r300_zb_depth_control_ib_depth_format(z16.ib, 1u, &format) ==
+          -EINVAL);
+   assert(r300_zb_depth_control_ib_depth_format(NULL, 4u, &format) == -EINVAL);
+   assert(r300_zb_depth_control_ib_depth_format(z16.ib, z16.ib_size_dwords,
+                                                NULL) == -EINVAL);
+
+   /* A stream whose format dword is corrupted reports the corrupted
+    * value, which is what lets a consumer notice the disagreement. */
+   uint32_t saved = 0, index = 0;
+   for (uint32_t i = 0; i + 1u < z24.ib_size_dwords; i++) {
+      if (z24.ib[i + 1u] == R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL) {
+         index = i + 1u;
+         break;
+      }
+   }
+   assert(index != 0);
+   saved = z24.ib[index];
+   z24.ib[index] = R300_DEPTHFORMAT_16BIT_INT_Z;
+   assert(r300_zb_depth_control_ib_depth_format(z24.ib, z24.ib_size_dwords,
+                                                &format) == 0);
+   assert(format == R300_DEPTHFORMAT_16BIT_INT_Z);
+   assert(format != r300_zb_depth_surface_z24_linear.depth_format);
+   z24.ib[index] = saved;
+
+   r300_zb_depth_control_release(&z16);
+   r300_zb_depth_control_release(&z24);
+   printf("ib depth-format readback ok\n");
+}
+
+/* The reader states its own grammar rather than the emitter's habits.
+ * A one-register run writes every payload dword to the base register, so
+ * a slot index would name the wrong register under it; r300_pm4_packet0
+ * never sets the bit, so a hand-built stream is the only way to present
+ * one and the only way to test the refusal.
+ */
+static void
+test_ib_depth_format_one_reg_wr(void)
+{
+   uint32_t format = 0xabcdefu;
+
+   /* An ordinary one-value packet-0 targeting ZB_FORMAT reads back. */
+   uint32_t ordinary[2] = { CP_PACKET0(R300_ZB_FORMAT, 0),
+                            R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL };
+   assert(r300_zb_depth_control_ib_depth_format(ordinary, 2u, &format) == 0);
+   assert(format == R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL);
+
+   /* The same header carrying ONE_REG_WR refuses, and leaves the output
+    * as the caller left it. */
+   format = 0xabcdefu;
+   uint32_t one_reg[2] = { CP_PACKET0(R300_ZB_FORMAT, 0) | RADEON_ONE_REG_WR,
+                           R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL };
+   assert(r300_zb_depth_control_ib_depth_format(one_reg, 2u, &format) ==
+          -EINVAL);
+   assert(format == 0xabcdefu);
+
+   /* A repeated-register run is where the two readings differ: under the
+    * sequential rule slot 1 would name ZB_FORMAT + 4, under ONE_REG_WR
+    * it names ZB_FORMAT again.  The reader refuses rather than choosing. */
+   uint32_t repeated[3] = { CP_PACKET0(R300_ZB_FORMAT - 4u, 1) |
+                               RADEON_ONE_REG_WR,
+                            0x11111111u, 0x22222222u };
+   assert(r300_zb_depth_control_ib_depth_format(repeated, 3u, &format) ==
+          -EINVAL);
+
+   /* Without the bit the same run walks, so ZB_FORMAT is the second
+    * payload dword. */
+   repeated[0] = CP_PACKET0(R300_ZB_FORMAT - 4u, 1);
+   assert(r300_zb_depth_control_ib_depth_format(repeated, 3u, &format) == 0);
+   assert(format == 0x22222222u);
+
+   /* A run naming ZB_FORMAT whose payload the stream does not carry
+    * refuses rather than reading past the end. */
+   assert(r300_zb_depth_control_ib_depth_format(repeated, 2u, &format) ==
+          -EINVAL);
+
+   printf("ib depth-format grammar ok\n");
+}
+
+/* A resolver placing a pixel outside the caller's mapping.  The oracle
+ * bound-checks the offset a resolver returns rather than trusting the
+ * allocation precheck, because that precheck bounds the contiguous
+ * surface footprint and cannot bound an arbitrary callback's result.
+ */
+static uint64_t stray_offset;
+static uint32_t stray_x, stray_y;
+
+static int
+stray_byte_offset(const struct r300_zb_depth_surface *surface,
+                  uint64_t base_offset_bytes, uint32_t x, uint32_t y,
+                  uint64_t *byte_offset_out)
+{
+   if (x == stray_x && y == stray_y) {
+      if (byte_offset_out == NULL)
+         return -EINVAL;
+      *byte_offset_out = stray_offset;
+      return 0;
+   }
+   return r300_zb_depth_address_linear.byte_offset(surface, base_offset_bytes,
+                                                   x, y, byte_offset_out);
+}
+
+static const struct r300_zb_depth_address_resolver stray_resolver = {
+   .name = "stray",
+   .byte_offset = stray_byte_offset,
+};
+
+static void
+test_oracle_bounds_a_resolver_result(void)
+{
+   /* Twice the surface's bytes, so a read past the declared mapping
+    * lands in defined storage and the verdict difference is the
+    * measurement rather than a crash. */
+   const uint64_t declared = (uint64_t)PIXELS * sizeof(uint32_t);
+   uint32_t *depth = malloc((size_t)declared * 2u);
+   assert(depth != NULL);
+   struct r300_zb_depth_control_depth_verdict v;
+
+   /* The near pixel the stray resolver displaces. */
+   stray_x = 8u;
+   stray_y = 32u;
+
+   /* A resolver that agrees with the linear one everywhere reproduces
+    * the passing verdict, so the harness itself is calibrated. */
+   paint_depth_z24(depth, 0x00400000u, 0u);
+   for (uint32_t i = 0; i < PIXELS; i++)
+      depth[PIXELS + i] = 0x00400000u << 8;
+   stray_offset = (uint64_t)(stray_y * R300_ZB_DEPTH_CONTROL_PITCH_PIXELS +
+                             stray_x) *
+                  4u;
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_linear, &stray_resolver, 0u, depth, declared,
+      &v);
+   assert(v.near_pass && v.far_pass && v.exterior_pass && v.canary_pass);
+
+   /* The same image with that one pixel resolved to the first byte past
+    * the declared mapping.  A valid near word sits there, so an
+    * unchecked read would pass; the bound is what refuses. */
+   stray_offset = declared;
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_linear, &stray_resolver, 0u, depth, declared,
+      &v);
+   assert(!v.near_pass && !v.far_pass && !v.exterior_pass && !v.canary_pass);
+
+   /* One whole word past, and the straddling case one byte short of a
+    * whole word, are the two boundaries the check states separately. */
+   stray_offset = declared + 4u;
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_linear, &stray_resolver, 0u, depth, declared,
+      &v);
+   assert(!v.near_pass);
+
+   stray_offset = declared - 3u;
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_linear, &stray_resolver, 0u, depth, declared,
+      &v);
+   assert(!v.near_pass);
+
+   /* The last word wholly inside the mapping is admitted, so the bound
+    * refuses what lies past it and nothing else. */
+   stray_offset = declared - 4u;
+   r300_zb_depth_control_depth_oracle_surface(
+      &r300_zb_depth_surface_z24_linear, &stray_resolver, 0u, depth, declared,
+      &v);
+   assert(v.near_pass);
+
+   free(depth);
+   printf("oracle bounds a resolver result ok\n");
+}
+
 /* The two triangles are disjoint at the verdict margin, so no pixel
  * carries both regions' verdicts and the two halves decide separately.
  */
@@ -681,6 +1161,13 @@ main(void)
    test_surface_parameterization();
    test_color_oracle();
    test_depth_oracle();
+   test_z24_linear_depth_oracle();
+   test_stencil_is_observed();
+   test_surface_selection_moves_one_dword();
+   test_linear_resolver();
+   test_ib_depth_format_readback();
+   test_ib_depth_format_one_reg_wr();
+   test_oracle_bounds_a_resolver_result();
    test_regions_disjoint();
    printf("r300_zb_depth_control_cell_test: all checks passed\n");
    return 0;

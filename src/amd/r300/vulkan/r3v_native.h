@@ -609,6 +609,33 @@ struct r3v_native_deferred_draw {
    uint32_t target_height;
 };
 
+/* The depth surface a depth-control recording binds.  The cell emits
+ * from a descriptor and its allocation follows that descriptor's own
+ * footprint, so the selector is what the recorder, the queue's
+ * frozen-geometry predicate, and the retained manifest all read; a
+ * command buffer carrying no depth-control cell reports Z16 linear, the
+ * shape every prior recording had.
+ */
+/* One entry per selectable surface: the enumerator suffix and the common
+ * descriptor it names.  The enum, the descriptor lookup, and the
+ * catalogue test are all generated from this list, so a third surface
+ * joins every one of them at once and the test that holds each entry to
+ * r300_zb_depth_surface_check, to a fill width the host can store, and
+ * to the cell's geometry covers it without being edited.
+ */
+#define R3V_NATIVE_ZB_DEPTH_SURFACES(X)                                       \
+   X(Z16_LINEAR, z16_linear)                                                  \
+   X(Z24_LINEAR, z24_linear)
+
+enum r3v_native_zb_depth_surface {
+#define R3V_NATIVE_ZB_DEPTH_SURFACE_ENUMERATOR(suffix, descriptor)            \
+   R3V_NATIVE_ZB_DEPTH_SURFACE_##suffix,
+   R3V_NATIVE_ZB_DEPTH_SURFACES(R3V_NATIVE_ZB_DEPTH_SURFACE_ENUMERATOR)
+#undef R3V_NATIVE_ZB_DEPTH_SURFACE_ENUMERATOR
+};
+
+struct r300_zb_depth_surface;
+
 /* Native command buffer: one fixed IB dword vector plus its BO references,
  * installed whole by a device-internal emitter or by the public triangle
  * recording surface.  The recording-state members carry the public
@@ -686,6 +713,14 @@ struct r3v_native_cmd_buffer {
     * array reads.
     */
    struct r3v_native_memory *owned_slot;
+   /* The depth surface a recorded depth-control cell binds, meaningful
+    * exactly when cell_kind is R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL:
+    * the depth recorder is the only writer and the queue's
+    * frozen-geometry predicate the only reader, and that predicate
+    * reaches this field only under that kind.  It sizes the depth
+    * allocation, so the shape the recorder admitted is the shape the
+    * predicate judges. */
+   enum r3v_native_zb_depth_surface zb_depth_surface;
    /* The multisample resolve cell's sample-expanded color surface,
     * allocated at that recording and released with the buffer.  It
     * takes RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU
@@ -2125,10 +2160,33 @@ VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
  */
 #define R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION 4096u
 
+/* The descriptor a selector names, or NULL for a value outside the
+ * enumeration. */
+const struct r300_zb_depth_surface *r3v_native_zb_depth_surface_descriptor(
+   enum r3v_native_zb_depth_surface selection);
+
+/* Depth bytes a selector's allocation carries: the descriptor's pitch,
+ * allocation rows, and pixel width.  Returns 0 for a selector outside
+ * the enumeration, which no caller treats as a size. */
+uint32_t r3v_native_zb_depth_surface_bytes(
+   enum r3v_native_zb_depth_surface selection);
+
+/* Records the depth control against the Z16 linear surface, the shape
+ * the retained cell has always emitted. */
 VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
                                             VkDeviceMemory vertexMemory,
                                             VkDeviceMemory colorMemory,
                                             VkDeviceMemory depthMemory);
+
+/* Records the depth control against a named depth surface.  The depth
+ * allocation is sized from that surface rather than from the Z16
+ * footprint, and the recorded selection travels to the queue, so a
+ * recording the recorder admits is a submission the frozen-geometry
+ * predicate admits.  A selector outside the enumeration refuses. */
+VkResult r3v_native_record_zb_depth_control_surface(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r3v_native_zb_depth_surface surface);
 
 /* Producer-only recorder: poisons the whole carrier allocation, emits the
  * reference R2VB producer pass
