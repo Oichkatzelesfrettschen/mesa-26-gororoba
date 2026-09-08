@@ -65,7 +65,7 @@ def staged_payload(configured_build: Path) -> Path:
         "prefix=/usr\ndridriverdir=/usr/lib/dri\n"
     )
     (stage / "usr/lib/pkgconfig/gbm.pc").write_text(
-        "prefix=/usr\nlibdir=${prefix}/lib\n"
+        "prefix=/usr\nlibdir=${prefix}/lib\ngbmbackendspath=${libdir}/gbm\n"
     )
     manifest = stage / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
     manifest.parent.mkdir(parents=True)
@@ -90,10 +90,91 @@ def test_missing_loader_artifact(staged_payload: Path, relative: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "prefix", ("/opt/mesa-gororoba-debug-optimized", "/usr/local/mesa")
+    "prefix",
+    (
+        "/opt/mesa-gororoba-debug-optimized",
+        "/usr/local/mesa",
+        "/tmp/mesa-prefix",
+        "/home/builder/mesa",
+        "/var/tmp/mesa-root/prefix",
+        "/usr/lib/../../tmp/mesa",
+    ),
 )
 def test_pkgconfig_prefix_leak(staged_payload: Path, prefix: str) -> None:
     (staged_payload / "usr/lib/pkgconfig/gbm.pc").write_text(f"prefix={prefix}\n")
+    with pytest.raises(ValueError, match="pkg-config"):
+        layout.check_stage(staged_payload)
+
+
+def test_pkgconfig_resolves_stock_variables(staged_payload: Path) -> None:
+    (staged_payload / "usr/lib/pkgconfig/gbm.pc").write_text(
+        "# Package-local locations resolve in the installed filesystem.\n"
+        "prefix = ${pcfiledir}/../..\n"
+        "exec_prefix=${prefix}\n"
+        "libdir = ${exec_prefix}/lib\n"
+        "includedir=${prefix}/include\n"
+        "backenddir=${libdir}/gbm\n"
+        "gbmbackendspath=${backenddir}\n"
+        "Name: gbm\n"
+        "Description: Mesa gbm library\n"
+        "Version: 26.2.0\n"
+        "Libs: -L${libdir} -lgbm\n"
+        "Libs.private: -L ${libdir}/mesa -ldrm\n"
+        "Cflags: -I${includedir} -isystem ${includedir}/mesa\n"
+    )
+    layout.check_stage(staged_payload)
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "libdir=/tmp/mesa/lib\n",
+        "libdir=${prefix}/lib64\n",
+        "includedir=../include\n",
+        "libdir=${missing}/lib\n",
+        "first=${second}\nsecond=${first}\n",
+        "gbmbackendspath=${prefix}/local/lib/gbm\n",
+        "Cflags: -I/tmp/mesa/include\n",
+        "Cflags: -isystem /home/builder/include\n",
+        "Libs: -L /var/tmp/mesa/lib -lgbm\n",
+        "Libs: -L\n",
+        "Libs: -Wl,-rpath,/tmp/mesa/lib\n",
+        "Libs: -Rrelative-library-directory\n",
+        "Cflags: -isysroot relative-root\n",
+        "Libs: ${unresolved}\n",
+        "prefix=/usr\nprefix=/usr\n",
+        "prefix=${prefix}\n",
+        "prefix=$ORIGIN\n",
+    ),
+)
+def test_pkgconfig_rejects_invalid_resolved_paths(
+    staged_payload: Path, change: str
+) -> None:
+    path = staged_payload / "usr/lib/pkgconfig/gbm.pc"
+    variables = {
+        "prefix": "/usr",
+        "libdir": "${prefix}/lib",
+        "gbmbackendspath": "${libdir}/gbm",
+    }
+    changed_names = {
+        line.split("=", 1)[0] for line in change.splitlines() if "=" in line
+    }
+    path.write_text(
+        "".join(
+            f"{name}={value}\n"
+            for name, value in variables.items()
+            if name not in changed_names
+        )
+        + change
+    )
+    with pytest.raises(ValueError, match="pkg-config"):
+        layout.check_stage(staged_payload)
+
+
+def test_pkgconfig_requires_active_dri_directory(staged_payload: Path) -> None:
+    (staged_payload / "usr/lib/pkgconfig/dri.pc").write_text(
+        "prefix=/usr\n# dridriverdir=/usr/lib/dri\n"
+    )
     with pytest.raises(ValueError, match="pkg-config"):
         layout.check_stage(staged_payload)
 
@@ -172,6 +253,164 @@ def test_elf_loader_prefix_leak(
     )
     with pytest.raises(ValueError, match="ELF loader"):
         layout.check_stage(staged_payload)
+
+
+@pytest.fixture
+def elf_source(tmp_path: Path) -> Path:
+    source = tmp_path / "library.c"
+    source.write_text("int mesa_package_marker(void) { return 1; }\n")
+    return source
+
+
+@pytest.mark.parametrize("dynamic_tag", ("RPATH", "RUNPATH"))
+@pytest.mark.parametrize(
+    "search_path,valid",
+    (
+        ("/usr/lib", True),
+        ("/usr/lib/mesa:/usr/lib", True),
+        ("/usr/lib/mesa;/usr/lib", True),
+        ("$ORIGIN", True),
+        ("${ORIGIN}/mesa", True),
+        ("$ORIGIN/../lib", True),
+        ("/tmp/mesa/lib", False),
+        ("/home/builder/mesa/lib", False),
+        ("/var/tmp/mesa-root/prefix/lib", False),
+        ("$ORIGIN/../../tmp", False),
+        ("/usr/lib64", False),
+        ("/usr/lib/../local/lib", False),
+        ("/usr/lib:", False),
+        ("lib", False),
+        ("$ORIGIN_SUFFIX/lib", False),
+        ("$LIB", False),
+    ),
+)
+def test_real_elf_search_paths(
+    staged_payload: Path,
+    elf_source: Path,
+    dynamic_tag: str,
+    search_path: str,
+    valid: bool,
+) -> None:
+    target = staged_payload / "usr/lib/libgbm.so.1"
+    dtags = "--enable-new-dtags" if dynamic_tag == "RUNPATH" else "--disable-new-dtags"
+    subprocess.run(
+        [
+            "cc",
+            "-shared",
+            "-fPIC",
+            "-Werror",
+            str(elf_source),
+            f"-Wl,{dtags}",
+            f"-Wl,-rpath,{search_path}",
+            "-o",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    dynamic = subprocess.run(
+        ["readelf", "--dynamic", str(target)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert f"({dynamic_tag})" in dynamic
+    if valid:
+        layout.check_stage(staged_payload)
+    else:
+        with pytest.raises(ValueError, match="ELF loader"):
+            layout.check_stage(staged_payload)
+
+
+@pytest.mark.parametrize(
+    "needed,valid",
+    (
+        ("libmesa-package-dependency.so", True),
+        ("/usr/lib/libmesa-package-dependency.so", True),
+        ("$ORIGIN/libmesa-package-dependency.so", True),
+        ("${ORIGIN}/mesa/libmesa-package-dependency.so", True),
+        ("/tmp/libmesa-package-dependency.so", False),
+        ("../libmesa-package-dependency.so", False),
+        ("$ORIGIN/../../tmp/libmesa-package-dependency.so", False),
+    ),
+)
+def test_real_elf_needed_paths(
+    staged_payload: Path, elf_source: Path, needed: str, valid: bool
+) -> None:
+    dependency = elf_source.parent / "libdependency.so"
+    subprocess.run(
+        [
+            "cc",
+            "-shared",
+            "-fPIC",
+            "-Werror",
+            str(elf_source),
+            f"-Wl,-soname,{needed}",
+            "-o",
+            str(dependency),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    target = staged_payload / "usr/lib/libgbm.so.1"
+    subprocess.run(
+        [
+            "cc",
+            "-shared",
+            "-fPIC",
+            "-Werror",
+            str(elf_source),
+            "-Wl,--no-as-needed",
+            str(dependency),
+            "-o",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    dynamic = subprocess.run(
+        ["readelf", "--dynamic", str(target)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert f"Shared library: [{needed}]" in dynamic
+    if valid:
+        layout.check_stage(staged_payload)
+    else:
+        with pytest.raises(ValueError, match="ELF loader"):
+            layout.check_stage(staged_payload)
+
+
+@pytest.mark.parametrize(
+    "search_path,valid", (("$ORIGIN", True), ("$ORIGIN/..", False))
+)
+def test_real_elf_origin_checks_each_installed_alias(
+    staged_payload: Path, elf_source: Path, search_path: str, valid: bool
+) -> None:
+    target = staged_payload / "usr/lib/dri/libmesa-package-origin.so"
+    subprocess.run(
+        [
+            "cc",
+            "-shared",
+            "-fPIC",
+            "-Werror",
+            str(elf_source),
+            f"-Wl,-rpath,{search_path}",
+            "-o",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    link = staged_payload / "usr/lib/libgbm.so.1"
+    link.unlink()
+    link.symlink_to("dri/libmesa-package-origin.so")
+    if valid:
+        layout.check_stage(staged_payload)
+    else:
+        with pytest.raises(ValueError, match="ELF loader"):
+            layout.check_stage(staged_payload)
 
 
 def test_build_owned_default_and_unprivileged_install() -> None:

@@ -7,10 +7,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import posixpath
 import re
+import shlex
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REQUIRED_OPTIONS = {
     "prefix": "/usr",
@@ -127,6 +130,143 @@ def staged_file(stage: Path, relative: str) -> Path:
     return resolved
 
 
+def stock_path(value: str, roots: tuple[str, ...], label: str) -> str:
+    if not value.startswith("/") or "$" in value:
+        raise ValueError(f"{label} requires an absolute resolved stock path: {value}")
+    normalized = posixpath.normpath(value)
+    path = PurePosixPath(normalized)
+    if not any(path.is_relative_to(root) for root in roots):
+        raise ValueError(f"{label} escapes its stock directories: {value}")
+    return normalized
+
+
+def check_pkgconfig(path: Path, installed_path: PurePosixPath) -> None:
+    label = f"pkg-config metadata {installed_path}"
+    variables = {"pcfiledir": str(installed_path.parent)}
+    fields: dict[str, str] = {}
+    content = path.read_text().replace("\\\n", "")
+    for line in content.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.]+)\s*([=:])\s*(.*)", line)
+        if match is None:
+            raise ValueError(f"{label} has an invalid assignment or field: {line}")
+        name, separator, value = match.groups()
+        entries = variables if separator == "=" else fields
+        if name in entries:
+            raise ValueError(f"{label} repeats {name}")
+        entries[name] = value
+
+    resolved: dict[str, str] = {}
+
+    def expand(value: str, active: tuple[str, ...] = ()) -> str:
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name in active or name not in variables:
+                raise ValueError(f"{label} has a cyclic or undefined variable: {name}")
+            if name not in resolved:
+                resolved[name] = expand(variables[name], (*active, name))
+            return resolved[name]
+
+        expanded = re.sub(r"\$\{([^{}]+)\}", replace, value)
+        if "$" in expanded:
+            raise ValueError(f"{label} has an unresolved variable: {value}")
+        return expanded
+
+    for name in variables:
+        value = expand("${" + name + "}")
+        if value.startswith("/") and posixpath.normpath(value) != "/usr":
+            stock_path(value, ("/usr/lib", "/usr/include", "/usr/share"), label)
+    expected_paths = {
+        "prefix": "/usr",
+        "exec_prefix": "/usr",
+        "libdir": "/usr/lib",
+        "includedir": "/usr/include",
+    }
+    if path.name == "dri.pc":
+        expected_paths["dridriverdir"] = "/usr/lib/dri"
+    if path.name == "gbm.pc":
+        expected_paths["gbmbackendspath"] = "/usr/lib/gbm"
+    required = {"prefix"}
+    if path.name == "dri.pc":
+        required.add("dridriverdir")
+    if path.name == "gbm.pc":
+        required.update(("libdir", "gbmbackendspath"))
+    for name, expected in expected_paths.items():
+        if name not in variables and name not in required:
+            continue
+        value = resolved.get(name, "")
+        if stock_path(value, (expected,), label) != expected:
+            raise ValueError(f"{label} requires {name}={expected}")
+
+    for name, value in fields.items():
+        expanded = expand(value)
+        if name not in {"Libs", "Libs.private", "Cflags", "Cflags.private"}:
+            continue
+        arguments = shlex.split(expanded)
+        position = 0
+        while position < len(arguments):
+            argument = arguments[position]
+            roots = ("/usr/lib",) if name.startswith("Libs") else ("/usr/include",)
+            prefixes = (
+                ("-L",)
+                if name.startswith("Libs")
+                else ("-isystem", "-iquote", "-idirafter", "-I")
+            )
+            for prefix in prefixes:
+                if argument.startswith(prefix):
+                    directory = argument[len(prefix) :]
+                    if not directory:
+                        position += 1
+                        if position == len(arguments):
+                            raise ValueError(f"{label} lacks a path after {prefix}")
+                        directory = arguments[position]
+                    stock_path(directory, roots, label)
+                    break
+            else:
+                # Mesa's generated metadata exports library names, include paths,
+                # and pthread linkage. Other options need an explicit path rule.
+                library = (
+                    name.startswith("Libs")
+                    and argument.startswith("-l")
+                    and len(argument) > 2
+                )
+                if "/" in argument or not (library or argument == "-pthread"):
+                    raise ValueError(f"{label} has an unsupported argument: {argument}")
+            position += 1
+
+
+def check_elf(path: Path, installed_path: PurePosixPath) -> None:
+    result = subprocess.run(
+        ["readelf", "--dynamic", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    label = f"ELF loader metadata {installed_path}"
+    if result.stderr:
+        raise ValueError(f"{label}: {result.stderr.strip()}")
+    for line in result.stdout.splitlines():
+        if not re.search(r"\((?:RPATH|RUNPATH|NEEDED)\)", line):
+            continue
+        match = re.search(r"\((RPATH|RUNPATH|NEEDED)\).*\[([^\]]*)\]", line)
+        if match is None:
+            raise ValueError(f"{label} has an unreadable dynamic path: {line}")
+        tag, value = match.groups()
+        if tag == "NEEDED" and value and "/" not in value and "$" not in value:
+            continue
+        entries = [value] if tag == "NEEDED" else re.split("[:;]", value)
+        for entry in entries:
+            expanded = re.sub(
+                r"\$(?:\{ORIGIN\}|ORIGIN\b)",
+                lambda _match: str(installed_path.parent),
+                entry,
+            )
+            stock_path(expanded, ("/usr/lib",), label)
+
+
 def check_stage(stage: Path) -> None:
     if stage.is_symlink() or stage.resolve(strict=True) != stage:
         raise ValueError("package staging root must be a physical directory")
@@ -147,32 +287,13 @@ def check_stage(stage: Path) -> None:
             staged_file(stage, str(relative))
         if not path.is_file():
             continue
+        installed_path = PurePosixPath("/") / relative
         if path.suffix == ".pc":
-            content = path.read_text()
-            if "/opt/" in content or "/usr/local" in content:
-                raise ValueError(
-                    f"pkg-config metadata leaks an alternate prefix: {relative}"
-                )
-            if path.name == "dri.pc" and "dridriverdir=/usr/lib/dri" not in content:
-                raise ValueError(
-                    "dri.pc must export the stock dridriverdir=/usr/lib/dri"
-                )
+            check_pkgconfig(path, installed_path)
         with path.open("rb") as artifact:
             is_elf = artifact.read(4) == b"\x7fELF"
         if is_elf:
-            dynamic = subprocess.run(
-                ["readelf", "--dynamic", str(path)],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
-            if re.search(
-                r"\((?:RPATH|RUNPATH|NEEDED)\).*\[(?:[^\]]*/opt/|[^\]]*/usr/local)",
-                dynamic,
-            ):
-                raise ValueError(
-                    f"ELF loader metadata leaks an alternate prefix: {relative}"
-                )
+            check_elf(path, installed_path)
 
 
 def publish_stage(builddir: Path, stage: Path) -> None:
