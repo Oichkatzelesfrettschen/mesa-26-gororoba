@@ -481,8 +481,10 @@ r3v_native_cell_geometry_unfrozen(
       if (cmd_buffer->reference_count != R300_ZB_DISCOVERY_SLOT_COUNT)
          return true;
       const struct r300_zb_depth_discovery_scenario *scenario =
-         r3v_native_zb_discovery_scenario_descriptor(
-            cmd_buffer->zb_discovery_scenario);
+         cmd_buffer->zb_coordinate_discovery_configured
+            ? &cmd_buffer->zb_coordinate_discovery.scenario
+            : r3v_native_zb_discovery_scenario_descriptor(
+                 cmd_buffer->zb_discovery_scenario);
       /* A selector cast in from outside the enumeration names no
        * scenario, and the recorder refuses one, so a command buffer
        * carrying it was altered after recording. */

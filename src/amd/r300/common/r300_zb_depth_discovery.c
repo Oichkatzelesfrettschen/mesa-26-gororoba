@@ -3,6 +3,7 @@
 #include "r300_zb_depth_discovery.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 
 /* The campaign's coordinate.  It sits away from both axes and off every
@@ -54,6 +55,108 @@ const struct r300_zb_depth_discovery_scenario
 const struct r300_zb_depth_discovery_scenario
    r300_zb_depth_discovery_z24_macrotiled = DISCOVERY_SCENARIO(
       "z24-macrotiled", &r300_zb_depth_surface_z24_macrotiled, 0x00u);
+
+int
+r300_zb_coordinate_discovery_init(
+   enum r300_zb_coordinate_discovery_layout layout, uint32_t pixel_x,
+   uint32_t pixel_y, uint32_t pitch_pixels, uint32_t base_bytes,
+   struct r300_zb_coordinate_discovery *out)
+{
+   if (out == NULL || pixel_x >= 64u || pixel_y >= 64u ||
+       (pitch_pixels != 64u && pitch_pixels != 96u) ||
+       (base_bytes != 2048u && base_bytes != 4096u))
+      return -EINVAL;
+
+   const struct r300_zb_depth_surface *template_surface = NULL;
+   const char *name = NULL;
+   switch (layout) {
+   case R300_ZB_COORDINATE_DISCOVERY_MICROTILED:
+      template_surface = &r300_zb_depth_surface_z24_microtiled;
+      name = "z24-coordinate-microtiled";
+      break;
+   case R300_ZB_COORDINATE_DISCOVERY_MACROTILED:
+      template_surface = &r300_zb_depth_surface_z24_macrotiled;
+      name = "z24-coordinate-macrotiled";
+      break;
+   default:
+      return -EINVAL;
+   }
+
+   memset(out, 0, sizeof(*out));
+   out->surface = *template_surface;
+   out->surface.name = name;
+   out->surface.pitch_pixels = pitch_pixels;
+
+   struct r300_zb_depth_layout computed;
+   if (r300_zb_depth_layout_compute(&out->surface, base_bytes, &computed) != 0)
+      return -EINVAL;
+   if (computed.total_bytes >
+       UINT64_MAX - R300_ZB_COORDINATE_DISCOVERY_TAIL_BYTES)
+      return -EINVAL;
+
+   out->scenario = (struct r300_zb_depth_discovery_scenario){
+      .name = name,
+      .surface = &out->surface,
+      .pixel_x = pixel_x,
+      .pixel_y = pixel_y,
+      .initial_depth_code = DISCOVERY_INITIAL_CODE,
+      .initial_stencil = 0u,
+      .marker_depth_code = DISCOVERY_MARKER_CODE,
+      .allocation_bytes =
+         computed.total_bytes + R300_ZB_COORDINATE_DISCOVERY_TAIL_BYTES,
+      .guard_bytes = base_bytes,
+   };
+   return r300_zb_depth_discovery_scenario_check(&out->scenario);
+}
+
+int
+r300_zb_coordinate_discovery_declaration(
+   const struct r300_zb_depth_discovery_scenario *scenario, char *bytes,
+   size_t capacity)
+{
+   if (bytes == NULL || capacity == 0u || scenario == NULL ||
+       r300_zb_depth_discovery_scenario_check(scenario) != 0 ||
+       scenario->surface->microtile != R300_ZB_MICROTILE_TILED)
+      return -EINVAL;
+
+   const char *layout = NULL;
+   switch (scenario->surface->macrotile) {
+   case R300_ZB_MACROTILE_LINEAR:
+      layout = "microtiled";
+      break;
+   case R300_ZB_MACROTILE_TILED:
+      layout = "macrotiled";
+      break;
+   default:
+      return -EINVAL;
+   }
+
+   struct r300_zb_depth_layout computed;
+   if (r300_zb_depth_discovery_layout(scenario, &computed) != 0)
+      return -EINVAL;
+   const int length = snprintf(
+      bytes, capacity,
+      "schema=r300-zb-coordinate-discovery/1\n"
+      "layout=%s\n"
+      "pixel_x=%u\n"
+      "pixel_y=%u\n"
+      "pitch_pixels=%u\n"
+      "base_bytes=%u\n"
+      "allocation_bytes=%llu\n"
+      "storage_bytes=%llu\n"
+      "initial_depth_code=0x%06x\n"
+      "initial_stencil=0x%02x\n"
+      "marker_depth_code=0x%06x\n",
+      layout, scenario->pixel_x, scenario->pixel_y,
+      scenario->surface->pitch_pixels, scenario->guard_bytes,
+      (unsigned long long)scenario->allocation_bytes,
+      (unsigned long long)computed.storage_bytes,
+      scenario->initial_depth_code, scenario->initial_stencil,
+      scenario->marker_depth_code);
+   if (length < 0 || (size_t)length >= capacity)
+      return -EINVAL;
+   return length;
+}
 
 int
 r300_zb_depth_discovery_scenario_check(

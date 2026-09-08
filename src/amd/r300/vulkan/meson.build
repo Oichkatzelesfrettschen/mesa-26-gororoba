@@ -1463,6 +1463,21 @@ r3v_native_attended_zb_depth_discovery = executable(
   install : false,
 )
 
+# Coordinate-selectable tiled depth discovery.  The separate executable
+# preserves the fixed-scenario apparatus and its retained binary identity.
+r3v_native_attended_zb_coordinate_discovery = executable(
+  'r3v_native_attended_zb_coordinate_discovery',
+  files('tests/r3v_native_attended_zb_coordinate_discovery.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Attended producer-only cell: performs a live DRM_RADEON_CS on RS485M
 # silicon, writing the vertex carrier alone -- no visible target and no
 # re-ingest -- so the CPU read-back of the carrier against the delivery
@@ -2248,6 +2263,16 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+
+  test(
+    'r3v-native-zb-coordinate-discovery-open',
+    r3v_native_zb_depth_discovery_harness,
+    args : ['open', 'coordinate'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
 
   test(
     'r3v-native-queue-transport-status',
@@ -4067,6 +4092,40 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
+  )
+
+  r3v_native_zb_coordinate_discovery_arming_runner = executable(
+    'r3v_native_zb_coordinate_discovery_arming_runner',
+    files('r3v_native_arming.c',
+          'tests/r3v_native_zb_coordinate_discovery_arming_runner.c',
+          '../common/r300_first_draw_state.c',
+          '../common/r300_fragment_binary.c',
+          '../common/r300_pm4_builder.c',
+          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_flat_color0_plan.c',
+          '../common/r300_rs_tex_adj_probe.c',
+          '../common/r300_noperspective_reciprocal_plan.c',
+          '../common/r300_noperspective_q_lane_plan.c',
+          '../common/r300_noperspective_mixed_carrier_plan.c',
+          '../common/r300_zb_depth_discovery.c',
+          '../common/r300_zb_depth_discovery_cell.c',
+          '../common/r300_zb_depth_state.c',
+          '../common/r300_zb_depth_surface.c',
+          '../common/r300_zb_depth_layout.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : [idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+  test(
+    'r3v-native-zb-coordinate-discovery-arming-runner',
+    prog_python,
+    args : [
+      files('tests/r3v_native_zb_coordinate_discovery_arming_runner_check.py'),
+      r3v_native_zb_coordinate_discovery_arming_runner,
+      r3v_native_attended_zb_coordinate_discovery,
+    ],
+    depends : [r3v_native_attended_zb_coordinate_discovery],
+    suite : ['r3v'],
   )
   test(
     'r3v-native-zb-depth-discovery-arming-runner',

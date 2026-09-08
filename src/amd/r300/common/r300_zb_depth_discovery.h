@@ -53,6 +53,7 @@
 #include "r300_zb_depth_surface.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Bytes the campaign allocates for every depth surface it discovers,
@@ -68,6 +69,17 @@
  * depth word: a guard carries no pixel, and a value distinct from every
  * initial storage word keeps a guard byte recognizable in a raw dump. */
 #define R300_ZB_DISCOVERY_GUARD_FILL 0xa3u
+
+/* Coordinate-discovery experiments keep one explicit tail beyond the
+ * suffix guard.  The raw scan classifies every tail byte independently,
+ * so a write beyond the computed tiled envelope cannot disappear into
+ * allocation padding. */
+#define R300_ZB_COORDINATE_DISCOVERY_TAIL_BYTES 4096u
+
+enum r300_zb_coordinate_discovery_layout {
+   R300_ZB_COORDINATE_DISCOVERY_MICROTILED,
+   R300_ZB_COORDINATE_DISCOVERY_MACROTILED,
+};
 
 /* One declared discovery experiment.  Every field is stated before the
  * run and retained with its result, so the observation is read against
@@ -96,6 +108,14 @@ struct r300_zb_depth_discovery_scenario {
    uint32_t guard_bytes;
 };
 
+/* Owns both halves of a configurable declaration.  scenario.surface points
+ * at surface, so callers must preserve this object's address while using the
+ * scenario. */
+struct r300_zb_coordinate_discovery {
+   struct r300_zb_depth_surface surface;
+   struct r300_zb_depth_discovery_scenario scenario;
+};
+
 /* The linear rung: the Z24 surface whose byte for a coordinate is known
  * in closed form, so a discovery run over it is checked against an
  * answer the apparatus did not produce.  Stencil seed zero. */
@@ -117,6 +137,23 @@ extern const struct r300_zb_depth_discovery_scenario
    r300_zb_depth_discovery_z24_microtiled;
 extern const struct r300_zb_depth_discovery_scenario
    r300_zb_depth_discovery_z24_macrotiled;
+
+/* Builds a bounded coordinate-discovery declaration.  The render extent
+ * remains 64x64.  Pitch accepts 64 and 96 pixels, the two discriminator
+ * geometries, and the surface base accepts 2048 and 4096 bytes.  Allocation
+ * size is two base-sized guards, the computed tiled storage envelope, and
+ * R300_ZB_COORDINATE_DISCOVERY_TAIL_BYTES of classified tail. */
+int r300_zb_coordinate_discovery_init(
+   enum r300_zb_coordinate_discovery_layout layout, uint32_t pixel_x,
+   uint32_t pixel_y, uint32_t pitch_pixels, uint32_t base_bytes,
+   struct r300_zb_coordinate_discovery *out);
+
+/* Writes the canonical UTF-8 declaration hashed by both coordinate-discovery
+ * executables.
+ * Returns the byte count excluding the terminator, or -EINVAL. */
+int r300_zb_coordinate_discovery_declaration(
+   const struct r300_zb_depth_discovery_scenario *scenario, char *bytes,
+   size_t capacity);
 
 /* Holds a scenario to what the surface, the allocation, and the packing
  * admit: a surface that passes its own check and offers raw mapping and

@@ -105,11 +105,11 @@ r300_zb_depth_discovery_emit_into(
    const struct r300_zb_depth_surface *surface = params->scenario->surface;
 
    /* The cell's vertices, contract, and color oracle carry the target
-    * extent as constants, so a surface naming other geometry would emit
-    * one layout and be read at another. */
+    * extent as constants, so a surface naming another extent would emit
+    * one layout and be read at another.  Depth pitch belongs to the depth
+    * layout alone and may exceed the fixed 64-pixel color pitch. */
    if (surface->width != R300_ZB_DISCOVERY_TARGET_WIDTH ||
-       surface->height != R300_ZB_DISCOVERY_TARGET_HEIGHT ||
-       surface->pitch_pixels != R300_ZB_DISCOVERY_PITCH_PIXELS)
+       surface->height != R300_ZB_DISCOVERY_TARGET_HEIGHT)
       return -EINVAL;
 
    struct r300_pm4_builder b;

@@ -20,6 +20,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/r300/common/r300_zb_hyperz_admission.h"
+#include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -676,7 +677,6 @@ enum r3v_native_zb_depth_surface {
 };
 
 struct r300_zb_depth_surface;
-struct r300_zb_depth_discovery_scenario;
 
 /* Native command buffer: one fixed IB dword vector plus its BO references,
  * installed whole by a device-internal emitter or by the public triangle
@@ -772,6 +772,11 @@ struct r3v_native_cmd_buffer {
     * enable, and the predicate holds the recorded stream to both. */
    enum r3v_native_zb_discovery_scenario zb_discovery_scenario;
    enum r3v_native_zb_discovery_arm zb_discovery_arm;
+   /* A configurable discovery owns its surface and scenario inside the
+    * command buffer.  The embedded scenario points at the embedded surface,
+    * so queue validation reads the exact declaration that emission used. */
+   bool zb_coordinate_discovery_configured;
+   struct r300_zb_coordinate_discovery zb_coordinate_discovery;
    /* The multisample resolve cell's sample-expanded color surface,
     * allocated at that recording and released with the buffer.  It
     * takes RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU
@@ -2281,6 +2286,15 @@ VkResult r3v_native_record_zb_depth_discovery(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
    enum r3v_native_zb_discovery_scenario scenario,
+   enum r3v_native_zb_discovery_arm arm);
+
+/* Records a bounded coordinate-selectable tiled discovery.  Layout, pitch,
+ * and base use r300_zb_coordinate_discovery_init's finite domain. */
+VkResult r3v_native_record_zb_coordinate_discovery(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r300_zb_coordinate_discovery_layout layout, uint32_t pixel_x,
+   uint32_t pixel_y, uint32_t pitch_pixels, uint32_t base_bytes,
    enum r3v_native_zb_discovery_arm arm);
 
 /* Producer-only recorder: poisons the whole carrier allocation, emits the
