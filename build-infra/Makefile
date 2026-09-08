@@ -3008,20 +3008,59 @@ source-root-selection-test:
 	}; \
 	echo "OK    external configure rejects an unhashed wrap-file download"; \
 	default_prefix_build_root="$$tmpdir/default-prefix-build"; \
-	if default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+	default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$default_prefix_build_root" \
 		BUILDDIR="$$default_prefix_build_root/probe" \
 		BUILD_LOCK="$$tmpdir/default-prefix.lock" LOCK_WAIT=0 \
-		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
-		echo "FAIL  external configure accepted the shared default prefix" >&2; \
-		exit 1; \
-	fi; \
-	printf '%s\n' "$$default_prefix_output" | \
-		grep -F "external PREFIX must be a direct child of BUILD_ROOT" >/dev/null || { \
-		echo "FAIL  shared default prefix returned the wrong diagnostic" >&2; \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )" || { \
+		echo "FAIL  external configure rejected the build-owned default prefix" >&2; \
 		printf '%s\n' "$$default_prefix_output" >&2; exit 1; \
 	}; \
-	echo "OK    external configure rejects the shared default prefix"; \
+	python3 -c 'import json, pathlib, sys; root = pathlib.Path(sys.argv[1]); identity = json.loads((root / ".mesa-external-source-identity.json").read_text()); sys.exit(0 if identity["prefix"] == str(root / "prefix") and identity["state"] == "final" else "FAIL  default prefix identity differs from BUILD_ROOT/prefix")' \
+		"$$default_prefix_build_root"; \
+	cmp -s "$$default_prefix_build_root/.mesa-external-source-identity.json" \
+		"$$default_prefix_build_root/probe/.mesa-source-identity.json" || { \
+		echo "FAIL  default prefix has inconsistent source identities" >&2; exit 1; \
+	}; \
+	echo "OK    external configure binds the default prefix to BUILD_ROOT/prefix"; \
+	mkdir -p "$$default_prefix_build_root/prefix"; \
+	printf '%s\n' "retained default prefix" > "$$default_prefix_build_root/prefix/sentinel"; \
+	default_prefix_before="$$(sha256sum "$$default_prefix_build_root/prefix/sentinel" \
+		"$$default_prefix_build_root/.mesa-external-source-identity.json")"; \
+	for prefix_case in cross-root default-symlink builddir-alias; do \
+		prefix_case_root="$$tmpdir/prefix-$$prefix_case"; \
+		prefix_case_builddir="$$prefix_case_root/probe"; \
+		prefix_arguments=(); \
+		prefix_diagnostic="staging PREFIX must be a direct child of BUILD_ROOT"; \
+		case "$$prefix_case" in \
+			cross-root) prefix_arguments=("PREFIX=$$default_prefix_build_root/prefix") ;; \
+			default-symlink) \
+				mkdir -p "$$prefix_case_root"; \
+				ln -s "$$default_prefix_build_root/prefix" "$$prefix_case_root/prefix" ;; \
+			builddir-alias) \
+				prefix_case_builddir="$$prefix_case_root/prefix"; \
+				prefix_diagnostic="external PREFIX aliases BUILDDIR" ;; \
+		esac; \
+		if prefix_case_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+			TOPSRC="$$source_root" BUILD_ROOT="$$prefix_case_root" \
+			BUILDDIR="$$prefix_case_builddir" "$${prefix_arguments[@]}" \
+			BUILD_LOCK="$$tmpdir/prefix-$$prefix_case.lock" LOCK_WAIT=0 \
+			COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
+			echo "FAIL  configure accepted $$prefix_case prefix contamination" >&2; exit 1; \
+		fi; \
+		printf '%s\n' "$$prefix_case_output" | grep -F "$$prefix_diagnostic" >/dev/null || { \
+			echo "FAIL  $$prefix_case prefix returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$prefix_case_output" >&2; exit 1; \
+		}; \
+		test ! -e "$$prefix_case_root/.mesa-external-source-identity.json" || { \
+			echo "FAIL  rejected $$prefix_case prefix acquired a source identity" >&2; exit 1; \
+		}; \
+		echo "OK    configure rejects $$prefix_case prefix contamination"; \
+	done; \
+	test "$$default_prefix_before" = "$$(sha256sum "$$default_prefix_build_root/prefix/sentinel" \
+		"$$default_prefix_build_root/.mesa-external-source-identity.json")" || { \
+		echo "FAIL  rejected prefix selection changed the retained prefix or identity" >&2; exit 1; \
+	}; \
 	unbound_build_root="$$tmpdir/unbound-build"; \
 	unbound_builddir="$$unbound_build_root/probe"; \
 	mkdir -p "$$unbound_builddir"; \
