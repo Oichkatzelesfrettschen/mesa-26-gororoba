@@ -354,19 +354,23 @@ def run_rejection_cases(
 def run_control_prefix_case(
     context: CalibrationContext,
 ) -> None:
+    fixture_control = context.victim.parent / "control-source"
+    create_fixture_directory(fixture_control)
+    create_fixture_directory(fixture_control / "build")
+    create_fixture_directory(fixture_control / "build" / "prefix")
     control_prefix_values: dict[str, Path | str] = {
-        "source_root": context.control_root,
+        "source_root": fixture_control,
         "source_commit": "1" * 40,
         "source_tree": "2" * 40,
-        "control_root": context.control_root,
+        "control_root": fixture_control,
         "control_commit": "3" * 40,
         "control_tree": "4" * 40,
-        "build_root": context.control_root / "build",
-        "builddir": context.control_root / "build" / "mount-boundary-probe",
-        "prefix": Path("/opt/local/mesa-26-gororoba"),
+        "build_root": fixture_control / "build",
+        "builddir": fixture_control / "build" / "mount-boundary-probe",
+        "prefix": fixture_control / "build" / "prefix",
         "sysconfdir": Path("/etc"),
     }
-    control_prefix_mount_point = Path("/opt/local")
+    control_prefix_mount_point = fixture_control / "build" / "prefix"
     require_existing_directory(
         control_prefix_mount_point,
         "private namespace control-prefix mount target",

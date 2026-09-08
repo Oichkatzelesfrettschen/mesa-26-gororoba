@@ -1,77 +1,13 @@
-# mesa-gororoba install scriptlet: surface the non-obvious consequences of a
-# system Mesa replacement build.
-
-_notes() {
+# Stock-path Mesa deployment uses package ownership and the standard linker cache.
+post_install() {
+  ldconfig
   cat <<'EOF'
-mesa-gororoba installed an RS482-scoped fork build into the system Mesa prefix:
-  * GL: r300 hardware (egl/glx/gles/gbm/glvnd); software rasterizers are
-    excluded so hardware-path failures remain visible.
-  * Vulkan: ati_r300 (r3v) ICD installed under /usr/share/vulkan/icd.d with its
-    library under /usr/lib, so ordinary applications use the standard loader
-    search path.  mesa-gororoba-run remains available for prefix-specific
-    development selection.
-  * VA-API: r300 MPEG-1/2 decode through the normal libva DRI path.
-  * Loader policy: profile.d and environment.d entries prefer r300 for GL and
-    VA shells and user sessions; mesa-gororoba-run scopes explicit Vulkan and
-    GL variables to one development command.
-Consequences to know:
-  * The package builds without LLVM and llvmpipe.  The vertex stage uses the
-    C draw path required by the RS482-focused hybrid TCL configuration.
-  * mesa-gororoba replaces stock mesa and vulkan-radeon.  To roll back,
-    reinstall the distro mesa and vulkan-radeon packages, then reboot the
-    display stack.
-  * r300-focused probes:
-      mesa-gororoba-run glxinfo -B
-      mesa-gororoba-run eglinfo -B -p surfaceless
-      mesa-gororoba-run vainfo --display drm --device /dev/dri/renderD128
-      mesa-gororoba-run vulkaninfo --summary
-  * GLX on Mesa 26 needs an X server with DRI3 for hardware clients.  On RS482,
-    xf86-video-ati radeon EXA exposes server-side DRI2 and can make glxinfo
-    fail to expose hardware GL even when Xorg logs "AIGLX: Loaded and
-    initialized r300".  For RS482 hosts, install the sample
-    modesetting+glamor policy from:
-      /usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf
-    to the host's /etc/X11/xorg.conf.d policy path, then restart the display
-    manager and verify glxinfo reports "ATI RS480".
-  * Remove stale display-manager wrappers that point Xorg at old opt prefixes,
-    especially /etc/lightdm/lightdm.conf.d entries that launch
-    /usr/local/sbin/xorg-mesa-gororoba with /opt/local/mesa-26-gororoba paths.
-  * compatibility aliases are package-managed:
-      /opt/local/mesa-26-gororoba -> /usr
-      /opt/share/mesa-gororoba -> /usr
-      /usr/share/mesa-gororoba is a real directory holding the xorg.conf.d
-      sample above, not an alias.
+Mesa owns its selected release or debug payload under /usr.
+The r300/zink Gallium drivers and R3V library share the stock GLX/EGL/GBM paths.
+The R3V manifest is selected explicitly with mesa-gororoba-run.
+Sanitizer experiments use build-owned staging through build-infra.
+Restart the display stack after replacing its loaded Mesa libraries.
 EOF
 }
-
-_ld_conf=/etc/ld.so.conf.d/00-mesa-gororoba-deps.conf
-
-pre_install() {
-  # Drop an unowned pre-packaging conf so this package can own the file without
-  # a filesystem conflict; package() reinstalls it pointing at /usr/lib.
-  if [ -e "${_ld_conf}" ] && ! pacman -Qqo "${_ld_conf}" >/dev/null 2>&1; then
-    rm -f "${_ld_conf}"
-  fi
-}
-
-pre_upgrade() {
-  pre_install
-}
-
-post_install() {
-  # Re-index the linker path for this variant so GL/Vulkan (and X modesetting's
-  # libgbm dlopen) resolve before the next reboot.
-  ldconfig
-  _notes
-}
-
-post_upgrade() {
-  ldconfig
-  _notes
-}
-
-post_remove() {
-  # Re-index after removing this variant's owned conf so the linker cache no
-  # longer references it; the next system Mesa's post_install re-points.
-  ldconfig
-}
+post_upgrade() { post_install; }
+post_remove() { ldconfig; }

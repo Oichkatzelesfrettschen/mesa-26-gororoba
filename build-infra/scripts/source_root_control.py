@@ -1024,7 +1024,7 @@ def is_git_worktree_marker(path: Path) -> bool:
             return False
         if not first_line.startswith("gitdir:"):
             return False
-        target = first_line[len("gitdir:"):].strip()
+        target = first_line[len("gitdir:") :].strip()
         if not target:
             return False
         # Git writes the target relative to the marker's own directory
@@ -1307,32 +1307,150 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
     assert isinstance(repository_root, Path)
     assert isinstance(build_root, Path)
 
-    profile = os.environ.get("MESA_PROFILE_INPUT", "")
-    allowed_opt_prefixes = {
-        Path(f"/opt/local/mesa-{profile}"),
-        Path("/opt/local/mesa-26-gororoba"),
-        Path("/opt/local/mesa-gororoba-debug-optimized"),
-        Path("/opt/mesa-gororoba-debug-optimized"),
-        Path("/opt/mesa-gororoba-debug-asan"),
-        Path("/opt/mesa-gororoba-debug-o0"),
-    }
     reject_protected_path(prefix, "PREFIX")
-    home = Path.home().resolve(strict=False)
-    if prefix == home:
-        fail(f"refusing unsafe PREFIX: {prefix}")
-    if is_within_or_equal(prefix, source_root):
-        fail(f"refusing PREFIX inside TOPSRC: {prefix}")
-    if is_within_or_equal(prefix, repository_root):
-        fail(f"refusing PREFIX inside the control worktree: {prefix}")
-    if (
-        source_root == repository_root
-        and prefix not in allowed_opt_prefixes
-        and prefix.parent != build_root
+    for boundary, label in (
+        (repository_root, "the control worktree"),
+        (source_root, "TOPSRC"),
     ):
-        fail(
-            "control-source PREFIX must be an owned profile prefix or "
-            f"a direct child of BUILD_ROOT: {prefix}"
+        if is_within_or_equal(prefix, boundary) and build_root != boundary / "build":
+            fail(f"refusing PREFIX inside {label}: {prefix}")
+    if prefix.parent != build_root:
+        fail(f"staging PREFIX must be a direct child of BUILD_ROOT: {prefix}")
+    if prefix == source_view_path(values):
+        fail(f"external PREFIX aliases the source view: {prefix}")
+    if prefix == builddir_path(values):
+        fail(f"external PREFIX aliases BUILDDIR: {prefix}")
+    if prefix == Path.home().resolve(strict=False):
+        fail(f"refusing unsafe PREFIX: {prefix}")
+
+
+def builddir_path(values: dict[str, Path | str]) -> Path:
+    builddir = values["builddir"]
+    assert isinstance(builddir, Path)
+    return builddir
+
+
+def package_stage_path(values: dict[str, Path | str]) -> Path:
+    build_root = values["build_root"]
+    assert isinstance(build_root, Path)
+    return build_root / "package-root"
+
+
+def validate_package_stage(
+    values: dict[str, Path | str],
+    *,
+    require_empty: bool = True,
+) -> Path:
+    if values["prefix"] != Path("/usr"):
+        fail("package staging requires the exact logical PREFIX=/usr")
+    stage = package_stage_path(values)
+    if stage.is_symlink() or stage.resolve(strict=False) != stage:
+        fail(f"package staging path follows a symlink: {stage}")
+    build_root = values["build_root"]
+    control = values["control_root"]
+    assert isinstance(build_root, Path)
+    assert isinstance(control, Path)
+    for artifact in (builddir_path(values), source_view_path(values)):
+        if is_within_or_equal(stage, artifact) or is_within_or_equal(artifact, stage):
+            fail(f"package staging overlaps build artifacts: {stage}")
+    reject_protected_path(stage, "package staging directory")
+    reject_mount_target(
+        stage, "package staging directory", selected_build_boundary(values)
+    )
+    reject_git_worktree_target(
+        stage,
+        "package staging directory",
+        control,
+        control / "build",
+        scan_descendants=True,
+    )
+    if require_empty and stage.exists() and any(stage.iterdir()):
+        fail(f"package staging directory must be empty: {stage}")
+    return stage
+
+
+def install_experiment(values: dict[str, Path | str], meson: str) -> None:
+    """Materialize prefix artifacts while retaining absolute config outputs in DESTDIR."""
+    validate_layout("install", values)
+    build_root = values["build_root"]
+    prefix = values["prefix"]
+    control = values["control_root"]
+    assert isinstance(build_root, Path)
+    assert isinstance(prefix, Path)
+    assert isinstance(control, Path)
+    destination = build_root / "installation-root"
+    if destination.is_symlink() or destination.resolve(strict=False) != destination:
+        fail(f"experimental staging follows a symlink: {destination}")
+    for artifact in (prefix, builddir_path(values), source_view_path(values)):
+        if is_within_or_equal(destination, artifact) or is_within_or_equal(
+            artifact, destination
+        ):
+            fail("experimental staging overlaps the prefix or build artifacts")
+    reject_mount_target(
+        destination, "experimental staging", selected_build_boundary(values)
+    )
+    reject_git_worktree_target(
+        destination,
+        "experimental staging",
+        control,
+        control / "build",
+        scan_descendants=True,
+    )
+    scratch = Path(tempfile.mkdtemp(prefix=".mesa-install-", dir=build_root))
+    try:
+        subprocess.run(
+            [
+                meson,
+                "install",
+                "--no-rebuild",
+                "-C",
+                str(builddir_path(values)),
+                "--destdir",
+                str(scratch),
+            ],
+            check=True,
         )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"experimental install failed; retained DESTDIR {scratch}: {error}")
+    staged_prefix = scratch / prefix.relative_to("/")
+    if not staged_prefix.is_dir() or staged_prefix.is_symlink():
+        fail(f"experimental install omitted its configured prefix; retained {scratch}")
+    for artifact in scratch.rglob("*"):
+        if artifact.is_dir() and not artifact.is_symlink():
+            continue
+        if not (
+            artifact.is_relative_to(staged_prefix)
+            or artifact.is_relative_to(scratch / "etc")
+        ):
+            fail(f"experimental install has an undeclared output: {artifact}")
+        if artifact.is_symlink():
+            if artifact.readlink().is_absolute() or not artifact.resolve(
+                strict=False
+            ).is_relative_to(scratch):
+                fail(f"experimental install has an escaping symlink: {artifact}")
+    require_captured_inputs(
+        values,
+        (
+            "source_root",
+            "control_root",
+            "build_root",
+            "builddir",
+            "prefix",
+            "sysconfdir",
+        ),
+    )
+    validate_layout("install", values)
+    archive_suffix = ".disabled." + secrets.token_hex(8)
+    for previous in (prefix, destination):
+        if previous.exists():
+            archive = previous.with_name(previous.name + archive_suffix)
+            if archive.exists() or archive.is_symlink():
+                fail(f"experimental archive already exists: {archive}")
+            previous.rename(archive)
+    staged_prefix.rename(prefix)
+    scratch.rename(destination)
+    print(f"staged experiment prefix: {prefix}")
+    print(f"staged system configuration: {destination / 'etc'}")
 
 
 def selected_prefix_boundary(
@@ -1345,8 +1463,6 @@ def selected_prefix_boundary(
     assert isinstance(build_root, Path)
     if prefix.parent == build_root:
         return build_boundary
-    if is_strict_descendant(prefix, Path("/opt")):
-        return Path("/opt")
     fail(f"PREFIX has no trusted mutation boundary: {prefix}")
 
 
@@ -1378,6 +1494,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
         "distclean",
         "install",
         "test",
+        "stage-package",
     }
     destructive_builddir = operation in {"clean", "distclean"}
     if builddir_mutation:
@@ -1422,7 +1539,11 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
             build_boundary,
         )
 
+    if operation == "stage-package":
+        validate_package_stage(values)
     if operation in {"configure", "install", "distclean", "artifact"}:
+        if operation == "configure" and values["prefix"] == Path("/usr"):
+            return
         validate_prefix(values)
         prefix = values["prefix"]
         assert isinstance(prefix, Path)
@@ -1649,8 +1770,7 @@ def directory_identity_manifest(
             try:
                 if file_identity(os.fstat(child_descriptor)) != entry_identity:
                     fail(
-                        f"{entry_label} changed before descriptor binding: "
-                        f"{entry_name}"
+                        f"{entry_label} changed before descriptor binding: {entry_name}"
                     )
                 if descriptor_mount_id(child_descriptor, entry_label) != (
                     expected_mount_id
@@ -1860,7 +1980,7 @@ def base_identity_payload(
         require_reproducible_source_worktrees(source_root)
     else:
         require_clean_external_source(source_root)
-    return {
+    payload: dict[str, str | int] = {
         "schema_version": SCHEMA_VERSION,
         "source_root": str(source_root),
         "source_commit": str(values["source_commit"]),
@@ -1880,6 +2000,10 @@ def base_identity_payload(
         "compiler_family": str(values["compiler_family"]),
         "reproducible_run": str(values["reproducible_run"]),
     }
+    if values["prefix"] == Path("/usr"):
+        payload["package_layout"] = "stock-usr"
+        payload["package_destdir"] = str(package_stage_path(values))
+    return payload
 
 
 def legacy_identity_payload(
@@ -2402,7 +2526,7 @@ def restore_quarantined_build_root(
         )
         os.rmdir(quarantine_name, dir_fd=namespace_descriptor)
     except OSError as error:
-        fail("cannot restore schema-7 cleanup candidate from quarantine: " f"{error}")
+        fail(f"cannot restore schema-7 cleanup candidate from quarantine: {error}")
 
 
 def remove_identity_v7_build_root(values: dict[str, Path | str]) -> None:
@@ -2791,9 +2915,13 @@ def parse_arguments() -> argparse.Namespace:
             "configure",
             "distclean",
             "install",
+            "stage-package",
             "test",
         ),
     )
+    experiment_parser = subparsers.add_parser("install-experiment")
+    experiment_parser.add_argument("--meson", required=True)
+    subparsers.add_parser("remove-package-stage")
     subparsers.add_parser("prepare-identity")
     subparsers.add_parser("prepare-source-view")
     subparsers.add_parser("write-identity")
@@ -2908,6 +3036,13 @@ def main() -> int:
         require_reproducible_source_worktrees(source_root)
     elif arguments.command == "check-layout":
         validate_layout(arguments.operation, values)
+    elif arguments.command == "install-experiment":
+        install_experiment(values, arguments.meson)
+    elif arguments.command == "remove-package-stage":
+        validate_layout("build", values)
+        verify_identity(values)
+        stage = validate_package_stage(values, require_empty=False)
+        remove_directory_tree(stage, "qualified package staging directory")
     elif arguments.command == "prepare-identity":
         validate_layout("configure", values)
         prepare_identity(values)

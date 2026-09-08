@@ -1,50 +1,27 @@
 #!/bin/sh
-# Run a command against the PRIME r300 driver (ASan+UBSan+extended sanitizers,
-# -O0) staged in /opt/mesa-gororoba-debug-asan, WITHOUT making it the system
-# Mesa.  An ASan/UBSan .so cannot be the default /usr Mesa (every GL/VK app would
-# abort with "ASan runtime does not come first in initial library list"), so this
-# driver is only ever reached through this wrapper, which preloads the sanitizer
-# runtime first and points the GL + Vulkan loaders at the /opt tree for the
-# wrapped process.  The system /usr Mesa stays mesa-gororoba-debug-optimized.
-#
-# Usage:  mesa-gororoba-debug-asan-run vkcube
-#         mesa-gororoba-debug-asan-run gdb --args vulkaninfo --summary
-#         ASAN_OPTIONS=detect_leaks=1 mesa-gororoba-debug-asan-run <app>
+# Run the sanitizer profile from its explicitly selected build-owned staging prefix.
 set -eu
-PREFIX=/opt/mesa-gororoba-debug-asan
-
-if [ ! -d "$PREFIX/lib" ]; then
-  echo "mesa-gororoba-debug-asan-run: $PREFIX not installed; build+install the prime tier:" >&2
-  echo "  make rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache && makepkg (mesa-gororoba-debug-asan)" >&2
-  exit 1
+if [ "$#" -lt 2 ]; then
+  echo 'usage: mesa-gororoba-debug-asan-run <BUILD_ROOT/prefix> <command> [args...]' >&2
+  exit 2
 fi
-
-# The Clang ASan runtime must be the first object loaded (the app binary is not
-# sanitizer-built), so LD_PRELOAD it.  Resolve it from clang, fall back to the
-# pinned clang-22 path.
-ASAN_RT="$(clang -print-file-name=libclang_rt.asan-x86_64.so 2>/dev/null || true)"
-[ -e "${ASAN_RT:-}" ] || ASAN_RT=/usr/lib/clang/22/lib/linux/libclang_rt.asan-x86_64.so
-if [ ! -e "$ASAN_RT" ]; then
-  echo "mesa-gororoba-debug-asan-run: ASan runtime not found ($ASAN_RT); install clang." >&2
-  exit 1
-fi
-
-ICD="$(ls "$PREFIX"/share/vulkan/icd.d/*.json 2>/dev/null | head -1 || true)"
-
-export LD_PRELOAD="${ASAN_RT}${LD_PRELOAD:+:$LD_PRELOAD}"
-export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export LIBGL_DRIVERS_PATH="$PREFIX/lib/dri"
-[ -n "$ICD" ] && export VK_ICD_FILENAMES="$ICD"
-
-# Maximal detection, low-noise default: collect every finding (halt_on_error=0),
-# activate the extended ASan checks the profile compiles in (use-after-return,
-# init-order, invalid-pointer-pairs for the -fsanitize=pointer-compare/subtract
-# instrumentation, strict string checks).  detect_leaks stays 0 by default --
-# Mesa's exit-time pools are noise; use the -leak wrapper or override to 1 to hunt
-# leaks.  UBSan prints a stack per finding.
-export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=0:abort_on_error=0:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1:detect_invalid_pointer_pairs=2:strict_string_checks=1:print_stats=0}"
+prefix=$(realpath -e -- "$1")
+shift
+case "$prefix" in /opt/*|/usr/*|/usr|/)
+  echo 'sanitizer experiments require build-owned staging' >&2; exit 2 ;;
+esac
+[ "$(basename "$prefix")" = prefix ] && [ -d "$prefix/lib" ] || {
+  echo 'select the sanitizer build root staging prefix' >&2; exit 2;
+}
+runtime=$(clang -print-file-name=libclang_rt.asan-x86_64.so)
+[ -f "$runtime" ] || { echo 'matching Clang ASan runtime is required' >&2; exit 2; }
+export LD_PRELOAD="$runtime${LD_PRELOAD:+:$LD_PRELOAD}"
+export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LIBGL_DRIVERS_PATH="$prefix/lib/dri"
+export GBM_BACKENDS_PATH="$prefix/lib/gbm"
+export __EGL_VENDOR_LIBRARY_FILENAMES="$prefix/share/glvnd/egl_vendor.d/50_mesa.json"
+export VK_DRIVER_FILES="$prefix/share/vulkan/icd.d/r3v_icd.x86_64.json"
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=0:abort_on_error=0:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=0}"
-# Free, built-in Mesa GPU tracing alongside the sanitizers (override to taste).
-export RADEON_DEBUG="${RADEON_DEBUG:-info}"
-
 exec "$@"

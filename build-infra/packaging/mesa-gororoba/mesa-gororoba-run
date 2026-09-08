@@ -1,27 +1,10 @@
 #!/bin/sh
+# Select the package-owned R3V manifest for one command.
 set -eu
-
-if [ "${GOROROBA_MESA_ENV+x}" = x ]; then
-  echo "GOROROBA_MESA_ENV was renamed to MESA_ENV_FILE" >&2
-  exit 2
-fi
-
-env_file=${MESA_ENV_FILE:-/etc/opt/mesa-gororoba/mesa-gororoba-env.sh}
-
 if [ "$#" -eq 0 ]; then
-  cat >&2 <<'EOF'
-usage: mesa-gororoba-run <command> [args...]
-
-Examples:
-  mesa-gororoba-run glxinfo -B
-  mesa-gororoba-run eglinfo
-  mesa-gororoba-run glesinfo
-  mesa-gororoba-run vainfo
-  mesa-gororoba-run vulkaninfo --summary
-EOF
+  echo 'usage: mesa-gororoba-run <command> [args...]' >&2
   exit 2
 fi
-
 # shellcheck disable=SC1090
-. "$env_file"
+. "${MESA_ENV_FILE:-/etc/mesa-gororoba/mesa-gororoba-env.sh}"
 exec "$@"

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# System variants preserve one loader, driver, and test surface across optimization levels.
+[built-in options]
+libdir = 'lib'
+b_lto = false
+[project options]
+gallium-drivers = ['r300', 'zink']
+vulkan-drivers = ['ati_r300']
+vulkan-layers = ['anti-lag', 'device-select']
+build-tests = true
+werror = true
+dri-drivers-path = '/usr/lib/dri'
+gbm-backends-path = '/usr/lib/gbm'
