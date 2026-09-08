@@ -40,6 +40,7 @@
 
 [built-in options]
 buildtype = 'release'
+optimization = '2'
 b_ndebug = 'true'
 # -fno-emulated-tls: clang on linux x86_64 otherwise emulates TLS and the
 # libglapi link fails; this profile builds the GL stack (opengl=true), so it
@@ -89,6 +90,9 @@ lmsensors = 'enabled'
 llvm = 'disabled'
 draw-use-llvm = false
 gallium-rusticl = false
+# Release artifacts keep debug-only runtime dependencies outside their ABI closure.
+valgrind = 'disabled'
+libunwind = 'disabled'
 
 # r300 gallium-va video decode (MPEG-1/MPEG-2 / mpeg12dec): the restored pure-NIR
 # g3dvl shader decode kernels (vl_idct/vl_mc/vl_zscan/vl_matrix_filter/

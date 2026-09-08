@@ -16,12 +16,7 @@ esac
 runtime=$(clang -print-file-name=libclang_rt.asan-x86_64.so)
 [ -f "$runtime" ] || { echo 'matching Clang ASan runtime is required' >&2; exit 2; }
 export LD_PRELOAD="$runtime${LD_PRELOAD:+:$LD_PRELOAD}"
-export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export LIBGL_DRIVERS_PATH="$prefix/lib/dri"
-export GBM_BACKENDS_PATH="$prefix/lib/gbm"
-export __EGL_VENDOR_LIBRARY_FILENAMES="$prefix/share/glvnd/egl_vendor.d/50_mesa.json"
-export VK_DRIVER_FILES="$prefix/share/vulkan/icd.d/r3v_icd.x86_64.json"
-export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=0:abort_on_error=0:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=0}"
-exec "$@"
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+exec "$script_dir/../../scripts/mesa-experiment-run" "$(dirname -- "$prefix")" "$@"

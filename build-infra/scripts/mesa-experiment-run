@@ -16,6 +16,12 @@ export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LIBGL_DRIVERS_PATH="$prefix/lib/dri"
 export GBM_BACKENDS_PATH="$prefix/lib/gbm"
 export __EGL_VENDOR_LIBRARY_FILENAMES="$prefix/share/glvnd/egl_vendor.d/50_mesa.json"
+if [ -d "$prefix/share/vulkan/explicit_layer.d" ]; then
+  export VK_ADD_LAYER_PATH="$prefix/share/vulkan/explicit_layer.d${VK_ADD_LAYER_PATH:+:$VK_ADD_LAYER_PATH}"
+fi
+if [ -d "$prefix/share/vulkan/implicit_layer.d" ]; then
+  export VK_ADD_IMPLICIT_LAYER_PATH="$prefix/share/vulkan/implicit_layer.d${VK_ADD_IMPLICIT_LAYER_PATH:+:$VK_ADD_IMPLICIT_LAYER_PATH}"
+fi
 if [ -d "$build_root/installation-root/etc/OpenCL/vendors" ]; then
   export OCL_ICD_VENDORS="$build_root/installation-root/etc/OpenCL/vendors"
 fi

@@ -24,7 +24,14 @@ def configured_build(tmp_path: Path) -> Path:
     builddir = tmp_path / "build"
     (builddir / "meson-info").mkdir(parents=True)
     options = dict(layout.REQUIRED_OPTIONS)
-    options.update(buildtype="release", b_ndebug="true", b_sanitize=[])
+    options.update(
+        buildtype="release",
+        b_ndebug="true",
+        b_sanitize=[],
+        optimization="2",
+        valgrind="disabled",
+        libunwind="disabled",
+    )
     (builddir / "meson-info/intro-buildoptions.json").write_text(
         json.dumps([{"name": name, "value": value} for name, value in options.items()])
     )
@@ -112,6 +119,9 @@ def test_symlink_escape(staged_payload: Path, target: str) -> None:
         ("vulkan-layers", ["device-select"]),
         ("gallium-drivers", ["r300"]),
         ("b_sanitize", ["address"]),
+        ("valgrind", "auto"),
+        ("libunwind", "auto"),
+        ("optimization", "3"),
         ("buildtype", "debug"),
         ("b_ndebug", "false"),
         ("dri-drivers-path", "/opt/mesa/lib/dri"),
@@ -240,3 +250,42 @@ def test_lease_fixture_stops_when_directory_creation_fails(tmp_path: Path) -> No
     assert result.returncode != 0
     assert "forced fixture directory failure" in result.stderr
     assert not marker.exists()
+
+
+def test_experiment_launcher_selects_config_and_layers(tmp_path: Path) -> None:
+    import os
+
+    build_root = tmp_path / "experiment"
+    prefix = build_root / "prefix"
+    for relative in (
+        "lib",
+        "share/vulkan/explicit_layer.d",
+        "share/vulkan/implicit_layer.d",
+    ):
+        (prefix / relative).mkdir(parents=True)
+    opencl = build_root / "installation-root/etc/OpenCL/vendors"
+    opencl.mkdir(parents=True)
+    environment = dict(os.environ)
+    environment.update(
+        VK_ADD_LAYER_PATH="/fixture/explicit",
+        VK_ADD_IMPLICIT_LAYER_PATH="/fixture/implicit",
+    )
+    result = subprocess.run(
+        [
+            "sh",
+            str(ROOT / "scripts/mesa-experiment-run"),
+            str(build_root),
+            "sh",
+            "-c",
+            'printf "%s\\n" "$OCL_ICD_VENDORS" "$VK_ADD_LAYER_PATH" "$VK_ADD_IMPLICIT_LAYER_PATH"',
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.splitlines() == [
+        str(opencl),
+        str(prefix / "share/vulkan/explicit_layer.d") + ":/fixture/explicit",
+        str(prefix / "share/vulkan/implicit_layer.d") + ":/fixture/implicit",
+    ]

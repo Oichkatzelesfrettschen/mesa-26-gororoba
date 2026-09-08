@@ -96,6 +96,15 @@ def check_configuration(builddir: Path) -> tuple[dict[str, object], dict[str, ob
                 f"package option {option}: expected {expected!r}, got {options.get(option)!r}"
             )
     expected_buildtype, expected_ndebug = SYSTEM_PROFILES[str(profile)]
+    instrumentation = "disabled" if expected_buildtype == "release" else "enabled"
+    for option in ("valgrind", "libunwind"):
+        if options.get(option) != instrumentation:
+            raise ValueError(
+                f"package {option} disagrees with its profile dependency closure"
+            )
+    optimization = "0" if expected_buildtype == "debug" else "2"
+    if options.get("optimization") != optimization:
+        raise ValueError("package optimization disagrees with its profile")
     if (
         options.get("buildtype") != expected_buildtype
         or options.get("b_ndebug") != expected_ndebug
