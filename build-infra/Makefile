@@ -2124,6 +2124,10 @@ build-lease-test:
 	}; \
 	echo "OK    distclean holds one build lease"
 
+# Synthetic source fixtures exercise mutable checkout and identity transitions.
+# Explicit recursive assignments retain control over individual mode probes.
+source-root-selection-test: private override MAKE := $(MAKE) REPRODUCIBLE_RUN=0
+source-root-selection-test: private override MESA_REPRODUCIBLE_RUN_INPUT := 0
 source-root-selection-test:
 	@set -euo pipefail; \
 	while IFS= read -r environment_name; do \
@@ -2165,7 +2169,7 @@ source-root-selection-test:
 		}; \
 	echo "OK    MAKE_VERSION comparison treats caller text as data"; \
 	if lower_bound_make="$$(command -v make-4.2 2>/dev/null)"; then \
-		lower_bound_output="$$( "$$lower_bound_make" --no-print-directory \
+		lower_bound_output="$$( "$$lower_bound_make" REPRODUCIBLE_RUN=0 --no-print-directory \
 			-C "$(CURDIR)" help TOPSRC="$(CONTROL_ROOT)" \
 			BUILD_ROOT="$$tmpdir/make42-build" \
 			BUILDDIR="$$tmpdir/make42-build/probe" \
