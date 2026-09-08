@@ -14,7 +14,7 @@ lowest layer whose invariant is demonstrably violated.
 | --- | --- | --- | --- |
 | Xorg Server / glamor | `xserver-rs48x` | `PKGBUILD_xorg-server-glamor-r300fix` | `/usr/lib/Xorg`, `libglamoregl.so` |
 | Xorg modesetting DDX | `xserver-rs48x` | `PKGBUILD_xorg-server-glamor-r300fix` | `modesetting_drv.so` |
-| Radeon DDX | `xf86-video-ati-rs482` | `PKGBUILD_xf86-video-ati-rs482` | `radeon_drv.so` |
+| Radeon DDX | `xf86-video-ati-rs485m` | `PKGBUILD_xf86-video-ati-rs485m` | `radeon_drv.so` |
 | Mesa userspace | `mesa-26-gororoba` | `mesa-26-gororoba` PKGBUILDs and build-infra | `libgallium`, r300 DRI driver, `r3v` ICD |
 | Radeon kernel | `linux-radeon-gororoba` | `radeon-custom` | source commit and tree, module SHA-256, GNU Build ID, `srcversion`, build profile, module parameters |
 | Platform | `vostro1000-re` | `vostro1000-re` | SB600 watchdog, EC thermal, boot configuration |
@@ -29,8 +29,8 @@ source tests, numeric derivations, and source history.
 `PKGBUILD_xorg-server-glamor-r300fix` owns the package recipe, deterministic
 source export, package gates, installed manifest, and release qualification.
 
-`xf86-video-ati-rs482` owns external Radeon DDX source, source tests, and
-source history. `PKGBUILD_xf86-video-ati-rs482` owns the package recipe,
+`xf86-video-ati-rs485m` owns external Radeon DDX source, source tests, and
+source history. `PKGBUILD_xf86-video-ati-rs485m` owns the package recipe,
 deterministic source export, package gates, installed manifest, TearFree
 configuration, and release qualification.
 
@@ -128,9 +128,9 @@ retained evidence identifies the loaded module.
 - Xorg source is correct but the package export, recipe, or installed payload
   differs: `PKGBUILD_xorg-server-glamor-r300fix`.
 - Radeon DDX constructed the wrong KMS or presentation request:
-  `xf86-video-ati-rs482`.
+  `xf86-video-ati-rs485m`.
 - Radeon DDX source is correct but the package export, recipe, or installed
-  payload differs: `PKGBUILD_xf86-video-ati-rs482`.
+  payload differs: `PKGBUILD_xf86-video-ati-rs485m`.
 - Xorg constructed the correct program but hardware executed stale state:
   Mesa or kernel.
 - Mesa emitted the correct patched IB but cross-IB behavior is wrong:
@@ -222,8 +222,8 @@ The calibrated verifier accepts legacy and post-cutover v2 specimens with
 the historical DDX names. A v3 specimen requires `xf86-video-ati-rs485m`
 paired with `PKGBUILD_xf86-video-ati-rs485m`; mixed pairs and contract/name
 mismatches fail. Repository-name migration preserves historical v2 captures.
-The v3 schema prepares the identity cutover; the authority table continues to
-name the deployed repository identities until that cutover completes. It rejects malformed or incorrectly sized Git and
+The authority table names the RS485M repositories after the source and
+package identity cutover. Historical v2 manifests retain their original slugs. It rejects malformed or incorrectly sized Git and
 SHA-256 identities, empty or nonhexadecimal Build IDs, a kernel manifest
 without the module Build ID, a Radeon DDX manifest without DDX provenance, and
 a post-cutover kernel manifest without equivalence evidence. The
