@@ -218,6 +218,67 @@ test_seed_words(void)
           r300_zb_depth_discovery_z24_linear.pixel_y);
 }
 
+static void
+test_coordinate_declarations(void)
+{
+   static const struct {
+      enum r300_zb_coordinate_discovery_layout layout;
+      uint32_t pitch;
+      uint64_t storage;
+   } cases[] = {
+      { R300_ZB_COORDINATE_DISCOVERY_MICROTILED, 64u, 16896u },
+      { R300_ZB_COORDINATE_DISCOVERY_MICROTILED, 96u, 25344u },
+      { R300_ZB_COORDINATE_DISCOVERY_MACROTILED, 64u, 20480u },
+      { R300_ZB_COORDINATE_DISCOVERY_MACROTILED, 96u, 30720u },
+   };
+   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      for (uint32_t base = 2048u; base <= 4096u; base *= 2u) {
+         struct r300_zb_coordinate_discovery configured;
+         assert(r300_zb_coordinate_discovery_init(
+                   cases[i].layout, 37u, 21u, cases[i].pitch, base,
+                   &configured) == 0);
+         assert(configured.scenario.surface == &configured.surface);
+         assert(configured.scenario.allocation_bytes ==
+                cases[i].storage + 2u * base +
+                   R300_ZB_COORDINATE_DISCOVERY_TAIL_BYTES);
+         struct r300_zb_depth_layout layout;
+         assert(r300_zb_depth_discovery_layout(&configured.scenario,
+                                                &layout) == 0);
+         assert(layout.storage_bytes == cases[i].storage);
+         assert(configured.scenario.allocation_bytes - layout.total_bytes ==
+                R300_ZB_COORDINATE_DISCOVERY_TAIL_BYTES);
+
+         char declaration[512];
+         const int length = r300_zb_coordinate_discovery_declaration(
+            &configured.scenario, declaration, sizeof(declaration));
+         assert(length > 0 && (size_t)length == strlen(declaration));
+         assert(strstr(declaration, "pixel_x=37\npixel_y=21\n") != NULL);
+         assert(strstr(declaration, "initial_stencil=0x00\n") != NULL);
+         char short_buffer[8];
+         assert(r300_zb_coordinate_discovery_declaration(
+                   &configured.scenario, short_buffer,
+                   sizeof(short_buffer)) == -EINVAL);
+      }
+   }
+
+   struct r300_zb_coordinate_discovery refused;
+   assert(r300_zb_coordinate_discovery_init(
+             R300_ZB_COORDINATE_DISCOVERY_MICROTILED, 64u, 21u, 64u,
+             2048u, &refused) == -EINVAL);
+   assert(r300_zb_coordinate_discovery_init(
+             R300_ZB_COORDINATE_DISCOVERY_MICROTILED, 37u, 64u, 64u,
+             2048u, &refused) == -EINVAL);
+   assert(r300_zb_coordinate_discovery_init(
+             R300_ZB_COORDINATE_DISCOVERY_MICROTILED, 37u, 21u, 68u,
+             2048u, &refused) == -EINVAL);
+   assert(r300_zb_coordinate_discovery_init(
+             R300_ZB_COORDINATE_DISCOVERY_MACROTILED, 37u, 21u, 64u,
+             32u, &refused) == -EINVAL);
+   assert(r300_zb_coordinate_discovery_init(
+             (enum r300_zb_coordinate_discovery_layout)97, 37u, 21u, 64u,
+             2048u, &refused) == -EINVAL);
+}
+
 /* A scenario a mutated field must refuse.  Each arm changes one field of
  * an admitted scenario, so a check that stopped reading a field is
  * caught by the arm that names it. */
@@ -721,6 +782,7 @@ main(void)
    test_marker_matches_geometry();
    test_fill_initial();
    test_seed_words();
+   test_coordinate_declarations();
    test_scenario_refusals();
    test_layout_validate_refusals();
    test_guard_expectation_is_independent();
