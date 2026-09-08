@@ -20,7 +20,8 @@ no tiled-address equation.
 
 ```sh
 python3 src/amd/r300/common/tests/r300_zb_stencil_pair.py \
-  --seed-5a "$SEED_5A_DIR" --seed-a5 "$SEED_A5_DIR"
+  --seed-5a "$SEED_5A_DIR" --seed-a5 "$SEED_A5_DIR" \
+  --pair-context "$VERIFIED_PAIR_CONTEXT"
 ```
 
 Each input directory supplies `depth_before.bin` and `depth_after.bin`.
@@ -29,21 +30,61 @@ standard output. Retain that output through the campaign's evidence writer.
 
 ## Interpretation
 
-Exit 0 means the bytes satisfy the pair experiment and were classified.
-It does not mean that stencil was preserved. Inspect `selected_behavior`
-and `unwritten_slots_preserved` independently. Zero replacement, one
-replacement, and other output pairs remain observations rather than being
-coerced into preservation or silently discarded.
+The version 2 raw result uses `status=OBSERVED` and
+`qualification=UNJUDGED`. The raw API classifies supplied bytes independently
+of execution metadata. `selected_slot_behavior` describes the unique
+depth-written slot; `spatially_isolated` and `off_target_stencil_changes`
+report whether additional stencil writes occurred. Replacement by zero or
+one remains a valid local observation. Additional stencil writes fail the
+isolated experiment while retaining that local observation.
 
-Exit 1 names a violated input/observation constraint. Exit 2 identifies
-argument or input-I/O failure. The output carries hashes of the four byte
-images, complete slot counts, stencil histograms, and every stencil-only
-change outside the depth-written slot.
+`scan_images()` retains safely readable slot counts, histograms, region
+counts, hashes, and contextual errors. `observe()` applies the raw geometric
+contract and attaches the collected observation to `ObservationRefusal`.
+The zero-seed calibration continues to use `observe()` directly. Missing
+coverage produces null interpretation fields. CLI input records distinguish
+complete-file digests from bounded-prefix digests on oversized inputs.
 
-The tool does not validate the receipt seal, submitted PM4, boot identity,
-color target, completion, or hardware execution. Keep those checks in the
-existing campaign. Its scope is `raw_byte_comparison_only`; a successful
-run neither authorizes a submission nor promotes a driver capability.
+The CLI returns 1 for geometric or isolation refusal and 2 for input I/O
+failure, retaining readable inputs in either case. Raw classification alone
+establishes byte relationships; hardware qualification additionally requires
+execution metadata and the campaign's sealed receipt authority.
+
+## Execution evidence join
+
+The CLI requires each `zb_depth_discovery_outcome.json` and an explicit
+`r300-zb-stencil-pair-context/1` JSON document. Exit 0 means a qualified,
+isolated observation under the supplied receipt context. Exit 1 retains a
+judged constraint refusal; exit 2 identifies input or hasher infrastructure
+failure. The raw Python API remains independent of those external inputs.
+
+Outcome schema `r3v-native-zb-depth-discovery-outcome/1` has strict field
+types, exact seed-specific scenario identity, bounded JSON parsing, and
+independent raw counter comparisons. PATH-resolved `b3sum --no-names` reads
+exactly the immutable before-image bytes through stdin. Successful submission,
+completed queue, declared initialization, and the color oracle are required.
+Duplicate keys and non-finite JSON values refuse.
+
+The context has a `declaration` identity object and `runs` keyed by
+`seed-5a` and `seed-a5`. Each run supplies `identity`,
+`authority=retained-bundle-sha256`, the verified `seal_sha256`, and an
+`artifacts` map containing SHA-256s for `depth_before.bin`,
+`depth_after.bin`, and `zb_depth_discovery_outcome.json`.
+`CONTEXT_FIELDS` defines the required identity fields. Every run must match
+the independently predeclared identity. Seed-specific image digests and
+receipt seals may differ.
+
+The campaign receipt verifier owns seal verification and normalized identity
+extraction. The caller must supply its verified context and preserve the
+predeclared identity's provenance. The public checker verifies the supplied
+joins; a self-consistent JSON document supplies neither hardware attestation
+nor authorization. Public tests use synthetic contexts and a real BLAKE3
+integration leg, independently of the evidence checkout.
+
+Boot, platform, source/profile, application SHA-256/build ID, and runner
+identity come from sealed `identity.txt`. Driver BLAKE3 and kernel/module
+fields come from sealed `submit_manifest.json`. Arming alone establishes
+readiness rather than completed execution.
 
 ## Complementary seeds
 

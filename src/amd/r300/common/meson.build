@@ -56,6 +56,13 @@ libr300_common = static_library(
 )
 
 if with_tests
+  test(
+    'r300-zb-stencil-pair',
+    prog_python,
+    args : files('tests/r300_zb_stencil_pair_test.py'),
+    suite : ['r300'],
+    timeout : 120,
+  )
 # Host-only tests over the API-neutral R300 hardware vocabulary.  Everything
 # here builds against inc_src, inc_include, inc_amd_common, and this
 # directory alone, which keeps the common layer's independence from the
