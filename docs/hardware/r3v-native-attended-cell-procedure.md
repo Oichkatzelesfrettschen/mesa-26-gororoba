@@ -320,6 +320,12 @@ node remains a retained preflight refusal. An explicit manual-recovery waiver
 requires a separately reviewed runner path that supports that route. Package
 installation and general experiment authorization do not supply the waiver.
 
+### Historical watchdog bracket implementation
+
+The following bracket description records the implementation and its original
+checks. The bracket remains retired as an operational admission route; only an
+explicitly authorized manual-recovery route may admit an attended attempt.
+
 The hazardous interval is `DRM_IOCTL_RADEON_CS` through fence
 completion, because a ring wedge becomes observable while waiting for
 completion rather than at the ioctl return. `vkQueueSubmit` is a wider
@@ -436,6 +442,8 @@ confirms the counter is running and ends after it confirms the counter
 is halted, so it carries the reload, both two-read observations, and
 both acknowledgements.
 
+### Manual-recovery admission
+
 A runner that implements the manual-recovery route takes `--waiver <path>`, naming a document
 the operator writes for one run. An exported variable outlives the
 decision it recorded and authorizes whatever runs next, so the waiver
@@ -454,9 +462,10 @@ Every field is matched against the live run, and the timestamp admits an
 age of 0 to 3600 seconds, so a waiver written for another boot, another
 attempt, another cell, another runner image, or another hour admits
 nothing. The runner prints the exact bindings when it refuses, so the
-operator writes what the run is rather than transcribing it. Without
-either the bracket or an admitted waiver the runner refuses before it
-creates the instance.
+operator writes what the run is rather than transcribing it. Operational admission requires the explicit human waiver and physical
+attendance. A bracket-only software acceptance does not authorize execution.
+The selected runner must implement the admitted waiver route before execution;
+a frozen runner lacking that route remains blocked.
 
 Record these fields:
 
