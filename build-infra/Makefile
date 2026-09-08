@@ -2613,10 +2613,18 @@ source-root-selection-test:
 			MESA_CALLER_MOUNT_NAMESPACE="$$caller_mount_namespace" \
 			unshare --user --map-root-user --mount bash -c '\
 				set -euo pipefail; \
+				exec {control_root_fd}< "$$2"; \
+				cd /; \
 				mount --make-rprivate /; \
 				mount -t tmpfs -o mode=0700 tmpfs /tmp; \
 				mount -t tmpfs -o mode=0755 tmpfs /opt; \
 				mkdir -p /opt/local; \
+				case "$$2" in \
+					/tmp/*|/opt/*) \
+						mkdir -p "$$2"; \
+						mount --no-canonicalize --bind "/proc/self/fd/$$control_root_fd" "$$2" ;; \
+				esac; \
+				exec {control_root_fd}<&-; \
 				exec python3 "$$1" --control-root "$$2"' \
 				_ "$(MOUNT_BOUNDARY_CALIBRATION)" "$(CONTROL_ROOT)" \
 				2>&1 \
