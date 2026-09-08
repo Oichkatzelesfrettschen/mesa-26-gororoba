@@ -38,7 +38,17 @@ class PairTests(unittest.TestCase):
         self.assertFalse(result["general_stencil_function_established"])
         self.assertEqual(result["scope"], "raw_byte_comparison_only")
         self.assertEqual(result["bit_observations"]["same_as_input"], 255)
-        for run in result["runs"]:
+        for seed, run in zip((0x5A, 0xA5), result["runs"]):
+            before, after = image_pair(seed)
+            self.assertEqual(run["seed"], seed)
+            self.assertEqual(run["before_sha256"], hashlib.sha256(before).hexdigest())
+            self.assertEqual(run["after_sha256"], hashlib.sha256(after).hexdigest())
+            self.assertEqual(run["storage_slots"], 4160)
+            self.assertEqual(run["after_stencil_histogram"], {seed: 4160})
+            self.assertEqual(run["regions"], {
+                "prefix_guard": {"inspected_bytes": 2048, "changed_bytes": 0},
+                "suffix_guard": {"inspected_bytes": 2048, "changed_bytes": 0},
+                "unclaimed": {"inspected_bytes": 3840, "changed_bytes": 0}})
             self.assertEqual(run["depth_bo_offset"], 7572)
             self.assertEqual(run["depth_surface_offset"], 5524)
             self.assertEqual(run["changed_bytes"], 1)
@@ -87,7 +97,10 @@ class PairTests(unittest.TestCase):
         def swap(value):
             return (value & ~10) | ((value & 2) << 2) | ((value & 8) >> 2)
         self.assertEqual((swap(0x5A), swap(0xA5)), (0x5A, 0xA5))
-        self.assertNotEqual(swap(2), 2)
+        self.assertEqual(swap(2), 8)
+        self.assertEqual(self.classify(swap(0x5A), swap(0xA5))["bit_observations"],
+                         {"same_as_input": 255, "opposite_to_input": 0,
+                          "zero_for_both": 0, "one_for_both": 0})
         self.assertFalse(self.classify(swap(0x5A), swap(0xA5))[
             "general_stencil_function_established"])
 
@@ -456,6 +469,34 @@ class CommandTests(unittest.TestCase):
         result = self.run_pair()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(json.loads(result.stdout)["errors"][0]["reason"], "allocation_length")
+
+    def test_missing_metadata_refuses_with_raw_hashes(self):
+        (self.a / "zb_depth_discovery_outcome.json").unlink()
+        result = self.run_pair()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn("outcome_missing", [error["reason"] for error in payload["errors"]])
+        self.assertEqual(payload["runs"][0]["before_sha256"],
+                         hashlib.sha256(image_pair(0x5A)[0]).hexdigest())
+
+    def test_input_failure_retains_other_images(self):
+        (self.b / "depth_after.bin").unlink()
+        result = self.run_pair()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["inputs"][0]["sha256"],
+                         hashlib.sha256(image_pair(0x5A)[0]).hexdigest())
+        self.assertIsNone(payload["runs"][1]["after_sha256"])
+        self.assertEqual(payload["errors"][0]["seed_role"], "seed-a5")
+
+    def test_oversized_digest_is_explicit_prefix(self):
+        with (self.a / "depth_after.bin").open("ab") as target:
+            target.write(b"extra data")
+        result = self.run_pair()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["inputs"][1]["digest_scope"], "bounded_prefix")
+        self.assertIsNone(payload["runs"][0]["after_sha256"])
 
     def test_usage_is_not_a_crash(self):
         result = self.command()
