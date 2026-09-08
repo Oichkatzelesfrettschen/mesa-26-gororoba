@@ -134,9 +134,8 @@ endif
 ifeq ($(origin BUILDDIR),undefined)
 BUILDDIR := $(BUILD_ROOT)/mesa-$(PROFILE)
 endif
-# Keep profile lanes isolated by default because meson install does not remove
-# artifacts that are absent from the current profile.  Override PREFIX=... on
-# the make line when intentionally installing into a shared active tree.
+# Keep experimental installation outputs inside their selected build root.
+# Select distinct BUILD_ROOT values for profiles that need separate prefixes.
 ifeq ($(origin PREFIX),undefined)
 PREFIX := $(BUILD_ROOT)/prefix
 endif
