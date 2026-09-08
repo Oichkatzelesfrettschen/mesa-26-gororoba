@@ -30,7 +30,7 @@ class PairTests(unittest.TestCase):
 
     def test_preserved_pair(self):
         result = self.classify()
-        self.assertEqual(result["selected_behavior"], "PRESERVED_FOR_BOTH_SEEDS")
+        self.assertEqual(result["selected_slot_behavior"], "PRESERVED_FOR_BOTH_SEEDS")
         self.assertTrue(result["unwritten_slots_preserved"])
         self.assertFalse(result["general_stencil_function_established"])
         self.assertEqual(result["scope"], "raw_byte_comparison_only")
@@ -50,19 +50,19 @@ class PairTests(unittest.TestCase):
 
     def test_zero_replacement_is_classified(self):
         result = self.classify(0, 0)
-        self.assertEqual(result["selected_behavior"], "ZERO_FOR_BOTH_SEEDS")
+        self.assertEqual(result["selected_slot_behavior"], "ZERO_FOR_BOTH_SEEDS")
         self.assertEqual(result["bit_observations"]["zero_for_both"], 255)
         self.assertEqual(result["runs"][0]["slot_classes"]["both"], 1)
         self.assertEqual(result["runs"][0]["changed_bytes"], 2)
 
     def test_one_replacement_is_classified(self):
         result = self.classify(255, 255)
-        self.assertEqual(result["selected_behavior"], "ONE_FOR_BOTH_SEEDS")
+        self.assertEqual(result["selected_slot_behavior"], "ONE_FOR_BOTH_SEEDS")
         self.assertEqual(result["bit_observations"]["one_for_both"], 255)
 
     def test_complement_and_mixed_behavior(self):
         result = self.classify(0xA5, 0x5A)
-        self.assertEqual(result["selected_behavior"], "OTHER_OBSERVED_PAIR")
+        self.assertEqual(result["selected_slot_behavior"], "OTHER_OBSERVED_PAIR")
         self.assertEqual(result["bit_observations"]["opposite_to_input"], 255)
         masks = pair.bit_observations(0x5A, 0xA5, 0x50, 0xA0)
         self.assertEqual(masks, {"same_as_input": 0xF0, "opposite_to_input": 0,
@@ -103,18 +103,65 @@ class PairTests(unittest.TestCase):
         modified = bytearray(after)
         modified[18684] = 0
         result = pair.classify_pair(before, bytes(modified), *image_pair(0xA5))
-        self.assertEqual(result["selected_behavior"], "PRESERVED_FOR_BOTH_SEEDS")
+        self.assertEqual(result["selected_slot_behavior"], "PRESERVED_FOR_BOTH_SEEDS")
         self.assertFalse(result["unwritten_slots_preserved"])
         self.assertEqual(result["runs"][0]["stencil_only_offsets"], [18684])
         self.assertEqual(result["runs"][0]["slot_classes"]["stencil_only"], 1)
 
+    def test_mass_clobber_retains_selected_observation(self):
+        for selected in (None, 0):
+            images = []
+            for seed in (0x5A, 0xA5):
+                before, after = image_pair(seed, selected)
+                after = bytearray(after)
+                for offset in range(2048, 18688, 4):
+                    if offset != 7572:
+                        after[offset] = 0
+                images.extend((before, bytes(after)))
+            result = pair.classify_pair(*images)
+            self.assertEqual(result["off_target_stencil_changes"], [4159, 4159])
+            self.assertFalse(result["spatially_isolated"])
+            self.assertFalse(result["unwritten_slots_preserved"])
+            self.assertEqual(result["selected_slot_behavior"],
+                             "PRESERVED_FOR_BOTH_SEEDS" if selected is None else
+                             "ZERO_FOR_BOTH_SEEDS")
+
+    def test_off_target_combined_write_is_counted(self):
+        before, after = image_pair(0x5A)
+        after = bytearray(after)
+        struct.pack_into("<I", after, 18684, 0x40000000)
+        result = pair.classify_pair(before, bytes(after), *image_pair(0xA5))
+        self.assertEqual(result["off_target_stencil_changes"], [1, 0])
+        self.assertFalse(result["unwritten_slots_preserved"])
+        self.assertIsNone(result["selected_slot_behavior"])
+
+    def test_missing_coverage_is_unjudged(self):
+        result = pair.classify_pair(b"", b"", *image_pair(0xA5))
+        self.assertIsNone(result["unwritten_slots_preserved"])
+        self.assertIsNone(result["spatially_isolated"])
+        self.assertIsNone(result["selected_slot_behavior"])
+
+    def test_refusal_retains_complete_measurements(self):
+        before, after = image_pair(0x5A, offset=5524)
+        with self.assertRaises(pair.ObservationRefusal) as refusal:
+            pair.observe(before, after, 0x5A)
+        run = refusal.exception.observation
+        self.assertEqual(run["storage_slots"], 4160)
+        self.assertEqual(run["depth_bo_offset"], 5524)
+        self.assertEqual(run["errors"][0]["offset"], 5524)
+        self.assertEqual(run["errors"][0]["expected"], 7572)
+        self.assertEqual(run["regions"]["unclaimed"],
+                         {"inspected_bytes": 3840, "changed_bytes": 0})
+
     def test_zero_seed_evidence_cannot_be_reused(self):
-        with self.assertRaisesRegex(pair.ObservationRefusal, "^initial_storage$"):
-            pair.classify_pair(*image_pair(0), *image_pair(0))
+        result = pair.classify_pair(*image_pair(0), *image_pair(0))
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertEqual(result["errors"][0]["reason"], "initial_storage")
 
     def test_swapped_seed_roles_refuse(self):
-        with self.assertRaisesRegex(pair.ObservationRefusal, "^initial_storage$"):
-            pair.classify_pair(*image_pair(0xA5), *image_pair(0x5A))
+        result = pair.classify_pair(*image_pair(0xA5), *image_pair(0x5A))
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertEqual(result["errors"][0]["reason"], "initial_storage")
 
     def test_initial_storage_is_checked_even_if_unchanged(self):
         before, after = map(bytearray, image_pair(0x5A))
@@ -208,14 +255,20 @@ class CommandTests(unittest.TestCase):
     def test_success(self):
         result = self.run_pair()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["status"], "CLASSIFIED")
+        self.assertEqual(json.loads(result.stdout)["status"], "OBSERVED")
 
     def test_judged_failure_exact_status(self):
         (self.a / "depth_after.bin").write_bytes((self.a / "depth_before.bin").read_bytes())
         result = self.run_pair()
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(json.loads(result.stdout), {
-            "status": "REFUSED", "reason": "one_depth_location"})
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "REFUSED")
+        self.assertEqual(payload["errors"][0], {
+            "stage": "raw_observation", "seed_role": "seed-5a",
+            "artifact": "depth_after.bin", "offset": None,
+            "reason": "one_depth_location", "expected": 1, "observed": 0})
+        self.assertEqual(payload["runs"][0]["storage_slots"], 4160)
+        self.assertIsNone(payload["runs"][0]["selected_stencil"])
 
     def test_input_failure_exact_status(self):
         (self.b / "depth_before.bin").unlink()
@@ -228,7 +281,7 @@ class CommandTests(unittest.TestCase):
             output.write(b"x")
         result = self.run_pair()
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(json.loads(result.stdout)["reason"], "allocation_length")
+        self.assertEqual(json.loads(result.stdout)["errors"][0]["reason"], "allocation_length")
 
     def test_usage_is_not_a_crash(self):
         result = self.command()

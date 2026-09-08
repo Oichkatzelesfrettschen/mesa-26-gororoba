@@ -29,21 +29,25 @@ standard output. Retain that output through the campaign's evidence writer.
 
 ## Interpretation
 
-Exit 0 means the bytes satisfy the pair experiment and were classified.
-It does not mean that stencil was preserved. Inspect `selected_behavior`
-and `unwritten_slots_preserved` independently. Zero replacement, one
-replacement, and other output pairs remain observations rather than being
-coerced into preservation or silently discarded.
+The version 2 raw result uses `status=OBSERVED` and
+`qualification=UNJUDGED`. The raw API classifies supplied bytes independently
+of execution metadata. `selected_slot_behavior` describes the unique
+depth-written slot; `spatially_isolated` and `off_target_stencil_changes`
+report whether additional stencil writes occurred. Replacement by zero or
+one remains a valid local observation. Additional stencil writes fail the
+isolated experiment while retaining that local observation.
 
-Exit 1 names a violated input/observation constraint. Exit 2 identifies
-argument or input-I/O failure. The output carries hashes of the four byte
-images, complete slot counts, stencil histograms, and every stencil-only
-change outside the depth-written slot.
+`scan_images()` retains safely readable slot counts, histograms, region
+counts, hashes, and contextual errors. `observe()` applies the raw geometric
+contract and attaches the collected observation to `ObservationRefusal`.
+The zero-seed calibration continues to use `observe()` directly. Missing
+coverage produces null interpretation fields. CLI input records distinguish
+complete-file digests from bounded-prefix digests on oversized inputs.
 
-The tool does not validate the receipt seal, submitted PM4, boot identity,
-color target, completion, or hardware execution. Keep those checks in the
-existing campaign. Its scope is `raw_byte_comparison_only`; a successful
-run neither authorizes a submission nor promotes a driver capability.
+The CLI returns 1 for geometric or isolation refusal and 2 for input I/O
+failure, retaining readable inputs in either case. Raw classification alone
+establishes byte relationships; hardware qualification additionally requires
+execution metadata and the campaign's sealed receipt authority.
 
 ## Complementary seeds
 
