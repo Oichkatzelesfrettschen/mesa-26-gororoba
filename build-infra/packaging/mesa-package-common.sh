@@ -74,7 +74,11 @@ check() {
   local vulkan_dir=${_source_root}/src/amd/r300/vulkan
   python3 "${_control_root}/build-infra/scripts/mesa_package_layout.py" config \
     --builddir "${_builddir}" || return 1
-  _package_make test || return 1
+  if [[ -n ${MESA_PACKAGE_BUILDDIR:-} ]]; then
+    _package_make test MESON_TEST_ARGS=--no-rebuild || return 1
+  else
+    _package_make test || return 1
+  fi
   python3 "${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py" --selftest || return 1
   python3 "${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py" \
     --source "${vulkan_dir}/r3v_physical_device.c" || return 1

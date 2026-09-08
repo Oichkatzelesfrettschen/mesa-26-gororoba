@@ -1527,6 +1527,7 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
                 fail(f"refusing BUILD_ROOT inside {name}: {build_root}")
             if is_within_or_equal(builddir, boundary):
                 fail(f"refusing BUILDDIR inside {name}: {builddir}")
+    if requires_source_identity(values):
         source_view = source_view_path(values)
         if is_within_or_equal(builddir, source_view) or is_within_or_equal(
             source_view,
@@ -1581,6 +1582,12 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
             repository_build_root,
             scan_descendants=True,
         )
+
+
+def requires_source_identity(values: dict[str, Path | str]) -> bool:
+    return values["source_root"] != values["control_root"] or values["prefix"] == Path(
+        "/usr"
+    )
 
 
 def source_view_path(values: dict[str, Path | str]) -> Path:
@@ -1980,6 +1987,8 @@ def base_identity_payload(
         require_reproducible_source_worktrees(source_root)
     else:
         require_clean_external_source(source_root)
+        if source_root == values["control_root"] and requires_source_identity(values):
+            require_clean_worktree(source_root, "package source/control worktree")
     payload: dict[str, str | int] = {
         "schema_version": SCHEMA_VERSION,
         "source_root": str(source_root),
@@ -2161,7 +2170,7 @@ def prepare_identity(values: dict[str, Path | str]) -> None:
     assert isinstance(build_root, Path)
     assert isinstance(builddir, Path)
     ensure_selected_build_namespace(values)
-    if source_root == values["control_root"]:
+    if not requires_source_identity(values):
         return
 
     expected_base = base_identity_payload(values)
@@ -2239,7 +2248,7 @@ def prepare_source_view(values: dict[str, Path | str]) -> None:
     assert isinstance(source_root, Path)
     assert isinstance(source_commit, str)
     assert isinstance(build_root, Path)
-    if source_root == values["control_root"]:
+    if not requires_source_identity(values):
         return
 
     expected_base = base_identity_payload(values)
@@ -2351,7 +2360,7 @@ def write_json_atomic(output: Path, payload: dict[str, str | int]) -> None:
 def write_identity(values: dict[str, Path | str]) -> None:
     source_root = values["source_root"]
     assert isinstance(source_root, Path)
-    if source_root == values["control_root"]:
+    if not requires_source_identity(values):
         return
 
     expected_base = base_identity_payload(values)
@@ -2782,7 +2791,7 @@ def remove_identity_v7_build_root(values: dict[str, Path | str]) -> None:
 def verify_identity(values: dict[str, Path | str]) -> None:
     source_root = values["source_root"]
     assert isinstance(source_root, Path)
-    if source_root == values["control_root"]:
+    if not requires_source_identity(values):
         return
 
     expected_base = base_identity_payload(values)
@@ -2834,7 +2843,7 @@ def verify_delete_identity(
     builddir = values["builddir"]
     assert isinstance(source_root, Path)
     assert isinstance(builddir, Path)
-    if source_root == values["control_root"]:
+    if not requires_source_identity(values):
         return
     expected_base = base_identity_payload(values)
     root_path = root_identity_path(values)

@@ -442,7 +442,13 @@ endif
 # -Dwerror=true is always on the CLI so a profile that drops the option, or a
 # coredata reset of werror, cannot re-open a warnings-are-nonfatal configure.
 # Profile dflags still re-assert every other project option (and werror again).
+override SOURCE_VIEW_REQUIRED := 1
 ifeq ($(TOPSRC),$(CONTROL_ROOT))
+ifneq ($(PREFIX),/usr)
+override SOURCE_VIEW_REQUIRED := 0
+endif
+endif
+ifeq ($(SOURCE_VIEW_REQUIRED),0)
 override MESON_SOURCE_ROOT := $(TOPSRC)
 override EXTERNAL_SOURCE_WRAP_ARG :=
 override EXTERNAL_MESON_SETUP_LOCAL_UNSET :=
@@ -729,6 +735,7 @@ source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 		python3 -m pytest -q \
 		$(CURDIR)/tests/test_source_root_control.py \
+		$(CURDIR)/tests/test_package_source_identity.py \
 		$(CURDIR)/tests/test_mount_boundary_calibration.py
 
 remove-identity-v7-build-root: source-root-check
