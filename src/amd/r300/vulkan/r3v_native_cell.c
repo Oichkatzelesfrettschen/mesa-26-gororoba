@@ -3158,11 +3158,13 @@ zb_discovery_fill_depth(struct r3v_native_device *device,
 #define R3V_ZB_DISCOVERY_VERTEX_BYTES \
    (R300_ZB_DISCOVERY_VERTEX_DWORDS * sizeof(uint32_t))
 
-VkResult
-r3v_native_record_zb_depth_discovery(
+static VkResult
+record_zb_depth_discovery_scenario(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   const struct r300_zb_depth_discovery_scenario *scenario,
    enum r3v_native_zb_discovery_scenario scenario_selection,
+   const struct r300_zb_coordinate_discovery *coordinate_discovery,
    enum r3v_native_zb_discovery_arm arm)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
@@ -3177,8 +3179,6 @@ r3v_native_record_zb_depth_discovery(
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
 
-   const struct r300_zb_depth_discovery_scenario *scenario =
-      r3v_native_zb_discovery_scenario_descriptor(scenario_selection);
    if (scenario == NULL) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: discovery names no scenario for selector "
@@ -3313,11 +3313,51 @@ r3v_native_record_zb_depth_discovery(
     * experiment this recorder admitted. */
    cmd_buffer->zb_discovery_scenario = scenario_selection;
    cmd_buffer->zb_discovery_arm = arm;
+   cmd_buffer->zb_coordinate_discovery_configured =
+      coordinate_discovery != NULL;
+   if (coordinate_discovery != NULL) {
+      cmd_buffer->zb_coordinate_discovery = *coordinate_discovery;
+      cmd_buffer->zb_coordinate_discovery.scenario.surface =
+         &cmd_buffer->zb_coordinate_discovery.surface;
+   }
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_zb_depth_discovery_release(&cell);
 
    return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_zb_depth_discovery(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r3v_native_zb_discovery_scenario scenario_selection,
+   enum r3v_native_zb_discovery_arm arm)
+{
+   return record_zb_depth_discovery_scenario(
+      commandBuffer, vertexMemory, colorMemory, depthMemory,
+      r3v_native_zb_discovery_scenario_descriptor(scenario_selection),
+      scenario_selection, NULL, arm);
+}
+
+VkResult
+r3v_native_record_zb_coordinate_discovery(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r300_zb_coordinate_discovery_layout layout, uint32_t pixel_x,
+   uint32_t pixel_y, uint32_t pitch_pixels, uint32_t base_bytes,
+   enum r3v_native_zb_discovery_arm arm)
+{
+   struct r300_zb_coordinate_discovery configured;
+   if (r300_zb_coordinate_discovery_init(layout, pixel_x, pixel_y,
+                                         pitch_pixels, base_bytes,
+                                         &configured) != 0)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   return record_zb_depth_discovery_scenario(
+      commandBuffer, vertexMemory, colorMemory, depthMemory,
+      &configured.scenario, R3V_NATIVE_ZB_DISCOVERY_SCENARIO_Z24_LINEAR,
+      &configured, arm);
 }
 
 int

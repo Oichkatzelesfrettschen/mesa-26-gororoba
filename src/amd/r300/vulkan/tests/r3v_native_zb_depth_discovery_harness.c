@@ -213,12 +213,15 @@ main(int argc, char **argv)
          mode_known = mode_known || strcmp(argv[1], modes[m]) == 0;
    }
    if (argc < 2 || argc > 3 || !mode_known ||
-       (argc == 3 && strcmp(argv[2], "z24_macrotiled") != 0)) {
+       (argc == 3 && strcmp(argv[2], "z24_macrotiled") != 0 &&
+        strcmp(argv[2], "coordinate") != 0) ||
+       (argc == 3 && strcmp(argv[2], "coordinate") == 0 &&
+        strcmp(argv[1], "open") != 0)) {
       fprintf(stderr,
               "usage: %s closed|open|refuse-unnamed-scenario|"
               "refuse-unnamed-arm|refuse-arm-disagreement|"
               "refuse-compression-enabled|refuse-altered-stream "
-              "[z24_macrotiled]\n",
+              "[z24_macrotiled|coordinate]\n",
               argv[0]);
       return 2;
    }
@@ -240,11 +243,21 @@ main(int argc, char **argv)
     * transform exists for, and its envelope fills the constant
     * allocation exactly while the linear one leaves 3840 unclaimed
     * bytes. */
+   const bool coordinate = argc == 3 && strcmp(argv[2], "coordinate") == 0;
    const enum r3v_native_zb_discovery_scenario scenario_selection =
-      argc == 3 ? R3V_NATIVE_ZB_DISCOVERY_SCENARIO_Z24_MACROTILED
-                : R3V_NATIVE_ZB_DISCOVERY_SCENARIO_Z24_LINEAR;
+      argc == 3 && !coordinate
+         ? R3V_NATIVE_ZB_DISCOVERY_SCENARIO_Z24_MACROTILED
+         : R3V_NATIVE_ZB_DISCOVERY_SCENARIO_Z24_LINEAR;
+   struct r300_zb_coordinate_discovery configured;
+   if (coordinate)
+      CHECK(r300_zb_coordinate_discovery_init(
+                R300_ZB_COORDINATE_DISCOVERY_MACROTILED, 37u, 21u, 96u,
+                4096u, &configured) == 0,
+            "coordinate scenario constructs");
    const struct r300_zb_depth_discovery_scenario *scenario =
-      r3v_native_zb_discovery_scenario_descriptor(scenario_selection);
+      coordinate ? &configured.scenario
+                 : r3v_native_zb_discovery_scenario_descriptor(
+                      scenario_selection);
    CHECK(scenario != NULL, "scenario selector %d names a scenario",
          (int)scenario_selection);
    if (scenario == NULL)
@@ -481,9 +494,14 @@ main(int argc, char **argv)
    CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
          "an unnamed arm selector refuses recording: %d", result);
 
-   result = r3v_native_record_zb_depth_discovery(
-      cmd, vertex_memory, color_memory, depth_memory, scenario_selection,
-      arm_selection);
+   result = coordinate
+               ? r3v_native_record_zb_coordinate_discovery(
+                    cmd, vertex_memory, color_memory, depth_memory,
+                    R300_ZB_COORDINATE_DISCOVERY_MACROTILED, 37u, 21u, 96u,
+                    4096u, arm_selection)
+               : r3v_native_record_zb_depth_discovery(
+                    cmd, vertex_memory, color_memory, depth_memory,
+                    scenario_selection, arm_selection);
    CHECK(result == VK_SUCCESS, "discovery recording on %s: %d",
          scenario->name, result);
 
@@ -505,8 +523,20 @@ main(int argc, char **argv)
    {
       struct r3v_native_cmd_buffer *recorded =
          r3v_native_cmd_buffer_from_handle(cmd);
+      if (coordinate) {
+         CHECK(recorded->zb_coordinate_discovery_configured,
+               "coordinate recording carries its declaration");
+         CHECK(recorded->zb_coordinate_discovery.scenario.surface ==
+                  &recorded->zb_coordinate_discovery.surface,
+               "coordinate recording rebases its surface pointer");
+         CHECK(recorded->zb_coordinate_discovery.scenario.surface !=
+                  &configured.surface,
+               "coordinate recording owns no stack surface pointer");
+      }
       const struct r300_zb_depth_discovery_params declared = {
-         .scenario = scenario,
+         .scenario = coordinate
+                        ? &recorded->zb_coordinate_discovery.scenario
+                        : scenario,
          .depth_function = depth_function,
          .depth_write = depth_write,
       };
