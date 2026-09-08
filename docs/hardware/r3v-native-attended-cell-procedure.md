@@ -283,37 +283,48 @@ submission runs in, so the watchdog is registered after the reboot, and
 
 ## Watchdog gate
 
-The SB600 TCO watchdog reboots this machine after a wedge only while it
-is counting. These are the measured properties of that counter on the
-Vostro 1000, from the retained tick measurement
-(`sb600-watchdog-tick-32768hz-pet-ineffective`):
+The SB600 TCO provides no qualified fixed survival interval on the Vostro
+1000. The canonical timing reconciliation lives in the sibling
+`vostro1000-re` repository at
+`systems/dell-vostro-1000/southbridge-sb600/rs480-wd-feeder-status.md`.
+Its retained measurements span below 0.2 seconds to approximately 26 seconds.
+`WDIOC_KEEPALIVE` does not establish a reloadable timer, and the programmed
+count does not predict the observed reset delay across those measurements.
 
-- `WatchDogCount` ticks at 32.768 kHz.
-- The count is 16 bits, so a full count is an approximately 2.0-second
-  maximum window.
-- The operational grace is 1.7 seconds, leaving roughly 0.3 second for a
-  disarm to land ahead of the fire.
-- `WDIOC_KEEPALIVE` does not reload the counter, so the window admits no
-  extension and a guarded interval closes inside it or the machine
-  reboots.
-- `sp5100_tco` loads with `heartbeat=65535` so the count holds 0xffff at
-  probe and the first open counts from the full window.
-- PM index 0x69 bit 0 (`WatchDogTimerDisable`) is the confirmed disarm.
+The retained `sb600-watchdog-tick-32768hz-pet-ineffective` observation
+establishes a 32.768 kHz tick and a roughly 2-second full-count interval for
+that measurement. The 1.7-second software grace derives from that observation.
+Those values do not establish a universal safety margin. PM index 0x69 bit 0
+is the retained disarm mechanism; its reachability does not qualify timing.
 
-The gate follows from those properties:
+The operational admission gate therefore remains closed for automatic timed
+recovery. The historical bracket implementation described below records its
+own states and intervals; its successful software checks do not override the
+contradicting timing evidence.
 
 ```text
-Watchdog registered but inactive:
-    admits preparation and offline verification;
-    refuses hardware submission.
+Recovery packages, module registration, and software panic policy:
+    admit preparation and offline verification.
 
-Watchdog armed around a measured sub-1.7-second hazardous interval:
-    admits one hardware submission.
+SB600 watchdog bracket or a measured sub-1.7-second interval alone:
+    refuses operational admission for a hardware submission.
 
-Hazardous interval not isolatable or not bounded below 1.7 seconds:
-    refuses submission unless the human operator explicitly waives
-    automatic recovery and accepts manual power-cycle recovery.
+Explicit human waiver accepting manual power-cycle recovery:
+    requires physical attendance and exact run identity;
+    admits only the individually authorized attempt through its runner gates.
 ```
+
+Do not load or arm the watchdog to repair a missing-device preflight result.
+The registration checks above record deployment state; a missing watchdog
+node remains a retained preflight refusal. An explicit manual-recovery waiver
+requires a separately reviewed runner path that supports that route. Package
+installation and general experiment authorization do not supply the waiver.
+
+### Historical watchdog bracket implementation
+
+The following bracket description records the implementation and its original
+checks. The bracket remains retired as an operational admission route; only an
+explicitly authorized manual-recovery route may admit an attended attempt.
 
 The hazardous interval is `DRM_IOCTL_RADEON_CS` through fence
 completion, because a ring wedge becomes observable while waiting for
@@ -421,8 +432,7 @@ state, keeps the PM halt, performs the watchdog core's magic close, and
 confirms PM 0x69 bit 0 still reads set; the count cannot answer that,
 because reopening the device would arm it. Every abnormal exit -- a
 signal, a closed command stream, a parent that wedged the machine --
-leaves an armed counter running, so the reset the gate promises still
-lands.
+leaves an armed counter running, with reset timing governed by the unresolved hardware interval.
 
 A helper that answers without touching hardware measures the pipe round
 trip and nothing else. That figure is
@@ -432,7 +442,9 @@ confirms the counter is running and ends after it confirms the counter
 is halted, so it carries the reload, both two-read observations, and
 both acknowledgements.
 
-The third clause of the gate takes `--waiver <path>`, naming a document
+### Manual-recovery admission
+
+A runner that implements the manual-recovery route takes `--waiver <path>`, naming a document
 the operator writes for one run. An exported variable outlives the
 decision it recorded and authorizes whatever runs next, so the waiver
 binds to the run instead:
@@ -450,9 +462,10 @@ Every field is matched against the live run, and the timestamp admits an
 age of 0 to 3600 seconds, so a waiver written for another boot, another
 attempt, another cell, another runner image, or another hour admits
 nothing. The runner prints the exact bindings when it refuses, so the
-operator writes what the run is rather than transcribing it. Without
-either the bracket or an admitted waiver the runner refuses before it
-creates the instance.
+operator writes what the run is rather than transcribing it. Operational admission requires the explicit human waiver and physical
+attendance. A bracket-only software acceptance does not authorize execution.
+The selected runner must implement the admitted waiver route before execution;
+a frozen runner lacking that route remains blocked.
 
 Record these fields:
 
