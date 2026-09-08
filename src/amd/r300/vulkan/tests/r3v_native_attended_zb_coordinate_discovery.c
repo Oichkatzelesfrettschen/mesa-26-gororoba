@@ -300,6 +300,10 @@ main(int argc, char **argv)
       vk_icdGetInstanceProcAddr;
    PFN_vkCreateInstance create_instance =
       (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+   if (create_instance == NULL) {
+      fprintf(stderr, "native ICD provides no vkCreateInstance\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
    VkInstance instance = VK_NULL_HANDLE;
    VkResult result = create_instance(
       &(VkInstanceCreateInfo){
@@ -317,6 +321,12 @@ main(int argc, char **argv)
    LOAD_INSTANCE(vkCreateDevice);
    LOAD_INSTANCE(vkGetDeviceProcAddr);
    LOAD_INSTANCE(vkDestroyInstance);
+   if (vkEnumeratePhysicalDevices == NULL ||
+       vkGetPhysicalDeviceProperties == NULL || vkCreateDevice == NULL ||
+       vkGetDeviceProcAddr == NULL || vkDestroyInstance == NULL) {
+      fprintf(stderr, "native ICD omits a required instance entry point\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
 
    stage("physical device");
    uint32_t pdev_count = 1;
@@ -374,6 +384,15 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkEndCommandBuffer);
    LOAD_DEVICE(vkQueueSubmit);
    LOAD_DEVICE(vkDestroyDevice);
+   if (vkAllocateMemory == NULL || vkFreeMemory == NULL ||
+       vkMapMemory == NULL || vkGetDeviceQueue == NULL ||
+       vkCreateCommandPool == NULL || vkDestroyCommandPool == NULL ||
+       vkAllocateCommandBuffers == NULL || vkBeginCommandBuffer == NULL ||
+       vkEndCommandBuffer == NULL || vkQueueSubmit == NULL ||
+       vkDestroyDevice == NULL) {
+      fprintf(stderr, "native ICD omits a required device entry point\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
 
    stage("memory");
    struct { VkDeviceSize size; VkDeviceMemory memory; } allocations[] = {

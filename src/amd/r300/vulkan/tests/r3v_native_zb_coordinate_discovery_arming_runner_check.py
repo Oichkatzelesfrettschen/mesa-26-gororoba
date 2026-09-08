@@ -41,6 +41,12 @@ def require_frozen_stream_identity(result, expected_digest):
                              result.stdout)
 
 
+def require_stream_identity_changed(baseline, changed, factor):
+    if field(changed.stdout, "ib_blake3") == field(baseline.stdout,
+                                                     "ib_blake3"):
+        raise AssertionError("%s did not move stream identity" % factor)
+
+
 def main():
     if len(sys.argv) != 3:
         print("usage: r3v_native_zb_coordinate_discovery_arming_runner_check.py "
@@ -95,6 +101,12 @@ def main():
         require_frozen_stream_identity(
             reports[("macrotiled", "64", "2048")],
             "3785aebf83d8be0cb196032b2951b7302e527dbc2743b01a4ab348d6e1f52e84")
+        require_stream_identity_changed(
+            baseline, reports[("macrotiled", "64", "2048")], "layout")
+        require_stream_identity_changed(
+            baseline, reports[("microtiled", "96", "2048")], "pitch")
+        require_stream_identity_changed(
+            baseline, reports[("microtiled", "64", "4096")], "base")
         moved = run(runner, evidence_dir, environment, x="36", y="20")
         require_report(moved, {
             "layout": "microtiled", "pixel_x": "36", "pixel_y": "20",
