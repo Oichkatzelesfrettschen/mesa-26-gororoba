@@ -69,6 +69,9 @@ def bit_observations(seed_a: int, seed_b: int, out_a: int, out_b: int) -> dict:
 
 def scan_images(before: bytes, after: bytes, seed: int) -> dict:
     require(type(seed) is int and 0 <= seed <= 255, "stencil_byte")
+    available_before, available_after = before is not None, after is not None
+    before = before if available_before else b""
+    after = after if available_after else b""
     errors = []
 
     def check(condition, reason, artifact, offset, expected, observed):
@@ -129,8 +132,9 @@ def scan_images(before: bytes, after: bytes, seed: int) -> dict:
               offset, PIXEL_OFFSET, offset)
         check(word >> 8 == MARKER_DEPTH, "depth_marker", "depth_after.bin",
               offset, MARKER_DEPTH, word >> 8)
-    return {
+    result = {
         "seed": seed,
+        "comparison_available": available_before and available_after,
         "allocation_bytes": ALLOCATION_BYTES,
         "image_lengths": {"before": len(before), "after": len(after)},
         "storage_slots": sum(classes.values()),
@@ -152,6 +156,34 @@ def scan_images(before: bytes, after: bytes, seed: int) -> dict:
         "before_sha256": hashlib.sha256(before).hexdigest(),
         "after_sha256": hashlib.sha256(after).hexdigest(),
     }
+
+    if not result["comparison_available"]:
+        for name in ("storage_slots", "slot_classes", "depth_bo_offset", "depth_surface_offset",
+                     "depth_code", "selected_stencil", "depth_changes", "stencil_only_offsets",
+                     "off_target_stencil_offsets", "after_stencil_histogram", "changed_bytes"):
+            result[name] = None
+        result["regions"] = {name: {"inspected_bytes": None, "changed_bytes": None}
+                             for name in ("prefix_guard", "suffix_guard", "unclaimed")}
+        result["errors"] = [error for error in errors
+                            if available_before and (error["reason"].startswith("initial_") or
+                               (error["reason"] == "allocation_length" and
+                                error["artifact"] == "depth_before.bin"))]
+        if available_after:
+            histogram = {}
+            for offset in range(BASE, min(STORAGE_END, len(after) - 3), 4):
+                stencil = after[offset]
+                histogram[stencil] = histogram.get(stencil, 0) + 1
+            result["after_stencil_histogram"] = histogram
+        for side, available in (("before", available_before), ("after", available_after)):
+            if not available:
+                result[side + "_sha256"] = None
+                result["image_lengths"][side] = None
+                result["errors"].append({"stage": "raw_observation",
+                                         "seed_role": f"seed-{seed:02x}",
+                                         "artifact": f"depth_{side}.bin", "offset": None,
+                                         "reason": "image_unavailable", "expected": "readable image",
+                                         "observed": None})
+    return result
 
 
 def observe(before: bytes, after: bytes, seed: int) -> dict:
@@ -176,7 +208,7 @@ def classify_pair(a_before: bytes, a_after: bytes,
         selected = "ONE_FOR_BOTH_SEEDS"
     else:
         selected = "OTHER_OBSERVED_PAIR"
-    off_target = [len(run["off_target_stencil_offsets"]) for run in (a, b)]
+    off_target = [len(run["off_target_stencil_offsets"]) if run["off_target_stencil_offsets"] is not None else None for run in (a, b)]
     complete = all(run["storage_slots"] == 4160 for run in (a, b))
     preserved = False if any(off_target) else True if complete else None
     return {
@@ -269,6 +301,8 @@ def blake3_bytes(data):
 
 
 def validate_outcome(document, before, after, run):
+    if not run["comparison_available"]:
+        raise EvidenceError("raw_inputs_unavailable", "readable image pair", None)
     expected = {
         "schema": "r3v-native-zb-depth-discovery-outcome/1",
         "verdict": "CONTROL_PASS", "scenario": f"z24-linear-seed-{run['seed']:02x}",
@@ -321,23 +355,33 @@ def validate_outcome(document, before, after, run):
                             sorted(document))
 
 
+def exact_keys(value, names, code):
+    if type(value) is not dict or set(value) != set(names):
+        raise EvidenceError(code, sorted(names), sorted(value) if type(value) is dict else None)
+
+
 def validate_context(context, role, artifacts):
     if type(context) is not dict:
         raise EvidenceError("context:type", "object", type(context).__name__)
     exact(context.get("schema"), "r300-zb-stencil-pair-context/1", "context:schema")
+    exact_keys(context, ("schema", "declaration", "runs"), "context:fields")
     declaration = context.get("declaration")
     runs = context.get("runs")
     if type(declaration) is not dict or type(runs) is not dict:
         raise EvidenceError("context:structure", "declaration and runs objects", None)
+    exact_keys(runs, ("seed-5a", "seed-a5"), "context:run_fields")
     record = runs.get(role)
     if type(record) is not dict or type(record.get("identity")) is not dict:
         raise EvidenceError("context:run", role, record)
+    exact_keys(record, ("identity", "authority", "seal_sha256", "artifacts"), "context:record_fields")
     identity = record["identity"]
     for name in CONTEXT_FIELDS:
         wanted = declaration.get(name)
         if type(wanted) is not str or not wanted.strip():
             raise EvidenceError("context:declaration:" + name, "nonempty identity", wanted)
         exact(identity.get(name), wanted, "context:identity:" + name)
+    exact_keys(declaration, CONTEXT_FIELDS, "context:declaration_fields")
+    exact_keys(identity, CONTEXT_FIELDS, "context:identity_fields")
     platform = declaration["platform"]
     if "subsystem" not in platform or "1028:022a" not in platform or "Vostro 1000" not in platform:
         raise EvidenceError("context:platform", "Vostro 1000 with subsystem identity", platform)
@@ -357,7 +401,11 @@ def validate_context(context, role, artifacts):
     verified = record.get("artifacts")
     if type(verified) is not dict:
         raise EvidenceError("context:artifacts", "verified artifact map", verified)
+    exact_keys(verified, ("depth_before.bin", "depth_after.bin", "zb_depth_discovery_outcome.json"),
+               "context:artifact_fields")
     for name, data in artifacts.items():
+        if data is None:
+            raise EvidenceError("context:artifact_unavailable:" + name, "readable artifact", None)
         exact(verified.get(name), hashlib.sha256(data).hexdigest(), "context:artifact:" + name)
 
 
@@ -384,7 +432,7 @@ def qualify_pair(result, images, outcomes, context):
                         raise EvidenceError("context_missing", "verified pair context", None)
                     validate_context(context, role, {"depth_before.bin": before,
                                      "depth_after.bin": after,
-                                     "zb_depth_discovery_outcome.json": data or b""})
+                                     "zb_depth_discovery_outcome.json": data})
             except EvidenceError as exc:
                 errors.append({"stage": stage, "seed_role": role,
                                "artifact": "zb_depth_discovery_outcome.json" if stage == "outcome" else "pair_context",
@@ -427,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                                "digest_scope": "bounded_prefix" if len(data) > ALLOCATION_BYTES else "complete_file",
                                "sha256": hashlib.sha256(data).hexdigest()})
             except OSError as exc:
-                images.append(b"")
+                images.append(None)
                 inputs.append({"seed_role": role, "artifact": name,
                                "read_bytes": None, "sha256": None})
                 input_errors.append({"stage": "input", "seed_role": role,
@@ -450,8 +498,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with (root / "zb_depth_discovery_outcome.json").open("rb") as source:
                 outcomes.append(source.read(JSON_LIMIT + 1))
-        except OSError:
+        except OSError as exc:
             outcomes.append(None)
+            if not isinstance(exc, FileNotFoundError):
+                result["errors"].append({"stage": "input", "seed_role": "seed-5a" if root == args.seed_5a else "seed-a5",
+                                         "artifact": "zb_depth_discovery_outcome.json", "offset": None,
+                                         "reason": "outcome_read", "expected": "readable outcome",
+                                         "observed": str(exc), "infrastructure": True})
     context = None
     if args.pair_context is not None:
         try:

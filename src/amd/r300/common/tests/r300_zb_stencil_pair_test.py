@@ -401,6 +401,22 @@ class EvidenceTests(unittest.TestCase):
                 with mock.patch.object(self, "context", changed):
                     self.assert_failure("context:artifact:" + name)
 
+    def test_unknown_context_fields_refuse_at_every_level(self):
+        paths = (((), "context:fields"), (("declaration",), "context:declaration_fields"),
+                 (("runs",), "context:run_fields"),
+                 (("runs", "seed-5a"), "context:record_fields"),
+                 (("runs", "seed-5a", "identity"), "context:identity_fields"),
+                 (("runs", "seed-5a", "artifacts"), "context:artifact_fields"))
+        for path, reason in paths:
+            with self.subTest(path=path):
+                changed = copy.deepcopy(self.context)
+                target = changed
+                for component in path:
+                    target = target[component]
+                target["receipt_verified"] = False
+                with mock.patch.object(self, "context", changed):
+                    self.assert_failure(reason)
+
     def test_hasher_failures(self):
         with mock.patch.object(pair.shutil, "which", return_value=None):
             self.assert_failure("hasher_missing", 2)
@@ -487,6 +503,10 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(payload["inputs"][0]["sha256"],
                          hashlib.sha256(image_pair(0x5A)[0]).hexdigest())
         self.assertIsNone(payload["runs"][1]["after_sha256"])
+        for field in ("storage_slots", "slot_classes", "changed_bytes", "depth_changes"):
+            self.assertIsNone(payload["runs"][1][field])
+        self.assertEqual(payload["runs"][1]["regions"]["prefix_guard"],
+                         {"inspected_bytes": None, "changed_bytes": None})
         self.assertEqual(payload["errors"][0]["seed_role"], "seed-a5")
 
     def test_oversized_digest_is_explicit_prefix(self):
@@ -497,6 +517,16 @@ class CommandTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["inputs"][1]["digest_scope"], "bounded_prefix")
         self.assertIsNone(payload["runs"][0]["after_sha256"])
+
+    def test_outcome_read_infrastructure_failure(self):
+        path = self.a / "zb_depth_discovery_outcome.json"
+        path.unlink()
+        path.mkdir()
+        result = self.run_pair()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "INPUT_ERROR")
+        self.assertIn("outcome_read", [error["reason"] for error in payload["errors"]])
 
     def test_usage_is_not_a_crash(self):
         result = self.command()
