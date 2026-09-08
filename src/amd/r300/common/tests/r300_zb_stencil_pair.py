@@ -15,6 +15,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import shutil
+import subprocess
 from pathlib import Path
 import struct
 import sys
@@ -199,12 +202,216 @@ def read_image(path: Path) -> bytes:
     return data
 
 
+JSON_LIMIT = 65536
+CONTEXT_FIELDS = (
+    "platform", "boot_id", "kernel_release", "module_srcversion",
+    "driver_elf_blake3", "mesa_source_sha", "build_profile",
+    "application_sha256", "application_build_id",
+    "arming_runner_sha256", "arming_runner_build_id",
+)
+
+
+class EvidenceError(ValueError):
+    def __init__(self, code, expected=None, observed=None, infrastructure=False):
+        super().__init__(code)
+        self.code = code
+        self.expected = expected
+        self.observed = observed
+        self.infrastructure = infrastructure
+
+
+def exact(value, expected, code):
+    if type(value) is not type(expected) or value != expected:
+        raise EvidenceError(code, expected, value)
+
+
+def parse_document(data):
+    if len(data) > JSON_LIMIT:
+        raise EvidenceError("metadata_length", JSON_LIMIT, len(data))
+
+    def pairs(entries):
+        result = {}
+        for name, value in entries:
+            if name in result:
+                raise EvidenceError("duplicate_key", "unique key", name)
+            result[name] = value
+        return result
+
+    def constant(value):
+        raise EvidenceError("nonfinite_constant", "finite JSON", value)
+
+    try:
+        result = json.loads(data, object_pairs_hook=pairs, parse_constant=constant)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        if isinstance(exc, EvidenceError):
+            raise
+        raise EvidenceError("malformed_json", "JSON object", str(exc)) from exc
+    if type(result) is not dict:
+        raise EvidenceError("metadata_type", "object", type(result).__name__)
+    return result
+
+
+def blake3_bytes(data):
+    executable = shutil.which("b3sum")
+    if executable is None:
+        raise EvidenceError("hasher_missing", "PATH b3sum", None, True)
+    try:
+        process = subprocess.run([executable, "--no-names"], input=data,
+                                 capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EvidenceError("hasher_execution", "completed b3sum", str(exc), True) from exc
+    if process.returncode != 0:
+        raise EvidenceError("hasher_exit", 0, process.returncode, True)
+    if process.stderr or re.fullmatch(rb"[0-9a-f]{64}\n?", process.stdout) is None:
+        raise EvidenceError("hasher_output", "one lowercase BLAKE3 digest",
+                            repr(process.stdout[:256]), True)
+    return process.stdout.decode("ascii").strip()
+
+
+def validate_outcome(document, before, after, run):
+    expected = {
+        "schema": "r3v-native-zb-depth-discovery-outcome/1",
+        "verdict": "CONTROL_PASS", "scenario": f"z24-linear-seed-{run['seed']:02x}",
+        "arm": "measure", "pixel_x": 37, "pixel_y": 21,
+        "initial_depth_code": "0x800000", "initial_stencil": f"0x{run['seed']:02x}",
+        "marker_depth_code": "0x400000", "initialization_declared": True,
+        "allocation_bytes": 24576, "envelope_offset": 2048, "envelope_bytes": 16640,
+        "submit_result": 0, "queue_status": "COMPLETED", "judged": True,
+        "slots_inspected": run["storage_slots"],
+        "depth_locations": len(run["depth_changes"]),
+        "guard_bytes_inspected": sum(run["regions"][name]["inspected_bytes"]
+                                     for name in ("prefix_guard", "suffix_guard")),
+        "guard_bytes_changed": sum(run["regions"][name]["changed_bytes"]
+                                   for name in ("prefix_guard", "suffix_guard")),
+        "unclaimed_bytes_inspected": run["regions"]["unclaimed"]["inspected_bytes"],
+        "unclaimed_bytes_changed": run["regions"]["unclaimed"]["changed_bytes"],
+        "color_judged": True, "color_exact": True,
+        "color_inside_colored": 1, "color_inside_samples": 1,
+        "color_outside_colored": 0, "color_outside_samples": 4095,
+    }
+    expected.update({"slots_" + name: count for name, count in run["slot_classes"].items()})
+    changes = []
+    for offset in range(BASE, min(STORAGE_END, len(before) - 3, len(after) - 3), 4):
+        old, new = WORD.unpack_from(before, offset)[0], WORD.unpack_from(after, offset)[0]
+        if old != new:
+            changes.append({"offset": offset, "before": f"0x{old:08x}",
+                            "after": f"0x{new:08x}", "depth_changed": old >> 8 != new >> 8,
+                            "stencil_changed": old & 255 != new & 255,
+                            "depth_before": f"0x{old >> 8:06x}", "depth_after": f"0x{new >> 8:06x}",
+                            "stencil_before": f"0x{old & 255:02x}", "stencil_after": f"0x{new & 255:02x}"})
+    expected["change_overflow"] = len(changes) > 64
+    for name, value in expected.items():
+        if name not in document:
+            raise EvidenceError("missing_field:" + name, value, None)
+        exact(document[name], value, "outcome:" + name)
+    reported = document.get("changes")
+    if type(reported) is not list or len(reported) != min(64, len(changes)):
+        raise EvidenceError("outcome:changes", changes[:64], reported)
+    for actual, wanted in zip(reported, changes):
+        if type(actual) is not dict or actual.keys() != wanted.keys():
+            raise EvidenceError("outcome:change_fields", list(wanted), actual)
+        for name, value in wanted.items():
+            exact(actual[name], value, "outcome:changes:" + name)
+    digest = document.get("initial_image_blake3")
+    if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise EvidenceError("outcome:initial_image_blake3_format", "lowercase digest", digest)
+    exact(digest, blake3_bytes(before), "initial_image_digest")
+    if document.keys() != expected.keys() | {"changes", "initial_image_blake3"}:
+        raise EvidenceError("outcome:fields", sorted(expected.keys() | {"changes", "initial_image_blake3"}),
+                            sorted(document))
+
+
+def validate_context(context, role, artifacts):
+    if type(context) is not dict:
+        raise EvidenceError("context:type", "object", type(context).__name__)
+    exact(context.get("schema"), "r300-zb-stencil-pair-context/1", "context:schema")
+    declaration = context.get("declaration")
+    runs = context.get("runs")
+    if type(declaration) is not dict or type(runs) is not dict:
+        raise EvidenceError("context:structure", "declaration and runs objects", None)
+    record = runs.get(role)
+    if type(record) is not dict or type(record.get("identity")) is not dict:
+        raise EvidenceError("context:run", role, record)
+    identity = record["identity"]
+    for name in CONTEXT_FIELDS:
+        wanted = declaration.get(name)
+        if type(wanted) is not str or not wanted.strip():
+            raise EvidenceError("context:declaration:" + name, "nonempty identity", wanted)
+        exact(identity.get(name), wanted, "context:identity:" + name)
+    platform = declaration["platform"]
+    if "subsystem" not in platform or "1028:022a" not in platform or "Vostro 1000" not in platform:
+        raise EvidenceError("context:platform", "Vostro 1000 with subsystem identity", platform)
+    for name, pattern in (("boot_id", r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"),
+                          ("mesa_source_sha", r"[0-9a-f]{40}"),
+                          ("driver_elf_blake3", r"[0-9a-f]{64}"),
+                          ("application_sha256", r"[0-9a-f]{64}"),
+                          ("arming_runner_sha256", r"[0-9a-f]{64}"),
+                          ("application_build_id", r"[0-9a-f]{40}"),
+                          ("arming_runner_build_id", r"[0-9a-f]{40}")):
+        if re.fullmatch(pattern, declaration[name]) is None:
+            raise EvidenceError("context:format:" + name, pattern, declaration[name])
+    exact(record.get("authority"), "retained-bundle-sha256", "context:authority")
+    seal = record.get("seal_sha256")
+    if type(seal) is not str or re.fullmatch(r"[0-9a-f]{64}", seal) is None:
+        raise EvidenceError("context:seal", "verified seal digest", seal)
+    verified = record.get("artifacts")
+    if type(verified) is not dict:
+        raise EvidenceError("context:artifacts", "verified artifact map", verified)
+    for name, data in artifacts.items():
+        exact(verified.get(name), hashlib.sha256(data).hexdigest(), "context:artifact:" + name)
+
+
+def qualify_pair(result, images, outcomes, context):
+    """Join bytes to a caller-supplied context from the receipt verifier.
+
+    The caller owns the declaration and receipt-verifier provenance. A
+    normalized context is an input contract, rather than hardware attestation.
+    """
+    errors = result["errors"]
+    for index, role in enumerate(("seed-5a", "seed-a5")):
+        before, after = images[index * 2:index * 2 + 2]
+        data = outcomes[index]
+        run = result["runs"][index]
+        run["outcome_sha256"] = hashlib.sha256(data).hexdigest() if data is not None and len(data) <= JSON_LIMIT else None
+        for stage in ("outcome", "context"):
+            try:
+                if stage == "outcome":
+                    if data is None:
+                        raise EvidenceError("outcome_missing", "outcome JSON", None)
+                    validate_outcome(parse_document(data), before, after, run)
+                else:
+                    if context is None:
+                        raise EvidenceError("context_missing", "verified pair context", None)
+                    validate_context(context, role, {"depth_before.bin": before,
+                                     "depth_after.bin": after,
+                                     "zb_depth_discovery_outcome.json": data or b""})
+            except EvidenceError as exc:
+                errors.append({"stage": stage, "seed_role": role,
+                               "artifact": "zb_depth_discovery_outcome.json" if stage == "outcome" else "pair_context",
+                               "offset": None, "reason": exc.code,
+                               "expected": exc.expected, "observed": exc.observed,
+                               "infrastructure": exc.infrastructure})
+    if result["spatially_isolated"] is not True:
+        errors.append({"stage": "qualification", "seed_role": "pair",
+                       "artifact": "depth_after.bin", "offset": None,
+                       "reason": "spatial_isolation", "expected": True,
+                       "observed": result["spatially_isolated"]})
+    result["qualification"] = "REFUSED" if errors else "QUALIFIED_ISOLATED_PAIR"
+    result["scope"] = "supplied_verified_receipt_context"
+    result["status"] = "REFUSED" if errors else "QUALIFIED"
+    if any(error.get("infrastructure", False) for error in errors):
+        result["status"] = "INPUT_ERROR"
+        return 2
+    return 1 if errors else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed-5a", required=True, type=Path,
                         help="directory containing depth_before.bin and depth_after.bin")
     parser.add_argument("--seed-a5", required=True, type=Path,
                         help="directory containing depth_before.bin and depth_after.bin")
+    parser.add_argument("--pair-context", type=Path)
     args = parser.parse_args(argv)
     images = []
     inputs = []
@@ -238,6 +445,27 @@ def main(argv: list[str] | None = None) -> int:
     if input_errors:
         result["status"] = "INPUT_ERROR"
         status = 2
+    outcomes = []
+    for root in (args.seed_5a, args.seed_a5):
+        try:
+            with (root / "zb_depth_discovery_outcome.json").open("rb") as source:
+                outcomes.append(source.read(JSON_LIMIT + 1))
+        except OSError:
+            outcomes.append(None)
+    context = None
+    if args.pair_context is not None:
+        try:
+            with args.pair_context.open("rb") as source:
+                context = parse_document(source.read(JSON_LIMIT + 1))
+        except (OSError, EvidenceError) as exc:
+            result["errors"].append({"stage": "context", "seed_role": "pair",
+                                     "artifact": "pair_context", "offset": None,
+                                     "reason": "context_read", "expected": "valid context",
+                                     "observed": str(exc), "infrastructure": isinstance(exc, OSError)})
+    qualified_status = qualify_pair(result, images, outcomes, context)
+    status = 2 if input_errors else qualified_status
+    if input_errors:
+        result["status"] = "INPUT_ERROR"
     try:
         print(json.dumps(result, sort_keys=True))
         sys.stdout.flush()

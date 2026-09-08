@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Exercise paired-stencil classification with independent byte fixtures."""
 
+import copy
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import r300_zb_stencil_pair as pair
 
@@ -235,6 +238,169 @@ class PairTests(unittest.TestCase):
             pair.observe(before, bytes(modified), 0x5A)
 
 
+def outcome_fixture(seed):
+    before, after = image_pair(seed)
+    digest = subprocess.run(["b3sum", "--no-names"], input=before,
+                            capture_output=True, check=True).stdout.decode().strip()
+    return {
+        "schema": "r3v-native-zb-depth-discovery-outcome/1", "verdict": "CONTROL_PASS",
+        "scenario": f"z24-linear-seed-{seed:02x}", "arm": "measure",
+        "pixel_x": 37, "pixel_y": 21, "initial_depth_code": "0x800000",
+        "initial_stencil": f"0x{seed:02x}", "marker_depth_code": "0x400000",
+        "initial_image_blake3": digest, "initialization_declared": True,
+        "allocation_bytes": 24576, "envelope_offset": 2048, "envelope_bytes": 16640,
+        "submit_result": 0, "queue_status": "COMPLETED", "judged": True,
+        "slots_inspected": 4160, "slots_unchanged": 4159, "slots_depth_only": 1,
+        "slots_stencil_only": 0, "slots_both": 0, "depth_locations": 1,
+        "guard_bytes_inspected": 4096, "guard_bytes_changed": 0,
+        "unclaimed_bytes_inspected": 3840, "unclaimed_bytes_changed": 0,
+        "change_overflow": False,
+        "changes": [{"offset": 7572, "before": f"0x800000{seed:02x}",
+                     "after": f"0x400000{seed:02x}", "depth_changed": True,
+                     "stencil_changed": False, "depth_before": "0x800000",
+                     "depth_after": "0x400000", "stencil_before": f"0x{seed:02x}",
+                     "stencil_after": f"0x{seed:02x}"}],
+        "color_judged": True, "color_exact": True, "color_inside_colored": 1,
+        "color_inside_samples": 1, "color_outside_colored": 0,
+        "color_outside_samples": 4095,
+    }
+
+
+def context_fixture(images, outcomes):
+    identity = {"platform": "Dell Vostro 1000 PCI 1002:5974 subsystem 1028:022a",
+                "boot_id": "6222574b-495d-411e-9a88-1703bad493c8",
+                "kernel_release": "test-kernel", "module_srcversion": "test-module",
+                "driver_elf_blake3": "1" * 64, "mesa_source_sha": "2" * 40,
+                "build_profile": "profile 4 release", "application_sha256": "3" * 64,
+                "application_build_id": "4" * 40, "arming_runner_sha256": "5" * 64,
+                "arming_runner_build_id": "6" * 40}
+    context = {"schema": "r300-zb-stencil-pair-context/1", "declaration": identity,
+               "runs": {}}
+    for index, role in enumerate(("seed-5a", "seed-a5")):
+        context["runs"][role] = {
+            "identity": identity.copy(), "authority": "retained-bundle-sha256",
+            "seal_sha256": str(index + 7) * 64,
+            "artifacts": dict(zip(("depth_before.bin", "depth_after.bin",
+                                   "zb_depth_discovery_outcome.json"),
+                                  (hashlib.sha256(data).hexdigest() for data in
+                                   (*images[2 * index:2 * index + 2], outcomes[index]))))}
+    return context
+
+
+class EvidenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.documents = [outcome_fixture(seed) for seed in (0x5A, 0xA5)]
+
+    def setUp(self):
+        self.images = (*image_pair(0x5A), *image_pair(0xA5))
+        self.outcomes = [json.dumps(document).encode() for document in self.documents]
+        self.context = context_fixture(self.images, self.outcomes)
+
+    def qualify(self):
+        result = pair.classify_pair(*self.images)
+        status = pair.qualify_pair(result, self.images, self.outcomes, self.context)
+        return status, result
+
+    def assert_failure(self, code, expected_status=1):
+        status, result = self.qualify()
+        self.assertEqual(status, expected_status, result)
+        self.assertIn(code, [error["reason"] for error in result["errors"]])
+        self.assertTrue(all(run["before_sha256"] for run in result["runs"]))
+        return result
+
+    def test_real_digest_and_distinct_seed_artifacts(self):
+        status, result = self.qualify()
+        self.assertEqual(status, 0, result)
+        self.assertEqual(result["qualification"], "QUALIFIED_ISOLATED_PAIR")
+        self.assertNotEqual(self.documents[0]["initial_image_blake3"],
+                            self.documents[1]["initial_image_blake3"])
+
+    def test_metadata_one_fact_mutations(self):
+        mutations = {"schema": "unsupported", "arm": "never", "pixel_x": 38,
+                     "pixel_y": 20, "initial_depth_code": "0X800000",
+                     "marker_depth_code": "0x400001", "initial_stencil": "0xa5",
+                     "scenario": "z24-linear", "submit_result": False,
+                     "queue_status": "SUBMITTED", "judged": False,
+                     "initialization_declared": False, "color_exact": False,
+                     "color_judged": False, "color_outside_colored": 1,
+                     "allocation_bytes": 24575, "envelope_offset": 0,
+                     "envelope_bytes": 16636, "slots_inspected": 4159,
+                     "slots_unchanged": 0, "slots_depth_only": 0,
+                     "slots_stencil_only": 1, "slots_both": 1,
+                     "depth_locations": 0, "guard_bytes_inspected": 0,
+                     "guard_bytes_changed": 1, "unclaimed_bytes_inspected": 0,
+                     "unclaimed_bytes_changed": 1, "change_overflow": True}
+        original = self.outcomes[0]
+        for name, value in mutations.items():
+            with self.subTest(field=name):
+                document = copy.deepcopy(self.documents[0])
+                document[name] = value
+                self.outcomes[0] = json.dumps(document).encode()
+                self.assert_failure("outcome:" + name)
+        self.outcomes[0] = original
+        self.assertEqual(self.qualify()[0], 0)
+
+    def test_missing_field_and_digest(self):
+        document = copy.deepcopy(self.documents[0])
+        del document["submit_result"]
+        self.outcomes[0] = json.dumps(document).encode()
+        self.assert_failure("missing_field:submit_result")
+        document = copy.deepcopy(self.documents[0])
+        document["initial_image_blake3"] = "0" * 64
+        self.outcomes[0] = json.dumps(document).encode()
+        self.assert_failure("initial_image_digest")
+
+    def test_document_parser_refusals(self):
+        for data, code in ((None, "outcome_missing"), (b"{", "malformed_json"),
+                           (b"[]", "metadata_type"), (b'{"a":1,"a":2}', "duplicate_key"),
+                           (b'{"a":NaN}', "nonfinite_constant"),
+                           (b" " * 65537, "metadata_length")):
+            with self.subTest(code=code):
+                self.outcomes[0] = data
+                self.assert_failure(code)
+
+    def test_context_identity_one_run_and_equally_wrong(self):
+        for name in pair.CONTEXT_FIELDS:
+            for roles in (("seed-5a",), ("seed-5a", "seed-a5")):
+                with self.subTest(field=name, roles=roles):
+                    changed = copy.deepcopy(self.context)
+                    for role in roles:
+                        changed["runs"][role]["identity"][name] = "wrong"
+                    with mock.patch.object(self, "context", changed):
+                        self.assert_failure("context:identity:" + name)
+        self.assertEqual(self.qualify()[0], 0)
+
+    def test_absent_identity_and_board(self):
+        del self.context["declaration"]["boot_id"]
+        self.assert_failure("context:declaration:boot_id")
+        self.context = context_fixture(self.images, self.outcomes)
+        self.context["declaration"]["platform"] = "1002:5974"
+        for record in self.context["runs"].values():
+            record["identity"]["platform"] = "1002:5974"
+        self.assert_failure("context:platform")
+
+    def test_sealed_artifact_join(self):
+        for name in ("depth_before.bin", "depth_after.bin", "zb_depth_discovery_outcome.json"):
+            with self.subTest(artifact=name):
+                changed = copy.deepcopy(self.context)
+                changed["runs"]["seed-5a"]["artifacts"][name] = "0" * 64
+                with mock.patch.object(self, "context", changed):
+                    self.assert_failure("context:artifact:" + name)
+
+    def test_hasher_failures(self):
+        with mock.patch.object(pair.shutil, "which", return_value=None):
+            self.assert_failure("hasher_missing", 2)
+        for code, stdout, stderr, reason in ((1, b"", b"failed", "hasher_exit"),
+                                            (0, b"bad\n", b"", "hasher_output"),
+                                            (0, b"1" * 64 + b"\n", b"warning", "hasher_output")):
+            process = subprocess.CompletedProcess([], code, stdout, stderr)
+            with mock.patch.object(pair.subprocess, "run", return_value=process):
+                self.assert_failure(reason, 2)
+        with mock.patch.object(pair.subprocess, "run", side_effect=subprocess.TimeoutExpired("b3sum", 30)):
+            self.assert_failure("hasher_execution", 2)
+
+
 class CommandTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -245,17 +411,25 @@ class CommandTests(unittest.TestCase):
             for name, data in zip(("depth_before.bin", "depth_after.bin"), image_pair(seed)):
                 (root / name).write_bytes(data)
 
+        images = (*image_pair(0x5A), *image_pair(0xA5))
+        outcomes = [json.dumps(outcome_fixture(seed)).encode() for seed in (0x5A, 0xA5)]
+        for root, data in zip((self.a, self.b), outcomes):
+            (root / "zb_depth_discovery_outcome.json").write_bytes(data)
+        self.context_path = Path(self.tmp.name) / "context.json"
+        self.context_path.write_text(json.dumps(context_fixture(images, outcomes)))
+
     def command(self, *args):
         return subprocess.run([sys.executable, str(Path(pair.__file__)), *map(str, args)],
                               capture_output=True, text=True, timeout=10, check=False)
 
     def run_pair(self):
-        return self.command("--seed-5a", self.a, "--seed-a5", self.b)
+        return self.command("--seed-5a", self.a, "--seed-a5", self.b,
+                            "--pair-context", self.context_path)
 
     def test_success(self):
         result = self.run_pair()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["status"], "OBSERVED")
+        self.assertEqual(json.loads(result.stdout)["status"], "QUALIFIED")
 
     def test_judged_failure_exact_status(self):
         (self.a / "depth_after.bin").write_bytes((self.a / "depth_before.bin").read_bytes())
