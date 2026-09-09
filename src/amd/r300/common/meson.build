@@ -18,6 +18,7 @@ r300_common_contract_files = files(
   'r300_numeric_domain.c',
   'r300_pm4_builder.c',
   'r300_rb2d_fill.c',
+  'r300_rb2d_copy.c',
   'r300_rb2d_linear_span.c',
   'r300_rb2d_pitch_evidence.c',
   'r300_rb2d_contract_evidence.c',
@@ -435,6 +436,18 @@ test(
   r300_zb_depth_surface_test,
   suite : ['r300'],
 )
+
+r300_rb2d_copy_test = executable(
+  'r300_rb2d_copy_test',
+  files('r300_rb2d_copy.c', 'r300_rb2d_fill.c', 'r300_pm4_builder.c',
+        'r300_zb_tile_copy.c', 'tests/r300_rb2d_copy_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r300-rb2d-copy', r300_rb2d_copy_test, suite : ['r300'])
 
 r300_zb_tile_copy_test = executable(
   'r300_zb_tile_copy_test',
