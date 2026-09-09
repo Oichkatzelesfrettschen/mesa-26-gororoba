@@ -21,6 +21,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/r300/common/r300_zb_hyperz_admission.h"
+#include "amd/r300/common/r300_zb_combined_clear.h"
 #include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
 #include "r3v_native_depth_image_contract.h"
@@ -540,6 +541,13 @@ struct r3v_native_deferred_draw {
     */
    struct r300_vertex_job vertex_job;
    bool vertex_job_identity;
+   /* Depth attachment captured at pass begin and the combined load clear. */
+   struct r3v_native_memory *depth_memory;
+   struct r3v_native_depth_image_bound depth_bound;
+   struct r3v_native_depth_pipeline_state depth_pipeline;
+   bool has_depth_pipeline;
+   struct r300_zb_combined_clear_plan depth_clear;
+   bool has_depth_clear;
    /* The post-vertex lowering the pipeline's linked interface
     * selects, applied to the CPU route's records after the job and
     * before clipping (r3v_post_vs_lowering.h). */
@@ -1713,6 +1721,11 @@ struct r3v_native_pipeline {
    /* Lowered depth comparison and timing state for a D24S8 subpass. */
    struct r3v_native_depth_pipeline_state depth_pipeline;
    bool has_depth_pipeline;
+   /* Depth attachment captured at pass begin and the combined load clear. */
+   struct r3v_native_memory *depth_memory;
+   struct r3v_native_depth_image_bound depth_bound;
+   struct r300_zb_combined_clear_plan depth_clear;
+   bool has_depth_clear;
    bool gpu_vertex_job_identity;
    /* The linked stage boundary the two modules declare: per-location
     * kind, width, mask, and Smooth/Flat/NoPerspective interpolation

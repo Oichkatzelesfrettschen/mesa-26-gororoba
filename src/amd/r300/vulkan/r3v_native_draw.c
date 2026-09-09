@@ -18,6 +18,7 @@
 
 #include <radeon_drm.h>
 #include "vk_alloc.h"
+#include <math.h>
 #include <string.h>
 
 static void
@@ -25,6 +26,15 @@ poison(VkCommandBuffer commandBuffer, VkResult error)
 {
    VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
    vk_command_buffer_set_error(cmd_buffer, error);
+}
+
+static bool
+depth_clear_code(float value, uint32_t *code)
+{
+   if (code == NULL || !isfinite(value) || value < 0.0f || value > 1.0f)
+      return false;
+   *code = (uint32_t)(value * 16777215.0f + 0.5f);
+   return true;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -114,6 +124,37 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       return;
    }
 
+   struct r300_zb_combined_clear_plan depth_clear = { 0 };
+   struct r3v_native_depth_image_bound depth_bound = { 0 };
+   struct r3v_native_memory *depth_memory = NULL;
+   if (framebuffer->attachment_count == 2) {
+      uint32_t depth_code = 0;
+      const VkClearDepthStencilValue clear =
+         pRenderPassBegin->pClearValues[1].depthStencil;
+      if (!depth_clear_code(clear.depth, &depth_code) ||
+          depth_view->image->memory == NULL ||
+          r300_zb_combined_clear_plan(
+             &(struct r300_zb_combined_clear_request){
+                .surface = &depth_view->image->depth_contract.surface,
+                .surface_base_bytes =
+                   depth_view->image->depth_bound.surface_base_bytes,
+                .mapped_surface_bytes =
+                   depth_view->image->depth_bound.bo_bytes,
+                .pitch_bytes =
+                   depth_view->image->depth_contract.layout.pitch_bytes,
+                .format = R300_RB2D_FORMAT_ARGB8888,
+                .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
+                .depth_code = depth_code,
+                .stencil = clear.stencil,
+             },
+             &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+      depth_bound = depth_view->image->depth_bound;
+      depth_memory = depth_view->image->memory;
+   }
+
    /* The load-op clear realizes as a host fill of the target's
     * footprint, so the pass's clear color travels as the one texel that
     * fill writes: the attachment's format selects the live
@@ -138,7 +179,16 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       .clear_dword = clear_dword,
       .target_width = view->image->width,
       .target_height = view->image->height,
+      .depth_memory = depth_memory,
+      .depth_bound = depth_bound,
+      .depth_clear = depth_clear,
+      .has_depth_clear = framebuffer->attachment_count == 2,
    };
+   if (framebuffer->attachment_count == 2)
+      cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+         .depth_clear.fill.rects =
+            &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+                .depth_clear.rect;
 }
 
 /* A pass with no draw still carries its load-op clear through deferred_draw.
@@ -325,6 +375,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
     * last record in the list.
     */
    const uint32_t pass_slot = cmd_buffer->deferred_draw_count - 1;
+   const struct r3v_native_deferred_draw *pass_draw =
+      &cmd_buffer->deferred_draws[pass_slot];
+   const bool pass_has_depth = pass_draw->has_depth_clear;
+   if (pass_has_depth != pipeline->has_depth_pipeline ||
+       (pass_has_depth && pass_draw->depth_memory == NULL)) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
 
    /* An indexed draw reads its indices from the bound index
     * buffer at execution, so the record proves the index range alone:
@@ -641,6 +699,11 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
     */
    const uint32_t clear_dword =
       cmd_buffer->deferred_draws[pass_slot].clear_dword;
+   const struct r3v_native_depth_image_bound depth_bound =
+      pass_draw->depth_bound;
+   struct r300_zb_combined_clear_plan depth_clear = pass_draw->depth_clear;
+   if (depth_clear.fill.rects != NULL)
+      depth_clear.fill.rects = &depth_clear.rect;
    cmd_buffer->deferred_draws[pass_slot] =
       (struct r3v_native_deferred_draw){
       .pending = true,
@@ -685,7 +748,16 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .clear_dword = clear_dword,
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
+      .depth_memory = pass_draw->depth_memory,
+      .depth_bound = depth_bound,
+      .depth_pipeline = pipeline->depth_pipeline,
+      .has_depth_pipeline = pipeline->has_depth_pipeline,
+      .depth_clear = depth_clear,
+      .has_depth_clear = pass_has_depth,
    };
+   if (pass_has_depth)
+      cmd_buffer->deferred_draws[pass_slot].depth_clear.fill.rects =
+         &cmd_buffer->deferred_draws[pass_slot].depth_clear.rect;
    memcpy(cmd_buffer->deferred_draws[pass_slot].streams, streams,
           sizeof(streams));
    cmd_buffer->draw_recorded = true;
