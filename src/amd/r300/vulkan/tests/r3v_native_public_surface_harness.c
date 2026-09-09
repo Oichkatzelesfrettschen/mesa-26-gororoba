@@ -257,6 +257,131 @@ fresh_cmd(void)
    return cmd;
 }
 
+static void
+check_depth_attachment_begin(VkImageView color_view)
+{
+   VkImage depth_image = VK_NULL_HANDLE;
+   assert(vkCreateImage(device, &(VkImageCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   }, NULL, &depth_image) == VK_SUCCESS);
+   VkMemoryRequirements requirements;
+   vkGetImageMemoryRequirements(device, depth_image, &requirements);
+   VkDeviceMemory depth_memory = VK_NULL_HANDLE;
+   assert(vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = requirements.size + 4096, .memoryTypeIndex = 0,
+   }, NULL, &depth_memory) == VK_SUCCESS);
+   assert(vkBindImageMemory(device, depth_image, depth_memory, 4096) ==
+          VK_SUCCESS);
+   VkImageView depth_view = VK_NULL_HANDLE;
+   assert(vkCreateImageView(device, &(VkImageViewCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = depth_image, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT |
+                            VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 },
+   }, NULL, &depth_view) == VK_SUCCESS);
+   const VkAttachmentDescription attachments[2] = {
+      { .format = R3V_NATIVE_TARGET_FORMAT, .samples = 1,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .finalLayout = VK_IMAGE_LAYOUT_GENERAL },
+      { .format = VK_FORMAT_D24_UNORM_S8_UINT, .samples = 1,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .finalLayout = VK_IMAGE_LAYOUT_GENERAL },
+   };
+   const VkAttachmentReference color_ref = { 0, VK_IMAGE_LAYOUT_GENERAL };
+   const VkAttachmentReference depth_ref = { 1, VK_IMAGE_LAYOUT_GENERAL };
+   VkRenderPass pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 2, .pAttachments = attachments,
+      .subpassCount = 1,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .colorAttachmentCount = 1, .pColorAttachments = &color_ref,
+         .pDepthStencilAttachment = &depth_ref,
+      },
+   }, NULL, &pass) == VK_SUCCESS);
+   VkImageView framebuffer_views[2] = { color_view, depth_view };
+   VkFramebuffer framebuffer = VK_NULL_HANDLE;
+   assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = pass, .attachmentCount = 2,
+      .pAttachments = framebuffer_views, .width = 64, .height = 64,
+      .layers = 1,
+   }, NULL, &framebuffer) == VK_SUCCESS);
+   VkClearValue clears[2] = {
+      { .color = { .float32 = { 0, 0, 0, 1 } } },
+      { .depthStencil = { 1.0f, 0 } },
+   };
+   VkRenderPassBeginInfo begin = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = pass, .framebuffer = framebuffer,
+      .renderArea = { { 0, 0 }, { 64, 64 } },
+      .clearValueCount = 2, .pClearValues = clears,
+   };
+   VkCommandBuffer command_buffer = fresh_cmd();
+   vkCmdBeginRenderPass(command_buffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdEndRenderPass(command_buffer);
+   assert(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
+
+   VkImageView variants[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE,
+                               VK_NULL_HANDLE };
+   const VkImageViewCreateInfo view_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = depth_image, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+   };
+   assert(vkCreateImageView(device, &view_info, NULL, &variants[0]) == VK_SUCCESS);
+   variants[1] = color_view;
+   VkImageViewCreateInfo slice_info = view_info;
+   slice_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+   assert(vkCreateImageView(device, &slice_info, NULL, &variants[2]) == VK_SUCCESS);
+   for (unsigned i = 0; i < 5; i++) {
+      VkImageView selected = i == 0 ? variants[0] :
+                            i == 1 ? variants[1] :
+                            i == 2 ? variants[2] : depth_view;
+      framebuffer_views[1] = selected;
+      VkFramebuffer bad = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+         .renderPass = pass, .attachmentCount = 2,
+         .pAttachments = framebuffer_views,
+         .width = i == 3 ? 63 : 64, .height = 64, .layers = 1,
+      }, NULL, &bad) == VK_SUCCESS);
+      begin.framebuffer = bad;
+      if (i == 4)
+         begin.clearValueCount = 1;
+      VkCommandBuffer bad_command_buffer = fresh_cmd();
+      vkCmdBeginRenderPass(bad_command_buffer, &begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      assert(vkEndCommandBuffer(bad_command_buffer) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+      vkDestroyFramebuffer(device, bad, NULL);
+      begin.clearValueCount = 2;
+   }
+   vkDestroyImageView(device, variants[2], NULL);
+   vkDestroyImageView(device, variants[0], NULL);
+   vkDestroyFramebuffer(device, framebuffer, NULL);
+   vkDestroyRenderPass(device, pass, NULL);
+   vkDestroyImageView(device, depth_view, NULL);
+   vkDestroyImage(device, depth_image, NULL);
+   vkFreeMemory(device, depth_memory, NULL);
+}
+
 static VkCommandBuffer
 record_triangle_draw(const VkRenderPassBeginInfo *begin_pass,
                      VkPipeline pipeline, VkBuffer vertex_buffer,
@@ -7174,6 +7299,8 @@ main(void)
    const uint64_t known_bad_cache_event = 11;
    assert(!r3v_native_cache_publication_precedes_close(
       known_bad_cache_event, known_bad_close_event));
+
+   check_depth_attachment_begin(view);
 
    vkDestroyPipeline(device, xyz_pipeline, NULL);
    vkDestroyPipeline(device, pipeline, NULL);
