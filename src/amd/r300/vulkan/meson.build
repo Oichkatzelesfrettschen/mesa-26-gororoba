@@ -30,6 +30,12 @@ r3v_loader_base_files = files(
 # test runs in every configuration and calibrates on known-bad tables.
 if with_tests
   test(
+    'r3v-public-depth-stencil-obligations',
+    prog_python,
+    args : [files('tests/r3v_public_depth_stencil_obligations_test.py')],
+    suite : ['r3v'],
+  )
+  test(
     'r3v-memory-properties-contract',
     executable(
       'r3v_memory_properties_contract_test',
