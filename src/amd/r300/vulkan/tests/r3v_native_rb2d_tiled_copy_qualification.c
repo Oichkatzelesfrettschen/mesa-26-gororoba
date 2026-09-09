@@ -261,7 +261,8 @@ selftest(void)
    cmd.references = references;
    cmd.reference_count = 2u;
    cmd.rb2d_tiled_copy_configured = true;
-   cmd.rb2d_tiled_copy_request = request;
+   if (!qualification_byte_copy)
+      cmd.rb2d_tiled_copy_request = request;
    cmd.rb2d_tiled_copy_write_mask = qualification_write_mask;
    if (qualification_byte_copy) {
       cmd.rb2d_copy_geometry = R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS;

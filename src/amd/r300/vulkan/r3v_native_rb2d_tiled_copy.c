@@ -192,11 +192,12 @@ r3v_native_rb2d_tiled_copy_geometry_valid(
         (cmd_buffer->rb2d_copy_source_buffer_bytes != source->memory->bo.size ||
          cmd_buffer->rb2d_copy_destination_buffer_bytes !=
             destination->memory->bo.size)) ||
-       cmd_buffer->rb2d_tiled_copy_request.same_buffer ||
-       cmd_buffer->rb2d_tiled_copy_request.source.buffer_bytes !=
-          source->memory->bo.size ||
-       cmd_buffer->rb2d_tiled_copy_request.destination.buffer_bytes !=
-          destination->memory->bo.size)
+       (cmd_buffer->rb2d_copy_geometry == R3V_NATIVE_RB2D_COPY_GEOMETRY_TILE &&
+        (cmd_buffer->rb2d_tiled_copy_request.same_buffer ||
+         cmd_buffer->rb2d_tiled_copy_request.source.buffer_bytes !=
+            source->memory->bo.size ||
+         cmd_buffer->rb2d_tiled_copy_request.destination.buffer_bytes !=
+            destination->memory->bo.size)))
       return false;
 
    struct r300_rb2d_copy_segment segment_storage[R300_RB2D_COPY_MAX_SEGMENTS];
