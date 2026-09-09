@@ -14,6 +14,7 @@
 
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/vulkan/r3v_vertex_spirv.h"
+#include "amd/r300/vulkan/r3v_native_depth_pipeline.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
 
 #include "r3v_native_reference_spirv.h"
@@ -113,6 +114,34 @@ static void test_reference_fragment_module(void)
                                                   &reason));
    assert(color[0] == 0x3f800000u && color[1] == 0 && color[2] == 0 &&
           color[3] == 0x3f800000u);
+
+   struct r3v_native_depth_shader_flags flags;
+   assert(r3v_fragment_depth_shader_flags_from_spirv(
+      r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
+      "main", &flags, &reason));
+   assert(!flags.discards_fragments && !flags.writes_depth &&
+          !flags.has_observable_side_effects &&
+          !flags.requested_early_fragment_tests);
+
+   /* EarlyFragmentTests is an execution-mode property, so the flag walk
+    * remains useful before the shape admitter decides whether lowering can
+    * execute that timing contract. */
+   uint32_t early[WORDS(r3v_reference_fragment_spirv)];
+   memcpy(early, r3v_reference_fragment_spirv, sizeof(early));
+   bool patched_mode = false;
+   for (size_t word = 5; word < WORDS(early);) {
+      const uint32_t len = early[word] >> 16;
+      assert(len != 0 && word + len <= WORDS(early));
+      if ((early[word] & 0xffffu) == 16 && len == 3) {
+         early[word + 2] = 9;
+         patched_mode = true;
+      }
+      word += len;
+   }
+   assert(patched_mode);
+   assert(r3v_fragment_depth_shader_flags_from_spirv(
+      early, WORDS(early), "main", &flags, &reason));
+   assert(flags.requested_early_fragment_tests);
 }
 
 
