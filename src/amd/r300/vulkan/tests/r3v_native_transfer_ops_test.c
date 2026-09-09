@@ -987,7 +987,9 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
       .format = VK_FORMAT_D24_UNORM_S8_UINT,
       .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1,
       .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
    };
    VkImage image = VK_NULL_HANDLE;
@@ -1017,6 +1019,37 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
          "nonzero aligned depth binding");
    CHECK(vkBindImageMemory(f->device, image, memory, 4096) != VK_SUCCESS,
          "depth rebinding refuses");
+   const VkImageAspectFlags view_aspects[] = {
+      VK_IMAGE_ASPECT_DEPTH_BIT,
+      VK_IMAGE_ASPECT_STENCIL_BIT,
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+   };
+   for (unsigned aspect_index = 0;
+        aspect_index < sizeof(view_aspects) / sizeof(view_aspects[0]);
+        aspect_index++) {
+      const VkImageViewCreateInfo view_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .image = image,
+         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .subresourceRange = {view_aspects[aspect_index], 0, 1, 0, 1},
+      };
+      VkImageView view = VK_NULL_HANDLE;
+      CHECK(vkCreateImageView(f->device, &view_info, NULL, &view) == VK_SUCCESS,
+            "depth image view aspect mask %u", view_aspects[aspect_index]);
+      vkDestroyImageView(f->device, view, NULL);
+   }
+   const VkImageViewCreateInfo color_view_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = image,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+   };
+   VkImageView color_view = VK_NULL_HANDLE;
+   CHECK(vkCreateImageView(f->device, &color_view_info, NULL, &color_view) !=
+            VK_SUCCESS && color_view == VK_NULL_HANDLE,
+         "depth image refuses a color aspect view");
    struct staging staging;
    if (create_staging(f, 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, &staging))
