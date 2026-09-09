@@ -76,7 +76,7 @@ main(int argc, char **argv)
    if (!unbound) {
       CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
                &armed_cell, r300_tcl_bypass_triangle_msaa_slot_index,
-               R300_TRIANGLE_SLOT_COUNT) == 0,
+               R300_TRIANGLE_COMPOSED_SLOT_COUNT) == 0,
             "the offline cell binds");
    }
    char armed_digest[BLAKE3_OUT_LEN * 2 + 1];
@@ -327,7 +327,7 @@ main(int argc, char **argv)
 
    CHECK(r300_tcl_bypass_triangle_bind_reloc_indices(
             &reference_cell, r300_tcl_bypass_triangle_msaa_slot_index,
-            R300_TRIANGLE_SLOT_COUNT) == 0,
+            R300_TRIANGLE_COMPOSED_SLOT_COUNT) == 0,
          "the reference cell binds");
    CHECK(memcmp(reference_cell.ib, native_cmd->ib,
                 (size_t)native_cmd->ib_size_dwords * sizeof(uint32_t)) == 0,

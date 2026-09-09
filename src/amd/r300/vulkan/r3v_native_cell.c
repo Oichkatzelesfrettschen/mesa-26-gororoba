@@ -4393,7 +4393,8 @@ r3v_native_record_composed_render_sample(
       uint32_t read_domains;
       uint32_t write_domain;
    };
-   const struct r3v_tcl_bypass_composed_slot slots[R300_TRIANGLE_SLOT_COUNT] = {
+   const struct r3v_tcl_bypass_composed_slot
+      slots[R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = { render_vertex, RADEON_GEM_DOMAIN_GTT, 0 },
       [R300_TRIANGLE_SLOT_COLOR] = { render_color, 0, RADEON_GEM_DOMAIN_GTT },
       [R300_TRIANGLE_SLOT_TEXTURE] = { render_color, RADEON_GEM_DOMAIN_GTT, 0 },
@@ -4412,9 +4413,9 @@ r3v_native_record_composed_render_sample(
     * handle, domains ORed.  The map reads back the array's own
     * positions, so the payloads and the entries cannot drift apart.
     */
-   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t slot_index[R300_TRIANGLE_COMPOSED_SLOT_COUNT];
    uint32_t reference_count = 0;
-   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_COMPOSED_SLOT_COUNT; slot++) {
       uint32_t found = reference_count;
       for (uint32_t i = 0; i < reference_count; i++) {
          if (references[i].handle == slots[slot].memory->bo.handle) {
@@ -4438,7 +4439,7 @@ r3v_native_record_composed_render_sample(
       r300_tcl_bypass_triangle_composed_render_sample_emit(composed, &cell);
    if (emit_result == 0) {
       emit_result = r300_tcl_bypass_triangle_bind_reloc_indices(
-         &cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
+         &cell, slot_index, R300_TRIANGLE_COMPOSED_SLOT_COUNT);
       if (emit_result != 0)
          r300_tcl_bypass_triangle_release(&cell);
    }
@@ -4664,7 +4665,8 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
     * while AARESOLVE_MODE redirects the downsampled output.  The
     * destination carries its own write; the two vertex arrays are read.
     */
-   const struct r3v_tcl_bypass_msaa_slot slots[R300_TRIANGLE_SLOT_COUNT] = {
+   const struct r3v_tcl_bypass_msaa_slot
+      slots[R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = { render_vertex, RADEON_GEM_DOMAIN_GTT,
                                       0 },
       [R300_TRIANGLE_SLOT_COLOR] = { surface, 0, RADEON_GEM_DOMAIN_VRAM },
@@ -4686,9 +4688,9 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t slot_index[R300_TRIANGLE_COMPOSED_SLOT_COUNT];
    uint32_t reference_count = 0;
-   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_COMPOSED_SLOT_COUNT; slot++) {
       uint32_t found = reference_count;
       for (uint32_t i = 0; i < reference_count; i++) {
          if (references[i].handle == slots[slot].memory->bo.handle) {
@@ -4708,7 +4710,7 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
    }
 
    emit_result = r300_tcl_bypass_triangle_bind_reloc_indices(
-      &cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
+      &cell, slot_index, R300_TRIANGLE_COMPOSED_SLOT_COUNT);
    if (emit_result != 0) {
       free(references);
       if (surface_is_new) {

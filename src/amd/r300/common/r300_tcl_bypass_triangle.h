@@ -729,7 +729,8 @@ int r300_tcl_bypass_triangle_composed_render_sample_emit(
  * emitter binds with to reach the digest the recorded cell carries.
  */
 extern const uint32_t
-   r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT];
+   r300_tcl_bypass_triangle_composed_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT];
 
 /* The multisample resolve cell: one stream renders the reference
  * triangle into a sample-expanded color surface with GB_AA_CONFIG's
@@ -808,7 +809,8 @@ int r300_tcl_bypass_triangle_msaa_resolve_emit(
  * entry.
  */
 extern const uint32_t
-   r300_tcl_bypass_triangle_msaa_slot_index[R300_TRIANGLE_SLOT_COUNT];
+   r300_tcl_bypass_triangle_msaa_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT];
 
 /* The resolve half's vertices: one triangle at (0, 0), (2w, 0), (0, 2h)
  * whose interior covers the whole extent, so the scissor bounds the

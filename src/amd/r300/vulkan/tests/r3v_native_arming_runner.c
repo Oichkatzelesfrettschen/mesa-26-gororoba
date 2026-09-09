@@ -136,7 +136,8 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
        * installs and the armed run would refuse on the mismatch.
        */
       const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
-         cell, r300_tcl_bypass_triangle_composed_slot_index, R300_TRIANGLE_SLOT_COUNT);
+         cell, r300_tcl_bypass_triangle_composed_slot_index,
+         R300_TRIANGLE_COMPOSED_SLOT_COUNT);
       if (bound != 0)
          r300_tcl_bypass_triangle_release(cell);
       return bound;
@@ -180,7 +181,7 @@ cell_emit(struct r300_tcl_bypass_triangle_ib *cell)
        */
       const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
          cell, r300_tcl_bypass_triangle_msaa_slot_index,
-         R300_TRIANGLE_SLOT_COUNT);
+         R300_TRIANGLE_COMPOSED_SLOT_COUNT);
       if (bound != 0)
          r300_tcl_bypass_triangle_release(cell);
       return bound;

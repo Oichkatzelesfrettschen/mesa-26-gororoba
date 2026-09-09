@@ -2387,7 +2387,8 @@ composed_sample_emit(const struct r300_triangle_composed_render_sample *c,
 }
 
 const uint32_t
-   r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT] = {
+   r300_tcl_bypass_triangle_composed_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = 0,
       [R300_TRIANGLE_SLOT_COLOR] = 1,
       [R300_TRIANGLE_SLOT_TEXTURE] = 1,
@@ -2430,7 +2431,8 @@ r300_tcl_bypass_triangle_bind_reloc_indices(
  * color slot, which is the second half's destination in both cells.
  */
 const uint32_t
-   r300_tcl_bypass_triangle_msaa_slot_index[R300_TRIANGLE_SLOT_COUNT] = {
+   r300_tcl_bypass_triangle_msaa_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = 0,
       [R300_TRIANGLE_SLOT_COLOR] = 1,
       [R300_TRIANGLE_SLOT_TEXTURE] = 1,

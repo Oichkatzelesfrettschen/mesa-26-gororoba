@@ -2163,7 +2163,7 @@ test_multi_pass_cell(void)
    /* The bound form binds no further. */
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &two, r300_tcl_bypass_triangle_composed_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) != 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) != 0);
    r300_tcl_bypass_triangle_release(&two);
 
    /* Every binding the merge produces, with its reference count. */
@@ -3023,10 +3023,10 @@ test_msaa_resolve_cell(void)
    /* The merged map binds without refusing, and binding twice refuses. */
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &ib, r300_tcl_bypass_triangle_msaa_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) == 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) == 0);
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &ib, r300_tcl_bypass_triangle_msaa_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) != 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) != 0);
    r300_tcl_bypass_triangle_release(&ib);
 
    /* Refusals: a sample count with no subsample set, a destination
@@ -3180,7 +3180,7 @@ test_msaa_clear_cell(void)
     */
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &cleared, r300_tcl_bypass_triangle_msaa_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) == 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) == 0);
    assert(cleared.ib[cleared.reloc_sites[0].ib_index] ==
           cleared.ib[cleared.reloc_sites[2].ib_index]);
    assert(cleared.ib[cleared.reloc_sites[1].ib_index] ==
