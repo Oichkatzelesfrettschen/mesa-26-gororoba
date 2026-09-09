@@ -21,6 +21,7 @@
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/r300/common/r300_zb_hyperz_admission.h"
 #include "amd/r300/common/r300_zb_depth_discovery.h"
+#include "amd/r300/common/r300_zb_tile_copy.h"
 #include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -764,6 +765,8 @@ struct r3v_native_cmd_buffer {
     * allocation, so the shape the recorder admitted is the shape the
     * predicate judges. */
    enum r3v_native_zb_depth_surface zb_depth_surface;
+   bool rb2d_tiled_copy_configured;
+   struct r300_zb_tile_copy_request rb2d_tiled_copy_request;
    bool zb_persistence_configured;
    enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
    struct r3v_native_memory *zb_persistence_depth_a;
@@ -2261,6 +2264,12 @@ uint32_t r3v_native_zb_depth_surface_bytes(
 
 /* Publishes six vertex positions and records tiled depth validation.
  * The application owns color and depth initialization across submissions. */
+bool r3v_native_rb2d_tiled_copy_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+VkResult r3v_native_record_rb2d_tiled_copy(
+   VkCommandBuffer command_buffer, VkDeviceMemory source,
+   VkDeviceMemory destination, const struct r300_zb_tile_copy_request *request);
+
 VkResult r3v_native_record_zb_tiled_validation(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,

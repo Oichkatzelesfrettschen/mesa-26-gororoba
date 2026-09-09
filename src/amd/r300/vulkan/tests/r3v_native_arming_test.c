@@ -114,12 +114,16 @@ test_each_factor_refuses(void)
    const enum r3v_native_cell_kind kinds[] = {
       R3V_NATIVE_CELL_KIND_TRIANGLE,
       R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
+      R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION,
       R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
    };
    for (unsigned i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
       facts = armed_facts();
       facts.cell_kind = kinds[i];
       assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+      facts.nonmaximum_extent = true;
+      assert(r3v_native_arming_evaluate(&facts) ==
+             R3V_NATIVE_ARMING_NONMAXIMUM_EXTENT);
    }
    facts = armed_facts();
    facts.cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;

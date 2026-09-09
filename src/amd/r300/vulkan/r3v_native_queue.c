@@ -582,6 +582,8 @@ r3v_native_cell_geometry_unfrozen(
       return r300_zb_depth_discovery_check_state(
                 &declared, cmd_buffer->ib, cmd_buffer->ib_size_dwords) != 0;
    }
+   case R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION:
+      return !r3v_native_rb2d_tiled_copy_geometry_valid(cmd_buffer);
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
    case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION: {

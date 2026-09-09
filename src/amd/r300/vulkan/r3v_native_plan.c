@@ -41,6 +41,8 @@ static const struct {
    {R3V_NATIVE_CELL_KIND_TRIANGLE, "triangle"},
    {R3V_NATIVE_CELL_KIND_DIRECT_WRITE, "direct_write"},
    {R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC, "rb2d_fill_public"},
+   {R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION,
+    "rb2d_tiled_copy_qualification"},
    {R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE, "rb2d_fill_v2_route"},
    {R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION,
     "rb2d_carrier_qualification"},

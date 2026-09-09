@@ -301,6 +301,7 @@ r3v_native_files = files(
   'r3v_native_device.c',
   'r3v_native_draw.c',
   'r3v_native_fill_route.c',
+  'r3v_native_rb2d_tiled_copy.c',
   'r3v_native_image.c',
   'r3v_native_identity.c',
   'r3v_native_memory.c',
@@ -1449,6 +1450,25 @@ r3v_native_zb_persistence_identity_test = executable(
 )
 test('r3v-native-zb-persistence-identity',
      r3v_native_zb_persistence_identity_test, suite : ['r3v'])
+
+r3v_native_rb2d_tiled_copy_qualification = executable(
+  'r3v_native_rb2d_tiled_copy_qualification',
+  files('tests/r3v_native_rb2d_tiled_copy_qualification.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+test('r3v-native-rb2d-tiled-copy-fixtures',
+     r3v_native_rb2d_tiled_copy_qualification,
+     args : ['--selftest'], suite : ['r3v'])
+test('r3v-native-rb2d-tiled-copy-prepare',
+     r3v_native_rb2d_tiled_copy_qualification,
+     args : ['--prepare'], suite : ['r3v'])
 
 # Hardware execution is explicit; the registered test uses CPU fixtures only.
 r3v_native_zb_tiled_validation = executable(
