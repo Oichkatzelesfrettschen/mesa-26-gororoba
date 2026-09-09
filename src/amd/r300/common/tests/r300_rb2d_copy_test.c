@@ -246,8 +246,10 @@ test_tile_adapter_all_parities(void)
                      assert(destination_within < R300_ZB_TILE_COPY_BYTES);
                      assert(destination_within ==
                             (source_within ^ destination_xor));
-                     assert(source_seen[source_within]++ == 0u);
-                     assert(destination_seen[destination_within]++ == 0u);
+                     assert(source_seen[source_within] == 0u);
+                     source_seen[source_within]++;
+                     assert(destination_seen[destination_within] == 0u);
+                     destination_seen[destination_within]++;
                   }
                }
                for (uint32_t byte_index = 0;
