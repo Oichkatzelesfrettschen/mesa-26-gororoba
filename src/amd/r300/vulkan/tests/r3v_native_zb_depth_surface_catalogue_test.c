@@ -1,13 +1,8 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Every selectable depth surface holds the properties the recorder, the
- * host fill, and the queue's frozen-geometry predicate act on without
- * re-testing.  Those consumers took runtime guards before this test
- * existed; the guards were unreachable because the catalogue is fixed,
- * so the invariant moved here, where a third entry joins it through the
- * shared R3V_NATIVE_ZB_DEPTH_SURFACES list rather than by being
- * remembered.
+ * The surface catalogue binds descriptor validity, logical access, and
+ * exact allocation sizes for linear controls and guarded tiled validation.
  *
  * The release profiles compile with -DNDEBUG, which discards an assert
  * whole, side effects included.  Undefining it before <assert.h> keeps
@@ -39,7 +34,7 @@ static const struct catalogue_entry catalogue[] = {
 int
 main(void)
 {
-   assert(CATALOGUE_COUNT >= 2u);
+   assert(CATALOGUE_COUNT == 3u);
 
    for (size_t i = 0; i < CATALOGUE_COUNT; i++) {
       const struct catalogue_entry *entry = &catalogue[i];
@@ -64,9 +59,7 @@ main(void)
       assert(surface->allocation_rows ==
              R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS);
 
-      /* The pre-draw fill is the comparison's stored operand and the
-       * oracle reads the surface back as an image, so every selectable
-       * surface addresses linearly from the host. */
+      /* Logical access follows each descriptor's selected address resolver. */
       assert(surface->raw_allocation_mapping);
       assert(surface->uniform_packed_initialization);
       assert(surface->logical_pixel_addressing);
@@ -82,8 +75,15 @@ main(void)
       const uint32_t bytes =
          r3v_native_zb_depth_surface_bytes(entry->selection);
       assert(bytes > 0u);
-      assert(bytes == surface->pitch_pixels * surface->allocation_rows *
-                         surface->bytes_per_pixel);
+      if (entry->selection ==
+          R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
+         assert(bytes == 28672u);
+      } else {
+         assert(bytes == surface->pitch_pixels * surface->allocation_rows *
+                            surface->bytes_per_pixel);
+         assert(bytes == (entry->selection == R3V_NATIVE_ZB_DEPTH_SURFACE_Z16_LINEAR
+                             ? 8320u : 16640u));
+      }
 
       /* Distinct entries name distinct descriptors, so a selector always
        * resolves to one surface. */

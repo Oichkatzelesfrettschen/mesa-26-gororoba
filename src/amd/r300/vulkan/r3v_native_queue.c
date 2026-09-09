@@ -466,6 +466,29 @@ r3v_native_cell_geometry_unfrozen(
                                                 &emitted_format) != 0 ||
           emitted_format != depth_surface->depth_format)
          return true;
+      if (cmd_buffer->zb_depth_surface ==
+          R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
+         bool matches = false;
+         for (unsigned write_enabled = 0; write_enabled < 2; write_enabled++) {
+            struct r300_zb_depth_control_ib expected;
+            if (r300_zb_depth_tiled_validation_emit(write_enabled != 0,
+                                                    &expected) != 0)
+               return true;
+            matches = expected.ib_size_dwords == cmd_buffer->ib_size_dwords &&
+                      memcmp(expected.ib, cmd_buffer->ib,
+                             expected.ib_size_dwords * sizeof(uint32_t)) == 0;
+            r300_zb_depth_control_release(&expected);
+            if (matches)
+               break;
+         }
+         if (!matches || depth->memory == NULL ||
+             vertex->handle != vertex->memory->bo.handle ||
+             color->handle != color->memory->bo.handle ||
+             depth->handle != depth->memory->bo.handle ||
+             vertex->handle == color->handle ||
+             vertex->handle == depth->handle || color->handle == depth->handle)
+            return true;
+      }
       return
              depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
              depth->write_domain != RADEON_GEM_DOMAIN_GTT ||

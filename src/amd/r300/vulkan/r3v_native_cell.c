@@ -22,6 +22,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_zb_depth_layout.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
 #include "amd/r300/common/r300_reg.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
@@ -2881,10 +2882,13 @@ r3v_native_zb_depth_surface_bytes(enum r3v_native_zb_depth_surface selection)
       r3v_native_zb_depth_surface_descriptor(selection);
    if (surface == NULL)
       return 0u;
-   /* Both selectable surfaces are linear in both tile classes, so the
-    * storage extent equals the parser footprint and one product names
-    * the allocation.  A tiled selector would take
-    * r300_zb_depth_layout_compute instead, whose envelope exceeds this. */
+   if (selection == R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
+      struct r300_zb_depth_layout layout;
+      if (r300_zb_depth_layout_compute(surface, 2048, &layout) != 0 ||
+          layout.total_bytes > UINT32_MAX - 4096u)
+         return 0u;
+      return (uint32_t)layout.total_bytes + 4096u;
+   }
    return surface->pitch_pixels * surface->allocation_rows *
           surface->bytes_per_pixel;
 }
@@ -2931,7 +2935,9 @@ r3v_native_record_zb_depth_control_surface(
 
    const struct r300_zb_depth_surface *surface =
       r3v_native_zb_depth_surface_descriptor(surface_selection);
-   if (surface == NULL) {
+   if (surface == NULL ||
+       surface_selection ==
+          R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: depth control names no surface for "
                        "selector %d", (int)surface_selection);
@@ -3076,6 +3082,88 @@ r3v_native_record_zb_depth_control_surface(
    cell.ib = NULL;
    r300_zb_depth_control_release(&cell);
 
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_zb_tiled_validation(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   const uint32_t vertices[24], bool depth_write)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, depth_memory, depthMemory);
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL ||
+       depth_memory == NULL || vertices == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   const enum r3v_native_zb_depth_surface selection =
+      R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL;
+   if (vertex_memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
+       color_memory->bo.size != R300_ZB_DEPTH_CONTROL_COLOR_BYTES ||
+       depth_memory->bo.size != r3v_native_zb_depth_surface_bytes(selection) ||
+       vertex_memory->bo.handle == color_memory->bo.handle ||
+       vertex_memory->bo.handle == depth_memory->bo.handle ||
+       color_memory->bo.handle == depth_memory->bo.handle)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   struct r300_zb_depth_control_ib cell;
+   int result = r300_zb_depth_tiled_validation_emit(depth_write, &cell);
+   if (result != 0)
+      return vk_error(device, r3v_native_cell_vk_result_from_errno(result));
+   if (r300_zb_depth_control_validate_reloc_sites(&cell) != 0) {
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+   struct r3v_native_bo_reference *references =
+      calloc(R300_ZB_DEPTH_CONTROL_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   const bool owns_map = vertex_memory->map == NULL;
+   if (owns_map && radeon_drm_vk_bo_map(
+          &device->drm, &vertex_memory->bo, &vertex_memory->map) != 0) {
+      free(references);
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   }
+   memcpy(vertex_memory->map, vertices, 24u * sizeof(*vertices));
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                              24u * sizeof(*vertices));
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                            vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+   references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX] =
+      (struct r3v_native_bo_reference){
+         .handle = vertex_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .memory = vertex_memory,
+      };
+   references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR] =
+      (struct r3v_native_bo_reference){
+         .handle = color_memory->bo.handle,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color_memory,
+      };
+   references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH] =
+      (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+   r3v_native_cmd_buffer_install_ib(
+      cmd_buffer, R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL, cell.ib,
+      cell.ib_size_dwords, references, R300_ZB_DEPTH_CONTROL_SLOT_COUNT);
+   cmd_buffer->zb_depth_surface = selection;
+   cell.ib = NULL;
+   r300_zb_depth_control_release(&cell);
    return VK_SUCCESS;
 }
 

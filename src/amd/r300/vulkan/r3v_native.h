@@ -626,7 +626,8 @@ struct r3v_native_deferred_draw {
  */
 #define R3V_NATIVE_ZB_DEPTH_SURFACES(X)                                       \
    X(Z16_LINEAR, z16_linear)                                                  \
-   X(Z24_LINEAR, z24_linear)
+   X(Z24_LINEAR, z24_linear)                                                \
+   X(RS485M_Z24_MACROTILED_LOGICAL, rs485m_z24_macrotiled_logical)
 
 /* The address-discovery scenarios a discovery recording can name, one
  * entry per declared experiment: the enumerator suffix and the common
@@ -639,7 +640,7 @@ struct r3v_native_deferred_draw {
  * the experiment identity has to name the initial image.
  */
 #define R3V_NATIVE_ZB_DISCOVERY_SCENARIOS(X)                                  \
-   X(Z24_LINEAR, z24_linear)                                                  \
+   X(Z24_LINEAR, z24_linear)                                                \
    X(Z24_LINEAR_SEED_5A, z24_linear_seed_5a)                                  \
    X(Z24_LINEAR_SEED_A5, z24_linear_seed_a5)                                  \
    X(Z24_MICROTILED, z24_microtiled)                                          \
@@ -2221,14 +2222,20 @@ VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
 const struct r300_zb_depth_surface *r3v_native_zb_depth_surface_descriptor(
    enum r3v_native_zb_depth_surface selection);
 
-/* Depth bytes a selector's allocation carries: the descriptor's pitch,
- * allocation rows, and pixel width.  Returns 0 for a selector outside
- * the enumeration, which no caller treats as a size. */
+/* Linear controls use the parser footprint. Tiled validation adds two
+ * 2048-byte guards and a 4096-byte tail to the tiled storage envelope.
+ * Returns zero for an unsupported selection or invalid layout. */
 uint32_t r3v_native_zb_depth_surface_bytes(
    enum r3v_native_zb_depth_surface selection);
 
-/* Records the depth control against the Z16 linear surface, the shape
- * the retained cell has always emitted. */
+/* Publishes six vertex positions and records tiled depth validation.
+ * The application owns color and depth initialization across submissions. */
+VkResult r3v_native_record_zb_tiled_validation(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   const uint32_t vertices[24], bool depth_write);
+
+/* Records the depth control against the Z16 linear surface. */
 VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
                                             VkDeviceMemory vertexMemory,
                                             VkDeviceMemory colorMemory,
@@ -2238,7 +2245,7 @@ VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
  * allocation is sized from that surface rather than from the Z16
  * footprint, and the recorded selection travels to the queue, so a
  * recording the recorder admits is a submission the frozen-geometry
- * predicate admits.  A selector outside the enumeration refuses. */
+ * predicate admits. The host initialization requires a linear selector. */
 VkResult r3v_native_record_zb_depth_control_surface(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
@@ -2273,8 +2280,8 @@ bool r3v_native_zb_discovery_arm_state(enum r3v_native_zb_discovery_arm arm,
  * The depth allocation is R300_ZB_DISCOVERY_ALLOCATION_BYTES for every
  * scenario, held constant so the transport, the queue predicate, and the
  * retained artifact do not move between tiling rungs.  It is not
- * r3v_native_zb_depth_surface_bytes, which names the parser footprint of
- * a linear surface and carries no guards.
+ * r3v_native_zb_depth_surface_bytes, which sizes the selected depth-control
+ * or tiled-validation allocation.
  *
  * A tiled scenario records here where the depth control refuses it: the
  * control reads the surface back as a row-major image and needs an

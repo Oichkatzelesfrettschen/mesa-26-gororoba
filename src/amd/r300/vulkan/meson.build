@@ -1431,6 +1431,22 @@ test(
   suite : ['r3v'],
 )
 
+# Hardware execution is explicit; the registered test uses CPU fixtures only.
+r3v_native_zb_tiled_validation = executable(
+  'r3v_native_zb_tiled_validation',
+  files('tests/r3v_native_zb_tiled_validation.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+test('r3v-native-zb-tiled-validation-fixtures',
+     r3v_native_zb_tiled_validation, args : ['--selftest'], suite : ['r3v'])
+
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',
   files('tests/r3v_native_attended_zb_depth_control.c'),
