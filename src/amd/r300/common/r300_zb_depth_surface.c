@@ -3,6 +3,7 @@
 #include "r300_zb_depth_surface.h"
 
 #include "r300_reg.h"
+#include "r300_zb_depth_layout.h"
 #include "r300_zb_depth_control_cell.h"
 
 #include <errno.h>
@@ -10,6 +11,7 @@
 
 const struct r300_zb_depth_surface r300_zb_depth_surface_z16_linear = {
    .name = "z16_linear",
+   .address_resolver = &r300_zb_depth_address_linear,
    .depth_format = R300_DEPTHFORMAT_16BIT_INT_Z,
    .bytes_per_pixel = R300_ZB_DEPTH_CONTROL_DEPTH_CPP,
    .microtile = R300_ZB_MICROTILE_LINEAR,
@@ -41,6 +43,7 @@ const struct r300_zb_depth_surface r300_zb_depth_surface_z16_linear = {
  */
 const struct r300_zb_depth_surface r300_zb_depth_surface_z24_linear = {
    .name = "z24_linear",
+   .address_resolver = &r300_zb_depth_address_linear,
    .depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL,
    .bytes_per_pixel = 4u,
    .microtile = R300_ZB_MICROTILE_LINEAR,
@@ -278,14 +281,13 @@ r300_zb_depth_surface_check(const struct r300_zb_depth_surface *surface)
    if (surface->logical_image_readback && !surface->logical_pixel_addressing)
       return -EINVAL;
 
-   /* A tiled surface's byte for a coordinate follows a transform this
-    * tree does not carry, so a descriptor that claims logical addressing
-    * over one is refused rather than trusted.  Uniform initialization
-    * survives tiling, because a constant image is invariant under the
-    * permutation, and it stays admitted here. */
+   /* Logical operations require the selected model to cover the surface.
+    * Raw discovery leaves the model absent and observes allocation bytes. */
    if (surface->logical_pixel_addressing &&
-       (surface->microtile != R300_ZB_MICROTILE_LINEAR ||
-        surface->macrotile != R300_ZB_MACROTILE_LINEAR))
+       (surface->address_resolver == NULL ||
+        surface->address_resolver->surface_check == NULL ||
+        surface->address_resolver->byte_offset == NULL ||
+        surface->address_resolver->surface_check(surface) != 0))
       return -EINVAL;
 
    return 0;

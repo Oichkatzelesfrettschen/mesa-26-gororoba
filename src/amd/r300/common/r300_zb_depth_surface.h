@@ -74,8 +74,12 @@ enum r300_zb_macrotile {
    R300_ZB_MACROTILE_TILED = 1,
 };
 
+struct r300_zb_depth_address_resolver;
+
 struct r300_zb_depth_surface {
    const char *name;
+   /* Selected logical address model; discovery leaves this null. */
+   const struct r300_zb_depth_address_resolver *address_resolver;
    /* One complete ZB_FORMAT depth encoding. */
    uint32_t depth_format;
    /* Bytes the format stores per pixel, the width the kernel reads out of

@@ -421,7 +421,7 @@ test(
 
 r300_zb_depth_surface_test = executable(
   'r300_zb_depth_surface_test',
-  files('r300_zb_depth_surface.c',
+  files('r300_zb_depth_surface.c', 'r300_zb_depth_layout.c',
         'tests/r300_zb_depth_surface_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -434,6 +434,18 @@ test(
   r300_zb_depth_surface_test,
   suite : ['r300'],
 )
+
+r300_zb_rs485m_address_test = executable(
+  'r300_zb_rs485m_address_test',
+  files('r300_zb_depth_layout.c', 'r300_zb_depth_surface.c',
+        'tests/r300_zb_rs485m_address_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r300-zb-rs485m-address', r300_zb_rs485m_address_test, suite : ['r300'])
 
 r300_zb_depth_layout_test = executable(
   'r300_zb_depth_layout_test',

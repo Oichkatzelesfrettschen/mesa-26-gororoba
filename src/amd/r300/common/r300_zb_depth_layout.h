@@ -217,8 +217,26 @@ int r300_zb_depth_layout_tile_pixels(uint32_t bytes_per_pixel,
  * does not address, the coordinate falls outside the render extent, or
  * the offset leaves the 64-bit range.  A refused call writes nothing.
  */
+enum r300_zb_depth_address_region {
+   R300_ZB_DEPTH_ADDRESS_LOGICAL,
+   R300_ZB_DEPTH_ADDRESS_PADDING,
+};
+
+struct r300_zb_depth_address_coordinate {
+   uint32_t x;
+   uint32_t y;
+   enum r300_zb_depth_address_region region;
+};
+
 struct r300_zb_depth_address_resolver {
    const char *name;
+   int (*surface_check)(const struct r300_zb_depth_surface *surface);
+   /* Inverse accepts aligned storage words; outside storage returns -ERANGE.
+    * Every refusal preserves the output object. */
+   int (*coordinate)(const struct r300_zb_depth_surface *surface,
+                     uint64_t base_offset_bytes, uint64_t mapped_bytes,
+                     uint64_t byte_offset,
+                     struct r300_zb_depth_address_coordinate *out);
    int (*byte_offset)(const struct r300_zb_depth_surface *surface,
                       uint64_t base_offset_bytes, uint32_t x, uint32_t y,
                       uint64_t *byte_offset_out);
@@ -235,6 +253,25 @@ struct r300_zb_depth_address_resolver {
  */
 extern const struct r300_zb_depth_address_resolver
    r300_zb_depth_address_linear;
+
+/* RS485M uncompressed Z24/S8 arithmetic for 64x64, pitches 64/96,
+ * 65 allocation rows, and aligned bases 2048/4096. Model selection and
+ * qualified hardware configuration remain the caller's responsibility. */
+extern const struct r300_zb_depth_address_resolver
+   r300_zb_depth_address_rs485m_tiled;
+
+/* Bind logical access to a selected model and a complete mapped word.
+ * Refusal preserves the output. */
+int r300_zb_depth_address_checked(
+   const struct r300_zb_depth_surface *surface,
+   uint64_t base_offset_bytes, uint64_t mapped_bytes,
+   uint32_t x, uint32_t y, uint64_t *byte_offset_out);
+
+/* Update selected packed components without numerical depth conversion. */
+int r300_zb_depth_packed_update(
+   const struct r300_zb_depth_surface *surface, uint32_t old_word,
+   bool write_depth, uint32_t depth_code, bool write_stencil,
+   uint32_t stencil, uint32_t stencil_write_mask, uint32_t *word_out);
 
 /* True when byte_offset falls inside one of the layout's two guard
  * ranges.  A discovery oracle scans the whole allocation and separates
