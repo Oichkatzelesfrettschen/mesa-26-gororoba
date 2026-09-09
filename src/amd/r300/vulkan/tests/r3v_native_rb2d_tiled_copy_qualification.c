@@ -20,6 +20,20 @@
 #define QUALIFICATION_GRID_WIDTH 2u
 
 static uint32_t qualification_write_mask = UINT32_MAX;
+static bool qualification_byte_copy;
+static struct r300_rb2d_copy_segment qualification_byte_span;
+
+static struct r300_rb2d_copy_plan
+byte_plan(void)
+{
+   return (struct r300_rb2d_copy_plan){
+      .source_buffer_bytes = QUALIFICATION_BYTES,
+      .destination_buffer_bytes = QUALIFICATION_BYTES,
+      .segments = &qualification_byte_span,
+      .segment_count = 1u,
+      .byte_carrier = true,
+   };
+}
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
                                              const char *name);
@@ -110,6 +124,8 @@ expected_stream(const struct r300_zb_tile_copy_request *request,
           &tile_plan, QUALIFICATION_BYTES, QUALIFICATION_BYTES, false,
           segment_storage, &copy_plan) != R300_RB2D_COPY_OK)
       return -EINVAL;
+   if (qualification_byte_copy)
+      copy_plan = byte_plan();
    const uint32_t dwords = R300_RB2D_COPY_DWORDS(copy_plan.segment_count);
    uint32_t *words = calloc(dwords, sizeof(*words));
    if (words == NULL)
@@ -179,6 +195,11 @@ print_stream(const struct r300_zb_tile_copy_request *request)
    if (qualification_write_mask != UINT32_MAX)
       printf("component=%s ", qualification_write_mask == 0xffffff00u
                                    ? "depth" : "stencil");
+   if (qualification_byte_copy)
+      printf("source-byte=%llu destination-byte=%llu byte-count=%u ",
+             (unsigned long long)qualification_byte_span.source_offset_bytes,
+             (unsigned long long)qualification_byte_span.destination_offset_bytes,
+             qualification_byte_span.byte_count);
    printf("source=%u,%u destination=%u,%u ib_dwords=%u ib_blake3=%s "
           "source_before_blake3=%s destination_before_blake3=%s "
           "destination_expected_blake3=%s\n",
@@ -192,6 +213,11 @@ print_stream(const struct r300_zb_tile_copy_request *request)
 static int
 prepare_all(void)
 {
+   if (qualification_byte_copy) {
+      const struct r300_zb_tile_copy_request request = request_for(0, 0, 0, 0);
+      print_stream(&request);
+      return 0;
+   }
    for (uint32_t source_x = 0; source_x < 2u; source_x++)
       for (uint32_t source_y = 0; source_y < 2u; source_y++)
          for (uint32_t destination_x = 0; destination_x < 2u;
@@ -237,6 +263,14 @@ selftest(void)
    cmd.rb2d_tiled_copy_configured = true;
    cmd.rb2d_tiled_copy_request = request;
    cmd.rb2d_tiled_copy_write_mask = qualification_write_mask;
+   if (qualification_byte_copy) {
+      cmd.rb2d_copy_geometry = R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS;
+      cmd.rb2d_copy_segment_count = 1;
+      cmd.rb2d_copy_segments[0] = qualification_byte_span;
+      cmd.rb2d_copy_source_buffer_bytes = QUALIFICATION_BYTES;
+      cmd.rb2d_copy_destination_buffer_bytes = QUALIFICATION_BYTES;
+      cmd.rb2d_copy_byte_carrier = true;
+   }
    if (!r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
       return 1;
 
@@ -267,7 +301,15 @@ selftest(void)
    destination.bo.size = QUALIFICATION_BYTES;
    REFUSES(cmd.rb2d_tiled_copy_configured = false);
    REFUSES(cmd.rb2d_tiled_copy_write_mask ^= 1u);
-   REFUSES(cmd.rb2d_tiled_copy_request.destination.macro_x ^= 1u);
+   if (qualification_byte_copy) {
+      REFUSES(cmd.rb2d_copy_segments[0].source_offset_bytes++);
+      REFUSES(cmd.rb2d_copy_segments[0].destination_offset_bytes++);
+      REFUSES(cmd.rb2d_copy_segments[0].byte_count++);
+      REFUSES(cmd.rb2d_copy_segment_count = 0);
+      REFUSES(cmd.rb2d_copy_byte_carrier = false);
+   } else {
+      REFUSES(cmd.rb2d_tiled_copy_request.destination.macro_x ^= 1u);
+   }
 #undef REFUSES
 
    uint32_t depth_mismatches = 0u;
@@ -295,6 +337,23 @@ expected_destination_word(const struct r300_zb_tile_copy_request *request,
 {
    const uint64_t destination_offset =
       (uint64_t)word_index * sizeof(uint32_t);
+   if (qualification_byte_copy) {
+      uint32_t expected = destination_word(word_index);
+      for (uint32_t lane = 0; lane < 4u; lane++) {
+         const uint64_t offset = destination_offset + lane;
+         if (offset < qualification_byte_span.destination_offset_bytes ||
+             offset - qualification_byte_span.destination_offset_bytes >=
+                qualification_byte_span.byte_count)
+            continue;
+         const uint64_t source_offset = qualification_byte_span.source_offset_bytes +
+            offset - qualification_byte_span.destination_offset_bytes;
+         const uint32_t source_byte =
+            (source_word(source_offset / 4u) >> (8u * (source_offset % 4u))) & 0xffu;
+         expected = (expected & ~(0xffu << (8u * lane))) |
+                    (source_byte << (8u * lane));
+      }
+      return expected;
+   }
    if (destination_offset >= request->destination.tile_offset_bytes &&
        destination_offset < request->destination.tile_offset_bytes +
                                R300_ZB_TILE_COPY_BYTES) {
@@ -312,6 +371,20 @@ expected_destination_word(const struct r300_zb_tile_copy_request *request,
              (destination_word(word_index) & ~qualification_write_mask);
    }
    return destination_word(word_index);
+}
+
+static VkResult
+record_copy(VkCommandBuffer command, VkDeviceMemory source,
+            VkDeviceMemory destination,
+            const struct r300_zb_tile_copy_request *request)
+{
+   if (qualification_byte_copy) {
+      const struct r300_rb2d_copy_plan plan = byte_plan();
+      return r3v_native_record_rb2d_copy(command, source, destination, &plan,
+                                       qualification_write_mask);
+   }
+   return r3v_native_record_rb2d_tiled_copy_masked(
+      command, source, destination, request, qualification_write_mask);
 }
 
 static int
@@ -459,9 +532,7 @@ run_hardware(const char *evidence_directory,
           &(VkCommandBufferBeginInfo){
              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
           }) != VK_SUCCESS ||
-       r3v_native_record_rb2d_tiled_copy_masked(
-          command, source, destination, request, qualification_write_mask) !=
-          VK_SUCCESS ||
+       record_copy(command, source, destination, request) != VK_SUCCESS ||
        vkEndCommandBuffer(command) != VK_SUCCESS)
       goto cleanup;
    VkQueue queue = VK_NULL_HANDLE;
@@ -497,6 +568,8 @@ run_hardware(const char *evidence_directory,
    uint32_t depth_mismatches = 0u;
    uint32_t stencil_mismatches = 0u;
    uint32_t target_mismatches = 0u;
+   uint32_t selected_byte_mismatches = 0u;
+   uint32_t exterior_byte_mismatches = 0u;
    uint32_t prefix_guard_mismatches = 0u;
    uint32_t untargeted_grid_mismatches = 0u;
    uint32_t tail_guard_mismatches = 0u;
@@ -513,9 +586,27 @@ run_hardware(const char *evidence_directory,
             &stencil_mismatches);
          const uint64_t byte_offset =
             (uint64_t)word_index * sizeof(uint32_t);
-         if (byte_offset >= request->destination.tile_offset_bytes &&
+         if (qualification_byte_copy) {
+            for (unsigned byte = 0; byte < 4; byte++) {
+               if (((destination_words[word_index] ^ expected) >> (8u * byte) &
+                    0xffu) == 0u)
+                  continue;
+               const uint64_t offset = byte_offset + byte;
+               if (offset >= qualification_byte_span.destination_offset_bytes &&
+                   offset - qualification_byte_span.destination_offset_bytes <
+                      qualification_byte_span.byte_count)
+                  selected_byte_mismatches++;
+               else
+                  exterior_byte_mismatches++;
+            }
+         }
+         if (qualification_byte_copy ?
+                (byte_offset + 4u > qualification_byte_span.destination_offset_bytes &&
+                 byte_offset < qualification_byte_span.destination_offset_bytes +
+                                  qualification_byte_span.byte_count) :
+                (byte_offset >= request->destination.tile_offset_bytes &&
              byte_offset < request->destination.tile_offset_bytes +
-                              R300_ZB_TILE_COPY_BYTES)
+                              R300_ZB_TILE_COPY_BYTES))
             target_mismatches++;
          else if (byte_offset < QUALIFICATION_GUARD_BYTES)
             prefix_guard_mismatches++;
@@ -526,6 +617,9 @@ run_hardware(const char *evidence_directory,
             tail_guard_mismatches++;
       }
    }
+   if (qualification_byte_copy)
+      printf("selected_byte_mismatches=%u exterior_byte_mismatches=%u\n",
+             selected_byte_mismatches, exterior_byte_mismatches);
    vkUnmapMemory(device, source);
    source_map = NULL;
    vkUnmapMemory(device, destination);
@@ -584,6 +678,37 @@ cleanup:
 int
 main(int argc, char **argv)
 {
+   if (argc > 1 && strcmp(argv[1], "--byte-span") == 0) {
+      if (argc != 6)
+         return 2;
+      uint64_t values[3];
+      for (unsigned index = 0; index < 3; index++) {
+         const char *text = argv[index + 2];
+         char *end;
+         if (*text < '0' || *text > '9')
+            return 2;
+         errno = 0;
+         values[index] = strtoull(text, &end, 10);
+         if (errno || *end)
+            return 2;
+      }
+      if (values[2] == 0 || values[2] > 256)
+         return 2;
+      qualification_byte_copy = true;
+      qualification_byte_span = (struct r300_rb2d_copy_segment){
+         .source_offset_bytes = values[0],
+         .destination_offset_bytes = values[1],
+         .byte_count = (uint32_t)values[2],
+      };
+      if (strcmp(argv[5], "--prepare") == 0)
+         return prepare_all();
+      if (strcmp(argv[5], "--selftest") == 0)
+         return selftest();
+      if (argv[5][0] == '-')
+         return 2;
+      const struct r300_zb_tile_copy_request request = request_for(0, 0, 0, 0);
+      return run_hardware(argv[5], &request);
+   }
    if (argc > 1 && (strcmp(argv[1], "--depth-only") == 0 ||
                    strcmp(argv[1], "--stencil-only") == 0)) {
       qualification_write_mask = strcmp(argv[1], "--depth-only") == 0

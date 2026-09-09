@@ -17,6 +17,7 @@
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_operation_route.h"
+#include "amd/r300/common/r300_rb2d_copy.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/r300/common/r300_zb_hyperz_admission.h"
@@ -158,6 +159,11 @@ struct r3v_native_image;
 struct r3v_native_pipeline;
 struct r3v_native_buffer;
 struct r3v_native_arming_provider;
+
+enum r3v_native_rb2d_copy_geometry {
+   R3V_NATIVE_RB2D_COPY_GEOMETRY_TILE = 0,
+   R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS,
+};
 
 /* Deferred draw execution: vertex reads and the load-op clear happen at
  * queue submission, matching Vulkan's execution-time semantics, so the
@@ -768,6 +774,17 @@ struct r3v_native_cmd_buffer {
    bool rb2d_tiled_copy_configured;
    uint32_t rb2d_tiled_copy_write_mask;
    struct r300_zb_tile_copy_request rb2d_tiled_copy_request;
+   /* One configured flag and geometry discriminator cover both the legacy
+    * logical-tile request and the generic owned span list.  The latter owns
+    * every segment so a caller cannot mutate the stream's source or target
+    * windows after recording. */
+   enum r3v_native_rb2d_copy_geometry rb2d_copy_geometry;
+   struct r300_rb2d_copy_segment
+      rb2d_copy_segments[R300_RB2D_COPY_MAX_SEGMENTS];
+   uint32_t rb2d_copy_segment_count;
+   uint64_t rb2d_copy_source_buffer_bytes;
+   uint64_t rb2d_copy_destination_buffer_bytes;
+   bool rb2d_copy_byte_carrier;
    bool zb_persistence_configured;
    enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
    struct r3v_native_memory *zb_persistence_depth_a;
@@ -2273,6 +2290,10 @@ VkResult r3v_native_record_rb2d_tiled_copy(
 VkResult r3v_native_record_rb2d_tiled_copy_masked(
    VkCommandBuffer command_buffer, VkDeviceMemory source,
    VkDeviceMemory destination, const struct r300_zb_tile_copy_request *request,
+   uint32_t mask);
+VkResult r3v_native_record_rb2d_copy(
+   VkCommandBuffer command_buffer, VkDeviceMemory source_memory,
+   VkDeviceMemory destination_memory, const struct r300_rb2d_copy_plan *plan,
    uint32_t mask);
 
 VkResult r3v_native_record_zb_tiled_validation(

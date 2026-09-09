@@ -43,6 +43,11 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
    cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    cmd_buffer->rb2d_tiled_copy_configured = false;
    cmd_buffer->rb2d_tiled_copy_write_mask = UINT32_MAX;
+   cmd_buffer->rb2d_copy_geometry = R3V_NATIVE_RB2D_COPY_GEOMETRY_TILE;
+   cmd_buffer->rb2d_copy_segment_count = 0u;
+   cmd_buffer->rb2d_copy_source_buffer_bytes = 0u;
+   cmd_buffer->rb2d_copy_destination_buffer_bytes = 0u;
+   cmd_buffer->rb2d_copy_byte_carrier = false;
    cmd_buffer->ib = NULL;
    cmd_buffer->ib_size_dwords = 0;
    cmd_buffer->window_space_ib = NULL;

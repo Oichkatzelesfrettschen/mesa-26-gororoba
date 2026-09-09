@@ -1491,6 +1491,12 @@ r3v_native_rb2d_tiled_copy_qualification = executable(
   build_by_default : true,
   install : false,
 )
+foreach mode : ['prepare', 'selftest']
+  test('r3v-native-rb2d-tiled-copy-byte-' + mode,
+       r3v_native_rb2d_tiled_copy_qualification,
+       args : ['--byte-span', '7573', '8197', '3', '--' + mode],
+       suite : ['r3v'])
+endforeach
 test('r3v-native-rb2d-tiled-copy-fixtures',
      r3v_native_rb2d_tiled_copy_qualification,
      args : ['--selftest'], suite : ['r3v'])
