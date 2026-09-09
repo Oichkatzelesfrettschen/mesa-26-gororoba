@@ -58,7 +58,9 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
        cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
-       framebuffer->layers != 1 || framebuffer->attachment_count != 1) {
+       framebuffer->layers != 1 ||
+       (framebuffer->attachment_count != 1 &&
+        framebuffer->attachment_count != 2)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -81,6 +83,9 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     * image's own format.
     */
    VK_FROM_HANDLE(r3v_native_image_view, view, framebuffer->attachments[0]);
+   VK_FROM_HANDLE(r3v_native_image_view, depth_view,
+                  framebuffer->attachment_count == 2
+                     ? framebuffer->attachments[1] : VK_NULL_HANDLE);
    const VkRect2D *area = &pRenderPassBegin->renderArea;
    /* The color backend places one slice's base in RB3D_COLOROFFSET0, so
     * the attachment takes a view whose slice the creation resolved.
@@ -94,7 +99,17 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
        area->offset.x != 0 || area->offset.y != 0 ||
        area->extent.width != view->image->width ||
        area->extent.height != view->image->height ||
-       pRenderPassBegin->clearValueCount < 1) {
+       pRenderPassBegin->clearValueCount < framebuffer->attachment_count ||
+       (framebuffer->attachment_count == 2 &&
+        (depth_view == NULL || depth_view->image == NULL ||
+         depth_view->image->memory == NULL ||
+         !depth_view->image->depth_family ||
+         depth_view->image->format != VK_FORMAT_D24_UNORM_S8_UINT ||
+         depth_view->aspect_mask !=
+            (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ||
+         !r3v_native_view_type_executes(depth_view->view_type) ||
+         depth_view->image->width != view->image->width ||
+         depth_view->image->height != view->image->height))) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }

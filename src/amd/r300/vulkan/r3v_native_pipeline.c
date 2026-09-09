@@ -22,31 +22,42 @@
 
 #include <string.h>
 
-/* The render-pass shape whose one subpass the cell realizes: a single
- * single-sample color attachment in either render-family lane order,
- * cleared on load and stored, referenced as the one color output of
- * the one subpass.  The attachment format names a lane order; the
- * framebuffer's view then binds the image whose own format
- * r3v_CmdBeginRenderPass holds equal to it, so the emitted
- * US_OUT_FMT_0 payload matches the target the pass declares.
+/* The render-pass shape whose one subpass the cell realizes: one
+ * single-sample color attachment in either render-family lane order and one
+ * single-sample D24S8 depth/stencil attachment, each cleared on load and
+ * stored.  The color attachment is the one color output and the depth
+ * attachment is the one depth/stencil reference of the subpass.  Draw
+ * emission keeps depth writes outside this admission until a depth-aware
+ * cell carries the tiled surface state.
  */
 bool
 r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
 {
-   if (pass == NULL || pass->is_multiview || pass->attachment_count != 1 ||
+   if (pass == NULL || pass->is_multiview ||
+       (pass->attachment_count != 1 && pass->attachment_count != 2) ||
        pass->subpass_count != 1)
       return false;
-   const struct vk_render_pass_attachment *att = &pass->attachments[0];
+   const struct vk_render_pass_attachment *color = &pass->attachments[0];
    enum r300_triangle_lane_order lanes;
-   if (!r3v_native_render_lane_order(att->format, &lanes) ||
-       att->samples != 1 ||
-       att->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
-       att->store_op != VK_ATTACHMENT_STORE_OP_STORE)
+   if (!r3v_native_render_lane_order(color->format, &lanes) ||
+       color->samples != 1 ||
+       color->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
+       color->store_op != VK_ATTACHMENT_STORE_OP_STORE)
       return false;
    const struct vk_subpass *subpass = &pass->subpasses[0];
-   return subpass->input_count == 0 && subpass->color_count == 1 &&
-          subpass->color_attachments[0].attachment == 0 &&
-          subpass->depth_stencil_attachment == NULL;
+   if (subpass->input_count != 0 || subpass->color_count != 1 ||
+       subpass->color_attachments[0].attachment != 0)
+      return false;
+   if (pass->attachment_count == 1)
+      return subpass->depth_stencil_attachment == NULL;
+   const struct vk_render_pass_attachment *depth = &pass->attachments[1];
+   return depth->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          depth->samples == 1 && depth->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+          depth->store_op == VK_ATTACHMENT_STORE_OP_STORE &&
+          depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+          depth->stencil_store_op == VK_ATTACHMENT_STORE_OP_STORE &&
+          subpass->depth_stencil_attachment != NULL &&
+          subpass->depth_stencil_attachment->attachment == 1;
 }
 
 /* SPIR-V ingestion for the semantic front end: the direct word-stream
