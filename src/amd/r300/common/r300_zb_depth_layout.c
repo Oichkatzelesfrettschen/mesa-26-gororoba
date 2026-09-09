@@ -208,11 +208,31 @@ r300_zb_depth_layout_compute(const struct r300_zb_depth_surface *surface,
 }
 
 static int
+linear_surface_check(const struct r300_zb_depth_surface *surface)
+{
+   if (surface == NULL)
+      return -EINVAL;
+   if (surface->microtile != R300_ZB_MICROTILE_LINEAR ||
+       surface->macrotile != R300_ZB_MACROTILE_LINEAR)
+      return -EINVAL;
+   const bool z24 = surface->depth_format == R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL;
+   const bool z16 = surface->depth_format == R300_DEPTHFORMAT_16BIT_INT_Z ||
+                    surface->depth_format == R300_DEPTHFORMAT_16BIT_13E3;
+   if ((!z24 && !z16) || surface->bytes_per_pixel != (z24 ? 4u : 2u) ||
+       surface->width == 0 || surface->height == 0 ||
+       surface->pitch_pixels < surface->width || surface->pitch_pixels % 4u ||
+       surface->pitch_pixels > R300_DEPTHPITCH_MASK ||
+       surface->allocation_rows < surface->height)
+      return -EINVAL;
+   return 0;
+}
+
+static int
 linear_byte_offset(const struct r300_zb_depth_surface *surface,
                    uint64_t base_offset_bytes, uint32_t x, uint32_t y,
                    uint64_t *byte_offset_out)
 {
-   if (surface == NULL || byte_offset_out == NULL)
+   if (linear_surface_check(surface) != 0 || byte_offset_out == NULL)
       return -EINVAL;
    if (surface->microtile != R300_ZB_MICROTILE_LINEAR ||
        surface->macrotile != R300_ZB_MACROTILE_LINEAR)
@@ -236,17 +256,6 @@ linear_byte_offset(const struct r300_zb_depth_surface *surface,
       return -EINVAL;
 
    *byte_offset_out = base_offset_bytes + offset;
-   return 0;
-}
-
-static int
-linear_surface_check(const struct r300_zb_depth_surface *surface)
-{
-   if (surface == NULL)
-      return -EINVAL;
-   if (surface->microtile != R300_ZB_MICROTILE_LINEAR ||
-       surface->macrotile != R300_ZB_MACROTILE_LINEAR)
-      return -EINVAL;
    return 0;
 }
 

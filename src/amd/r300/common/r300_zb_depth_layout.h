@@ -105,8 +105,7 @@ enum r300_zb_depth_layout_maturity {
    /* Tile dimensions and storage extent follow r300_get_pixel_alignment
     * and r300_setup_miptree, which decide how many bytes a level
     * occupies.  Which byte inside the envelope a logical coordinate
-    * reaches is a separate transform, and no silicon observation of it
-    * exists in this tree. */
+    * reaches is a separate transform. */
    R300_ZB_DEPTH_LAYOUT_BLOCK_ENVELOPE = 0,
    /* The permutation inside the envelope is established by retained
     * observation as well. */
@@ -203,13 +202,10 @@ int r300_zb_depth_layout_tile_pixels(uint32_t bytes_per_pixel,
 
 /* Resolves the byte a logical pixel names inside a depth allocation.
  *
- * An oracle reads a surface it did not write, so it needs the inverse of
- * whatever placed the bytes.  A linear surface has one in closed form; a
- * tiled surface's is the permutation this tree does not yet carry.
- * Passing the resolver in keeps the oracle's region logic identical
- * across surfaces and confines the addressing to one replaceable object,
- * so a tiled resolver arrives as a new instance rather than as a second
- * oracle.
+ * A selected resolver maps logical coordinates and classifies physical
+ * storage words. Linear and bounded RS485M tiled models share the same
+ * region interface. Discovery scans raw bytes independently of either
+ * model, allowing measurements to falsify the selected transform.
  *
  * byte_offset resolves the pixel at (x, y) of surface, whose storage
  * begins at base_offset_bytes inside the allocation, and returns 0 with

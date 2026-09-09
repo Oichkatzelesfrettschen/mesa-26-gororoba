@@ -106,6 +106,24 @@ const struct r300_zb_depth_surface r300_zb_depth_surface_z24_macrotiled = {
    .logical_image_readback = false,
 };
 
+const struct r300_zb_depth_surface r300_zb_depth_surface_rs485m_z24_macrotiled_logical = {
+   .name = "rs485m_z24_macrotiled_logical",
+   .address_resolver = &r300_zb_depth_address_rs485m_tiled,
+   .depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL,
+   .bytes_per_pixel = 4u,
+   .microtile = R300_ZB_MICROTILE_TILED,
+   .macrotile = R300_ZB_MACROTILE_TILED,
+   .width = R300_ZB_DEPTH_CONTROL_TARGET_WIDTH,
+   .height = R300_ZB_DEPTH_CONTROL_TARGET_HEIGHT,
+   .pitch_pixels = R300_ZB_DEPTH_CONTROL_PITCH_PIXELS,
+   .allocation_rows = R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS,
+   .depth_sentinel_code = 0x00800000u,
+   .raw_allocation_mapping = true,
+   .uniform_packed_initialization = true,
+   .logical_pixel_addressing = true,
+   .logical_image_readback = true,
+};
+
 /* The cpp each ZB_FORMAT encoding stores, the same widths
  * r300_packet0_check reads out of ZB_FORMAT into track->zb.cpp: two bytes
  * for either 16-bit encoding, four for packed Z24/S8. */
