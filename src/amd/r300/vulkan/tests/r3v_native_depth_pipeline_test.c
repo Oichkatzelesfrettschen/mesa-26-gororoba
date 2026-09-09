@@ -3,7 +3,9 @@
  */
 
 #include "../r3v_native_depth_pipeline.h"
+#include "../r3v_native.h"
 #include "../../common/r300_reg.h"
+#include "vk_render_pass.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -98,5 +100,59 @@ main(void)
    assert(r3v_native_depth_pipeline_lower(&disabled, &shader, false, &state) ==
           -EINVAL);
    assert(memcmp(&state, &before, sizeof(state)) == 0);
+
+   struct vk_render_pass_attachment attachments[2] = {
+      {
+         .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .aspects = VK_IMAGE_ASPECT_COLOR_BIT,
+         .samples = VK_SAMPLE_COUNT_1_BIT,
+         .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+         .store_op = VK_ATTACHMENT_STORE_OP_STORE,
+      },
+      {
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .aspects = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .samples = VK_SAMPLE_COUNT_1_BIT,
+         .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+         .store_op = VK_ATTACHMENT_STORE_OP_STORE,
+         .stencil_load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
+         .stencil_store_op = VK_ATTACHMENT_STORE_OP_STORE,
+      },
+   };
+   struct vk_subpass_attachment color_ref = { .attachment = 0 };
+   struct vk_subpass_attachment depth_ref = { .attachment = 1 };
+   struct vk_subpass subpass = {
+      .color_count = 1,
+      .color_attachments = &color_ref,
+      .depth_stencil_attachment = &depth_ref,
+   };
+   struct vk_render_pass pass = {
+      .attachment_count = 2,
+      .attachments = attachments,
+      .subpass_count = 1,
+      .subpasses = &subpass,
+   };
+   assert(r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].aspects = VK_IMAGE_ASPECT_DEPTH_BIT;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].aspects = VK_IMAGE_ASPECT_DEPTH_BIT |
+                            VK_IMAGE_ASPECT_STENCIL_BIT;
+   attachments[1].format = VK_FORMAT_D32_SFLOAT;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].format = VK_FORMAT_D24_UNORM_S8_UINT;
+   attachments[1].samples = VK_SAMPLE_COUNT_2_BIT;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+   attachments[1].load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
+   attachments[1].stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].stencil_store_op = VK_ATTACHMENT_STORE_OP_STORE;
+   depth_ref.attachment = 0;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
+   depth_ref.attachment = 1;
+   subpass.depth_stencil_attachment = NULL;
+   assert(!r3v_native_render_pass_matches_cell(&pass));
    return 0;
 }

@@ -52,6 +52,8 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
       return subpass->depth_stencil_attachment == NULL;
    const struct vk_render_pass_attachment *depth = &pass->attachments[1];
    return depth->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          depth->aspects ==
+             (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
           depth->samples == 1 && depth->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
           depth->store_op == VK_ATTACHMENT_STORE_OP_STORE &&
           depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
