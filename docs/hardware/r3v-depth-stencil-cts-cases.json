@@ -1,0 +1,76 @@
+{
+  "schema": "r3v-depth-stencil-cts-cases/1",
+  "status": "not_run",
+  "reason": "Public Vulkan depth/stencil paths remain unimplemented; CTS execution is intentionally deferred.",
+  "scope": {"api": "Vulkan 1.0", "extensions": [], "maintenance1": false, "silicon": "RS485M", "pci_device": "1002:5974", "subsystem": "1028:022a"},
+  "obligation_source": "docs/hardware/r3v-public-depth-stencil-obligations.json",
+  "obligation_source_sha256": "4794169a596baa4ba077b57f5ac0e2a6e66055a9c6809281dfe05b0f9d70844c",
+  "cts": {
+    "repository": "https://github.com/KhronosGroup/VK-GL-CTS.git",
+    "commit": "43c65c1327aad14bd602e898f036c284a90efcf4",
+    "catalog": "external/vulkancts/mustpass/main/vk-default/pipeline/monolithic/monolithic.txt",
+    "catalog_sha256": "2ccd2eabd0bd36f5114751caff1f7a16a323cd10bb167ed8c2045f419e6c1f72",
+    "depth_source": "external/vulkancts/modules/vulkan/pipeline/vktPipelineDepthTests.cpp",
+    "depth_source_sha256": "f3da7b49ef8d49793e832a56a4ef3e9567cd2c1ea8621bb025f10da5118d0557",
+    "stencil_source": "external/vulkancts/modules/vulkan/pipeline/vktPipelineStencilTests.cpp",
+    "stencil_source_sha256": "2c82b4000721fd18ae112c2544356129a9d6630ff70baf9c6539d04fd85cd0a4"
+  },
+  "counts": {"depth_d16": 9, "depth_d24s8": 9, "stencil_d24s8": 24, "total": 42, "catalog_occurrences": 42},
+  "selection": {
+    "limitations": [
+      "The selection covers eight static triangle-list compare vectors plus the depth-test-disabled/write-enabled case for D16_UNORM and D24_UNORM_S8_UINT.",
+      "The stencil selection covers the eight comparison operators for three operation-role groups on D24_UNORM_S8_UINT, using the .any variant.",
+      "Line and point topologies, generated compare vectors outside the selected eight, depth bounds, layouts and separate layouts, dynamic state, load/store, clears, copies, transitions, synchronization, shader early/late tests, format and image queries, and limit checks remain unselected.",
+      "The complete obligation set is recorded in docs/hardware/r3v-public-depth-stencil-obligations.json."
+    ],
+    "depth_d16": [
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_always_never_greater",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_equal_always_never",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_equal_less_or_equal_greater_or_equal",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_greater_less_always",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_greater_or_equal_greater_or_equal_less_or_equal",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_less_greater_greater",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_less_or_equal_not_equal_equal",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.compare_ops.triangle_list_always_never_equal_less",
+      "dEQP-VK.pipeline.monolithic.depth.format.d16_unorm.depth_test_disabled.depth_write_enabled"
+    ],
+    "depth_d24s8": [
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_always_never_greater",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_equal_always_never",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_equal_less_or_equal_greater_or_equal",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_greater_less_always",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_greater_or_equal_greater_or_equal_less_or_equal",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_less_greater_greater",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_less_or_equal_not_equal_equal",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.compare_ops.triangle_list_always_never_equal_less",
+      "dEQP-VK.pipeline.monolithic.depth.format.d24_unorm_s8_uint.depth_test_disabled.depth_write_enabled"
+    ],
+    "stencil_d24s8": [
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_never.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_less.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_less_or_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_greater.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_not_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_greater_or_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_zero.pass_keep.dfail_keep.comp_always.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_never.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_less.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_less_or_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_greater.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_not_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_greater_or_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_repl.dfail_keep.comp_always.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_never.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_less.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_less_or_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_greater.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_not_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_greater_or_equal.any",
+      "dEQP-VK.pipeline.monolithic.stencil.format.d24_unorm_s8_uint.states.fail_keep.pass_keep.dfail_repl.comp_always.any"
+    ]
+  },
+  "verification": {"command": "CTS_ROOT=\"${CTS_ROOT:?set CTS_ROOT to the pinned VK-GL-CTS checkout}\" python3 -c 'import json,os,pathlib; j=json.load(open(\"docs/hardware/r3v-depth-stencil-cts-cases.json\")); c=pathlib.Path(os.environ[\"CTS_ROOT\"],j[\"cts\"][\"catalog\"]).read_text().splitlines(); s=sum((j[\"selection\"][k] for k in (\"depth_d16\",\"depth_d24s8\",\"stencil_d24s8\")), []); assert len(s)==42 and all(c.count(x)==1 for x in s)'", "expected": "With CTS_ROOT set to the pinned checkout, 42 selected names occur exactly once; no CTS execution"}
+}
