@@ -48,6 +48,10 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
    cmd_buffer->rb2d_copy_source_buffer_bytes = 0u;
    cmd_buffer->rb2d_copy_destination_buffer_bytes = 0u;
    cmd_buffer->rb2d_copy_byte_carrier = false;
+   free(cmd_buffer->rb2d_copy_operations);
+   cmd_buffer->rb2d_copy_operations = NULL;
+   cmd_buffer->rb2d_copy_operation_count = 0u;
+   cmd_buffer->rb2d_copy_operation_capacity = 0u;
    cmd_buffer->ib = NULL;
    cmd_buffer->ib_size_dwords = 0;
    cmd_buffer->window_space_ib = NULL;

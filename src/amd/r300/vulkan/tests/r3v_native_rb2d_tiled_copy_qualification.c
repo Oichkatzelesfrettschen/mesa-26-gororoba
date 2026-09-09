@@ -233,8 +233,104 @@ prepare_all(void)
 }
 
 static int
+ordered_operations_selftest(void)
+{
+   struct r3v_native_memory source = {0};
+   struct r3v_native_memory destination = {0};
+   source.bo.handle = 61u;
+   source.bo.size = QUALIFICATION_BYTES;
+   destination.bo.handle = 73u;
+   destination.bo.size = QUALIFICATION_BYTES;
+   const struct r300_rb2d_copy_segment segments[2] = {
+      { .source_offset_bytes = 128u, .destination_offset_bytes = 256u,
+        .byte_count = 8u },
+      { .source_offset_bytes = 512u, .destination_offset_bytes = 768u,
+        .byte_count = 16u },
+   };
+   struct r3v_native_rb2d_copy_operation *operations =
+      calloc(2u, sizeof(*operations));
+   struct r3v_native_bo_reference *references =
+      calloc(2u, sizeof(*references));
+   uint32_t *ib = calloc(2u * R300_RB2D_COPY_DWORDS(1u), sizeof(*ib));
+   if (operations == NULL || references == NULL || ib == NULL) {
+      free(operations);
+      free(references);
+      free(ib);
+      return 1;
+   }
+   references[0] = (struct r3v_native_bo_reference){
+      .handle = source.bo.handle, .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .memory = &source,
+   };
+   references[1] = (struct r3v_native_bo_reference){
+      .handle = destination.bo.handle, .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .memory = &destination,
+   };
+   const uint32_t masks[2] = {0xffffff00u, 0x000000ffu};
+   for (uint32_t index = 0u; index < 2u; index++) {
+      const struct r300_rb2d_copy_plan plan = {
+         .source_buffer_bytes = QUALIFICATION_BYTES,
+         .destination_buffer_bytes = QUALIFICATION_BYTES,
+         .segments = &segments[index], .segment_count = 1u,
+         .byte_carrier = true,
+      };
+      struct r300_rb2d_copy_ib emitted;
+      if (r300_rb2d_copy_emit_masked_into(
+             &plan, masks[index], ib + index * R300_RB2D_COPY_DWORDS(1u),
+             R300_RB2D_COPY_DWORDS(1u), &emitted) != 0 ||
+          r300_rb2d_copy_validate_reloc_sites(&emitted) != 0)
+         goto fail;
+      for (uint32_t site = 0u; site < emitted.reloc_site_count; site++)
+         (ib + index * R300_RB2D_COPY_DWORDS(1u))[emitted.reloc_sites[site].ib_index] =
+            (emitted.reloc_sites[site].role == R300_RB2D_COPY_SLOT_SOURCE ? 0u : 1u) * 4u;
+      operations[index] = (struct r3v_native_rb2d_copy_operation){
+         .source_memory = &source, .destination_memory = &destination,
+         .segment_count = 1u, .source_buffer_bytes = QUALIFICATION_BYTES,
+         .destination_buffer_bytes = QUALIFICATION_BYTES,
+         .write_mask = masks[index], .byte_carrier = true,
+      };
+      operations[index].segments[0] = segments[index];
+   }
+   struct r3v_native_cmd_buffer cmd = {
+      .cell_kind = R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION,
+      .ib = ib, .ib_size_dwords = 2u * R300_RB2D_COPY_DWORDS(1u),
+      .references = references, .reference_count = 2u,
+      .rb2d_tiled_copy_configured = true,
+      .rb2d_copy_geometry = R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS,
+      .rb2d_copy_operations = operations, .rb2d_copy_operation_count = 2u,
+      .rb2d_copy_operation_capacity = 2u,
+   };
+   if (!r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
+      goto fail;
+   operations[1].segments[0].source_offset_bytes++;
+   if (r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
+      goto fail;
+   operations[1].segments[0].source_offset_bytes--;
+   operations[1].write_mask ^= 1u;
+   if (r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
+      goto fail;
+   operations[1].write_mask ^= 1u;
+   references[1].handle = references[0].handle;
+   if (r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
+      goto fail;
+   references[1].handle = destination.bo.handle;
+   r3v_native_cmd_buffer_release_ib(&cmd);
+   if (cmd.rb2d_copy_operations != NULL || cmd.rb2d_copy_operation_count != 0u ||
+       cmd.ib != NULL || cmd.references != NULL || cmd.ib_size_dwords != 0u)
+      return 1;
+   return 0;
+fail:
+   free(operations);
+   free(references);
+   free(ib);
+   return 1;
+}
+
+static int
 selftest(void)
 {
+   if (ordered_operations_selftest() != 0)
+      return 1;
    const struct r300_zb_tile_copy_request request = request_for(0u, 1u, 1u, 0u);
    uint32_t *ib = NULL;
    uint32_t ib_dwords = 0u;
@@ -272,8 +368,45 @@ selftest(void)
       cmd.rb2d_copy_destination_buffer_bytes = QUALIFICATION_BYTES;
       cmd.rb2d_copy_byte_carrier = true;
    }
-   if (!r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
+   cmd.rb2d_copy_operations = calloc(1u, sizeof(*cmd.rb2d_copy_operations));
+   if (cmd.rb2d_copy_operations == NULL) {
+      free(ib);
       return 1;
+   }
+   cmd.rb2d_copy_operation_count = 1u;
+   cmd.rb2d_copy_operation_capacity = 1u;
+   cmd.rb2d_copy_operations[0] = (struct r3v_native_rb2d_copy_operation){
+      .source_memory = &source,
+      .destination_memory = &destination,
+      .source_buffer_bytes = QUALIFICATION_BYTES,
+      .destination_buffer_bytes = QUALIFICATION_BYTES,
+      .write_mask = qualification_write_mask,
+      .byte_carrier = qualification_byte_copy,
+   };
+   if (qualification_byte_copy) {
+      cmd.rb2d_copy_operations[0].segment_count = 1u;
+      cmd.rb2d_copy_operations[0].segments[0] = qualification_byte_span;
+   } else {
+      struct r300_zb_tile_copy_plan tile_plan;
+      struct r300_rb2d_copy_segment segments[R300_RB2D_COPY_MAX_SEGMENTS];
+      struct r300_rb2d_copy_plan copy_plan;
+      if (r300_zb_tile_copy_plan_build(&request, &tile_plan) != R300_ZB_TILE_COPY_OK ||
+          r300_rb2d_copy_plan_from_zb_tile(
+             &tile_plan, QUALIFICATION_BYTES, QUALIFICATION_BYTES, false,
+             segments, &copy_plan) != R300_RB2D_COPY_OK) {
+         free(cmd.rb2d_copy_operations);
+         free(ib);
+         return 1;
+      }
+      cmd.rb2d_copy_operations[0].segment_count = copy_plan.segment_count;
+      memcpy(cmd.rb2d_copy_operations[0].segments, copy_plan.segments,
+             copy_plan.segment_count * sizeof(copy_plan.segments[0]));
+   }
+   if (!r3v_native_rb2d_tiled_copy_geometry_valid(&cmd)) {
+      free(cmd.rb2d_copy_operations);
+      free(ib);
+      return 1;
+   }
 
 #define REFUSES(statement)                                                   \
    do {                                                                      \
@@ -281,11 +414,14 @@ selftest(void)
       if (r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))                  \
          return 1;                                                           \
       cmd = valid;                                                           \
+      *cmd.rb2d_copy_operations = valid_operation;                          \
       memcpy(ib, pristine_ib, (size_t)ib_dwords * sizeof(*ib));              \
       references[0] = valid_references[0];                                   \
       references[1] = valid_references[1];                                   \
    } while (0)
    const struct r3v_native_cmd_buffer valid = cmd;
+   const struct r3v_native_rb2d_copy_operation valid_operation =
+      cmd.rb2d_copy_operations[0];
    const struct r3v_native_bo_reference valid_references[2] = {
       references[0], references[1]
    };
@@ -301,13 +437,19 @@ selftest(void)
    REFUSES(destination.bo.size--);
    destination.bo.size = QUALIFICATION_BYTES;
    REFUSES(cmd.rb2d_tiled_copy_configured = false);
-   REFUSES(cmd.rb2d_tiled_copy_write_mask ^= 1u);
+   REFUSES(cmd.rb2d_tiled_copy_write_mask ^= 1u;
+           cmd.rb2d_copy_operations[0].write_mask ^= 1u);
    if (qualification_byte_copy) {
-      REFUSES(cmd.rb2d_copy_segments[0].source_offset_bytes++);
-      REFUSES(cmd.rb2d_copy_segments[0].destination_offset_bytes++);
-      REFUSES(cmd.rb2d_copy_segments[0].byte_count++);
-      REFUSES(cmd.rb2d_copy_segment_count = 0);
-      REFUSES(cmd.rb2d_copy_byte_carrier = false);
+      REFUSES(cmd.rb2d_copy_segments[0].source_offset_bytes++;
+              cmd.rb2d_copy_operations[0].segments[0].source_offset_bytes++);
+      REFUSES(cmd.rb2d_copy_segments[0].destination_offset_bytes++;
+              cmd.rb2d_copy_operations[0].segments[0].destination_offset_bytes++);
+      REFUSES(cmd.rb2d_copy_segments[0].byte_count++;
+              cmd.rb2d_copy_operations[0].segments[0].byte_count++);
+      REFUSES(cmd.rb2d_copy_segment_count = 0;
+              cmd.rb2d_copy_operations[0].segment_count = 0);
+      REFUSES(cmd.rb2d_copy_byte_carrier = false;
+              cmd.rb2d_copy_operations[0].byte_carrier = false);
    } else {
       REFUSES(cmd.rb2d_tiled_copy_request.destination.macro_x ^= 1u);
    }
@@ -327,6 +469,7 @@ selftest(void)
       return 1;
 
    free(pristine_ib);
+   free(cmd.rb2d_copy_operations);
    free(ib);
    printf("r3v_native_rb2d_tiled_copy_qualification: selftest passed\n");
    return 0;

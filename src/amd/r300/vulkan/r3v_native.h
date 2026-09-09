@@ -165,6 +165,18 @@ enum r3v_native_rb2d_copy_geometry {
    R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS,
 };
 
+struct r3v_native_rb2d_copy_operation {
+   struct r3v_native_memory *source_memory;
+   struct r3v_native_memory *destination_memory;
+   struct r300_rb2d_copy_segment
+      segments[R300_RB2D_COPY_MAX_SEGMENTS];
+   uint32_t segment_count;
+   uint64_t source_buffer_bytes;
+   uint64_t destination_buffer_bytes;
+   uint32_t write_mask;
+   bool byte_carrier;
+};
+
 /* Deferred draw execution: vertex reads and the load-op clear happen at
  * queue submission, matching Vulkan's execution-time semantics, so the
  * recorded state names the sources by reference.  The application keeps
@@ -785,6 +797,9 @@ struct r3v_native_cmd_buffer {
    uint64_t rb2d_copy_source_buffer_bytes;
    uint64_t rb2d_copy_destination_buffer_bytes;
    bool rb2d_copy_byte_carrier;
+   struct r3v_native_rb2d_copy_operation *rb2d_copy_operations;
+   uint32_t rb2d_copy_operation_count;
+   uint32_t rb2d_copy_operation_capacity;
    bool zb_persistence_configured;
    enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
    struct r3v_native_memory *zb_persistence_depth_a;
