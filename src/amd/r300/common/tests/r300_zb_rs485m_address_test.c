@@ -104,6 +104,40 @@ check_bijection(void)
 }
 
 static void
+check_micro_inverse(void)
+{
+   unsigned storage_words = 0;
+   for (uint32_t pitch = 64; pitch <= 96; pitch += 32) {
+      for (uint32_t base = 2048; base <= 4096; base += 2048) {
+         struct r300_zb_depth_surface image = surface(pitch);
+         image.macrotile = R300_ZB_MACROTILE_LINEAR;
+         bool seen[96 * 66] = {false};
+         for (uint64_t offset = base; offset < base + pitch * 66u * 4u; offset += 4) {
+            struct r300_zb_depth_address_coordinate coordinate;
+            assert(image.address_resolver->coordinate(&image, base, 40000,
+                                                       offset, &coordinate) == 0);
+            assert(coordinate.x < pitch && coordinate.y < 66);
+            const unsigned index = coordinate.y * pitch + coordinate.x;
+            assert(!seen[index]);
+            seen[index] = true;
+            uint64_t result = UINT64_MAX;
+            const int status = r300_zb_depth_address_checked(
+               &image, base, 40000, coordinate.x, coordinate.y, &result);
+            if (coordinate.x < 64 && coordinate.y < 64) {
+               assert(coordinate.region == R300_ZB_DEPTH_ADDRESS_LOGICAL);
+               assert(status == 0 && result == offset);
+            } else {
+               assert(coordinate.region == R300_ZB_DEPTH_ADDRESS_PADDING);
+               assert(status != 0 && result == UINT64_MAX);
+            }
+            storage_words++;
+         }
+      }
+   }
+   assert(storage_words == 21120);
+}
+
+static void
 check_refusals(void)
 {
    struct r300_zb_depth_surface image = surface(64);
@@ -155,8 +189,9 @@ int main(void)
 {
    check_vectors();
    check_bijection();
+   check_micro_inverse();
    check_refusals();
    check_components();
-   puts("RS485M address: 34 vectors, 25600 storage words, packed masks PASS");
+   puts("RS485M address: 34 vectors, 25600 macro and 21120 micro storage words, packed masks PASS");
    return 0;
 }
