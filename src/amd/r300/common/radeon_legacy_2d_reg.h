@@ -110,6 +110,7 @@
 /* The destination datatype code DP_GUI_MASTER_CNTL carries at bit 8, which
  * r100_copy_blit writes as (RADEON_COLOR_FORMAT_ARGB8888 << 8). */
 #define RADEON_COLOR_FORMAT_ARGB8888 6u
+#define RADEON_GMC_DST_8BPP_RGB (7u << 8)
 /* Code 4 is RGB565, two bytes per pixel; r100_cs_2d_dst_cpp sizes it 2. */
 #define RADEON_COLOR_FORMAT_RGB565 4u
 

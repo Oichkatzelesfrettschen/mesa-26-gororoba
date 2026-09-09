@@ -338,7 +338,7 @@ test_short_carrier_spans(void)
    assert(words[23] == 3u);
    assert(words[25] == 7u);
    assert(words[27] == ((3u << 16) | 1u));
-   assert(words[9] == ((9u << 8) | (words[9] & ~0x0f00u)));
+   assert(words[9] == (RADEON_GMC_DST_8BPP_RGB | (words[9] & ~0x0f00u)));
 
    struct r300_rb2d_copy_ib before = ib;
    segment = (struct r300_rb2d_copy_segment){255u, 511u, 2u};
