@@ -15,7 +15,7 @@ main(void)
    const uint64_t mapped = 2048u + 32768u;
    struct r300_rb2d_copy_segment segment;
    assert(r300_zb_aspect_copy_plan(
-             surface, base, mapped, 0u, 0u, 0u, 256u, 64u * 256u,
+             surface, base, mapped, 0u, 0u, 0u, 0u, 0u, 256u, 64u * 256u,
              R300_ZB_ASPECT_COPY_DEPTH,
              R300_ZB_ASPECT_COPY_SURFACE_TO_BUFFER, &segment) ==
           R300_ZB_ASPECT_COPY_OK);
@@ -23,7 +23,7 @@ main(void)
    assert(segment.source_offset_bytes == 2049u);
 
    assert(r300_zb_aspect_copy_plan(
-             surface, base, mapped, 0u, 0u, 0u, 256u, 64u * 256u,
+             surface, base, mapped, 0u, 0u, 0u, 0u, 0u, 256u, 64u * 256u,
              R300_ZB_ASPECT_COPY_STENCIL,
              R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) ==
           R300_ZB_ASPECT_COPY_OK);
@@ -31,7 +31,7 @@ main(void)
    assert(segment.source_offset_bytes == 0u &&
           segment.destination_offset_bytes == 2048u);
    assert(r300_zb_aspect_copy_plan(
-             surface, base, mapped, 1u, 0u, 0u, 64u, 64u,
+             surface, base, mapped, 1u, 0u, 1u, 0u, 0u, 64u, 64u,
              R300_ZB_ASPECT_COPY_STENCIL,
              R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) ==
           R300_ZB_ASPECT_COPY_OK);
@@ -49,7 +49,7 @@ main(void)
       surface_bytes[10038] = 0x45;
       surface_bytes[10039] = 0x67;
       assert(r300_zb_aspect_copy_plan(
-                surface, base, sizeof(surface_bytes), 37, 21, 0, pitch,
+                surface, base, sizeof(surface_bytes), 37, 21, 37, 21, 0, pitch,
                 sizeof(buffer_bytes), depth ? R300_ZB_ASPECT_COPY_DEPTH :
                                              R300_ZB_ASPECT_COPY_STENCIL,
                 R300_ZB_ASPECT_COPY_SURFACE_TO_BUFFER, &segment) == 0);
@@ -65,7 +65,7 @@ main(void)
       }
       memset(surface_bytes, 0x5a, sizeof(surface_bytes));
       assert(r300_zb_aspect_copy_plan(
-                surface, base, sizeof(surface_bytes), 37, 21, 0, pitch,
+                surface, base, sizeof(surface_bytes), 37, 21, 37, 21, 0, pitch,
                 sizeof(buffer_bytes), depth ? R300_ZB_ASPECT_COPY_DEPTH :
                                              R300_ZB_ASPECT_COPY_STENCIL,
                 R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) == 0);
@@ -80,19 +80,31 @@ main(void)
          assert(surface_bytes[offset] == expected);
       }
    }
+   assert(r300_zb_aspect_copy_plan(
+             surface, base, mapped, 37, 21, 0, 0, 0, 4, 4,
+             R300_ZB_ASPECT_COPY_DEPTH,
+             R300_ZB_ASPECT_COPY_SURFACE_TO_BUFFER, &segment) == 0);
+   assert(segment.source_offset_bytes == 10037);
+   assert(segment.destination_offset_bytes == 0 && segment.byte_count == 3);
+   assert(r300_zb_aspect_copy_plan(
+             surface, base, mapped, 37, 21, 0, 0, 0, 1, 1,
+             R300_ZB_ASPECT_COPY_STENCIL,
+             R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) == 0);
+   assert(segment.source_offset_bytes == 0);
+   assert(segment.destination_offset_bytes == 10036 && segment.byte_count == 1);
    const struct r300_rb2d_copy_segment before = segment;
    assert(r300_zb_aspect_copy_plan(
-             surface, base, mapped, 64u, 0u, 0u, 256u, 64u * 256u,
+             surface, base, mapped, 64u, 0u, 64u, 0u, 0u, 256u, 64u * 256u,
              R300_ZB_ASPECT_COPY_DEPTH,
              R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) !=
           R300_ZB_ASPECT_COPY_OK);
    assert(r300_zb_aspect_copy_plan(
-             surface, base, mapped, 0u, 0u, 0u, 256u, 2u,
+             surface, base, mapped, 0u, 0u, 0u, 0u, 0u, 256u, 2u,
              R300_ZB_ASPECT_COPY_DEPTH,
              R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) !=
           R300_ZB_ASPECT_COPY_OK);
    assert(r300_zb_aspect_copy_plan(
-             surface, base, mapped, 0u, 0u, 0u, 256u, 64u * 256u,
+             surface, base, mapped, 0u, 0u, 0u, 0u, 0u, 256u, 64u * 256u,
              (enum r300_zb_aspect_copy_aspect)99,
              R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE, &segment) !=
           R300_ZB_ASPECT_COPY_OK);

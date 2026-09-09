@@ -11,7 +11,8 @@ enum r300_zb_aspect_copy_refusal
 r300_zb_aspect_copy_plan(
    const struct r300_zb_depth_surface *surface,
    uint64_t surface_base_bytes, uint64_t mapped_surface_bytes,
-   uint32_t x, uint32_t y, uint64_t buffer_offset_bytes,
+   uint32_t x, uint32_t y, uint32_t buffer_x, uint32_t buffer_y,
+   uint64_t buffer_offset_bytes,
    uint32_t buffer_pitch_bytes, uint64_t buffer_bytes,
    enum r300_zb_aspect_copy_aspect aspect,
    enum r300_zb_aspect_copy_direction direction,
@@ -23,7 +24,7 @@ r300_zb_aspect_copy_plan(
       return R300_ZB_ASPECT_COPY_REFUSE_INPUT;
    if (surface->depth_format != R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL ||
        surface->bytes_per_pixel != 4u || !surface->logical_pixel_addressing ||
-       buffer_pitch_bytes < (uint64_t)surface->width *
+       buffer_pitch_bytes < ((uint64_t)buffer_x + 1u) *
                               (aspect == R300_ZB_ASPECT_COPY_DEPTH ? 4u : 1u))
       return R300_ZB_ASPECT_COPY_REFUSE_FORMAT;
    if (aspect != R300_ZB_ASPECT_COPY_DEPTH &&
@@ -50,9 +51,9 @@ r300_zb_aspect_copy_plan(
        aspect_bytes > mapped_surface_bytes - surface_offset)
       return R300_ZB_ASPECT_COPY_REFUSE_SURFACE_BOUNDS;
 
-   const uint64_t row_offset = (uint64_t)y * buffer_pitch_bytes;
+   const uint64_t row_offset = (uint64_t)buffer_y * buffer_pitch_bytes;
    const uint64_t texel_offset =
-      (uint64_t)x * (aspect == R300_ZB_ASPECT_COPY_DEPTH ? 4u : 1u);
+      (uint64_t)buffer_x * (aspect == R300_ZB_ASPECT_COPY_DEPTH ? 4u : 1u);
    if (row_offset > UINT64_MAX - texel_offset ||
        buffer_offset_bytes > UINT64_MAX - row_offset - texel_offset ||
        buffer_offset_bytes + row_offset + texel_offset > buffer_bytes ||

@@ -31,11 +31,13 @@ enum r300_zb_aspect_copy_refusal {
 
 /* buffer_offset_bytes identifies the first byte of the aspect buffer:
  * X8_D24_UNORM_PACK32 for depth (the X byte is unused), or S8_UINT for
- * stencil. buffer_pitch_bytes is the corresponding row pitch. */
+ * stencil. buffer_pitch_bytes is the corresponding row pitch. Image x/y
+ * and buffer_x/buffer_y select independent origins within their layouts. */
 enum r300_zb_aspect_copy_refusal r300_zb_aspect_copy_plan(
    const struct r300_zb_depth_surface *surface,
    uint64_t surface_base_bytes, uint64_t mapped_surface_bytes,
-   uint32_t x, uint32_t y, uint64_t buffer_offset_bytes,
+   uint32_t x, uint32_t y, uint32_t buffer_x, uint32_t buffer_y,
+   uint64_t buffer_offset_bytes,
    uint32_t buffer_pitch_bytes, uint64_t buffer_bytes,
    enum r300_zb_aspect_copy_aspect aspect,
    enum r300_zb_aspect_copy_direction direction,
