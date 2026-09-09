@@ -412,6 +412,7 @@ r3v_native_cell_geometry_unfrozen(
       return input->read_domains != RADEON_GEM_DOMAIN_GTT ||
              input->write_domain != 0 || input->memory == NULL;
    }
+   case R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL:
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL: {
       /* The depth control binds three exact footprints: the vertex page
        * device-read, the color target device-written, and the depth
@@ -428,6 +429,23 @@ r3v_native_cell_geometry_unfrozen(
          &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR];
       const struct r3v_native_bo_reference *depth =
          &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH];
+      if (cmd_buffer->cell_kind ==
+          R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL) {
+         const struct r3v_native_memory *active_depth =
+            cmd_buffer->zb_persistence_ordinal ==
+                  R3V_NATIVE_ZB_PERSISTENCE_B
+               ? cmd_buffer->zb_persistence_depth_b
+               : cmd_buffer->zb_persistence_depth_a;
+         if (!cmd_buffer->zb_persistence_configured ||
+             cmd_buffer->zb_persistence_ordinal >
+                R3V_NATIVE_ZB_PERSISTENCE_A_FINAL ||
+             cmd_buffer->zb_persistence_depth_a == NULL ||
+             cmd_buffer->zb_persistence_depth_b == NULL ||
+             cmd_buffer->zb_persistence_depth_a ==
+                cmd_buffer->zb_persistence_depth_b ||
+             active_depth != depth->memory)
+            return true;
+      }
       if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
           vertex->write_domain != 0 || vertex->memory == NULL ||
           vertex->memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION)
@@ -467,9 +485,15 @@ r3v_native_cell_geometry_unfrozen(
           emitted_format != depth_surface->depth_format)
          return true;
       if (cmd_buffer->zb_depth_surface ==
-          R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
+         R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
          bool matches = false;
-         for (unsigned write_enabled = 0; write_enabled < 2; write_enabled++) {
+         const unsigned write_variants =
+            cmd_buffer->cell_kind ==
+                  R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL
+               ? 1u
+               : 2u;
+         for (unsigned write_enabled = 0; write_enabled < write_variants;
+              write_enabled++) {
             struct r300_zb_depth_control_ib expected;
             if (r300_zb_depth_tiled_validation_emit(write_enabled != 0,
                                                     &expected) != 0)
@@ -763,6 +787,75 @@ r3v_native_serial_semantic_identity_capture(
    identity->valid = true;
 }
 
+static bool
+r3v_native_cell_is_serial(enum r3v_native_cell_kind kind)
+{
+   return kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL ||
+          kind == R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
+}
+
+bool
+r3v_native_zb_persistence_identity_matches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal)
+{
+   if (!identity->valid || !cmd_buffer->zb_persistence_configured ||
+       cmd_buffer->zb_persistence_ordinal != ordinal ||
+       cmd_buffer->ib_size_dwords != identity->ib_size_dwords ||
+       strcmp(identity->ib_blake3, ib_digest) != 0 ||
+       cmd_buffer->reference_count != R300_ZB_DEPTH_CONTROL_SLOT_COUNT)
+      return false;
+   const struct r3v_native_memory *vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   const struct r3v_native_memory *color =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].memory;
+   const struct r3v_native_memory *active =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH].memory;
+   const struct r3v_native_memory *expected_active =
+      ordinal == R3V_NATIVE_ZB_PERSISTENCE_B ? identity->depth_b
+                                             : identity->depth_a;
+   if (vertex == NULL || color == NULL || identity->depth_a == NULL ||
+       identity->depth_b == NULL)
+      return false;
+   return vertex == identity->vertex && color == identity->color &&
+          cmd_buffer->zb_persistence_depth_a == identity->depth_a &&
+          cmd_buffer->zb_persistence_depth_b == identity->depth_b &&
+          active == expected_active &&
+          vertex->generation == identity->vertex_generation &&
+          color->generation == identity->color_generation &&
+          identity->depth_a->generation == identity->depth_a_generation &&
+          identity->depth_b->generation == identity->depth_b_generation &&
+          vertex->bo.handle == identity->vertex_handle &&
+          color->bo.handle == identity->color_handle &&
+          identity->depth_a->bo.handle == identity->depth_a_handle &&
+          identity->depth_b->bo.handle == identity->depth_b_handle;
+}
+
+void
+r3v_native_zb_persistence_identity_capture(
+   struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest)
+{
+   identity->ib_size_dwords = cmd_buffer->ib_size_dwords;
+   memcpy(identity->ib_blake3, ib_digest, sizeof(identity->ib_blake3));
+   identity->vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   identity->color =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].memory;
+   identity->depth_a = cmd_buffer->zb_persistence_depth_a;
+   identity->depth_b = cmd_buffer->zb_persistence_depth_b;
+   identity->vertex_generation = identity->vertex->generation;
+   identity->color_generation = identity->color->generation;
+   identity->depth_a_generation = identity->depth_a->generation;
+   identity->depth_b_generation = identity->depth_b->generation;
+   identity->vertex_handle = identity->vertex->bo.handle;
+   identity->color_handle = identity->color->bo.handle;
+   identity->depth_a_handle = identity->depth_a->bo.handle;
+   identity->depth_b_handle = identity->depth_b->bo.handle;
+   identity->valid = true;
+}
+
 /* Retains the semantic cell -- the IB and the command buffer's own
  * relocation list, before the completion reference folds in -- as
  * content-bound evidence: ib.bin and relocs.bin land atomically, and
@@ -788,6 +881,24 @@ r3v_native_queue_retention_dir(struct r3v_native_device *device,
                                const struct r3v_native_cmd_buffer *cmd_buffer,
                                char *storage, size_t size)
 {
+   if (cmd_buffer->cell_kind ==
+       R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL) {
+      static const char *const stage_names[] = {
+         "stage-0-a", "stage-1-b", "stage-2-a",
+      };
+      if (cmd_buffer->zb_persistence_ordinal >= ARRAY_SIZE(stage_names) ||
+          cmd_buffer->zb_persistence_ordinal !=
+             device->serial_submissions_consumed)
+         return NULL;
+      const int length = snprintf(
+         storage, size, "%s/%s", device->manifest_dir,
+         stage_names[cmd_buffer->zb_persistence_ordinal]);
+      if (length < 0 || (size_t)length >= size)
+         return NULL;
+      if (mkdir(storage, 0755) != 0 && errno != EEXIST)
+         return NULL;
+      return storage;
+   }
    if (!cmd_buffer->measurement_bound)
       return device->manifest_dir;
    const int length =
@@ -1425,17 +1536,24 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    facts.nonmaximum_extent =
             r3v_native_cell_geometry_unfrozen(cmd_buffer);
    facts.serial_submissions_consumed = device->serial_submissions_consumed;
+   facts.persistence_ordinal = cmd_buffer->zb_persistence_ordinal;
    facts.burst_recorded_draws = cmd_buffer->burst_draws;
 
-   const bool serial_kind =
-      cmd_buffer->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+   const bool serial_kind = r3v_native_cell_is_serial(cmd_buffer->cell_kind);
+   const bool persistence_kind =
+      cmd_buffer->cell_kind ==
+      R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
    const bool serial_continuation =
       serial_kind && device->serial_submissions_consumed > 0;
    VkResult result = VK_SUCCESS;
    if (serial_continuation &&
-       !r3v_native_serial_semantic_identity_matches(
-          &device->serial_semantic_identity, cmd_buffer, ib_digest,
-          &prepared->relocs)) {
+       !(persistence_kind
+            ? r3v_native_zb_persistence_identity_matches(
+                 &device->zb_persistence_identity, cmd_buffer, ib_digest,
+                 device->serial_submissions_consumed)
+            : r3v_native_serial_semantic_identity_matches(
+                 &device->serial_semantic_identity, cmd_buffer, ib_digest,
+                 &prepared->relocs))) {
       result = vk_errorf(
          device, VK_ERROR_DEVICE_LOST,
          "r3v-native: serial continuation changed the command-buffer or "
@@ -1460,8 +1578,17 @@ r3v_native_queue_prepare_submission(VkDevice _device,
       goto prepare_fail;
    }
 
-   if (!(serial_kind && device->serial_submissions_consumed > 0) &&
-       r3v_native_queue_write_manifest(device, device->manifest_dir,
+   char retention_storage[1024];
+   const char *retention_dir = persistence_kind
+      ? r3v_native_queue_retention_dir(device, cmd_buffer, retention_storage,
+                                       sizeof(retention_storage))
+      : device->manifest_dir;
+   if (retention_dir == NULL) {
+      result = vk_error(device, VK_ERROR_DEVICE_LOST);
+      goto prepare_fail;
+   }
+   if ((persistence_kind || !serial_continuation) &&
+       r3v_native_queue_write_manifest(device, retention_dir,
                                        cmd_buffer->ib,
                                        cmd_buffer->ib_size_dwords,
                                        &prepared->relocs) != 0) {
@@ -1470,10 +1597,15 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                          "failed; refusing before any ioctl");
       goto prepare_fail;
    }
-   if (serial_kind && !serial_continuation)
-      r3v_native_serial_semantic_identity_capture(
-         &device->serial_semantic_identity, cmd_buffer, ib_digest,
-         &prepared->relocs);
+   if (serial_kind && !serial_continuation) {
+      if (persistence_kind)
+         r3v_native_zb_persistence_identity_capture(
+            &device->zb_persistence_identity, cmd_buffer, ib_digest);
+      else
+         r3v_native_serial_semantic_identity_capture(
+            &device->serial_semantic_identity, cmd_buffer, ib_digest,
+            &prepared->relocs);
+   }
 
    if (radeon_drm_vk_completion_init(&device->drm, &prepared->completion) !=
        0) {
@@ -1504,7 +1636,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                           true);
 
    if (r3v_native_queue_write_submit_object(
-          device, device->manifest_dir, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+          device, retention_dir, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
           &prepared->relocs, &prepared->cs, cmd_buffer->references,
           prepared->reference_indices, cmd_buffer->reference_count,
           prepared->completion_index, prepared->completion.bo.handle,
@@ -1953,9 +2085,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       facts.platform_id = r3v_native_arming_platform(device);
       facts.pci_vendor_id = device->pdevice->pci_vendor_id;
       facts.pci_device_id = device->pdevice->pci_device_id;
-      const bool serial_kind =
+      const bool serial_kind = r3v_native_cell_is_serial(cmd_buffer->cell_kind);
+      const bool persistence_kind =
          cmd_buffer->cell_kind ==
-         R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+         R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
       const bool serial_continuation =
          serial_kind && device->serial_submissions_consumed > 0;
       if (device->submit_hazard_accepted) {
@@ -1992,6 +2125,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          facts.measurement_session_active = cmd_buffer->measurement_bound;
          facts.serial_submissions_consumed =
             device->serial_submissions_consumed;
+         facts.persistence_ordinal = cmd_buffer->zb_persistence_ordinal;
          facts.burst_recorded_draws = cmd_buffer->burst_draws;
 
          /* The serial kind admits its own token within the declared
@@ -2011,9 +2145,13 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
 
          if (serial_continuation &&
-             !r3v_native_serial_semantic_identity_matches(
-                &device->serial_semantic_identity, cmd_buffer, ib_digest,
-                &relocs)) {
+             !(persistence_kind
+                  ? r3v_native_zb_persistence_identity_matches(
+                       &device->zb_persistence_identity, cmd_buffer, ib_digest,
+                       device->serial_submissions_consumed)
+                  : r3v_native_serial_semantic_identity_matches(
+                       &device->serial_semantic_identity, cmd_buffer, ib_digest,
+                       &relocs))) {
             free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
             return vk_errorf(
@@ -2044,7 +2182,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             R3V_MEASUREMENT_SESSION_MAX_CASES &&
          device->measurement_case_retained[cmd_buffer->measurement_case_index];
       const bool semantic_cell_retained =
-         (serial_kind && device->serial_submissions_consumed > 0) ||
+         (serial_kind && !persistence_kind &&
+          device->serial_submissions_consumed > 0) ||
          measurement_case_retained;
       /* Resolved for the writers that will run: the semantic manifest below
        * and the submit object further down.  A campaign's case creates its
@@ -2101,10 +2240,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
       if (serial_kind && !serial_continuation &&
-          device->submit_hazard_accepted)
-         r3v_native_serial_semantic_identity_capture(
-            &device->serial_semantic_identity, cmd_buffer, ib_digest,
-            &relocs);
+          device->submit_hazard_accepted) {
+         if (persistence_kind)
+            r3v_native_zb_persistence_identity_capture(
+               &device->zb_persistence_identity, cmd_buffer, ib_digest);
+         else
+            r3v_native_serial_semantic_identity_capture(
+               &device->serial_semantic_identity, cmd_buffer, ib_digest,
+               &relocs);
+      }
 
       /* Finite completion: a 4-byte write-domain BO rides the relocation
        * chunk, the kernel fences it at submit, and the bounded
@@ -2450,8 +2594,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: one-shot disarm failed; refusing "
                           "before the ioctl");
       }
-      if (cmd_buffer->cell_kind ==
-          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL) {
+      if (serial_kind) {
          device->serial_submissions_consumed++;
       }
 

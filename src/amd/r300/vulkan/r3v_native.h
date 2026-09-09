@@ -764,6 +764,10 @@ struct r3v_native_cmd_buffer {
     * allocation, so the shape the recorder admitted is the shape the
     * predicate judges. */
    enum r3v_native_zb_depth_surface zb_depth_surface;
+   bool zb_persistence_configured;
+   enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
+   struct r3v_native_memory *zb_persistence_depth_a;
+   struct r3v_native_memory *zb_persistence_depth_b;
    /* The declared experiment and arm a recorded discovery cell carries,
     * meaningful exactly when cell_kind is
     * R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY.  The discovery recorder is
@@ -932,6 +936,32 @@ struct r3v_native_serial_semantic_identity {
    char ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
    char relocs_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
 };
+
+struct r3v_native_zb_persistence_identity {
+   bool valid;
+   uint32_t ib_size_dwords;
+   char ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
+   struct r3v_native_memory *vertex;
+   struct r3v_native_memory *color;
+   struct r3v_native_memory *depth_a;
+   struct r3v_native_memory *depth_b;
+   uint64_t vertex_generation;
+   uint64_t color_generation;
+   uint64_t depth_a_generation;
+   uint64_t depth_b_generation;
+   uint32_t vertex_handle;
+   uint32_t color_handle;
+   uint32_t depth_a_handle;
+   uint32_t depth_b_handle;
+};
+
+bool r3v_native_zb_persistence_identity_matches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal);
+void r3v_native_zb_persistence_identity_capture(
+   struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest);
 
 /* Compares one serial continuation with the semantic cell captured by the
  * first admission.  The queue uses the same predicate before retention and
@@ -1102,6 +1132,7 @@ struct r3v_native_device {
     * command buffer, IB bytes, and relocation bytes. */
    uint32_t serial_submissions_consumed;
    struct r3v_native_serial_semantic_identity serial_semantic_identity;
+   struct r3v_native_zb_persistence_identity zb_persistence_identity;
    /* The production path leaves this NULL and collects host facts.  The
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
@@ -2234,6 +2265,12 @@ VkResult r3v_native_record_zb_tiled_validation(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
    const uint32_t vertices[24], bool depth_write);
+
+VkResult r3v_native_record_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB, const uint32_t vertices[24],
+   enum r3v_native_zb_persistence_ordinal ordinal);
 
 /* Records the depth control against the Z16 linear surface. */
 VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,

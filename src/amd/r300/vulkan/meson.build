@@ -1431,6 +1431,19 @@ test(
   suite : ['r3v'],
 )
 
+r3v_native_zb_persistence_identity_test = executable(
+  'r3v_native_zb_persistence_identity_test',
+  files('tests/r3v_native_zb_persistence_identity_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-zb-persistence-identity',
+     r3v_native_zb_persistence_identity_test, suite : ['r3v'])
+
 # Hardware execution is explicit; the registered test uses CPU fixtures only.
 r3v_native_zb_tiled_validation = executable(
   'r3v_native_zb_tiled_validation',
@@ -1446,6 +1459,9 @@ r3v_native_zb_tiled_validation = executable(
 )
 test('r3v-native-zb-tiled-validation-fixtures',
      r3v_native_zb_tiled_validation, args : ['--selftest'], suite : ['r3v'])
+test('r3v-native-zb-persistence-prepare',
+     r3v_native_zb_tiled_validation,
+     args : ['unused-evidence', '--persistence', '--prepare'], suite : ['r3v'])
 
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',

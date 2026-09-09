@@ -91,6 +91,9 @@ enum r3v_native_cell_kind {
     * with the depth surface's read-write GTT relocation.
     */
    R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL,
+   /* Three read-only tiled-depth submissions over two predeclared images in
+    * the exact A, B, A order. */
+   R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL,
    /* The depth address-discovery cell: one covering primitive confined
     * by the scissor to a single logical pixel, over a uniformly
     * initialized depth surface whose physical byte for that pixel is
@@ -228,6 +231,7 @@ struct r3v_native_arming_facts {
     */
    uint32_t serial_authorized_submissions;
    uint32_t serial_submissions_consumed;
+   uint32_t persistence_ordinal;
    /* Burst authority: the exact-value declared member count
     * (R3V_NATIVE_AUTHORIZED_BURST_DRAWS, decimal 1 through 64; 0 is
     * undeclared or malformed and refuses the burst kind), and the
@@ -241,6 +245,13 @@ struct r3v_native_arming_facts {
 };
 
 #define R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS 64u
+#define R3V_NATIVE_ZB_PERSISTENCE_SUBMISSIONS 3u
+
+enum r3v_native_zb_persistence_ordinal {
+   R3V_NATIVE_ZB_PERSISTENCE_A_FIRST,
+   R3V_NATIVE_ZB_PERSISTENCE_B,
+   R3V_NATIVE_ZB_PERSISTENCE_A_FINAL,
+};
 #define R3V_NATIVE_ARMING_BURST_MAX_DRAWS 64u
 
 /* The authorized attended-run board: the Dell Vostro 1000 RS485M

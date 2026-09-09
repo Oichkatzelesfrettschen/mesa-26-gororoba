@@ -3167,6 +3167,37 @@ r3v_native_record_zb_tiled_validation(
    return VK_SUCCESS;
 }
 
+VkResult
+r3v_native_record_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB, const uint32_t vertices[24],
+   enum r3v_native_zb_persistence_ordinal ordinal)
+{
+   VK_FROM_HANDLE(r3v_native_memory, depth_a, depthMemoryA);
+   VK_FROM_HANDLE(r3v_native_memory, depth_b, depthMemoryB);
+   const uint32_t depth_bytes = r3v_native_zb_depth_surface_bytes(
+      R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL);
+   if (depth_a == NULL || depth_b == NULL || depth_a == depth_b ||
+       depth_a->bo.handle == depth_b->bo.handle ||
+       depth_a->bo.size != depth_bytes || depth_b->bo.size != depth_bytes ||
+       ordinal > R3V_NATIVE_ZB_PERSISTENCE_A_FINAL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   const VkDeviceMemory active_depth =
+      ordinal == R3V_NATIVE_ZB_PERSISTENCE_B ? depthMemoryB : depthMemoryA;
+   VkResult result = r3v_native_record_zb_tiled_validation(
+      commandBuffer, vertexMemory, colorMemory, active_depth, vertices, false);
+   if (result != VK_SUCCESS)
+      return result;
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
+   cmd_buffer->zb_persistence_configured = true;
+   cmd_buffer->zb_persistence_ordinal = ordinal;
+   cmd_buffer->zb_persistence_depth_a = depth_a;
+   cmd_buffer->zb_persistence_depth_b = depth_b;
+   return VK_SUCCESS;
+}
+
 const struct r300_zb_depth_discovery_scenario *
 r3v_native_zb_discovery_scenario_descriptor(
    enum r3v_native_zb_discovery_scenario selection)

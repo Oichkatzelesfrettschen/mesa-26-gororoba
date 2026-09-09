@@ -377,6 +377,34 @@ test_serial_bound_predicate(void)
           R3V_NATIVE_ARMING_ALREADY_ATTEMPTED);
 }
 
+static void
+test_zb_persistence_exact_sequence(void)
+{
+   struct r3v_native_arming_facts facts = armed_facts();
+   facts.cell_kind = R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
+
+   facts.serial_authorized_submissions = 2;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED);
+   facts.serial_authorized_submissions = R3V_NATIVE_ZB_PERSISTENCE_SUBMISSIONS;
+   assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+
+   facts.attempt_token_present = true;
+   facts.serial_submissions_consumed = 1;
+   facts.persistence_ordinal = R3V_NATIVE_ZB_PERSISTENCE_B;
+   assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+   facts.persistence_ordinal = R3V_NATIVE_ZB_PERSISTENCE_A_FINAL;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED);
+
+   facts.serial_submissions_consumed = 2;
+   facts.persistence_ordinal = R3V_NATIVE_ZB_PERSISTENCE_A_FINAL;
+   assert(r3v_native_arming_evaluate(&facts) == R3V_NATIVE_ARMING_ARMED);
+   facts.serial_submissions_consumed = 3;
+   assert(r3v_native_arming_evaluate(&facts) ==
+          R3V_NATIVE_ARMING_SERIAL_BOUND_EXHAUSTED);
+}
+
 /* The env spelling parses as an exact decimal: 1..64 admits, and empty,
  * zero, over-bound, sign, leading-zero, and trailing-byte spellings all
  * collect as undeclared.
@@ -545,6 +573,7 @@ main(void)
    test_attempt_token_path_budget();
    test_disarm_is_one_shot();
    test_serial_bound_predicate();
+   test_zb_persistence_exact_sequence();
    test_serial_env_parse();
    test_burst_draws_predicate();
    test_burst_env_parse();

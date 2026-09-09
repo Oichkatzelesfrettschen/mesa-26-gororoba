@@ -206,6 +206,22 @@ fill_depth_image(uint8_t bytes[DEPTH_BYTES], uint32_t pattern,
    return true;
 }
 
+static bool
+fill_depth_image_codes(uint8_t bytes[DEPTH_BYTES], uint32_t pattern,
+                       uint32_t low_code, uint32_t high_code)
+{
+   if (!fill_depth_image(bytes, pattern, MODE_READ))
+      return false;
+   for (uint32_t slot = 0; slot < STORAGE_WORDS; slot++) {
+      const uint32_t offset = DEPTH_BASE + slot * 4u;
+      const uint32_t word = load_word(bytes, offset);
+      const uint32_t depth = word >> 8;
+      const uint32_t replacement = depth == DEPTH_HIGH ? high_code : low_code;
+      store_word(bytes, offset, (replacement << 8) | (word & 0xffu));
+   }
+   return true;
+}
+
 static void
 fill_vertices(enum run_mode mode, uint32_t vertices[24])
 {
@@ -462,11 +478,261 @@ run_selftest(void)
    return 0;
 }
 
+static int
+run_persistence(const char *evidence_dir, bool prepare)
+{
+   uint8_t initial_a[DEPTH_BYTES];
+   uint8_t initial_b[DEPTH_BYTES];
+   uint32_t vertices[24];
+   if (!fill_depth_image_codes(initial_a, 2u, 0x200000u, 0x600000u) ||
+       !fill_depth_image_codes(initial_b, 19u, 0x100000u, 0x700000u))
+      return 2;
+   fill_vertices(MODE_READ, vertices);
+   struct r300_zb_depth_control_ib reference;
+   if (r300_zb_depth_tiled_validation_emit(false, &reference) != 0 ||
+       r300_zb_depth_control_validate_reloc_sites(&reference) != 0)
+      return 2;
+   char ib_digest[65];
+   char a_digest[65];
+   char b_digest[65];
+   char vertex_digest[65];
+   r300_triangle_ib_digest_hex(reference.ib, reference.ib_size_dwords,
+                               ib_digest);
+   blake3_hex(initial_a, sizeof(initial_a), a_digest);
+   blake3_hex(initial_b, sizeof(initial_b), b_digest);
+   blake3_hex(vertices, sizeof(vertices), vertex_digest);
+   printf("persistence_sequence=A2,B19,A2\nib_dwords=%u\nib_blake3=%s\n"
+          "initial_a_blake3=%s\ninitial_b_blake3=%s\nvertex_blake3=%s\n",
+          reference.ib_size_dwords, ib_digest, a_digest, b_digest,
+          vertex_digest);
+   r300_zb_depth_control_release(&reference);
+   if (prepare) {
+      fflush(stdout);
+      return 0;
+   }
+
+   const char *serial = getenv("R3V_NATIVE_AUTHORIZED_SERIAL_SUBMISSIONS");
+   const char *declared = getenv("R3V_NATIVE_MANIFEST_DIR");
+   const char *preload = getenv("LD_PRELOAD");
+   if (serial == NULL || strcmp(serial, "3") != 0 ||
+       declared == NULL || declared[0] == '\0' ||
+       !same_directory(declared, evidence_dir) ||
+       (preload != NULL && preload[0] != '\0'))
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+
+   PFN_vkCreateInstance create_instance = (PFN_vkCreateInstance)
+      vk_icdGetInstanceProcAddr(NULL, "vkCreateInstance");
+   if (create_instance == NULL)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   VkInstance instance = VK_NULL_HANDLE;
+   VkResult result = create_instance(&(VkInstanceCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}, NULL, &instance);
+   if (result != VK_SUCCESS)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)
+      vk_icdGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices");
+   PFN_vkGetPhysicalDeviceProperties get_properties =
+      (PFN_vkGetPhysicalDeviceProperties)vk_icdGetInstanceProcAddr(
+         instance, "vkGetPhysicalDeviceProperties");
+   PFN_vkCreateDevice create_device = (PFN_vkCreateDevice)
+      vk_icdGetInstanceProcAddr(instance, "vkCreateDevice");
+   PFN_vkGetDeviceProcAddr get_device_proc_addr = (PFN_vkGetDeviceProcAddr)
+      vk_icdGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
+   PFN_vkDestroyInstance destroy_instance = (PFN_vkDestroyInstance)
+      vk_icdGetInstanceProcAddr(instance, "vkDestroyInstance");
+   if (!enumerate || !get_properties || !create_device ||
+       !get_device_proc_addr || !destroy_instance)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   uint32_t physical_count = 1;
+   VkPhysicalDevice physical = VK_NULL_HANDLE;
+   result = enumerate(instance, &physical_count, &physical);
+   if ((result != VK_SUCCESS && result != VK_INCOMPLETE) ||
+       physical_count != 1 || physical == VK_NULL_HANDLE)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   VkPhysicalDeviceProperties properties;
+   get_properties(physical, &properties);
+   if (properties.vendorID != R3V_NATIVE_ARMING_PCI_VENDOR ||
+       properties.deviceID != R3V_NATIVE_ARMING_PCI_DEVICE)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   const float priority = 1.0f;
+   VkDevice device = VK_NULL_HANDLE;
+   result = create_device(physical, &(VkDeviceCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      .queueCreateInfoCount = 1,
+      .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+         .queueFamilyIndex = 0, .queueCount = 1,
+         .pQueuePriorities = &priority}}, NULL, &device);
+   if (result != VK_SUCCESS)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+
+#define PERSISTENCE_DEVICE_PROC(type, variable, name)                         \
+   type variable = (type)get_device_proc_addr(device, name)
+   PERSISTENCE_DEVICE_PROC(PFN_vkAllocateMemory, allocate_memory,
+                           "vkAllocateMemory");
+   PERSISTENCE_DEVICE_PROC(PFN_vkFreeMemory, free_memory, "vkFreeMemory");
+   PERSISTENCE_DEVICE_PROC(PFN_vkMapMemory, map_memory, "vkMapMemory");
+   PERSISTENCE_DEVICE_PROC(PFN_vkGetDeviceQueue, get_queue,
+                           "vkGetDeviceQueue");
+   PERSISTENCE_DEVICE_PROC(PFN_vkCreateCommandPool, create_pool,
+                           "vkCreateCommandPool");
+   PERSISTENCE_DEVICE_PROC(PFN_vkDestroyCommandPool, destroy_pool,
+                           "vkDestroyCommandPool");
+   PERSISTENCE_DEVICE_PROC(PFN_vkAllocateCommandBuffers, allocate_commands,
+                           "vkAllocateCommandBuffers");
+   PERSISTENCE_DEVICE_PROC(PFN_vkBeginCommandBuffer, begin_command,
+                           "vkBeginCommandBuffer");
+   PERSISTENCE_DEVICE_PROC(PFN_vkEndCommandBuffer, end_command,
+                           "vkEndCommandBuffer");
+   PERSISTENCE_DEVICE_PROC(PFN_vkQueueSubmit, queue_submit, "vkQueueSubmit");
+   PERSISTENCE_DEVICE_PROC(PFN_vkDestroyDevice, destroy_device,
+                           "vkDestroyDevice");
+#undef PERSISTENCE_DEVICE_PROC
+   if (!allocate_memory || !free_memory || !map_memory || !get_queue ||
+       !create_pool || !destroy_pool || !allocate_commands || !begin_command ||
+       !end_command || !queue_submit || !destroy_device)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+
+   struct allocation {
+      VkDeviceSize size;
+      VkDeviceMemory memory;
+   } allocations[4] = {{VERTEX_BYTES, VK_NULL_HANDLE},
+                       {COLOR_BYTES, VK_NULL_HANDLE},
+                       {DEPTH_BYTES, VK_NULL_HANDLE},
+                       {DEPTH_BYTES, VK_NULL_HANDLE}};
+   for (unsigned index = 0; index < 4; index++) {
+      result = allocate_memory(device, &(VkMemoryAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+         .allocationSize = allocations[index].size, .memoryTypeIndex = 0},
+         NULL, &allocations[index].memory);
+      if (result != VK_SUCCESS)
+         return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   VkCommandPool pool = VK_NULL_HANDLE;
+   result = create_pool(device, &(VkCommandPoolCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .queueFamilyIndex = 0}, NULL, &pool);
+   VkCommandBuffer commands[3] = {VK_NULL_HANDLE};
+   if (result == VK_SUCCESS)
+      result = allocate_commands(device, &(VkCommandBufferAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+         .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+         .commandBufferCount = 3}, commands);
+   for (uint32_t ordinal = 0; result == VK_SUCCESS && ordinal < 3; ordinal++) {
+      result = begin_command(commands[ordinal], &(VkCommandBufferBeginInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO});
+      if (result == VK_SUCCESS)
+         result = r3v_native_record_zb_tiled_persistence(
+            commands[ordinal], allocations[0].memory, allocations[1].memory,
+            allocations[2].memory, allocations[3].memory, vertices,
+            (enum r3v_native_zb_persistence_ordinal)ordinal);
+      if (result == VK_SUCCESS)
+         result = end_command(commands[ordinal]);
+   }
+   if (result != VK_SUCCESS)
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+
+   void *color_map = NULL;
+   void *depth_a_map = NULL;
+   void *depth_b_map = NULL;
+   if (map_memory(device, allocations[1].memory, 0, VK_WHOLE_SIZE, 0,
+                  &color_map) != VK_SUCCESS || !color_map ||
+       map_memory(device, allocations[2].memory, 0, VK_WHOLE_SIZE, 0,
+                  &depth_a_map) != VK_SUCCESS || !depth_a_map ||
+       map_memory(device, allocations[3].memory, 0, VK_WHOLE_SIZE, 0,
+                  &depth_b_map) != VK_SUCCESS || !depth_b_map)
+      return finish(OUTCOME_RETENTION_FAILURE);
+   memcpy(depth_a_map, initial_a, DEPTH_BYTES);
+   memcpy(depth_b_map, initial_b, DEPTH_BYTES);
+   if (r3v_native_evidence_write_file(evidence_dir, "depth_a_before.bin",
+                                      initial_a, DEPTH_BYTES) != 0 ||
+       r3v_native_evidence_write_file(evidence_dir, "depth_b_before.bin",
+                                      initial_b, DEPTH_BYTES) != 0)
+      return finish(OUTCOME_RETENTION_FAILURE);
+
+   VkQueue queue = VK_NULL_HANDLE;
+   get_queue(device, 0, 0, &queue);
+   enum outcome outcome = OUTCOME_PASS;
+   static const char *const stage_names[] = {
+      "stage-0-a", "stage-1-b", "stage-2-a",
+   };
+   static const uint32_t patterns[] = {2u, 19u, 2u};
+   for (uint32_t ordinal = 0; ordinal < 3; ordinal++) {
+      for (uint32_t pixel = 0; pixel < COLOR_BYTES / 4u; pixel++)
+         ((uint32_t *)color_map)[pixel] = R300_TRIANGLE_COLOR_SENTINEL;
+      result = queue_submit(queue, 1, &(VkSubmitInfo){
+         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+         .pCommandBuffers = &commands[ordinal]}, VK_NULL_HANDLE);
+      const enum r3v_native_queue_status queue_status =
+         r3v_native_queue_submission_status(device);
+      char stage_dir[PATH_MAX];
+      const int stage_length = snprintf(stage_dir, sizeof(stage_dir), "%s/%s",
+                                        evidence_dir, stage_names[ordinal]);
+      if (stage_length < 0 || (size_t)stage_length >= sizeof(stage_dir) ||
+          r3v_native_evidence_write_file(stage_dir, "color_after.bin",
+                                         color_map, COLOR_BYTES) != 0 ||
+          r3v_native_evidence_write_file(stage_dir, "depth_a_after.bin",
+                                         depth_a_map, DEPTH_BYTES) != 0 ||
+          r3v_native_evidence_write_file(stage_dir, "depth_b_after.bin",
+                                         depth_b_map, DEPTH_BYTES) != 0)
+         return finish(OUTCOME_RETENTION_FAILURE);
+      uint8_t bits[PIXELS / 8u];
+      uint32_t colored, color_mismatches, a_mismatches, b_mismatches;
+      bool color_containment, a_containment, b_containment;
+      const bool color_exact = classify_color(
+         color_map, patterns[ordinal], MODE_READ, bits, &colored,
+         &color_mismatches, &color_containment);
+      const bool a_exact = classify_depth(initial_a, depth_a_map, 2u, MODE_READ,
+         &a_mismatches, &a_containment);
+      const bool b_exact = classify_depth(initial_b, depth_b_map, 19u,
+         MODE_READ, &b_mismatches, &b_containment);
+      char outcome_json[768];
+      const int outcome_length = snprintf(
+         outcome_json, sizeof(outcome_json),
+         "{\n  \"schema\": \"r3v-native-zb-tiled-persistence-stage/1\",\n"
+         "  \"ordinal\": %u,\n  \"image\": \"%c\",\n"
+         "  \"pattern\": %u,\n  \"submit_result\": %d,\n"
+         "  \"queue_status\": \"%s\",\n  \"color_exact\": %s,\n"
+         "  \"depth_a_exact\": %s,\n  \"depth_b_exact\": %s\n}\n",
+         ordinal, ordinal == 1 ? 'B' : 'A', patterns[ordinal], result,
+         r3v_native_queue_status_name(queue_status),
+         color_exact ? "true" : "false", a_exact ? "true" : "false",
+         b_exact ? "true" : "false");
+      if (outcome_length <= 0 ||
+          (size_t)outcome_length >= sizeof(outcome_json) ||
+          r3v_native_evidence_write_file(stage_dir, "outcome.json",
+             outcome_json, (size_t)outcome_length) != 0)
+         return finish(OUTCOME_RETENTION_FAILURE);
+      if (color_containment || a_containment || b_containment)
+         outcome = OUTCOME_CONTAINMENT_FAILURE;
+      else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE)
+         outcome = OUTCOME_COMPLETION_FAILURE;
+      else if (result != VK_SUCCESS ||
+               queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED)
+         outcome = OUTCOME_SUBMISSION_REFUSED;
+      else if (queue_status != R3V_NATIVE_QUEUE_STATUS_COMPLETED ||
+               !color_exact || !a_exact || !b_exact)
+         outcome = OUTCOME_FAILED;
+      if (outcome != OUTCOME_PASS)
+         break;
+   }
+
+   destroy_pool(device, pool, NULL);
+   for (unsigned index = 0; index < 4; index++)
+      free_memory(device, allocations[index].memory, NULL);
+   destroy_device(device, NULL);
+   destroy_instance(instance, NULL);
+   return finish(outcome);
+}
+
 int
 main(int argc, char **argv)
 {
    if (argc == 2 && strcmp(argv[1], "--selftest") == 0)
       return run_selftest();
+   if ((argc == 3 || argc == 4) && strcmp(argv[2], "--persistence") == 0 &&
+       (argc == 3 || strcmp(argv[3], "--prepare") == 0))
+      return run_persistence(argv[1], argc == 4);
    const bool prepare = argc == 5 && strcmp(argv[4], "--prepare") == 0;
    uint32_t pattern;
    enum run_mode mode;
@@ -475,8 +741,9 @@ main(int argc, char **argv)
       fprintf(stderr,
               "usage: %s <evidence-directory> <pattern 0..19> "
               "<read|write|nearfar|farnear> [--prepare]\n"
+              "       %s <evidence-directory> --persistence [--prepare]\n"
               "       %s --selftest\n",
-              argv[0], argv[0]);
+              argv[0], argv[0], argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
