@@ -1532,6 +1532,25 @@ test('r3v-native-zb-persistence-prepare',
      r3v_native_zb_tiled_validation,
      args : ['unused-evidence', '--persistence', '--prepare'], suite : ['r3v'])
 
+# Public Vulkan D24S8 attachment qualification.  The automatic cases stop at
+# the independent oracle and command-recording boundaries; live submissions
+# remain explicit attended executions.
+r3v_native_attended_public_zb_depth = executable(
+  'r3v_native_attended_public_zb_depth',
+  files('tests/r3v_native_attended_public_zb_depth.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+test('r3v-native-public-zb-depth-fixtures',
+     r3v_native_attended_public_zb_depth,
+     args : ['--selftest'], suite : ['r3v'])
+
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',
   files('tests/r3v_native_attended_zb_depth_control.c'),
@@ -3434,6 +3453,27 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-public-two-draw-record',
     r3v_native_attended_public_two_draw,
     args : [meson.current_build_dir(), '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  foreach public_depth_mode : ['read', 'write', 'nearfar', 'farnear']
+    test(
+      'r3v-native-public-zb-depth-record-' + public_depth_mode,
+      r3v_native_attended_public_zb_depth,
+      args : [meson.current_build_dir(), '2', public_depth_mode,
+              '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  test(
+    'r3v-native-public-zb-depth-record-persistence',
+    r3v_native_attended_public_zb_depth,
+    args : [meson.current_build_dir(), '--persistence', '--record-only'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
