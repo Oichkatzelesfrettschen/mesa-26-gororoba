@@ -17,7 +17,7 @@
 #include <assert.h>
 #include <string.h>
 
-/* Creation admits two families over one common shape -- 2D, one mip,
+/* Creation admits three families over one common shape -- 2D, one mip,
  * one layer, one sample, exclusive sharing. The render family carries
  * the color-attachment bit at either 32-bpp lane order, at any extent
  * inside R3V_NATIVE_RENDER_MAX_EXTENT per axis over the eight-pixel
@@ -29,7 +29,9 @@
  * transfer family carries transfer usage alone at any extent inside
  * 2048 per axis over a width-derived 64-byte-aligned pitch; its copies
  * execute through host mappings, and the attachment paths never see it
- * because usage without the color-attachment bit admits no view. Every
+ * because usage without an attachment bit admits no view. The depth family
+ * carries the RS485M D24S8 depth-stencil attachment bit with optional
+ * transfer bits and keeps its exact tiled contract. Every
  * other shape refuses with a cleared handle, so no image exists whose
  * lowering the implementation cannot record.
  */
@@ -161,9 +163,11 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
          .optimal_tiling = pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL,
          .compressed = false,
       };
+      const VkImageUsageFlags depth_usage =
+         transfer_usage | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
       if (pCreateInfo->flags != 0 ||
-          (pCreateInfo->usage & transfer_usage) == 0 ||
-          (pCreateInfo->usage & ~transfer_usage) != 0 ||
+          (pCreateInfo->usage & depth_usage) == 0 ||
+          (pCreateInfo->usage & ~depth_usage) != 0 ||
           r3v_native_depth_image_contract_init(&depth_info,
                                                &depth_contract) != 0)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
@@ -567,6 +571,15 @@ r3v_CreateImageView(VkDevice _device,
       layer_count_ok = resolved_layers == 1;
       break;
    }
+   const VkImageAspectFlags depth_aspects =
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+   const bool aspect_mask_ok =
+      image != NULL
+         ? image->depth_family
+              ? (range->aspectMask != 0 &&
+                 (range->aspectMask & ~depth_aspects) == 0)
+              : range->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT
+         : false;
    if (image == NULL ||
        (image->transfer_family &&
         (image->usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0) ||
@@ -581,7 +594,7 @@ r3v_CreateImageView(VkDevice _device,
                             VK_COMPONENT_SWIZZLE_B) ||
        !swizzle_is_identity(pCreateInfo->components.a,
                             VK_COMPONENT_SWIZZLE_A) ||
-       range->aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
+       !aspect_mask_ok ||
        range->baseMipLevel != 0 ||
        (range->levelCount != 1 &&
         range->levelCount != VK_REMAINING_MIP_LEVELS) ||
@@ -599,6 +612,7 @@ r3v_CreateImageView(VkDevice _device,
    view->image = image;
    view->base_array_layer = range->baseArrayLayer;
    view->layer_offset_bytes = image->layer_pitch_bytes * range->baseArrayLayer;
+   view->aspect_mask = range->aspectMask;
    view->view_type = view_type;
    *pView = r3v_native_image_view_to_handle(view);
    return VK_SUCCESS;

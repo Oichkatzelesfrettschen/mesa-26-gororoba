@@ -1626,6 +1626,11 @@ struct r3v_native_image_view {
     */
    uint32_t base_array_layer;
    uint32_t layer_offset_bytes;
+   /* The image aspects selected by the view.  Depth and stencil share the
+    * RS485M D24S8 word, while transfer and attachment validation still need
+    * to distinguish a combined view from a single-aspect view.
+    */
+   VkImageAspectFlags aspect_mask;
    /* The declared view type.  Creation admits every type the image's own
     * geometry supports; the executing routes admit the one-slice types,
     * VK_IMAGE_VIEW_TYPE_1D and VK_IMAGE_VIEW_TYPE_2D, since a TX program
