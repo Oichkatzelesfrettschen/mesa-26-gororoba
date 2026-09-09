@@ -240,6 +240,16 @@ r300_rb2d_copy_emit_into(const struct r300_rb2d_copy_plan *plan,
                          uint32_t *words, uint32_t capacity,
                          struct r300_rb2d_copy_ib *out)
 {
+   return r300_rb2d_copy_emit_masked_into(plan, UINT32_MAX, words, capacity,
+                                          out);
+}
+
+int
+r300_rb2d_copy_emit_masked_into(const struct r300_rb2d_copy_plan *plan,
+                                uint32_t mask, uint32_t *words,
+                                uint32_t capacity,
+                                struct r300_rb2d_copy_ib *out)
+{
    if (words == NULL || out == NULL ||
        r300_rb2d_copy_plan_check(plan) != R300_RB2D_COPY_OK)
       return -EINVAL;
@@ -267,10 +277,11 @@ r300_rb2d_copy_emit_into(const struct r300_rb2d_copy_plan *plan,
                    (RADEON_COLOR_FORMAT_ARGB8888 << 8) |
                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_S |
                    RADEON_DP_SRC_SOURCE_MEMORY |
-                   RADEON_GMC_CLR_CMP_CNTL_DIS | RADEON_GMC_WR_MSK_DIS);
+                   RADEON_GMC_CLR_CMP_CNTL_DIS |
+                   (mask == UINT32_MAX ? RADEON_GMC_WR_MSK_DIS : 0u));
    r300_pm4_reg(&builder, RADEON_DP_CNTL,
                 RADEON_DST_X_LEFT_TO_RIGHT | RADEON_DST_Y_TOP_TO_BOTTOM);
-   r300_pm4_reg(&builder, RADEON_DP_WRITE_MSK, UINT32_MAX);
+   r300_pm4_reg(&builder, RADEON_DP_WRITE_MSK, mask);
 
    for (uint32_t segment_index = 0; segment_index < plan->segment_count;
         segment_index++) {

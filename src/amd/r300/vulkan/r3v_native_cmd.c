@@ -42,6 +42,7 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
    free(cmd_buffer->references);
    cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    cmd_buffer->rb2d_tiled_copy_configured = false;
+   cmd_buffer->rb2d_tiled_copy_write_mask = UINT32_MAX;
    cmd_buffer->ib = NULL;
    cmd_buffer->ib_size_dwords = 0;
    cmd_buffer->window_space_ib = NULL;

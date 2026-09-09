@@ -299,10 +299,37 @@ test_register_authority(void)
    assert(RADEON_DP_SRC_SOURCE_MEMORY == 0x02000000u);
 }
 
+static void
+test_masked_streams(void)
+{
+   const struct r300_rb2d_copy_segment segment = {2048u, 4096u, 2048u};
+   const struct r300_rb2d_copy_plan plan = plan_for(&segment, 1u);
+   uint32_t full_words[WORD_CAPACITY], wrapped_words[WORD_CAPACITY];
+   struct r300_rb2d_copy_ib full, wrapped;
+   assert(r300_rb2d_copy_emit_into(&plan, wrapped_words, WORD_CAPACITY,
+                                   &wrapped) == 0);
+   assert(r300_rb2d_copy_emit_masked_into(&plan, UINT32_MAX, full_words,
+                                          WORD_CAPACITY, &full) == 0);
+   assert(full.ib_size_dwords == wrapped.ib_size_dwords &&
+          memcmp(full_words, wrapped_words,
+                 full.ib_size_dwords * sizeof(uint32_t)) == 0);
+   const uint32_t masks[] = {0u, 0xffu, 0xffffff00u, 0x12345678u};
+   for (unsigned mask_index = 0; mask_index < 4; mask_index++) {
+      uint32_t words[WORD_CAPACITY];
+      struct r300_rb2d_copy_ib ib;
+      assert(r300_rb2d_copy_emit_masked_into(&plan, masks[mask_index], words,
+                                             WORD_CAPACITY, &ib) == 0);
+      assert(words[13] == masks[mask_index]);
+      assert((words[9] & RADEON_GMC_WR_MSK_DIS) == 0u);
+      assert(r300_rb2d_copy_validate_reloc_sites(&ib) == 0);
+   }
+}
+
 int
 main(void)
 {
    test_register_authority();
+   test_masked_streams();
    test_parity_shapes();
    test_tile_adapter_all_parities();
    test_complete_overlap_rules();

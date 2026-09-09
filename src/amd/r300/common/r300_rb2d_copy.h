@@ -98,6 +98,11 @@ int r300_rb2d_copy_emit_into(const struct r300_rb2d_copy_plan *plan,
                              uint32_t *words, uint32_t capacity,
                              struct r300_rb2d_copy_ib *out);
 
+int r300_rb2d_copy_emit_masked_into(const struct r300_rb2d_copy_plan *plan,
+                                    uint32_t mask, uint32_t *words,
+                                    uint32_t capacity,
+                                    struct r300_rb2d_copy_ib *out);
+
 int r300_rb2d_copy_validate_reloc_sites(const struct r300_rb2d_copy_ib *ib);
 
 #endif /* R300_RB2D_COPY_H */

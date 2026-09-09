@@ -1497,6 +1497,14 @@ test('r3v-native-rb2d-tiled-copy-fixtures',
 test('r3v-native-rb2d-tiled-copy-prepare',
      r3v_native_rb2d_tiled_copy_qualification,
      args : ['--prepare'], suite : ['r3v'])
+foreach component : ['depth', 'stencil']
+  test('r3v-native-rb2d-tiled-copy-' + component + '-fixtures',
+       r3v_native_rb2d_tiled_copy_qualification,
+       args : ['--' + component + '-only', '--selftest'], suite : ['r3v'])
+  test('r3v-native-rb2d-tiled-copy-' + component + '-prepare',
+       r3v_native_rb2d_tiled_copy_qualification,
+       args : ['--' + component + '-only', '--prepare'], suite : ['r3v'])
+endforeach
 
 # Hardware execution is explicit; the registered test uses CPU fixtures only.
 r3v_native_zb_tiled_validation = executable(

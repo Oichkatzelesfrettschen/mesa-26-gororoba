@@ -16,6 +16,7 @@
 static int
 build_stream(const struct r300_zb_tile_copy_request *request,
              uint64_t source_buffer_bytes, uint64_t destination_buffer_bytes,
+             uint32_t mask,
              uint32_t **words_out, uint32_t *dword_count_out)
 {
    struct r300_zb_tile_copy_plan tile_plan;
@@ -36,7 +37,8 @@ build_stream(const struct r300_zb_tile_copy_request *request,
    if (words == NULL)
       return -ENOMEM;
    struct r300_rb2d_copy_ib emitted;
-   int result = r300_rb2d_copy_emit_into(&copy_plan, words, capacity, &emitted);
+   int result = r300_rb2d_copy_emit_masked_into(&copy_plan, mask, words,
+                                                capacity, &emitted);
    if (result != 0 || emitted.ib_size_dwords != capacity ||
        r300_rb2d_copy_validate_reloc_sites(&emitted) != 0) {
       free(words);
@@ -69,6 +71,16 @@ r3v_native_record_rb2d_tiled_copy(
    VkDeviceMemory destinationMemory,
    const struct r300_zb_tile_copy_request *request)
 {
+   return r3v_native_record_rb2d_tiled_copy_masked(
+      commandBuffer, sourceMemory, destinationMemory, request, UINT32_MAX);
+}
+
+VkResult
+r3v_native_record_rb2d_tiled_copy_masked(
+   VkCommandBuffer commandBuffer, VkDeviceMemory sourceMemory,
+   VkDeviceMemory destinationMemory,
+   const struct r300_zb_tile_copy_request *request, uint32_t mask)
+{
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(r3v_native_memory, source_memory, sourceMemory);
    VK_FROM_HANDLE(r3v_native_memory, destination_memory, destinationMemory);
@@ -85,7 +97,7 @@ r3v_native_record_rb2d_tiled_copy(
    uint32_t *ib = NULL;
    uint32_t ib_dwords = 0u;
    int emit_result = build_stream(request, source_memory->bo.size,
-                                  destination_memory->bo.size, &ib,
+                                  destination_memory->bo.size, mask, &ib,
                                   &ib_dwords);
    if (emit_result != 0)
       return vk_error(device,
@@ -116,6 +128,7 @@ r3v_native_record_rb2d_tiled_copy(
       cmd_buffer, R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION, ib,
       ib_dwords, references, R3V_RB2D_TILED_COPY_REFERENCE_COUNT);
    cmd_buffer->rb2d_tiled_copy_request = *request;
+   cmd_buffer->rb2d_tiled_copy_write_mask = mask;
    cmd_buffer->rb2d_tiled_copy_configured = true;
    return VK_SUCCESS;
 }
@@ -152,7 +165,8 @@ r3v_native_rb2d_tiled_copy_geometry_valid(
    uint32_t expected_dwords = 0u;
    const int result = build_stream(
       &cmd_buffer->rb2d_tiled_copy_request, source->memory->bo.size,
-      destination->memory->bo.size, &expected, &expected_dwords);
+      destination->memory->bo.size, cmd_buffer->rb2d_tiled_copy_write_mask,
+      &expected, &expected_dwords);
    const bool valid = result == 0 && cmd_buffer->ib != NULL &&
                       cmd_buffer->ib_size_dwords == expected_dwords &&
                       memcmp(cmd_buffer->ib, expected,

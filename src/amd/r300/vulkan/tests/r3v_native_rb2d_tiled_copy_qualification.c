@@ -19,6 +19,8 @@
 #define QUALIFICATION_GUARD_BYTES 2048u
 #define QUALIFICATION_GRID_WIDTH 2u
 
+static uint32_t qualification_write_mask = UINT32_MAX;
+
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
                                              const char *name);
 
@@ -114,7 +116,8 @@ expected_stream(const struct r300_zb_tile_copy_request *request,
       return -ENOMEM;
    struct r300_rb2d_copy_ib emitted;
    const int result =
-      r300_rb2d_copy_emit_into(&copy_plan, words, dwords, &emitted);
+      r300_rb2d_copy_emit_masked_into(&copy_plan, qualification_write_mask,
+                                     words, dwords, &emitted);
    if (result != 0 || emitted.ib_size_dwords != dwords ||
        r300_rb2d_copy_validate_reloc_sites(&emitted) != 0) {
       free(words);
@@ -173,6 +176,9 @@ print_stream(const struct r300_zb_tile_copy_request *request)
    _mesa_blake3_format(source_hex, source_digest);
    _mesa_blake3_format(destination_before_hex, destination_before_digest);
    _mesa_blake3_format(destination_expected_hex, destination_expected_digest);
+   if (qualification_write_mask != UINT32_MAX)
+      printf("component=%s ", qualification_write_mask == 0xffffff00u
+                                   ? "depth" : "stencil");
    printf("source=%u,%u destination=%u,%u ib_dwords=%u ib_blake3=%s "
           "source_before_blake3=%s destination_before_blake3=%s "
           "destination_expected_blake3=%s\n",
@@ -230,6 +236,7 @@ selftest(void)
    cmd.reference_count = 2u;
    cmd.rb2d_tiled_copy_configured = true;
    cmd.rb2d_tiled_copy_request = request;
+   cmd.rb2d_tiled_copy_write_mask = qualification_write_mask;
    if (!r3v_native_rb2d_tiled_copy_geometry_valid(&cmd))
       return 1;
 
@@ -259,6 +266,7 @@ selftest(void)
    REFUSES(destination.bo.size--);
    destination.bo.size = QUALIFICATION_BYTES;
    REFUSES(cmd.rb2d_tiled_copy_configured = false);
+   REFUSES(cmd.rb2d_tiled_copy_write_mask ^= 1u);
    REFUSES(cmd.rb2d_tiled_copy_request.destination.macro_x ^= 1u);
 #undef REFUSES
 
@@ -299,7 +307,9 @@ expected_destination_word(const struct r300_zb_tile_copy_request *request,
          request->source.tile_offset_bytes +
          ((destination_offset - request->destination.tile_offset_bytes) ^
           parity_xor);
-      return source_word((uint32_t)(source_offset / sizeof(uint32_t)));
+      return (source_word((uint32_t)(source_offset / sizeof(uint32_t))) &
+              qualification_write_mask) |
+             (destination_word(word_index) & ~qualification_write_mask);
    }
    return destination_word(word_index);
 }
@@ -449,8 +459,9 @@ run_hardware(const char *evidence_directory,
           &(VkCommandBufferBeginInfo){
              .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
           }) != VK_SUCCESS ||
-       r3v_native_record_rb2d_tiled_copy(command, source, destination,
-                                         request) != VK_SUCCESS ||
+       r3v_native_record_rb2d_tiled_copy_masked(
+          command, source, destination, request, qualification_write_mask) !=
+          VK_SUCCESS ||
        vkEndCommandBuffer(command) != VK_SUCCESS)
       goto cleanup;
    VkQueue queue = VK_NULL_HANDLE;
@@ -573,6 +584,13 @@ cleanup:
 int
 main(int argc, char **argv)
 {
+   if (argc > 1 && (strcmp(argv[1], "--depth-only") == 0 ||
+                   strcmp(argv[1], "--stencil-only") == 0)) {
+      qualification_write_mask = strcmp(argv[1], "--depth-only") == 0
+                                    ? 0xffffff00u : 0x000000ffu;
+      argc--;
+      argv++;
+   }
    if (argc == 2 && strcmp(argv[1], "--prepare") == 0)
       return prepare_all();
    if (argc == 2 && strcmp(argv[1], "--selftest") == 0)

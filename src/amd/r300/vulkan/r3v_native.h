@@ -766,6 +766,7 @@ struct r3v_native_cmd_buffer {
     * predicate judges. */
    enum r3v_native_zb_depth_surface zb_depth_surface;
    bool rb2d_tiled_copy_configured;
+   uint32_t rb2d_tiled_copy_write_mask;
    struct r300_zb_tile_copy_request rb2d_tiled_copy_request;
    bool zb_persistence_configured;
    enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
@@ -2269,6 +2270,10 @@ bool r3v_native_rb2d_tiled_copy_geometry_valid(
 VkResult r3v_native_record_rb2d_tiled_copy(
    VkCommandBuffer command_buffer, VkDeviceMemory source,
    VkDeviceMemory destination, const struct r300_zb_tile_copy_request *request);
+VkResult r3v_native_record_rb2d_tiled_copy_masked(
+   VkCommandBuffer command_buffer, VkDeviceMemory source,
+   VkDeviceMemory destination, const struct r300_zb_tile_copy_request *request,
+   uint32_t mask);
 
 VkResult r3v_native_record_zb_tiled_validation(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
