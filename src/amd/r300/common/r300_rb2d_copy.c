@@ -25,6 +25,8 @@ struct rb2d_copy_rect {
    uint32_t destination_y;
    uint32_t width;
    uint32_t height;
+   uint32_t source_x;
+   uint32_t destination_x;
 };
 
 const char *
@@ -51,11 +53,24 @@ static enum r300_rb2d_copy_refusal
 segment_check(const struct r300_rb2d_copy_plan *plan,
               const struct r300_rb2d_copy_segment *segment)
 {
-   if (segment->byte_count != 512u && segment->byte_count != 1024u &&
-       segment->byte_count != 2048u)
+   const uint32_t cpp = plan->byte_carrier ? 1u : 4u;
+   const bool short_span = segment->byte_count <= 256u;
+   if (short_span &&
+       (segment->byte_count == 0u ||
+        (!plan->byte_carrier && segment->byte_count % 4u != 0u) ||
+        segment->source_offset_bytes % cpp != 0u ||
+        segment->destination_offset_bytes % cpp != 0u ||
+        segment->source_offset_bytes % 256u + segment->byte_count > 256u ||
+        segment->destination_offset_bytes % 256u + segment->byte_count > 256u))
       return R300_RB2D_COPY_REFUSE_SEGMENT_SIZE;
-   if (segment->source_offset_bytes % 512u != 0u ||
-       segment->destination_offset_bytes % 512u != 0u)
+   if (segment->byte_count != 512u && segment->byte_count != 1024u &&
+       segment->byte_count != 2048u && !short_span)
+      return R300_RB2D_COPY_REFUSE_SEGMENT_SIZE;
+   if ((!short_span && (segment->source_offset_bytes % 512u != 0u ||
+                        segment->destination_offset_bytes % 512u != 0u)) ||
+       (short_span && !plan->byte_carrier &&
+        (segment->source_offset_bytes % 4u != 0u ||
+         segment->destination_offset_bytes % 4u != 0u)))
       return R300_RB2D_COPY_REFUSE_OFFSET_ALIGNMENT;
 
    const uint64_t source_base =
@@ -191,8 +206,9 @@ r300_rb2d_copy_plan_from_zb_tile(
 }
 
 static struct rb2d_copy_rect
-rect_for(const struct r300_rb2d_copy_segment *segment)
+rect_for(const struct r300_rb2d_copy_segment *segment, bool byte_carrier)
 {
+   const uint32_t cpp = byte_carrier ? 1u : 4u;
    const uint64_t source_base =
       segment->source_offset_bytes & ~(uint64_t)(R300_RB2D_OFFSET_GRANULARITY - 1u);
    const uint64_t destination_base =
@@ -206,9 +222,19 @@ rect_for(const struct r300_rb2d_copy_segment *segment)
       .destination_y =
          (uint32_t)(segment->destination_offset_bytes - destination_base) /
          R300_RB2D_COPY_CARRIER_PITCH_BYTES,
-      .width = R300_RB2D_COPY_CARRIER_PITCH_BYTES /
-               R300_RB2D_COPY_BYTES_PER_PIXEL,
-      .height = segment->byte_count / R300_RB2D_COPY_CARRIER_PITCH_BYTES,
+      .width = segment->byte_count <= 256u
+                  ? segment->byte_count / cpp
+                  : R300_RB2D_COPY_CARRIER_PITCH_BYTES / cpp,
+      .height = segment->byte_count <= 256u
+                   ? 1u
+                   : segment->byte_count / R300_RB2D_COPY_CARRIER_PITCH_BYTES,
+      .source_x = ((uint32_t)(segment->source_offset_bytes - source_base) %
+                   R300_RB2D_COPY_CARRIER_PITCH_BYTES) /
+                  cpp,
+      .destination_x = ((uint32_t)(segment->destination_offset_bytes -
+                                   destination_base) %
+                        R300_RB2D_COPY_CARRIER_PITCH_BYTES) /
+                       cpp,
    };
 }
 
@@ -274,7 +300,8 @@ r300_rb2d_copy_emit_masked_into(const struct r300_rb2d_copy_plan *plan,
                    RADEON_GMC_DST_PITCH_OFFSET_CNTL |
                    RADEON_GMC_SRC_CLIPPING | RADEON_GMC_DST_CLIPPING |
                    RADEON_GMC_BRUSH_NONE |
-                   (RADEON_COLOR_FORMAT_ARGB8888 << 8) |
+                   ((plan->byte_carrier ? 9u : RADEON_COLOR_FORMAT_ARGB8888)
+                    << 8) |
                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_S |
                    RADEON_DP_SRC_SOURCE_MEMORY |
                    RADEON_GMC_CLR_CMP_CNTL_DIS |
@@ -285,7 +312,8 @@ r300_rb2d_copy_emit_masked_into(const struct r300_rb2d_copy_plan *plan,
 
    for (uint32_t segment_index = 0; segment_index < plan->segment_count;
         segment_index++) {
-      const struct rb2d_copy_rect rect = rect_for(&plan->segments[segment_index]);
+      const struct rb2d_copy_rect rect = rect_for(&plan->segments[segment_index],
+                                                  plan->byte_carrier);
       uint32_t slot = segment_index * R300_RB2D_COPY_RELOCS_PER_SEGMENT;
       r300_pm4_reg(&builder, RADEON_SRC_PITCH_OFFSET,
                    pitch_offset_word(rect.source_base));
@@ -294,8 +322,10 @@ r300_rb2d_copy_emit_masked_into(const struct r300_rb2d_copy_plan *plan,
                    pitch_offset_word(rect.destination_base));
       emit_relocation(&builder, &candidate, slot,
                       R300_RB2D_COPY_SLOT_DESTINATION);
-      r300_pm4_reg(&builder, RADEON_SRC_Y_X, rect.source_y << 16);
-      r300_pm4_reg(&builder, RADEON_DST_Y_X, rect.destination_y << 16);
+      r300_pm4_reg(&builder, RADEON_SRC_Y_X,
+                   (rect.source_y << 16) | rect.source_x);
+      r300_pm4_reg(&builder, RADEON_DST_Y_X,
+                   (rect.destination_y << 16) | rect.destination_x);
       r300_pm4_reg(&builder, RADEON_DST_WIDTH_HEIGHT,
                    (rect.width << 16) | rect.height);
    }

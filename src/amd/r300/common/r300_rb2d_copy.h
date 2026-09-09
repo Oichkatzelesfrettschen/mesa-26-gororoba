@@ -30,6 +30,7 @@ struct r300_rb2d_copy_plan {
    bool same_buffer;
    const struct r300_rb2d_copy_segment *segments;
    uint32_t segment_count;
+   bool byte_carrier;
 };
 
 struct r300_rb2d_copy_reloc_site {

@@ -325,11 +325,42 @@ test_masked_streams(void)
    }
 }
 
+static void
+test_short_carrier_spans(void)
+{
+   struct r300_rb2d_copy_segment segment = {1027u, 2055u, 3u};
+   struct r300_rb2d_copy_plan plan = plan_for(&segment, 1u);
+   plan.byte_carrier = true;
+   uint32_t words[WORD_CAPACITY];
+   struct r300_rb2d_copy_ib ib;
+   assert(r300_rb2d_copy_emit_masked_into(&plan, 0xffu, words,
+                                          WORD_CAPACITY, &ib) == 0);
+   assert(words[23] == 3u);
+   assert(words[25] == 7u);
+   assert(words[27] == ((3u << 16) | 1u));
+   assert(words[9] == ((9u << 8) | (words[9] & ~0x0f00u)));
+
+   struct r300_rb2d_copy_ib before = ib;
+   segment = (struct r300_rb2d_copy_segment){255u, 511u, 2u};
+   plan.segments = &segment;
+   assert(r300_rb2d_copy_emit_into(&plan, words, WORD_CAPACITY, &ib) ==
+          -EINVAL);
+   assert(memcmp(&ib, &before, sizeof(ib)) == 0);
+
+   plan.byte_carrier = false;
+   segment = (struct r300_rb2d_copy_segment){4u, 8u, 4u};
+   assert(r300_rb2d_copy_plan_check(&plan) == R300_RB2D_COPY_OK);
+   segment.source_offset_bytes = 3u;
+   assert(r300_rb2d_copy_plan_check(&plan) ==
+          R300_RB2D_COPY_REFUSE_SEGMENT_SIZE);
+}
+
 int
 main(void)
 {
    test_register_authority();
    test_masked_streams();
+   test_short_carrier_spans();
    test_parity_shapes();
    test_tile_adapter_all_parities();
    test_complete_overlap_rules();
