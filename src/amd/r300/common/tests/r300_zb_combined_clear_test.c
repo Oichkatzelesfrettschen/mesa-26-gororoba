@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
+#undef NDEBUG
+
 #include "../r300_zb_combined_clear.h"
 
 #include <assert.h>
