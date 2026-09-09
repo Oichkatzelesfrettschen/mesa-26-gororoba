@@ -300,7 +300,7 @@ r300_rb2d_copy_emit_masked_into(const struct r300_rb2d_copy_plan *plan,
                    RADEON_GMC_DST_PITCH_OFFSET_CNTL |
                    RADEON_GMC_SRC_CLIPPING | RADEON_GMC_DST_CLIPPING |
                    RADEON_GMC_BRUSH_NONE |
-                   (plan->byte_carrier ? RADEON_GMC_DST_8BPP_RGB :
+                   (plan->byte_carrier ? RADEON_GMC_DST_8BPP_CI :
                     (RADEON_COLOR_FORMAT_ARGB8888 << 8)) |
                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_S |
                    RADEON_DP_SRC_SOURCE_MEMORY |

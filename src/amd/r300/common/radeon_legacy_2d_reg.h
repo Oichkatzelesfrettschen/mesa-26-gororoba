@@ -107,10 +107,10 @@
 #define RADEON_GMC_CLR_CMP_CNTL_DIS (1u << 28)
 #define RADEON_GMC_WR_MSK_DIS (1u << 30)
 
-/* The destination datatype code DP_GUI_MASTER_CNTL carries at bit 8, which
- * r100_copy_blit writes as (RADEON_COLOR_FORMAT_ARGB8888 << 8). */
+/* DP_GUI_MASTER_CNTL carries the destination datatype at bit 8.  The Radeon
+ * register ABI assigns code 2 to 8-bit color index and code 6 to ARGB8888. */
 #define RADEON_COLOR_FORMAT_ARGB8888 6u
-#define RADEON_GMC_DST_8BPP_RGB (7u << 8)
+#define RADEON_GMC_DST_8BPP_CI (2u << 8)
 /* Code 4 is RGB565, two bytes per pixel; r100_cs_2d_dst_cpp sizes it 2. */
 #define RADEON_COLOR_FORMAT_RGB565 4u
 
