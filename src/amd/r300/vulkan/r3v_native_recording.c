@@ -87,11 +87,28 @@ r3v_native_render_layout_ok(VkImageLayout layout)
 }
 
 static bool
+r3v_native_depth_layout_ok(const struct r3v_native_image *image,
+                           VkImageLayout layout)
+{
+   if (layout == VK_IMAGE_LAYOUT_GENERAL)
+      return true;
+   if ((image->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0u &&
+       layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+      return true;
+   return ((image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u &&
+           layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) ||
+          ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0u &&
+           layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+}
+
+static bool
 r3v_native_image_layout_ok(const struct r3v_native_image *image,
                            VkImageLayout layout)
 {
    if (layout == VK_IMAGE_LAYOUT_GENERAL)
       return true;
+   if (image->depth_family)
+      return r3v_native_depth_layout_ok(image, layout);
    /* Each usage bit brings its own layouts, so a render target that also
     * carries transfer usage reaches both vocabularies.
     */
@@ -132,9 +149,13 @@ r3v_native_image_layout_ok(const struct r3v_native_image *image,
  * r3v_native_queue_family_pair_ok src/amd/r300/vulkan/)`.
  */
 static bool
-r3v_native_image_barrier_range_ok(const VkImageSubresourceRange *range)
+r3v_native_image_barrier_range_ok(const struct r3v_native_image *image,
+                                  const VkImageSubresourceRange *range)
 {
-   return range->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT &&
+   const VkImageAspectFlags required_aspects = image->depth_family
+      ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
+      : VK_IMAGE_ASPECT_COLOR_BIT;
+   return range->aspectMask == required_aspects &&
           range->baseMipLevel == 0 &&
           (range->levelCount == 1 ||
            range->levelCount == VK_REMAINING_MIP_LEVELS) &&
@@ -157,7 +178,8 @@ r3v_native_image_barrier_layouts_ok(const VkImageMemoryBarrier *barrier)
       r3v_native_image_layout_ok(image, barrier->newLayout);
 
    return image != NULL && image->memory != NULL &&
-          r3v_native_image_barrier_range_ok(&barrier->subresourceRange) &&
+          r3v_native_image_barrier_range_ok(image,
+                                             &barrier->subresourceRange) &&
           old_layout_ok && new_layout_ok;
 }
 
@@ -1117,7 +1139,10 @@ r3v_CmdPipelineBarrier(
     * lowering), no ownership transfer -- the device exposes one queue
     * family, so an ownership-transferring pair names a family that
     * does not exist -- and image barriers over the qualified transfer or
-    * render-family color subresource with its supported layout vocabulary.
+    * render-family color subresource or the combined depth-stencil
+    * subresource with its supported layout vocabulary.  The device exposes
+    * neither separate depth-stencil layouts nor independent aspect state, so
+    * a D24S8 image barrier names both aspects.
     * Equal queue-family fields still name either the native family (0) or
     * the no-ownership-transfer sentinel.
     * Vulkan 1.3 `vkCmdPipelineBarrier` valid usage binds image layout and

@@ -1061,8 +1061,30 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    };
    if (begin(f))
       return 1;
+   VkImageMemoryBarrier depth_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image,
+      .subresourceRange = {
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         0, 1, 0, 1,
+      },
+   };
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                        1, &depth_barrier);
    vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+   depth_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   depth_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   depth_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   depth_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                        1, &depth_barrier);
    vkCmdCopyImageToBuffer(f->cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          staging.buffer, 1, &region);
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_copy, f->cmd);
@@ -1086,6 +1108,14 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    }
    CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
          "depth copies retain independent image/buffer origins in both directions");
+   if (begin(f))
+      return 1;
+   depth_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                        1, &depth_barrier);
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "combined D24S8 layout transition refuses a single-aspect range");
    for (unsigned invalid = 0; invalid < 4; invalid++) {
       VkBufferImageCopy bad = region;
       VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
