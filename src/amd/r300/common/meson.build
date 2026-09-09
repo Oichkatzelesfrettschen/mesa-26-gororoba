@@ -39,6 +39,7 @@ r300_common_contract_files = files(
   'r300_zb_depth_discovery_cell.c',
   'r300_zb_depth_layout.c',
   'r300_zb_tile_copy.c',
+  'r300_zb_aspect_copy.c',
   'r300_zb_depth_state.c',
   'r300_zb_depth_surface.c',
   'r300_zb_hyperz_admission.c',
@@ -1408,3 +1409,15 @@ test(
   suite : ['r300'],
 )
 endif
+
+r300_zb_aspect_copy_test = executable(
+  'r300_zb_aspect_copy_test',
+  files('r300_zb_aspect_copy.c', 'r300_zb_depth_layout.c',
+        'r300_zb_depth_surface.c', 'tests/r300_zb_aspect_copy_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r300-zb-aspect-copy', r300_zb_aspect_copy_test, suite : ['r300'])
