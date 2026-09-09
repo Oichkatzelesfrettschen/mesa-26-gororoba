@@ -58,10 +58,39 @@ Refused address operations leave their output untouched.
 
 Enumeration of 25,600 storage words establishes bijection and round trips for
 the tested mathematical configurations. Agreement with the retained vectors
-establishes agreement at those measured coordinates. GPU nonuniform read masks,
-physical write scans, and image switching must establish broader execution.
+establishes agreement at those measured coordinates. The nonuniform campaign extends execution evidence for the principal geometry:
+26 submissions reconstruct all 4096 logical read addresses with zero model
+mismatches and compare asymmetric read masks, packed writes, and overlapping
+near/far draws in both orders. Three further read-only A/B/A submissions
+preserve both complete depth allocations while producing the expected masks.
+The portable observations and calibrated analyzers live in steinmarder-r300
+at `47d5da7cb`, under `analysis/zb-tiled-nonuniform-observations/`.
+CPU initialization and observation serve qualification. Public image lifetime,
+GPU copies, aspect operations, and write-after-switch visibility require their
+own execution checks.
+
+## Bit-preserving tile copies
+
+`r300_rb2d_copy` converts the whole-tile parity plan into memory-source
+PACKET0 copies with ROP3_S. A 256-byte cpp4 carrier represents 2048, 1024,
+and 512-byte spans as 64-pixel rectangles with eight, four, and two rows.
+Each source and destination base is independently aligned to 1024 bytes;
+the residual offset becomes a row coordinate. Full source and destination
+footprints, the kernel's u32 exclusive-end arithmetic, and cross-segment
+overlap are checked before emission.
+
+Host tests cover all sixteen parity combinations and the emitted register and
+relocation roles. These checks establish command construction. GPU copy
+qualification requires source-footprint validation in the kernel parser and
+independent packed-byte observations before the route executes publicly.
 
 ## Public image obligations
+
+The [operation matrix](r3v-public-depth-stencil-obligations.json) pins the
+Vulkan 1.0 normative source and records 23 required operations separately
+from the experimental address and draw observations. Its checker validates
+the matrix's coverage and provenance; passing the checker establishes neither
+an implemented public operation nor CTS conformance.
 
 The acceptance baseline is Vulkan 1.0 without maintenance1. The checked-in
 registry is version 1.4.354, imported by
