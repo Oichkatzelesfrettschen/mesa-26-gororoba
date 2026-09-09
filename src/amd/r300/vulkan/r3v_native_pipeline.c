@@ -253,7 +253,8 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
                         bool *sampled, uint32_t *narrow_width,
                         bool *mixed_fragment, uint32_t color_bits[4],
-                        struct r3v_shader_interface_link *interface)
+                        struct r3v_shader_interface_link *interface,
+                        struct r3v_native_depth_shader_flags *depth_shader)
 {
    if (info->stageCount != 2)
       return false;
@@ -278,6 +279,10 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    size_t fs_words = 0;
    const uint32_t *fs_data = stage_words(fragment, &fs_words);
    if (vs_data == NULL || fs_data == NULL)
+      return false;
+
+   if (!r3v_fragment_depth_shader_flags_from_spirv(
+          fs_data, fs_words, fragment->pName, depth_shader, &reason))
       return false;
 
    /* The stage boundary links first: every qualifier the modules
@@ -342,7 +347,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
 static bool
 fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
                          uint32_t *target_width, uint32_t *target_height,
-                         bool *dynamic_out)
+                         bool has_depth_attachment, bool *dynamic_out)
 {
    const VkPipelineInputAssemblyStateCreateInfo *ia =
       info->pInputAssemblyState;
@@ -446,14 +451,11 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
    if (blend->colorWriteMask != full_mask && blend->colorWriteMask != 0)
       return false;
 
-   /* The pass shape carries no depth/stencil attachment, so the only
-    * depth/stencil state a valid program presents is the fully
-    * disabled one; any enabled test, bounds, or write refuses until a
-    * depth surface exists.
-    */
+   /* Color-only passes carry disabled depth/stencil state.  D24S8 state is
+    * lowered after the render-pass attachment contract is checked. */
    const VkPipelineDepthStencilStateCreateInfo *ds =
       info->pDepthStencilState;
-   if (ds != NULL &&
+   if (!has_depth_attachment && ds != NULL &&
        (ds->flags != 0 || ds->depthTestEnable != VK_FALSE ||
         ds->depthWriteEnable != VK_FALSE ||
         ds->depthBoundsTestEnable != VK_FALSE ||
@@ -487,6 +489,9 @@ create_pipeline(struct r3v_native_device *device,
 
    VK_FROM_HANDLE(vk_render_pass, pass, info->renderPass);
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
+   const bool render_pass_shape = r3v_native_render_pass_matches_cell(pass);
+   const bool has_depth_attachment =
+      render_pass_shape && pass->attachment_count == 2;
 
    uint32_t target_width = 0, target_height = 0;
    bool dynamic_viewport_scissor = false;
@@ -496,18 +501,30 @@ create_pipeline(struct r3v_native_device *device,
    uint32_t narrow_width = 0;
    bool mixed_fragment = false;
    uint32_t color_bits[4] = { 0 };
+   struct r3v_native_depth_shader_flags depth_shader = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
        !stages_build_vertex_job(info, &job, &varying, &sampled,
                                 &narrow_width, &mixed_fragment, color_bits,
-                                &admitted.shader_interface) ||
+                                &admitted.shader_interface, &depth_shader) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
+                                 has_depth_attachment,
                                  &dynamic_viewport_scissor) ||
        layout == NULL || layout->push_range_count != 0 ||
-       !r3v_native_render_pass_matches_cell(pass) || info->subpass != 0)
+       !render_pass_shape || info->subpass != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   if (has_depth_attachment) {
+      if (info->pDepthStencilState == NULL ||
+          r3v_native_depth_pipeline_lower(
+             info->pDepthStencilState, &depth_shader,
+             info->pRasterizationState->depthBiasEnable,
+             &admitted.depth_pipeline) != 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      admitted.has_depth_pipeline = true;
+   }
    /* The sampled module names set 0 binding 0, so its layout carries
     * exactly that combined-image-sampler binding under the fragment
     * stage; every other pipeline carries no set.
@@ -557,6 +574,8 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
+   pipeline->depth_pipeline = admitted.depth_pipeline;
+   pipeline->has_depth_pipeline = admitted.has_depth_pipeline;
    pipeline->shader_interface = admitted.shader_interface;
    r3v_post_vs_lowering_from_interface(&pipeline->shader_interface,
                                        &pipeline->post_vs);

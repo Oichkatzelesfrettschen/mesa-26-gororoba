@@ -24,6 +24,7 @@
 #include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
 #include "r3v_native_depth_image_contract.h"
+#include "r3v_native_depth_pipeline.h"
 #include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -1709,6 +1710,9 @@ struct r3v_native_pipeline {
     * identity job is GPU-admissible.
     */
    struct r300_vertex_job vertex_job;
+   /* Lowered depth comparison and timing state for a D24S8 subpass. */
+   struct r3v_native_depth_pipeline_state depth_pipeline;
+   bool has_depth_pipeline;
    bool gpu_vertex_job_identity;
    /* The linked stage boundary the two modules declare: per-location
     * kind, width, mask, and Smooth/Flat/NoPerspective interpolation
