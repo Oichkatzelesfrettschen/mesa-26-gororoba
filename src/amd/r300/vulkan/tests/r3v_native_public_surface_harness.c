@@ -65,6 +65,7 @@ VKAPI_ATTR void VKAPI_CALL r3v_GetDeviceBufferMemoryRequirements(
    VkMemoryRequirements2 *pMemoryRequirements);
 
 #define CLEAR_SENTINEL ((float)0xa5 / 255.0f)
+#define COLOR_SEED 0x5c5c5c5cu
 
 /* The application payload is NDC: the public route's CPU vertex node
  * applies the Vulkan viewport transform, and over the 64x64 target
@@ -316,9 +317,28 @@ find_last_register_write(const uint32_t *ib, uint32_t ib_size_dwords,
 }
 
 static void
-check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
-                             VkBuffer vertex_buffer)
+assert_word_range(const uint8_t *bytes, uint64_t offset, uint64_t size,
+                  uint32_t expected)
 {
+   assert(offset % sizeof(uint32_t) == 0 && size % sizeof(uint32_t) == 0);
+   const uint32_t *words = (const uint32_t *)(bytes + offset);
+   for (uint64_t word = 0; word < size / sizeof(*words); word++)
+      assert(words[word] == expected);
+}
+
+static void
+check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
+                             VkBuffer vertex_buffer,
+                             VkDeviceMemory color_memory, VkQueue queue)
+{
+   /* The drm-shim fixture supplies the RS485M device ID but no board
+    * subsystem or DMI tuple.  Declare the fixture's qualified board before
+    * exercising the RS485M image contract; production physical-device
+    * discovery still requires the complete tuple. */
+   VK_FROM_HANDLE(r3v_native_device, native_device, device);
+   native_device->pdevice->platform_id =
+      R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M;
+
    VkImage depth_image = VK_NULL_HANDLE;
    assert(vkCreateImage(device, &(VkImageCreateInfo){
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -440,6 +460,69 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       assert(native_command->ib[word] != CP_PACKET0(R300_ZB_ZMASK_PITCH, 0));
    }
 
+   const uint32_t untouched_word = 0xa5a5a5a5u;
+   uint8_t *depth_bytes = NULL;
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   memset(depth_bytes, 0xa5, requirements.size + 4096u);
+   vkUnmapMemory(device, depth_memory);
+
+   VkCommandBuffer empty_command = fresh_cmd();
+   vkCmdBeginRenderPass(empty_command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdEndRenderPass(empty_command);
+   assert(vkEndCommandBuffer(empty_command) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_empty, empty_command);
+   assert(native_empty->ib_size_dwords == 0u &&
+          native_empty->deferred_draws[0].has_depth_clear);
+   assert(vkQueueSubmit(
+      queue, 1,
+      &(VkSubmitInfo){
+         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .commandBufferCount = 1,
+         .pCommandBuffers = &empty_command,
+      }, VK_NULL_HANDLE) == VK_SUCCESS);
+
+   VK_FROM_HANDLE(r3v_native_image, native_depth_image, depth_image);
+   const struct r300_zb_depth_layout *depth_layout =
+      &native_depth_image->depth_contract.layout;
+   const uint64_t binding_offset =
+      native_depth_image->depth_bound.binding_offset_bytes;
+   const uint64_t allocation_bytes = requirements.size + 4096u;
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   assert_word_range(depth_bytes, 0u, binding_offset, untouched_word);
+   assert_word_range(depth_bytes,
+                     binding_offset + depth_layout->prefix_guard_offset_bytes,
+                     depth_layout->prefix_guard_bytes, untouched_word);
+   const struct r300_zb_depth_surface *depth_surface =
+      &native_depth_image->depth_contract.surface;
+   const uint64_t storage_base =
+      native_depth_image->depth_bound.surface_base_bytes;
+   const uint64_t contract_base =
+      native_depth_image->depth_contract.surface_base_bytes;
+   for (uint64_t offset = storage_base;
+        offset < storage_base + depth_layout->storage_bytes;
+        offset += sizeof(uint32_t)) {
+      struct r300_zb_depth_address_coordinate coordinate;
+      assert(depth_surface->address_resolver->coordinate(
+                depth_surface, contract_base, depth_layout->total_bytes,
+                offset - binding_offset,
+                &coordinate) == 0);
+      uint32_t observed;
+      memcpy(&observed, depth_bytes + offset, sizeof(observed));
+      assert(observed ==
+             (coordinate.region == R300_ZB_DEPTH_ADDRESS_LOGICAL
+                 ? 0xffffff00u : untouched_word));
+   }
+   assert_word_range(depth_bytes,
+                     binding_offset + depth_layout->suffix_guard_offset_bytes,
+                     depth_layout->suffix_guard_bytes, untouched_word);
+   const uint64_t tail_offset = binding_offset + depth_layout->total_bytes;
+   assert(tail_offset <= allocation_bytes);
+   assert_word_range(depth_bytes, tail_offset,
+                     allocation_bytes - tail_offset, untouched_word);
+   vkUnmapMemory(device, depth_memory);
+
    VkImageView variants[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE,
                                VK_NULL_HANDLE };
    const VkImageViewCreateInfo view_info = {
@@ -476,6 +559,13 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       vkDestroyFramebuffer(device, bad, NULL);
       begin.clearValueCount = 2;
    }
+   uint32_t *color_words = NULL;
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&color_words) == VK_SUCCESS);
+   for (uint32_t word = 0;
+        word < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096u) / 4; word++)
+      color_words[word] = COLOR_SEED;
+   vkUnmapMemory(device, color_memory);
    vkDestroyImageView(device, variants[2], NULL);
    vkDestroyImageView(device, variants[0], NULL);
    vkDestroyFramebuffer(device, framebuffer, NULL);
@@ -1159,7 +1249,6 @@ main(void)
     * untouched-memory verdicts below compare against a defined byte
     * pattern rather than fresh-allocation content.
     */
-#define COLOR_SEED 0x5c5c5c5cu
    {
       uint32_t *seed_map = NULL;
       assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
@@ -3650,6 +3739,9 @@ main(void)
       vkFreeMemory(device, mem_a, NULL);
       vkFreeMemory(device, mem_b, NULL);
    }
+
+   check_depth_attachment_begin(view, layout, vertex_buffer, color_memory,
+                                queue);
 
    /* Pre-commit refusal leaves bytes unchanged: the closed gate refuses
     * before the deferred draw, so the carrier keeps its pre-submit
@@ -7369,8 +7461,6 @@ main(void)
    const uint64_t known_bad_cache_event = 11;
    assert(!r3v_native_cache_publication_precedes_close(
       known_bad_cache_event, known_bad_close_event));
-
-   check_depth_attachment_begin(view, layout, vertex_buffer);
 
    vkDestroyPipeline(device, xyz_pipeline, NULL);
    vkDestroyPipeline(device, pipeline, NULL);

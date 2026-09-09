@@ -1517,8 +1517,28 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       VkResult clear_result =
          fill_color(device, draw->target_memory, draw->target_fill_offset,
                     draw->target_fill_bytes, draw->clear_dword);
-      if (clear_result != VK_SUCCESS || draw->clear_rect_count == 0)
+      if (clear_result != VK_SUCCESS)
          return clear_result;
+      if (draw->has_depth_clear) {
+         const struct r300_rb2d_fill_plan *depth_fill =
+            &draw->depth_clear.fill;
+         if (draw->depth_memory == NULL || depth_fill->rect_count != 1u ||
+             depth_fill->rects == NULL || depth_fill->rects[0].x != 0u ||
+             depth_fill->rects[0].y != 0u ||
+             depth_fill->rects[0].width != depth_fill->surface.width_pixels ||
+             depth_fill->rects[0].height != depth_fill->surface.height_pixels)
+            return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+         const uint64_t depth_bytes =
+            (uint64_t)depth_fill->surface.pitch_bytes *
+            depth_fill->surface.height_pixels;
+         clear_result = fill_color(device, draw->depth_memory,
+                                   depth_fill->surface.base_offset_bytes,
+                                   depth_bytes, draw->depth_clear.packed_word);
+         if (clear_result != VK_SUCCESS)
+            return clear_result;
+      }
+      if (draw->clear_rect_count == 0)
+         return VK_SUCCESS;
       /* The recorded attachment clears land after the load-op clear,
        * in API order, over the target's own row pitch from its bind
        * offset.
