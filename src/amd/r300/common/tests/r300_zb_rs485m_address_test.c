@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#undef NDEBUG
 #include "r300_zb_depth_layout.h"
 #include "r300_reg.h"
 
