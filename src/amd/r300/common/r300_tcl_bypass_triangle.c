@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_zb_depth_state.h"
 #include "r300_first_draw_state.h"
 #include "r300_flat_color0_plan.h"
 #include "r300_noperspective_reciprocal_fs_block.h"
@@ -436,7 +437,6 @@ emit_triangle_stream_into(
    r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, params->color_offset);
    write_reloc(&b, out, R300_TRIANGLE_SLOT_COLOR);
    r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
-
    /* Each hardware draw uses local vertex indices and a rebased byte offset,
     * so each 16-bit count field describes at most one 21,845-triangle
     * segment; the separate maximum-index field remains 24-bit. Segment
@@ -642,6 +642,26 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_TEXTURE,
       R300_TRIANGLE_SLOT_COLOR,
    };
+   static const uint32_t depth_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t depth_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t depth_clear_render_prefix[] = {
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t depth_clear_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
    static const uint32_t composed_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
@@ -671,6 +691,16 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
          ib, render_prefix, ARRAY_SIZE(render_prefix)) ||
       reloc_repeated_vertex_sequence_matches(
          ib, sampled_prefix, ARRAY_SIZE(sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_render_prefix, ARRAY_SIZE(depth_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_sampled_prefix, ARRAY_SIZE(depth_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_clear_render_prefix,
+         ARRAY_SIZE(depth_clear_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_clear_sampled_prefix,
+         ARRAY_SIZE(depth_clear_sampled_prefix)) ||
       reloc_sequence_matches(ib, composed_slots, ARRAY_SIZE(composed_slots)) ||
       reloc_sequence_matches(ib, msaa_slots, ARRAY_SIZE(msaa_slots)) ||
       reloc_sequence_matches(ib, msaa_clear_slots,
@@ -684,6 +714,127 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
    for (uint32_t i = 1; i < ib->reloc_site_count; i++)
       if (ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
          return -EINVAL;
+   return 0;
+}
+
+int
+r300_tcl_bypass_triangle_insert_depth_state(
+   struct r300_tcl_bypass_triangle_ib *ib,
+   const struct r300_zb_depth_state_params *state, bool z_top_enable)
+{
+   if (state == NULL)
+      return 0;
+   if (ib == NULL || ib->ib == NULL || !ib->owns_ib ||
+       r300_tcl_bypass_triangle_validate_reloc_sites(ib) != 0 ||
+       ib->reloc_site_count >= R300_TRIANGLE_MAX_RELOC_SITES)
+      return -EINVAL;
+
+   uint32_t insert_index = 0;
+   uint32_t insert_site = ib->reloc_site_count;
+   bool found_vertex_packet = false;
+   /* Walk the complete PM4 stream before choosing an insertion point.  The
+    * vertex relocation follows LOAD_VBPNTR's three payload dwords and its
+    * relocation NOP, so inserting at the relocation payload would split the
+    * packet's required ordering.
+    */
+   for (uint32_t i = 0; i < ib->ib_size_dwords;) {
+      const uint32_t header = ib->ib[i];
+      const uint32_t type = header >> 30;
+      const uint32_t payload = type == 2 ? 0 : ((header >> 16) & 0x3fffu) + 1u;
+      if (type == 1)
+         return -EINVAL;
+      if (payload > ib->ib_size_dwords - i - 1u)
+         return -EINVAL;
+      if (type == 3 && !found_vertex_packet &&
+          (header & 0xff00u) == R300_PACKET3_3D_LOAD_VBPNTR) {
+         if (payload != 3u)
+            return -EINVAL;
+         for (uint32_t site_index = 0; site_index < ib->reloc_site_count;
+              site_index++) {
+            if (ib->reloc_sites[site_index].slot == R300_TRIANGLE_SLOT_VERTEX) {
+               if (ib->reloc_sites[site_index].ib_index != i + 5u)
+                  return -EINVAL;
+               insert_site = site_index;
+               break;
+            }
+         }
+         if (insert_site == ib->reloc_site_count)
+            return -EINVAL;
+         insert_index = i;
+         found_vertex_packet = true;
+      }
+      i += 1u + payload;
+   }
+   if (!found_vertex_packet)
+      return -EINVAL;
+
+   const uint32_t depth_dwords = r300_zb_depth_state_dwords() + 2u;
+   uint32_t *depth_words = calloc(depth_dwords, sizeof(*depth_words));
+   if (depth_words == NULL)
+      return -ENOMEM;
+   struct r300_pm4_builder builder;
+   r300_pm4_builder_init(&builder, depth_words, depth_dwords);
+   struct r300_zb_depth_state_params depth = *state;
+   depth.depth_relocation_payload =
+      R300_TRIANGLE_RELOC_PAYLOAD(R300_TRIANGLE_SLOT_DEPTH);
+   uint32_t depth_reloc = 0;
+   int result = r300_zb_depth_state_emit(&builder, &depth, &depth_reloc);
+   uint32_t emitted_depth_dwords = 0;
+   if (result == 0) {
+      r300_pm4_reg(&builder, R300_ZB_ZTOP, z_top_enable ? 1u : 0u);
+      result = r300_pm4_builder_finish(&builder, &emitted_depth_dwords);
+      if (result == 0 && emitted_depth_dwords != depth_dwords)
+         result = -EINVAL;
+   }
+   if (result != 0) {
+      free(depth_words);
+      return result;
+   }
+
+   uint32_t *merged = calloc(ib->ib_size_dwords + depth_dwords,
+                             sizeof(*merged));
+   if (merged == NULL) {
+      free(depth_words);
+      return -ENOMEM;
+   }
+   memcpy(merged, ib->ib, (size_t)insert_index * sizeof(*merged));
+   memcpy(merged + insert_index, depth_words,
+          (size_t)depth_dwords * sizeof(*merged));
+   memcpy(merged + insert_index + depth_dwords, ib->ib + insert_index,
+          (size_t)(ib->ib_size_dwords - insert_index) * sizeof(*merged));
+   free(depth_words);
+
+   struct r300_tcl_bypass_triangle_reloc_site sites[
+      R300_TRIANGLE_MAX_RELOC_SITES];
+   uint32_t site = 0;
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      if (i == insert_site)
+         sites[site++] = (struct r300_tcl_bypass_triangle_reloc_site){
+            .ib_index = insert_index + depth_reloc,
+            .slot = R300_TRIANGLE_SLOT_DEPTH,
+         };
+      sites[site] = ib->reloc_sites[i];
+      if (sites[site].ib_index >= insert_index)
+         sites[site].ib_index += depth_dwords;
+      site++;
+   }
+   if (insert_site == ib->reloc_site_count)
+      sites[site++] = (struct r300_tcl_bypass_triangle_reloc_site){
+         .ib_index = insert_index + depth_reloc,
+         .slot = R300_TRIANGLE_SLOT_DEPTH,
+      };
+
+   struct r300_tcl_bypass_triangle_ib candidate = *ib;
+   candidate.ib = merged;
+   candidate.ib_size_dwords += depth_dwords;
+   candidate.reloc_site_count = site;
+   memcpy(candidate.reloc_sites, sites, sizeof(sites));
+   if (r300_tcl_bypass_triangle_validate_reloc_sites(&candidate) != 0) {
+      free(merged);
+      return -EINVAL;
+   }
+   free(ib->ib);
+   *ib = candidate;
    return 0;
 }
 

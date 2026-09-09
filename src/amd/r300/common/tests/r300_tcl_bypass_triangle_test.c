@@ -16,6 +16,7 @@
 #include "r300_pm4_builder.h"
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_zb_depth_state.h"
 #include "r300_us_source_read.h"
 #include "tests/r300_retained_route_digests.h"
 #include "tests/r300_varying_cell_digests.h"
@@ -289,6 +290,47 @@ test_reloc_sites_bind_slots(void)
       assert(cell.ib[index - 1] == 0xC0001000u);
    }
 
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
+static void
+test_depth_state_insertion(void)
+{
+   struct r300_fragment_binary fs;
+   struct r300_tcl_bypass_triangle_ib cell;
+   make_cell(&fs, &cell);
+   const uint32_t before = cell.ib_size_dwords;
+   const struct r300_zb_depth_state_params depth = {
+      .pitch_pixels = 64,
+      .depth_format = R300_DEPTHFORMAT_16BIT_INT_Z,
+      .depth_offset_bytes = 0x2000,
+      .depth_function = R300_ZS_LESS,
+      .depth_write = true,
+   };
+   assert(r300_tcl_bypass_triangle_insert_depth_state(&cell, &depth, true) == 0);
+   assert(cell.ib_size_dwords == before + r300_zb_depth_state_dwords() + 2u);
+   assert(cell.reloc_site_count == 3);
+   assert(cell.reloc_sites[0].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert(cell.reloc_sites[1].slot == R300_TRIANGLE_SLOT_DEPTH);
+   assert(cell.reloc_sites[2].slot == R300_TRIANGLE_SLOT_VERTEX);
+   assert(cell.ib[cell.reloc_sites[1].ib_index + 9u] ==
+          CP_PACKET0(R300_ZB_ZTOP, 0));
+   assert(cell.ib[cell.reloc_sites[1].ib_index + 10u] == 1u);
+   assert(cell.reloc_sites[1].ib_index < r300_triangle_draw_dword(&cell));
+   assert(cell.ib[cell.reloc_sites[2].ib_index - 5u] ==
+          CP_PACKET3(R300_PACKET3_3D_LOAD_VBPNTR, 2));
+   assert(cell.reloc_sites[1].ib_index <
+          cell.reloc_sites[2].ib_index - 5u);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+
+   make_cell(&fs, &cell);
+   assert(r300_tcl_bypass_triangle_insert_depth_state(&cell, &depth, false) ==
+          0);
+   assert(cell.ib[cell.reloc_sites[1].ib_index + 10u] == 0u);
    r300_tcl_bypass_triangle_release(&cell);
    r300_fragment_binary_finish(&fs);
 }
@@ -3463,6 +3505,7 @@ main(void)
    test_reloc_site_mutations_refuse();
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
+   test_depth_state_insertion();
    test_reloc_site_validator_refuses_each_defect();
    test_emission_is_deterministic();
    test_contract_emission_is_self_contained();

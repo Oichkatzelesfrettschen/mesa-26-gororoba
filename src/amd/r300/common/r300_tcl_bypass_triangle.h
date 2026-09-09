@@ -18,6 +18,7 @@ struct r300_noperspective_q_lane_plan;
 struct r300_noperspective_mixed_carrier_plan;
 struct r300_flat_color0_plan;
 struct r300_rs_tex_adj_probe_plan;
+struct r300_zb_depth_state_params;
 
 /* BO slots the cell references; the transport binds slot order to the
  * relocation-list order at submission.
@@ -39,7 +40,8 @@ enum r300_tcl_bypass_triangle_slot {
     */
    R300_TRIANGLE_SLOT_COMPOSED_VERTEX = 3,
    R300_TRIANGLE_SLOT_COMPOSED_COLOR = 4,
-   R300_TRIANGLE_SLOT_COUNT = 5,
+   R300_TRIANGLE_SLOT_DEPTH = 5,
+   R300_TRIANGLE_SLOT_COUNT = 6,
 };
 
 /* The unsampled cells reference the vertex and color slots alone, so
@@ -208,7 +210,8 @@ struct r300_tcl_bypass_triangle_reloc_site {
    (1u + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
 #define R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT \
    (2u + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
-#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT
+#define R300_TRIANGLE_MAX_RELOC_SITES \
+   (R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT + 2u)
 static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
               "slot uniqueness is proven in a 32-bit mask");
 
@@ -253,6 +256,10 @@ void r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib);
  */
 int r300_tcl_bypass_triangle_validate_reloc_sites(
    const struct r300_tcl_bypass_triangle_ib *ib);
+
+int r300_tcl_bypass_triangle_insert_depth_state(
+   struct r300_tcl_bypass_triangle_ib *ib,
+   const struct r300_zb_depth_state_params *state, bool z_top_enable);
 
 /* Builds the cell's fragment binary from the compiled constant-color US
  * block (r300_tcl_bypass_triangle_fs_block.h, baked by
