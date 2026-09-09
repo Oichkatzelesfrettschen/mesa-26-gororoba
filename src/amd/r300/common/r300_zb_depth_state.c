@@ -143,8 +143,10 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
                    R300_DEPTHENDIAN(R300_SURF_NO_SWAP));
 
    r300_pm4_reg(builder, R300_ZB_CNTL,
-                R300_Z_ENABLE |
-                   (params->depth_write ? R300_Z_WRITE_ENABLE : 0u));
+                params->depth_test_disabled
+                   ? 0u
+                   : R300_Z_ENABLE |
+                        (params->depth_write ? R300_Z_WRITE_ENABLE : 0u));
 
    /* Stencil stays disabled through ZB_CNTL, so the stencil fields of
     * this word select nothing and the depth comparison is its content.

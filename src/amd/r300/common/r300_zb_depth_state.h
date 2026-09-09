@@ -55,6 +55,8 @@ struct r300_zb_depth_state_params {
     * proving the write needs this set and a readback of the buffer.
     */
    bool depth_write;
+   /* Disabled testing also suppresses depth writes. */
+   bool depth_test_disabled;
 };
 
 /* Dwords r300_zb_depth_state_emit reserves, so a caller sizes its

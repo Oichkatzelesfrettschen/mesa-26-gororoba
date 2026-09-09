@@ -178,6 +178,19 @@ depth_write_disabled(void)
 }
 
 static void
+depth_test_disabled(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   struct r300_zb_depth_state_params params = reference;
+   params.depth_test_disabled = true;
+   params.depth_write = true;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+   assert(words[9] == 0u);
+}
+
+static void
 every_comparison_encodes(void)
 {
    for (uint32_t function = R300_ZS_NEVER; function <= R300_ZS_ALWAYS;
@@ -414,6 +427,7 @@ main(void)
    reported_relocation_index();
    tile_bits_ride_the_pitch();
    depth_write_disabled();
+   depth_test_disabled();
    every_comparison_encodes();
    every_depth_format_encodes();
    validation();

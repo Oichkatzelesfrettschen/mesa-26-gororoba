@@ -303,6 +303,7 @@ r3v_native_files = files(
   'r3v_native_fill_route.c',
   'r3v_native_rb2d_tiled_copy.c',
   'r3v_native_depth_image_contract.c',
+  'r3v_native_depth_pipeline.c',
   'r3v_native_image.c',
   'r3v_native_identity.c',
   'r3v_native_memory.c',
@@ -1434,6 +1435,19 @@ r3v_native_depth_image_contract_test = executable(
   gnu_symbol_visibility : 'hidden',
 )
 test('r3v-native-depth-image-contract', r3v_native_depth_image_contract_test,
+     suite : ['r3v'])
+
+r3v_native_depth_pipeline_test = executable(
+  'r3v_native_depth_pipeline_test',
+  files('tests/r3v_native_depth_pipeline_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-depth-pipeline', r3v_native_depth_pipeline_test,
      suite : ['r3v'])
 
 r3v_native_zb_depth_surface_catalogue_test = executable(
