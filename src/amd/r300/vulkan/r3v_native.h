@@ -1721,11 +1721,6 @@ struct r3v_native_pipeline {
    /* Lowered depth comparison and timing state for a D24S8 subpass. */
    struct r3v_native_depth_pipeline_state depth_pipeline;
    bool has_depth_pipeline;
-   /* Depth attachment captured at pass begin and the combined load clear. */
-   struct r3v_native_memory *depth_memory;
-   struct r3v_native_depth_image_bound depth_bound;
-   struct r300_zb_combined_clear_plan depth_clear;
-   bool has_depth_clear;
    bool gpu_vertex_job_identity;
    /* The linked stage boundary the two modules declare: per-location
     * kind, width, mask, and Smooth/Flat/NoPerspective interpolation
@@ -1841,7 +1836,7 @@ VkResult r3v_native_cmd_buffer_append_ib(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r300_tcl_bypass_triangle_ib *cell,
    const struct r3v_native_bo_reference *references,
-   uint32_t reference_count,
+   const uint32_t *reference_slots, uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell);
 
 /* Returns an installed stream and its relocation list to the allocator and
@@ -2177,6 +2172,10 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled,
+   struct r3v_native_memory *depth_memory,
+   const struct r3v_native_depth_image_bound *depth_bound,
+   const struct r3v_native_depth_pipeline_state *depth_pipeline,
+   const struct r300_zb_combined_clear_plan *depth_clear,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell);
 
 /* Resolves every adaptive NoPerspective deferred draw of the command

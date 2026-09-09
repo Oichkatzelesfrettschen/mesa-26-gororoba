@@ -16,6 +16,7 @@
 struct r300_zb_combined_clear_request {
    const struct r300_zb_depth_surface *surface;
    uint64_t surface_base_bytes;
+   uint64_t binding_offset_bytes;
    uint64_t mapped_surface_bytes;
    uint32_t pitch_bytes;
    enum r300_rb2d_format format;

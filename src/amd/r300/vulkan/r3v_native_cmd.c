@@ -139,7 +139,7 @@ r3v_native_cmd_buffer_append_ib(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r300_tcl_bypass_triangle_ib *cell,
    const struct r3v_native_bo_reference *references,
-   uint32_t reference_count,
+   const uint32_t *reference_slots, uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell)
 {
    /* slot_index below holds one entry per relocation slot the triangle
@@ -172,18 +172,27 @@ r3v_native_cmd_buffer_append_ib(
     * cell's payload for that slot must name.
     */
    uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT] = { 0 };
-   for (uint32_t slot = 0; slot < reference_count; slot++) {
+   uint32_t populated_slots = 0;
+   for (uint32_t reference = 0; reference < reference_count; reference++) {
+      const uint32_t slot =
+         reference_slots != NULL ? reference_slots[reference] : reference;
+      if (slot >= R300_TRIANGLE_SLOT_COUNT ||
+          (populated_slots & (1u << slot)) != 0) {
+         free(merged);
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
+      populated_slots |= 1u << slot;
       uint32_t found = merged_count;
       for (uint32_t i = 0; i < merged_count; i++) {
-         if (merged[i].handle == references[slot].handle) {
+         if (merged[i].handle == references[reference].handle) {
             found = i;
             break;
          }
       }
       if (found == merged_count)
-         merged[merged_count++] = references[slot];
-      merged[found].read_domains |= references[slot].read_domains;
-      merged[found].write_domain |= references[slot].write_domain;
+         merged[merged_count++] = references[reference];
+      merged[found].read_domains |= references[reference].read_domains;
+      merged[found].write_domain |= references[reference].write_domain;
       slot_index[slot] = found;
    }
 
@@ -191,10 +200,10 @@ r3v_native_cmd_buffer_append_ib(
     * relocations bind to the same merged indices and the cell can
     * replace the appended span in place. */
    int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
-      cell, slot_index, reference_count);
+      cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
    if (bound == 0 && alternate_cell != NULL)
       bound = r300_tcl_bypass_triangle_bind_reloc_indices(
-         alternate_cell, slot_index, reference_count);
+         alternate_cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
    if (bound != 0) {
       free(merged);
       return vk_error(device, r3v_native_cell_vk_result_from_errno(bound));

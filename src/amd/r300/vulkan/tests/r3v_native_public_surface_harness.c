@@ -38,6 +38,7 @@
 #include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/radeon_legacy_2d_reg.h"
 
 #include "vk_semaphore.h"
 
@@ -257,8 +258,66 @@ fresh_cmd(void)
    return cmd;
 }
 
+/* One contract-shaped graphics pipeline over the given vertex format and
+ * stride.  Each field lets a refusal leg deviate by one public state member.
+ */
+struct pipeline_shape {
+   /* 0 omits depth/stencil state, 1 supplies disabled state, and 2 enables
+    * the depth test. */
+   int depth_stencil;
+   VkFormat attribute_format;
+   uint32_t stride;
+   VkBool32 blend_enable;
+   /* Select the ONE, ZERO, ADD identity when blending is enabled. */
+   VkBool32 blend_identity;
+   /* Remove every color channel from the attachment write mask. */
+   VkBool32 write_mask_zero;
+   /* Enable the selected logic operation. */
+   VkBool32 logic_op_enable;
+   VkLogicOp logic_op;
+   VkCullModeFlags cull_mode;
+   VkFrontFace front_face;
+   /* A null vertex module selects the position pass-through module. */
+   const uint32_t *vertex_words;
+   size_t vertex_bytes;
+   const uint32_t *fragment_words;
+   size_t fragment_bytes;
+   /* Zero selects the maximum target extent. */
+   uint32_t extent_width;
+   uint32_t extent_height;
+   /* Declare viewport and scissor dynamic. */
+   VkBool32 dynamic_viewport_scissor;
+};
+
+static VkResult
+make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
+              VkPipelineLayout layout, VkPipeline *pipeline);
+
+static VkCommandBuffer
+record_triangle_draw(const VkRenderPassBeginInfo *begin_pass,
+                     VkPipeline pipeline, VkBuffer vertex_buffer,
+                     uint32_t vertex_count, uint32_t instance_count,
+                     uint32_t first_vertex);
+
+static uint32_t
+find_last_register_write(const uint32_t *ib, uint32_t ib_size_dwords,
+                         uint32_t register_offset)
+{
+   const uint32_t header = CP_PACKET0(register_offset, 0);
+   uint32_t found = UINT32_MAX;
+
+   for (uint32_t word = 0; word + 1 < ib_size_dwords; word++) {
+      if (ib[word] != header)
+         continue;
+      found = word;
+   }
+   assert(found != UINT32_MAX);
+   return found;
+}
+
 static void
-check_depth_attachment_begin(VkImageView color_view)
+check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
+                             VkBuffer vertex_buffer)
 {
    VkImage depth_image = VK_NULL_HANDLE;
    assert(vkCreateImage(device, &(VkImageCreateInfo){
@@ -334,10 +393,52 @@ check_depth_attachment_begin(VkImageView color_view)
       .renderArea = { { 0, 0 }, { 64, 64 } },
       .clearValueCount = 2, .pClearValues = clears,
    };
-   VkCommandBuffer command_buffer = fresh_cmd();
-   vkCmdBeginRenderPass(command_buffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
-   vkCmdEndRenderPass(command_buffer);
-   assert(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
+   const struct pipeline_shape depth_shape = {
+      .depth_stencil = 2,
+      .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .stride = 16,
+      .fragment_words = r3v_reference_fragment_spirv,
+      .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+   };
+   VkPipeline depth_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&depth_shape, pass, layout, &depth_pipeline) ==
+             VK_SUCCESS &&
+          depth_pipeline != VK_NULL_HANDLE);
+   VkCommandBuffer command_buffer = record_triangle_draw(
+      &begin, depth_pipeline, vertex_buffer, 3, 1, 0);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command_buffer);
+   VK_FROM_HANDLE(r3v_native_memory, native_depth_memory, depth_memory);
+
+   uint32_t depth_reference_count = 0;
+   for (uint32_t reference = 0; reference < native_command->reference_count;
+        reference++)
+      depth_reference_count +=
+         native_command->references[reference].handle ==
+         native_depth_memory->bo.handle;
+   assert(depth_reference_count == 1);
+
+   const uint32_t clear_launch = find_last_register_write(
+      native_command->ib, native_command->ib_size_dwords,
+      RADEON_DST_WIDTH_HEIGHT);
+   const uint32_t depth_state = find_last_register_write(
+      native_command->ib, native_command->ib_size_dwords, R300_ZB_FORMAT);
+   const uint32_t bandwidth_control = find_last_register_write(
+      native_command->ib, native_command->ib_size_dwords, R300_ZB_BW_CNTL);
+   const uint32_t triangle_draw = r300_triangle_draw_dword(
+      &(struct r300_tcl_bypass_triangle_ib){
+         .ib = native_command->ib,
+         .ib_size_dwords = native_command->ib_size_dwords,
+      });
+   assert(clear_launch < depth_state && depth_state < triangle_draw);
+   assert(bandwidth_control > depth_state &&
+          bandwidth_control < triangle_draw);
+   assert(native_command->ib[bandwidth_control + 1] ==
+          (R300_HIZ_DISABLE | R300_FAST_FILL_DISABLE |
+           R300_RD_COMP_DISABLE | R300_WR_COMP_DISABLE));
+   for (uint32_t word = 0; word < native_command->ib_size_dwords; word++) {
+      assert(native_command->ib[word] != CP_PACKET0(R300_ZB_ZMASK_OFFSET, 0));
+      assert(native_command->ib[word] != CP_PACKET0(R300_ZB_ZMASK_PITCH, 0));
+   }
 
    VkImageView variants[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE,
                                VK_NULL_HANDLE };
@@ -378,6 +479,7 @@ check_depth_attachment_begin(VkImageView color_view)
    vkDestroyImageView(device, variants[2], NULL);
    vkDestroyImageView(device, variants[0], NULL);
    vkDestroyFramebuffer(device, framebuffer, NULL);
+   vkDestroyPipeline(device, depth_pipeline, NULL);
    vkDestroyRenderPass(device, pass, NULL);
    vkDestroyImageView(device, depth_view, NULL);
    vkDestroyImage(device, depth_image, NULL);
@@ -563,40 +665,6 @@ make_module(const uint32_t *words, size_t bytes)
              NULL, &module) == VK_SUCCESS);
    return module;
 }
-
-/* One contract-shaped graphics pipeline over the given vertex format
- * and stride; the mutate hook lets the negative legs deviate exactly
- * one member.
- */
-struct pipeline_shape {
-   /* Attach a depth/stencil state: DISABLED passes the all-disabled
-    * struct, ENABLED turns the depth test on (the refusal leg). */
-   int depth_stencil; /* 0 none, 1 disabled, 2 enabled */
-   VkFormat attribute_format;
-   uint32_t stride;
-   VkBool32 blend_enable;
-   /* With blend_enable, select the identity configuration (ONE, ZERO,
-    * ADD) instead of the zero-initialized factors. */
-   VkBool32 blend_identity;
-   /* Zero the color write mask (the no-channel shape). */
-   VkBool32 write_mask_zero;
-   /* Enable the logic op; the op itself. */
-   VkBool32 logic_op_enable;
-   VkLogicOp logic_op;
-   VkCullModeFlags cull_mode;
-   VkFrontFace front_face;
-   /* Zero selects the position pass-through vertex module. */
-   const uint32_t *vertex_words;
-   size_t vertex_bytes;
-   const uint32_t *fragment_words;
-   size_t fragment_bytes;
-   /* Viewport/scissor extent; zero selects the maximum target extent. */
-   uint32_t extent_width;
-   uint32_t extent_height;
-   /* Declare viewport and scissor dynamic; the vkCmdSet values then
-    * carry the extent. */
-   VkBool32 dynamic_viewport_scissor;
-};
 
 static VkResult
 make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
@@ -7302,7 +7370,7 @@ main(void)
    assert(!r3v_native_cache_publication_precedes_close(
       known_bad_cache_event, known_bad_close_event));
 
-   check_depth_attachment_begin(view);
+   check_depth_attachment_begin(view, layout, vertex_buffer);
 
    vkDestroyPipeline(device, xyz_pipeline, NULL);
    vkDestroyPipeline(device, pipeline, NULL);

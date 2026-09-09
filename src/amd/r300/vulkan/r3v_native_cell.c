@@ -76,6 +76,60 @@ r3v_native_cell_vk_result_from_errno(int emit_result)
                                  : VK_ERROR_INITIALIZATION_FAILED;
 }
 
+static int
+prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
+                    struct r300_tcl_bypass_triangle_ib *cell)
+{
+   if (clear == NULL || cell == NULL || cell->ib == NULL ||
+       cell->reloc_site_count >= R300_TRIANGLE_MAX_RELOC_SITES)
+      return -EINVAL;
+
+   const uint32_t clear_dwords = R300_RB2D_FILL_DWORDS(clear->fill.rect_count);
+   if (clear_dwords > UINT32_MAX - cell->ib_size_dwords)
+      return -EOVERFLOW;
+   const uint32_t total_dwords = clear_dwords + cell->ib_size_dwords;
+   uint32_t *words = calloc(total_dwords, sizeof(*words));
+   if (words == NULL)
+      return -ENOMEM;
+
+   struct r300_rb2d_fill_ib clear_ib = { 0 };
+   int result = r300_rb2d_fill_emit_into(&clear->fill, words, clear_dwords,
+                                         &clear_ib);
+   if (result != 0 || clear_ib.reloc_site_count != 1u) {
+      free(words);
+      return result != 0 ? result : -EINVAL;
+   }
+   memcpy(words + clear_dwords, cell->ib,
+          (size_t)cell->ib_size_dwords * sizeof(*words));
+
+   struct r300_tcl_bypass_triangle_ib composed = *cell;
+   composed.ib = words;
+   composed.ib_size_dwords = total_dwords;
+   composed.owns_ib = true;
+   memmove(&composed.reloc_sites[1], &composed.reloc_sites[0],
+           (size_t)cell->reloc_site_count * sizeof(composed.reloc_sites[0]));
+   composed.reloc_sites[0] =
+      (struct r300_tcl_bypass_triangle_reloc_site){
+         .ib_index = clear_ib.reloc_sites[0].ib_index,
+         .slot = R300_TRIANGLE_SLOT_DEPTH,
+      };
+   composed.reloc_site_count++;
+   composed.ib[composed.reloc_sites[0].ib_index] =
+      R300_TRIANGLE_SLOT_DEPTH * 4u;
+   for (uint32_t site = 1; site < composed.reloc_site_count; site++)
+      composed.reloc_sites[site].ib_index += clear_dwords;
+
+   result = r300_tcl_bypass_triangle_validate_reloc_sites(&composed);
+   if (result != 0) {
+      free(words);
+      return result;
+   }
+   if (cell->owns_ib)
+      free(cell->ib);
+   *cell = composed;
+   return 0;
+}
+
 /* The triangle cell binds both roles at byte offset zero.  A shared GEM BO
  * makes the vertex fetch overlap the color target, and
  * radeon_drm_vk_reloc_list_add (rg --fixed-strings
@@ -403,6 +457,12 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
                                   *sampled,
+                               struct r3v_native_memory *depth_memory,
+                               const struct r300_zb_depth_state_params
+                                  *depth_state,
+                               bool z_top_enable,
+                               const struct r300_zb_combined_clear_plan
+                                  *depth_clear,
                                struct r300_tcl_bypass_triangle_ib
                                   *alternate_carrier_out)
 {
@@ -483,11 +543,34 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       if (emit_result != 0)
          r300_tcl_bypass_triangle_release(&cell);
    }
-   if (emit_result != 0)
+   if (emit_result == 0 && depth_state != NULL)
+      emit_result = r300_tcl_bypass_triangle_insert_depth_state(&cell,
+                                                                depth_state,
+                                                                z_top_enable);
+   if (emit_result == 0 && depth_state != NULL && depth_clear != NULL)
+      emit_result = prepend_depth_clear(depth_clear, &cell);
+   if (emit_result == 0 && depth_state != NULL && retain_window_cell)
+      emit_result = r300_tcl_bypass_triangle_insert_depth_state(&window_cell,
+                                                                depth_state,
+                                                                z_top_enable);
+   if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
+       retain_window_cell)
+      emit_result = prepend_depth_clear(depth_clear, &window_cell);
+   if (emit_result == 0 && depth_state != NULL &&
+       alternate_carrier_out != NULL)
+      emit_result = r300_tcl_bypass_triangle_insert_depth_state(
+         alternate_carrier_out, depth_state, z_top_enable);
+   if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
+       alternate_carrier_out != NULL)
+      emit_result = prepend_depth_clear(depth_clear, alternate_carrier_out);
+   if (emit_result != 0) {
+      r300_tcl_bypass_triangle_release(&cell);
       r300_tcl_bypass_triangle_release(&window_cell);
-   if (emit_result != 0)
+      if (alternate_carrier_out != NULL)
+         r300_tcl_bypass_triangle_release(alternate_carrier_out);
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
+   }
 
    /* Reference order is relocation-slot order: the queue records the index
     * returned by radeon_drm_vk_reloc_list_add for each reference, and the
@@ -496,9 +579,10 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * list reaches the queue, so deduplication cannot leave a slot payload
     * outside the relocation chunk.
     */
-   const uint32_t slot_count = sampled != NULL
-                                  ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
-                                  : R300_TRIANGLE_RENDER_SLOT_COUNT;
+   const uint32_t base_slot_count = sampled != NULL
+                                       ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
+                                       : R300_TRIANGLE_RENDER_SLOT_COUNT;
+   const uint32_t slot_count = base_slot_count + (depth_state != NULL ? 1u : 0u);
    struct r3v_native_bo_reference *references =
       calloc(slot_count, sizeof(*references));
    if (references == NULL) {
@@ -529,6 +613,20 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
             .memory = sampled->memory,
          };
    }
+   uint32_t reference_slots[R300_TRIANGLE_SLOT_COUNT] = {
+      R300_TRIANGLE_SLOT_VERTEX,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+   };
+   if (depth_state != NULL) {
+      references[base_slot_count] = (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+      reference_slots[base_slot_count] = R300_TRIANGLE_SLOT_DEPTH;
+   }
 
    /* A second recorded pass appends its cell to the installed stream:
     * each half opens with its own first-draw contract, so the
@@ -539,7 +637,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     */
    if (cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1) {
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
-         device, cmd_buffer, &cell, references, slot_count,
+         device, cmd_buffer, &cell, references, reference_slots, slot_count,
          alternate_carrier_out);
       free(references);
       if (appended != VK_SUCCESS) {
@@ -557,6 +655,31 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       return VK_SUCCESS;
    }
 
+   if (depth_state != NULL) {
+      uint32_t slot_indices[R300_TRIANGLE_SLOT_COUNT] = { 0 };
+      for (uint32_t reference = 0; reference < slot_count; reference++)
+         slot_indices[reference_slots[reference]] = reference;
+      const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+         &cell, slot_indices, R300_TRIANGLE_SLOT_COUNT);
+      int alternate_bound = 0;
+      if (bound == 0 && retain_window_cell)
+         alternate_bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+            &window_cell, slot_indices, R300_TRIANGLE_SLOT_COUNT);
+      if (bound == 0 && alternate_bound == 0 &&
+          alternate_carrier_out != NULL)
+         alternate_bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+            alternate_carrier_out, slot_indices, R300_TRIANGLE_SLOT_COUNT);
+      if (bound != 0 || alternate_bound != 0) {
+         free(references);
+         r300_tcl_bypass_triangle_release(&cell);
+         r300_tcl_bypass_triangle_release(&window_cell);
+         if (alternate_carrier_out != NULL)
+            r300_tcl_bypass_triangle_release(alternate_carrier_out);
+         return vk_error(
+            device, r3v_native_cell_vk_result_from_errno(
+                       bound != 0 ? bound : alternate_bound));
+      }
+   }
    r3v_native_cmd_buffer_install_ib(cmd_buffer,
                                     sampled != NULL
                                        ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
@@ -602,7 +725,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
                                          false, false, false, false, 0, 1, NULL,
-                                         NULL);
+                                         NULL, NULL, false, NULL, NULL);
 }
 
 VkResult
@@ -616,6 +739,10 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled,
+   struct r3v_native_memory *depth_memory,
+   const struct r3v_native_depth_image_bound *depth_bound,
+   const struct r3v_native_depth_pipeline_state *depth_pipeline,
+   const struct r300_zb_combined_clear_plan *depth_clear,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -668,13 +795,36 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    shape.target_offset = (uint32_t)target_base;
    if (!varying)
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
+   struct r300_zb_depth_state_params depth_state;
+   const struct r300_zb_depth_state_params *selected_depth_state = NULL;
+   if (depth_memory != NULL || depth_bound != NULL || depth_pipeline != NULL ||
+       depth_clear != NULL) {
+      if (depth_memory == NULL || depth_bound == NULL ||
+          depth_bound->contract == NULL || depth_pipeline == NULL ||
+          depth_clear == NULL || depth_bound->surface_base_bytes > UINT32_MAX)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      depth_state = depth_pipeline->hardware;
+      depth_state.pitch_pixels = depth_bound->contract->surface.pitch_pixels;
+      depth_state.depth_format = depth_bound->contract->surface.depth_format;
+      depth_state.pitch_tile_bits = r300_zb_depth_surface_tile_bits(
+         &depth_bound->contract->surface);
+      depth_state.depth_offset_bytes =
+         (uint32_t)depth_bound->surface_base_bytes;
+      depth_state.depth_relocation_payload = R300_TRIANGLE_SLOT_DEPTH * 4u;
+      selected_depth_state = &depth_state;
+   }
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, true, varying,
                                          flat_color0, noperspective_carrier,
                                          noperspective_q_lane,
                                          noperspective_mixed_carrier,
                                          rs_probe_candidate, triangle_count,
-                                         sampled, alternate_carrier_cell);
+                                         sampled, depth_memory,
+                                         selected_depth_state,
+                                         depth_pipeline != NULL &&
+                                            depth_pipeline->early_fragment_tests,
+                                         depth_clear,
+                                         alternate_carrier_cell);
 }
 
 /* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume
@@ -4383,7 +4533,7 @@ r3v_native_record_multi_pass(VkCommandBuffer commandBuffer,
       }
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
          device, cmd_buffer, &cell, references,
-         R300_TRIANGLE_RENDER_SLOT_COUNT, NULL);
+         NULL, R300_TRIANGLE_RENDER_SLOT_COUNT, NULL);
       free(references);
       r300_tcl_bypass_triangle_release(&cell);
       if (appended != VK_SUCCESS)

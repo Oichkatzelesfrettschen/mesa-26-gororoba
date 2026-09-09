@@ -2479,6 +2479,7 @@ test_composed_reloc_payloads_bind_to_merged_indices(void)
    handle_of_slot[R300_TRIANGLE_SLOT_TEXTURE] = 7;
    handle_of_slot[R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 9;
    handle_of_slot[R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 11;
+   handle_of_slot[R300_TRIANGLE_SLOT_DEPTH] = 13;
 
    uint32_t merged[R300_TRIANGLE_SLOT_COUNT];
    uint32_t merged_handles[R300_TRIANGLE_SLOT_COUNT];
@@ -2495,16 +2496,16 @@ test_composed_reloc_payloads_bind_to_merged_indices(void)
          merged_handles[merged_count++] = handle_of_slot[slot];
       merged[slot] = found;
    }
-   /* Five slots over four buffer objects, so the texture shares the
+   /* Six slots over five buffer objects, so the texture shares the
     * color's entry and every later slot shifts down one.
     */
-   assert(merged_count == 4);
+   assert(merged_count == 5);
    assert(merged[R300_TRIANGLE_SLOT_TEXTURE] ==
           merged[R300_TRIANGLE_SLOT_COLOR]);
    assert(merged[R300_TRIANGLE_SLOT_COMPOSED_COLOR] == 3);
 
    /* The emitted payload names the slot, which the merged chunk no
-    * longer agrees with at three of the five sites.
+    * longer agrees with at three of the five active sites.
     */
    uint32_t disagreements = 0;
    for (uint32_t i = 0; i < ib.reloc_site_count; i++) {

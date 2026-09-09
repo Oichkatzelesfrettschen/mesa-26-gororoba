@@ -33,7 +33,7 @@ depth_clear_code(float value, uint32_t *code)
 {
    if (code == NULL || !isfinite(value) || value < 0.0f || value > 1.0f)
       return false;
-   *code = (uint32_t)(value * 16777215.0f + 0.5f);
+   *code = (uint32_t)((double)value * 16777215.0 + 0.5);
    return true;
 }
 
@@ -137,7 +137,9 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
              &(struct r300_zb_combined_clear_request){
                 .surface = &depth_view->image->depth_contract.surface,
                 .surface_base_bytes =
-                   depth_view->image->depth_bound.surface_base_bytes,
+                   depth_view->image->depth_contract.surface_base_bytes,
+                .binding_offset_bytes =
+                   depth_view->image->depth_bound.binding_offset_bytes,
                 .mapped_surface_bytes =
                    depth_view->image->depth_bound.bo_bytes,
                 .pitch_bytes =
@@ -146,8 +148,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
                 .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
                 .depth_code = depth_code,
                 .stencil = clear.stencil,
-             },
-             &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
+             }, &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
          poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
          return;
       }
@@ -669,6 +670,10 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       rs_control_word,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled,
+      pass_has_depth ? pass_draw->depth_memory : NULL,
+      pass_has_depth ? &pass_draw->depth_bound : NULL,
+      pass_has_depth ? &pipeline->depth_pipeline : NULL,
+      pass_has_depth ? &pass_draw->depth_clear : NULL,
       adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
