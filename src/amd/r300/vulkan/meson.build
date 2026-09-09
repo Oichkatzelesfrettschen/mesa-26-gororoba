@@ -3469,11 +3469,30 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       timeout : 60,
       suite : ['r3v'],
     )
+    test(
+      'r3v-native-public-zb-depth-prepare-' + public_depth_mode,
+      r3v_native_attended_public_zb_depth,
+      args : [meson.current_build_dir(), '2', public_depth_mode,
+              '--prepare'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
   endforeach
   test(
     'r3v-native-public-zb-depth-record-persistence',
     r3v_native_attended_public_zb_depth,
     args : [meson.current_build_dir(), '--persistence', '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-public-zb-depth-prepare-persistence',
+    r3v_native_attended_public_zb_depth,
+    args : [meson.current_build_dir(), '--persistence', '--prepare'],
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,

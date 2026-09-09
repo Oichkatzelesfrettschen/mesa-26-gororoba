@@ -17,6 +17,7 @@
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/r300/common/r300_zb_depth_layout.h"
 #include "amd/r300/common/r300_zb_depth_surface.h"
+#include "util/mesa-blake3.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -182,6 +183,18 @@ static void
 store_word(uint8_t *bytes, uint32_t offset, uint32_t word)
 {
    memcpy(bytes + offset, &word, sizeof(word));
+}
+
+static void
+blake3_hex(const void *data, size_t size,
+           char text[BLAKE3_OUT_LEN * 2u + 1u])
+{
+   struct mesa_blake3 context;
+   blake3_hash digest;
+   _mesa_blake3_init(&context);
+   _mesa_blake3_update(&context, data, size);
+   _mesa_blake3_final(&context, digest);
+   _mesa_blake3_format(text, digest);
 }
 
 static bool
@@ -1082,6 +1095,20 @@ recorded_load_contract(VkCommandBuffer command,
 }
 
 static bool
+command_digest(VkCommandBuffer command,
+               char digest[BLAKE3_OUT_LEN * 2u + 1u],
+               uint32_t *dwords)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command);
+   if (native_command->ib_size_dwords == 0u)
+      return false;
+   r300_triangle_ib_digest_hex(native_command->ib,
+                               native_command->ib_size_dwords, digest);
+   *dwords = native_command->ib_size_dwords;
+   return true;
+}
+
+static bool
 classify_public_color(const uint32_t *color, uint32_t pattern,
                       enum run_mode mode, uint32_t *mismatches_out,
                       bool *containment_out)
@@ -1260,12 +1287,13 @@ hardware_environment_matches(const char *evidence_dir,
 
 static int
 run_public_single(const char *evidence_dir, uint32_t pattern,
-                  enum run_mode mode, bool record_only)
+                  enum run_mode mode, bool record_only, bool prepare_only)
 {
    uint8_t before[DEPTH_BYTES];
    if (!fill_depth_image(before, pattern, mode))
       return 2;
-   if (!record_only && !hardware_environment_matches(evidence_dir, "1")) {
+   if (!record_only && !prepare_only &&
+       !hardware_environment_matches(evidence_dir, "1")) {
       fprintf(stderr, "hardware environment does not authorize one public "
                       "submission\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -1286,6 +1314,26 @@ run_public_single(const char *evidence_dir, uint32_t pattern,
    }
    printf("[record] pattern=%u mode=%s public_load_contract=PASS\n", pattern,
           mode_names[mode]);
+   if (prepare_only) {
+      float vertices[48];
+      char ib_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      char initial_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      char vertex_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      uint32_t ib_dwords;
+      fill_public_vertices(mode, vertices);
+      if (!command_digest(command, ib_digest, &ib_dwords)) {
+         destroy_public_context(&context);
+         return 2;
+      }
+      blake3_hex(before, sizeof(before), initial_digest);
+      blake3_hex(vertices, sizeof(vertices), vertex_digest);
+      printf("pattern=%u\nmode=%s\nib_dwords=%u\nib_blake3=%s\n"
+             "initial_image_blake3=%s\nvertex_blake3=%s\n",
+             pattern, mode_names[mode], ib_dwords, ib_digest,
+             initial_digest, vertex_digest);
+      destroy_public_context(&context);
+      return 0;
+   }
    if (record_only) {
       destroy_public_context(&context);
       return finish(OUTCOME_PASS);
@@ -1343,13 +1391,15 @@ retain_and_check_other_depth(struct public_context *context,
 }
 
 static int
-run_public_persistence(const char *evidence_dir, bool record_only)
+run_public_persistence(const char *evidence_dir, bool record_only,
+                       bool prepare_only)
 {
    uint8_t initial[2][DEPTH_BYTES];
    if (!fill_depth_image_codes(initial[0], 2u, 0x200000u, 0x600000u) ||
        !fill_depth_image_codes(initial[1], 19u, 0x100000u, 0x700000u))
       return 2;
-   if (!record_only && !hardware_environment_matches(evidence_dir, "3")) {
+   if (!record_only && !prepare_only &&
+       !hardware_environment_matches(evidence_dir, "3")) {
       fprintf(stderr, "hardware environment does not authorize three public "
                       "submissions\n");
       return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -1375,6 +1425,39 @@ run_public_persistence(const char *evidence_dir, bool record_only)
       }
    }
    printf("[record] persistence=A2,B19,A2 public_load_contract=PASS\n");
+   if (prepare_only) {
+      char ib_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      char candidate_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      char a_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      char b_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      char vertex_digest[BLAKE3_OUT_LEN * 2u + 1u];
+      float vertices[48];
+      uint32_t ib_dwords;
+      uint32_t candidate_dwords;
+      if (!command_digest(commands[0], ib_digest, &ib_dwords)) {
+         destroy_public_context(&context);
+         return 2;
+      }
+      for (uint32_t ordinal = 1; ordinal < 3; ordinal++) {
+         if (!command_digest(commands[ordinal], candidate_digest,
+                             &candidate_dwords) ||
+             candidate_dwords != ib_dwords ||
+             strcmp(candidate_digest, ib_digest) != 0) {
+            destroy_public_context(&context);
+            return 2;
+         }
+      }
+      fill_public_vertices(MODE_READ, vertices);
+      blake3_hex(initial[0], sizeof(initial[0]), a_digest);
+      blake3_hex(initial[1], sizeof(initial[1]), b_digest);
+      blake3_hex(vertices, sizeof(vertices), vertex_digest);
+      printf("persistence_sequence=A2,B19,A2\nib_dwords=%u\n"
+             "ib_blake3=%s\ninitial_a_blake3=%s\n"
+             "initial_b_blake3=%s\nvertex_blake3=%s\n",
+             ib_dwords, ib_digest, a_digest, b_digest, vertex_digest);
+      destroy_public_context(&context);
+      return 0;
+   }
    if (record_only) {
       destroy_public_context(&context);
       return finish(OUTCOME_PASS);
@@ -1496,23 +1579,28 @@ main(int argc, char **argv)
       return 0;
    }
    bool record_only = false;
+   bool prepare_only = false;
    if (argc > 2 && strcmp(argv[argc - 1], "--record-only") == 0) {
       record_only = true;
       argc--;
+   } else if (argc > 2 && strcmp(argv[argc - 1], "--prepare") == 0) {
+      prepare_only = true;
+      argc--;
    }
    if (argc == 3 && strcmp(argv[2], "--persistence") == 0)
-      return run_public_persistence(argv[1], record_only);
+      return run_public_persistence(argv[1], record_only, prepare_only);
    uint32_t pattern;
    enum run_mode mode;
    if (argc != 4 || !parse_pattern(argv[2], &pattern) ||
        !parse_mode(argv[3], &mode)) {
       fprintf(stderr,
               "usage: %s <evidence-directory> <pattern 0..19> "
-              "<read|write|nearfar|farnear> [--record-only]\n"
+              "<read|write|nearfar|farnear> [--prepare|--record-only]\n"
               "       %s <evidence-directory> --persistence "
-              "[--record-only]\n       %s --selftest\n",
+              "[--prepare|--record-only]\n       %s --selftest\n",
               argv[0], argv[0], argv[0]);
       return 2;
    }
-   return run_public_single(argv[1], pattern, mode, record_only);
+   return run_public_single(argv[1], pattern, mode, record_only,
+                            prepare_only);
 }
