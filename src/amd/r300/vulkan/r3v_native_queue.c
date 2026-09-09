@@ -171,6 +171,24 @@ r3v_native_cell_geometry_unfrozen(
        */
       if (!cmd_buffer->deferred_draws[0].pending)
          return false;
+      const struct r3v_native_deferred_draw *draw =
+         &cmd_buffer->deferred_draws[0];
+      const bool depth_attachment_recorded = draw->depth_memory != NULL;
+      if (draw->has_depth_clear != depth_attachment_recorded ||
+          draw->has_depth_pipeline != depth_attachment_recorded ||
+          cmd_buffer->reference_count !=
+             R300_TRIANGLE_RENDER_SLOT_COUNT +
+                (depth_attachment_recorded ? 1u : 0u))
+         return true;
+      if (depth_attachment_recorded) {
+         const struct r3v_native_bo_reference *depth =
+            &cmd_buffer->references[R300_TRIANGLE_RENDER_SLOT_COUNT];
+         if (depth->memory != draw->depth_memory ||
+             depth->handle != draw->depth_memory->bo.handle ||
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT)
+            return true;
+      }
       const uint32_t width = cmd_buffer->deferred_draws[0].target_width;
       const uint32_t height = cmd_buffer->deferred_draws[0].target_height;
       const uint32_t pitch_pixels =
@@ -191,8 +209,16 @@ r3v_native_cell_geometry_unfrozen(
        * a third relocation: vertex and texture device-read, color
        * device-written.
        */
-      if (!cmd_buffer->deferred_draws[0].pending ||
-          cmd_buffer->reference_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT)
+      if (!cmd_buffer->deferred_draws[0].pending)
+         return true;
+      const struct r3v_native_deferred_draw *draw =
+         &cmd_buffer->deferred_draws[0];
+      const bool depth_attachment_recorded = draw->depth_memory != NULL;
+      if (draw->has_depth_clear != depth_attachment_recorded ||
+          draw->has_depth_pipeline != depth_attachment_recorded ||
+          cmd_buffer->reference_count !=
+             R300_TRIANGLE_SAMPLED_SLOT_COUNT +
+                (depth_attachment_recorded ? 1u : 0u))
          return true;
       const uint32_t s_width = cmd_buffer->deferred_draws[0].target_width;
       const uint32_t s_height = cmd_buffer->deferred_draws[0].target_height;
@@ -209,12 +235,22 @@ r3v_native_cell_geometry_unfrozen(
          &cmd_buffer->references[R300_TRIANGLE_SLOT_COLOR];
       const struct r3v_native_bo_reference *s_texture =
          &cmd_buffer->references[R300_TRIANGLE_SLOT_TEXTURE];
-      return s_vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
-             s_vertex->write_domain != 0 ||
-             s_color->read_domains != 0 ||
-             s_color->write_domain != RADEON_GEM_DOMAIN_GTT ||
-             s_texture->read_domains != RADEON_GEM_DOMAIN_GTT ||
-             s_texture->write_domain != 0;
+      if (s_vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          s_vertex->write_domain != 0 || s_color->read_domains != 0 ||
+          s_color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          s_texture->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          s_texture->write_domain != 0)
+         return true;
+      if (depth_attachment_recorded) {
+         const struct r3v_native_bo_reference *depth =
+            &cmd_buffer->references[R300_TRIANGLE_SAMPLED_SLOT_COUNT];
+         if (depth->memory != draw->depth_memory ||
+             depth->handle != draw->depth_memory->bo.handle ||
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT)
+            return true;
+      }
+      return false;
    }
    case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE: {
       /* The declared shape is the geometry and the digest carries it;

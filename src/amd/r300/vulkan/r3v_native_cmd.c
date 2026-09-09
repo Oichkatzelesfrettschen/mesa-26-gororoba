@@ -196,6 +196,23 @@ r3v_native_cmd_buffer_append_ib(
       slot_index[slot] = found;
    }
 
+   const struct r300_tcl_bypass_triangle_ib *cells[] = {cell,
+                                                        alternate_cell};
+   for (uint32_t candidate = 0; candidate < ARRAY_SIZE(cells); candidate++) {
+      const struct r300_tcl_bypass_triangle_ib *candidate_cell =
+         cells[candidate];
+      if (candidate_cell == NULL)
+         continue;
+      for (uint32_t site = 0; site < candidate_cell->reloc_site_count; site++) {
+         const uint32_t slot = candidate_cell->reloc_sites[site].slot;
+         if (slot >= R300_TRIANGLE_SLOT_COUNT ||
+             (populated_slots & (1u << slot)) == 0) {
+            free(merged);
+            return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+         }
+      }
+   }
+
    /* An alternate cell shares the appended cell's references, so its
     * relocations bind to the same merged indices and the cell can
     * replace the appended span in place. */

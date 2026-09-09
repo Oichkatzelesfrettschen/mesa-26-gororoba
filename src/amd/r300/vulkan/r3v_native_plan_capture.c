@@ -58,8 +58,9 @@ static atomic_uint capture_next_ordinal = ATOMIC_VAR_INIT(0);
  * cell emitters bind their references in; a slot past a kind's table is
  * named by index so the entry still distinguishes it.
  */
-static const char *const triangle_roles[] = {"vertex", "color"};
-static const char *const sampled_roles[] = {"vertex", "color", "texture"};
+static const char *const triangle_roles[] = {"vertex", "color", "depth"};
+static const char *const sampled_roles[] = {"vertex", "color", "texture",
+                                             "depth"};
 /* The public producer route rides the triangle slots with the carrier
  * at the vertex slot, written by the producer and read by the consumer.
  */
