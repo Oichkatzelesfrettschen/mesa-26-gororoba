@@ -37,7 +37,8 @@ r3v_native_depth_pipeline_lower(
        state->sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO ||
        state->pNext != NULL || state->flags != 0 ||
        state->depthBoundsTestEnable || state->stencilTestEnable ||
-       depth_bias_enabled || shader->requested_early_fragment_tests)
+       depth_bias_enabled || shader->requested_early_fragment_tests ||
+       shader->writes_depth)
       return -EINVAL;
 
    uint32_t function = R300_ZS_ALWAYS;

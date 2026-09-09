@@ -67,16 +67,18 @@ main(void)
           0);
    assert(!state.early_fragment_tests);
    shader.has_observable_side_effects = false;
+   struct r3v_native_depth_pipeline_state before = state;
    shader.writes_depth = true;
    assert(r3v_native_depth_pipeline_lower(&disabled, &shader, false, &state) ==
-          0);
-   assert(!state.early_fragment_tests);
+          -EINVAL);
+   assert(memcmp(&state, &before, sizeof(state)) == 0);
+   shader.writes_depth = false;
 
-   struct r3v_native_depth_pipeline_state before = state;
    disabled.front.failOp = VK_STENCIL_OP_REPLACE;
    assert(r3v_native_depth_pipeline_lower(&disabled, &shader, false, &state) ==
           0);
-   assert(!state.early_fragment_tests);
+   assert(state.early_fragment_tests);
+   before = state;
    disabled.front.failOp = VK_STENCIL_OP_KEEP;
    disabled.stencilTestEnable = VK_TRUE;
    assert(r3v_native_depth_pipeline_lower(&disabled, &shader, false, &state) ==
