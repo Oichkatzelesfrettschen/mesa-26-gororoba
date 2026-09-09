@@ -267,7 +267,9 @@ check_depth_attachment_begin(VkImageView color_view)
       .format = VK_FORMAT_D24_UNORM_S8_UINT,
       .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
       .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
    }, NULL, &depth_image) == VK_SUCCESS);
    VkMemoryRequirements requirements;
