@@ -734,6 +734,15 @@ r3v_CmdCopyBufferToImage(
 
    for (uint32_t r = 0; r < regionCount; r++) {
       const VkBufferImageCopy *region = &pRegions[r];
+      if (image != NULL && image->depth_family) {
+         if (r3v_native_record_depth_image_copy(
+                commandBuffer, srcBuffer, dstImage, region, dstImageLayout, true) != VK_SUCCESS)
+         {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+         continue;
+      }
       struct r3v_native_deferred_copy *op =
          r3v_native_copy_slot(commandBuffer);
       uint32_t row_length;
@@ -839,6 +848,15 @@ r3v_CmdCopyImageToBuffer(
 
    for (uint32_t r = 0; r < regionCount; r++) {
       const VkBufferImageCopy *region = &pRegions[r];
+      if (image != NULL && image->depth_family) {
+         if (r3v_native_record_depth_image_copy(
+                commandBuffer, dstBuffer, srcImage, region, srcImageLayout, false) != VK_SUCCESS)
+         {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+         continue;
+      }
       struct r3v_native_deferred_copy *op =
          r3v_native_copy_slot(commandBuffer);
       uint32_t row_length;

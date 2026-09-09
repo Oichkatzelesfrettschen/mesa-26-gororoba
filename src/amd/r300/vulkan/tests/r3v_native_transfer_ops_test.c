@@ -20,6 +20,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "../r3v_native.h"
+
 static unsigned failures;
 
 enum mutation_mode {
@@ -1015,6 +1017,79 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
          "nonzero aligned depth binding");
    CHECK(vkBindImageMemory(f->device, image, memory, 4096) != VK_SUCCESS,
          "depth rebinding refuses");
+   struct staging staging;
+   if (create_staging(f, 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, &staging))
+      return 1;
+   VkBufferImageCopy region = {
+      .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+      .imageOffset = {37, 21, 0}, .imageExtent = {1, 1, 1},
+      .bufferImageHeight = 100,
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+   vkCmdCopyImageToBuffer(f->cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         staging.buffer, 1, &region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_copy, f->cmd);
+   CHECK(native_depth_copy->rb2d_copy_operation_count == 2u,
+         "depth transfer records two ordered operations");
+   if (native_depth_copy->rb2d_copy_operation_count == 2u) {
+      const struct r3v_native_rb2d_copy_operation *to_image =
+         &native_depth_copy->rb2d_copy_operations[0];
+      const struct r3v_native_rb2d_copy_operation *to_buffer =
+         &native_depth_copy->rb2d_copy_operations[1];
+      CHECK(to_image->segment_count == 1u &&
+               to_image->segments[0].source_offset_bytes == 0u &&
+               to_image->segments[0].destination_offset_bytes == 14133u &&
+               to_image->segments[0].byte_count == 3u,
+            "depth upload binds layout-local offset to image memory placement");
+      CHECK(to_buffer->segment_count == 1u &&
+               to_buffer->segments[0].source_offset_bytes == 14133u &&
+               to_buffer->segments[0].destination_offset_bytes == 0u &&
+               to_buffer->segments[0].byte_count == 3u,
+            "depth download preserves the bound image and buffer coordinates");
+   }
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "depth copies retain independent image/buffer origins in both directions");
+   for (unsigned invalid = 0; invalid < 4; invalid++) {
+      VkBufferImageCopy bad = region;
+      VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
+      if (invalid == 0)
+         bad.bufferOffset = 1;
+      if (invalid == 1)
+         bad.imageExtent.width = 2;
+      if (invalid == 2)
+         bad.imageSubresource.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+      if (invalid == 3)
+         layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      if (begin(f))
+         return 1;
+      vkCmdCopyImageToBuffer(f->cmd, image, layout, staging.buffer, 1, &bad);
+      CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+            "invalid depth copy case %u refuses", invalid);
+   }
+   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_stencil_copy, f->cmd);
+   CHECK(native_stencil_copy->rb2d_copy_operation_count == 1u &&
+            native_stencil_copy->rb2d_copy_operations[0].segment_count == 1u &&
+            native_stencil_copy->rb2d_copy_operations[0]
+                  .segments[0].source_offset_bytes == 0u &&
+            native_stencil_copy->rb2d_copy_operations[0]
+                  .segments[0].destination_offset_bytes == 14132u &&
+            native_stencil_copy->rb2d_copy_operations[0]
+                  .segments[0].byte_count == 1u,
+         "stencil upload addresses the packed low byte independently");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "single stencil byte records independently");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release depth copy references before object destruction");
+   destroy_staging(f, &staging);
    vkDestroyImage(f->device, image, NULL);
    vkFreeMemory(f->device, memory, NULL);
    info.extent.height = 65;

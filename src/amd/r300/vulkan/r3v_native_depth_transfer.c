@@ -1,0 +1,136 @@
+/* SPDX-License-Identifier: MIT */
+
+#include "r3v_native.h"
+
+#include "amd/r300/common/r300_zb_aspect_copy.h"
+
+#include <stdint.h>
+
+static bool
+r3v_native_depth_copy_apply_binding_offset(
+   const struct r3v_native_depth_image_bound *bound, bool buffer_to_image,
+   struct r300_rb2d_copy_segment *segment)
+{
+   uint64_t *surface_offset = buffer_to_image
+                                 ? &segment->destination_offset_bytes
+                                 : &segment->source_offset_bytes;
+   if (*surface_offset > UINT64_MAX - bound->binding_offset_bytes)
+      return false;
+   *surface_offset += bound->binding_offset_bytes;
+   return *surface_offset <= bound->bo_bytes &&
+          segment->byte_count <= bound->bo_bytes - *surface_offset;
+}
+
+VkResult
+r3v_native_record_depth_image_copy(
+   VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image_handle,
+   const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd, command_buffer);
+   VK_FROM_HANDLE(r3v_native_buffer, native_buffer, buffer);
+   VK_FROM_HANDLE(r3v_native_image, image, image_handle);
+   if (cmd == NULL || native_buffer == NULL || image == NULL || region == NULL ||
+       !image->depth_family || image->memory == NULL ||
+       (layout != VK_IMAGE_LAYOUT_GENERAL &&
+        layout != (buffer_to_image ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL :
+                                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)) ||
+       !(image->usage & (buffer_to_image ? VK_IMAGE_USAGE_TRANSFER_DST_BIT :
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) ||
+       !(native_buffer->vk.usage & (buffer_to_image ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT :
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT)) ||
+       native_buffer->memory == NULL ||
+       cmd->deferred_copy_count != 0u || cmd->deferred_draw_count != 0u ||
+       cmd->deferred_dispatch.pending || cmd->pass_target != NULL ||
+       region->imageSubresource.mipLevel != 0u ||
+       region->imageSubresource.baseArrayLayer != 0u ||
+       region->imageSubresource.layerCount != 1u ||
+       (region->imageSubresource.aspectMask != VK_IMAGE_ASPECT_DEPTH_BIT &&
+        region->imageSubresource.aspectMask != VK_IMAGE_ASPECT_STENCIL_BIT) ||
+       region->imageOffset.x < 0 || region->imageOffset.y < 0 ||
+       region->imageOffset.z != 0 || region->imageExtent.depth != 1u ||
+       region->imageExtent.width == 0u || region->imageExtent.height == 0u ||
+       (uint64_t)(uint32_t)region->imageOffset.x + region->imageExtent.width >
+          image->depth_contract.surface.width ||
+       (uint64_t)(uint32_t)region->imageOffset.y + region->imageExtent.height >
+          image->depth_contract.surface.height ||
+       (region->bufferOffset & 3u) != 0u ||
+       region->bufferOffset > native_buffer->vk.size ||
+       native_buffer->offset > native_buffer->memory->bo.size ||
+       native_buffer->vk.size >
+          native_buffer->memory->bo.size - native_buffer->offset)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const bool depth = region->imageSubresource.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT;
+   const uint32_t texel_bytes = depth ? 4u : 1u;
+   const uint32_t row_length = region->bufferRowLength != 0u
+                                  ? region->bufferRowLength
+                                  : region->imageExtent.width;
+   const uint32_t image_height = region->bufferImageHeight != 0u
+                                    ? region->bufferImageHeight
+                                    : region->imageExtent.height;
+   if (row_length < region->imageExtent.width ||
+       image_height < region->imageExtent.height)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   const uint64_t row_bytes = (uint64_t)row_length * texel_bytes;
+   const uint64_t last_byte =
+      region->bufferOffset +
+      ((uint64_t)(region->imageExtent.height - 1u) * row_length +
+       region->imageExtent.width) * texel_bytes;
+   if (row_bytes > UINT32_MAX || last_byte < region->bufferOffset ||
+       last_byte > native_buffer->vk.size)
+      { fprintf(stderr, "depth refusal line %d\n", __LINE__); return VK_ERROR_INITIALIZATION_FAILED; }
+
+   struct r300_rb2d_copy_segment segments[R300_RB2D_COPY_MAX_SEGMENTS];
+   uint32_t segment_count = 0u;
+   for (uint32_t y = 0u; y < region->imageExtent.height; y++) {
+      for (uint32_t x = 0u; x < region->imageExtent.width; x++) {
+         const enum r300_zb_aspect_copy_refusal aspect_refusal =
+            r300_zb_aspect_copy_plan(
+                &image->depth_contract.surface,
+                image->depth_contract.surface_base_bytes,
+                image->depth_contract.binding_bytes,
+                (uint32_t)region->imageOffset.x + x,
+                (uint32_t)region->imageOffset.y + y,
+                x, y, native_buffer->offset + region->bufferOffset,
+                (uint32_t)row_bytes, native_buffer->memory->bo.size,
+                depth ? R300_ZB_ASPECT_COPY_DEPTH :
+                        R300_ZB_ASPECT_COPY_STENCIL,
+                buffer_to_image ? R300_ZB_ASPECT_COPY_BUFFER_TO_SURFACE :
+                                  R300_ZB_ASPECT_COPY_SURFACE_TO_BUFFER,
+                &segments[segment_count]);
+         if (aspect_refusal != R300_ZB_ASPECT_COPY_OK ||
+             !r3v_native_depth_copy_apply_binding_offset(
+                &image->depth_bound, buffer_to_image,
+                &segments[segment_count]))
+            return VK_ERROR_INITIALIZATION_FAILED;
+         segment_count++;
+         if (segment_count == R300_RB2D_COPY_MAX_SEGMENTS ||
+             (x + 1u == region->imageExtent.width &&
+              y + 1u == region->imageExtent.height)) {
+            const struct r300_rb2d_copy_plan plan = {
+               .source_buffer_bytes = buffer_to_image
+                                            ? native_buffer->memory->bo.size
+                                            : image->memory->bo.size,
+               .destination_buffer_bytes = buffer_to_image
+                                               ? image->memory->bo.size
+                                               : native_buffer->memory->bo.size,
+               .same_buffer = false,
+               .segments = segments,
+               .segment_count = segment_count,
+               .byte_carrier = true,
+            };
+            const VkResult result = r3v_native_record_rb2d_copy(
+               command_buffer,
+               buffer_to_image ? r3v_native_memory_to_handle(native_buffer->memory) :
+                                 r3v_native_memory_to_handle(image->memory),
+               buffer_to_image ? r3v_native_memory_to_handle(image->memory) :
+                                 r3v_native_memory_to_handle(native_buffer->memory),
+               &plan, UINT32_MAX);
+            if (result != VK_SUCCESS)
+               return result;
+            segment_count = 0u;
+         }
+      }
+   }
+   return VK_SUCCESS;
+}

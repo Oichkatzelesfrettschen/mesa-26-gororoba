@@ -315,6 +315,7 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_native_depth_transfer.c',
   'r3v_fill_route.c',
   'r3v_measurement_claim.c',
   'r3v_measurement_declaration.c',
@@ -2702,8 +2703,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_transfer_ops_test = executable(
       'r3v_native_transfer_ops_test',
       files('tests/r3v_native_transfer_ops_test.c'),
-      include_directories : [inc_include, include_directories('.')],
-      dependencies : [dep_vulkan_loader],
+      include_directories : [inc_include, inc_src, include_directories('.')],
+      dependencies : [dep_vulkan_loader] + r3v_native_deps,
       c_args : [no_override_init_args],
     )
     test('r3v-native-depth-image-storage', r3v_native_transfer_ops_test,

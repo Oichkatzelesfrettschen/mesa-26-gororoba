@@ -2317,6 +2317,9 @@ VkResult r3v_native_record_rb2d_copy(
    VkCommandBuffer command_buffer, VkDeviceMemory source_memory,
    VkDeviceMemory destination_memory, const struct r300_rb2d_copy_plan *plan,
    uint32_t mask);
+VkResult r3v_native_record_depth_image_copy(
+   VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
+   const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
 
 VkResult r3v_native_record_zb_tiled_validation(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
