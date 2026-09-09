@@ -23,6 +23,7 @@
 #include "amd/r300/common/r300_zb_hyperz_admission.h"
 #include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
+#include "r3v_native_depth_image_contract.h"
 #include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -1608,6 +1609,12 @@ struct r3v_native_image {
     * queryable subresource layout).
     */
    bool optimal_tiling;
+   /* The bounded RS485M D24S8 image contract keeps its exact tiled
+    * allocation and post-bind surface base separate from the linear color
+    * image layout. */
+   bool depth_family;
+   struct r3v_native_depth_image_contract depth_contract;
+   struct r3v_native_depth_image_bound depth_bound;
 };
 
 struct r3v_native_image_view {

@@ -2706,6 +2706,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       dependencies : [dep_vulkan_loader],
       c_args : [no_override_init_args],
     )
+    test('r3v-native-depth-image-storage', r3v_native_transfer_ops_test,
+         args : ['--depth-storage'],
+         env : environment(r3v_native_cell_vars + {
+           'VK_DRIVER_FILES' : _dev_icd.full_path(),
+           'R3V_DRM_SHIM_SUBSYSTEM_ID' : '1028:022a',
+           'R3V_DRM_SHIM_DMI_PRODUCT_NAME' : 'Vostro 1000',
+         }),
+         depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+         suite : ['r3v'])
+    test('r3v-native-depth-image-unresolved-board', r3v_native_transfer_ops_test,
+         args : ['--depth-storage-refuse-platform'], env : r3v_native_loader_env,
+         depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+         suite : ['r3v'])
     test(
       'r3v-native-transfer-ops',
       r3v_native_transfer_ops_test,

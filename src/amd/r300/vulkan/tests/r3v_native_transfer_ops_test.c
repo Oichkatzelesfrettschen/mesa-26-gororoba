@@ -664,10 +664,7 @@ optimal_probe_setup_step(int code)
  * bad oracle branches at compile time on the same macro the driver
  * checks, since the test binary shares the project-wide b_ndebug
  * setting: a live assert must abort, and a compiled-out assert must
- * fall through to the same linear-span layout the transfer family
- * already executes for VK_IMAGE_TILING_LINEAR (r3v_native_transfer_
- * footprint_bytes) -- a driver that answered anything else there
- * would be the real defect. The call runs in a forked child with its
+ * return an empty layout rather than exposing opaque storage. The call runs in a forked child with its
  * own fresh instance and device, since reusing the parent's live
  * device across fork risks the drm-shim mock's per-process handle
  * bookkeeping, which this probe does not need to share; the wait is
@@ -803,19 +800,9 @@ check_optimal_subresource_layout_oracle(const struct fixture *f)
             "the known-bad child reports its computed layout (read %zd "
             "of %zu bytes)", n, sizeof(layout));
       if (n == (ssize_t)sizeof(layout)) {
-         const uint32_t expect_row_pitch = (4u * 4u + 63u) & ~63u;
-         const VkDeviceSize expect_size =
-            (VkDeviceSize)expect_row_pitch * 4u;
-         CHECK(layout.offset == 0 && layout.rowPitch == expect_row_pitch &&
-                  layout.size == expect_size,
-               "under NDEBUG, vkGetImageSubresourceLayout on the "
-               "OPTIMAL image falls through to the transfer family's "
-               "linear span (offset %llu rowPitch %llu size %llu, "
-               "expected offset 0 rowPitch %u size %llu)",
-               (unsigned long long)layout.offset,
-               (unsigned long long)layout.rowPitch,
-               (unsigned long long)layout.size, expect_row_pitch,
-               (unsigned long long)expect_size);
+         CHECK(layout.offset == 0 && layout.rowPitch == 0 && layout.size == 0 &&
+                  layout.arrayPitch == 0 && layout.depthPitch == 0,
+               "optimal image query returns an empty layout under NDEBUG");
       }
    }
 #else
@@ -989,11 +976,65 @@ create_fixture(struct fixture *f)
    return 0;
 }
 
+static int
+check_depth_storage(const struct fixture *f, bool refuse_platform)
+{
+   VkImageCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkImage image = VK_NULL_HANDLE;
+   VkResult result = vkCreateImage(f->device, &info, NULL, &image);
+   if (refuse_platform) {
+      CHECK(result != VK_SUCCESS && image == VK_NULL_HANDLE,
+            "unresolved board refuses depth storage");
+      return 0;
+   }
+   REQUIRE(result == VK_SUCCESS, "qualified depth storage creation");
+   VkMemoryRequirements requirements;
+   vkGetImageMemoryRequirements(f->device, image, &requirements);
+   CHECK(requirements.size == 28672 && requirements.alignment == 4096,
+         "depth requirements include tiled padding, guards and tail");
+   VkDeviceMemory memory = VK_NULL_HANDLE;
+   const VkMemoryAllocateInfo allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = requirements.size + 4096, .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &allocation, NULL, &memory) == VK_SUCCESS,
+           "depth backing allocation");
+   CHECK(vkBindImageMemory(f->device, image, memory, 1) != VK_SUCCESS,
+         "unaligned depth binding refuses");
+   CHECK(vkBindImageMemory(f->device, image, memory, 8192) != VK_SUCCESS,
+         "depth binding requires complete storage envelope");
+   CHECK(vkBindImageMemory(f->device, image, memory, 4096) == VK_SUCCESS,
+         "nonzero aligned depth binding");
+   CHECK(vkBindImageMemory(f->device, image, memory, 4096) != VK_SUCCESS,
+         "depth rebinding refuses");
+   vkDestroyImage(f->device, image, NULL);
+   vkFreeMemory(f->device, memory, NULL);
+   info.extent.height = 65;
+   image = VK_NULL_HANDLE;
+   CHECK(vkCreateImage(f->device, &info, NULL, &image) != VK_SUCCESS &&
+         image == VK_NULL_HANDLE, "storage padding remains nonrenderable");
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
+   bool depth_storage = false, refuse_platform = false;
    for (int i = 1; i < argc; i++) {
-      if (strcmp(argv[i], "--inject-scaled-linear-blit-admits") == 0) {
+      if (strcmp(argv[i], "--depth-storage") == 0) {
+         depth_storage = true;
+      } else if (strcmp(argv[i], "--depth-storage-refuse-platform") == 0) {
+         depth_storage = true;
+         refuse_platform = true;
+      } else if (strcmp(argv[i], "--inject-scaled-linear-blit-admits") == 0) {
          mutation = MUTATION_SCALED_LINEAR_BLIT_ADMITS;
       } else if (strcmp(argv[i], "--inject-overlap-copy-admits") == 0) {
          mutation = MUTATION_OVERLAP_COPY_ADMITS;
@@ -1006,7 +1047,8 @@ main(int argc, char **argv)
    struct fixture f = { 0 };
    if (create_fixture(&f))
       return 1;
-   int fatal = check_fill_and_update(&f) || check_copy_overlap(&f) ||
+   int fatal = depth_storage ? check_depth_storage(&f, refuse_platform) :
+               check_fill_and_update(&f) || check_copy_overlap(&f) ||
                check_blit(&f) || check_texel_formats(&f) ||
                check_optimal_tiling(&f);
    vkDestroyCommandPool(f.device, f.cmd_pool, NULL);

@@ -1,13 +1,13 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Native R3V image surface: the render-shape target family with its
- * identity view, and the transfer family.  Both execute one linear
- * layout under either VK_IMAGE_TILING_LINEAR or
- * VK_IMAGE_TILING_OPTIMAL.
+ * Native R3V image storage: color render and transfer images use linear
+ * storage under either tiling enum. The bounded RS485M Z24/S8 contract
+ * selects opaque tiled storage with independent allocation and binding bounds.
  */
 
 #include "r3v_native.h"
+#include "r3v_physical_device.h"
 
 #include "r3v_entrypoints.h"
 
@@ -59,7 +59,9 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     * observes every write the record order places before it.
     */
    const uint32_t texel_bytes =
-      r3v_native_transfer_texel_bytes(pCreateInfo->format);
+      pCreateInfo->format == VK_FORMAT_D24_UNORM_S8_UINT
+         ? 4u
+         : r3v_native_transfer_texel_bytes(pCreateInfo->format);
    /* VK_IMAGE_TYPE_1D is the height-one member of the same linear
     * layout: one row the TX block addresses with its height mask at
     * zero and the render cell scissors to a single scanline, so the two
@@ -122,10 +124,52 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     */
    const VkImageUsageFlags transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-   bool transfer_family;
+   bool transfer_family = false;
+   bool depth_family = false;
+   struct r3v_native_depth_image_contract depth_contract = {0};
    uint32_t row_pitch_bytes;
    enum r300_triangle_lane_order lanes = R300_TRIANGLE_LANES_B8G8R8A8;
-   if (pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
+   if (pCreateInfo->format == VK_FORMAT_D24_UNORM_S8_UINT) {
+      const struct r300_platform_identity *platform = NULL;
+      uint32_t platform_count = 0u;
+      const struct r300_platform_identity *const *platform_rows =
+         r300_platform_identity_rows(&platform_count);
+      for (uint32_t index = 0u; index < platform_count; index++) {
+         if (platform_rows[index]->platform_id ==
+                device->pdevice->platform_id &&
+             platform_rows[index]->pci_vendor ==
+                device->pdevice->pci_vendor_id &&
+             platform_rows[index]->pci_device ==
+                device->pdevice->pci_device_id) {
+            platform = platform_rows[index];
+            break;
+         }
+      }
+      if (platform == NULL)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      const struct r3v_native_depth_image_create_info depth_info = {
+         .pci_vendor = device->pdevice->pci_vendor_id,
+         .pci_device = device->pdevice->pci_device_id,
+         .pci_subsystem_vendor = platform->subsystem_vendor,
+         .pci_subsystem_device = platform->subsystem_device,
+         .format = pCreateInfo->format,
+         .image_type = pCreateInfo->imageType,
+         .extent = pCreateInfo->extent,
+         .mip_levels = pCreateInfo->mipLevels,
+         .array_layers = pCreateInfo->arrayLayers,
+         .samples = pCreateInfo->samples,
+         .optimal_tiling = pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL,
+         .compressed = false,
+      };
+      if (pCreateInfo->flags != 0 ||
+          (pCreateInfo->usage & transfer_usage) == 0 ||
+          (pCreateInfo->usage & ~transfer_usage) != 0 ||
+          r3v_native_depth_image_contract_init(&depth_info,
+                                               &depth_contract) != 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      depth_family = true;
+      row_pitch_bytes = 0u;
+   } else if (pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
       /* The sampled bit joins the attachment bit over one layout: the
        * 64-byte row alignment the sampling family already executes is a
        * multiple of the eight 32-bpp pixels the render cell's
@@ -189,10 +233,15 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
     * routes place travels in, so a footprint past it has no register
     * payload and refuses here.
     */
-   const uint32_t layer_pitch_bytes = r3v_native_image_layer_pitch_bytes(
-      row_pitch_bytes, pCreateInfo->extent.height, !transfer_family);
-   const uint64_t footprint_bytes =
-      (uint64_t)layer_pitch_bytes * slice_count;
+   const uint32_t layer_pitch_bytes = depth_family
+                                          ? 0u
+                                          : r3v_native_image_layer_pitch_bytes(
+                                               row_pitch_bytes,
+                                               pCreateInfo->extent.height,
+                                               !transfer_family);
+   const uint64_t footprint_bytes = depth_family
+                                       ? depth_contract.binding_bytes
+                                       : (uint64_t)layer_pitch_bytes * slice_count;
    if (footprint_bytes > UINT32_MAX)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
 
@@ -219,6 +268,9 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->usage = pCreateInfo->usage;
    image->transfer_family = transfer_family;
    image->optimal_tiling = pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL;
+   image->depth_family = depth_family;
+   if (depth_family)
+      image->depth_contract = depth_contract;
    image->memory = NULL;
    image->memory_offset = 0;
    *pImage = r3v_native_image_to_handle(image);
@@ -256,7 +308,8 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
     * is always one the clear can map.
     */
    *pMemoryRequirements = (VkMemoryRequirements){
-      .size = image->footprint_bytes,
+      .size = image->depth_family ? image->depth_contract.binding_bytes
+                                  : image->footprint_bytes,
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
       .memoryTypeBits = 0x1,
    };
@@ -286,7 +339,7 @@ r3v_GetImageMemoryRequirements2(VkDevice _device,
       if (ext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
          VkMemoryDedicatedRequirements *dedicated = (void *)ext;
          const VkBool32 render_family =
-            image != NULL && !image->transfer_family;
+            image != NULL && !image->transfer_family && !image->depth_family;
          dedicated->prefersDedicatedAllocation = render_family;
          dedicated->requiresDedicatedAllocation = render_family;
       }
@@ -343,13 +396,23 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
         * RB3D_COLOROFFSET0, so the bind offset plus that layer's stride
         * answers to the register's ceiling, not the bind offset alone.
         */
-       (!image->transfer_family &&
+       (!image->transfer_family && !image->depth_family &&
         memoryOffset + (uint64_t)image->layer_pitch_bytes *
                           (image->array_layers - 1) >
            R300_TRIANGLE_MAX_TARGET_OFFSET) ||
        memoryOffset > memory->bo.size ||
        footprint > memory->bo.size - memoryOffset)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   if (image->depth_family) {
+      if (r3v_native_depth_image_contract_bind(
+             &image->depth_contract, memoryOffset, memory->bo.size,
+             &image->depth_bound) != 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      image->memory = memory;
+      image->memory_offset = memoryOffset;
+      return VK_SUCCESS;
+   }
 
    image->memory = memory;
    image->memory_offset = memoryOffset;
@@ -383,19 +446,13 @@ r3v_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
 {
    VK_FROM_HANDLE(r3v_native_image, image, _image);
 
-   /* VUID-vkGetImageSubresourceLayout-image-07790: calling this entry
-    * on a VK_IMAGE_TILING_OPTIMAL image is invalid usage the
-    * validation layers catch; the entry point is void, so the driver
-    * has no return value to report it through. The assert holds the
-    * same refusal in a debug build (b_ndebug=false) that runs without
-    * validation; a release build (NDEBUG, assert() a no-op) computes
-    * the transfer family's linear-span layout below regardless of
-    * tiling, since VK_IMAGE_TILING_OPTIMAL executes that identical
-    * span (r3v_native_transfer_footprint_bytes) -- the answer is
-    * correct for the bytes this driver actually writes, even though
-    * the call remains invalid application usage under the spec.
-    */
+   /* VUID-vkGetImageSubresourceLayout-image-07790 restricts subresource
+    * layout queries to linear images or supported DRM modifier images. */
    assert(!image->optimal_tiling);
+   if (image->optimal_tiling) {
+      *pLayout = (VkSubresourceLayout){0};
+      return;
+   }
 
    /* Layers and depth slices stack at the one stride, so the queried
     * layer's span starts there.  arrayPitch names that stride for a
