@@ -24,9 +24,11 @@
 
 /* The render-pass shape whose one subpass the cell realizes: one
  * single-sample color attachment in either render-family lane order and one
- * single-sample D24S8 depth/stencil attachment, each cleared on load and
- * stored.  The color attachment is the one color output and the depth
- * attachment is the one depth/stencil reference of the subpass.  Draw
+ * single-sample D24S8 depth/stencil attachment, stored after the subpass.
+ * The color attachment is cleared on load.  The depth and stencil aspects
+ * use the same load operation, either CLEAR or LOAD, because one packed word
+ * carries both components and the cell has one optional clear plan.  The
+ * depth attachment is the one depth/stencil reference of the subpass.  Draw
  * emission keeps depth writes outside this admission until a depth-aware
  * cell carries the tiled surface state.
  */
@@ -51,12 +53,16 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
    if (pass->attachment_count == 1)
       return subpass->depth_stencil_attachment == NULL;
    const struct vk_render_pass_attachment *depth = &pass->attachments[1];
+   const bool depth_loads_clear =
+      depth->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+      depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
+   const bool depth_loads = depth->load_op == VK_ATTACHMENT_LOAD_OP_LOAD &&
+                            depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_LOAD;
    return depth->format == VK_FORMAT_D24_UNORM_S8_UINT &&
           depth->aspects ==
              (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
-          depth->samples == 1 && depth->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+          depth->samples == 1 && (depth_loads_clear || depth_loads) &&
           depth->store_op == VK_ATTACHMENT_STORE_OP_STORE &&
-          depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
           depth->stencil_store_op == VK_ATTACHMENT_STORE_OP_STORE &&
           subpass->depth_stencil_attachment != NULL &&
           subpass->depth_stencil_attachment->attachment == 1;

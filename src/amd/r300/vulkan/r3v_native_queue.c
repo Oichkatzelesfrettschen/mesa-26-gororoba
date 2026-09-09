@@ -174,7 +174,7 @@ r3v_native_cell_geometry_unfrozen(
       const struct r3v_native_deferred_draw *draw =
          &cmd_buffer->deferred_draws[0];
       const bool depth_attachment_recorded = draw->depth_memory != NULL;
-      if (draw->has_depth_clear != depth_attachment_recorded ||
+      if ((draw->has_depth_clear && !depth_attachment_recorded) ||
           draw->has_depth_pipeline != depth_attachment_recorded ||
           cmd_buffer->reference_count !=
              R300_TRIANGLE_RENDER_SLOT_COUNT +
@@ -214,7 +214,7 @@ r3v_native_cell_geometry_unfrozen(
       const struct r3v_native_deferred_draw *draw =
          &cmd_buffer->deferred_draws[0];
       const bool depth_attachment_recorded = draw->depth_memory != NULL;
-      if (draw->has_depth_clear != depth_attachment_recorded ||
+      if ((draw->has_depth_clear && !depth_attachment_recorded) ||
           draw->has_depth_pipeline != depth_attachment_recorded ||
           cmd_buffer->reference_count !=
              R300_TRIANGLE_SAMPLED_SLOT_COUNT +

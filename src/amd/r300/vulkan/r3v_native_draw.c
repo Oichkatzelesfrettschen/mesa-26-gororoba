@@ -109,7 +109,11 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
        area->offset.x != 0 || area->offset.y != 0 ||
        area->extent.width != view->image->width ||
        area->extent.height != view->image->height ||
-       pRenderPassBegin->clearValueCount < framebuffer->attachment_count ||
+       pRenderPassBegin->clearValueCount <
+          (framebuffer->attachment_count == 2 &&
+           pass->attachments[1].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR
+              ? framebuffer->attachment_count
+              : 1u) ||
        (framebuffer->attachment_count == 2 &&
         (depth_view == NULL || depth_view->image == NULL ||
          depth_view->image->memory == NULL ||
@@ -127,33 +131,36 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    struct r300_zb_combined_clear_plan depth_clear = { 0 };
    struct r3v_native_depth_image_bound depth_bound = { 0 };
    struct r3v_native_memory *depth_memory = NULL;
+   const bool depth_loads_clear =
+      framebuffer->attachment_count == 2 &&
+      pass->attachments[1].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
    if (framebuffer->attachment_count == 2) {
-      uint32_t depth_code = 0;
-      const VkClearDepthStencilValue clear =
-         pRenderPassBegin->pClearValues[1].depthStencil;
-      if (!depth_clear_code(clear.depth, &depth_code) ||
-          depth_view->image->memory == NULL ||
-          r300_zb_combined_clear_plan(
-             &(struct r300_zb_combined_clear_request){
-                .surface = &depth_view->image->depth_contract.surface,
-                .surface_base_bytes =
-                   depth_view->image->depth_contract.surface_base_bytes,
-                .binding_offset_bytes =
-                   depth_view->image->depth_bound.binding_offset_bytes,
-                .mapped_surface_bytes =
-                   depth_view->image->depth_bound.bo_bytes,
-                .pitch_bytes =
-                   depth_view->image->depth_contract.layout.pitch_bytes,
-                .format = R300_RB2D_FORMAT_ARGB8888,
-                .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
-                .depth_code = depth_code,
-                .stencil = clear.stencil,
-             }, &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
-         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
-         return;
-      }
       depth_bound = depth_view->image->depth_bound;
       depth_memory = depth_view->image->memory;
+      if (depth_loads_clear) {
+         uint32_t depth_code = 0;
+         const VkClearDepthStencilValue clear =
+            pRenderPassBegin->pClearValues[1].depthStencil;
+         if (!depth_clear_code(clear.depth, &depth_code) ||
+             r300_zb_combined_clear_plan(
+                &(struct r300_zb_combined_clear_request){
+                   .surface = &depth_view->image->depth_contract.surface,
+                   .surface_base_bytes =
+                      depth_view->image->depth_contract.surface_base_bytes,
+                   .binding_offset_bytes =
+                      depth_view->image->depth_bound.binding_offset_bytes,
+                   .mapped_surface_bytes = depth_view->image->depth_bound.bo_bytes,
+                   .pitch_bytes =
+                      depth_view->image->depth_contract.layout.pitch_bytes,
+                   .format = R300_RB2D_FORMAT_ARGB8888,
+                   .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
+                   .depth_code = depth_code,
+                   .stencil = clear.stencil,
+                }, &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
+            poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+            return;
+         }
+      }
    }
 
    /* The load-op clear realizes as a host fill of the target's
@@ -183,9 +190,9 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       .depth_memory = depth_memory,
       .depth_bound = depth_bound,
       .depth_clear = depth_clear,
-      .has_depth_clear = framebuffer->attachment_count == 2,
+      .has_depth_clear = depth_loads_clear,
    };
-   if (framebuffer->attachment_count == 2)
+   if (depth_loads_clear)
       cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
          .depth_clear.fill.rects =
             &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
@@ -378,7 +385,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    const uint32_t pass_slot = cmd_buffer->deferred_draw_count - 1;
    const struct r3v_native_deferred_draw *pass_draw =
       &cmd_buffer->deferred_draws[pass_slot];
-   const bool pass_has_depth = pass_draw->has_depth_clear;
+   const bool pass_has_depth = pass_draw->depth_memory != NULL;
    if (pass_has_depth != pipeline->has_depth_pipeline ||
        (pass_has_depth && pass_draw->depth_memory == NULL)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
@@ -673,7 +680,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       pass_has_depth ? pass_draw->depth_memory : NULL,
       pass_has_depth ? &pass_draw->depth_bound : NULL,
       pass_has_depth ? &pipeline->depth_pipeline : NULL,
-      pass_has_depth ? &pass_draw->depth_clear : NULL,
+      pass_draw->has_depth_clear ? &pass_draw->depth_clear : NULL,
       adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
@@ -758,9 +765,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .depth_pipeline = pipeline->depth_pipeline,
       .has_depth_pipeline = pipeline->has_depth_pipeline,
       .depth_clear = depth_clear,
-      .has_depth_clear = pass_has_depth,
+      .has_depth_clear = pass_draw->has_depth_clear,
    };
-   if (pass_has_depth)
+   if (pass_draw->has_depth_clear)
       cmd_buffer->deferred_draws[pass_slot].depth_clear.fill.rects =
          &cmd_buffer->deferred_draws[pass_slot].depth_clear.rect;
    memcpy(cmd_buffer->deferred_draws[pass_slot].streams, streams,

@@ -22,6 +22,7 @@
 #define VK_NO_PROTOTYPES
 
 #include "r3v_native.h"
+#include "r3v_physical_device.h"
 #include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_multi_pass_arms.h"
@@ -316,6 +317,19 @@ find_last_register_write(const uint32_t *ib, uint32_t ib_size_dwords,
    return found;
 }
 
+static bool
+contains_register_write(const uint32_t *ib, uint32_t ib_size_dwords,
+                        uint32_t register_offset)
+{
+   const uint32_t header = CP_PACKET0(register_offset, 0);
+
+   for (uint32_t word = 0; word + 1 < ib_size_dwords; word++) {
+      if (ib[word] == header)
+         return true;
+   }
+   return false;
+}
+
 static void
 assert_word_range(const uint8_t *bytes, uint64_t offset, uint64_t size,
                   uint32_t expected)
@@ -522,6 +536,112 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
    assert_word_range(depth_bytes, tail_offset,
                      allocation_bytes - tail_offset, untouched_word);
    vkUnmapMemory(device, depth_memory);
+
+   /* A LOAD pass carries the attachment and its ZB state without an RB2D
+    * clear prefix.  Seed every logical pixel with an asymmetric packed
+    * value, retain the entire allocation, and execute the public command's
+    * host preparation.  The preparation publishes the carrier and clears
+    * the color attachment while preserving every depth allocation byte.
+    */
+   VkAttachmentDescription load_attachments[2] = {
+      attachments[0], attachments[1]
+   };
+   load_attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   load_attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   VkRenderPass load_pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 2, .pAttachments = load_attachments,
+      .subpassCount = 1,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .colorAttachmentCount = 1, .pColorAttachments = &color_ref,
+         .pDepthStencilAttachment = &depth_ref,
+      },
+   }, NULL, &load_pass) == VK_SUCCESS);
+   VkFramebuffer load_framebuffer = VK_NULL_HANDLE;
+   assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = load_pass, .attachmentCount = 2,
+      .pAttachments = framebuffer_views, .width = 64, .height = 64,
+      .layers = 1,
+   }, NULL, &load_framebuffer) == VK_SUCCESS);
+   VkPipeline load_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&depth_shape, load_pass, layout, &load_pipeline) ==
+             VK_SUCCESS &&
+          load_pipeline != VK_NULL_HANDLE);
+   VkRenderPassBeginInfo load_begin = begin;
+   load_begin.renderPass = load_pass;
+   load_begin.framebuffer = load_framebuffer;
+   load_begin.clearValueCount = 1;
+
+   uint8_t *depth_before = malloc((size_t)allocation_bytes);
+   assert(depth_before != NULL);
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   memset(depth_bytes, 0xa5, (size_t)allocation_bytes);
+   for (uint32_t y = 0; y < 64; y++) {
+      for (uint32_t x = 0; x < 64; x++) {
+         uint64_t offset;
+         assert(depth_surface->address_resolver->byte_offset(
+                   depth_surface, contract_base, x, y, &offset) == 0);
+         offset += binding_offset;
+         const uint32_t packed =
+            ((((x * 0x1f123bu) ^ (y * 0x12d687u)) & 0xffffffu) << 8) |
+            ((x * 17u + y * 29u) & 0xffu);
+         memcpy(depth_bytes + offset, &packed, sizeof(packed));
+      }
+   }
+   memcpy(depth_before, depth_bytes, (size_t)allocation_bytes);
+   vkUnmapMemory(device, depth_memory);
+
+   VkCommandBuffer load_command = record_triangle_draw(
+      &load_begin, load_pipeline, vertex_buffer, 3, 1, 0);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_load, load_command);
+   assert(native_load->deferred_draws[0].depth_memory == native_depth_memory &&
+          native_load->deferred_draws[0].has_depth_pipeline &&
+          !native_load->deferred_draws[0].has_depth_clear);
+   assert(contains_register_write(native_load->ib,
+                                  native_load->ib_size_dwords,
+                                  R300_ZB_FORMAT));
+   assert(!contains_register_write(native_load->ib,
+                                   native_load->ib_size_dwords,
+                                   RADEON_DST_WIDTH_HEIGHT));
+   depth_reference_count = 0;
+   for (uint32_t reference = 0; reference < native_load->reference_count;
+        reference++)
+      depth_reference_count +=
+         native_load->references[reference].handle ==
+         native_depth_memory->bo.handle;
+   assert(depth_reference_count == 1);
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
+             native_device, native_load) == VK_SUCCESS);
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   assert(memcmp(depth_bytes, depth_before, (size_t)allocation_bytes) == 0);
+   vkUnmapMemory(device, depth_memory);
+
+   VkRenderPassBeginInfo refused_load_begin = load_begin;
+   refused_load_begin.clearValueCount = 0;
+   refused_load_begin.pClearValues = NULL;
+   VkCommandBuffer refused_load_command = fresh_cmd();
+   vkCmdBeginRenderPass(refused_load_command, &refused_load_begin,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_refused_load,
+                  refused_load_command);
+   assert(native_refused_load->deferred_draw_count == 0 &&
+          native_refused_load->pass_target == NULL);
+   assert(vkEndCommandBuffer(refused_load_command) ==
+          R3V_NATIVE_REFUSAL_RESULT);
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   assert(memcmp(depth_bytes, depth_before, (size_t)allocation_bytes) == 0);
+   vkUnmapMemory(device, depth_memory);
+   free(depth_before);
+
+   vkDestroyPipeline(device, load_pipeline, NULL);
+   vkDestroyFramebuffer(device, load_framebuffer, NULL);
+   vkDestroyRenderPass(device, load_pass, NULL);
 
    VkImageView variants[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE,
                                VK_NULL_HANDLE };

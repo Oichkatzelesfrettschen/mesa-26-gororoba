@@ -541,7 +541,7 @@ struct r3v_native_deferred_draw {
     */
    struct r300_vertex_job vertex_job;
    bool vertex_job_identity;
-   /* Depth attachment captured at pass begin and the combined load clear. */
+   /* Depth attachment captured at pass begin and its optional load clear. */
    struct r3v_native_memory *depth_memory;
    struct r3v_native_depth_image_bound depth_bound;
    struct r3v_native_depth_pipeline_state depth_pipeline;

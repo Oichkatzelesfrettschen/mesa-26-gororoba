@@ -146,6 +146,9 @@ main(void)
    assert(!r3v_native_render_pass_matches_cell(&pass));
    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
    attachments[1].load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+   attachments[1].stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+   assert(r3v_native_render_pass_matches_cell(&pass));
+   attachments[1].stencil_load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
    assert(!r3v_native_render_pass_matches_cell(&pass));
    attachments[1].load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
    attachments[1].stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE;

@@ -801,7 +801,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
        depth_clear != NULL) {
       if (depth_memory == NULL || depth_bound == NULL ||
           depth_bound->contract == NULL || depth_pipeline == NULL ||
-          depth_clear == NULL || depth_bound->surface_base_bytes > UINT32_MAX)
+          depth_bound->surface_base_bytes > UINT32_MAX)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       depth_state = depth_pipeline->hardware;
       depth_state.pitch_pixels = depth_bound->contract->surface.pitch_pixels;
