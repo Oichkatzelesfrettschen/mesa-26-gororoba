@@ -2357,6 +2357,14 @@ VkResult r3v_native_record_zb_tiled_persistence(
    VkDeviceMemory depthMemoryB, const uint32_t vertices[24],
    enum r3v_native_zb_persistence_ordinal ordinal);
 
+/* Binds one completed public depth command to the three-submission A/B/A
+ * qualification sequence.  The command must contain one 64x64 read-only
+ * D24S8 attachment draw against the active allocation. */
+VkResult r3v_native_bind_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB,
+   enum r3v_native_zb_persistence_ordinal ordinal);
+
 /* Records the depth control against the Z16 linear surface. */
 VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
                                             VkDeviceMemory vertexMemory,

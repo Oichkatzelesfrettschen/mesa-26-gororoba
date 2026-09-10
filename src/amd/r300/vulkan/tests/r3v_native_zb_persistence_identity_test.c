@@ -6,6 +6,7 @@
 #include "r3v_native.h"
 
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_reg.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -37,9 +38,85 @@ bind_command(struct r3v_native_cmd_buffer *command,
    command->zb_persistence_depth_b = depth_b;
 }
 
+static void
+test_public_persistence_binding(void)
+{
+   struct r3v_native_memory vertex = {
+      .vk.base.type = VK_OBJECT_TYPE_DEVICE_MEMORY,
+      .bo = { .handle = 21, .size = 4096 },
+   };
+   struct r3v_native_memory color = {
+      .vk.base.type = VK_OBJECT_TYPE_DEVICE_MEMORY,
+      .bo = { .handle = 22, .size = R300_ZB_DEPTH_CONTROL_COLOR_BYTES },
+   };
+   const uint32_t depth_bytes = r3v_native_zb_depth_surface_bytes(
+      R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL);
+   struct r3v_native_memory depth_a = {
+      .vk.base.type = VK_OBJECT_TYPE_DEVICE_MEMORY,
+      .bo = { .handle = 23, .size = depth_bytes },
+   };
+   struct r3v_native_memory depth_b = {
+      .vk.base.type = VK_OBJECT_TYPE_DEVICE_MEMORY,
+      .bo = { .handle = 24, .size = depth_bytes },
+   };
+   struct r3v_native_depth_image_contract contract = {
+      .surface = r300_zb_depth_surface_rs485m_z24_macrotiled_logical,
+   };
+   struct r3v_native_bo_reference references[3] = {
+      { .handle = 21, .read_domains = RADEON_GEM_DOMAIN_GTT,
+        .memory = &vertex },
+      { .handle = 22, .write_domain = RADEON_GEM_DOMAIN_GTT,
+        .memory = &color },
+      { .handle = 23, .read_domains = RADEON_GEM_DOMAIN_GTT,
+        .write_domain = RADEON_GEM_DOMAIN_GTT, .memory = &depth_a },
+   };
+   struct r3v_native_cmd_buffer command = {
+      .vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER,
+      .cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE,
+      .references = references,
+      .reference_count = 3,
+      .deferred_draw_count = 1,
+      .deferred_draws = {{
+         .pending = true,
+         .target_width = 64,
+         .target_height = 64,
+         .depth_memory = &depth_a,
+         .depth_bound = { .contract = &contract },
+         .depth_pipeline = {
+            .hardware = { .depth_function = R300_ZS_LESS },
+            .depth_test_enable = true,
+         },
+         .has_depth_pipeline = true,
+      }},
+   };
+   assert(r3v_native_bind_zb_tiled_persistence(
+             r3v_native_cmd_buffer_to_handle(&command),
+             r3v_native_memory_to_handle(&depth_a),
+             r3v_native_memory_to_handle(&depth_b),
+             R3V_NATIVE_ZB_PERSISTENCE_A_FIRST) == VK_SUCCESS);
+   assert(command.cell_kind ==
+          R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL);
+   assert(!r3v_native_cell_geometry_unfrozen(&command));
+
+   command.deferred_draws[0].depth_pipeline.hardware.depth_write = true;
+   assert(r3v_native_cell_geometry_unfrozen(&command));
+   command.deferred_draws[0].depth_pipeline.hardware.depth_write = false;
+   command.cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE;
+   command.zb_persistence_configured = false;
+   assert(r3v_native_bind_zb_tiled_persistence(
+             r3v_native_cmd_buffer_to_handle(&command),
+             r3v_native_memory_to_handle(&depth_a),
+             r3v_native_memory_to_handle(&depth_a),
+             R3V_NATIVE_ZB_PERSISTENCE_A_FIRST) ==
+          VK_ERROR_INITIALIZATION_FAILED);
+   assert(command.cell_kind == R3V_NATIVE_CELL_KIND_TRIANGLE);
+   assert(!command.zb_persistence_configured);
+}
+
 int
 main(void)
 {
+   test_public_persistence_binding();
    struct r3v_native_memory vertex = {.bo.handle = 11, .generation = 101};
    struct r3v_native_memory color = {.bo.handle = 12, .generation = 102};
    struct r3v_native_memory depth_a = {.bo.handle = 13, .generation = 103};

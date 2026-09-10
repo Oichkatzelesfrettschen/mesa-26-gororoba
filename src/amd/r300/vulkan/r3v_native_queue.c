@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
@@ -522,6 +523,55 @@ r3v_native_cell_geometry_unfrozen(
                 cmd_buffer->zb_persistence_depth_b ||
              active_depth != depth->memory)
             return true;
+
+         if (cmd_buffer->deferred_draws[0].pending) {
+            const struct r3v_native_deferred_draw *draw =
+               &cmd_buffer->deferred_draws[0];
+            const struct r300_zb_depth_surface *surface =
+               draw->depth_bound.contract != NULL
+                  ? &draw->depth_bound.contract->surface
+                  : NULL;
+            const struct r300_zb_depth_surface *qualified =
+               &r300_zb_depth_surface_rs485m_z24_macrotiled_logical;
+            return cmd_buffer->deferred_draw_count != 1u ||
+                   draw->target_width != qualified->width ||
+                   draw->target_height != qualified->height ||
+                   draw->has_depth_clear || !draw->has_depth_pipeline ||
+                   draw->color_load_in_ib ||
+                   !draw->depth_pipeline.depth_test_enable ||
+                   draw->depth_pipeline.hardware.depth_test_disabled ||
+                   draw->depth_pipeline.hardware.depth_write ||
+                   draw->depth_pipeline.hardware.depth_function !=
+                      R300_ZS_LESS ||
+                   surface == NULL ||
+                   surface->address_resolver != qualified->address_resolver ||
+                   surface->depth_format != qualified->depth_format ||
+                   surface->bytes_per_pixel != qualified->bytes_per_pixel ||
+                   surface->microtile != qualified->microtile ||
+                   surface->macrotile != qualified->macrotile ||
+                   surface->width != qualified->width ||
+                   surface->height != qualified->height ||
+                   surface->pitch_pixels != qualified->pitch_pixels ||
+                   surface->allocation_rows != qualified->allocation_rows ||
+                   !surface->logical_pixel_addressing ||
+                   !surface->logical_image_readback ||
+                   vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+                   vertex->write_domain != 0 || vertex->memory == NULL ||
+                   color->read_domains != 0 ||
+                   color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+                   color->memory == NULL || depth->memory == NULL ||
+                   depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+                   depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
+                   depth->memory->bo.size !=
+                      r3v_native_zb_depth_surface_bytes(
+                         R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) ||
+                   vertex->handle != vertex->memory->bo.handle ||
+                   color->handle != color->memory->bo.handle ||
+                   depth->handle != depth->memory->bo.handle ||
+                   vertex->handle == color->handle ||
+                   vertex->handle == depth->handle ||
+                   color->handle == depth->handle;
+         }
       }
       if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
           vertex->write_domain != 0 || vertex->memory == NULL ||

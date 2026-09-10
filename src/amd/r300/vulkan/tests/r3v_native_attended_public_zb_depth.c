@@ -1492,7 +1492,11 @@ run_public_persistence(const char *evidence_dir, bool record_only,
                                  &commands[ordinal]) ||
           !recorded_load_contract(commands[ordinal],
                                   context.depth[targets[ordinal]].memory,
-                                  MODE_READ)) {
+                                  MODE_READ) ||
+          r3v_native_bind_zb_tiled_persistence(
+             commands[ordinal], context.depth[0].memory,
+             context.depth[1].memory,
+             (enum r3v_native_zb_persistence_ordinal)ordinal) != VK_SUCCESS) {
          destroy_public_context(&context);
          return finish(OUTCOME_SUBMISSION_REFUSED);
       }
