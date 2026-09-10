@@ -737,6 +737,33 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       .layout = VK_IMAGE_LAYOUT_GENERAL,
    };
    VkRenderPass depth_only_pass = VK_NULL_HANDLE;
+   const VkSubpassDependency depth_only_dependencies[] = {
+      {
+         .srcSubpass = VK_SUBPASS_EXTERNAL,
+         .dstSubpass = 0u,
+         .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+         .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+      },
+      {
+         .srcSubpass = 0u,
+         .dstSubpass = 0u,
+         .srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+         .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+         .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+      },
+      {
+         .srcSubpass = 0u,
+         .dstSubpass = VK_SUBPASS_EXTERNAL,
+         .srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+         .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      },
+   };
    assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
       .attachmentCount = 1,
@@ -746,6 +773,8 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
          .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
          .pDepthStencilAttachment = &depth_only_reference,
       },
+      .dependencyCount = ARRAY_SIZE(depth_only_dependencies),
+      .pDependencies = depth_only_dependencies,
    }, NULL, &depth_only_pass) == VK_SUCCESS);
    const VkImageView depth_aspect_views[] = { variants[0], stencil_view };
    for (unsigned aspect = 0; aspect < ARRAY_SIZE(depth_aspect_views); aspect++) {
@@ -773,6 +802,16 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       VkCommandBuffer depth_only_command = fresh_cmd();
       vkCmdBeginRenderPass(depth_only_command, &depth_only_begin,
                            VK_SUBPASS_CONTENTS_INLINE);
+      const VkMemoryBarrier self_barrier = {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+         .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      };
+      vkCmdPipelineBarrier(depth_only_command,
+                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                           VK_DEPENDENCY_BY_REGION_BIT, 1u, &self_barrier,
+                           0u, NULL, 0u, NULL);
       vkCmdEndRenderPass(depth_only_command);
       VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_only,
                      depth_only_command);
@@ -782,17 +821,23 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       assert(native_depth_only->deferred_draw_count == 1u);
       assert(native_depth_only->deferred_draws[0].depth_only);
       assert(!native_depth_only->deferred_draws[0].has_depth_clear);
-      assert(native_depth_only->ordered_operation_count == 3u);
+      assert(native_depth_only->ordered_operation_count == 6u);
       assert(native_depth_only->ordered_operations[0].kind ==
-             R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
-      assert(native_depth_only->ordered_operations[0]
-                .payload.rb2d_depth_clear.width == 32u);
-      assert(native_depth_only->ordered_operations[0]
-                .payload.rb2d_depth_clear.height == 32u);
+             R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
       assert(native_depth_only->ordered_operations[1].kind ==
-             R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+             R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
+      assert(native_depth_only->ordered_operations[1]
+                .payload.rb2d_depth_clear.width == 32u);
+      assert(native_depth_only->ordered_operations[1]
+                .payload.rb2d_depth_clear.height == 32u);
       assert(native_depth_only->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+      assert(native_depth_only->ordered_operations[3].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
+      assert(native_depth_only->ordered_operations[4].kind ==
              R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+      assert(native_depth_only->ordered_operations[5].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
 
       if (aspect == 0) {
          VkRenderPassBeginInfo offset_begin = depth_only_begin;
@@ -807,9 +852,9 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
          VK_FROM_HANDLE(r3v_native_cmd_buffer, native_offset,
                         offset_command);
          assert(vkEndCommandBuffer(offset_command) == VK_SUCCESS);
-         assert(native_offset->ordered_operation_count == 3u);
+         assert(native_offset->ordered_operation_count == 5u);
          const struct r3v_native_ordered_operation *offset_clear =
-            &native_offset->ordered_operations[0];
+            &native_offset->ordered_operations[1];
          assert(offset_clear->kind ==
                 R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
          assert(offset_clear->payload.rb2d_depth_clear.x == 5u);

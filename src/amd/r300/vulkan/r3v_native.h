@@ -952,6 +952,7 @@ struct r3v_native_cmd_buffer {
 
    struct r3v_native_image *pass_target;
    struct r3v_native_image *pass_depth_target;
+   const struct vk_render_pass *active_render_pass;
    VkImageLayout pass_color_layout;
    VkImageLayout pass_depth_layout;
    VkImageLayout pass_color_final_layout;
@@ -2067,6 +2068,7 @@ extern const struct vk_command_buffer_ops r3v_native_cmd_buffer_ops;
  * predicate so the two admissions cannot drift apart.
  */
 struct vk_render_pass;
+struct vk_subpass_dependency;
 bool r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass);
 
 /* Releases the public recording state and the owned carrier BO; reset,
@@ -2101,6 +2103,10 @@ VkResult r3v_native_cmd_buffer_require_image_layout(
 VkResult r3v_native_cmd_buffer_transition_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout old_layout, VkImageLayout new_layout);
+
+VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct vk_subpass_dependency *dependency);
 
 /* Installs a complete IB and reference list into a native command buffer,
  * taking ownership of both allocations.  The fixed-cell emitters are the

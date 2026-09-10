@@ -15,6 +15,7 @@
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
+#include "vk_render_pass.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -143,6 +144,39 @@ r3v_native_append_global_dependency(
    if (result == VK_SUCCESS)
       cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
    return result;
+}
+
+VkResult
+r3v_native_cmd_buffer_append_render_pass_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct vk_subpass_dependency *dependency)
+{
+   if (cmd_buffer == NULL || dependency == NULL ||
+       dependency->src_stage_mask > UINT32_MAX ||
+       dependency->dst_stage_mask > UINT32_MAX ||
+       dependency->src_access_mask > UINT32_MAX ||
+       dependency->dst_access_mask > UINT32_MAX)
+      return R3V_NATIVE_REFUSAL_RESULT;
+
+   VkResult result = r3v_native_cmd_buffer_reserve_ordered_operations(
+      cmd_buffer, 1u);
+   uint32_t ib_position = 0u;
+   if (result == VK_SUCCESS)
+      result = r3v_native_append_global_dependency(cmd_buffer, &ib_position);
+   if (result != VK_SUCCESS)
+      return result;
+
+   return r3v_native_cmd_buffer_append_ordered_operation(
+      cmd_buffer, &(struct r3v_native_ordered_operation){
+         .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+         .ib_position_dwords = ib_position,
+         .payload.memory_barrier = {
+            .src_stage_mask = (VkPipelineStageFlags)dependency->src_stage_mask,
+            .dst_stage_mask = (VkPipelineStageFlags)dependency->dst_stage_mask,
+            .src_access_mask = (VkAccessFlags)dependency->src_access_mask,
+            .dst_access_mask = (VkAccessFlags)dependency->dst_access_mask,
+         },
+      });
 }
 
 static VkResult
@@ -1989,6 +2023,46 @@ r3v_CmdNextSubpass(
    r3v_native_cmd_poison(commandBuffer);
 }
 
+static bool
+r3v_native_render_pass_barrier_covered(
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   VkPipelineStageFlags source_stages, VkPipelineStageFlags destination_stages,
+   VkDependencyFlags dependency_flags, uint32_t memory_barrier_count,
+   const VkMemoryBarrier *memory_barriers)
+{
+   const struct vk_render_pass *pass = cmd_buffer->active_render_pass;
+   if (pass == NULL)
+      return false;
+
+   for (uint32_t dependency_index = 0u;
+        dependency_index < pass->dependency_count; dependency_index++) {
+      const struct vk_subpass_dependency *dependency =
+         &pass->dependencies[dependency_index];
+      if (dependency->src_subpass != 0u || dependency->dst_subpass != 0u ||
+          dependency->flags != dependency_flags ||
+          ((VkPipelineStageFlags2)source_stages &
+           ~dependency->src_stage_mask) != 0u ||
+          ((VkPipelineStageFlags2)destination_stages &
+           ~dependency->dst_stage_mask) != 0u)
+         continue;
+
+      bool access_covered = true;
+      for (uint32_t barrier_index = 0u;
+           barrier_index < memory_barrier_count; barrier_index++) {
+         if (((VkAccessFlags2)memory_barriers[barrier_index].srcAccessMask &
+              ~dependency->src_access_mask) != 0u ||
+             ((VkAccessFlags2)memory_barriers[barrier_index].dstAccessMask &
+              ~dependency->dst_access_mask) != 0u) {
+            access_covered = false;
+            break;
+         }
+      }
+      if (access_covered)
+         return true;
+   }
+   return false;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdPipelineBarrier(
    VkCommandBuffer commandBuffer,
@@ -2004,8 +2078,7 @@ r3v_CmdPipelineBarrier(
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (cmd_buffer->pass_target != NULL ||
-       (memoryBarrierCount != 0u && pMemoryBarriers == NULL) ||
+   if ((memoryBarrierCount != 0u && pMemoryBarriers == NULL) ||
        (bufferMemoryBarrierCount != 0u && pBufferMemoryBarriers == NULL) ||
        (imageMemoryBarrierCount != 0u && pImageMemoryBarriers == NULL)) {
       r3v_native_cmd_poison(commandBuffer);
@@ -2065,12 +2138,52 @@ r3v_CmdPipelineBarrier(
       }
    }
 
+   if (cmd_buffer->pass_target != NULL) {
+      if (bufferMemoryBarrierCount != 0u || imageMemoryBarrierCount != 0u ||
+          !r3v_native_render_pass_barrier_covered(
+             cmd_buffer, srcStageMask, dstStageMask, dependencyFlags,
+             memoryBarrierCount, pMemoryBarriers))
+         goto refuse;
+
+      VkAccessFlags source_access = 0u;
+      VkAccessFlags destination_access = 0u;
+      for (uint32_t barrier_index = 0u;
+           barrier_index < memoryBarrierCount; barrier_index++) {
+         source_access |= pMemoryBarriers[barrier_index].srcAccessMask;
+         destination_access |= pMemoryBarriers[barrier_index].dstAccessMask;
+      }
+      const struct vk_subpass_dependency dependency = {
+         .src_stage_mask = srcStageMask,
+         .dst_stage_mask = dstStageMask,
+         .src_access_mask = source_access,
+         .dst_access_mask = destination_access,
+      };
+      if (r3v_native_cmd_buffer_append_render_pass_dependency(
+             cmd_buffer, &dependency) != VK_SUCCESS)
+         goto refuse;
+      return;
+   }
+
    const uint64_t ordered_count = (uint64_t)memoryBarrierCount +
                                   bufferMemoryBarrierCount +
                                   imageMemoryBarrierCount;
+   const bool execution_only = ordered_count == 0u;
    if (ordered_count > UINT32_MAX ||
        r3v_native_cmd_buffer_reserve_ordered_operations(
-          cmd_buffer, (uint32_t)ordered_count) != VK_SUCCESS)
+          cmd_buffer, execution_only ? 1u : (uint32_t)ordered_count) !=
+          VK_SUCCESS)
+      goto refuse;
+
+   if (execution_only &&
+       r3v_native_cmd_buffer_append_ordered_operation(
+          cmd_buffer, &(struct r3v_native_ordered_operation){
+             .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+             .ib_position_dwords = cmd_buffer->ib_size_dwords,
+             .payload.memory_barrier = {
+                .src_stage_mask = srcStageMask,
+                .dst_stage_mask = dstStageMask,
+             },
+          }) != VK_SUCCESS)
       goto refuse;
 
    if (memoryBarrierCount != 0u || bufferMemoryBarrierCount != 0u) {

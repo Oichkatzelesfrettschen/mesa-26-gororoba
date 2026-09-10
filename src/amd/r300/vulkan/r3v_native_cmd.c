@@ -475,6 +475,7 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->image_state_capacity = 0;
    cmd_buffer->pass_target = NULL;
    cmd_buffer->pass_depth_target = NULL;
+   cmd_buffer->active_render_pass = NULL;
    cmd_buffer->pass_color_layout = VK_IMAGE_LAYOUT_UNDEFINED;
    cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
    cmd_buffer->pass_color_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;

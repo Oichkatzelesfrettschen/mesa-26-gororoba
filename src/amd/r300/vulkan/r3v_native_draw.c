@@ -35,6 +35,28 @@ depth_only_render_pass(const struct vk_render_pass *pass)
           pass->subpasses[0].depth_stencil_attachment != NULL;
 }
 
+static VkResult
+record_render_pass_dependencies(struct r3v_native_cmd_buffer *cmd_buffer,
+                                const struct vk_render_pass *pass,
+                                uint32_t source_subpass,
+                                uint32_t destination_subpass)
+{
+   for (uint32_t dependency_index = 0u;
+        dependency_index < pass->dependency_count; dependency_index++) {
+      const struct vk_subpass_dependency *dependency =
+         &pass->dependencies[dependency_index];
+      if (dependency->src_subpass != source_subpass ||
+          dependency->dst_subpass != destination_subpass)
+         continue;
+      const VkResult result =
+         r3v_native_cmd_buffer_append_render_pass_dependency(cmd_buffer,
+                                                              dependency);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   return VK_SUCCESS;
+}
+
 static void
 begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
                              struct r3v_native_cmd_buffer *cmd_buffer,
@@ -141,6 +163,7 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
    }
 
    cmd_buffer->pass_target = depth_view->image;
+   cmd_buffer->active_render_pass = pass;
    cmd_buffer->pass_depth_target = NULL;
    cmd_buffer->pass_color_layout = layout;
    cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -214,6 +237,13 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    if (cmd_buffer->deferred_draw_count != 0 &&
        cmd_buffer->deferred_draws[0].gpu_producer_delivery) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
+   const VkResult dependency_result = record_render_pass_dependencies(
+      cmd_buffer, pass, VK_SUBPASS_EXTERNAL, 0u);
+   if (dependency_result != VK_SUCCESS) {
+      poison(commandBuffer, dependency_result);
       return;
    }
 
@@ -376,6 +406,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    }
 
    cmd_buffer->pass_target = view->image;
+   cmd_buffer->active_render_pass = pass;
    cmd_buffer->pass_depth_target =
       depth_view != NULL ? depth_view->image : NULL;
    cmd_buffer->pass_color_layout = color_layout;
@@ -418,7 +449,7 @@ r3v_CmdEndRenderPass(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (cmd_buffer->pass_target == NULL) {
+   if (cmd_buffer->pass_target == NULL || cmd_buffer->active_render_pass == NULL) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -439,12 +470,16 @@ r3v_CmdEndRenderPass(VkCommandBuffer commandBuffer)
                               cmd_buffer->deferred_draw_count - 1u,
                         },
                      });
+   if (state_result == VK_SUCCESS)
+      state_result = record_render_pass_dependencies(
+         cmd_buffer, cmd_buffer->active_render_pass, 0u, VK_SUBPASS_EXTERNAL);
    if (state_result != VK_SUCCESS) {
       poison(commandBuffer, state_result);
       return;
    }
    cmd_buffer->pass_target = NULL;
    cmd_buffer->pass_depth_target = NULL;
+   cmd_buffer->active_render_pass = NULL;
    cmd_buffer->pass_color_layout = VK_IMAGE_LAYOUT_UNDEFINED;
    cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
    cmd_buffer->pass_color_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
