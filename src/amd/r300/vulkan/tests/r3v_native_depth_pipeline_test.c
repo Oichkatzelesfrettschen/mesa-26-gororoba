@@ -481,7 +481,21 @@ main(void)
    materialize_command.vk.pool = &pool;
    struct r3v_native_memory materialize_memory = {0};
    materialize_memory.bo.handle = 3u;
-   materialize_memory.bo.size = 26624u;
+   materialize_memory.bo.size = 32768u;
+   const struct r3v_native_depth_image_create_info materialize_create_info = {
+      .pci_vendor = 0x1002u,
+      .pci_device = 0x5974u,
+      .pci_subsystem_vendor = 0x1028u,
+      .pci_subsystem_device = 0x022au,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .image_type = VK_IMAGE_TYPE_2D,
+      .extent = {64u, 64u, 1u},
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .samples = 1u,
+      .optimal_tiling = true,
+      .compressed = false,
+   };
    struct r3v_native_image materialize_image = {
       .base = { .type = VK_OBJECT_TYPE_IMAGE },
       .memory = &materialize_memory,
@@ -499,13 +513,12 @@ main(void)
       .zmask_layout_admitted = true,
       .depth_family = true,
    };
-   materialize_image.depth_contract.surface =
-      r300_zb_depth_surface_rs485m_z24_macrotiled_logical;
-   materialize_image.depth_bound.contract =
-      &materialize_image.depth_contract;
-   materialize_image.depth_bound.binding_offset_bytes = 4096u;
-   materialize_image.depth_bound.surface_base_bytes = 6144u;
-   materialize_image.depth_bound.bo_bytes = materialize_memory.bo.size;
+   assert(r3v_native_depth_image_contract_init(
+             &materialize_create_info,
+             &materialize_image.depth_contract) == 0);
+   assert(r3v_native_depth_image_contract_bind(
+             &materialize_image.depth_contract, 4096u,
+             materialize_memory.bo.size, &materialize_image.depth_bound) == 0);
 
    materialize_device.zmask_fast_clear_gate = "1";
    struct r3v_native_image fast_clear_image = materialize_image;
@@ -747,18 +760,22 @@ main(void)
    stale_backing_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
    stale_backing_command.vk.base.device = &materialize_device.vk;
    stale_backing_command.vk.pool = &pool;
-   const uint32_t stale_backing_state_count =
-      stale_backing_command.image_state_count;
-   assert(r3v_native_cmd_buffer_require_ordinary_depth_backing(
-             &stale_backing_command, &materialize_image) != VK_SUCCESS);
-   assert(stale_backing_command.image_state_count ==
-          stale_backing_state_count);
-   assert(r3v_native_record_depth_image_clear(
-             r3v_native_cmd_buffer_to_handle(&stale_backing_command),
-             r3v_native_image_to_handle(&materialize_image),
-             R300_ZB_COMBINED_CLEAR_ASPECTS, 0x200000u, 0x5au) != VK_SUCCESS);
-   assert(stale_backing_command.ib_size_dwords == 0u);
-   assert(stale_backing_command.ordered_operation_count == 0u);
+   const VkResult stale_backing_result = r3v_native_record_depth_image_clear(
+      r3v_native_cmd_buffer_to_handle(&stale_backing_command),
+      r3v_native_image_to_handle(&materialize_image),
+      R300_ZB_COMBINED_CLEAR_ASPECTS, 0x200000u, 0x5au);
+   assert(stale_backing_result == VK_SUCCESS);
+   assert(stale_backing_command.ib_size_dwords != 0u);
+   assert(stale_backing_command.ordered_operation_count == 2u);
+   assert(stale_backing_command.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(stale_backing_command.ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
+   assert(stale_backing_command.image_states[0].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(stale_backing_command.image_states[0]
+             .current_zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
 
    struct r3v_native_cmd_buffer materialize_secondary = {0};
    materialize_secondary.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;

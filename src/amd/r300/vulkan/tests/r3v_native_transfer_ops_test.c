@@ -1243,8 +1243,46 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
             fast_clear_image->committed_submission.representation ==
                R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
          "the exact gate records a transactional combined ZMASK fast clear");
+   struct staging fast_clear_readback;
+   if (create_staging(f, 64u * 64u * 4u,
+                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      &fast_clear_readback))
+      return 1;
+   const VkBufferImageCopy fast_clear_copy = {
+      .bufferOffset = 0u,
+      .bufferRowLength = 64u,
+      .bufferImageHeight = 64u,
+      .imageSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .mipLevel = 0u,
+         .baseArrayLayer = 0u,
+         .layerCount = 1u,
+      },
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {64u, 64u, 1u},
+   };
+   vkCmdCopyImageToBuffer(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                          fast_clear_readback.buffer, 1u, &fast_clear_copy);
+   CHECK(fast_clear_cmd->ordered_operation_count == 3u &&
+            fast_clear_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR &&
+            fast_clear_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE &&
+            fast_clear_cmd->ordered_operations[2].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY &&
+            fast_clear_cmd->rb2d_copy_operation_count == 1u &&
+            fast_clear_cmd->image_states[0].current_representation ==
+               R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.status ==
+               R3V_NATIVE_ZMASK_METADATA_RETIRED &&
+            fast_clear_cmd->current_zmask_owner.image == NULL,
+         "a readback materializes fast-clear contents before the RB2D copy");
    CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
-         "the gated ZMASK fast clear records successfully");
+         "the gated ZMASK clear and readback record successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release fast-clear readback references");
+   destroy_staging(f, &fast_clear_readback);
    native_device->zmask_fast_clear_gate = NULL;
    return 0;
 }
