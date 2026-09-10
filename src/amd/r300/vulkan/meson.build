@@ -2103,6 +2103,21 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       suite : ['r3v'],
     )
   endforeach
+  foreach zmask_materialize_result : [
+    'materialize-success',
+    'materialize-cs-refuse',
+    'materialize-completion-fail',
+  ]
+    test(
+      'r3v-native-zmask-queue-@0@'.format(zmask_materialize_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [zmask_materialize_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # The compute recording calibration runs under the compute gate: the
   # surface the runner records through stands behind it.
   r3v_native_compute_record_env = environment(
