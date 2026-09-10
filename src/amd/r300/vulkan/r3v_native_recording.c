@@ -1060,12 +1060,15 @@ r3v_CmdClearDepthStencilImage(
    }
 
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   struct r3v_native_device *device =
+      cmd_buffer != NULL && cmd_buffer->vk.base.device != NULL
+         ? container_of(cmd_buffer->vk.base.device, struct r3v_native_device, vk)
+         : NULL;
+   const enum r3v_native_zmask_fast_clear_authority fast_clear_authority =
+      r3v_native_zmask_fast_clear_select(
+         device, cmd_buffer, native_image, aspect_mask, depth_code, stencil);
    const bool use_zmask_fast_clear =
-      cmd_buffer != NULL && cmd_buffer->vk.base.device != NULL &&
-      container_of(cmd_buffer->vk.base.device, struct r3v_native_device, vk)
-            ->zmask_fast_clear_gate != NULL &&
-      aspect_mask == (R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH |
-                      R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL);
+      fast_clear_authority != R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY;
    const enum r3v_native_image_producer producer =
       use_zmask_fast_clear ? R3V_NATIVE_IMAGE_PRODUCER_ZB
                            : R3V_NATIVE_IMAGE_PRODUCER_RB2D;
@@ -1073,8 +1076,9 @@ r3v_CmdClearDepthStencilImage(
       cmd_buffer, native_image, imageLayout, producer, true);
    if (result == VK_SUCCESS) {
       result = use_zmask_fast_clear
-                  ? r3v_native_record_zmask_fast_clear(
-                       commandBuffer, image, depth_code, stencil)
+                  ? r3v_native_record_zmask_fast_clear_with_authority(
+                       commandBuffer, image, depth_code, stencil,
+                       fast_clear_authority)
                   : r3v_native_record_depth_image_clear(
                        commandBuffer, image, aspect_mask, depth_code, stencil);
    }

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "r3v_native.h"
+#include "r3v_physical_device.h"
 
 #include "amd/r300/common/r300_rb2d_fill.h"
 #include "amd/r300/common/r300_rb2d_linear_span.h"
@@ -890,13 +891,200 @@ r3v_native_zmask_fast_clear_source_valid(
    }
 }
 
+enum r3v_native_zmask_fast_clear_authority
+r3v_native_zmask_fast_clear_select_facts(
+   const struct r3v_native_zmask_fast_clear_facts *facts)
+{
+   if (facts == NULL)
+      return R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY;
+   const bool common = facts->platform_qualified &&
+                       facts->image_contract_qualified &&
+                       facts->combined_aspects && facts->transfer_destination &&
+                       facts->binding_valid && facts->layout_qualified &&
+                       facts->materialization_scratch_valid &&
+                       facts->fast_clear_plan_valid &&
+                       facts->command_scope_valid;
+   if (common && facts->automatic_qualified &&
+       facts->automatic_source_valid)
+      return R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC;
+   if (common && facts->experimental_gate &&
+       facts->experimental_source_valid)
+      return R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL;
+   return R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY;
+}
+
+static const struct r3v_native_cmd_image_state *
+r3v_native_zmask_find_image_state(
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_image *image)
+{
+   if (cmd_buffer == NULL)
+      return NULL;
+   for (uint32_t index = 0u; index < cmd_buffer->image_state_count; index++) {
+      if (cmd_buffer->image_states[index].image == image)
+         return &cmd_buffer->image_states[index];
+   }
+   return NULL;
+}
+
+static bool
+r3v_native_zmask_binding_valid(const struct r3v_native_image *image)
+{
+   return image != NULL && image->memory != NULL &&
+          image->memory->bo.handle != 0u &&
+          image->depth_bound.contract == &image->depth_contract &&
+          image->depth_bound.binding_offset_bytes == image->memory_offset &&
+          image->depth_bound.bo_bytes == image->memory->bo.size &&
+          image->memory_offset <= image->memory->bo.size &&
+          image->depth_contract.binding_bytes <=
+             image->memory->bo.size - image->memory_offset &&
+          image->depth_bound.surface_base_bytes >= image->memory_offset &&
+          image->depth_bound.surface_base_bytes <= image->memory->bo.size &&
+          image->depth_contract.layout.storage_bytes <=
+             image->memory->bo.size - image->depth_bound.surface_base_bytes;
+}
+
+static bool
+r3v_native_zmask_exact_image_contract(const struct r3v_native_image *image)
+{
+   return image != NULL && image->depth_family && image->optimal_tiling &&
+          image->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          image->image_type == VK_IMAGE_TYPE_2D && image->width == 64u &&
+          image->height == 64u && image->depth == 1u &&
+          image->array_layers == 1u && image->slice_count == 1u &&
+          image->depth_contract.logical_extent.width == 64u &&
+          image->depth_contract.logical_extent.height == 64u &&
+          image->depth_contract.logical_extent.depth == 1u &&
+          image->depth_contract.surface.pitch_pixels == 64u &&
+          image->depth_contract.layout.bytes_per_pixel == 4u;
+}
+
+static bool
+r3v_native_zmask_exact_layout(const struct r3v_native_image *image)
+{
+   return image != NULL && image->zmask_layout_admitted &&
+          image->zmask_layout.fits_zmask_ram &&
+          image->zmask_layout.stride_in_pixels == 64u &&
+          image->zmask_layout.dwords == 16u &&
+          image->zmask_layout.zmask_ram_dwords == 5120u &&
+          !image->zmask_layout.zcomp8x8;
+}
+
+static bool
+r3v_native_zmask_owner_materializable(
+   const struct r3v_native_zmask_owner_state *owner, bool automatic)
+{
+   if (owner == NULL || owner->image == NULL || owner->metadata.generation == 0u)
+      return false;
+   const bool metadata_status_valid =
+      owner->metadata.status == R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR ||
+      (!automatic &&
+       owner->metadata.status == R3V_NATIVE_ZMASK_METADATA_COMPRESSED);
+   if (!metadata_status_valid)
+      return false;
+   if (!r3v_native_zmask_binding_valid(owner->image) ||
+       !r3v_native_zmask_exact_layout(owner->image))
+      return false;
+   struct r300_zmask_materialize_plan plan;
+   return r300_zmask_materialize_prefix(
+             &owner->image->depth_contract.surface,
+             &owner->image->zmask_layout, owner->metadata.clear_depth_code,
+             owner->metadata.clear_stencil, &plan) == 0 &&
+          r300_zmask_materialize_suffix(&plan) == 0;
+}
+
+enum r3v_native_zmask_fast_clear_authority
+r3v_native_zmask_fast_clear_select(
+   const struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_image *image, uint32_t aspect_mask,
+   uint32_t depth_code, uint32_t stencil)
+{
+   struct r3v_native_zmask_fast_clear_facts facts = {0};
+   if (device == NULL || cmd_buffer == NULL || image == NULL)
+      return R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY;
+   const struct r3v_native_cmd_image_state *state =
+      r3v_native_zmask_find_image_state(cmd_buffer, image);
+   const enum r3v_native_image_representation representation =
+      state != NULL && state->current_representation_set
+         ? state->current_representation
+         : state != NULL ? state->required_representation
+                         : image->committed_submission.representation;
+   const struct r3v_native_zmask_metadata_state metadata =
+      state != NULL && state->current_zmask_metadata_set
+         ? state->current_zmask_metadata
+         : state != NULL ? state->required_zmask_metadata
+                         : image->committed_submission.zmask_metadata;
+   const struct r3v_native_zmask_owner_state owner =
+      cmd_buffer->current_zmask_owner_set
+         ? cmd_buffer->current_zmask_owner
+         : cmd_buffer->required_zmask_owner_set
+              ? cmd_buffer->required_zmask_owner
+              : device->zmask_owner;
+   const struct r3v_native_zmask_owner_state no_owner = {0};
+   const bool owner_absent = r3v_native_zmask_owner_equal(&owner, &no_owner);
+   const bool owner_matches =
+      owner.image == image &&
+      r3v_native_zmask_metadata_equal(&owner.metadata, &metadata);
+   const bool retired_target =
+      representation == R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED &&
+      metadata.status == R3V_NATIVE_ZMASK_METADATA_RETIRED;
+   const bool fast_clear_target =
+      representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
+      metadata.status == R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR;
+   const bool experimental_target =
+      r3v_native_zmask_fast_clear_source_valid(representation, &metadata);
+   struct r300_zmask_clear_plan plan;
+   facts.automatic_qualified = device->zmask_automatic_qualified;
+   facts.platform_qualified =
+      device->pdevice != NULL &&
+      device->pdevice->platform_id == R3V_NATIVE_ARMING_PLATFORM &&
+      device->pdevice->pci_vendor_id == R3V_NATIVE_ARMING_PCI_VENDOR &&
+      device->pdevice->pci_device_id == R3V_NATIVE_ARMING_PCI_DEVICE;
+   facts.image_contract_qualified = r3v_native_zmask_exact_image_contract(image);
+   facts.combined_aspects =
+      aspect_mask == (R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH |
+                      R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL);
+   facts.transfer_destination =
+      (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0u;
+   facts.binding_valid = r3v_native_zmask_binding_valid(image);
+   facts.layout_qualified = r3v_native_zmask_exact_layout(image);
+   facts.materialization_scratch_valid =
+      device->zmask_materialize_scratch_initialized &&
+      device->zmask_materialize_vertex.bo.handle != 0u &&
+      device->zmask_materialize_vertex.bo.size >=
+         R3V_NATIVE_MEMORY_ALIGNMENT &&
+      device->zmask_materialize_color.bo.handle != 0u &&
+      device->zmask_materialize_color.bo.size >=
+         R300_ZB_DEPTH_CONTROL_COLOR_BYTES;
+   facts.fast_clear_plan_valid =
+      stencil <= UINT8_MAX &&
+      r300_zmask_fast_clear_plan_build(
+         &image->depth_contract.surface, &image->zmask_layout, depth_code,
+         stencil, &plan) == 0;
+   facts.command_scope_valid =
+      cmd_buffer->pass_target == NULL && !cmd_buffer->deferred_dispatch.pending;
+   facts.automatic_source_valid =
+      (retired_target && owner_absent) || (fast_clear_target && owner_matches) ||
+      (retired_target && owner.image != image &&
+       r3v_native_zmask_owner_materializable(&owner, true));
+   facts.experimental_gate = device->zmask_fast_clear_gate != NULL;
+   facts.experimental_source_valid =
+      (retired_target && owner_absent) ||
+      (experimental_target && owner_matches) ||
+      (retired_target && owner.image != image &&
+       r3v_native_zmask_owner_materializable(&owner, false));
+   return r3v_native_zmask_fast_clear_select_facts(&facts);
+}
+
 static VkResult
 r3v_native_record_zmask_fast_clear_state(
    VkCommandBuffer command_buffer, VkImage image_handle, uint32_t depth_code,
    uint32_t stencil,
    const enum r3v_native_image_representation *expected_representation,
    const struct r3v_native_zmask_metadata_state *expected_metadata,
-   const struct r3v_native_zmask_metadata_state *fixed_resulting_metadata)
+   const struct r3v_native_zmask_metadata_state *fixed_resulting_metadata,
+   enum r3v_native_zmask_fast_clear_authority authority)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
    VK_FROM_HANDLE(r3v_native_image, image, image_handle);
@@ -909,8 +1097,14 @@ r3v_native_record_zmask_fast_clear_state(
 
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
-   if (device->zmask_fast_clear_gate == NULL)
+   if ((authority == R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC &&
+        !device->zmask_automatic_qualified) ||
+       (authority == R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL &&
+        device->zmask_fast_clear_gate == NULL))
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   if (authority != R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC &&
+       authority != R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL)
+      return VK_ERROR_INITIALIZATION_FAILED;
 
    struct r3v_native_cmd_image_state *state =
       r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
@@ -1017,6 +1211,7 @@ r3v_native_record_zmask_fast_clear_state(
             .ib_position_dwords = cmd_buffer->ib_size_dwords,
             .payload.image_fast_clear = {
                .image = image,
+               .authority = authority,
                .source_representation = representation,
                .source_metadata = metadata,
                .resulting_metadata = resulting_metadata,
@@ -1038,9 +1233,9 @@ r3v_native_record_zmask_fast_clear_state(
 }
 
 VkResult
-r3v_native_record_zmask_fast_clear(VkCommandBuffer command_buffer,
-                                   VkImage image, uint32_t depth_code,
-                                   uint32_t stencil)
+r3v_native_record_zmask_fast_clear_with_authority(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,
+   uint32_t stencil, enum r3v_native_zmask_fast_clear_authority authority)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
    VK_FROM_HANDLE(r3v_native_image, destination, image);
@@ -1058,7 +1253,8 @@ r3v_native_record_zmask_fast_clear(VkCommandBuffer command_buffer,
               : device->zmask_owner;
    if (current_owner.image == NULL || current_owner.image == destination)
       return r3v_native_record_zmask_fast_clear_state(
-         command_buffer, image, depth_code, stencil, NULL, NULL, NULL);
+         command_buffer, image, depth_code, stencil, NULL, NULL, NULL,
+         authority);
 
    enum r3v_native_image_representation owner_representation;
    switch (current_owner.metadata.status) {
@@ -1103,7 +1299,8 @@ r3v_native_record_zmask_fast_clear(VkCommandBuffer command_buffer,
       owner_representation, &current_owner.metadata);
    if (result == VK_SUCCESS)
       result = r3v_native_record_zmask_fast_clear_state(
-         command_buffer, image, depth_code, stencil, NULL, NULL, NULL);
+         command_buffer, image, depth_code, stencil, NULL, NULL, NULL,
+         authority);
    if (result != VK_SUCCESS) {
       cmd_buffer->ib_size_dwords = original_ib_size;
       cmd_buffer->reference_count = original_reference_count;
@@ -1121,6 +1318,16 @@ r3v_native_record_zmask_fast_clear(VkCommandBuffer command_buffer,
    }
    free(original_image_states);
    return result;
+}
+
+VkResult
+r3v_native_record_zmask_fast_clear(VkCommandBuffer command_buffer,
+                                   VkImage image, uint32_t depth_code,
+                                   uint32_t stencil)
+{
+   return r3v_native_record_zmask_fast_clear_with_authority(
+      command_buffer, image, depth_code, stencil,
+      R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL);
 }
 
 VkResult
@@ -1143,7 +1350,8 @@ r3v_native_replay_zmask_fast_clear(
          source_operation->payload.image_fast_clear.image),
       resulting->clear_depth_code, resulting->clear_stencil,
       &source_representation,
-      &source_operation->payload.image_fast_clear.source_metadata, resulting);
+      &source_operation->payload.image_fast_clear.source_metadata, resulting,
+      source_operation->payload.image_fast_clear.authority);
 }
 
 VkResult

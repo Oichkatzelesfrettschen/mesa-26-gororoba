@@ -253,6 +253,28 @@ enum r3v_native_image_representation {
    R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
 };
 
+enum r3v_native_zmask_fast_clear_authority {
+   R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY = 0,
+   R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC,
+   R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL,
+};
+
+struct r3v_native_zmask_fast_clear_facts {
+   bool automatic_qualified;
+   bool platform_qualified;
+   bool image_contract_qualified;
+   bool combined_aspects;
+   bool transfer_destination;
+   bool binding_valid;
+   bool layout_qualified;
+   bool materialization_scratch_valid;
+   bool fast_clear_plan_valid;
+   bool command_scope_valid;
+   bool automatic_source_valid;
+   bool experimental_gate;
+   bool experimental_source_valid;
+};
+
 enum r3v_native_image_producer {
    R3V_NATIVE_IMAGE_PRODUCER_HOST = 0,
    R3V_NATIVE_IMAGE_PRODUCER_RB2D,
@@ -529,6 +551,7 @@ struct r3v_native_ordered_operation {
       } rb2d_copy;
       struct {
          struct r3v_native_image *image;
+         enum r3v_native_zmask_fast_clear_authority authority;
          enum r3v_native_image_representation source_representation;
          struct r3v_native_zmask_metadata_state source_metadata;
          struct r3v_native_zmask_metadata_state resulting_metadata;
@@ -1526,6 +1549,7 @@ struct r3v_native_device {
    struct r3v_native_memory zmask_materialize_vertex;
    struct r3v_native_memory zmask_materialize_color;
    bool zmask_materialize_scratch_initialized;
+   bool zmask_automatic_qualified;
    struct r3v_native_queue queue;
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
@@ -2268,6 +2292,19 @@ VkResult r3v_native_replay_zmask_initialize(
 VkResult r3v_native_record_zmask_fast_clear(
    VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,
    uint32_t stencil);
+enum r3v_native_zmask_fast_clear_authority
+r3v_native_zmask_fast_clear_select_facts(
+   const struct r3v_native_zmask_fast_clear_facts *facts);
+enum r3v_native_zmask_fast_clear_authority
+r3v_native_zmask_fast_clear_select(
+   const struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_image *image, uint32_t aspect_mask,
+   uint32_t depth_code, uint32_t stencil);
+VkResult r3v_native_record_zmask_fast_clear_with_authority(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,
+   uint32_t stencil,
+   enum r3v_native_zmask_fast_clear_authority authority);
 
 VkResult r3v_native_replay_zmask_fast_clear(
    VkCommandBuffer command_buffer,
