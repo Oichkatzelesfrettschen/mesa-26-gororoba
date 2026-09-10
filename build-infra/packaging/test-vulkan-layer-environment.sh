@@ -1,33 +1,17 @@
-#!/usr/bin/env sh
-# Verify that the debug launcher exposes its opt-scoped Vulkan layers once.
+#!/bin/sh
+# Stock implicit layers use the loader's package paths; scoped selection chooses R3V.
 set -eu
-
-HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
-environment_file="$HERE/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
-fixture_prefix=/opt/mesa-vulkan-layer-environment-fixture
-
+here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 (
-  MESA_INSTALL_PREFIX=$fixture_prefix
-  VK_ADD_LAYER_PATH=/usr/local/share/vulkan/explicit_layer.d
-  VK_ADD_IMPLICIT_LAYER_PATH=/usr/local/share/vulkan/implicit_layer.d
-  export MESA_INSTALL_PREFIX VK_ADD_LAYER_PATH VK_ADD_IMPLICIT_LAYER_PATH
-
-  # shellcheck disable=SC1090
-  . "$environment_file"
-  # shellcheck disable=SC1090
-  . "$environment_file"
-
-  expected_explicit="$fixture_prefix/share/vulkan/explicit_layer.d:/usr/local/share/vulkan/explicit_layer.d"
-  expected_implicit="$fixture_prefix/share/vulkan/implicit_layer.d:/usr/local/share/vulkan/implicit_layer.d"
-
-  if [ "$VK_ADD_LAYER_PATH" != "$expected_explicit" ]; then
-    echo "explicit Vulkan layer path mismatch: $VK_ADD_LAYER_PATH" >&2
-    exit 1
-  fi
-  if [ "$VK_ADD_IMPLICIT_LAYER_PATH" != "$expected_implicit" ]; then
-    echo "implicit Vulkan layer path mismatch: $VK_ADD_IMPLICIT_LAYER_PATH" >&2
-    exit 1
-  fi
+  VK_ADD_LAYER_PATH=/fixture/explicit
+  VK_ADD_IMPLICIT_LAYER_PATH=/fixture/implicit
+  export VK_ADD_LAYER_PATH VK_ADD_IMPLICIT_LAYER_PATH
+  unset VK_DRIVER_FILES VK_ICD_FILENAMES
+  . "$here/mesa-gororoba/mesa-gororoba-env.sh"
+  . "$here/mesa-gororoba/mesa-gororoba-env.sh"
+  [ "$VK_ADD_LAYER_PATH" = /fixture/explicit ]
+  [ "$VK_ADD_IMPLICIT_LAYER_PATH" = /fixture/implicit ]
+  [ "$VK_DRIVER_FILES" = /usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json ]
+  [ "$VK_ICD_FILENAMES" = "$VK_DRIVER_FILES" ]
 )
-
-echo "Vulkan layer launcher environment: PASS"
+echo 'stock Vulkan layer and scoped ICD environment: PASS'

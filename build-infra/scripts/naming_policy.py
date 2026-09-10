@@ -603,10 +603,10 @@ def repository_reference_allowed(
 
 def identifier_name_for_policy(match: re.Match[str], line: str) -> str:
     identifier_name = match.group(1)
-    if (
-        identifier_name.endswith("-")
-        and match.end() < len(line)
-        and line[match.end()] in "*{<"
+    suffix = line[match.end() :]
+    if identifier_name.endswith("-") and (
+        suffix.startswith(("*", "{", "<"))
+        or re.match(r"\$(?:[({]|[A-Za-z_0-9@*#?$!-])", suffix)
     ):
         return identifier_name[:-1]
     return identifier_name
@@ -1479,6 +1479,44 @@ def self_test() -> int:
         ),
         ("build-infra/example.md", "Use mesa-26-gororoba.\n", False),
         ("build-infra/example.md", "Use mesa-26-gororoba-* worktrees.\n", False),
+        *(
+            (
+                "build-infra/example.sh",
+                f'build_root="/var/tmp/{namespace}-{expansion}"\n',
+                expected_failure,
+            )
+            for namespace, expected_failure in (
+                ("mesa-26-gororoba", False),
+                ("fake-gororoba", True),
+                (retired_identifier, True),
+                ("mesa-26-gororoba-", True),
+            )
+            for expansion in (
+                "$(id -u)",
+                "${user_id}",
+                "$user_id",
+                "$1",
+                "$$",
+                "$@",
+                "$((user_id + 1))",
+            )
+        ),
+        *(
+            (
+                "build-infra/example.sh",
+                f'build_root="/var/tmp/mesa-26-gororoba-{rejected_suffix}"\n',
+                True,
+            )
+            for rejected_suffix in (
+                "$",
+                "$:",
+                "$.",
+                r"\$(id -u)",
+                "${GOROROBA_JOBS}",
+                "$GOROROBA_JOBS",
+                "$(gororoba_helper)",
+            )
+        ),
         ("build-infra/example.md", "Install mesa-gororoba-debug-optimized.\n", False),
         ("build-infra/example.md", "Install umr-gororoba.\n", False),
         ("build-infra/Makefile", "MESA_REPO_NAME ?= gororoba\n", False),

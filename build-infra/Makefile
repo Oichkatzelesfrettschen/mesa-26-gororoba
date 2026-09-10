@@ -134,11 +134,10 @@ endif
 ifeq ($(origin BUILDDIR),undefined)
 BUILDDIR := $(BUILD_ROOT)/mesa-$(PROFILE)
 endif
-# Keep profile lanes isolated by default because meson install does not remove
-# artifacts that are absent from the current profile.  Override PREFIX=... on
-# the make line when intentionally installing into a shared active tree.
+# Keep experimental installation outputs inside their selected build root.
+# Select distinct BUILD_ROOT values for profiles that need separate prefixes.
 ifeq ($(origin PREFIX),undefined)
-PREFIX := /opt/local/$(INSTALL_NAMESPACE)-$(PROFILE)
+PREFIX := $(BUILD_ROOT)/prefix
 endif
 # drirc/driconf is host configuration, not an install artifact: meson bakes
 # SYSCONFDIR into the driver objects (util/xmlconfig.c reads SYSCONFDIR/drirc),
@@ -340,6 +339,7 @@ SUDO ?= sudo
 FLOCK ?= flock
 NINJA_TARGETS ?=
 REMOVE_TREE ?= rm -rf
+MOVE_TREE ?= mv
 # Extra flags for the build ninja invocation.  NINJA_ARGS=-k0 keeps compiling
 # after the first failure, so one warnings-as-errors run reports every
 # diagnostic in the tree and the fixes get scoped from a complete list.
@@ -428,10 +428,27 @@ endif
 # profiles keep llvm=disabled, so configure aborts.  CLI -D flags override
 # that reset and keep the profile's declared surface.
 override PROFILE_DFLAGS_SCRIPT := $(CURDIR)/scripts/meson_profile_dflags.py
+override PACKAGE_PROFILE := $(CURDIR)/packaging/stock-package.meson
+ifeq ($(PREFIX),/usr)
+ifeq (,$(filter $(PROFILE),4_r300_full_release_x86_64v1-clang22-distcc-cache 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache 2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache))
+$(error stock system packaging requires an unsanitized r300 release or debug profile)
+endif
+override PROFILE_OVERLAY := $(PACKAGE_PROFILE)
+override PACKAGE_SETUP_ARGS := --libdir=lib --native-file=$(PACKAGE_PROFILE)
+else
+override PROFILE_OVERLAY :=
+override PACKAGE_SETUP_ARGS :=
+endif
 # -Dwerror=true is always on the CLI so a profile that drops the option, or a
 # coredata reset of werror, cannot re-open a warnings-are-nonfatal configure.
 # Profile dflags still re-assert every other project option (and werror again).
+override SOURCE_VIEW_REQUIRED := 1
 ifeq ($(TOPSRC),$(CONTROL_ROOT))
+ifneq ($(PREFIX),/usr)
+override SOURCE_VIEW_REQUIRED := 0
+endif
+endif
+ifeq ($(SOURCE_VIEW_REQUIRED),0)
 override MESON_SOURCE_ROOT := $(TOPSRC)
 override EXTERNAL_SOURCE_WRAP_ARG :=
 override EXTERNAL_MESON_SETUP_LOCAL_UNSET :=
@@ -441,7 +458,7 @@ override EXTERNAL_SOURCE_WRAP_ARG := --wrap-mode=default
 override EXTERNAL_MESON_SETUP_LOCAL_UNSET := MESON_PACKAGE_CACHE_DIR
 endif
 override SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) \
-	--reconfigure -Dwerror=true $(EXTERNAL_SOURCE_WRAP_ARG)
+	--reconfigure -Dwerror=true $(EXTERNAL_SOURCE_WRAP_ARG) $(PACKAGE_SETUP_ARGS)
 # MODE=stable pins the same safe -O2 release level through a command-line
 # override without enabling LTO.  Default (unset / clean / rebuild) keeps the
 # config level.
@@ -547,7 +564,7 @@ r300-release-profile-contract-test:
 			target_name="$$1"; \
 			awk -v target="$$target_name:" '$$0 == target { in_target=1; next } in_target && $$0 !~ /^[[:space:]]/ { exit } in_target { print }' "$$contract_makefile"; \
 		}; \
-		grep -F -- 'override SELECT_PROFILE_PREFIX = $$(if $$(filter 1,$$(REPRODUCIBLE_RUN)),$$(BUILD_ROOT)/prefix,$$1)' "$$contract_makefile" >/dev/null || return 1; \
+		grep -F -- 'override SELECT_PROFILE_PREFIX = $$(BUILD_ROOT)/prefix' "$$contract_makefile" >/dev/null || return 1; \
 		check_tier_target() { \
 			tier_target="$$1"; tier_profile="$$2"; default_prefix="$$3"; \
 			tier_body="$$(target_body "$$tier_target")"; \
@@ -559,15 +576,15 @@ r300-release-profile-contract-test:
 		check_tier_target \
 			rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
 			1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache \
-			/opt/mesa-gororoba-debug-asan || return 1; \
+			'$$(BUILD_ROOT)/prefix' || return 1; \
 		check_tier_target \
 			rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
 			2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache \
-			/opt/mesa-gororoba-debug-o0 || return 1; \
+			'$$(BUILD_ROOT)/prefix' || return 1; \
 		check_tier_target \
 			rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
 			3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache \
-			/opt/mesa-gororoba-debug-optimized || return 1; \
+			'$$(BUILD_ROOT)/prefix' || return 1; \
 		check_release_target() { \
 			release_target="$$1"; release_profile="$$2"; release_prefix="$$3"; shift 3; \
 			release_body="$$(target_body "$$release_target")"; \
@@ -718,6 +735,7 @@ source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 		python3 -m pytest -q \
 		$(CURDIR)/tests/test_source_root_control.py \
+		$(CURDIR)/tests/test_package_source_identity.py \
 		$(CURDIR)/tests/test_mount_boundary_calibration.py
 
 remove-identity-v7-build-root: source-root-check
@@ -941,7 +959,7 @@ help:
 	@echo "  build             locked ninja -C \$$(BUILDDIR); NINJA_TARGETS=one target, NINJA_ARGS=-k0"
 	@echo "  clean-registered-build skip an absent builddir; otherwise run strict clean"
 	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
-	@echo "  clean-all         remove the fixed repo-local build/ tree (all profiles)"
+	@echo "  clean-all         remove regenerable repo-local build artifacts and retain installed staging"
 	@echo "  distclean         atomically clean + archive \$$(PREFIX) under one lease"
 	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
@@ -966,7 +984,7 @@ help:
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
 	@echo "  distcc-gcc-major-probe-test calibrates remote C/C++ dispatch and GNU compiler identity"
-	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
+	@echo "  install           unprivileged build-owned experiment staging"
 	@echo "  artifact-check    list installed Terakan/r600/r3v artifacts under \$$(PREFIX); warn on stale r300 ICDs"
 	@echo "  test              locked meson test -C \$$(BUILDDIR); set MESON_TEST_ARGS for one test"
 	@echo "  build-lease-test  verify mutation leases and path-safety guards"
@@ -994,21 +1012,10 @@ loader-environment-function-scope-test:
 	sh $(CURDIR)/packaging/test-loader-environment-function-scope.sh
 
 vostro-prefix-check:
-	@case "$(PROFILE):$(PREFIX)" in \
-		[12]_r300_*:/usr/local/mesa-26-gororoba*|r300*-vostro-*:/usr/local/mesa-26-gororoba*) \
-			echo "Vostro r300/r3v profiles install under /opt/local/mesa-26-gororoba*; refusing PREFIX=$(PREFIX)" >&2; \
-			exit 2 ;; \
-	esac
+	@$(call CHECK_LAYOUT,configure)
 
-# Mechanical invariant gate (a prerequisite of audit, so `make audit` enforces it):
-# every build profile must set warnings-as-errors; packaging PKGBUILDs that
-# run meson setup with gallium-drivers/vulkan-drivers (this Mesa tree) must
-# pass -Dwerror=true (sibling packages such as libva keep their own policy);
-# and the /opt-scoped sanitizer and -O0 tiers must never carry system-Mesa
-# activation (no /usr loader symlinks via _link_into_usr, no ld.so.conf.d
-# drop-in).  These are the things that would let warnings pass silently or let
-# an ASan driver become the /usr default and black-screen the login.  Cultural
-# convention rots; this fails the build instead.
+# Every profile and package overlay keeps compiler warnings fatal. System package
+# qualification additionally checks loader ownership and rejects sanitizer activation.
 audit-werror:
 	@rc=0; \
 	for f in configs/*.meson configs/alternates/*.meson; do \
@@ -1022,13 +1029,7 @@ audit-werror:
 				|| { echo "FAIL  $$pb runs mesa meson setup without -Dwerror=true" >&2; rc=1; }; \
 		fi; \
 	done; \
-	for p in mesa-gororoba-debug-asan mesa-gororoba-debug-o0; do \
-		pb="packaging/$$p/PKGBUILD"; \
-		[ -f "$$pb" ] || continue; \
-		if grep -q '_link_into_usr' "$$pb"; then echo "FAIL  $$pb (scoped tier) must not _link_into_usr" >&2; rc=1; fi; \
-		if grep -qE 'ld\.so\.conf\.d/[^"]*\.conf' "$$pb"; then echo "FAIL  $$pb (scoped tier) must not drop an ld.so.conf.d activation" >&2; rc=1; fi; \
-	done; \
-	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles werror=true; packaging meson -Dwerror=true; prime/-o0 no /usr activation"; fi; \
+	if [ $$rc -eq 0 ]; then echo "OK    audit-werror: profiles and package overlay require werror=true"; fi; \
 	exit $$rc
 
 distcc-probe-directory-test:
@@ -1294,7 +1295,7 @@ distcc-gcc-major-probe-test:
 	}; \
 	echo "OK    missing GCC identity fails closed"
 
-audit: source-root-check source-root-control-unit-test naming-policy-test \
+audit: source-root-check source-root-control-unit-test package-layout-test naming-policy-test \
        receipt-identifier-check packaging-source-checksum-test \
        packaging-source-commit-pin-test \
        packaging-built-package-selection-test \
@@ -1825,7 +1826,7 @@ configure: source-root-check vostro-prefix-check
 	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) ($$toolchain_label, $(COMPILER_CHAIN))"; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
+	profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)" $(PROFILE_OVERLAY)) || { \
 		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
@@ -1883,20 +1884,31 @@ clean:
 	}; \
 	echo "cleaned: $(BUILDDIR)"
 
-# Remove the entire repo-local build/ tree (every profile's builddir), not just
-# the active PROFILE's.  The tree is gitignored (/build), so this only drops
-# regenerable artifacts and never touches the source or an installed PREFIX.
+# Remove every regenerable entry in the repo-local build tree.  Experimental
+# installs retain their prefix and absolute configuration under the two named
+# roots, so clean-all leaves those deployment artifacts available for rollback.
 clean-all:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root); \
 	$(call CHECK_LAYOUT,clean-all); \
-	$(REMOVE_TREE) "$(BUILD_ROOT)" || { \
-		echo "failed to remove build root: $(BUILD_ROOT)" >&2; exit 2; \
-	}; \
-	{ [ ! -e "$(BUILD_ROOT)" ] && [ ! -L "$(BUILD_ROOT)" ]; } || { \
-		echo "build root remains after removal: $(BUILD_ROOT)" >&2; exit 2; \
-	}; \
-	echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"
+	retained=0; \
+	for entry in "$(BUILD_ROOT)"/* "$(BUILD_ROOT)"/.[!.]* "$(BUILD_ROOT)"/..?*; do \
+		{ [ -e "$$entry" ] || [ -L "$$entry" ]; } || continue; \
+		case "$$(basename "$$entry")" in \
+			prefix|installation-root) retained=1; continue ;; \
+		esac; \
+		$(REMOVE_TREE) "$$entry" || { \
+			echo "failed to remove generated build entry: $$entry" >&2; exit 2; \
+		}; \
+	done; \
+	if [ "$$retained" -eq 0 ]; then \
+		rmdir "$(BUILD_ROOT)" || { \
+			echo "build root retains an unclassified entry: $(BUILD_ROOT)" >&2; exit 2; \
+		}; \
+		echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"; \
+	else \
+		echo "cleaned regenerable build entries; retained prefix and installation-root"; \
+	fi
 
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \
@@ -1915,7 +1927,7 @@ distclean:
 		{ [ ! -e "$$archive" ] && [ ! -L "$$archive" ]; } || { \
 			echo "archive target already exists: $$archive" >&2; exit 2; \
 		}; \
-		$(SUDO) mv "$(PREFIX)" "$$archive" || { \
+		$(MOVE_TREE) "$(PREFIX)" "$$archive" || { \
 			echo "failed to archive prefix: $(PREFIX)" >&2; exit 2; \
 		}; \
 		{ [ ! -e "$(PREFIX)" ] && [ ! -L "$(PREFIX)" ]; } && \
@@ -1942,28 +1954,50 @@ install: source-root-check vostro-prefix-check
 	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-source-view; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)") || { \
+	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)" $(PROFILE_OVERLAY)) || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
 	      --sysconfdir="$$MESA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
 	      echo "Meson setup failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
-	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
-	    $(SUDO) $(MESON) install --no-rebuild --only-changed -C "$(BUILDDIR)" || { \
+	    echo "[install] staging Meson output beneath BUILD_ROOT"; \
+	    python3 "$(SOURCE_ROOT_CONTROL)" install-experiment --meson "$(MESON)" || { \
 	      echo "Meson install failed; source identity remains provisional" >&2; \
-	      exit 2; \
-	    }; \
-	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
-	    : "ownership so a later non-sudo makepkg of the same builddir can rewrite"; \
-	    : "it instead of failing package() with a PermissionError under fakeroot"; \
-	    $(SUDO) chown -R "$$(id -un):$$(id -gn)" "$(BUILDDIR)/meson-logs" || { \
-	      echo "Meson install log ownership restore failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" write-identity; \
 	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    echo "[install] complete; releasing flock"'
+
+# The logical /usr prefix remains metadata; all writes use a fresh build-owned DESTDIR.
+.PHONY: stage-package package-layout-test
+stage-package: source-root-check
+	@set -euo pipefail; \
+	$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
+	$(call CHECK_LAYOUT,stage-package); \
+	$(VERIFY_SOURCE_IDENTITY); \
+	python3 "$(CURDIR)/scripts/mesa_package_layout.py" config --builddir "$(BUILDDIR)"; \
+	$(MESON) install --no-rebuild -C "$(BUILDDIR)" --destdir "$(BUILD_ROOT)/package-root"; \
+	$(VERIFY_SOURCE_IDENTITY); \
+	python3 "$(CURDIR)/scripts/mesa_package_layout.py" stage \
+	  --builddir "$(BUILDDIR)" --stage "$(BUILD_ROOT)/package-root"
+
+.PHONY: clean-package-stage
+clean-package-stage: source-root-check
+	@set -euo pipefail; \
+	$(ACQUIRE_BUILD_LOCK) \
+	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
+	$(call CHECK_LAYOUT,build); \
+	$(VERIFY_SOURCE_IDENTITY); \
+	python3 "$(CURDIR)/scripts/mesa_package_layout.py" verify \
+	  --builddir "$(BUILDDIR)" --stage "$(BUILD_ROOT)/package-root"; \
+	python3 "$(SOURCE_ROOT_CONTROL)" remove-package-stage
+
+package-layout-test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q $(CURDIR)/tests/test_mesa_package_layout.py
+
 
 artifact-check: source-root-check vostro-prefix-check
 	@set -euo pipefail; \
@@ -2000,7 +2034,8 @@ test: source-root-check
 	exit "$$test_status"
 
 build-lease-test:
-	@tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+	@set -euo pipefail; \
+	tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
 		create-test-directory --label=build-lease)"; \
 	canonical_builddir="$(TOPSRC)/build/.build-lease-test-$$$$"; \
 	trap 'rm -rf "$$tmpdir" "$$canonical_builddir"' EXIT HUP INT TERM; \
@@ -2595,10 +2630,18 @@ source-root-selection-test:
 			MESA_CALLER_MOUNT_NAMESPACE="$$caller_mount_namespace" \
 			unshare --user --map-root-user --mount bash -c '\
 				set -euo pipefail; \
+				exec {control_root_fd}< "$$2"; \
+				cd /; \
 				mount --make-rprivate /; \
 				mount -t tmpfs -o mode=0700 tmpfs /tmp; \
 				mount -t tmpfs -o mode=0755 tmpfs /opt; \
 				mkdir -p /opt/local; \
+				case "$$2" in \
+					/tmp/*|/opt/*) \
+						mkdir -p "$$2"; \
+						mount --no-canonicalize --bind "/proc/self/fd/$$control_root_fd" "$$2" ;; \
+				esac; \
+				exec {control_root_fd}<&-; \
 				exec python3 "$$1" --control-root "$$2"' \
 				_ "$(MOUNT_BOUNDARY_CALIBRATION)" "$(CONTROL_ROOT)" \
 				2>&1 \
@@ -2653,7 +2696,7 @@ source-root-selection-test:
 			MESA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
 			MESA_BUILD_ROOT_INPUT="$$system_build_root" \
 			MESA_BUILDDIR_INPUT="$$system_build_root/probe" \
-			MESA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
+			MESA_PREFIX_INPUT="$$system_prefix_build_root/prefix" \
 			MESA_PROFILE_INPUT="$(PROFILE)" \
 			python3 "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=distclean >/dev/null 2>&1; then \
@@ -2667,7 +2710,7 @@ source-root-selection-test:
 			MESA_TOPSRC_INPUT="$(CONTROL_ROOT)" \
 			MESA_BUILD_ROOT_INPUT="$$hostile_home/source-root-review" \
 			MESA_BUILDDIR_INPUT="$$hostile_home/source-root-review/probe" \
-			MESA_PREFIX_INPUT="/opt/local/mesa-$(PROFILE)" \
+			MESA_PREFIX_INPUT="$$system_prefix_build_root/prefix" \
 			MESA_PROFILE_INPUT="$(PROFILE)" \
 			python3 "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=clean >/dev/null 2>&1; then \
@@ -2982,20 +3025,59 @@ source-root-selection-test:
 	}; \
 	echo "OK    external configure rejects an unhashed wrap-file download"; \
 	default_prefix_build_root="$$tmpdir/default-prefix-build"; \
-	if default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+	default_prefix_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
 		TOPSRC="$$source_root" BUILD_ROOT="$$default_prefix_build_root" \
 		BUILDDIR="$$default_prefix_build_root/probe" \
 		BUILD_LOCK="$$tmpdir/default-prefix.lock" LOCK_WAIT=0 \
-		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
-		echo "FAIL  external configure accepted the shared default prefix" >&2; \
-		exit 1; \
-	fi; \
-	printf '%s\n' "$$default_prefix_output" | \
-		grep -F "external PREFIX must be a direct child of BUILD_ROOT" >/dev/null || { \
-		echo "FAIL  shared default prefix returned the wrong diagnostic" >&2; \
+		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )" || { \
+		echo "FAIL  external configure rejected the build-owned default prefix" >&2; \
 		printf '%s\n' "$$default_prefix_output" >&2; exit 1; \
 	}; \
-	echo "OK    external configure rejects the shared default prefix"; \
+	python3 -c 'import json, pathlib, sys; root = pathlib.Path(sys.argv[1]); identity = json.loads((root / ".mesa-external-source-identity.json").read_text()); sys.exit(0 if identity["prefix"] == str(root / "prefix") and identity["state"] == "final" else "FAIL  default prefix identity differs from BUILD_ROOT/prefix")' \
+		"$$default_prefix_build_root"; \
+	cmp -s "$$default_prefix_build_root/.mesa-external-source-identity.json" \
+		"$$default_prefix_build_root/probe/.mesa-source-identity.json" || { \
+		echo "FAIL  default prefix has inconsistent source identities" >&2; exit 1; \
+	}; \
+	echo "OK    external configure binds the default prefix to BUILD_ROOT/prefix"; \
+	mkdir -p "$$default_prefix_build_root/prefix"; \
+	printf '%s\n' "retained default prefix" > "$$default_prefix_build_root/prefix/sentinel"; \
+	default_prefix_before="$$(sha256sum "$$default_prefix_build_root/prefix/sentinel" \
+		"$$default_prefix_build_root/.mesa-external-source-identity.json")"; \
+	for prefix_case in cross-root default-symlink builddir-alias; do \
+		prefix_case_root="$$tmpdir/prefix-$$prefix_case"; \
+		prefix_case_builddir="$$prefix_case_root/probe"; \
+		prefix_arguments=(); \
+		prefix_diagnostic="staging PREFIX must be a direct child of BUILD_ROOT"; \
+		case "$$prefix_case" in \
+			cross-root) prefix_arguments=("PREFIX=$$default_prefix_build_root/prefix") ;; \
+			default-symlink) \
+				mkdir -p "$$prefix_case_root"; \
+				ln -s "$$default_prefix_build_root/prefix" "$$prefix_case_root/prefix" ;; \
+			builddir-alias) \
+				prefix_case_builddir="$$prefix_case_root/prefix"; \
+				prefix_diagnostic="external PREFIX aliases BUILDDIR" ;; \
+		esac; \
+		if prefix_case_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" configure \
+			TOPSRC="$$source_root" BUILD_ROOT="$$prefix_case_root" \
+			BUILDDIR="$$prefix_case_builddir" "$${prefix_arguments[@]}" \
+			BUILD_LOCK="$$tmpdir/prefix-$$prefix_case.lock" LOCK_WAIT=0 \
+			COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true 2>&1 )"; then \
+			echo "FAIL  configure accepted $$prefix_case prefix contamination" >&2; exit 1; \
+		fi; \
+		printf '%s\n' "$$prefix_case_output" | grep -F "$$prefix_diagnostic" >/dev/null || { \
+			echo "FAIL  $$prefix_case prefix returned the wrong diagnostic" >&2; \
+			printf '%s\n' "$$prefix_case_output" >&2; exit 1; \
+		}; \
+		test ! -e "$$prefix_case_root/.mesa-external-source-identity.json" || { \
+			echo "FAIL  rejected $$prefix_case prefix acquired a source identity" >&2; exit 1; \
+		}; \
+		echo "OK    configure rejects $$prefix_case prefix contamination"; \
+	done; \
+	test "$$default_prefix_before" = "$$(sha256sum "$$default_prefix_build_root/prefix/sentinel" \
+		"$$default_prefix_build_root/.mesa-external-source-identity.json")" || { \
+		echo "FAIL  rejected prefix selection changed the retained prefix or identity" >&2; exit 1; \
+	}; \
 	unbound_build_root="$$tmpdir/unbound-build"; \
 	unbound_builddir="$$unbound_build_root/probe"; \
 	mkdir -p "$$unbound_builddir"; \
@@ -3353,11 +3435,25 @@ source-root-selection-test:
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
 		COMPILER_CHAIN=direct MESA_LLVM_VERSION=22 MESON=true >/dev/null; \
+	staging_meson="$$tmpdir/staging-meson"; \
+	printf '%s\n' '#!/bin/sh' 'set -eu' \
+		'case "$$1" in setup) exit 0 ;; install) shift ;; *) exit 64 ;; esac' \
+		'destination=' \
+		'while [ "$$#" -gt 0 ]; do case "$$1" in --destdir) destination=$$2; shift 2 ;; *) shift ;; esac; done' \
+		'[ -n "$$destination" ]' \
+		'mkdir -p "$$destination$$MESA_PREFIX_INPUT/lib" "$$destination/etc/OpenCL/vendors"' \
+		'touch "$$destination$$MESA_PREFIX_INPUT/lib/libgallium-fixture.so"' \
+		'printf "%s\n" libRusticlOpenCL.so > "$$destination/etc/OpenCL/vendors/rusticl.icd"' \
+		> "$$staging_meson"; \
+	chmod 700 "$$staging_meson"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" install \
 		TOPSRC="$$source_root" BUILD_ROOT="$$identity_build_root" \
 		BUILDDIR="$$identity_builddir" PREFIX="$$identity_prefix" \
 		BUILD_LOCK="$$tmpdir/identity.lock" LOCK_WAIT=0 \
-		COMPILER_CHAIN=direct MESON=true SUDO=true >/dev/null; \
+		COMPILER_CHAIN=direct MESON="$$staging_meson" >/dev/null; \
+	test -f "$$identity_build_root/installation-root/etc/OpenCL/vendors/rusticl.icd" || { \
+		echo "FAIL  install omitted its staged absolute configuration output" >&2; exit 1; \
+	}; \
 	cmp -s "$$identity_build_root/.mesa-external-source-identity.json" \
 		"$$identity_builddir/.mesa-source-identity.json" || { \
 		echo "FAIL  successful install wrote mismatched transactions" >&2; \
@@ -3552,7 +3648,7 @@ source-root-selection-test:
 		TOPSRC="$$source_root" BUILD_ROOT="$$archive_failure_root" \
 		BUILDDIR="$$archive_failure_builddir" PREFIX="$$archive_failure_prefix" \
 		BUILD_LOCK="$$tmpdir/archive-failure.lock" LOCK_WAIT=0 \
-		COMPILER_CHAIN=direct SUDO=false 2>&1 )"; then \
+		COMPILER_CHAIN=direct MOVE_TREE=false 2>&1 )"; then \
 		echo "FAIL  distclean reported success after archive failure" >&2; \
 		exit 1; \
 	fi; \
@@ -3952,7 +4048,7 @@ define INSTALL_PAIR
 	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
 endef
 
-override SELECT_PROFILE_PREFIX = $(if $(filter 1,$(REPRODUCIBLE_RUN)),$(BUILD_ROOT)/prefix,$1)
+override SELECT_PROFILE_PREFIX = $(BUILD_ROOT)/prefix
 
 # Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
 # ati_r300 ICD in one artifact (profile 4_).  The registered in-tree unit tests
@@ -3972,12 +4068,12 @@ install-4_r300_full_release_x86_64v1-clang22-distcc-cache:
 # Canonical full-feature r300 DEBUG build: same surface, assertions live (-O2 -g),
 # installs to the -debug prefix (profile 3_).
 rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean-registered-build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
-	$(MAKE) configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
-	$(MAKE) build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) clean-registered-build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 install-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 # Canonical r600/terakan RELEASE build: maximal terakan stack (r600, zink,
 # softpipe, llvmpipe, amd_terascale) plus Rusticl in one artifact (profile 3_).
@@ -3995,12 +4091,12 @@ install-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
 # Canonical r600/terakan DEBUG build: same surface, assertions live (-O2 -g),
 # Rusticl live, installs to the -debug prefix (profile 4_).
 rebuild-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean-registered-build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
-	$(MAKE) configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
-	$(MAKE) build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) clean-registered-build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 install-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) install PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 # r600/terakan RELEASE build without Rusticl: use when bindgen drift makes
 # Rusticl unbuildable (profile 5_).  Installs to the release prefix.
@@ -4017,48 +4113,35 @@ install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
 # r600/terakan DEBUG build without Rusticl: use when bindgen drift makes
 # Rusticl unbuildable (profile 6_).  Installs to the -debug prefix.
 rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean-registered-build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
-	$(MAKE) configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
-	$(MAKE) build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) clean-registered-build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-optimized)
+	$(MAKE) install PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
-# PRIME r300 driver: ASan+UBSan+extended sanitizers at -O0 (profile 1_).  SCOPED
-# install to /opt/mesa-gororoba-debug-asan -- NEVER the system Mesa (an ASan
-# libGL/libvulkan as the default Mesa aborts every GL/VK client and can
-# black-screen the login).  The prefix must equal the mesa-gororoba-debug-asan
-# PKGBUILD _prefix so the repack stages to the right tree; it is reached only
-# through mesa-gororoba-debug-asan-run.
+# Sanitizer instrumentation stages under its selected BUILD_ROOT. The scoped
+# launcher preloads the matching runtime before loading the experiment's drivers.
 rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean-registered-build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
-	$(MAKE) configure PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
-	$(MAKE) build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
+	$(MAKE) clean-registered-build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) configure PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) build PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 install-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-asan)
+	$(MAKE) install PROFILE=1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
-# -O0 normal-debug r300 driver, no sanitizer (profile 2_).  SCOPED install to
-# /opt/mesa-gororoba-debug-o0 -- NOT the system Mesa; reached through
-# mesa-gororoba-debug-o0-run.  The prefix must equal the mesa-gororoba-debug-o0
-# PKGBUILD _prefix.
+# Uninstrumented -O0 qualification uses build-owned staging; its optional system
+# package replaces the selected release/debug payload through pacman.
 rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) clean-registered-build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
-	$(MAKE) configure PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
-	$(MAKE) build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
+	$(MAKE) clean-registered-build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) configure PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
+	$(MAKE) build PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
 install-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,/opt/mesa-gororoba-debug-o0)
+	$(MAKE) install PROFILE=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=$(call SELECT_PROFILE_PREFIX,$(BUILD_ROOT)/prefix)
 
-# Coherent GPU debug stack ("if one is updated they are all updated"): rebuild the
-# four r300 driver tiers (prime 1_, debug-o0 2_, debug-optimized 3_, release 4_)
-# from the current tree so they share the source-of-truth pkgver and stay in
-# lockstep.  The per-package PKGBUILDs (mesa-gororoba-debug-asan,
-# mesa-gororoba-debug-o0, mesa-gororoba-debug-optimized, mesa-gororoba) then repack
-# those builddirs, umr-gororoba repacks its CMake build, and the
-# mesa-gororoba-debug-tools meta-package pins them together.  Pacman has no
-# atomic "update all"; this target + the meta-package pin are the idiom.  Note: only
-# the debug-optimized and release tiers ever become the /usr system Mesa.
+# All optimization/instrumentation profiles qualify one source revision in distinct
+# build roots. Packaging selects one unsanitized profile with the stock overlay.
 rebuild-all-tiers:
 	@[ "$(REPRODUCIBLE_RUN)" = "1" ] || { echo "four-tier qualification requires REPRODUCIBLE_RUN=1 with distinct detached control and TOPSRC worktrees" >&2; exit 2; }
 	$(MAKE) rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache"
@@ -4066,7 +4149,7 @@ rebuild-all-tiers:
 	$(MAKE) rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache"
 	$(MAKE) rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache REPRODUCIBLE_RUN=1 TOPSRC="$(TOPSRC)" BUILD_ROOT="$(BUILD_ROOT)/4_r300_full_release_x86_64v1-clang22-distcc-cache"
 	@echo "rebuilt the four r300 driver tiers (prime + debug-o0 + debug-optimized + release) from the current tree."
-	@echo "package: for p in mesa-gororoba-debug-asan mesa-gororoba-debug-o0 mesa-gororoba-debug-optimized mesa-gororoba umr-gororoba mesa-gororoba-debug-tools; do (cd packaging/\$$p && makepkg -f --noconfirm); done"
+	@echo "package: for p in mesa-gororoba-debug-o0 mesa-gororoba-debug-optimized mesa-gororoba umr-gororoba mesa-gororoba-debug-tools; do (cd packaging/\$$p && makepkg -f --noconfirm); done"
 
 # mesa-gororoba CachyOS-style /usr drop-in package (r300 GL, zink, and the
 # ati_r300/r3v Vulkan ICD; the recipe builds no LLVM and no llvmpipe), built
@@ -4075,14 +4158,14 @@ rebuild-all-tiers:
 # MESA_REPO_NAME, whose directory accumulates every package built there;
 # deploy-mesa ships the newest artifact to TARGET_HOST and asks pacman to
 # execute the package-declared replacement transaction.  Build on a fast
-# x86-64 host whose llvm major matches the target's llvm-libs.
+# x86-64 host with the configured compiler and package dependencies.
 # The recipe tracks the branch tip through its source fragment; MESA_COMMIT=<sha>
 # rewrites that fragment to one object name through packaging/pin-source-commit.sh,
 # which refuses a recipe it cannot pin so a build never carries a commit name it
 # did not fetch.  Artifacts live under ../build/ (the sanctioned build area),
 # not as workspace siblings.
 MESA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
-MESA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-package)
+MESA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-package-$(notdir $(patsubst %/,%,$(MESA_PKG_SRC))))
 MESA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-package-repository)
 MESA_REPO_NAME ?= gororoba
 TARGET_HOST        ?= cachyos-vostro1000
@@ -4090,7 +4173,7 @@ MESA_DEPLOY_ACCEPTED ?= 0
 
 package-mesa:
 	mkdir -p "$(MESA_PKG_DIR)/tmp" "$(MESA_REPO_DIR)"
-	find "$(MESA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(MESA_PKG_DIR)/" {} +
+	find "$(MESA_PKG_SRC)" -maxdepth 1 \( -type f -o -type l \) -exec cp -L -t "$(MESA_PKG_DIR)/" {} +
 	[ -z "$(MESA_COMMIT)" ] || sh $(CURDIR)/packaging/pin-source-commit.sh "$(MESA_PKG_DIR)/PKGBUILD" "$(MESA_COMMIT)"
 	cd "$(MESA_PKG_DIR)" && TMPDIR="$(MESA_PKG_DIR)/tmp" SRCDEST="$(MESA_PKG_DIR)" BUILDDIR="$(MESA_PKG_DIR)" makepkg -f --noconfirm
 	built=$$(sh $(CURDIR)/packaging/select-built-package.sh "$(MESA_PKG_DIR)") && \

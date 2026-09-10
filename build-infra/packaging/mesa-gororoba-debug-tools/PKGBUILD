@@ -1,41 +1,31 @@
-# mesa-gororoba-debug-tools: the full RS482/r300 GPU debug stack in one
-# install.  A depends-only meta-package -- it ships no driver of its own; it pulls
-# the PRIME sanitizer driver (mesa-gororoba-debug-asan), the umr-gororoba fork,
-# and the radeon-KMD instrumentation tool set, and installs the stack
-# documentation.  Installing this gives you everything needed for sanitizer-backed
-# GPU RCA on RS482 alongside the system driver (debug-optimized or release).  See
-# /usr/share/doc/mesa-gororoba-debug-tools/ for the 4-tier table and the
-# per-tool invocations against the prime driver.
+# SPDX-License-Identifier: MIT
+# Instrumentation tools install independently of the selected Mesa system variant.
 pkgname=mesa-gororoba-debug-tools
 pkgver=26.2.0
-pkgrel=2
+pkgrel=3
 epoch=2
 replaces=('mesa-gororoba-gpu-debug-stack')
 conflicts=('mesa-gororoba-gpu-debug-stack')
 provides=("mesa-gororoba-gpu-debug-stack=${epoch}:${pkgver}-${pkgrel}")
-pkgdesc='Meta-package: the RS482/r300 GPU debug stack -- prime ASan+UBSan -O0 driver + umr-gororoba + radeon-KMD instrumentation tools (bpftrace/valgrind/gdb/radeontop/perf) + docs'
+pkgdesc='Meta-package: the RS482/r300 GPU debug stack -- umr-gororoba + radeon-KMD instrumentation tools (bpftrace/valgrind/gdb/radeontop/perf) + docs'
 arch=('any')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
-# The stack, pinned in lockstep.  The mesa-gororoba driver carries the current
-# pkgver so a stack bump tracks it; the tools are by-name (their own versions).
-# bpftrace/perf target the radeon KMD, not amdgpu.
+# Tool versions follow their owning packages; GPU instrumentation targets radeon.
 depends=(
-  "mesa-gororoba-debug-asan>=${epoch}:${pkgver}"
   umr-gororoba
   bpftrace valgrind gdb strace radeontop perf lm_sensors
 )
-# Suggested but not required: the other driver tiers + symbolization extras.  Only
-# debug-optimized and release are /usr system Mesa; debug-o0 is a scoped /opt tier.
+# Driver variants are optional mutually exclusive stock system replacements.
 optdepends=(
-  'mesa-gororoba-debug-optimized: the default debug SYSTEM /usr driver (gdb/RADEON_DEBUG RCA)'
-  'mesa-gororoba: the release conformance/silicon-baseline SYSTEM /usr driver'
-  'mesa-gororoba-debug-o0: the -O0 scoped /opt deepest-stepping tier (no sanitizer)'
+  'mesa-gororoba-debug-optimized: the debugoptimized stock system driver (gdb/RADEON_DEBUG RCA)'
+  'mesa-gororoba: the release stock system driver'
+  'mesa-gororoba-debug-o0: the mutually exclusive stock -O0 system driver'
   'pwndbg: nicer gdb for driver state inspection'
   'heaptrack: allocation profiling in the draw path'
 )
 source=('r300-debug-tiers.md')
-sha256sums=('SKIP')
+sha256sums=('e25ec398a47f03c6a2f4836fdfed76e1e2fdf7825a10749c61f6ae6f4644f74d')
 
 package() {
   install -Dm644 "${srcdir}/r300-debug-tiers.md" \

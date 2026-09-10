@@ -61,11 +61,10 @@ Vulkan 1.0 device without multiview cannot satisfy, so the default r3v
 surface withholds them and the gate opens the full zink baseline with
 that dependency violation as its recorded conformance cost.  Conformance and silicon-evidence runs use profile 4_
 (`4_r300_full_release`, now under `alternates/`) because an asserts-live debug
-build can abort a CTS/Piglit case that release would pass.  `make install
-PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`
-by default; the shared active trees `/opt/local/mesa-26-gororoba` (release) and
-`/opt/local/mesa-gororoba-debug-optimized` (debug) are used only by the
-`install-<profile>` targets or when an explicit `PREFIX=` is passed.
+build can abort a CTS/Piglit case that release would pass. `make install`
+stages the selected experimental build under `BUILD_ROOT/prefix` without
+privilege. Use a distinct build root for each profile. System replacement uses
+the stock package pipeline described below.
 
 ## Layout
 
@@ -149,8 +148,9 @@ regenerable, while ignored original `subprojects/` sources remain rejected.
 Path selection rejects whitespace and shell metacharacters, resolves symlinks
 before containment checks, and keeps the external build root, build directory,
 and prefix outside both source worktrees.  The external prefix is a direct
-child of its build root, so the shared profile default under `/opt/local`
-never aliases two comparison sources.
+child of its build root, so separate comparison build roots retain separate
+staging destinations. The exact logical `/usr` prefix is permitted exclusively
+for stock package configuration and its build-owned DESTDIR operation.
 
 External and noncanonical build roots use one strict child of these designated
 namespaces:
@@ -169,12 +169,11 @@ symlink component.  `/tmp` and `/var/tmp` qualify only as root-owned sticky
 directories.  A build root inside any Git worktree or bare Git directory is
 rejected, including a sibling repository under the same workspace.  The
 control worktree's canonical `build/` remains the direct local exception.  A
-control-source prefix is either a named Mesa profile prefix under `/opt` or a
-direct child of its build root.  System top-level directories never qualify as
-install prefixes or build roots.
+control-source experimental prefix is a direct child of its build root. System
+top-level directories remain protected from installation and cleanup; `/usr`
+serves only as compiled package metadata.
 
-Reproducible profile targets configure `BUILD_ROOT/prefix`; they never select a
-shared `/opt` prefix.  `rebuild-all-tiers` treats its selected `BUILD_ROOT` as a
+Reproducible experimental profile targets configure `BUILD_ROOT/prefix`.  `rebuild-all-tiers` treats its selected `BUILD_ROOT` as a
 parent and derives one profile-named build root for each tier, so each root has
 one build directory, prefix, policy tuple, and source-identity transaction.
 
@@ -382,13 +381,13 @@ differs from the client major.  A syntactically valid host allocation cannot
 pass while every compile runs on the client, a volunteer lacks one language
 compiler, or one configured volunteer uses a different GNU compiler major.
 
-r300 DEBUG build (vostro, **default install target** -- assertions live,
-gallium-xa XA tracker, valgrind/libunwind/perfetto instrumentation):
+r300 debug qualification keeps assertions, the XA tracker, and the profile's
+valgrind/libunwind/perfetto instrumentation:
 ```bash
 make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
-# Package and install as the system Mesa (replaces stock mesa or release build):
-cd build-infra/packaging/mesa-gororoba-debug && makepkg --noconfirm && yes | sudo pacman -U mesa-gororoba-debug-*.pkg.tar.zst
 ```
+The command produces a build-owned experiment. System packaging selects the
+same native profile with the stock-path overlay and its complete test surface.
 
 r300 RELEASE build (vostro, conformance-baseline -- use only for CTS/Piglit/deqp runs
 where assertions-live behavior would contaminate pass/fail):
@@ -446,11 +445,85 @@ make distclean PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache
 
 Runtime smoke test (terakan):
 ```bash
-export PREFIX=/opt/local/mesa-26-gororoba
+export PREFIX="$MESA_BUILD_ROOT/prefix"
 export LD_LIBRARY_PATH=$PREFIX/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export VK_DRIVER_FILES=$PREFIX/share/vulkan/icd.d/terascale_icd.x86_64.json
 vulkaninfo --summary
 ```
+
+## Stock system packages
+
+Xorg and other consumers compile `dri.pc`'s `dridriverdir` into their binaries.
+Every installable Mesa variant therefore builds against `/usr` and emits real
+stock-path payloads. Release, debugoptimized, and ordinary O0 packages conflict
+with each other and with the retired installed sanitizer package. The shared
+recipe calls Make; the selected native profile supplies optimization and
+instrumentation, while `packaging/stock-package.meson` supplies r300/zink, R3V,
+anti-lag/device-select, DRI/GBM paths, and registered tests. Release retains
+MPEG-1/2 decode; debug profiles retain their additional gated codec selections.
+Explicit Vulkan overlay layers remain owned by the distro layer package.
+
+Build one package from a source revision with:
+
+```sh
+make -C build-infra package-mesa MESA_COMMIT=<full-source-commit>
+```
+
+Select `MESA_PKG_SRC` as the repository's `mesa-gororoba-debug-optimized` or
+`mesa-gororoba-debug-o0` recipe directory for a debug system replacement. Each
+recipe fetches the declared source, configures and builds through Make, runs the
+registered Meson tests and calibrated R3V surface/inventory checks, and invokes
+`stage-package`. `package()` verifies the finalized payload receipt before
+copying the staged files under fakeroot. Source checksums remain enabled. Default package builds use a variant-and-source
+named build root under the validated `/var/tmp/mesa-26-gororoba-<uid>/` namespace;
+new source commits receive fresh identities. A checked source-directory pointer
+preserves the selected build root across makepkg's fakeroot boundary.
+
+For an already qualified detached source/control pair, configure, build, and
+test with the same selectors and the exact `PREFIX=/usr`:
+
+```sh
+make -C "$MESA_CONTROL_ROOT/build-infra" configure \
+  TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT" \
+  PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  PREFIX=/usr REPRODUCIBLE_RUN=1
+make -C "$MESA_CONTROL_ROOT/build-infra" build \
+  TOPSRC="$MESA_SOURCE_ROOT" BUILD_ROOT="$MESA_BUILD_ROOT" \
+  PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
+  PREFIX=/usr REPRODUCIBLE_RUN=1
+```
+
+Set `MESA_PACKAGE_SRCROOT`, `MESA_PACKAGE_CONTROL_ROOT`,
+`MESA_PACKAGE_BUILD_ROOT`, `MESA_PACKAGE_BUILDDIR`, and
+`MESA_PACKAGE_REPRODUCIBLE_RUN=1` in the packaging command's environment to repack
+that build. Pin `MESA_COMMIT` to the qualified source commit. Repacking checks
+that the fetched recipe revision matches the source and preserves the existing
+configuration. Qualification receipts bind source/control commits, profile,
+Meson options, payload hashes, and symlink targets. Their files live inside the
+package; GPU captures and runtime findings belong in `steinmarder-r300`.
+
+`stage-package` writes unprivileged to the fresh derived
+`BUILD_ROOT/package-root`. A repeated checked package build first removes an
+unchanged, receipt-verified stage with `clean-package-stage`. Failed or changed
+staging remains available for inspection. `install` captures the complete Meson payload through DESTDIR, materializes the
+experimental prefix, and retains absolute configuration outputs under
+`BUILD_ROOT/installation-root/etc`. The build-owned `mesa-experiment-run`
+launcher selects that Rusticl ICD directory through `OCL_ICD_VENDORS` when present.
+`install` rejects `/usr`; `distclean` archives only a validated build-owned prefix.
+Pacman installs the selected artifact and owns replacement and removal.
+
+During migration, inspect package ownership before removing obsolete installed
+ASan/O0 packages or alternate-prefix residue. The instrumentation-only
+debug-tools package has no driver dependency. The core package ships the
+experimental R3V manifest beneath `usr/share/mesa-gororoba/vulkan/icd.d` and
+selects it with `mesa-gororoba-run`; global Vulkan selection remains with the
+loader. A 32-bit RADV manifest belongs with a package that supplies the matching
+32-bit driver; the core 64-bit package supplies neither artifact.
+
+After replacement, verify `/usr/lib/pkgconfig/dri.pc` exports `/usr/lib/dri`,
+check Mesa/Xorg package ownership, restart the display stack, and execute the
+bounded GLX/EGL checks. Rebuild consumers carrying an old compiled DRI directory.
+Roll back through a retained package archive or the matching distro packages.
 
 ## Cache discipline
 

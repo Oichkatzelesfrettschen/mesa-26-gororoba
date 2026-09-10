@@ -1,0 +1,39 @@
+#!/bin/sh
+# Select libraries and absolute configuration outputs from one build-owned experiment.
+set -eu
+if [ "$#" -lt 2 ]; then
+  echo 'usage: mesa-experiment-run <BUILD_ROOT> <command> [args...]' >&2
+  exit 2
+fi
+build_root=$(realpath -e -- "$1")
+shift
+prefix=$build_root/prefix
+case "$build_root" in /opt/*|/usr/*|/usr|/)
+  echo 'experiments require a build-owned root' >&2; exit 2 ;;
+esac
+[ -d "$prefix/lib" ] || { echo 'install the selected experiment through Make first' >&2; exit 2; }
+export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LIBGL_DRIVERS_PATH="$prefix/lib/dri"
+export GBM_BACKENDS_PATH="$prefix/lib/gbm"
+export __EGL_VENDOR_LIBRARY_FILENAMES="$prefix/share/glvnd/egl_vendor.d/50_mesa.json"
+if [ -d "$prefix/share/vulkan/explicit_layer.d" ]; then
+  export VK_ADD_LAYER_PATH="$prefix/share/vulkan/explicit_layer.d${VK_ADD_LAYER_PATH:+:$VK_ADD_LAYER_PATH}"
+fi
+if [ -d "$prefix/share/vulkan/implicit_layer.d" ]; then
+  export VK_ADD_IMPLICIT_LAYER_PATH="$prefix/share/vulkan/implicit_layer.d${VK_ADD_IMPLICIT_LAYER_PATH:+:$VK_ADD_IMPLICIT_LAYER_PATH}"
+fi
+if [ -d "$build_root/installation-root/etc/OpenCL/vendors" ]; then
+  export OCL_ICD_VENDORS="$build_root/installation-root/etc/OpenCL/vendors"
+fi
+# Each maintained Vulkan profile emits one native architecture ICD.
+manifest=
+for candidate in "$prefix"/share/vulkan/icd.d/*.json; do
+  [ -f "$candidate" ] || continue
+  [ -z "$manifest" ] || { echo 'select one Vulkan ICD explicitly for a multi-ICD experiment' >&2; exit 2; }
+  manifest=$candidate
+done
+if [ -n "$manifest" ]; then
+  export VK_DRIVER_FILES="$manifest"
+  export VK_ICD_FILENAMES="$manifest"
+fi
+exec "$@"

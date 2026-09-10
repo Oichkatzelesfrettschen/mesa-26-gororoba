@@ -86,7 +86,7 @@ class RS482SourceAuthorityTests(unittest.TestCase):
         authority, evidence = self.rows["Target deployment runtime"]
         self.assertRegex(
             authority,
-            r"^`steinmarder-r300/results/.+-deployment-runtime/`$",
+            r"^`steinmarder-r300/results/(?:.+-deployment-runtime|rs485m-radeon-package-module-identity)/`$",
         )
         for label in ("retaining commit", "source commit", "driver tree"):
             self.assert_labeled_identity(evidence, label, GIT_OBJECT)

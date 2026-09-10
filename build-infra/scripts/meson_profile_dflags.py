@@ -65,7 +65,7 @@ def _normalize_value(raw: str) -> str:
         return ",".join(items)
 
     # Quoted scalar.
-    if (len(text) >= 2 and text[0] == text[-1] and text[0] in "'\""):
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
         return text[1:-1]
 
     return text
@@ -109,7 +109,9 @@ def profile_dflags(path: str, include_builtin: bool) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("profile", help="path to a build-infra profile .meson file")
+    ap.add_argument(
+        "profile", nargs="+", help="path to a build-infra profile .meson file"
+    )
     ap.add_argument(
         "--builtin",
         action="store_true",
@@ -117,7 +119,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
     try:
-        flags = profile_dflags(args.profile, include_builtin=args.builtin)
+        options: dict[str, str] = {}
+        for profile in args.profile:
+            for flag in profile_dflags(profile, include_builtin=args.builtin):
+                options[flag.split("=", 1)[0]] = flag
+        flags = list(options.values())
     except (OSError, ValueError, configparser.Error) as exc:
         print(f"meson_profile_dflags: {exc}", file=sys.stderr)
         return 2

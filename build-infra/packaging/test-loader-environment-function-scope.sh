@@ -6,8 +6,6 @@ here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 
 check_environment_file() (
   environment_file=$1
-  MESA_INSTALL_PREFIX=/opt/mesa-loader-environment-fixture
-  export MESA_INSTALL_PREFIX
 
   mesa_prepend_path() {
     printf '%s\n' caller-definition
@@ -36,7 +34,7 @@ fi
 echo "loader environment caller-function deletion: REJECTED"
 
 check_environment_file "$here/mesa-gororoba/mesa-gororoba-env.sh"
-check_environment_file "$here/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
+check_environment_file "$here/mesa-gororoba-debug-optimized/mesa-gororoba-env.sh"
 
 check_profile_does_not_force_vulkan_selection() (
   unset VK_DRIVER_FILES VK_ICD_FILENAMES

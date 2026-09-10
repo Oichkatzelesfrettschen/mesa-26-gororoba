@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "rs482-stack-manifest.schema.json",
-  "title": "RS482 stack manifest",
+  "title": "RS485M stack manifest",
   "description": "Frozen stack identity required before an Xorg-associated hardware verdict can be promoted. Instances are evidence and live with their bundles in steinmarder-r300.",
   "type": "object",
   "required": [
@@ -250,7 +250,7 @@
       "if": {
         "properties": {
           "provenance_contract": {
-            "const": "source-to-payload-v2"
+            "enum": ["source-to-payload-v2", "source-to-payload-v3"]
           }
         },
         "required": ["provenance_contract"]
@@ -299,13 +299,53 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance_contract": {"const": "source-to-payload-v3"}
+        },
+        "required": ["provenance_contract"]
+      },
+      "then": {
+        "properties": {
+          "xorg": {
+            "properties": {
+              "radeon_ddx_provenance": {
+                "properties": {
+                  "source_repository": {"const": "xf86-video-ati-rs485m"},
+                  "release_repository": {
+                    "const": "PKGBUILD_xf86-video-ati-rs485m"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "xorg": {
+            "properties": {
+              "radeon_ddx_provenance": {
+                "properties": {
+                  "source_repository": {"const": "xf86-video-ati-rs482"},
+                  "release_repository": {
+                    "const": "PKGBUILD_xf86-video-ati-rs482"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
     "provenance_contract": {
       "type": "string",
-      "const": "source-to-payload-v2",
-      "description": "Enables the qualification source, release, installed-payload, and kernel-equivalence contract. Its absence identifies a legacy manifest."
+      "enum": ["source-to-payload-v2", "source-to-payload-v3"],
+      "description": "Enables the qualification source, release, installed-payload, and kernel-equivalence contract. Version 3 binds the Radeon DDX source and release repositories to the RS485M names; version 2 retains the RS482 names. Its absence identifies a legacy manifest."
     },
     "boot_id": {
       "$ref": "#/$defs/non_empty_string",
@@ -372,17 +412,7 @@
           ]
         },
         "radeon_ddx_provenance": {
-          "allOf": [
-            {"$ref": "#/$defs/source_release_provenance"},
-            {
-              "properties": {
-                "source_repository": {"const": "xf86-video-ati-rs482"},
-                "release_repository": {
-                  "const": "PKGBUILD_xf86-video-ati-rs482"
-                }
-              }
-            }
-          ]
+          "$ref": "#/$defs/source_release_provenance"
         }
       }
     },

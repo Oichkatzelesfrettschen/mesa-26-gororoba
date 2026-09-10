@@ -495,8 +495,7 @@ def write_git_repository_marker(worktree_root: Path) -> Path:
     return marker
 
 
-def write_git_linked_worktree_marker(worktree_root: Path,
-                                     metadata: Path) -> Path:
+def write_git_linked_worktree_marker(worktree_root: Path, metadata: Path) -> Path:
     """Write the .git file shape git gives a linked worktree.
 
     The metadata directory is written too, because the marker names it
@@ -533,7 +532,8 @@ def test_validate_layout_rejects_peer_linked_git_worktree(
     values = layout_values(tmp_path)
     peer_root = tmp_path / ".mesa-26-gororoba-builds" / "linked-peer"
     write_git_linked_worktree_marker(
-        peer_root, tmp_path / "elsewhere" / ".git" / "worktrees" / "peer")
+        peer_root, tmp_path / "elsewhere" / ".git" / "worktrees" / "peer"
+    )
     values["build_root"] = peer_root / "build-output"
     values["builddir"] = peer_root / "build-output" / "build"
     values["prefix"] = peer_root / "build-output" / "prefix"
@@ -549,7 +549,8 @@ def test_validate_layout_accepts_build_root_under_a_dangling_gitdir_marker(
     peer_root = tmp_path / ".mesa-26-gororoba-builds" / "dangling"
     peer_root.mkdir(parents=True)
     (peer_root / ".git").write_text(
-        f"gitdir: {tmp_path / 'absent' / 'worktrees' / 'gone'}\n")
+        f"gitdir: {tmp_path / 'absent' / 'worktrees' / 'gone'}\n"
+    )
     values["build_root"] = peer_root / "build-output"
     values["builddir"] = peer_root / "build-output" / "build"
     values["prefix"] = peer_root / "build-output" / "prefix"
@@ -2577,3 +2578,102 @@ def test_require_identity_record_rejects_unknown_fields(
             tmp_path / "identity.json",
             frozenset((source_root_control.FINAL_STATE,)),
         )
+
+
+@pytest.mark.parametrize("operation", ("install", "distclean", "artifact"))
+def test_stock_prefix_stays_protected_for_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
+    values["prefix"] = Path("/usr")
+    with pytest.raises(source_root_control.ControlError, match="unsafe PREFIX"):
+        source_root_control.validate_layout(operation, values)
+
+
+def test_stock_prefix_configures_as_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
+    values["prefix"] = Path("/usr")
+    source_root_control.validate_layout("configure", values)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "/opt/mesa-gororoba-debug-optimized",
+        "/usr/local/mesa",
+        "/opt/local/mesa-26-gororoba",
+    ),
+)
+def test_alternate_system_prefix_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prefix: str,
+) -> None:
+    values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
+    values["prefix"] = Path(prefix)
+    with pytest.raises(source_root_control.ControlError):
+        source_root_control.validate_layout("configure", values)
+
+
+def test_package_stage_rejects_symlink_and_stale_contents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
+    values["prefix"] = Path("/usr")
+    stage = source_root_control.package_stage_path(values)
+    stage.parent.mkdir(parents=True)
+    source_root_control.validate_layout("stage-package", values)
+    stage.symlink_to("/usr")
+    with pytest.raises(source_root_control.ControlError, match="symlink"):
+        source_root_control.validate_layout("stage-package", values)
+    stage.unlink()
+    stage.mkdir()
+    (stage / "retained").write_text("stale payload")
+    with pytest.raises(source_root_control.ControlError, match="must be empty"):
+        source_root_control.validate_layout("stage-package", values)
+
+
+def test_experimental_install_contains_absolute_config_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = layout_values(tmp_path)
+    isolate_fixture_build_namespace(values, monkeypatch)
+    build_root = values["build_root"]
+    prefix = values["prefix"]
+    assert isinstance(build_root, Path) and isinstance(prefix, Path)
+    build_root.mkdir(parents=True)
+
+    def fake_install(command: list[str], *, check: bool) -> None:
+        assert check
+        assert command[:3] == ["fixture-meson", "install", "--no-rebuild"]
+        stage = Path(command[command.index("--destdir") + 1])
+        assert stage.parent == build_root
+        library = stage / prefix.relative_to("/") / "lib/libRusticlOpenCL.so"
+        library.parent.mkdir(parents=True)
+        library.write_text("qualified OpenCL library")
+        icd = stage / "etc/OpenCL/vendors/rusticl.icd"
+        icd.parent.mkdir(parents=True)
+        icd.write_text("libRusticlOpenCL.so")
+
+    monkeypatch.setattr(source_root_control.subprocess, "run", fake_install)
+    monkeypatch.setattr(
+        source_root_control, "require_captured_inputs", lambda *args: None
+    )
+    source_root_control.install_experiment(values, "fixture-meson")
+    assert (
+        prefix / "lib/libRusticlOpenCL.so"
+    ).read_text() == "qualified OpenCL library"
+    assert (
+        build_root / "installation-root/etc/OpenCL/vendors/rusticl.icd"
+    ).read_text() == "libRusticlOpenCL.so"

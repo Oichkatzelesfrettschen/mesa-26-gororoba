@@ -41,7 +41,7 @@ make -C build-infra test \
   PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache \
   HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc \
   COMPILER_CHAIN=ccache \
-  PREFIX=/opt/local/mesa-26-gororoba
+  PREFIX="$MESA_BUILD_ROOT/prefix"
 ```
 
 Those results are build/test evidence and do not establish hardware behavior
@@ -95,22 +95,17 @@ the generic baseline lacks on this hardware.
 
 ## Build placement and artifact hygiene
 
-Builds land out-of-tree.  The `build-infra/Makefile` resolves
-`BUILDDIR ?= $(CURDIR)/../../build/mesa-<profile>`, i.e. a sibling
-`build/mesa-<profile>/` directory outside the repository working tree, so a
-build never appears in `git status`.  Each profile maps to one install
-prefix: release builds to `/opt/local/mesa-26-gororoba`, debug builds to
-`/opt/local/mesa-gororoba-debug-optimized`; neither prefix is inside the repo and
-system Mesa at `/usr/lib` is left untouched by these `/opt/local` profiles.
+Qualification uses separate build roots with one profile build directory and
+`BUILD_ROOT/prefix` staging directory per root. The default local build root is
+the checkout's ignored `build/` directory. External source/control qualification
+uses the validated namespace rules in `build-infra/README.md`.
 
-The package-managed release PKGBUILD uses `/opt/mesa-gororoba` as the FHS
-canonical add-on prefix and ships compatibility aliases for older local scripts:
-`/opt/local/mesa-26-gororoba` and `/opt/share/mesa-26-gororoba` both point at
-that prefix, while `/usr/share/mesa-26-gororoba` points at the same canonical
-prefix for older script compatibility.  The debug package follows the same
-pattern at `/opt/mesa-gororoba-debug-optimized`.  Use
-`mesa-gororoba-run <probe>` or `mesa-gororoba-debug-optimized-run <probe>` to select
-the side-by-side driver for one command without replacing stock Mesa.
+The release, debugoptimized, and ordinary O0 system packages replace one `/usr`
+Mesa payload through pacman. The shared stock overlay adds zink and both implicit
+Vulkan layers to the release package while retaining release optimization,
+assertion, codec, and LLVM settings. Every system variant runs registered tests.
+ASan stays in build-owned experimental staging with its scoped runtime launcher.
+Package metadata never redirects consumers to an alternate installed prefix.
 
 Concurrent builds serialize through a lock: the Makefile wraps `ninja` in
 `flock -x -w 7200 $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock`, so a second

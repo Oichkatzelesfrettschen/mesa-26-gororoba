@@ -425,8 +425,9 @@ Meson option receives an audit of the target-host dependencies that Meson
 enables. Hazardous submit paths require exact opt-ins such as
 `R300_TRACE_HAZARD_ACCEPTED=1`.
 
-Release, debugoptimized, and debug builds use separate build directories and
-install prefixes. Release builds supply conformance and silicon evidence;
+Release, debugoptimized, and debug qualification builds use separate build roots
+and staging prefixes. System packages replace one mutually exclusive payload
+under `/usr` through pacman. Release builds supply conformance and silicon evidence;
 debugoptimized and debug builds change timing, allocation, and error behavior.
 Run complete configure, build, and install cycles for one build before using
 another. A probe declares one prefix through its Meson `prefix` and `libdir`,
@@ -443,13 +444,17 @@ uses `vostro1000-x86-64-v1-gcc-ccache-distcc.env` with
 `COMPILER_FAMILY=gnu`. Historical pump environments remain under
 `build-infra/env/Archive/` and supply no active Make target.
 
-Each profile maps to `build/mesa-<profile>/` and an isolated default prefix
-`/opt/local/mesa-<profile>`. The only operator-selected shared prefixes are
-`/opt/local/mesa-26-gororoba` for release and
-`/opt/mesa-gororoba-debug-optimized` for debugoptimized, with
-`/opt/local/mesa-gororoba-debug-optimized` as its compatibility alias. An
-in-repository install tree contaminates the worktree and supplies no valid
-evidence surface.
+Each profile maps to `BUILD_ROOT/mesa-<profile>/`; experimental installation
+stages unprivileged under `BUILD_ROOT/prefix`. Use a distinct build root for each
+qualification profile. System packages configure the exact logical `PREFIX=/usr`
+and write exclusively to `BUILD_ROOT/package-root` through `stage-package`.
+The shared `build-infra/packaging/stock-package.meson` overlay preserves the
+r300/zink, R3V, implicit-layer, and unit-test surface across system variants.
+`install` and `distclean` reject `/usr`; pacman owns system installation and
+replacement. Package metadata, libraries, and headers use their stock paths.
+Alternate system prefixes and `/opt` compatibility activation are prohibited.
+ASan remains a build-owned experiment selected by its scoped runtime launcher.
+See `build-infra/README.md` for qualification, packaging, and migration commands.
 
 `ninja -C <builddir> clean` preserves Meson configuration. A Meson-option or
 Meson-version change uses `meson setup --wipe <builddir>`, followed by full

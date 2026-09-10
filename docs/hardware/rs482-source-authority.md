@@ -14,8 +14,8 @@ lowest layer whose invariant is demonstrably violated.
 | --- | --- | --- | --- |
 | Xorg Server / glamor | `xserver-rs48x` | `PKGBUILD_xorg-server-glamor-r300fix` | `/usr/lib/Xorg`, `libglamoregl.so` |
 | Xorg modesetting DDX | `xserver-rs48x` | `PKGBUILD_xorg-server-glamor-r300fix` | `modesetting_drv.so` |
-| Radeon DDX | `xf86-video-ati-rs482` | `PKGBUILD_xf86-video-ati-rs482` | `radeon_drv.so` |
-| Mesa userspace | `mesa-26-gororoba` | `mesa-26-gororoba` build-infra and immutable image | `libgallium`, r300 DRI driver, `r3v` ICD |
+| Radeon DDX | `xf86-video-ati-rs485m` | `PKGBUILD_xf86-video-ati-rs485m` | `radeon_drv.so` |
+| Mesa userspace | `mesa-26-gororoba` | `mesa-26-gororoba` PKGBUILDs and build-infra | `libgallium`, r300 DRI driver, `r3v` ICD |
 | Radeon kernel | `linux-radeon-gororoba` | `radeon-custom` | source commit and tree, module SHA-256, GNU Build ID, `srcversion`, build profile, module parameters |
 | Platform | `vostro1000-re` | `vostro1000-re` | SB600 watchdog, EC thermal, boot configuration |
 | Evidence and orchestration | `steinmarder-r300` | `steinmarder-r300` retained bundles | bundle manifests, hashes, and finding documents |
@@ -29,8 +29,8 @@ source tests, numeric derivations, and source history.
 `PKGBUILD_xorg-server-glamor-r300fix` owns the package recipe, deterministic
 source export, package gates, installed manifest, and release qualification.
 
-`xf86-video-ati-rs482` owns external Radeon DDX source, source tests, and
-source history. `PKGBUILD_xf86-video-ati-rs482` owns the package recipe,
+`xf86-video-ati-rs485m` owns external Radeon DDX source, source tests, and
+source history. `PKGBUILD_xf86-video-ati-rs485m` owns the package recipe,
 deterministic source export, package gates, installed manifest, TearFree
 configuration, and release qualification.
 
@@ -75,20 +75,28 @@ The current identities stay on separate axes:
 
 | Identity axis | Authority | Exact identity and claim boundary |
 | --- | --- | --- |
-| Modified source | `linux-radeon-gororoba` | current main commit `2be21eaa892723f1c9cd826b7331c7d234e2c1ce`, driver tree `644b64d932603143b1abc719adf1759569f580e8`; the 0.8.13-1 recipe pins this same commit, so the source and recipe axes agree and this row carries no package or runtime claim of its own |
-| Active package recipe | `radeon-custom` 0.8.13-1 | package commit `9a52df357d72f4a0c0365fbf0f7941077bd69ed2`, recipe tree `e6206ad96dd4234577b4b0ed7932773f2fdef46e`, `PKGBUILD` blob `f0330735bbc722e1f9bc8080319cf53c261b7256`, source identity blob `6324f1dd5a249a56b930a4c19ea5907b0bc3fc25`; the recipe pins signed source tag object `d6e88ebe5acc6b1c7b57e2d1951d88b23495cf81`, source commit `2be21eaa892723f1c9cd826b7331c7d234e2c1ce`, and driver tree `644b64d932603143b1abc719adf1759569f580e8` |
-| Target deployment runtime | `steinmarder-r300/results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-deployment-runtime/` | retaining commit `59f9361e277bb63c52d335eda9009aa94b7d989c`, manifest SHA-256 `2ab2b00758b5226ac096da4d63c30652ebceef245f56373374b8f6fc21171ec6`, hash ledger SHA-256 `7bff34920965ddb4292b54a7bc9313f1f38102dd1592339a09d6cfd1ff6ff1e7`; records `radeon-unified-dkms-dev` 0.8.11-1, source commit `3c5ccb3cfb684c975efbb30c3e312c310b741cf9`, driver tree `e3a54399a004c714402b5c9bd56e1edcfd1caa1c`, and srcversion `727CE89E79FB2D14663C381` across a reboot |
+| Modified source | `linux-radeon-gororoba` | current main commit `07e65682a835bb807420e079b56387cbf1c0b172`, driver tree `3af9ee2702f215be4f15db8e1bd3503688e8d587`; source main advances beyond the package pin and carries no package or runtime claim |
+| Active package recipe | `radeon-custom` 0.8.14-1 | package commit `c4b289383198b72bce4b97f44efda8d55ead31ee`, recipe tree `43fea64b45bc3f5a1a66bce0dff304485b7946aa`, `PKGBUILD` blob `e18d5754bd8f78323efa698628463c79fa9dd9d9`, source identity blob `3e47c284419dc4f4aba876f2707022c0aa1fbcda`; the recipe pins signed source tag object `8c8404c1909225ef854f71e81c750321c912ce9a`, source commit `b534d1b0a90529988f20f1bf4f29648e49d10e29`, and driver tree `a11b837b591dba78884afe7744762f878ebb6ff1` |
+| Target deployment runtime | `steinmarder-r300/results/rs485m-radeon-package-module-identity/` | retaining commit `65ba5b43af60280b50ca1267c67f9726903b13c8`, manifest SHA-256 `d30a21caab90a1f5f7ffcc67dc3295982cce8cf09a621adf53a20c4a947d32e0`, hash ledger SHA-256 `25661cce52f565679615e75b45cfc793e426bec2962fbf556b35be00db55f328`; records production packages 0.8.14-1, on-disk source commit `b534d1b0a90529988f20f1bf4f29648e49d10e29`, driver tree `a11b837b591dba78884afe7744762f878ebb6ff1`, and matching loaded/on-disk srcversion `F6D858EC31CEB8A5B320781`; package integrity covers 251 module-package files and 3 policy-package files, and the boot ID is stable across the read-only capture |
 | Loaded module byte identity | `steinmarder-r300/src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/` | retaining commit `55e74d6bbb7cdc061ed0c154f22cd8ede35a7ca1`, manifest SHA-256 `84340d65c87cb4ca3aa1f01faaa559a00d7950a55fad4cee344b988d3eeff386`, hash ledger SHA-256 `cc8a82f210cdccc847f9320faa7dc9f6136e537ef3555c78d867f0055ca70e42`, compressed module SHA-256 `6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`, GNU Build ID `a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, and srcversion `A7F72BE636B52D7EED42415`; no newer retained bundle records the loaded module bytes |
 | Parked-device behavior | `steinmarder-r300/src/re/r300/results/cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z/` | retaining commit `baa6b2d496c52392c0ecb5e18306db02e9dfd6cf`, outcome SHA-256 `f053e84ec97332abb5ec9c0611ac84d988c5070bdd2bc28eb22d1e10da82c243`, hash ledger SHA-256 `ab36a1a974679a8f9cb8c7da5bf0fd4452dbba3a5ca6151f5001841d926d96ae`; measures the 0.6-1 parked-entry contract, while later package and deployment identities carry no newer parked-device run |
 
 <!-- markdownlint-enable MD013 -->
 
-The active 0.8.13-1 recipe packages source commit `2be21eaa8927`, which is
-also the modified source authority's current main, so those two axes name one
-commit. The deployment axis stays behind them: a source commit becomes
-deployment authority only after a retained target capture proves the resulting
-deployment, and the newest such capture remains the 0.8.11-1 bundle at source
-commit `3c5ccb3c`. Registry currency below records that open drift.
+The active 0.8.14-1 recipe and on-disk module identify source commit
+`b534d1b0a90529988f20f1bf4f29648e49d10e29`. The loaded module srcversion
+matches the on-disk module during the retained observation. Source main has
+advanced beyond that pin; package admission, dual-kernel builds, and target
+qualification govern delivery of those later changes. The capture establishes
+package installation and metadata correspondence. Loaded byte identity,
+reboot activation, and GPU workloads retain separate evidence requirements.
+
+The historical 0.8.11-1 deployment record remains in
+`steinmarder-r300/results/cachyos-vostro1000-rs482-radeon-unified-0.8.11-1-deployment-runtime/`
+at retaining commit `59f9361e277bb63c52d335eda9009aa94b7d989c`, manifest
+SHA-256 `2ab2b00758b5226ac096da4d63c30652ebceef245f56373374b8f6fc21171ec6`,
+and hash ledger SHA-256
+`7bff34920965ddb4292b54a7bc9313f1f38102dd1592339a09d6cfd1ff6ff1e7`.
 
 The 0.8.11-1 deployment bundle joins the installed package and board policy to
 the recipe's source commit and driver tree, built DKMS modules for both served
@@ -120,9 +128,9 @@ retained evidence identifies the loaded module.
 - Xorg source is correct but the package export, recipe, or installed payload
   differs: `PKGBUILD_xorg-server-glamor-r300fix`.
 - Radeon DDX constructed the wrong KMS or presentation request:
-  `xf86-video-ati-rs482`.
+  `xf86-video-ati-rs485m`.
 - Radeon DDX source is correct but the package export, recipe, or installed
-  payload differs: `PKGBUILD_xf86-video-ati-rs482`.
+  payload differs: `PKGBUILD_xf86-video-ati-rs485m`.
 - Xorg constructed the correct program but hardware executed stale state:
   Mesa or kernel.
 - Mesa emitted the correct patched IB but cross-IB behavior is wrong:
@@ -163,15 +171,20 @@ payload executed. Each evidence class closes only its own claim.
 
 ## Build-model separation
 
-The three active build models stay distinct; their deployment constraints
-differ and they do not normalize into one:
+Each component retains its native build procedure. CachyOS installation and
+configuration changes enter through the owning PKGBUILD and package payload:
 
 - Xorg package: machine-neutral x86-64 release package, clean-chroot
   reproducible, installed through pacman.
-- Experimental Mesa: box-built for the K8 target, immutable per-SHA image,
-  selected at runtime through the loader environment
-  (`LIBGL_DRIVERS_PATH`, `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`).
-- Radeon kernel: DKMS build against the exact installed target kernel.
+- Mesa: target-qualified source/profile builds stage unprivileged package
+  payloads for stock `/usr` installation through pacman. Release and debug
+  packages conflict with stock Mesa and each other. Experimental profiles
+  retain build-owned staging and explicit launchers.
+- Radeon kernel: radeon-custom pins signed linux-radeon-gororoba source and
+  packages DKMS builds against the exact installed target kernels. Module,
+  initramfs, and modprobe policy remain package-owned.
+- Platform: vostro1000-re owns the laptop-specific PKGBUILDs and their
+  reviewed watchdog, thermal, and boot configuration inputs.
 
 ## DDX identity is an experimental variable
 
@@ -192,7 +205,9 @@ evidence and live with their bundles in `steinmarder-r300`.
 The optional `provenance_contract` field preserves the original required-field
 contract for historical manifests. Its absence classifies a manifest as legacy
 evidence and leaves the source-to-payload claim open. The value
-`source-to-payload-v2` activates the qualification contract:
+`source-to-payload-v2` activates the qualification contract.
+`source-to-payload-v3` retains those provenance requirements and selects the
+RS485M DDX repository names:
 
 - Xorg Server and the active DDX carry source, release, package, installed
   payload, binary, and Build ID identities.
@@ -203,8 +218,12 @@ evidence and leaves the source-to-payload claim open. The value
 - A `linux-radeon-gororoba` source identity also carries the complete,
   independently reproducible equivalence record.
 
-The calibrated verifier accepts a legacy specimen and both current and
-post-cutover v2 specimens. It rejects malformed or incorrectly sized Git and
+The calibrated verifier accepts legacy and post-cutover v2 specimens with
+the historical DDX names. A v3 specimen requires `xf86-video-ati-rs485m`
+paired with `PKGBUILD_xf86-video-ati-rs485m`; mixed pairs and contract/name
+mismatches fail. Repository-name migration preserves historical v2 captures.
+The authority table names the RS485M repositories after the source and
+package identity cutover. Historical v2 manifests retain their original slugs. It rejects malformed or incorrectly sized Git and
 SHA-256 identities, empty or nonhexadecimal Build IDs, a kernel manifest
 without the module Build ID, a Radeon DDX manifest without DDX provenance, and
 a post-cutover kernel manifest without equivalence evidence. The
@@ -247,16 +266,10 @@ installed package invalidates the loaded deployment identity until corrected.
 `docs/hardware/vostro1000-kernel-modules.md` tracks stable module mechanisms
 and ownership rather than changing package versions.
 
-That drift stands open. The target runs `radeon-unified-dkms 0.8.13-1` at
-srcversion `46C05689F2C98A526C314F4`, built for `7.1.8-1-cachyos` and
-`6.18.42-1-cachyos-lts`, while the target deployment runtime row names the
-0.8.11-1 bundle. The recipe axis moves with the package because the recipe is
-a repository object; the deployment axis names a retained target capture, and
-no deployment bundle is sealed for 0.8.13-1, so that row keeps the last
-identity a capture proves. Under this contract the loaded deployment identity
-reads invalid until a 0.8.13-1 target capture is retained, and a hardware
-qualification claim that needs a loaded deployment identity waits on that
-capture. `docs/hardware/r3v-current-program-status.md` carries the running
-identity in its epoch table meanwhile, and the interpolation receipts taken
-under 0.8.12-1 hold across the kernel move by the blob equality recorded
-there.
+The retained 0.8.14-1 observation closes package-version and srcversion
+correspondence for its recorded boot. The observation leaves loaded byte
+identity, reboot activation, RB2D execution, reset recovery, and API conformance
+as separately qualified surfaces. Any package, module, boot, or policy change
+requires a fresh corresponding capture before a hardware verdict uses it.
+Historical interpolation and parked-device receipts retain their original
+source and execution boundaries.
