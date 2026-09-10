@@ -36,6 +36,7 @@ import re
 import sys
 
 REGISTER_RE = re.compile(r"^#define\s+(\w+)\s+(0x[0-9a-fA-F]+)\b(.*)$")
+DEFINE_RE = re.compile(r"^#define\s+(\w+)(?:\s+(.*?))?\s*$")
 FIELD_RE = re.compile(r"^#\s+define\s+(\w+)")
 
 CRTC1_PREFIX = "RADEON_CRTC_"
@@ -54,6 +55,10 @@ WITHHELD_PREFIXES = (
 # CRTC2 is 12 unique registers: the DDX header defines RADEON_CRTC2_STATUS
 # twice at the same offset and the extractor deduplicates by name.
 EXPECTED_GROUP_COUNTS = {"CRTC1": 16, "CRTC2": 12, "OV0": 44}
+
+
+class GeneratorError(ValueError):
+    """A source-layout or output-integrity violation."""
 
 HEADER = """\
 /*
@@ -115,7 +120,8 @@ def parse_blocks(source_lines):
     blocks = {}
     order = []
     current = None
-    for raw in source_lines:
+    definitions = {}
+    for line_number, raw in enumerate(source_lines, 1):
         line = raw.rstrip()
         reg = REGISTER_RE.match(line)
         if reg:
@@ -123,12 +129,49 @@ def parse_blocks(source_lines):
             # Re-emit the register line normalized (name + offset only) so
             # source-side trailing comments cannot smuggle non-register text.
             current = name
+            previous = definitions.get(name)
+            if previous is not None:
+                previous_kind, previous_value, previous_line, _previous_owner = previous
+                if previous_kind != "register" or previous_value != offset:
+                    raise GeneratorError(
+                        "conflicting duplicate definition %s at lines %d and %d"
+                        % (name, previous_line, line_number))
             if name not in blocks:
                 blocks[name] = (offset, ["#define %-39s %s" % (name, offset)])
                 order.append(name)
+            first_line = previous[2] if previous else line_number
+            definitions[name] = ("register", offset, first_line, name)
             continue
-        if current and FIELD_RE.match(line):
-            blocks[current][1].append(line)
+        define = DEFINE_RE.match(line)
+        if define and define.group(1).startswith(
+            (CRTC1_PREFIX, CRTC2_PREFIX, OV0_PREFIX)
+        ):
+            name, expression = define.groups()
+            raise GeneratorError(
+                "unsupported register expression for %s at line %d: %s"
+                % (name, line_number, expression or "<missing value>"))
+        if (
+            current
+            and current.startswith((CRTC1_PREFIX, CRTC2_PREFIX, OV0_PREFIX))
+            and FIELD_RE.match(line)
+        ):
+            field = FIELD_RE.match(line)
+            field_name = field.group(1)
+            previous = definitions.get(field_name)
+            if previous is not None:
+                previous_kind, previous_value, previous_line, previous_owner = previous
+                if previous_kind != "field" or previous_value != line:
+                    raise GeneratorError(
+                        "conflicting duplicate definition %s at lines %d and %d"
+                        % (field_name, previous_line, line_number))
+                if previous_owner != current:
+                    raise GeneratorError(
+                        "register-name collision for %s in %s and %s"
+                        % (field_name, previous_owner, current))
+            else:
+                blocks[current][1].append(line)
+            first_line = previous[2] if previous else line_number
+            definitions[field_name] = ("field", line, first_line, current)
     return blocks, order
 
 
@@ -161,10 +204,10 @@ def main():
 
     for group, expected in EXPECTED_GROUP_COUNTS.items():
         actual = len(groups[group])
-        assert actual == expected, (
-            "%s register count %d != expected %d -- the source layout moved; "
-            "re-audit the group before regenerating" % (group, actual, expected)
-        )
+        if actual != expected:
+            raise GeneratorError(
+                "%s register count %d != expected %d -- the source layout moved; "
+                "re-audit the group before regenerating" % (group, actual, expected))
 
     emitted_names = set()
     field_count = 0
@@ -181,7 +224,8 @@ def main():
             for line in lines:
                 define_name = (REGISTER_RE.match(line) or FIELD_RE.match(line)).group(1)
                 if define_name in emitted_names:
-                    continue
+                    raise GeneratorError(
+                        "register-name collision while emitting %s" % define_name)
                 emitted_names.add(define_name)
                 if FIELD_RE.match(line):
                     field_count += 1
@@ -192,8 +236,9 @@ def main():
         with open(collision_path, encoding="utf-8", errors="replace") as f:
             existing = set(re.findall(r"^#\s*define\s+(\w+)", f.read(), re.M))
         collisions = emitted_names & existing
-        assert not collisions, "name collisions with %s: %s" % (
-            collision_path, sorted(collisions))
+        if collisions:
+            raise GeneratorError("name collisions with %s: %s" % (
+                collision_path, sorted(collisions)))
 
     out.append(FOOTER)
     with open(out_path, "w", encoding="utf-8") as f:
