@@ -1425,8 +1425,6 @@ test(
   r300_zmask_clear_plan_test,
   suite : ['r300'],
 )
-endif
-
 r300_zb_aspect_copy_test = executable(
   'r300_zb_aspect_copy_test',
   files('r300_zb_aspect_copy.c', 'r300_zb_depth_layout.c',
@@ -1438,3 +1436,4 @@ r300_zb_aspect_copy_test = executable(
   gnu_symbol_visibility : 'hidden',
 )
 test('r300-zb-aspect-copy', r300_zb_aspect_copy_test, suite : ['r300'])
+endif
