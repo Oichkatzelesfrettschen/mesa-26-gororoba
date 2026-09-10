@@ -1160,6 +1160,50 @@ check_depth_image_copy_recording(const struct fixture *f,
 
    if (begin(f))
       return 1;
+   const VkImageCopy regions[] = {
+      {
+         .srcSubresource = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .srcOffset = {32, 0, 0},
+         .extent = {32u, 16u, 1u},
+      },
+      {
+         .srcSubresource = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstOffset = {32, 0, 0},
+         .extent = {32u, 16u, 1u},
+      },
+   };
+   vkCmdCopyImage(f->cmd, source_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ARRAY_SIZE(regions),
+                  regions);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, multi_region_cmd, f->cmd);
+   CHECK(multi_region_cmd->rb2d_copy_operation_count == ARRAY_SIZE(regions) &&
+            multi_region_cmd->rb2d_copy_operations[0].segment_count == 2u &&
+            multi_region_cmd->rb2d_copy_operations[1].segment_count == 2u,
+         "depth image copy appends independent regions to one command");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "multiple non-overlapping depth image copy regions record");
+
+   if (begin(f))
+      return 1;
    const VkImageCopy partial = {
       .srcSubresource = {
          .aspectMask =

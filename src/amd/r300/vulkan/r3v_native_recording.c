@@ -856,11 +856,18 @@ r3v_CmdCopyImage(
 
    if ((src != NULL && src->depth_family) ||
        (dst != NULL && dst->depth_family)) {
-      if (regionCount != 1u || pRegions == NULL ||
-          r3v_native_record_depth_image_to_image_copy(
-             commandBuffer, srcImage, srcImageLayout, dstImage,
-             dstImageLayout, &pRegions[0]) != VK_SUCCESS)
+      if (pRegions == NULL && regionCount != 0u) {
          r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      for (uint32_t r = 0; r < regionCount; r++) {
+         if (r3v_native_record_depth_image_to_image_copy(
+                commandBuffer, srcImage, srcImageLayout, dstImage,
+                dstImageLayout, &pRegions[r]) != VK_SUCCESS) {
+            r3v_native_cmd_poison(commandBuffer);
+            break;
+         }
+      }
       return;
    }
 

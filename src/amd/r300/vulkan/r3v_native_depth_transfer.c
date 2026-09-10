@@ -2,6 +2,7 @@
 
 #include "r3v_native.h"
 
+#include "amd/r300/common/r300_rb2d_copy.h"
 #include "amd/r300/common/r300_zb_aspect_copy.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
 
@@ -100,9 +101,25 @@ r3v_native_record_depth_image_to_image_copy(
       .compressed = false,
       .multisample = false,
    };
-   return r3v_native_record_rb2d_tiled_copy(
+   struct r300_zb_tile_copy_plan tile_plan;
+   struct r300_rb2d_copy_segment segment_storage[R300_RB2D_COPY_MAX_SEGMENTS];
+   struct r300_rb2d_copy_plan copy_plan;
+   if (r300_zb_tile_copy_plan_build(&request, &tile_plan) !=
+          R300_ZB_TILE_COPY_OK ||
+       r300_rb2d_copy_plan_from_zb_tile(
+          &tile_plan, source_image->memory->bo.size,
+          destination_image->memory->bo.size, false, segment_storage,
+          &copy_plan) != R300_RB2D_COPY_OK)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   /* The tiled wrapper intentionally admits one complete-tile operation.
+    * Image copies carry an array of independent regions, so append the
+    * validated segment plan directly and leave the command buffer in the
+    * segment geometry used by the common RB2D validator. */
+   return r3v_native_record_rb2d_copy(
       command_buffer, r3v_native_memory_to_handle(source_image->memory),
-      r3v_native_memory_to_handle(destination_image->memory), &request);
+      r3v_native_memory_to_handle(destination_image->memory), &copy_plan,
+      UINT32_MAX);
 }
 
 VkResult
