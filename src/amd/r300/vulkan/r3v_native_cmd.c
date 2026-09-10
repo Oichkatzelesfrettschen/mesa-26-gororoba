@@ -265,6 +265,83 @@ r3v_native_cmd_buffer_transition_zmask_metadata(
 }
 
 static bool
+r3v_native_zmask_owner_valid(
+   const struct r3v_native_zmask_owner_state *owner)
+{
+   if (owner == NULL)
+      return false;
+   if (owner->image == NULL) {
+      const struct r3v_native_zmask_owner_state empty = {0};
+      return r3v_native_zmask_owner_equal(owner, &empty);
+   }
+   return owner->image->zmask_layout_admitted &&
+          owner->offset_dwords == 0u &&
+          owner->dword_count == owner->image->zmask_layout.dwords &&
+          owner->stride_in_pixels ==
+             owner->image->zmask_layout.stride_in_pixels &&
+          owner->zcomp8x8 == owner->image->zmask_layout.zcomp8x8 &&
+          r3v_native_zmask_metadata_valid(&owner->metadata) &&
+          owner->metadata.status != R3V_NATIVE_ZMASK_METADATA_RETIRED;
+}
+
+VkResult
+r3v_native_zmask_owner_from_image(
+   struct r3v_native_image *image,
+   const struct r3v_native_zmask_metadata_state *metadata,
+   struct r3v_native_zmask_owner_state *owner)
+{
+   if (image == NULL || metadata == NULL || owner == NULL ||
+       !image->zmask_layout_admitted ||
+       !r3v_native_zmask_metadata_valid(metadata) ||
+       metadata->status == R3V_NATIVE_ZMASK_METADATA_RETIRED)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const struct r3v_native_zmask_owner_state candidate = {
+      .image = image,
+      .offset_dwords = 0u,
+      .dword_count = image->zmask_layout.dwords,
+      .stride_in_pixels = image->zmask_layout.stride_in_pixels,
+      .zcomp8x8 = image->zmask_layout.zcomp8x8,
+      .metadata = *metadata,
+   };
+   if (!r3v_native_zmask_owner_valid(&candidate))
+      return VK_ERROR_INITIALIZATION_FAILED;
+   *owner = candidate;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_transition_zmask_owner(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_zmask_owner_state *required_owner,
+   const struct r3v_native_zmask_owner_state *resulting_owner)
+{
+   if (cmd_buffer == NULL || !r3v_native_zmask_owner_valid(required_owner) ||
+       !r3v_native_zmask_owner_valid(resulting_owner))
+      return VK_ERROR_INITIALIZATION_FAILED;
+   if (required_owner->image != NULL && resulting_owner->image != NULL &&
+       required_owner->image != resulting_owner->image)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const struct r3v_native_zmask_owner_state current_owner =
+      cmd_buffer->current_zmask_owner_set ? cmd_buffer->current_zmask_owner
+      : cmd_buffer->required_zmask_owner_set
+         ? cmd_buffer->required_zmask_owner
+         : *required_owner;
+   if (cmd_buffer->required_zmask_owner_set &&
+       !r3v_native_zmask_owner_equal(&current_owner, required_owner))
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (!cmd_buffer->required_zmask_owner_set) {
+      cmd_buffer->required_zmask_owner = *required_owner;
+      cmd_buffer->required_zmask_owner_set = true;
+   }
+   cmd_buffer->current_zmask_owner = *resulting_owner;
+   cmd_buffer->current_zmask_owner_set = true;
+   return VK_SUCCESS;
+}
+
+static bool
 r3v_native_image_representation_valid(
    enum r3v_native_image_representation representation)
 {
@@ -649,6 +726,12 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->image_states = NULL;
    cmd_buffer->image_state_count = 0;
    cmd_buffer->image_state_capacity = 0;
+   cmd_buffer->required_zmask_owner =
+      (struct r3v_native_zmask_owner_state){0};
+   cmd_buffer->current_zmask_owner =
+      (struct r3v_native_zmask_owner_state){0};
+   cmd_buffer->required_zmask_owner_set = false;
+   cmd_buffer->current_zmask_owner_set = false;
    cmd_buffer->pass_target = NULL;
    cmd_buffer->pass_depth_target = NULL;
    cmd_buffer->active_render_pass = NULL;

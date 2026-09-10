@@ -2437,11 +2437,23 @@ r3v_native_queue_preflight_image_states(
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    uint32_t state_count = 0u;
+   struct r3v_native_zmask_owner_state pending_owner = device->zmask_owner;
    for (uint32_t command_index = 0u;
         command_index < submit->command_buffer_count; command_index++) {
       const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[command_index],
          struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->required_zmask_owner_set &&
+          !r3v_native_zmask_owner_equal(
+             &pending_owner, &cmd_buffer->required_zmask_owner)) {
+         free(states);
+         return vk_errorf(
+            device, R3V_NATIVE_REFUSAL_RESULT,
+            "r3v-native: command buffer %u requires a different ZMASK owner",
+            command_index);
+      }
+      if (cmd_buffer->current_zmask_owner_set)
+         pending_owner = cmd_buffer->current_zmask_owner;
       for (uint32_t image_index = 0u;
            image_index < cmd_buffer->image_state_count; image_index++) {
          const struct r3v_native_cmd_image_state *recorded =
@@ -2497,13 +2509,16 @@ r3v_native_queue_preflight_image_states(
 }
 
 static void
-r3v_native_queue_publish_image_states(const struct vk_queue_submit *submit)
+r3v_native_queue_publish_image_states(struct r3v_native_device *device,
+                                      const struct vk_queue_submit *submit)
 {
    for (uint32_t command_index = 0u;
         command_index < submit->command_buffer_count; command_index++) {
       const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[command_index],
          struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->current_zmask_owner_set)
+         device->zmask_owner = cmd_buffer->current_zmask_owner;
       for (uint32_t image_index = 0u;
            image_index < cmd_buffer->image_state_count; image_index++) {
          const struct r3v_native_cmd_image_state *recorded =
@@ -3644,7 +3659,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
    device->queue_status = r3v_native_queue_status_finalize_submit(
       device->queue_status, submit_has_executable_ib);
-   r3v_native_queue_publish_image_states(submit);
+   r3v_native_queue_publish_image_states(device, submit);
 
    /* The bounded completion wait above retired every buffer.  Consuming
     * permanent binary waits before signaling keeps the semaphore state ready

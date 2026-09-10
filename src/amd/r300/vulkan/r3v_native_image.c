@@ -328,6 +328,8 @@ r3v_DestroyImage(VkDevice _device, VkImage _image,
 
    if (image == NULL)
       return;
+   if (device->zmask_owner.image == image)
+      device->zmask_owner = (struct r3v_native_zmask_owner_state){0};
    vk_object_free(&device->vk, pAllocator, image);
 }
 

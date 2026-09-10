@@ -1520,6 +1520,26 @@ r3v_native_merge_secondary_image_states(
    struct r3v_native_cmd_buffer *primary,
    const struct r3v_native_cmd_buffer *secondary)
 {
+   if (secondary->required_zmask_owner_set) {
+      const struct r3v_native_zmask_owner_state *current_owner =
+         primary->current_zmask_owner_set ? &primary->current_zmask_owner
+         : primary->required_zmask_owner_set
+            ? &primary->required_zmask_owner
+            : &secondary->required_zmask_owner;
+      if (primary->required_zmask_owner_set &&
+          !r3v_native_zmask_owner_equal(
+             current_owner, &secondary->required_zmask_owner))
+         return VK_ERROR_INITIALIZATION_FAILED;
+      if (!primary->required_zmask_owner_set) {
+         primary->required_zmask_owner = secondary->required_zmask_owner;
+         primary->required_zmask_owner_set = true;
+      }
+   }
+   if (secondary->current_zmask_owner_set) {
+      primary->current_zmask_owner = secondary->current_zmask_owner;
+      primary->current_zmask_owner_set = true;
+   }
+
    for (uint32_t index = 0u; index < secondary->image_state_count; index++) {
       const struct r3v_native_cmd_image_state *source =
          &secondary->image_states[index];

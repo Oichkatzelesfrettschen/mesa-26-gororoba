@@ -201,6 +201,7 @@ struct r3v_native_bo_reference {
 };
 
 struct r3v_native_image;
+
 struct r3v_native_pipeline;
 struct r3v_native_buffer;
 struct r3v_native_arming_provider;
@@ -284,6 +285,15 @@ struct r3v_native_zmask_metadata_state {
    uint64_t generation;
 };
 
+struct r3v_native_zmask_owner_state {
+   struct r3v_native_image *image;
+   uint32_t offset_dwords;
+   uint32_t dword_count;
+   uint32_t stride_in_pixels;
+   bool zcomp8x8;
+   struct r3v_native_zmask_metadata_state metadata;
+};
+
 static inline bool
 r3v_native_zmask_metadata_equal(
    const struct r3v_native_zmask_metadata_state *left,
@@ -293,6 +303,19 @@ r3v_native_zmask_metadata_equal(
           left->clear_depth_code == right->clear_depth_code &&
           left->clear_stencil == right->clear_stencil &&
           left->generation == right->generation;
+}
+
+static inline bool
+r3v_native_zmask_owner_equal(
+   const struct r3v_native_zmask_owner_state *left,
+   const struct r3v_native_zmask_owner_state *right)
+{
+   return left->image == right->image &&
+          left->offset_dwords == right->offset_dwords &&
+          left->dword_count == right->dword_count &&
+          left->stride_in_pixels == right->stride_in_pixels &&
+          left->zcomp8x8 == right->zcomp8x8 &&
+          r3v_native_zmask_metadata_equal(&left->metadata, &right->metadata);
 }
 
 /* State committed by the last completed submission.  A zeroed state denotes
@@ -1005,6 +1028,10 @@ struct r3v_native_cmd_buffer {
    uint32_t window_space_ib_size_dwords;
    struct r3v_native_bo_reference *references;
    uint32_t reference_count;
+   struct r3v_native_zmask_owner_state required_zmask_owner;
+   struct r3v_native_zmask_owner_state current_zmask_owner;
+   bool required_zmask_owner_set;
+   bool current_zmask_owner_set;
 
    struct r3v_native_image *pass_target;
    struct r3v_native_image *pass_depth_target;
@@ -1442,6 +1469,7 @@ struct r3v_native_device {
     * r3v_native_hyperz_admit and refuses by name when the kernel withholds
     * it; the descriptor releases the block at device destruction. */
    enum r300_zb_hyperz_ownership hyperz_ownership;
+   struct r3v_native_zmask_owner_state zmask_owner;
    struct r3v_native_queue queue;
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
@@ -2177,6 +2205,16 @@ VkResult r3v_native_cmd_buffer_transition_zmask_metadata(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    const struct r3v_native_zmask_metadata_state *required_metadata,
    const struct r3v_native_zmask_metadata_state *resulting_metadata);
+
+VkResult r3v_native_zmask_owner_from_image(
+   struct r3v_native_image *image,
+   const struct r3v_native_zmask_metadata_state *metadata,
+   struct r3v_native_zmask_owner_state *owner);
+
+VkResult r3v_native_cmd_buffer_transition_zmask_owner(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_zmask_owner_state *required_owner,
+   const struct r3v_native_zmask_owner_state *resulting_owner);
 
 VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
