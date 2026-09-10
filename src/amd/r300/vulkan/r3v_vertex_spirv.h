@@ -54,6 +54,13 @@ bool r3v_fragment_constant_color_from_spirv(const uint32_t *words,
                                              uint32_t color_bits[4],
                                              const char **reason);
 
+/* Admits the depth-only fragment grammar: one straight-line entry function
+ * that returns without declaring shader inputs, outputs, or side effects. */
+bool r3v_fragment_no_color_from_spirv(const uint32_t *words,
+                                      size_t word_count,
+                                      const char *entry_name,
+                                      const char **reason);
+
 /* Reads an admitted SPIR-V fragment module as the varying pass-through:
  * a straight-line Fragment entry function whose single store writes
  * the loaded location-0 vec4 input to the location-0 output unchanged.

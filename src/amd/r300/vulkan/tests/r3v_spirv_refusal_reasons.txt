@@ -209,3 +209,5 @@ fragment input outside varyings 0 and 1 as vec4
 fragment program outside the mixed carrier (smooth.xy, noperspective.xy)
 two fragment inputs at one location
 vec4 construction outside (smooth.xy, noperspective.xy)
+input in no-color fragment program
+output in no-color fragment program

@@ -1025,7 +1025,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       pass_has_depth ? &pipeline->depth_pipeline : NULL,
       (first_draw_in_pass && pass_draw->has_depth_clear)
          ? &pass_draw->depth_clear : NULL,
-         adaptive_noperspective ? &alternate_cell : NULL);
+      pipeline->color_writes_disabled,
+      adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
@@ -1088,6 +1089,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .cull_mode = pipeline->cull_mode,
       .front_face = pipeline->front_face,
       .sample_mask_zero = pipeline->sample_mask_zero,
+      .color_writes_disabled = pipeline->color_writes_disabled,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .post_vs = pipeline->post_vs,

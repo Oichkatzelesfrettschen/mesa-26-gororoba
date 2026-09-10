@@ -760,6 +760,9 @@ struct r3v_native_deferred_draw {
    VkCullModeFlags cull_mode;
    VkFrontFace front_face;
    bool sample_mask_zero;
+   /* Color-channel suppression remains independent from sample coverage;
+    * the draw emitter programs RB3D_COLOR_CHANNEL_MASK for this state. */
+   bool color_writes_disabled;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
@@ -2060,11 +2063,12 @@ struct r3v_native_pipeline {
     */
    VkCullModeFlags cull_mode;
    VkFrontFace front_face;
-   /* Set when pSampleMask clears bit 0 or the color write mask clears
-    * every channel: the draw writes nothing, so the host collapses
-    * every triangle to degenerate records.
+   /* Set when pSampleMask clears bit 0: the draw writes no sample, so the
+    * host collapses every triangle to degenerate records.  Color-channel
+    * suppression remains independent and is emitted by the cell.
     */
    bool sample_mask_zero;
+   bool color_writes_disabled;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,
@@ -2148,6 +2152,8 @@ VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
  * on failure.
  */
 struct r300_tcl_bypass_triangle_ib;
+VkResult r3v_native_cell_set_color_channel_mask(
+   struct r300_tcl_bypass_triangle_ib *cell, uint32_t mask);
 /* The board the arming gate compares.  A harness that replaces the fact
  * provider also declares the platform it stands in for; production resolves
  * it from the device and the firmware tables at physical-device creation.
@@ -2515,6 +2521,7 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    const struct r3v_native_depth_image_bound *depth_bound,
    const struct r3v_native_depth_pipeline_state *depth_pipeline,
    const struct r300_zb_combined_clear_plan *depth_clear,
+   bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell);
 
 /* Resolves every adaptive NoPerspective deferred draw of the command

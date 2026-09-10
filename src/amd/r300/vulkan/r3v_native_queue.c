@@ -224,8 +224,10 @@ r3v_native_ordered_image_composition_geometry_valid(
             return false;
          break;
       case R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER:
-         if (render_pass_open)
-            return false;
+         /* Render-pass dependencies use the same ordered memory-barrier
+          * record as explicit barriers.  The operation is valid at the
+          * execution position inside a pass; payload validation happens
+          * when the recorder appends the dependency. */
          break;
       case R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER:
          if (render_pass_open ||

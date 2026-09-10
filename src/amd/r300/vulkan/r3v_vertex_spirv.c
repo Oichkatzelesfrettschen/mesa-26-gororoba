@@ -208,6 +208,8 @@ enum id_kind {
  */
 enum fragment_shape {
    FRAGMENT_SHAPE_NONE = 0,
+   /* A depth-only fragment entry with no inputs, outputs, or side effects. */
+   FRAGMENT_SHAPE_NO_COLOR,
    FRAGMENT_SHAPE_CONSTANT_COLOR,
    FRAGMENT_SHAPE_VARYING_PASSTHROUGH,
    /* The location-0 varying's xy sampling the set-0 binding-0 combined
@@ -802,6 +804,8 @@ admit_module(const uint32_t *words, size_t word_count,
             return refuse(r, "variable type outside a matching pointer");
          switch (storage_class) {
          case SC_INPUT:
+            if (fragment && shape == FRAGMENT_SHAPE_NO_COLOR)
+               return refuse(r, "input in no-color fragment program");
             if (fragment && shape == FRAGMENT_SHAPE_CONSTANT_COLOR)
                return refuse(r, "fragment shader reads an input");
             if (fragment) {
@@ -871,6 +875,8 @@ admit_module(const uint32_t *words, size_t word_count,
             input_mask |= 1u << entry->location;
             break;
          case SC_OUTPUT:
+            if (fragment && shape == FRAGMENT_SHAPE_NO_COLOR)
+               return refuse(r, "output in no-color fragment program");
             if (!fragment && vector_type_width(r, ptr->b) != 0 &&
                 !entry->has_builtin && entry->has_location) {
                /* The varyings: locations 0 and 1, each a float scalar
@@ -1418,7 +1424,7 @@ admit_module(const uint32_t *words, size_t word_count,
       return refuse(r, "module preamble outside the admitted grammar");
    if (in_function || !function_seen || !returned)
       return refuse(r, "entry function did not complete");
-   if (!stored)
+   if (!stored && !(fragment && shape == FRAGMENT_SHAPE_NO_COLOR))
       return refuse(r, fragment ? "missing color-0 store"
                                 : "missing position store");
    /* A declared varying the program never writes would reach the
@@ -1499,6 +1505,19 @@ bool r3v_fragment_constant_color_from_spirv(const uint32_t *words,
    return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
                       FRAGMENT_SHAPE_CONSTANT_COLOR, entry_name, &scratch,
                       color_bits, NULL, reason);
+}
+
+bool r3v_fragment_no_color_from_spirv(const uint32_t *words,
+                                      size_t word_count,
+                                      const char *entry_name,
+                                      const char **reason)
+{
+   struct r300_vertex_job scratch;
+   uint32_t unused_color[4];
+   memset(&scratch, 0, sizeof(scratch));
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
+                      FRAGMENT_SHAPE_NO_COLOR, entry_name, &scratch,
+                      unused_color, NULL, reason);
 }
 
 bool r3v_fragment_varying_passthrough_from_spirv(const uint32_t *words,

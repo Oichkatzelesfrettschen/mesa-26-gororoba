@@ -286,12 +286,16 @@ struct pipeline_shape {
    /* 0 omits depth/stencil state, 1 supplies disabled state, and 2 enables
     * the depth test. */
    int depth_stencil;
+   /* Request depth writes independently from depth-test enablement. */
+   VkBool32 depth_write;
    VkBool32 stencil_split;
    VkFormat attribute_format;
    uint32_t stride;
    VkBool32 blend_enable;
    /* Select the ONE, ZERO, ADD identity when blending is enabled. */
    VkBool32 blend_identity;
+   /* Use the valid depth-only pipeline color-blend shape. */
+   VkBool32 color_attachment_count_zero;
    /* Remove every color channel from the attachment write mask. */
    VkBool32 write_mask_zero;
    /* Enable the selected logic operation. */
@@ -459,6 +463,19 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
    assert(make_pipeline(&depth_shape, pass, layout, &depth_pipeline) ==
              VK_SUCCESS &&
           depth_pipeline != VK_NULL_HANDLE);
+   struct pipeline_shape masked_depth_shape = depth_shape;
+   masked_depth_shape.depth_write = VK_TRUE;
+   masked_depth_shape.write_mask_zero = VK_TRUE;
+   VkPipeline masked_depth_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&masked_depth_shape, pass, layout,
+                        &masked_depth_pipeline) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_pipeline, native_masked_depth,
+                  masked_depth_pipeline);
+   assert(native_masked_depth->has_depth_pipeline);
+   assert(native_masked_depth->depth_pipeline.hardware.depth_write);
+   assert(!native_masked_depth->sample_mask_zero);
+   assert(native_masked_depth->color_writes_disabled);
+   vkDestroyPipeline(device, masked_depth_pipeline, NULL);
    VkCommandBuffer command_buffer = record_triangle_draw(
       &begin, depth_pipeline, vertex_buffer, 3, 1, 0);
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command_buffer);
@@ -821,6 +838,8 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       const VkResult depth_only_end_result =
          vkEndCommandBuffer(depth_only_command);
       assert(depth_only_end_result == VK_SUCCESS);
+      assert(r3v_native_ordered_image_composition_geometry_valid(
+                native_depth_only));
       assert(native_depth_only->deferred_draw_count == 1u);
       assert(native_depth_only->deferred_draws[0].depth_only);
       assert(!native_depth_only->deferred_draws[0].has_depth_clear);
@@ -847,6 +866,7 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
           * append one carrier and one ordered draw record per API draw. */
          struct pipeline_shape repeated_shape = {
             .depth_stencil = 2,
+            .color_attachment_count_zero = VK_TRUE,
             .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
             .stride = 16,
             .extent_width = 32,
@@ -873,6 +893,24 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
          assert(native_repeated_draw->render_pass_count == 1u);
          assert(native_repeated_draw->deferred_draw_count == 2u);
          assert(native_repeated_draw->deferred_draws[0].load_at_begin);
+
+         /* A depth-only fragment shader may omit every color output.  The
+          * native draw still uses its private sink while depth/stencil
+          * processing remains active. */
+         struct pipeline_shape no_color_output_shape = repeated_shape;
+         no_color_output_shape.fragment_words =
+            r3v_reference_fragment_no_output_spirv;
+         no_color_output_shape.fragment_bytes =
+            sizeof(r3v_reference_fragment_no_output_spirv);
+         VkPipeline no_color_output_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&no_color_output_shape, depth_only_pass, layout,
+                              &no_color_output_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_no_color_output,
+                        no_color_output_pipeline);
+         assert(native_no_color_output->has_depth_pipeline);
+         assert(!native_no_color_output->varying);
+         assert(!native_no_color_output->sampled);
+         vkDestroyPipeline(device, no_color_output_pipeline, NULL);
          assert(!native_repeated_draw->deferred_draws[1].load_at_begin);
          assert(native_repeated_draw->owned_carriers[0] != NULL &&
                 native_repeated_draw->owned_carriers[1] != NULL &&
@@ -1081,6 +1119,7 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
    }, NULL, &read_only_framebuffer) == VK_SUCCESS);
    const struct pipeline_shape read_only_shape = {
       .depth_stencil = 2,
+      .color_attachment_count_zero = VK_TRUE,
       .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
       .stride = 16u,
       .extent_width = 32u,
@@ -1424,11 +1463,12 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
          &(VkPipelineColorBlendStateCreateInfo){
             .sType =
                VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .attachmentCount = 1,
+            .attachmentCount = shape->color_attachment_count_zero ? 0 : 1,
             .logicOpEnable = shape->logic_op_enable,
             .logicOp = shape->logic_op,
-            .pAttachments =
-               &(VkPipelineColorBlendAttachmentState){
+            .pAttachments = shape->color_attachment_count_zero
+                               ? NULL
+                               : &(VkPipelineColorBlendAttachmentState){
                   .blendEnable = shape->blend_enable,
                   .srcColorBlendFactor = shape->blend_identity
                                             ? VK_BLEND_FACTOR_ONE
@@ -1447,7 +1487,7 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                              VK_COLOR_COMPONENT_G_BIT |
                              VK_COLOR_COMPONENT_B_BIT |
                              VK_COLOR_COMPONENT_A_BIT,
-               },
+                                 },
          },
       .pDepthStencilState =
          shape->depth_stencil != 0
@@ -1456,6 +1496,7 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                     VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                  .depthTestEnable =
                     shape->depth_stencil == 2 ? VK_TRUE : VK_FALSE,
+                 .depthWriteEnable = shape->depth_write,
                  .depthCompareOp = VK_COMPARE_OP_LESS,
                  .stencilTestEnable = shape->stencil_split,
                  .front = {
@@ -3178,8 +3219,8 @@ main(void)
 
    /* Blend, logic op, and write mask: the identity blend (ONE, ZERO,
     * ADD) and the COPY logic op equal the straight write and admit; a
-    * zero write mask admits and collapses the draw; the zeroed blend
-    * factors and any other logic op refuse.
+    * zero write mask admits while retaining sample/depth coverage; the
+    * zeroed blend factors and any other logic op refuse.
     */
    {
       struct pipeline_shape cb_shape = contract_shape;
@@ -3205,6 +3246,9 @@ main(void)
       cb_shape.write_mask_zero = VK_TRUE;
       assert(make_pipeline(&cb_shape, pass, layout, &cb_pipeline) ==
              VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_pipeline, native_mask_pipeline, cb_pipeline);
+      assert(!native_mask_pipeline->sample_mask_zero);
+      assert(native_mask_pipeline->color_writes_disabled);
       vkDestroyPipeline(device, cb_pipeline, NULL);
    }
 

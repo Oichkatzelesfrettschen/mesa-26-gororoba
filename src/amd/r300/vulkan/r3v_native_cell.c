@@ -452,6 +452,23 @@ emit_triangle_cell_for_position_space(
    return r300_tcl_bypass_triangle_render_shape_emit(shape, cell);
 }
 
+VkResult
+r3v_native_cell_set_color_channel_mask(
+   struct r300_tcl_bypass_triangle_ib *cell, uint32_t mask)
+{
+   if (cell == NULL || cell->ib == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   const uint32_t header = CP_PACKET0(RB3D_COLOR_CHANNEL_MASK, 0);
+   bool found = false;
+   for (uint32_t word = 0; word + 1 < cell->ib_size_dwords; word++) {
+      if (cell->ib[word] != header)
+         continue;
+      cell->ib[word + 1] = mask;
+      found = true;
+   }
+   return found ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+}
+
 /* Cell emission and installation with no memory writes: the emitted IB
  * and its references depend only on the two BO handles, so the recorded
  * digest is independent of when the carrier and target bytes land.
@@ -476,6 +493,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                bool z_top_enable,
                                const struct r300_zb_combined_clear_plan
                                   *depth_clear,
+                               bool color_writes_disabled,
                                struct r300_tcl_bypass_triangle_ib
                                   *alternate_carrier_out)
 {
@@ -591,6 +609,15 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
        alternate_carrier_out != NULL)
       emit_result = prepend_depth_clear(depth_clear, alternate_carrier_out);
+   if (emit_result == 0 && color_writes_disabled) {
+      emit_result = r3v_native_cell_set_color_channel_mask(&cell, 0u);
+      if (emit_result == VK_SUCCESS && retain_window_cell)
+         emit_result =
+            r3v_native_cell_set_color_channel_mask(&window_cell, 0u);
+      if (emit_result == VK_SUCCESS && alternate_carrier_out != NULL)
+         emit_result = r3v_native_cell_set_color_channel_mask(
+            alternate_carrier_out, 0u);
+   }
    /* CPU preparation can realize the first pass's load operation before
     * submission.  A later pass needs a device command between draw spans;
     * prepend the linear color fill to every retained form of the later
@@ -786,7 +813,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
                                          false, false, false, false, 0, 1, NULL,
-                                         NULL, NULL, false, NULL, NULL);
+                                         NULL, NULL, false, NULL, false, NULL);
 }
 
 VkResult
@@ -804,6 +831,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    const struct r3v_native_depth_image_bound *depth_bound,
    const struct r3v_native_depth_pipeline_state *depth_pipeline,
    const struct r300_zb_combined_clear_plan *depth_clear,
+   bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -885,6 +913,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                          depth_pipeline != NULL &&
                                             depth_pipeline->early_fragment_tests,
                                          depth_clear,
+                                         color_writes_disabled,
                                          alternate_carrier_cell);
 }
 

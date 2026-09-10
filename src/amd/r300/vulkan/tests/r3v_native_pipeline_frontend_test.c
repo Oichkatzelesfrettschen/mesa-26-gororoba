@@ -77,10 +77,20 @@ static void test_reference_fragment_module(void)
 {
    uint32_t color[4];
    const char *reason = NULL;
+   assert(r3v_fragment_no_color_from_spirv(
+      r3v_reference_fragment_no_output_spirv,
+      WORDS(r3v_reference_fragment_no_output_spirv), "main", &reason));
+   assert(!r3v_fragment_constant_color_from_spirv(
+      r3v_reference_fragment_no_output_spirv,
+      WORDS(r3v_reference_fragment_no_output_spirv), "main", color,
+      &reason));
    assert(r3v_fragment_constant_color_from_spirv(
       r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
       "main",
       color, &reason));
+   assert(!r3v_fragment_no_color_from_spirv(
+      r3v_reference_fragment_spirv, WORDS(r3v_reference_fragment_spirv),
+      "main", &reason));
    assert(color[0] == 0 && color[1] == 0x3f800000u && color[2] == 0 &&
           color[3] == 0x3f800000u);
 

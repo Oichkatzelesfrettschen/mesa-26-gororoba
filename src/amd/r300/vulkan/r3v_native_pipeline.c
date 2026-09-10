@@ -312,6 +312,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
                         bool *sampled, uint32_t *narrow_width,
                         bool *mixed_fragment, uint32_t color_bits[4],
+                        bool *no_color_output,
                         struct r3v_shader_interface_link *interface,
                         struct r3v_native_depth_shader_flags *depth_shader)
 {
@@ -366,6 +367,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    *sampled = false;
    *narrow_width = 0;
    *mixed_fragment = false;
+   *no_color_output = false;
    if (r300_vertex_job_varying_count(job) == 2) {
       /* The two-location job's one fragment shape is the mixed
        * carrier lane program over locations 0 and 1; the route
@@ -391,6 +393,23 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
          fs_data, fs_words, fragment->pName, &reason);
       return *sampled;
    }
+   bool fragment_has_output = false;
+   for (uint32_t location = 0;
+        location < R3V_SHADER_INTERFACE_MAX_LOCATIONS; location++) {
+      if (interface->fragment.outputs[location].present) {
+         fragment_has_output = true;
+         break;
+      }
+   }
+   if (!fragment_has_output) {
+      /* A depth-only fragment shader may omit all color outputs.  The draw
+       * still needs a private color sink for the fixed cell, so the caller
+       * supplies the sink route without inventing an application color
+       * output. */
+      *no_color_output = r3v_fragment_no_color_from_spirv(
+         fs_data, fs_words, fragment->pName, &reason);
+      return *no_color_output;
+   }
    return r3v_fragment_constant_color_from_spirv(fs_data, fs_words,
                                                   fragment->pName,
                                                   color_bits, &reason) &&
@@ -406,6 +425,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
 static bool
 fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
                          uint32_t *target_width, uint32_t *target_height,
+                         bool has_color_attachment,
                          bool has_depth_attachment, bool *dynamic_out)
 {
    const VkPipelineInputAssemblyStateCreateInfo *ia =
@@ -487,28 +507,35 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
     * admitted blend vocabulary is the arithmetic that equals that
     * write: blending only as the identity configuration (source
     * factor ONE, destination ZERO, op ADD on both channels), the logic
-    * op only as COPY, and the write mask as all channels or none -- a
-    * zero mask writes no channel, so the host collapses the draw's
-    * triangles and the target keeps its clear.
+    * op only as COPY, and the write mask as all channels or none.  A
+    * depth-only subpass has no color attachment and therefore supplies
+    * no blend attachment state.
     */
    const VkPipelineColorBlendStateCreateInfo *cb = info->pColorBlendState;
-   if (cb == NULL || cb->attachmentCount != 1 ||
+   if (cb == NULL ||
+       (has_color_attachment ? cb->attachmentCount != 1
+                             : cb->attachmentCount != 0) ||
        (cb->logicOpEnable != VK_FALSE && cb->logicOp != VK_LOGIC_OP_COPY))
       return false;
-   const VkPipelineColorBlendAttachmentState *blend = &cb->pAttachments[0];
-   if (blend->blendEnable != VK_FALSE &&
-       (blend->srcColorBlendFactor != VK_BLEND_FACTOR_ONE ||
-        blend->dstColorBlendFactor != VK_BLEND_FACTOR_ZERO ||
-        blend->colorBlendOp != VK_BLEND_OP_ADD ||
-        blend->srcAlphaBlendFactor != VK_BLEND_FACTOR_ONE ||
-        blend->dstAlphaBlendFactor != VK_BLEND_FACTOR_ZERO ||
-        blend->alphaBlendOp != VK_BLEND_OP_ADD))
-      return false;
-   const VkColorComponentFlags full_mask =
-      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-   if (blend->colorWriteMask != full_mask && blend->colorWriteMask != 0)
-      return false;
+   if (has_color_attachment) {
+      if (cb->pAttachments == NULL)
+         return false;
+      const VkPipelineColorBlendAttachmentState *blend =
+         &cb->pAttachments[0];
+      if (blend->blendEnable != VK_FALSE &&
+          (blend->srcColorBlendFactor != VK_BLEND_FACTOR_ONE ||
+           blend->dstColorBlendFactor != VK_BLEND_FACTOR_ZERO ||
+           blend->colorBlendOp != VK_BLEND_OP_ADD ||
+           blend->srcAlphaBlendFactor != VK_BLEND_FACTOR_ONE ||
+           blend->dstAlphaBlendFactor != VK_BLEND_FACTOR_ZERO ||
+           blend->alphaBlendOp != VK_BLEND_OP_ADD))
+         return false;
+      const VkColorComponentFlags full_mask =
+         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+      if (blend->colorWriteMask != full_mask && blend->colorWriteMask != 0)
+         return false;
+   }
 
    /* Color-only passes carry disabled depth/stencil state.  D24S8 state is
     * lowered after the render-pass attachment contract is checked. */
@@ -556,6 +583,8 @@ create_pipeline(struct r3v_native_device *device,
    const bool has_depth_attachment =
       render_pass_shape &&
       (pass->attachment_count == 2 || depth_only_render_pass);
+   const bool has_color_attachment =
+      render_pass_shape && pass->subpasses[0].color_count != 0;
 
    uint32_t target_width = 0, target_height = 0;
    bool dynamic_viewport_scissor = false;
@@ -565,17 +594,21 @@ create_pipeline(struct r3v_native_device *device,
    uint32_t narrow_width = 0;
    bool mixed_fragment = false;
    uint32_t color_bits[4] = { 0 };
+   bool no_color_output = false;
    struct r3v_native_depth_shader_flags depth_shader = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
        !stages_build_vertex_job(info, &job, &varying, &sampled,
                                 &narrow_width, &mixed_fragment, color_bits,
+                                &no_color_output,
                                 &admitted.shader_interface, &depth_shader) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
+                                 has_color_attachment,
                                  has_depth_attachment,
                                  &dynamic_viewport_scissor) ||
+       (no_color_output && !has_depth_attachment) ||
        layout == NULL || layout->push_range_count != 0 ||
        !render_pass_shape || info->subpass != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
@@ -630,8 +663,10 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->cull_mode = info->pRasterizationState->cullMode;
    pipeline->front_face = info->pRasterizationState->frontFace;
    pipeline->sample_mask_zero =
-      (info->pMultisampleState->pSampleMask != NULL &&
-       (info->pMultisampleState->pSampleMask[0] & 1u) == 0) ||
+      info->pMultisampleState->pSampleMask != NULL &&
+      (info->pMultisampleState->pSampleMask[0] & 1u) == 0;
+   pipeline->color_writes_disabled =
+      has_color_attachment &&
       info->pColorBlendState->pAttachments[0].colorWriteMask == 0;
    pipeline->dynamic_viewport_scissor = dynamic_viewport_scissor;
    pipeline->target_width = target_width;
