@@ -148,6 +148,8 @@ main(void)
    image.memory = &memory;
    image.depth_family = true;
    image.depth_contract = before;
+   image.committed_submission.representation =
+      R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED;
    assert(r3v_native_depth_image_contract_bind(&before, 0u,
                                                 before.binding_bytes,
                                                 &image.depth_bound) == 0);
@@ -156,6 +158,24 @@ main(void)
    pool.alloc = *vk_default_allocator();
    command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
    command.vk.pool = &pool;
+   struct r3v_native_image stale_backing_image = image;
+   stale_backing_image.committed_submission.representation =
+      R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR;
+   stale_backing_image.committed_submission.zmask_metadata =
+      (struct r3v_native_zmask_metadata_state){
+         .status = R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR,
+         .clear_depth_code = 0x400000u,
+         .clear_stencil = 0x5au,
+         .generation = 1u,
+      };
+   assert(r3v_native_record_depth_image_clear(
+             r3v_native_cmd_buffer_to_handle(&command),
+             r3v_native_image_to_handle(&stale_backing_image),
+             R300_ZB_COMBINED_CLEAR_ASPECTS, 0x123456u, 0xa5u) ==
+          VK_ERROR_INITIALIZATION_FAILED);
+   assert(command.ib_size_dwords == 0u &&
+          command.ordered_operation_count == 0u &&
+          command.image_state_count == 0u);
    assert(r3v_native_record_depth_image_clear(
              r3v_native_cmd_buffer_to_handle(&command),
              r3v_native_image_to_handle(&image),
@@ -191,6 +211,8 @@ main(void)
    logical_image.memory = &logical_memory;
    logical_image.depth_family = true;
    logical_image.depth_contract = logical_contract;
+   logical_image.committed_submission.representation =
+      R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED;
    assert(r3v_native_depth_image_contract_bind(
              &logical_contract, 0u, logical_contract.binding_bytes,
              &logical_image.depth_bound) == 0);

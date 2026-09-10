@@ -382,6 +382,37 @@ r3v_native_cmd_buffer_transition_image_representation(
 }
 
 VkResult
+r3v_native_cmd_buffer_require_ordinary_depth_backing(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image)
+{
+   if (cmd_buffer == NULL || image == NULL || !image->depth_family)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const uint32_t original_count = cmd_buffer->image_state_count;
+   struct r3v_native_cmd_image_state *state = NULL;
+   VkResult result = r3v_native_cmd_buffer_append_image_state(
+      cmd_buffer, image, &state);
+   if (result != VK_SUCCESS)
+      return result;
+   const struct r3v_native_cmd_image_state original = *state;
+   const enum r3v_native_image_representation representation =
+      state->current_representation_set ? state->current_representation
+                                        : state->required_representation;
+   const struct r3v_native_zmask_metadata_state *metadata =
+      state->current_zmask_metadata_set ? &state->current_zmask_metadata
+                                        : &state->required_zmask_metadata;
+   const struct r3v_native_zmask_metadata_state retired_metadata = {0};
+   if (representation != R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED ||
+       !r3v_native_zmask_metadata_equal(metadata, &retired_metadata)) {
+      *state = original;
+      cmd_buffer->image_state_count = original_count;
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+   return VK_SUCCESS;
+}
+
+VkResult
 r3v_native_cmd_buffer_require_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout layout, enum r3v_native_image_producer producer,

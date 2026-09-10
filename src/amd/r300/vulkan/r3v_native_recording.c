@@ -1528,7 +1528,10 @@ r3v_native_merge_secondary_image_states(
             : &secondary->required_zmask_owner;
       if (primary->required_zmask_owner_set &&
           !r3v_native_zmask_owner_equal(
-             current_owner, &secondary->required_zmask_owner))
+             current_owner, &secondary->required_zmask_owner) &&
+          (!secondary->current_zmask_owner_set ||
+           !r3v_native_zmask_owner_equal(
+              current_owner, &secondary->current_zmask_owner)))
          return VK_ERROR_INITIALIZATION_FAILED;
       if (!primary->required_zmask_owner_set) {
          primary->required_zmask_owner = secondary->required_zmask_owner;
@@ -1553,7 +1556,9 @@ r3v_native_merge_secondary_image_states(
             destination->current_representation_set
                ? destination->current_representation
                : destination->required_representation;
-         if (current_representation != source->required_representation)
+         if (current_representation != source->required_representation &&
+             (!source->current_representation_set ||
+              current_representation != source->current_representation))
             return VK_ERROR_INITIALIZATION_FAILED;
       }
       if (source->current_representation_set) {
@@ -1566,7 +1571,10 @@ r3v_native_merge_secondary_image_states(
                ? &destination->current_zmask_metadata
                : &destination->required_zmask_metadata;
          if (!r3v_native_zmask_metadata_equal(
-                current_metadata, &source->required_zmask_metadata))
+                current_metadata, &source->required_zmask_metadata) &&
+             (!source->current_zmask_metadata_set ||
+              !r3v_native_zmask_metadata_equal(
+                 current_metadata, &source->current_zmask_metadata)))
             return VK_ERROR_INITIALIZATION_FAILED;
       }
       if (source->current_zmask_metadata_set) {
@@ -1866,6 +1874,13 @@ r3v_native_append_secondary_operation(
          r3v_native_memory_to_handle(source->destination_memory), &plan,
          source->write_mask);
    }
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
+      return r3v_native_record_zmask_materialize(
+         commandBuffer,
+         r3v_native_image_to_handle(
+            source_operation->payload.image_materialize.image),
+         source_operation->payload.image_materialize.source_representation,
+         &source_operation->payload.image_materialize.metadata);
    case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER: {
       const struct r3v_native_image_barrier_record *barrier =
          &source_operation->payload.image_barrier;

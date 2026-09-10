@@ -347,6 +347,13 @@ r3v_native_record_depth_image_to_image_copy(
           region))
       return VK_ERROR_INITIALIZATION_FAILED;
 
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(
+          cmd_buffer, source_image) != VK_SUCCESS ||
+       r3v_native_cmd_buffer_require_ordinary_depth_backing(
+          cmd_buffer, destination_image) != VK_SUCCESS)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
    const VkImageAspectFlags source_aspects = region->srcSubresource.aspectMask;
 
    const bool aligned = ((uint32_t)region->srcOffset.x % 32u) == 0u &&
@@ -491,6 +498,11 @@ r3v_native_record_depth_image_copy(
    if (!r3v_native_validate_depth_image_copy(
           command_buffer, buffer, image_handle, region, layout,
           buffer_to_image))
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(
+          cmd_buffer, image) != VK_SUCCESS)
       return VK_ERROR_INITIALIZATION_FAILED;
 
    const bool depth = region->imageSubresource.aspectMask ==

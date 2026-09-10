@@ -218,6 +218,12 @@ r3v_native_ordered_image_composition_geometry_valid(
                 cmd_buffer->rb2d_copy_operation_count)
             return false;
          break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
+         if (render_pass_open ||
+             operation->payload.image_materialize.image == NULL ||
+             !operation->payload.image_materialize.image->zmask_layout_admitted)
+            return false;
+         break;
       case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER:
          if (render_pass_open ||
              operation->payload.image_barrier.image == NULL)
@@ -1809,6 +1815,15 @@ r3v_native_cmd_buffer_has_positional_host_work(
    return false;
 }
 
+static bool
+r3v_native_cmd_buffer_gpu_producer_delivery(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   return cmd_buffer->deferred_draw_count != 0u &&
+          cmd_buffer->deferred_draws != NULL &&
+          cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+}
+
 static VkResult
 r3v_native_queue_execute_ordered_host_operation(
    struct r3v_native_device *device,
@@ -1816,6 +1831,8 @@ r3v_native_queue_execute_ordered_host_operation(
    const struct r3v_native_ordered_operation *operation)
 {
    switch (operation->kind) {
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
+      return VK_SUCCESS;
    case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR:
       return r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
          device, cmd_buffer,
@@ -2364,7 +2381,7 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
     * path does, so one accessor describes both.
     */
    device->transport_gpu_producer_delivery =
-      cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+      r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
    device->transport_cell_kind = cmd_buffer->cell_kind;
    device->transport_return_ns = 0;
    device->transport_enter_ns = r3v_native_raw_now_ns();
@@ -3505,7 +3522,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
       if (positional_host_work) {
          device->transport_gpu_producer_delivery =
-            cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+            r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
          device->transport_cell_kind = cmd_buffer->cell_kind;
          VkResult ordered_result = r3v_native_queue_execute_positional_stream(
             device, cmd_buffer, &relocs, &completion);
@@ -3547,7 +3564,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * open transcript, and it runs identically on every route.
        */
       device->transport_gpu_producer_delivery =
-         cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+         r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
       device->transport_cell_kind = cmd_buffer->cell_kind;
       device->transport_return_ns = 0;
       device->transport_enter_ns = r3v_native_raw_now_ns();

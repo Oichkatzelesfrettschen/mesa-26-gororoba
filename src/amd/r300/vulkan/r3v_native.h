@@ -481,6 +481,7 @@ enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
    R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
    R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
@@ -516,6 +517,11 @@ struct r3v_native_ordered_operation {
       struct {
          uint32_t rb2d_copy_index;
       } rb2d_copy;
+      struct {
+         struct r3v_native_image *image;
+         enum r3v_native_image_representation source_representation;
+         struct r3v_native_zmask_metadata_state metadata;
+      } image_materialize;
       struct r3v_native_image_barrier_record image_barrier;
       struct r3v_native_memory_barrier_record memory_barrier;
       struct {
@@ -1458,6 +1464,36 @@ const char *r3v_native_plan_replay_close(
    struct r3v_native_plan_replay *replay);
 void r3v_native_plan_replay_finish(struct r3v_native_plan_replay *replay);
 
+/* Device memory owns exactly one GEM BO; a mapping lives for the map/unmap
+ * window.
+ */
+struct r3v_native_memory {
+   struct vk_device_memory vk;
+   struct radeon_drm_vk_bo bo;
+   void *map;
+   /* Which allocation on this device this is, taken from the device's
+    * counter before the handle is published and never written again.  A
+    * GEM handle indexes one DRM file's object table and is recycled once
+    * the object it named is destroyed, so a binding that recorded the
+    * handle alone would accept a different allocation reusing the
+    * number.  Zero is no allocation: the counter's first value is one,
+    * so a published allocation always carries a nonzero generation and a
+    * zeroed structure carries none.
+    *
+    * The scope is one device.  Every VkDevice a physical device creates
+    * shares that physical device's render-node file descriptor, and so
+    * one GEM handle table, while each device counts its allocations on
+    * its own.  Two devices therefore assign one generation to two
+    * different objects, which decides nothing, because
+    * r3v_BindBufferMemory2 refuses a buffer and a memory object that do
+    * not both belong to the binding device: a session compares handles
+    * and generations its own device stamped. */
+   uint64_t generation;
+};
+
+/* Vulkan bindings and their GEM BOs use one page of alignment. */
+#define R3V_NATIVE_MEMORY_ALIGNMENT 4096
+
 struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
@@ -1470,6 +1506,9 @@ struct r3v_native_device {
     * it; the descriptor releases the block at device destruction. */
    enum r300_zb_hyperz_ownership hyperz_ownership;
    struct r3v_native_zmask_owner_state zmask_owner;
+   struct r3v_native_memory zmask_materialize_vertex;
+   struct r3v_native_memory zmask_materialize_color;
+   bool zmask_materialize_scratch_initialized;
    struct r3v_native_queue queue;
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
@@ -1687,36 +1726,6 @@ VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,
                        VK_OBJECT_TYPE_DEVICE)
 VK_DEFINE_HANDLE_CASTS(r3v_native_cmd_buffer, vk.base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
-
-/* Device memory owns exactly one GEM BO; a mapping lives for the map/unmap
- * window.
- */
-struct r3v_native_memory {
-   struct vk_device_memory vk;
-   struct radeon_drm_vk_bo bo;
-   void *map;
-   /* Which allocation on this device this is, taken from the device's
-    * counter before the handle is published and never written again.  A
-    * GEM handle indexes one DRM file's object table and is recycled once
-    * the object it named is destroyed, so a binding that recorded the
-    * handle alone would accept a different allocation reusing the
-    * number.  Zero is no allocation: the counter's first value is one,
-    * so a published allocation always carries a nonzero generation and a
-    * zeroed structure carries none.
-    *
-    * The scope is one device.  Every VkDevice a physical device creates
-    * shares that physical device's render-node file descriptor, and so
-    * one GEM handle table, while each device counts its allocations on
-    * its own.  Two devices therefore assign one generation to two
-    * different objects, which decides nothing, because
-    * r3v_BindBufferMemory2 refuses a buffer and a memory object that do
-    * not both belong to the binding device: a session compares handles
-    * and generations its own device stamped. */
-   uint64_t generation;
-};
-
-/* Vulkan bindings and their GEM BOs use one page of alignment. */
-#define R3V_NATIVE_MEMORY_ALIGNMENT 4096
 
 struct r3v_native_buffer {
    struct vk_buffer vk;
@@ -2192,6 +2201,10 @@ VkResult r3v_native_cmd_buffer_require_image_layout(
    VkImageLayout layout, enum r3v_native_image_producer producer,
    bool writes_content);
 
+VkResult r3v_native_cmd_buffer_require_ordinary_depth_backing(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image);
+
 VkResult r3v_native_cmd_buffer_transition_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout old_layout, VkImageLayout new_layout);
@@ -2215,6 +2228,11 @@ VkResult r3v_native_cmd_buffer_transition_zmask_owner(
    struct r3v_native_cmd_buffer *cmd_buffer,
    const struct r3v_native_zmask_owner_state *required_owner,
    const struct r3v_native_zmask_owner_state *resulting_owner);
+
+VkResult r3v_native_record_zmask_materialize(
+   VkCommandBuffer command_buffer, VkImage image,
+   enum r3v_native_image_representation source_representation,
+   const struct r3v_native_zmask_metadata_state *source_metadata);
 
 VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
