@@ -578,10 +578,13 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
       device->plan_replay_active = true;
    }
 
-   result = r3v_native_device_init_zmask_materialize_scratch(device);
-   if (result != VK_SUCCESS) {
-      r3v_DestroyDevice(r3v_native_device_to_handle(device), pAllocator);
-      return result;
+   if (device->zmask_automatic_qualified ||
+       device->zmask_fast_clear_gate != NULL) {
+      result = r3v_native_device_init_zmask_materialize_scratch(device);
+      if (result != VK_SUCCESS) {
+         r3v_DestroyDevice(r3v_native_device_to_handle(device), pAllocator);
+         return result;
+      }
    }
 
    *pDevice = r3v_native_device_to_handle(device);
