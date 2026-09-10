@@ -140,6 +140,12 @@ r3v_native_cmd_buffer_require_image_layout(
    VkImageLayout layout, enum r3v_native_image_producer producer,
    bool writes_content)
 {
+   /* DEPTH_STENCIL_READ_ONLY_OPTIMAL permits depth and stencil reads while
+    * forbidding every producer that changes packed attachment contents. */
+   if (writes_content &&
+       layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
    struct r3v_native_cmd_image_state *state = NULL;
    VkResult result = r3v_native_cmd_buffer_append_image_state(
       cmd_buffer, image, &state);
@@ -427,6 +433,16 @@ r3v_native_cmd_buffer_release_recording(
       radeon_drm_vk_bo_free(&device->drm, &cmd_buffer->owned_carriers[i]->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carriers[i]);
       cmd_buffer->owned_carriers[i] = NULL;
+   }
+   for (uint32_t i = 0; i < R3V_NATIVE_DEFERRED_DRAW_MAX; i++) {
+      if (cmd_buffer->owned_color_sinks[i] == NULL)
+         continue;
+      struct r3v_native_device *device = container_of(
+         cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+      radeon_drm_vk_bo_free(&device->drm,
+                            &cmd_buffer->owned_color_sinks[i]->bo);
+      vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_color_sinks[i]);
+      cmd_buffer->owned_color_sinks[i] = NULL;
    }
    if (cmd_buffer->owned_slot != NULL) {
       struct r3v_native_device *device = container_of(

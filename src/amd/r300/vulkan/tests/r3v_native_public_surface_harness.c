@@ -6,10 +6,8 @@
  * cell through public entry points alone, and every contract deviation
  * refuses.  The hazard gate stays closed, so each vkQueueSubmit refuses
  * before the ioctl and before the deferred vertex gather and load-op
- * clear; the harness verifies that a refused submit leaves the carrier
- * and the target untouched, and proves the execution-time boundary --
- * the stream re-read and the clear realized at execution -- by driving
- * the deferred executor directly.
+ * clear. The harness authorizes the one shim submission for the composed
+ * ordering case, while the surrounding refusal cases keep the gate closed.
  */
 
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
@@ -42,7 +40,6 @@
 #include "amd/r300/common/radeon_legacy_2d_reg.h"
 
 #include "vk_semaphore.h"
-
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "util/u_math.h"
@@ -715,6 +712,92 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       vkDestroyFramebuffer(device, bad, NULL);
       begin.clearValueCount = 2;
    }
+
+   /* A depth/stencil attachment view may select one logical aspect while
+    * the attachment format still names the packed depth/stencil resource.
+    * The depth-only pass derives its hardware aspects from that format.  A
+    * 32x32 framebuffer and render area exercise the partial logical clear
+    * while the attached image remains 64x64. */
+   VkImageView stencil_view = VK_NULL_HANDLE;
+   VkImageViewCreateInfo stencil_view_info = view_info;
+   stencil_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+   assert(vkCreateImageView(device, &stencil_view_info, NULL, &stencil_view) ==
+          VK_SUCCESS);
+   const VkAttachmentDescription depth_only_attachment = {
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+   };
+   const VkAttachmentReference depth_only_reference = {
+      .attachment = 0,
+      .layout = VK_IMAGE_LAYOUT_GENERAL,
+   };
+   VkRenderPass depth_only_pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 1,
+      .pAttachments = &depth_only_attachment,
+      .subpassCount = 1,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .pDepthStencilAttachment = &depth_only_reference,
+      },
+   }, NULL, &depth_only_pass) == VK_SUCCESS);
+   const VkImageView depth_aspect_views[] = { variants[0], stencil_view };
+   for (unsigned aspect = 0; aspect < ARRAY_SIZE(depth_aspect_views); aspect++) {
+      VkFramebuffer depth_only_framebuffer = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+         .renderPass = depth_only_pass,
+         .attachmentCount = 1,
+         .pAttachments = &depth_aspect_views[aspect],
+         .width = 32,
+         .height = 32,
+         .layers = 1,
+      }, NULL, &depth_only_framebuffer) == VK_SUCCESS);
+      const VkClearValue depth_only_clear = {
+         .depthStencil = { 0.5f, 0x15a },
+      };
+      const VkRenderPassBeginInfo depth_only_begin = {
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+         .renderPass = depth_only_pass,
+         .framebuffer = depth_only_framebuffer,
+         .renderArea = { .extent = { 32, 32 } },
+         .clearValueCount = 1,
+         .pClearValues = &depth_only_clear,
+      };
+      VkCommandBuffer depth_only_command = fresh_cmd();
+      vkCmdBeginRenderPass(depth_only_command, &depth_only_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdEndRenderPass(depth_only_command);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_only,
+                     depth_only_command);
+      const VkResult depth_only_end_result =
+         vkEndCommandBuffer(depth_only_command);
+      assert(depth_only_end_result == VK_SUCCESS);
+      assert(native_depth_only->deferred_draw_count == 1u);
+      assert(native_depth_only->deferred_draws[0].depth_only);
+      assert(!native_depth_only->deferred_draws[0].has_depth_clear);
+      assert(native_depth_only->ordered_operation_count == 3u);
+      assert(native_depth_only->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
+      assert(native_depth_only->ordered_operations[0]
+                .payload.rb2d_depth_clear.width == 32u);
+      assert(native_depth_only->ordered_operations[0]
+                .payload.rb2d_depth_clear.height == 32u);
+      assert(native_depth_only->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+      assert(native_depth_only->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+      vkDestroyFramebuffer(device, depth_only_framebuffer, NULL);
+   }
+   vkDestroyRenderPass(device, depth_only_pass, NULL);
+   vkDestroyImageView(device, stencil_view, NULL);
+
    uint32_t *color_words = NULL;
    assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
                       (void **)&color_words) == VK_SUCCESS);
@@ -1156,6 +1239,34 @@ check_image_usage_surface(
       } else {
          assert(image == VK_NULL_HANDLE);
       }
+   }
+
+   const VkPhysicalDeviceImageFormatInfo2 invalid_depth_queries[] = {
+      {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .type = VK_IMAGE_TYPE_1D,
+         .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = transfer_usage,
+      },
+      {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .type = VK_IMAGE_TYPE_2D,
+         .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = transfer_usage,
+         .flags = VK_IMAGE_CREATE_ALIAS_BIT,
+      },
+   };
+   for (size_t i = 0;
+        i < sizeof(invalid_depth_queries) / sizeof(invalid_depth_queries[0]);
+        i++) {
+      VkImageFormatProperties2 properties = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+      };
+      assert(query_properties(physical_device, &invalid_depth_queries[i],
+                              &properties) == VK_ERROR_FORMAT_NOT_SUPPORTED);
+      assert(properties.imageFormatProperties.maxExtent.width == 0);
    }
 }
 
@@ -2541,12 +2652,10 @@ main(void)
       vkUnmapMemory(device, color_memory);
    }
 
-   /* In-pass attachment clears over a draw-less pass: each rectangle
-    * lands after the load-op clear on the zero-IB path, exact bytes at
-    * the rect corners and the sentinel outside; a rect past the render
-    * area refuses; a draw after a recorded clear refuses (the device
-    * draw executes after every host write); a clear outside a pass
-    * refuses.
+   /* In-pass attachment clears retain their command position.  The
+    * draw-less path applies a rectangle after the load-op clear, and the
+    * drawn path applies the same rectangle after the draw.  A rectangle
+    * past the render area and a clear outside a pass refuse.
     */
    {
       VkCommandBuffer clear_cmd = fresh_cmd();
@@ -2602,14 +2711,71 @@ main(void)
       VkCommandBuffer clear_draw_cmd = fresh_cmd();
       vkCmdBeginRenderPass(clear_draw_cmd, &begin_pass,
                            VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdClearAttachments(clear_draw_cmd, 1, &red, 1, &rect);
       vkCmdBindPipeline(clear_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         pipeline);
       vkCmdBindVertexBuffers(clear_draw_cmd, 0, 1, &vertex_buffer,
                              &(VkDeviceSize){ 0 });
       vkCmdDraw(clear_draw_cmd, 3, 1, 0, 0);
-      assert(vkEndCommandBuffer(clear_draw_cmd) ==
-             R3V_NATIVE_REFUSAL_RESULT);
+      vkCmdClearAttachments(clear_draw_cmd, 1, &red, 1, &rect);
+      vkCmdEndRenderPass(clear_draw_cmd);
+      assert(vkEndCommandBuffer(clear_draw_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_clear_draw,
+                     clear_draw_cmd);
+      assert(native_clear_draw->ordered_operation_count >= 4u);
+      assert(native_clear_draw->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_DRAW);
+      assert(native_clear_draw->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR);
+      assert(r3v_native_ordered_image_composition_geometry_valid(
+                native_clear_draw));
+      char clear_draw_digest[BLAKE3_OUT_LEN * 2 + 1];
+      r300_triangle_ib_digest_hex(native_clear_draw->ib,
+                                  native_clear_draw->ib_size_dwords,
+                                  clear_draw_digest);
+      char clear_draw_manifest_template[] =
+         "/tmp/r3v-public-post-draw-clear-XXXXXX";
+      const char *clear_draw_manifest_dir =
+         mkdtemp(clear_draw_manifest_template);
+      assert(clear_draw_manifest_dir != NULL);
+      struct utsname clear_draw_host;
+      assert(uname(&clear_draw_host) == 0);
+      setenv("R3V_NATIVE_MANIFEST_DIR", clear_draw_manifest_dir, 1);
+      setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", clear_draw_digest, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE",
+             clear_draw_host.release, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+             R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+      r3v_native_device_from_handle(device)->manifest_dir =
+         clear_draw_manifest_dir;
+      r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
+      r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
+      const VkResult post_draw_submit = vkQueueSubmit(
+                queue, 1,
+                &(VkSubmitInfo){
+                   .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                   .commandBufferCount = 1,
+                   .pCommandBuffers = &clear_draw_cmd,
+                },
+                VK_NULL_HANDLE);
+      assert(post_draw_submit == VK_SUCCESS);
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+      unsetenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
+      unsetenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
+      unsetenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+      unsetenv("R3V_NATIVE_MANIFEST_DIR");
+      r3v_native_device_from_handle(device)->arming_provider = NULL;
+      r3v_native_device_from_handle(device)->manifest_dir = NULL;
+      r3v_native_device_from_handle(device)->submit_hazard_accepted = false;
+      uint32_t *post_draw_clear_map = NULL;
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&post_draw_clear_map) == VK_SUCCESS);
+      assert(post_draw_clear_map[8 * row_words + 8] == 0xffff0000u);
+      assert(post_draw_clear_map[7 * row_words + 8] != 0xffff0000u);
+      for (unsigned i = 0; i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4;
+           i++)
+         post_draw_clear_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
 
       VkCommandBuffer outside_cmd = fresh_cmd();
       vkCmdClearAttachments(outside_cmd, 1, &red, 1, &rect);

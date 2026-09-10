@@ -513,6 +513,9 @@ struct public_api {
    PFN_vkCmdBindPipeline cmd_bind_pipeline;
    PFN_vkCmdBindVertexBuffers cmd_bind_vertex_buffers;
    PFN_vkCmdDraw cmd_draw;
+   PFN_vkCmdPipelineBarrier cmd_pipeline_barrier;
+   PFN_vkCmdClearDepthStencilImage cmd_clear_depth_stencil_image;
+   PFN_vkCmdCopyImage cmd_copy_image;
    PFN_vkGetDeviceQueue get_device_queue;
    PFN_vkQueueSubmit queue_submit;
    PFN_vkDestroyDevice destroy_device;
@@ -584,6 +587,9 @@ load_public_api(PFN_vkGetDeviceProcAddr get_device_proc_addr,
    LOAD(cmd_bind_pipeline, vkCmdBindPipeline);
    LOAD(cmd_bind_vertex_buffers, vkCmdBindVertexBuffers);
    LOAD(cmd_draw, vkCmdDraw);
+   LOAD(cmd_pipeline_barrier, vkCmdPipelineBarrier);
+   LOAD(cmd_clear_depth_stencil_image, vkCmdClearDepthStencilImage);
+   LOAD(cmd_copy_image, vkCmdCopyImage);
    LOAD(get_device_queue, vkGetDeviceQueue);
    LOAD(queue_submit, vkQueueSubmit);
    LOAD(destroy_device, vkDestroyDevice);
@@ -613,6 +619,9 @@ load_public_api(PFN_vkGetDeviceProcAddr get_device_proc_addr,
           context->api.cmd_end_render_pass &&
           context->api.cmd_bind_pipeline &&
           context->api.cmd_bind_vertex_buffers && context->api.cmd_draw &&
+          context->api.cmd_pipeline_barrier &&
+          context->api.cmd_clear_depth_stencil_image &&
+          context->api.cmd_copy_image &&
           context->api.get_device_queue && context->api.queue_submit &&
           context->api.destroy_device;
 }
@@ -1085,6 +1094,207 @@ record_public_command(struct public_context *context, uint32_t target_index,
 }
 
 static bool
+record_public_composition(struct public_context *context,
+                          VkCommandBuffer *command_out)
+{
+   VkCommandBuffer command = VK_NULL_HANDLE;
+   VkResult result = context->api.allocate_command_buffers(
+      context->device,
+      &(VkCommandBufferAllocateInfo){
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+         .commandPool = context->command_pool,
+         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+         .commandBufferCount = 1,
+      }, &command);
+   if (result == VK_SUCCESS)
+      result = context->api.begin_command_buffer(
+         command,
+         &(VkCommandBufferBeginInfo){
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+         });
+   if (result != VK_SUCCESS)
+      return false;
+
+   const VkImageSubresourceRange packed_range = {
+      .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT |
+                    VK_IMAGE_ASPECT_STENCIL_BIT,
+      .levelCount = 1,
+      .layerCount = 1,
+   };
+   const VkImageMemoryBarrier initial_barriers[2] = {
+      { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = context->depth[0].image,
+        .subresourceRange = packed_range },
+      { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = context->depth[1].image,
+        .subresourceRange = packed_range },
+   };
+   context->api.cmd_pipeline_barrier(
+      command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2,
+      initial_barriers);
+   context->api.cmd_clear_depth_stencil_image(
+      command, context->depth[0].image, VK_IMAGE_LAYOUT_GENERAL,
+      &(VkClearDepthStencilValue){ .depth = 0.5f, .stencil = 0x15au }, 1,
+      &packed_range);
+
+   const VkImageMemoryBarrier clear_to_copy = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = context->depth[0].image,
+      .subresourceRange = packed_range,
+   };
+   context->api.cmd_pipeline_barrier(
+      command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+      &clear_to_copy);
+
+   VkImageCopy copy_regions[2] = {0};
+   const VkImageAspectFlags aspects[2] = {
+      VK_IMAGE_ASPECT_DEPTH_BIT,
+      VK_IMAGE_ASPECT_STENCIL_BIT,
+   };
+   for (uint32_t index = 0; index < 2; index++) {
+      copy_regions[index].srcSubresource = (VkImageSubresourceLayers){
+         .aspectMask = aspects[index], .layerCount = 1,
+      };
+      copy_regions[index].dstSubresource = (VkImageSubresourceLayers){
+         .aspectMask = aspects[index], .layerCount = 1,
+      };
+      copy_regions[index].extent = (VkExtent3D){64, 64, 1};
+   }
+   context->api.cmd_copy_image(
+      command, context->depth[0].image,
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, context->depth[1].image,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, copy_regions);
+
+   const VkImageMemoryBarrier copy_to_depth = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = context->depth[1].image,
+      .subresourceRange = packed_range,
+   };
+   context->api.cmd_pipeline_barrier(
+      command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+      0, 0, NULL, 0, NULL, 1, &copy_to_depth);
+
+   const VkClearValue color_clear = {
+      .color = { .float32 = { 0.64705884f, 0.64705884f,
+                              0.64705884f, 0.64705884f } },
+   };
+   context->api.cmd_begin_render_pass(
+      command,
+      &(VkRenderPassBeginInfo){
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+         .renderPass = context->render_pass,
+         .framebuffer = context->depth[1].framebuffer,
+         .renderArea = { .extent = {64, 64} },
+         .clearValueCount = 1,
+         .pClearValues = &color_clear,
+      }, VK_SUBPASS_CONTENTS_INLINE);
+   context->api.cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  context->read_pipeline);
+   context->api.cmd_bind_vertex_buffers(
+      command, 0, 1, &context->vertex_buffer, &(VkDeviceSize){0});
+   context->api.cmd_draw(command, 6, 1, 0, 0);
+   context->api.cmd_end_render_pass(command);
+   if (context->api.end_command_buffer(command) != VK_SUCCESS)
+      return false;
+   *command_out = command;
+   return true;
+}
+
+static bool
+recorded_public_composition_order(VkCommandBuffer command,
+                                  const struct public_context *context)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command);
+   VK_FROM_HANDLE(r3v_native_image, source, context->depth[0].image);
+   VK_FROM_HANDLE(r3v_native_image, destination, context->depth[1].image);
+   enum {
+      NEED_SOURCE_INITIAL,
+      NEED_DESTINATION_INITIAL,
+      NEED_CLEAR,
+      NEED_CLEAR_BARRIER,
+      NEED_COPY,
+      NEED_COPY_BARRIER,
+      NEED_RENDER_BEGIN,
+      NEED_DRAW,
+      NEED_RENDER_END,
+      COMPLETE,
+   } state = NEED_SOURCE_INITIAL;
+   for (uint32_t index = 0; index < native_command->ordered_operation_count;
+        index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &native_command->ordered_operations[index];
+      if (state == NEED_SOURCE_INITIAL &&
+          operation->kind == R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+          operation->payload.image_barrier.image == source)
+         state = NEED_DESTINATION_INITIAL;
+      else if (state == NEED_DESTINATION_INITIAL &&
+               operation->kind ==
+                  R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+               operation->payload.image_barrier.image == destination)
+         state = NEED_CLEAR;
+      else if (state == NEED_CLEAR &&
+               operation->kind ==
+                  R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR &&
+               operation->payload.rb2d_depth_clear.image == source)
+         state = NEED_CLEAR_BARRIER;
+      else if (state == NEED_CLEAR_BARRIER &&
+               operation->kind ==
+                  R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+               operation->payload.image_barrier.image == source)
+         state = NEED_COPY;
+      else if (state == NEED_COPY &&
+               operation->kind == R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY)
+         state = NEED_COPY_BARRIER;
+      else if (state == NEED_COPY_BARRIER &&
+               operation->kind == R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY)
+         continue;
+      else if (state == NEED_COPY_BARRIER &&
+               operation->kind ==
+                  R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+               operation->payload.image_barrier.image == destination)
+         state = NEED_RENDER_BEGIN;
+      else if (state == NEED_RENDER_BEGIN &&
+               operation->kind ==
+                  R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN)
+         state = NEED_DRAW;
+      else if (state == NEED_DRAW &&
+               operation->kind == R3V_NATIVE_ORDERED_OPERATION_DRAW)
+         state = NEED_RENDER_END;
+      else if (state == NEED_RENDER_END &&
+               operation->kind ==
+                  R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END)
+         state = COMPLETE;
+   }
+   return state == COMPLETE;
+}
+
+static bool
 recorded_load_contract(VkCommandBuffer command,
                        VkDeviceMemory depth_memory, enum run_mode mode)
 {
@@ -1457,6 +1667,180 @@ struct other_depth_check {
    int retention_result;
 };
 
+static bool
+set_uniform_logical_depth(uint8_t image[DEPTH_BYTES], uint32_t depth_code,
+                          uint8_t stencil)
+{
+   const struct r300_zb_depth_surface *surface =
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical;
+   for (uint32_t y = 0; y < 64; y++) {
+      for (uint32_t x = 0; x < 64; x++) {
+         uint64_t offset;
+         if (r300_zb_depth_address_checked(surface, DEPTH_BASE, DEPTH_BYTES,
+                                           x, y, &offset) != 0 ||
+             offset > UINT32_MAX)
+            return false;
+         store_word(image, (uint32_t)offset,
+                    (depth_code << 8) | stencil);
+      }
+   }
+   return true;
+}
+
+static enum outcome
+classify_public_composition(struct public_context *context,
+                            const uint8_t expected_source[DEPTH_BYTES],
+                            const uint8_t expected_destination[DEPTH_BYTES],
+                            const char *result_dir, VkResult submit_result)
+{
+   uint32_t *color = NULL;
+   uint8_t *source = NULL;
+   uint8_t *destination = NULL;
+   if (context->api.map_memory(context->device, context->color_memory, 0,
+                               VK_WHOLE_SIZE, 0,
+                               (void **)&color) != VK_SUCCESS)
+      return OUTCOME_RETENTION_FAILURE;
+   if (context->api.map_memory(context->device, context->depth[0].memory, 0,
+                               VK_WHOLE_SIZE, 0,
+                               (void **)&source) != VK_SUCCESS) {
+      context->api.unmap_memory(context->device, context->color_memory);
+      return OUTCOME_RETENTION_FAILURE;
+   }
+   if (context->api.map_memory(context->device, context->depth[1].memory, 0,
+                               VK_WHOLE_SIZE, 0,
+                               (void **)&destination) != VK_SUCCESS) {
+      context->api.unmap_memory(context->device, context->color_memory);
+      context->api.unmap_memory(context->device, context->depth[0].memory);
+      return OUTCOME_RETENTION_FAILURE;
+   }
+
+   uint32_t color_mismatches = 0;
+   for (uint32_t pixel = 0; pixel < COLOR_BYTES / sizeof(*color); pixel++) {
+      const uint32_t expected = pixel < PIXELS
+                                   ? R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM
+                                   : R300_TRIANGLE_COLOR_SENTINEL;
+      color_mismatches += color[pixel] != expected;
+   }
+   const bool source_exact =
+      memcmp(source, expected_source, DEPTH_BYTES) == 0;
+   const bool destination_exact =
+      memcmp(destination, expected_destination, DEPTH_BYTES) == 0;
+   const int retention_result =
+      r3v_native_evidence_write_file(result_dir, "color_after.bin", color,
+                                     COLOR_BYTES) |
+      r3v_native_evidence_write_file(result_dir, "source_after.bin", source,
+                                     DEPTH_BYTES) |
+      r3v_native_evidence_write_file(result_dir, "destination_after.bin",
+                                     destination, DEPTH_BYTES);
+   context->api.unmap_memory(context->device, context->color_memory);
+   context->api.unmap_memory(context->device, context->depth[0].memory);
+   context->api.unmap_memory(context->device, context->depth[1].memory);
+
+   const enum r3v_native_queue_status queue_status =
+      r3v_native_queue_submission_status(context->device);
+   enum outcome outcome = OUTCOME_FAILED;
+   if (retention_result != 0)
+      outcome = OUTCOME_RETENTION_FAILURE;
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE)
+      outcome = OUTCOME_COMPLETION_FAILURE;
+   else if (submit_result != VK_SUCCESS ||
+            queue_status == R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED)
+      outcome = OUTCOME_SUBMISSION_REFUSED;
+   else if (queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED &&
+            color_mismatches == 0 && source_exact && destination_exact)
+      outcome = OUTCOME_PASS;
+
+   char json[768];
+   const int json_length = snprintf(
+      json, sizeof(json),
+      "{\n  \"schema\": \"r3v-public-zb-composition-result/1\",\n"
+      "  \"verdict\": \"%s\",\n  \"submit_result\": %d,\n"
+      "  \"queue_status\": \"%s\",\n"
+      "  \"color_mismatches\": %u,\n"
+      "  \"source_exact\": %s,\n  \"destination_exact\": %s\n}\n",
+      outcome_names[outcome], submit_result,
+      r3v_native_queue_status_name(queue_status), color_mismatches,
+      source_exact ? "true" : "false",
+      destination_exact ? "true" : "false");
+   if (json_length <= 0 || (size_t)json_length >= sizeof(json) ||
+       r3v_native_evidence_write_file(result_dir, "outcome.json", json,
+                                      (size_t)json_length) != 0)
+      return OUTCOME_RETENTION_FAILURE;
+   printf("[oracle] composition color_mismatches=%u source_exact=%d "
+          "destination_exact=%d\n", color_mismatches, source_exact,
+          destination_exact);
+   return outcome;
+}
+
+static int
+run_public_composition(const char *evidence_dir, bool record_only,
+                       bool prepare_only)
+{
+   if (!record_only && !prepare_only &&
+       !hardware_environment_matches(evidence_dir, "1")) {
+      fprintf(stderr, "hardware environment does not authorize one public "
+                      "composition submission\n");
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   uint8_t source_before[DEPTH_BYTES];
+   uint8_t destination_before[DEPTH_BYTES];
+   uint8_t expected_source[DEPTH_BYTES];
+   uint8_t expected_destination[DEPTH_BYTES];
+   if (!fill_depth_image(source_before, 0, MODE_READ) ||
+       !fill_depth_image(destination_before, 1, MODE_READ))
+      return 2;
+   memcpy(expected_source, source_before, sizeof(expected_source));
+   memcpy(expected_destination, destination_before,
+          sizeof(expected_destination));
+   if (!set_uniform_logical_depth(expected_source, 0x800000u, 0x5au) ||
+       !set_uniform_logical_depth(expected_destination, 0x800000u, 0x5au))
+      return 2;
+
+   struct public_context context;
+   if (!create_public_context(&context, 2) || !seed_color(&context) ||
+       !seed_depth(&context, 0, source_before) ||
+       !seed_depth(&context, 1, destination_before) ||
+       !upload_vertices(&context, MODE_READ)) {
+      destroy_public_context(&context);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   VkCommandBuffer command = VK_NULL_HANDLE;
+   if (!record_public_composition(&context, &command) ||
+       !recorded_public_composition_order(command, &context)) {
+      destroy_public_context(&context);
+      return finish(OUTCOME_SUBMISSION_REFUSED);
+   }
+   printf("[record] composition=clear-barrier-copy-barrier-depth-use PASS\n");
+   if (prepare_only || record_only) {
+      destroy_public_context(&context);
+      return finish(OUTCOME_PASS);
+   }
+
+   char result_dir[PATH_MAX];
+   if (!create_result_directory(evidence_dir, "ordered-composition",
+                                result_dir) ||
+       r3v_native_evidence_write_file(result_dir, "source_before.bin",
+                                      source_before, DEPTH_BYTES) != 0 ||
+       r3v_native_evidence_write_file(result_dir, "destination_before.bin",
+                                      destination_before, DEPTH_BYTES) != 0) {
+      destroy_public_context(&context);
+      return finish(OUTCOME_RETENTION_FAILURE);
+   }
+   stage("submit public ordered depth composition");
+   const VkResult submit_result = context.api.queue_submit(
+      context.queue, 1,
+      &(VkSubmitInfo){
+         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .commandBufferCount = 1,
+         .pCommandBuffers = &command,
+      }, VK_NULL_HANDLE);
+   const enum outcome outcome = classify_public_composition(
+      &context, expected_source, expected_destination, result_dir,
+      submit_result);
+   destroy_public_context(&context);
+   return finish(outcome);
+}
+
 static enum outcome
 classify_other_depth_check(enum outcome submission_outcome,
                            struct other_depth_check check)
@@ -1826,6 +2210,8 @@ main(int argc, char **argv)
    }
    if (argc == 3 && strcmp(argv[2], "--persistence") == 0)
       return run_public_persistence(argv[1], record_only, prepare_only);
+   if (argc == 3 && strcmp(argv[2], "--composition") == 0)
+      return run_public_composition(argv[1], record_only, prepare_only);
    uint32_t pattern;
    enum run_mode mode;
    if (argc != 4 || !parse_pattern(argv[2], &pattern) ||
@@ -1834,8 +2220,10 @@ main(int argc, char **argv)
               "usage: %s <evidence-directory> <pattern 0..19> "
               "<read|write|nearfar|farnear> [--prepare|--record-only]\n"
               "       %s <evidence-directory> --persistence "
+              "[--prepare|--record-only]\n"
+              "       %s <evidence-directory> --composition "
               "[--prepare|--record-only]\n       %s --selftest\n",
-              argv[0], argv[0], argv[0]);
+              argv[0], argv[0], argv[0], argv[0]);
       return 2;
    }
    return run_public_single(argv[1], pattern, mode, record_only,

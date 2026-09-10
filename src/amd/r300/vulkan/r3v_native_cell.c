@@ -1548,21 +1548,32 @@ r3v_native_cmd_buffer_select_deferred_routes(
 static VkResult
 execute_one_deferred_draw(struct r3v_native_device *device,
                           struct r3v_native_deferred_draw *draw,
-                          struct r3v_native_memory *carrier)
+                          struct r3v_native_memory *carrier,
+                          bool load_at_begin)
 {
    if (!draw->pending)
       return VK_SUCCESS;
+
+   /* Render-pass load operations execute at BEGIN_RENDER_PASS.  A CPU
+    * executor may still realize the load while the draw stream is deferred;
+    * a color or depth load already encoded in the native IB remains in the
+    * stream and is skipped here. */
+   VkResult load_result = VK_SUCCESS;
+   if (load_at_begin && !draw->depth_only && !draw->color_load_in_ib)
+      load_result = fill_color(device, draw->target_memory,
+                               draw->target_fill_offset,
+                               draw->target_fill_bytes, draw->clear_dword);
+   if (load_result != VK_SUCCESS)
+      return load_result;
+   if (draw->stream_mask != 0u && draw->has_depth_clear)
+      goto draw_stream;
 
    /* CmdBeginRenderPass records the load-op clear before a draw exists.  An
     * empty subpass has no vertex stream or carrier to execute, but its clear
     * still realizes at queue submission.
     */
    if (draw->stream_mask == 0) {
-      VkResult clear_result =
-         fill_color(device, draw->target_memory, draw->target_fill_offset,
-                    draw->target_fill_bytes, draw->clear_dword);
-      if (clear_result != VK_SUCCESS)
-         return clear_result;
+      VkResult clear_result = VK_SUCCESS;
       if (draw->has_depth_clear) {
          const struct r300_rb2d_fill_plan *depth_fill =
             &draw->depth_clear.fill;
@@ -1581,45 +1592,10 @@ execute_one_deferred_draw(struct r3v_native_device *device,
          if (clear_result != VK_SUCCESS)
             return clear_result;
       }
-      if (draw->clear_rect_count == 0)
-         return VK_SUCCESS;
-      /* The recorded attachment clears land after the load-op clear,
-       * in API order, over the target's own row pitch from its bind
-       * offset.
-       */
-      struct r3v_native_memory *target = draw->target_memory;
-      bool owns_map = target->map == NULL;
-      if (owns_map &&
-          radeon_drm_vk_bo_map(&device->drm, &target->bo,
-                               &target->map) != 0) {
-         return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                          "r3v-native: pass target memory is not "
-                          "CPU-mappable for the attachment clear");
-      }
-      for (uint32_t r = 0; r < draw->clear_rect_count; r++) {
-         const struct r3v_native_pass_clear_rect *rect =
-            &draw->clear_rects[r];
-         for (uint32_t row = 0; row < rect->height; row++) {
-            uint32_t *texels =
-               (uint32_t *)((uint8_t *)target->map +
-                            draw->target_fill_offset +
-                            (uint64_t)(rect->y + row) *
-                               draw->target_row_bytes) +
-               rect->x;
-            for (uint32_t x = 0; x < rect->width; x++)
-               texels[x] = rect->dword;
-         }
-      }
-      radeon_drm_vk_bo_cache_sync(&device->drm,
-                                  (uint8_t *)target->map +
-                                     draw->target_fill_offset,
-                                  draw->target_fill_bytes);
-      if (owns_map) {
-         radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
-         target->map = NULL;
-      }
       return VK_SUCCESS;
    }
+
+draw_stream:
 
    /* Every stream the job reads maps for the execution; two slots may
     * share one memory (one buffer bound to two bindings, or two buffers
@@ -2070,11 +2046,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
    /* pending stays set: every submission re-reads the stream and
     * re-clears, the execution-time semantics each submit carries.
     */
-   return draw->color_load_in_ib
-             ? VK_SUCCESS
-             : fill_color(device, draw->target_memory,
-                          draw->target_fill_offset, draw->target_fill_bytes,
-                          draw->clear_dword);
+   return VK_SUCCESS;
 }
 /* Submission-time execution of every recorded render pass, in record
  * order: each carries its own load-op clear, its own carrier, and its
@@ -2090,11 +2062,116 @@ r3v_native_cmd_buffer_execute_deferred_draws(
    for (uint32_t i = 0; i < count; i++) {
       const VkResult result = execute_one_deferred_draw(
          device, &cmd_buffer->deferred_draws[i],
-         cmd_buffer->owned_carriers[i]);
+         cmd_buffer->owned_carriers[i], true);
       if (result != VK_SUCCESS)
          return result;
    }
    return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw_load(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index)
+{
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   if (!draw->pending)
+      return VK_SUCCESS;
+   if (!draw->depth_only && !draw->color_load_in_ib) {
+      VkResult result = fill_color(device, draw->target_memory,
+                                   draw->target_fill_offset,
+                                   draw->target_fill_bytes, draw->clear_dword);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   if (draw->stream_mask == 0u && draw->has_depth_clear) {
+      const struct r300_rb2d_fill_plan *depth_fill = &draw->depth_clear.fill;
+      if (draw->depth_memory == NULL || depth_fill->rect_count != 1u ||
+          depth_fill->rects == NULL || depth_fill->rects[0].x != 0u ||
+          depth_fill->rects[0].y != 0u ||
+          depth_fill->rects[0].width != depth_fill->surface.width_pixels ||
+          depth_fill->rects[0].height != depth_fill->surface.height_pixels)
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      const uint64_t depth_bytes =
+         (uint64_t)depth_fill->surface.pitch_bytes *
+         depth_fill->surface.height_pixels;
+      return fill_color(device, draw->depth_memory,
+                        depth_fill->surface.base_offset_bytes, depth_bytes,
+                        draw->depth_clear.packed_word);
+   }
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index,
+   uint32_t first_rect, uint32_t rect_count)
+{
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   if (!draw->pending || draw->target_memory == NULL ||
+       first_rect > draw->clear_rect_count ||
+       rect_count > draw->clear_rect_count - first_rect)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+
+   struct r3v_native_memory *target = draw->target_memory;
+   const bool owns_map = target->map == NULL;
+   if (owns_map && radeon_drm_vk_bo_map(&device->drm, &target->bo,
+                                        &target->map) != 0)
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: pass target memory is not "
+                       "CPU-mappable for the attachment clear");
+
+   for (uint32_t index = first_rect; index < first_rect + rect_count; index++) {
+      const struct r3v_native_pass_clear_rect *rect =
+         &draw->clear_rects[index];
+      if (rect->aspect_mask != VK_IMAGE_ASPECT_COLOR_BIT ||
+          rect->x > draw->target_width ||
+          rect->width > draw->target_width - rect->x ||
+          rect->y > draw->target_height ||
+          rect->height > draw->target_height - rect->y) {
+         if (owns_map) {
+            radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
+            target->map = NULL;
+         }
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      }
+      for (uint32_t row = 0; row < rect->height; row++) {
+         uint32_t *texels =
+            (uint32_t *)((uint8_t *)target->map + draw->target_fill_offset +
+                         (uint64_t)(rect->y + row) * draw->target_row_bytes) +
+            rect->x;
+         for (uint32_t x = 0; x < rect->width; x++)
+            texels[x] = rect->dword;
+      }
+   }
+   radeon_drm_vk_bo_cache_sync(&device->drm,
+                               (uint8_t *)target->map +
+                                  draw->target_fill_offset,
+                               draw->target_fill_bytes);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
+      target->map = NULL;
+   }
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index)
+{
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   return execute_one_deferred_draw(
+      device, &cmd_buffer->deferred_draws[draw_index],
+      cmd_buffer->owned_carriers[draw_index], false);
 }
 
 /* The producer footprint over the triangle's three records: the odd

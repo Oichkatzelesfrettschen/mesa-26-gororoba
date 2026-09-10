@@ -35,25 +35,73 @@ r3v_native_depth_attachment_layout_ok(VkImageLayout layout, bool initial)
 {
    return (initial && layout == VK_IMAGE_LAYOUT_UNDEFINED) ||
           layout == VK_IMAGE_LAYOUT_GENERAL ||
-          layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+          layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+          layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 }
 
-/* The render-pass shape whose one subpass the cell realizes: one
- * single-sample color attachment in either render-family lane order and one
- * single-sample D24S8 depth/stencil attachment, stored after the subpass.
- * The color attachment is cleared on load.  The depth and stencil aspects
- * use the same load operation, either CLEAR or LOAD, because one packed word
- * carries both components and the cell has one optional clear plan.  The
- * depth attachment is the one depth/stencil reference of the subpass.  Draw
- * emission keeps depth writes outside this admission until a depth-aware
- * cell carries the tiled surface state.
- */
+static bool
+r3v_native_attachment_load_op_ok(VkAttachmentLoadOp op)
+{
+   return op == VK_ATTACHMENT_LOAD_OP_LOAD ||
+          op == VK_ATTACHMENT_LOAD_OP_CLEAR ||
+          op == VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+
+static bool
+r3v_native_attachment_store_op_ok(VkAttachmentStoreOp op)
+{
+   return op == VK_ATTACHMENT_STORE_OP_STORE ||
+          op == VK_ATTACHMENT_STORE_OP_DONT_CARE;
+}
+
+static bool
+r3v_native_depth_attachment_matches(const struct vk_render_pass_attachment *depth,
+                                    const struct vk_subpass *subpass,
+                                    uint32_t attachment)
+{
+   return depth->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          depth->aspects ==
+             (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
+          depth->samples == VK_SAMPLE_COUNT_1_BIT &&
+          r3v_native_attachment_load_op_ok(depth->load_op) &&
+          r3v_native_attachment_load_op_ok(depth->stencil_load_op) &&
+          r3v_native_attachment_store_op_ok(depth->store_op) &&
+          r3v_native_attachment_store_op_ok(depth->stencil_store_op) &&
+          r3v_native_depth_attachment_layout_ok(depth->initial_layout, true) &&
+          r3v_native_depth_attachment_layout_ok(depth->final_layout, false) &&
+          subpass->depth_stencil_attachment != NULL &&
+          subpass->depth_stencil_attachment->attachment == attachment &&
+          r3v_native_depth_attachment_layout_ok(
+             subpass->depth_stencil_attachment->layout, false);
+}
+
+/* The render-pass shape whose one subpass the cell realizes. Color and depth
+ * attachments may appear together, or the subpass may contain only the
+ * D24S8 depth/stencil attachment. Packed depth/stencil load and store
+ * operations are admitted independently; each clear aspect is lowered to a
+ * component mask before execution. */
 bool
 r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
 {
    if (pass == NULL || pass->is_multiview ||
        (pass->attachment_count != 1 && pass->attachment_count != 2) ||
        pass->subpass_count != 1)
+      return false;
+   const struct vk_subpass *subpass = &pass->subpasses[0];
+   if (subpass->input_count != 0)
+      return false;
+
+   const bool depth_only = subpass->color_count == 0 &&
+                           subpass->depth_stencil_attachment != NULL;
+   if (depth_only)
+      return pass->attachment_count == 1 &&
+             r3v_native_depth_attachment_matches(&pass->attachments[0],
+                                                 subpass, 0);
+
+   if (subpass->color_count != 1 ||
+       subpass->color_attachments[0].attachment != 0 ||
+       (pass->attachment_count == 1 &&
+        subpass->depth_stencil_attachment != NULL))
       return false;
    const struct vk_render_pass_attachment *color = &pass->attachments[0];
    enum r300_triangle_lane_order lanes;
@@ -62,34 +110,14 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
        color->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
        color->store_op != VK_ATTACHMENT_STORE_OP_STORE ||
        !r3v_native_color_attachment_layout_ok(color->initial_layout, true) ||
-       !r3v_native_color_attachment_layout_ok(color->final_layout, false))
-      return false;
-   const struct vk_subpass *subpass = &pass->subpasses[0];
-   if (subpass->input_count != 0 || subpass->color_count != 1 ||
-       subpass->color_attachments[0].attachment != 0 ||
+       !r3v_native_color_attachment_layout_ok(color->final_layout, false) ||
        !r3v_native_color_attachment_layout_ok(
           subpass->color_attachments[0].layout, false))
       return false;
    if (pass->attachment_count == 1)
-      return subpass->depth_stencil_attachment == NULL;
-   const struct vk_render_pass_attachment *depth = &pass->attachments[1];
-   const bool depth_loads_clear =
-      depth->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
-      depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
-   const bool depth_loads = depth->load_op == VK_ATTACHMENT_LOAD_OP_LOAD &&
-                            depth->stencil_load_op == VK_ATTACHMENT_LOAD_OP_LOAD;
-   return depth->format == VK_FORMAT_D24_UNORM_S8_UINT &&
-          depth->aspects ==
-             (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
-          depth->samples == 1 && (depth_loads_clear || depth_loads) &&
-          depth->store_op == VK_ATTACHMENT_STORE_OP_STORE &&
-          depth->stencil_store_op == VK_ATTACHMENT_STORE_OP_STORE &&
-          r3v_native_depth_attachment_layout_ok(depth->initial_layout, true) &&
-          r3v_native_depth_attachment_layout_ok(depth->final_layout, false) &&
-          subpass->depth_stencil_attachment != NULL &&
-          subpass->depth_stencil_attachment->attachment == 1 &&
-          r3v_native_depth_attachment_layout_ok(
-             subpass->depth_stencil_attachment->layout, false);
+      return true;
+   return r3v_native_depth_attachment_matches(&pass->attachments[1],
+                                               subpass, 1);
 }
 
 /* SPIR-V ingestion for the semantic front end: the direct word-stream
@@ -440,7 +468,7 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
        (rs->cullMode & ~(VkCullModeFlags)VK_CULL_MODE_FRONT_AND_BACK) != 0 ||
        (rs->frontFace != VK_FRONT_FACE_COUNTER_CLOCKWISE &&
         rs->frontFace != VK_FRONT_FACE_CLOCKWISE) ||
-       rs->depthBiasEnable != VK_FALSE || rs->lineWidth != 1.0f)
+       rs->lineWidth != 1.0f)
       return false;
 
    /* Single-sample rasterization with the coverage semantics of the
@@ -520,8 +548,13 @@ create_pipeline(struct r3v_native_device *device,
    VK_FROM_HANDLE(vk_render_pass, pass, info->renderPass);
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
    const bool render_pass_shape = r3v_native_render_pass_matches_cell(pass);
+   const bool depth_only_render_pass =
+      pass != NULL && pass->attachment_count == 1 &&
+      pass->subpass_count == 1 && pass->subpasses[0].color_count == 0 &&
+      pass->subpasses[0].depth_stencil_attachment != NULL;
    const bool has_depth_attachment =
-      render_pass_shape && pass->attachment_count == 2;
+      render_pass_shape &&
+      (pass->attachment_count == 2 || depth_only_render_pass);
 
    uint32_t target_width = 0, target_height = 0;
    bool dynamic_viewport_scissor = false;
@@ -548,10 +581,9 @@ create_pipeline(struct r3v_native_device *device,
 
    if (has_depth_attachment) {
       if (info->pDepthStencilState == NULL ||
-          r3v_native_depth_pipeline_lower(
-             info->pDepthStencilState, &depth_shader,
-             info->pRasterizationState->depthBiasEnable,
-             &admitted.depth_pipeline) != 0)
+          r3v_native_depth_pipeline_lower_rasterization(
+             info->pDepthStencilState, info->pRasterizationState,
+             &depth_shader, &admitted.depth_pipeline) != 0)
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       admitted.has_depth_pipeline = true;
    }

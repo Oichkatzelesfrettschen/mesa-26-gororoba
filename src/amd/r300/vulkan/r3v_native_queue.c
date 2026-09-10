@@ -165,7 +165,7 @@ r3v_native_ordered_image_composition_geometry_valid(
    if (cmd_buffer == NULL || cmd_buffer->ib == NULL ||
        cmd_buffer->ib_size_dwords == 0u || cmd_buffer->references == NULL ||
        cmd_buffer->reference_count == 0u ||
-       cmd_buffer->ordered_operation_count < 2u ||
+       cmd_buffer->ordered_operation_count == 0u ||
        cmd_buffer->ordered_operations == NULL)
       return false;
 
@@ -192,9 +192,23 @@ r3v_native_ordered_image_composition_geometry_valid(
       previous_position = operation->ib_position_dwords;
 
       switch (operation->kind) {
+      case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR: {
+         const uint32_t draw_index =
+            operation->payload.color_clear.deferred_draw_index;
+         if (!render_pass_open || draw_index >= cmd_buffer->deferred_draw_count)
+            return false;
+         const struct r3v_native_deferred_draw *draw =
+            &cmd_buffer->deferred_draws[draw_index];
+         if (operation->payload.color_clear.first_rect >
+                draw->clear_rect_count ||
+             operation->payload.color_clear.rect_count >
+                draw->clear_rect_count -
+                   operation->payload.color_clear.first_rect)
+            return false;
+         break;
+      }
       case R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR:
-         if (render_pass_open ||
-             operation->payload.rb2d_depth_clear.image == NULL ||
+         if (operation->payload.rb2d_depth_clear.image == NULL ||
              operation->payload.rb2d_depth_clear.image->memory == NULL)
             return false;
          break;
@@ -1655,10 +1669,44 @@ r3v_native_cmd_buffer_requires_inline_ordering(
    return r3v_recorded_work_census_ordered(&census);
 }
 
-/* Query and event records have no PM4 payload in the native carrier.  Their
- * operation records provide their mutual execution order.  Submission
- * preflight keeps them separate from PM4, draw, dispatch, and transfer work
- * until the transport can split execution at an arbitrary record position. */
+/* Query and event records have no PM4 payload in the native carrier. Their
+ * operation records provide their execution point in the stream. */
+static VkResult
+r3v_native_queue_execute_ordered_query(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer, uint32_t query_index)
+{
+   if (query_index >= cmd_buffer->query_op_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   const struct r3v_native_query_op *op = &cmd_buffer->query_ops[query_index];
+   const uint8_t value = op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1u : 0u;
+   memset(&op->pool->state[op->first_query], value, op->query_count);
+   return VK_SUCCESS;
+}
+
+static VkResult
+r3v_native_queue_execute_ordered_event(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer, uint32_t event_index)
+{
+   if (event_index >= cmd_buffer->event_op_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   const struct r3v_native_event_op *op = &cmd_buffer->event_ops[event_index];
+   switch (op->kind) {
+   case R3V_NATIVE_EVENT_OP_SET:
+      op->event->signaled = true;
+      return VK_SUCCESS;
+   case R3V_NATIVE_EVENT_OP_RESET:
+      op->event->signaled = false;
+      return VK_SUCCESS;
+   case R3V_NATIVE_EVENT_OP_WAIT:
+      return op->event->signaled
+                ? VK_SUCCESS
+                : vk_error(device, VK_ERROR_DEVICE_LOST);
+   }
+   return vk_error(device, VK_ERROR_DEVICE_LOST);
+}
+
 static VkResult
 r3v_native_queue_execute_ordered_query_events(
    struct r3v_native_device *device,
@@ -1666,25 +1714,16 @@ r3v_native_queue_execute_ordered_query_events(
 {
    if (cmd_buffer->ordered_operation_count == 0u) {
       for (uint32_t q = 0u; q < cmd_buffer->query_op_count; q++) {
-         const struct r3v_native_query_op *op = &cmd_buffer->query_ops[q];
-         const uint8_t value =
-            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1u : 0u;
-         memset(&op->pool->state[op->first_query], value, op->query_count);
+         VkResult result = r3v_native_queue_execute_ordered_query(
+            device, cmd_buffer, q);
+         if (result != VK_SUCCESS)
+            return result;
       }
       for (uint32_t e = 0u; e < cmd_buffer->event_op_count; e++) {
-         const struct r3v_native_event_op *op = &cmd_buffer->event_ops[e];
-         switch (op->kind) {
-         case R3V_NATIVE_EVENT_OP_SET:
-            op->event->signaled = true;
-            break;
-         case R3V_NATIVE_EVENT_OP_RESET:
-            op->event->signaled = false;
-            break;
-         case R3V_NATIVE_EVENT_OP_WAIT:
-            if (!op->event->signaled)
-               return vk_error(device, VK_ERROR_DEVICE_LOST);
-            break;
-         }
+         VkResult result = r3v_native_queue_execute_ordered_event(
+            device, cmd_buffer, e);
+         if (result != VK_SUCCESS)
+            return result;
       }
       return VK_SUCCESS;
    }
@@ -1694,34 +1733,15 @@ r3v_native_queue_execute_ordered_query_events(
         operation_index++) {
       const struct r3v_native_ordered_operation *operation =
          &cmd_buffer->ordered_operations[operation_index];
-      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_QUERY) {
-         const uint32_t query_index = operation->payload.query.query_index;
-         if (query_index >= cmd_buffer->query_op_count)
-            return vk_error(device, VK_ERROR_DEVICE_LOST);
-         const struct r3v_native_query_op *op =
-            &cmd_buffer->query_ops[query_index];
-         const uint8_t value =
-            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1u : 0u;
-         memset(&op->pool->state[op->first_query], value, op->query_count);
-      } else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_EVENT) {
-         const uint32_t event_index = operation->payload.event.event_index;
-         if (event_index >= cmd_buffer->event_op_count)
-            return vk_error(device, VK_ERROR_DEVICE_LOST);
-         const struct r3v_native_event_op *op =
-            &cmd_buffer->event_ops[event_index];
-         switch (op->kind) {
-         case R3V_NATIVE_EVENT_OP_SET:
-            op->event->signaled = true;
-            break;
-         case R3V_NATIVE_EVENT_OP_RESET:
-            op->event->signaled = false;
-            break;
-         case R3V_NATIVE_EVENT_OP_WAIT:
-            if (!op->event->signaled)
-               return vk_error(device, VK_ERROR_DEVICE_LOST);
-            break;
-         }
-      }
+      VkResult result = VK_SUCCESS;
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_QUERY)
+         result = r3v_native_queue_execute_ordered_query(
+            device, cmd_buffer, operation->payload.query.query_index);
+      else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_EVENT)
+         result = r3v_native_queue_execute_ordered_event(
+            device, cmd_buffer, operation->payload.event.event_index);
+      if (result != VK_SUCCESS)
+         return result;
    }
    return VK_SUCCESS;
 }
@@ -1758,6 +1778,235 @@ r3v_native_queue_execute_ordered_copies(
          device, cmd_buffer, group);
    }
    return VK_SUCCESS;
+}
+
+static bool
+r3v_native_cmd_buffer_has_positional_host_work(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   for (uint32_t index = 0u;
+        index < cmd_buffer->ordered_operation_count; index++) {
+      const enum r3v_native_ordered_operation_kind kind =
+         cmd_buffer->ordered_operations[index].kind;
+      if (kind == R3V_NATIVE_ORDERED_OPERATION_HOST_COPY ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_EVENT ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_QUERY)
+         return true;
+   }
+   return false;
+}
+
+static VkResult
+r3v_native_queue_execute_ordered_host_operation(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_ordered_operation *operation)
+{
+   switch (operation->kind) {
+   case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR:
+      return r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
+         device, cmd_buffer,
+         operation->payload.color_clear.deferred_draw_index,
+         operation->payload.color_clear.first_rect,
+         operation->payload.color_clear.rect_count);
+   case R3V_NATIVE_ORDERED_OPERATION_HOST_COPY:
+      return r3v_native_cmd_buffer_execute_deferred_copy(
+         device, cmd_buffer,
+         operation->payload.host_copy.deferred_copy_index);
+   case R3V_NATIVE_ORDERED_OPERATION_EVENT:
+      return r3v_native_queue_execute_ordered_event(
+         device, cmd_buffer, operation->payload.event.event_index);
+   case R3V_NATIVE_ORDERED_OPERATION_QUERY:
+      return r3v_native_queue_execute_ordered_query(
+         device, cmd_buffer, operation->payload.query.query_index);
+   default:
+      return VK_SUCCESS;
+   }
+}
+
+/* Executes a zero-IB stream in its recorded order.  Empty render passes still
+ * carry a deferred load operation, so the draw preparation belongs at its
+ * DRAW position beside host copies and synchronization records. */
+static VkResult
+r3v_native_queue_execute_ordered_host_stream(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->ordered_operation_count == 0u)
+      return r3v_native_queue_execute_ordered_query_events(device, cmd_buffer);
+
+   for (uint32_t index = 0u;
+        index < cmd_buffer->ordered_operation_count; index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[index];
+      VkResult result = VK_SUCCESS;
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw_load(
+            device, cmd_buffer,
+            operation->payload.render_pass_begin.deferred_draw_index);
+      } else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_DRAW) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw(
+            device, cmd_buffer,
+            operation->payload.draw.deferred_draw_index);
+      } else {
+         result = r3v_native_queue_execute_ordered_host_operation(
+            device, cmd_buffer, operation);
+      }
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   return VK_SUCCESS;
+}
+
+/* A completion BO may be reused after its idle wait retires the previous
+ * segment.  Every segment carries the same validated relocation set, which
+ * pins all command resources for each DRM_RADEON_CS call; unused references
+ * are harmless and keep the recorded IB's relocation indices stable. */
+static VkResult
+r3v_native_queue_submit_ordered_segment(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   struct radeon_drm_vk_completion *completion,
+   uint32_t begin_dwords, uint32_t end_dwords, bool *ioctl_seen,
+   bool *completion_retired)
+{
+   if (begin_dwords == end_dwords)
+      return VK_SUCCESS;
+   if (end_dwords > cmd_buffer->ib_size_dwords ||
+       begin_dwords > end_dwords)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+
+   for (uint32_t index = 0u; index < cmd_buffer->reference_count; index++) {
+      const struct r3v_native_bo_reference *reference =
+         &cmd_buffer->references[index];
+      if (reference->memory != NULL && reference->memory->map != NULL)
+         radeon_drm_vk_bo_cache_sync(&device->drm, reference->memory->map,
+                                     reference->memory->bo.size);
+   }
+
+   int trace_result = r3v_native_submission_trace_emit(
+      device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER);
+   if (trace_result != 0)
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: ordered transport trace refused before "
+                       "the submission ioctl");
+
+   struct radeon_drm_vk_cs cs;
+   radeon_drm_vk_cs_build(&cs, cmd_buffer->ib + begin_dwords,
+                          end_dwords - begin_dwords, relocs, 0, true);
+   device->transport_cs_ioctl_count++;
+   device->transport_return_ns = 0;
+   if (device->transport_enter_ns == 0)
+      device->transport_enter_ns = r3v_native_raw_now_ns();
+   int transport_result = radeon_drm_vk_cs_submit(&device->drm, &cs);
+   *ioctl_seen = true;
+   if (r3v_native_submission_trace_emit(
+          device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
+      trace_result = -EIO;
+   const bool accepted = transport_result == 0;
+   if (accepted) {
+      device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
+      if (r3v_native_submission_trace_emit(
+             device, R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_BEGIN) != 0)
+         trace_result = -EIO;
+      transport_result = radeon_drm_vk_completion_await(&device->drm,
+                                                        completion);
+      if (r3v_native_submission_trace_emit(
+             device,
+             R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
+         trace_result = -EIO;
+      if (transport_result == 0)
+         *completion_retired = true;
+   }
+   device->transport_return_ns = r3v_native_raw_now_ns();
+   if (transport_result == 0 && trace_result != 0)
+      transport_result = trace_result;
+   if (transport_result == 0) {
+      for (uint32_t index = 0u; index < cmd_buffer->reference_count; index++) {
+         const struct r3v_native_bo_reference *reference =
+            &cmd_buffer->references[index];
+         if (reference->memory != NULL && reference->memory->map != NULL)
+            radeon_drm_vk_bo_cache_sync(&device->drm, reference->memory->map,
+                                        reference->memory->bo.size);
+      }
+   }
+   if (transport_result != 0) {
+      device->queue_status = r3v_native_queue_status_from_transport(
+         accepted, false);
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: ordered segment submission failed: %d",
+                       transport_result);
+   }
+   return VK_SUCCESS;
+}
+
+/* Splits the installed PM4 stream at every host-visible operation.  The
+ * prefix ending at an operation's recorded position retires before the
+ * operation executes, and the trailing prefix is submitted after the final
+ * operation.  This makes a host read after an RB2D transfer observe the
+ * transfer's completed bytes while preserving the single recorded order. */
+static VkResult
+r3v_native_queue_execute_positional_stream(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   struct radeon_drm_vk_completion *completion)
+{
+   uint32_t submitted_dwords = 0u;
+   bool ioctl_seen = false;
+   bool completion_retired = false;
+
+   for (uint32_t index = 0u;
+        index < cmd_buffer->ordered_operation_count; index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[index];
+      if (operation->ib_position_dwords < submitted_dwords ||
+          operation->ib_position_dwords > cmd_buffer->ib_size_dwords)
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+
+      VkResult result = r3v_native_queue_submit_ordered_segment(
+         device, cmd_buffer, relocs, completion, submitted_dwords,
+         operation->ib_position_dwords, &ioctl_seen, &completion_retired);
+      if (result != VK_SUCCESS)
+         goto finish;
+      submitted_dwords = operation->ib_position_dwords;
+
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_DRAW) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw(
+            device, cmd_buffer,
+            operation->payload.draw.deferred_draw_index);
+      } else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw_load(
+            device, cmd_buffer,
+            operation->payload.render_pass_begin.deferred_draw_index);
+      } else {
+         result = r3v_native_queue_execute_ordered_host_operation(
+            device, cmd_buffer, operation);
+      }
+      if (result != VK_SUCCESS)
+         goto finish;
+   }
+
+   if (submitted_dwords != cmd_buffer->ib_size_dwords) {
+      VkResult result = r3v_native_queue_submit_ordered_segment(
+         device, cmd_buffer, relocs, completion, submitted_dwords,
+         cmd_buffer->ib_size_dwords, &ioctl_seen, &completion_retired);
+      if (result != VK_SUCCESS)
+         goto finish;
+   }
+
+   if (ioctl_seen)
+      r3v_native_fill_route_record_transport(cmd_buffer, true,
+                                             completion_retired);
+   return VK_SUCCESS;
+
+finish:
+   if (ioctl_seen)
+      r3v_native_fill_route_record_transport(cmd_buffer, true,
+                                             completion_retired);
+   return VK_ERROR_DEVICE_LOST;
 }
 
 /* Walks the routed fill's record along the transport that carried it.
@@ -2264,6 +2513,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
    device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
    device->transport_enter_ns = 0;
    device->transport_return_ns = 0;
+   device->transport_cs_ioctl_count = 0;
    device->transport_gpu_producer_delivery = false;
    device->transport_cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    bool submit_has_executable_ib = false;
@@ -2461,12 +2711,17 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
-      /* Query and event transitions follow the ordered operation stream;
-       * legacy carriers with no stream retain their category execution. */
-      VkResult query_event_result =
-         r3v_native_queue_execute_ordered_query_events(device, cmd_buffer);
-      if (query_event_result != VK_SUCCESS)
-         return query_event_result;
+      const bool positional_host_work =
+         r3v_native_cmd_buffer_has_positional_host_work(cmd_buffer);
+      /* Query and event transitions follow the ordered operation stream when
+       * a transport boundary can separate them from PM4. Legacy carriers
+       * without a host boundary retain their category execution. */
+      if (!positional_host_work) {
+         VkResult query_event_result =
+            r3v_native_queue_execute_ordered_query_events(device, cmd_buffer);
+         if (query_event_result != VK_SUCCESS)
+            return query_event_result;
+      }
 
       /* A zero-IB command buffer can still carry a deferred load-op clear
        * from an empty render pass, recorded transfer copies, or a
@@ -2475,6 +2730,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * submission.
        */
       if (cmd_buffer->ib_size_dwords == 0) {
+         if (positional_host_work) {
+            VkResult ordered_result =
+               r3v_native_queue_execute_ordered_host_stream(device,
+                                                            cmd_buffer);
+            if (ordered_result != VK_SUCCESS)
+               return ordered_result;
+            continue;
+         }
          /* Recorded transfer copies execute per submission through host
           * mappings -- Vulkan's execution-time ordering, the same
           * contract the deferred draw holds.  The pre-draw group runs
@@ -2997,6 +3260,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
+      if (!positional_host_work) {
       /* The pre-draw copies land with the draw's own writes, past every
        * gate and ahead of the publish loop below, so a copy into a BO the
        * IB references reaches memory before the ioctl and a refused
@@ -3055,6 +3319,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                                         reference->memory->map,
                                         reference->memory->bo.size);
          }
+      }
       }
 
       /* The first admission writes the token; a serial continuation runs
@@ -3188,6 +3453,43 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                              r3v_measurement_session_refusal_name(spent),
                              why != NULL ? why : "unnamed");
          }
+      }
+
+      if (positional_host_work) {
+         device->transport_gpu_producer_delivery =
+            cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+         device->transport_cell_kind = cmd_buffer->cell_kind;
+         VkResult ordered_result = r3v_native_queue_execute_positional_stream(
+            device, cmd_buffer, &relocs, &completion);
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         if (ordered_result != VK_SUCCESS) {
+            if (cmd_buffer->measurement_bound)
+               r3v_measurement_session_close(
+                  &device->measurement_session,
+                  "an ordered segment submission failed");
+            return ordered_result;
+         }
+         VkResult gpu_verdict =
+            r3v_native_deferred_draw_verify_gpu_producer(device, cmd_buffer);
+         if (gpu_verdict == VK_SUCCESS)
+            gpu_verdict =
+               r3v_native_deferred_dispatch_verify_gpu(device, cmd_buffer);
+         if (gpu_verdict != VK_SUCCESS)
+            return gpu_verdict;
+         device->queue_status = R3V_NATIVE_QUEUE_STATUS_COMPLETED;
+         if (device->plan_capture_active &&
+             r3v_native_plan_capture_lands_now(&device->plan_capture)) {
+            const int written = r3v_native_plan_capture_write(
+               &device->plan_capture, device->pdevice->pci_vendor_id,
+               device->pdevice->pci_device_id, NULL);
+            if (written != 0)
+               return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                                "r3v-native: plan transcript write failed: "
+                                "%s", strerror(-written));
+         }
+         continue;
       }
 
       /* The transport bracket a route measurement reads: the ioctl and

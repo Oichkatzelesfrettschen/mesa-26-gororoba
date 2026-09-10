@@ -3499,6 +3499,18 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  foreach composition_mode : ['record-only', 'prepare']
+    test(
+      'r3v-native-public-zb-depth-composition-' + composition_mode,
+      r3v_native_attended_public_zb_depth,
+      args : [meson.current_build_dir(), '--composition',
+              '--' + composition_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # The Flat two-draw runner's recording boundary on the fixture: the
   # Flat pipeline's interface record, both deferred draws' lowering over
   # their own vertex order, and the recorded stream's digest against
