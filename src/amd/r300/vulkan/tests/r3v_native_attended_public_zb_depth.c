@@ -1442,24 +1442,32 @@ run_public_single(const char *evidence_dir, uint32_t pattern,
    return finish(outcome);
 }
 
-static bool
+struct other_depth_check {
+   bool mapped;
+   bool exact;
+   int retention_result;
+};
+
+static struct other_depth_check
 retain_and_check_other_depth(struct public_context *context,
                              uint32_t target_index,
                              const uint8_t expected[DEPTH_BYTES],
                              const char *result_dir, const char *filename)
 {
+   struct other_depth_check check = {0};
    uint8_t *mapped = NULL;
    if (context->api.map_memory(context->device,
                                context->depth[target_index].memory, 0,
                                VK_WHOLE_SIZE, 0,
                                (void **)&mapped) != VK_SUCCESS)
-      return false;
-   const bool exact = memcmp(mapped, expected, DEPTH_BYTES) == 0;
-   const bool retained = r3v_native_evidence_write_file(
-      result_dir, filename, mapped, DEPTH_BYTES) == 0;
+      return check;
+   check.mapped = true;
+   check.exact = memcmp(mapped, expected, DEPTH_BYTES) == 0;
+   check.retention_result = r3v_native_evidence_write_file(
+      result_dir, filename, mapped, DEPTH_BYTES);
    context->api.unmap_memory(context->device,
                              context->depth[target_index].memory);
-   return exact && retained;
+   return check;
 }
 
 static int
@@ -1573,9 +1581,16 @@ run_public_persistence(const char *evidence_dir, bool record_only,
       const uint32_t other = targets[ordinal] ^ 1u;
       const char *other_name = other == 0 ? "depth_a_other_after.bin"
                                           : "depth_b_other_after.bin";
-      if (path_length <= 0 || (size_t)path_length >= sizeof(result_dir) ||
-          !retain_and_check_other_depth(&context, other, initial[other],
-                                        result_dir, other_name))
+      struct other_depth_check other_check = {0};
+      if (path_length > 0 && (size_t)path_length < sizeof(result_dir))
+         other_check = retain_and_check_other_depth(
+            &context, other, initial[other], result_dir, other_name);
+      printf("[oracle] %s other_depth_mapped=%d other_depth_exact=%d "
+             "other_depth_retention_result=%d\n",
+             names[ordinal], other_check.mapped, other_check.exact,
+             other_check.retention_result);
+      if (!other_check.mapped || !other_check.exact ||
+          other_check.retention_result != 0)
          final_outcome = OUTCOME_CONTAINMENT_FAILURE;
       if (final_outcome != OUTCOME_PASS)
          break;
