@@ -103,10 +103,11 @@ class MatrixTests(unittest.TestCase):
         validate(self.document)
         statuses = {row['id']: row['public_status']
                     for row in self.document['rows']}
-        self.assertEqual(sum(status == 'bounded' for status in statuses.values()), 13)
-        self.assertEqual(sum(status == 'residual' for status in statuses.values()), 10)
+        self.assertEqual(sum(status == 'bounded' for status in statuses.values()), 14)
+        self.assertEqual(sum(status == 'residual' for status in statuses.values()), 9)
         self.assertEqual(statuses['image-clear'], 'bounded')
-        self.assertEqual(statuses['stencil-state'], 'residual')
+        self.assertEqual(statuses['stencil-state'], 'bounded')
+        self.assertEqual(statuses['dynamic-state'], 'residual')
 
     def test_every_missing_row_refuses(self):
         for index in range(len(self.document['rows'])):

@@ -142,9 +142,9 @@
       "registry_symbol": "VkStencilOpState",
       "requirement": "Implement front/back stencil comparisons, reference and masks, fail/depth-fail/pass operations and write masking.",
       "falsifier": "Exercise all stencil operators with front/back faces and independently varied masks.",
-      "public_status": "residual",
-      "completion_evidence": [],
-      "experimental_status": "residual public obligation; ordered per-primitive front/back reference lowering remains outside the current bounded route"
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_pipeline_test", "r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; static front and back operations share hardware state while ordered primitive segments select their distinct references and masks"
     },
     {
       "id": "dynamic-state",
