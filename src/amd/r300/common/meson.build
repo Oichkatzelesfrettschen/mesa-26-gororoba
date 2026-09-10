@@ -74,7 +74,7 @@ if with_tests
 # Gallium tree enforceable at the build level; the Gallium adapter tests
 # live under src/gallium/drivers/r300.  These tests perform no winsys setup
 # and submit no command stream.
-r300_format_contract_test_c_args = ['-Werror=unused-function']
+r300_format_contract_test_c_args = ['-Werror=unused-function', '-UNDEBUG']
 r300_format_contract_test_includes = [
   inc_src,
   inc_include,
