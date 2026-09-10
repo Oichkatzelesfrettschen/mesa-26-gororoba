@@ -542,6 +542,37 @@ r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
    return result;
 }
 
+VkResult
+r3v_native_record_zmask_ownership_only(VkCommandBuffer command_buffer)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   if (cmd_buffer == NULL || cmd_buffer->vk.base.device == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   if (device->zmask_ownership_gate == NULL)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+
+   const struct r300_zmask_layout unused_layout = {0};
+   struct r300_zmask_clear_plan plan;
+   if (r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY,
+                                   &unused_layout, &plan) != 0 ||
+       plan.dword_count != 0u || !plan.requires_hyperz_ownership ||
+       plan.writes_hyperz_registers)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   VkResult result =
+      r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind =
+                           R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE,
+                        .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                     });
+   if (result == VK_SUCCESS)
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
+   return result;
+}
+
 static VkResult
 r3v_native_record_zmask_initialize_state(
    VkCommandBuffer command_buffer, VkImage image_handle,

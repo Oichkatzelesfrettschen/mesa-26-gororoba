@@ -527,6 +527,60 @@ main(void)
    fast_clear_image.committed_submission.zmask_metadata = retired_metadata;
    fast_clear_image.depth_bound.contract = &fast_clear_image.depth_contract;
 
+   struct r3v_native_cmd_buffer ownership_command = {0};
+   ownership_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   ownership_command.vk.base.device = &materialize_device.vk;
+   ownership_command.vk.pool = &pool;
+   assert(r3v_native_record_zmask_ownership_only(
+             r3v_native_cmd_buffer_to_handle(&ownership_command)) ==
+          VK_ERROR_FEATURE_NOT_PRESENT);
+   assert(ownership_command.ordered_operation_count == 0u);
+   assert(unsetenv("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL") == 0);
+   r3v_native_device_refresh_delivery_gates(&materialize_device);
+   assert(materialize_device.zmask_ownership_gate == NULL);
+   assert(setenv("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL", "0", 1) == 0);
+   r3v_native_device_refresh_delivery_gates(&materialize_device);
+   assert(materialize_device.zmask_ownership_gate == NULL);
+   assert(setenv("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL", "1", 1) == 0);
+   r3v_native_device_refresh_delivery_gates(&materialize_device);
+   assert(materialize_device.zmask_ownership_gate != NULL);
+   assert(unsetenv("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL") == 0);
+   materialize_device.zmask_ownership_gate = "1";
+   assert(r3v_native_record_zmask_ownership_only(
+             r3v_native_cmd_buffer_to_handle(&ownership_command)) ==
+          VK_SUCCESS);
+   assert(ownership_command.ib_size_dwords == 0u);
+   assert(ownership_command.reference_count == 0u);
+   assert(ownership_command.image_state_count == 0u);
+   assert(ownership_command.ordered_operation_count == 1u);
+   assert(ownership_command.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE);
+
+   struct r3v_native_cmd_buffer ownership_secondary = ownership_command;
+   ownership_secondary.vk.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+   ownership_secondary.ordered_operations = NULL;
+   ownership_secondary.ordered_operation_count = 0u;
+   ownership_secondary.ordered_operation_capacity = 0u;
+   assert(r3v_native_record_zmask_ownership_only(
+             r3v_native_cmd_buffer_to_handle(&ownership_secondary)) ==
+          VK_SUCCESS);
+   struct r3v_native_cmd_buffer ownership_primary = {0};
+   ownership_primary.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   ownership_primary.vk.base.device = &materialize_device.vk;
+   ownership_primary.vk.pool = &pool;
+   ownership_primary.vk.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+   VkCommandBuffer ownership_secondary_handle =
+      r3v_native_cmd_buffer_to_handle(&ownership_secondary);
+   r3v_CmdExecuteCommands(r3v_native_cmd_buffer_to_handle(&ownership_primary),
+                          1u, &ownership_secondary_handle);
+   assert(ownership_primary.vk.record_result == VK_SUCCESS);
+   assert(ownership_primary.ib_size_dwords == 0u);
+   assert(ownership_primary.reference_count == 0u);
+   assert(ownership_primary.image_state_count == 0u);
+   assert(ownership_primary.ordered_operation_count == 1u);
+   assert(ownership_primary.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE);
+
    struct r3v_native_cmd_buffer initialize_command = {0};
    initialize_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
    initialize_command.vk.base.device = &materialize_device.vk;
@@ -1089,6 +1143,9 @@ main(void)
    r3v_native_cmd_buffer_release_recording(&initialize_primary);
    r3v_native_cmd_buffer_release_recording(&initialize_secondary);
    r3v_native_cmd_buffer_release_recording(&initialize_command);
+   r3v_native_cmd_buffer_release_recording(&ownership_primary);
+   r3v_native_cmd_buffer_release_recording(&ownership_secondary);
+   r3v_native_cmd_buffer_release_recording(&ownership_command);
    r3v_native_cmd_buffer_release_recording(&representation_command);
    r3v_native_cmd_buffer_release_recording(&command);
    return 0;
