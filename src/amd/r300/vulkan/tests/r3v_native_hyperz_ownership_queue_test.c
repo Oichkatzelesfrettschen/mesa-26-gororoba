@@ -11,15 +11,22 @@
 
 #define VK_NO_PROTOTYPES
 #include "r3v_native.h"
+#include "r3v_native_shim_arming.h"
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
 
 #include <assert.h>
 #include <dlfcn.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
 
 #include <vulkan/vulkan.h>
+
+#include "util/mesa-blake3.h"
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
                                              const char *name);
@@ -46,14 +53,27 @@ int
 main(int argc, char **argv)
 {
    assert(argc == 2);
-   const bool success = strcmp(argv[1], "success") == 0;
+   const bool ownership_success = strcmp(argv[1], "success") == 0;
    const bool withhold = strcmp(argv[1], "withhold") == 0;
    const bool refuse = strcmp(argv[1], "refuse") == 0;
-   assert(success || withhold || refuse);
+   const bool initialize_success =
+      strcmp(argv[1], "initialize-success") == 0;
+   const bool initialize_cs_refuse =
+      strcmp(argv[1], "initialize-cs-refuse") == 0;
+   const bool initialize_completion_fail =
+      strcmp(argv[1], "initialize-completion-fail") == 0;
+   const bool initialize = initialize_success || initialize_cs_refuse ||
+                           initialize_completion_fail;
+   const bool success = ownership_success || initialize_success;
+   assert(ownership_success || withhold || refuse || initialize);
    if (withhold)
       assert(setenv("R3V_NATIVE_SHIM_HYPERZ_WITHHOLD", "1", 1) == 0);
    if (refuse)
       assert(setenv("R3V_NATIVE_SHIM_HYPERZ_REFUSE", "1", 1) == 0);
+   if (initialize_cs_refuse)
+      assert(setenv("R3V_NATIVE_SHIM_CS_REFUSE", "1", 1) == 0);
+   if (initialize_completion_fail)
+      assert(setenv("R3V_NATIVE_SHIM_COMPLETION_FAIL", "1", 1) == 0);
 
    counter_fn cs_count =
       (counter_fn)required_shim_symbol("drm_shim_test_radeon_cs_ioctls");
@@ -69,6 +89,27 @@ main(int argc, char **argv)
    assert(!ownership_held());
 
    assert(setenv("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL", "1", 1) == 0);
+   if (initialize)
+      assert(setenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL", "1", 1) ==
+             0);
+
+   char manifest_directory[PATH_MAX] = {0};
+   if (initialize) {
+      const char *temporary_root = getenv("TMPDIR");
+      if (temporary_root == NULL || temporary_root[0] == '\0')
+         temporary_root = "/tmp";
+      assert(snprintf(manifest_directory, sizeof(manifest_directory),
+                      "%s/r3v-zmask-queue-XXXXXX", temporary_root) > 0);
+      assert(mkdtemp(manifest_directory) != NULL);
+      assert(setenv("R3V_NATIVE_MANIFEST_DIR", manifest_directory, 1) == 0);
+      assert(setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1) == 0);
+      struct utsname host;
+      assert(uname(&host) == 0);
+      assert(setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE", host.release,
+                    1) == 0);
+      assert(setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+                    R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1) == 0);
+   }
 
    PFN_vkGetInstanceProcAddr get_instance_proc_addr =
       (PFN_vkGetInstanceProcAddr)vk_icdGetInstanceProcAddr;
@@ -117,6 +158,8 @@ main(int argc, char **argv)
              NULL, &device) == VK_SUCCESS);
    struct r3v_native_device *native_device =
       r3v_native_device_from_handle(device);
+   if (initialize)
+      r3v_native_install_shim_arming(native_device);
    assert(native_device->zmask_owner.image == NULL);
    assert(native_device->zmask_owner.metadata.status ==
           R3V_NATIVE_ZMASK_METADATA_RETIRED);
@@ -126,19 +169,29 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkCreateCommandPool);
    LOAD_DEVICE(vkDestroyCommandPool);
    LOAD_DEVICE(vkAllocateCommandBuffers);
+   LOAD_DEVICE(vkCreateImage);
+   LOAD_DEVICE(vkDestroyImage);
+   LOAD_DEVICE(vkGetImageMemoryRequirements);
+   LOAD_DEVICE(vkAllocateMemory);
+   LOAD_DEVICE(vkFreeMemory);
+   LOAD_DEVICE(vkBindImageMemory);
    LOAD_DEVICE(vkBeginCommandBuffer);
    LOAD_DEVICE(vkEndCommandBuffer);
    LOAD_DEVICE(vkQueueSubmit);
-   LOAD_DEVICE(vkQueueWaitIdle);
    LOAD_DEVICE(vkDestroyDevice);
    assert(vkGetDeviceQueue != NULL);
    assert(vkCreateCommandPool != NULL);
    assert(vkDestroyCommandPool != NULL);
    assert(vkAllocateCommandBuffers != NULL);
+   assert(vkCreateImage != NULL);
+   assert(vkDestroyImage != NULL);
+   assert(vkGetImageMemoryRequirements != NULL);
+   assert(vkAllocateMemory != NULL);
+   assert(vkFreeMemory != NULL);
+   assert(vkBindImageMemory != NULL);
    assert(vkBeginCommandBuffer != NULL);
    assert(vkEndCommandBuffer != NULL);
    assert(vkQueueSubmit != NULL);
-   assert(vkQueueWaitIdle != NULL);
    assert(vkDestroyDevice != NULL);
 
    VkCommandPool command_pool = VK_NULL_HANDLE;
@@ -164,18 +217,70 @@ main(int argc, char **argv)
              &(VkCommandBufferBeginInfo){
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
              }) == VK_SUCCESS);
-   assert(r3v_native_record_zmask_ownership_only(command_buffer) ==
-          VK_SUCCESS);
+   VkImage image = VK_NULL_HANDLE;
+   VkDeviceMemory image_memory = VK_NULL_HANDLE;
+   if (initialize) {
+      assert(vkCreateImage(
+                device,
+                &(VkImageCreateInfo){
+                   .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                   .imageType = VK_IMAGE_TYPE_2D,
+                   .format = VK_FORMAT_D24_UNORM_S8_UINT,
+                   .extent = {64u, 64u, 1u},
+                   .mipLevels = 1u,
+                   .arrayLayers = 1u,
+                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                   .tiling = VK_IMAGE_TILING_OPTIMAL,
+                   .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                },
+                NULL, &image) == VK_SUCCESS);
+      VkMemoryRequirements requirements;
+      vkGetImageMemoryRequirements(device, image, &requirements);
+      assert(vkAllocateMemory(
+                device,
+                &(VkMemoryAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                   .allocationSize = requirements.size + requirements.alignment,
+                   .memoryTypeIndex = 0u,
+                },
+                NULL, &image_memory) == VK_SUCCESS);
+      assert(vkBindImageMemory(device, image, image_memory,
+                               requirements.alignment) == VK_SUCCESS);
+      struct r3v_native_image *native_image =
+         r3v_native_image_from_handle(image);
+      assert(native_image->zmask_layout_admitted);
+      assert(native_image->committed_submission.representation ==
+             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+      assert(native_image->committed_submission.zmask_metadata.status ==
+             R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      native_device->submit_hazard_accepted = true;
+      assert(r3v_native_record_zmask_initialize(command_buffer, image) ==
+             VK_SUCCESS);
+   } else {
+      assert(r3v_native_record_zmask_ownership_only(command_buffer) ==
+             VK_SUCCESS);
+   }
    assert(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
 
    struct r3v_native_cmd_buffer *native_command =
       r3v_native_cmd_buffer_from_handle(command_buffer);
-   assert(native_command->ib_size_dwords == 0u);
-   assert(native_command->reference_count == 0u);
-   assert(native_command->image_state_count == 0u);
+   assert(initialize ? native_command->ib_size_dwords != 0u
+                     : native_command->ib_size_dwords == 0u);
+   assert(native_command->reference_count == (initialize ? 1u : 0u));
+   assert(native_command->image_state_count == (initialize ? 1u : 0u));
    assert(native_command->ordered_operation_count == 1u);
    assert(native_command->ordered_operations[0].kind ==
-          R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE);
+          (initialize ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE
+                      : R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE));
+   if (initialize) {
+      char digest[2u * BLAKE3_OUT_LEN + 1u];
+      r300_triangle_ib_digest_hex(native_command->ib,
+                                  native_command->ib_size_dwords, digest);
+      assert(setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", digest, 1) == 0);
+   }
 
    VkQueue queue = VK_NULL_HANDLE;
    vkGetDeviceQueue(device, 0u, 0u, &queue);
@@ -189,28 +294,50 @@ main(int argc, char **argv)
       },
       VK_NULL_HANDLE);
    assert(result == (success ? VK_SUCCESS : VK_ERROR_DEVICE_LOST));
-   if (success)
-      assert(vkQueueWaitIdle(queue) == VK_SUCCESS);
    assert(acquire_count() == 1u);
-   assert(release_count() == 0u);
-   assert(cs_count() == 0u);
-   assert(ownership_held() == success);
-   assert(native_command->image_state_count == 0u);
+   assert(release_count() == (initialize_cs_refuse ? 1u : 0u));
+   assert(cs_count() == (initialize ? 1u : 0u));
+   const bool retains_ownership =
+      ownership_success || initialize_success || initialize_completion_fail;
+   assert(ownership_held() == retains_ownership);
+   assert(native_command->image_state_count == (initialize ? 1u : 0u));
    assert(native_device->hyperz_ownership ==
-          (success ? R300_ZB_HYPERZ_OWNED : R300_ZB_HYPERZ_UNOWNED));
-   assert(native_device->zmask_owner.image == NULL);
+          (retains_ownership ? R300_ZB_HYPERZ_OWNED
+                             : R300_ZB_HYPERZ_UNOWNED));
+   struct r3v_native_image *native_image =
+      image != VK_NULL_HANDLE ? r3v_native_image_from_handle(image) : NULL;
+   assert(native_device->zmask_owner.image ==
+          (initialize_success ? native_image : NULL));
    assert(native_device->zmask_owner.metadata.status ==
-          R3V_NATIVE_ZMASK_METADATA_RETIRED);
-   assert(native_device->transport_cs_ioctl_count == 0u);
+          (initialize_success ? R3V_NATIVE_ZMASK_METADATA_INITIALIZED
+                              : R3V_NATIVE_ZMASK_METADATA_RETIRED));
+   assert(native_device->transport_cs_ioctl_count == (initialize ? 1u : 0u));
    assert(native_device->queue_status ==
-          (success ? R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION
-                   : R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED));
+          (ownership_success
+              ? R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION
+              : initialize_success
+                   ? R3V_NATIVE_QUEUE_STATUS_COMPLETED
+                   : initialize_completion_fail
+                        ? R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE
+                        : R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED));
+   if (native_image != NULL) {
+      assert(native_image->committed_submission.representation ==
+             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+      assert(native_image->committed_submission.zmask_metadata.status ==
+             (initialize_success ? R3V_NATIVE_ZMASK_METADATA_INITIALIZED
+                                 : R3V_NATIVE_ZMASK_METADATA_RETIRED));
+   }
 
    vkDestroyCommandPool(device, command_pool, NULL);
+   if (image != VK_NULL_HANDLE)
+      vkDestroyImage(device, image, NULL);
+   if (image_memory != VK_NULL_HANDLE)
+      vkFreeMemory(device, image_memory, NULL);
    vkDestroyDevice(device, NULL);
    assert(acquire_count() == 1u);
-   assert(release_count() == (success ? 1u : 0u));
-   assert(cs_count() == 0u);
+   assert(release_count() ==
+          ((initialize || ownership_success) ? 1u : 0u));
+   assert(cs_count() == (initialize ? 1u : 0u));
    assert(!ownership_held());
    vkDestroyInstance(instance, NULL);
    return 0;

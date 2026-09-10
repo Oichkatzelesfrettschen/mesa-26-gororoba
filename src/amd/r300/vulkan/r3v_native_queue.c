@@ -2423,6 +2423,7 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
    device->transport_gpu_producer_delivery =
       r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
    device->transport_cell_kind = cmd_buffer->cell_kind;
+   device->transport_cs_ioctl_count++;
    device->transport_return_ns = 0;
    device->transport_enter_ns = r3v_native_raw_now_ns();
    int result = radeon_drm_vk_cs_submit(&device->drm, &prepared->cs);
@@ -3617,6 +3618,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       device->transport_gpu_producer_delivery =
          r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
       device->transport_cell_kind = cmd_buffer->cell_kind;
+      device->transport_cs_ioctl_count++;
       device->transport_return_ns = 0;
       device->transport_enter_ns = r3v_native_raw_now_ns();
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
