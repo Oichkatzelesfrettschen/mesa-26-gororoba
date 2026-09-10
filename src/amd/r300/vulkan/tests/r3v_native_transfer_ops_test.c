@@ -1472,6 +1472,172 @@ check_depth_image_copy_recording(const struct fixture *f,
    CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
          "clear barrier and copy composition records successfully");
 
+   const struct memory_barrier_case {
+      VkPipelineStageFlags source_stages;
+      VkPipelineStageFlags destination_stages;
+      VkAccessFlags source_access;
+      VkAccessFlags destination_access;
+      bool global_dependency;
+   } memory_barrier_cases[] = {
+      {
+         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+         VK_ACCESS_TRANSFER_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+         VK_ACCESS_TRANSFER_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_ACCESS_TRANSFER_READ_BIT,
+         false,
+      },
+   };
+   for (uint32_t case_index = 0u;
+        case_index < ARRAY_SIZE(memory_barrier_cases); case_index++) {
+      if (begin(f))
+         return 1;
+      const struct memory_barrier_case *test_case =
+         &memory_barrier_cases[case_index];
+      const VkMemoryBarrier memory_barrier = {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+         .srcAccessMask = test_case->source_access,
+         .dstAccessMask = test_case->destination_access,
+      };
+      vkCmdPipelineBarrier(f->cmd, test_case->source_stages,
+                           test_case->destination_stages, 0u, 1u,
+                           &memory_barrier, 0u, NULL, 0u, NULL);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, memory_barrier_cmd, f->cmd);
+      CHECK(memory_barrier_cmd->ordered_operation_count == 1u,
+            "memory barrier case %u records one ordered operation", case_index);
+      if (memory_barrier_cmd->ordered_operation_count == 1u) {
+         const struct r3v_native_ordered_operation *operation =
+            &memory_barrier_cmd->ordered_operations[0];
+         CHECK(operation->kind == R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+               "memory barrier case %u retains its operation kind", case_index);
+         if (test_case->global_dependency) {
+            CHECK(memory_barrier_cmd->ib != NULL &&
+                     operation->ib_position_dwords + 6u <
+                        memory_barrier_cmd->ib_size_dwords &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords] ==
+                        CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0) &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords + 2u] ==
+                        CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0) &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords + 4u] ==
+                        CP_PACKET0(RADEON_DSTCACHE_CTLSTAT, 0) &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords + 6u] ==
+                        CP_PACKET0(RADEON_WAIT_UNTIL, 0),
+                  "memory barrier case %u carries the global dependency",
+                  case_index);
+         } else {
+            CHECK(memory_barrier_cmd->ib == NULL &&
+                     operation->ib_position_dwords == 0u,
+                  "memory barrier case %u avoids a same-engine dependency",
+                  case_index);
+         }
+      }
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "memory barrier case %u records successfully", case_index);
+   }
+
+   if (begin(f))
+      return 1;
+   VkMemoryBarrier invalid_memory_barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+   };
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 1u,
+                        &invalid_memory_barrier, 0u, NULL, 0u, NULL);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, invalid_memory_barrier_cmd, f->cmd);
+   CHECK(invalid_memory_barrier_cmd->ordered_operation_count == 0u &&
+            invalid_memory_barrier_cmd->ib == NULL &&
+            invalid_memory_barrier_cmd->references == NULL,
+         "an invalid memory barrier refuses before the dependency effect");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "an invalid memory barrier poisons the command");
+
+   VkCommandBuffer secondary_barrier = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateCommandBuffers(
+              f->device,
+              &(VkCommandBufferAllocateInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                 .commandPool = f->cmd_pool,
+                 .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                 .commandBufferCount = 1u,
+              },
+              &secondary_barrier) == VK_SUCCESS,
+           "secondary barrier command allocation");
+   REQUIRE(vkBeginCommandBuffer(
+              secondary_barrier,
+              &(VkCommandBufferBeginInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+              }) == VK_SUCCESS,
+           "secondary barrier command begin");
+   const VkMemoryBarrier secondary_memory_barrier = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+   };
+   vkCmdPipelineBarrier(secondary_barrier,
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 1u,
+                        &secondary_memory_barrier, 0u, NULL, 0u, NULL);
+   REQUIRE(vkEndCommandBuffer(secondary_barrier) == VK_SUCCESS,
+           "secondary barrier command end");
+   VkCommandBuffer replay_primary = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateCommandBuffers(
+              f->device,
+              &(VkCommandBufferAllocateInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                 .commandPool = f->cmd_pool,
+                 .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                 .commandBufferCount = 1u,
+              },
+              &replay_primary) == VK_SUCCESS,
+           "replay primary command allocation");
+   REQUIRE(vkBeginCommandBuffer(
+              replay_primary,
+              &(VkCommandBufferBeginInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+              }) == VK_SUCCESS,
+           "replay primary command begin");
+   vkCmdExecuteCommands(replay_primary, 1u, &secondary_barrier);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, replay_primary_cmd, replay_primary);
+   CHECK(replay_primary_cmd->ordered_operation_count == 1u &&
+            replay_primary_cmd->ib != NULL &&
+            replay_primary_cmd->ordered_operations[0].ib_position_dwords +
+                  6u < replay_primary_cmd->ib_size_dwords &&
+            replay_primary_cmd->ib[
+               replay_primary_cmd->ordered_operations[0].ib_position_dwords] ==
+               CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0),
+         "secondary replay reconstructs the cross-engine dependency");
+   REQUIRE(vkEndCommandBuffer(replay_primary) == VK_SUCCESS,
+           "replay primary command end");
+
    if (begin(f))
       return 1;
    const VkImageCopy full_image_regions[] = {

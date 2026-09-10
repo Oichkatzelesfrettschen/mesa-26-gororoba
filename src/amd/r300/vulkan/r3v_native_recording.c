@@ -146,6 +146,25 @@ r3v_native_append_global_dependency(
    return result;
 }
 
+static VkResult
+r3v_native_append_barrier_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   VkPipelineStageFlags source_stages, VkPipelineStageFlags destination_stages,
+   VkAccessFlags source_access, VkAccessFlags destination_access,
+   uint32_t *ib_position_out)
+{
+   *ib_position_out = cmd_buffer->ib_size_dwords;
+   const uint32_t source_visibility =
+      r3v_native_image_barrier_visibility(source_stages, source_access);
+   const uint32_t destination_visibility =
+      r3v_native_image_barrier_visibility(destination_stages,
+                                          destination_access);
+   if (source_visibility == 0u || destination_visibility == 0u ||
+       source_visibility == destination_visibility)
+      return VK_SUCCESS;
+   return r3v_native_append_global_dependency(cmd_buffer, ib_position_out);
+}
+
 VkResult
 r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
@@ -1827,7 +1846,19 @@ r3v_native_append_secondary_operation(
    case R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER:
    case R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER: {
       struct r3v_native_ordered_operation operation = *source_operation;
-      operation.ib_position_dwords = primary->ib_size_dwords;
+      const VkPipelineStageFlags source_stages =
+         operation.payload.memory_barrier.src_stage_mask;
+      const VkPipelineStageFlags destination_stages =
+         operation.payload.memory_barrier.dst_stage_mask;
+      const VkAccessFlags source_access =
+         operation.payload.memory_barrier.src_access_mask;
+      const VkAccessFlags destination_access =
+         operation.payload.memory_barrier.dst_access_mask;
+      const VkResult dependency_result = r3v_native_append_barrier_dependency(
+         primary, source_stages, destination_stages, source_access,
+         destination_access, &operation.ib_position_dwords);
+      if (dependency_result != VK_SUCCESS)
+         return dependency_result;
       return r3v_native_cmd_buffer_append_ordered_operation(primary,
                                                              &operation);
    }
@@ -2189,10 +2220,15 @@ r3v_CmdPipelineBarrier(
    if (memoryBarrierCount != 0u || bufferMemoryBarrierCount != 0u) {
       for (uint32_t i = 0u; i < memoryBarrierCount; i++) {
          const VkMemoryBarrier *barrier = &pMemoryBarriers[i];
+         uint32_t ib_position = cmd_buffer->ib_size_dwords;
+         if (r3v_native_append_barrier_dependency(
+                cmd_buffer, srcStageMask, dstStageMask, barrier->srcAccessMask,
+                barrier->dstAccessMask, &ib_position) != VK_SUCCESS)
+            goto refuse;
          if (r3v_native_cmd_buffer_append_ordered_operation(
                 cmd_buffer, &(struct r3v_native_ordered_operation){
                    .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
-                   .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                   .ib_position_dwords = ib_position,
                    .payload.memory_barrier = {
                       .src_stage_mask = srcStageMask,
                       .dst_stage_mask = dstStageMask,
@@ -2206,12 +2242,16 @@ r3v_CmdPipelineBarrier(
          const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
          VK_FROM_HANDLE(r3v_native_buffer, buffer, barrier->buffer);
          VkDeviceSize normalized_size;
+         uint32_t ib_position = cmd_buffer->ib_size_dwords;
          if (!r3v_native_buffer_barrier_range_ok(
                 buffer, barrier->offset, barrier->size, &normalized_size) ||
+             r3v_native_append_barrier_dependency(
+                cmd_buffer, srcStageMask, dstStageMask, barrier->srcAccessMask,
+                barrier->dstAccessMask, &ib_position) != VK_SUCCESS ||
              r3v_native_cmd_buffer_append_ordered_operation(
                 cmd_buffer, &(struct r3v_native_ordered_operation){
                    .kind = R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
-                   .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                   .ib_position_dwords = ib_position,
                    .payload.memory_barrier = {
                       .src_stage_mask = srcStageMask,
                       .dst_stage_mask = dstStageMask,
