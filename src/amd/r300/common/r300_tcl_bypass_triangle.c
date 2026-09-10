@@ -662,6 +662,39 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_DEPTH,
    };
+   static const uint32_t color_clear_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_COLOR,
+   };
+   static const uint32_t color_clear_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+   };
+   static const uint32_t color_clear_depth_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_clear_depth_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_depth_clear_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_depth_clear_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
    static const uint32_t composed_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
@@ -701,6 +734,24 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       reloc_repeated_vertex_sequence_matches(
          ib, depth_clear_sampled_prefix,
          ARRAY_SIZE(depth_clear_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_render_prefix,
+         ARRAY_SIZE(color_clear_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_sampled_prefix,
+         ARRAY_SIZE(color_clear_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_depth_render_prefix,
+         ARRAY_SIZE(color_clear_depth_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_depth_sampled_prefix,
+         ARRAY_SIZE(color_clear_depth_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_depth_clear_render_prefix,
+         ARRAY_SIZE(color_depth_clear_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_depth_clear_sampled_prefix,
+         ARRAY_SIZE(color_depth_clear_sampled_prefix)) ||
       reloc_sequence_matches(ib, composed_slots, ARRAY_SIZE(composed_slots)) ||
       reloc_sequence_matches(ib, msaa_slots, ARRAY_SIZE(msaa_slots)) ||
       reloc_sequence_matches(ib, msaa_clear_slots,

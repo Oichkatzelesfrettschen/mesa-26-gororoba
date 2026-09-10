@@ -632,6 +632,10 @@ struct r3v_native_deferred_draw {
     * through the target's lane order and the UNORM8 conversion.
     */
    uint32_t clear_dword;
+   /* A later pass carries its color load operation inside its IB span so
+    * the clear executes after every earlier draw and before the current
+    * pass's draw. */
+   bool color_load_in_ib;
    /* The pass target's extent: the viewport transform's window scale
     * at execution.
     */

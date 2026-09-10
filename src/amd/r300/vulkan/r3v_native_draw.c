@@ -758,6 +758,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .target_fill_bytes = cmd_buffer->pass_target->layer_pitch_bytes,
       .target_row_bytes = cmd_buffer->pass_target->row_pitch_bytes,
       .clear_dword = clear_dword,
+      .color_load_in_ib = pass_has_depth && ib_span_offset != 0,
       .target_width = cmd_buffer->pass_target->width,
       .target_height = cmd_buffer->pass_target->height,
       .depth_memory = pass_draw->depth_memory,

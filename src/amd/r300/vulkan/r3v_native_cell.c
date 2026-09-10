@@ -77,14 +77,15 @@ r3v_native_cell_vk_result_from_errno(int emit_result)
 }
 
 static int
-prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
-                    struct r300_tcl_bypass_triangle_ib *cell)
+prepend_rb2d_fill(const struct r300_rb2d_fill_plan *fill,
+                  enum r300_tcl_bypass_triangle_slot slot,
+                  struct r300_tcl_bypass_triangle_ib *cell)
 {
-   if (clear == NULL || cell == NULL || cell->ib == NULL ||
+   if (fill == NULL || cell == NULL || cell->ib == NULL ||
        cell->reloc_site_count >= R300_TRIANGLE_MAX_RELOC_SITES)
       return -EINVAL;
 
-   const uint32_t clear_dwords = R300_RB2D_FILL_DWORDS(clear->fill.rect_count);
+   const uint32_t clear_dwords = R300_RB2D_FILL_DWORDS(fill->rect_count);
    if (clear_dwords > UINT32_MAX - cell->ib_size_dwords)
       return -EOVERFLOW;
    const uint32_t total_dwords = clear_dwords + cell->ib_size_dwords;
@@ -93,7 +94,7 @@ prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
       return -ENOMEM;
 
    struct r300_rb2d_fill_ib clear_ib = { 0 };
-   int result = r300_rb2d_fill_emit_into(&clear->fill, words, clear_dwords,
+   int result = r300_rb2d_fill_emit_into(fill, words, clear_dwords,
                                          &clear_ib);
    if (result != 0 || clear_ib.reloc_site_count != 1u) {
       free(words);
@@ -111,11 +112,11 @@ prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
    composed.reloc_sites[0] =
       (struct r300_tcl_bypass_triangle_reloc_site){
          .ib_index = clear_ib.reloc_sites[0].ib_index,
-         .slot = R300_TRIANGLE_SLOT_DEPTH,
+         .slot = slot,
       };
    composed.reloc_site_count++;
    composed.ib[composed.reloc_sites[0].ib_index] =
-      R300_TRIANGLE_SLOT_DEPTH * 4u;
+      slot * 4u;
    for (uint32_t site = 1; site < composed.reloc_site_count; site++)
       composed.reloc_sites[site].ib_index += clear_dwords;
 
@@ -128,6 +129,16 @@ prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
       free(cell->ib);
    *cell = composed;
    return 0;
+}
+
+static int
+prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
+                    struct r300_tcl_bypass_triangle_ib *cell)
+{
+   return clear == NULL
+             ? -EINVAL
+             : prepend_rb2d_fill(&clear->fill, R300_TRIANGLE_SLOT_DEPTH,
+                                  cell);
 }
 
 /* The triangle cell binds both roles at byte offset zero.  A shared GEM BO
@@ -563,6 +574,39 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
        alternate_carrier_out != NULL)
       emit_result = prepend_depth_clear(depth_clear, alternate_carrier_out);
+   /* CPU preparation can realize the first pass's load operation before
+    * submission.  A later pass needs a device command between draw spans;
+    * prepend the linear color fill to every retained form of the later
+    * pass's span. */
+   if (emit_result == 0 && depth_state != NULL && cmd_buffer->ib != NULL &&
+       cmd_buffer->deferred_draw_count > 1) {
+      const struct r3v_native_deferred_draw *draw =
+         &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1];
+      const struct r300_rb2d_fill_rect rect = {
+         .x = 0,
+         .y = 0,
+         .width = shape->width,
+         .height = shape->height,
+         .value = draw->clear_dword,
+      };
+      const struct r300_rb2d_fill_plan fill = {
+         .surface = {
+            .base_offset_bytes = shape->target_offset,
+            .pitch_bytes = shape->pitch_pixels * 4u,
+            .width_pixels = shape->width,
+            .height_pixels = shape->height,
+            .format = R300_RB2D_FORMAT_ARGB8888,
+         },
+         .write_mask = UINT32_MAX,
+         .rects = &rect,
+         .rect_count = 1,
+      };
+      emit_result =
+         prepend_rb2d_fill(&fill, R300_TRIANGLE_SLOT_COLOR, &cell);
+      if (emit_result == 0 && alternate_carrier_out != NULL)
+         emit_result = prepend_rb2d_fill(
+            &fill, R300_TRIANGLE_SLOT_COLOR, alternate_carrier_out);
+   }
    if (emit_result != 0) {
       r300_tcl_bypass_triangle_release(&cell);
       r300_tcl_bypass_triangle_release(&window_cell);
@@ -1634,9 +1678,11 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                                 owned_maps[i]->map);
          owned_maps[i]->map = NULL;
       }
-      return fill_color(device, draw->target_memory,
-                        draw->target_fill_offset, draw->target_fill_bytes,
-                        draw->clear_dword);
+      return draw->color_load_in_ib
+                ? VK_SUCCESS
+                : fill_color(device, draw->target_memory,
+                             draw->target_fill_offset,
+                             draw->target_fill_bytes, draw->clear_dword);
    }
 
    /* The CPU route stages the vertex-job outputs and the fixed-capacity
@@ -2024,8 +2070,11 @@ execute_one_deferred_draw(struct r3v_native_device *device,
    /* pending stays set: every submission re-reads the stream and
     * re-clears, the execution-time semantics each submit carries.
     */
-   return fill_color(device, draw->target_memory, draw->target_fill_offset,
-                     draw->target_fill_bytes, draw->clear_dword);
+   return draw->color_load_in_ib
+             ? VK_SUCCESS
+             : fill_color(device, draw->target_memory,
+                          draw->target_fill_offset, draw->target_fill_bytes,
+                          draw->clear_dword);
 }
 /* Submission-time execution of every recorded render pass, in record
  * order: each carries its own load-op clear, its own carrier, and its

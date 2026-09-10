@@ -1077,19 +1077,45 @@ record_public_command(struct public_context *context, uint32_t target_index,
 
 static bool
 recorded_load_contract(VkCommandBuffer command,
-                       VkDeviceMemory depth_memory)
+                       VkDeviceMemory depth_memory, enum run_mode mode)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command);
    VK_FROM_HANDLE(r3v_native_memory, native_depth, depth_memory);
    bool has_depth_state = false;
-   bool has_rb2d_launch = false;
    bool has_zmask_state = false;
    uint32_t bandwidth_writes = 0;
+   uint32_t color_load_launches = 0;
+   bool ordered_color_relocation = false;
+   const bool overlap = mode == MODE_NEAR_FAR || mode == MODE_FAR_NEAR;
+   const uint32_t second_span =
+      overlap ? native_command->deferred_draws[1].ib_span_offset : 0;
+   uint32_t color_reference = UINT32_MAX;
+   if (overlap) {
+      for (uint32_t index = 0; index < native_command->reference_count;
+           index++) {
+         if (native_command->references[index].memory ==
+                native_command->deferred_draws[1].target_memory &&
+             native_command->references[index].write_domain ==
+                RADEON_GEM_DOMAIN_GTT) {
+            color_reference = index;
+            break;
+         }
+      }
+   }
    for (uint32_t word = 0; word + 1u < native_command->ib_size_dwords;
         word++) {
       has_depth_state |= native_command->ib[word] == CP_PACKET0(R300_ZB_FORMAT, 0);
-      has_rb2d_launch |=
-         native_command->ib[word] == CP_PACKET0(RADEON_DST_WIDTH_HEIGHT, 0);
+      if (native_command->ib[word] ==
+          CP_PACKET0(RADEON_DST_WIDTH_HEIGHT, 0)) {
+         if (!overlap || word < second_span)
+            return false;
+         color_load_launches++;
+      }
+      if (overlap && word >= second_span && color_reference != UINT32_MAX &&
+          native_command->ib[word] ==
+             CP_PACKET3(R300_PM4_PACKET3_NOP, 0) &&
+          native_command->ib[word + 1u] == color_reference * 4u)
+         ordered_color_relocation = true;
       has_zmask_state |=
          native_command->ib[word] == CP_PACKET0(R300_ZB_ZMASK_OFFSET, 0) ||
          native_command->ib[word] == CP_PACKET0(R300_ZB_ZMASK_PITCH, 0);
@@ -1105,8 +1131,38 @@ recorded_load_contract(VkCommandBuffer command,
    for (uint32_t index = 0; index < native_command->reference_count; index++)
       depth_references += native_command->references[index].handle ==
                           native_depth->bo.handle;
-   return has_depth_state && !has_rb2d_launch && !has_zmask_state &&
-          bandwidth_writes != 0u && depth_references == 1u;
+   return has_depth_state && !has_zmask_state && bandwidth_writes != 0u &&
+          depth_references == 1u &&
+          color_load_launches == (overlap ? 1u : 0u) &&
+          (!overlap ||
+           (ordered_color_relocation &&
+            !native_command->deferred_draws[0].color_load_in_ib &&
+            native_command->deferred_draws[1].color_load_in_ib));
+}
+
+static bool
+recorded_overlap_load_mutation_rejected(VkCommandBuffer command,
+                                        VkDeviceMemory depth_memory,
+                                        enum run_mode mode)
+{
+   if (mode != MODE_NEAR_FAR && mode != MODE_FAR_NEAR)
+      return true;
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command);
+   const uint32_t second_span =
+      native_command->deferred_draws[1].ib_span_offset;
+   for (uint32_t word = second_span;
+        word + 1u < native_command->ib_size_dwords; word++) {
+      if (native_command->ib[word] !=
+          CP_PACKET0(RADEON_DST_WIDTH_HEIGHT, 0))
+         continue;
+      const uint32_t saved = native_command->ib[word];
+      native_command->ib[word] = CP_PACKET0(RADEON_DST_Y_X, 0);
+      const bool rejected =
+         !recorded_load_contract(command, depth_memory, mode);
+      native_command->ib[word] = saved;
+      return rejected;
+   }
+   return false;
 }
 
 static bool
@@ -1323,7 +1379,9 @@ run_public_single(const char *evidence_dir, uint32_t pattern,
    }
    VkCommandBuffer command = VK_NULL_HANDLE;
    if (!record_public_command(&context, 0, mode, &command) ||
-       !recorded_load_contract(command, context.depth[0].memory)) {
+       !recorded_load_contract(command, context.depth[0].memory, mode) ||
+       !recorded_overlap_load_mutation_rejected(
+          command, context.depth[0].memory, mode)) {
       fprintf(stderr, "public LOAD command misses its depth contract\n");
       destroy_public_context(&context);
       return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -1433,7 +1491,8 @@ run_public_persistence(const char *evidence_dir, bool record_only,
       if (!record_public_command(&context, targets[ordinal], MODE_READ,
                                  &commands[ordinal]) ||
           !recorded_load_contract(commands[ordinal],
-                                  context.depth[targets[ordinal]].memory)) {
+                                  context.depth[targets[ordinal]].memory,
+                                  MODE_READ)) {
          destroy_public_context(&context);
          return finish(OUTCOME_SUBMISSION_REFUSED);
       }
