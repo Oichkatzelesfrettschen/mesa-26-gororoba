@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -99,6 +101,16 @@ same_directory(const char *first, const char *second)
    return realpath(first, resolved_first) != NULL &&
           realpath(second, resolved_second) != NULL &&
           strcmp(resolved_first, resolved_second) == 0;
+}
+
+static bool
+create_result_directory(const char *evidence_dir, const char *name,
+                        char result_dir[PATH_MAX])
+{
+   const int path_length = snprintf(result_dir, PATH_MAX, "%s/%s",
+                                    evidence_dir, name);
+   return path_length > 0 && path_length < PATH_MAX &&
+          mkdir(result_dir, 0700) == 0;
 }
 
 static bool
@@ -1348,9 +1360,7 @@ run_public_single(const char *evidence_dir, uint32_t pattern,
       return finish(OUTCOME_RETENTION_FAILURE);
    }
    char result_dir[PATH_MAX];
-   const int path_length = snprintf(result_dir, sizeof(result_dir), "%s/%s",
-                                    evidence_dir, result_name);
-   if (path_length <= 0 || (size_t)path_length >= sizeof(result_dir) ||
+   if (!create_result_directory(evidence_dir, result_name, result_dir) ||
        r3v_native_evidence_write_file(result_dir, "depth_before.bin", before,
                                       DEPTH_BYTES) != 0) {
       destroy_public_context(&context);
@@ -1569,11 +1579,40 @@ public_color_oracle_selftest(void)
                                  &containment);
 }
 
+static bool
+public_result_directory_selftest(void)
+{
+   const char *temporary_root = getenv("TMPDIR");
+   if (temporary_root == NULL || temporary_root[0] == '\0')
+      temporary_root = ".";
+   char root_template[PATH_MAX];
+   const int template_length = snprintf(root_template, sizeof(root_template),
+                                        "%s/r3v-public-zb-retention-XXXXXX",
+                                        temporary_root);
+   if (template_length <= 0 ||
+       (size_t)template_length >= sizeof(root_template) ||
+       mkdtemp(root_template) == NULL)
+      return false;
+   char result_dir[PATH_MAX];
+   struct stat result_stat;
+   const bool created =
+      create_result_directory(root_template, "pattern-2-read", result_dir);
+   const bool exact =
+      created && stat(result_dir, &result_stat) == 0 &&
+      S_ISDIR(result_stat.st_mode) && (result_stat.st_mode & 0777) == 0700;
+   const bool reuse_refused =
+      !create_result_directory(root_template, "pattern-2-read", result_dir);
+   const bool removed = (!created || rmdir(result_dir) == 0) &&
+                        rmdir(root_template) == 0;
+   return exact && reuse_refused && removed;
+}
+
 int
 main(int argc, char **argv)
 {
    if (argc == 2 && strcmp(argv[1], "--selftest") == 0) {
-      if (run_selftest() != 0 || !public_color_oracle_selftest())
+      if (run_selftest() != 0 || !public_color_oracle_selftest() ||
+          !public_result_directory_selftest())
          return 1;
       printf("public color order selftest: PASS\n");
       return 0;
