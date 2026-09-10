@@ -413,6 +413,45 @@ main(void)
    assert(memcmp(&representation_command.image_states[0],
                  &before_metadata_refusal,
                  sizeof(before_metadata_refusal)) == 0);
+
+   struct r3v_native_image owner_image_a = {
+      .zmask_layout = {
+         .stride_in_pixels = 64u,
+         .dwords = 16u,
+         .fits_zmask_ram = true,
+      },
+      .zmask_layout_admitted = true,
+   };
+   struct r3v_native_image owner_image_b = owner_image_a;
+   struct r3v_native_zmask_owner_state owner_a = {0};
+   struct r3v_native_zmask_owner_state owner_b = {0};
+   const struct r3v_native_zmask_owner_state no_owner = {0};
+   assert(r3v_native_zmask_owner_from_image(
+             &owner_image_a, &initialized_metadata, &owner_a) == VK_SUCCESS);
+   struct r3v_native_zmask_metadata_state image_b_metadata =
+      initialized_metadata;
+   image_b_metadata.generation = 3u;
+   assert(r3v_native_zmask_owner_from_image(
+             &owner_image_b, &image_b_metadata, &owner_b) == VK_SUCCESS);
+   assert(owner_a.image == &owner_image_a && owner_a.dword_count == 16u &&
+          owner_a.stride_in_pixels == 64u);
+
+   assert(r3v_native_cmd_buffer_transition_zmask_owner(
+             &representation_command, &no_owner, &owner_a) == VK_SUCCESS);
+   assert(r3v_native_cmd_buffer_transition_zmask_owner(
+             &representation_command, &owner_a, &no_owner) == VK_SUCCESS);
+   assert(r3v_native_cmd_buffer_transition_zmask_owner(
+             &representation_command, &no_owner, &owner_b) == VK_SUCCESS);
+   assert(r3v_native_cmd_buffer_transition_zmask_owner(
+             &representation_command, &owner_b, &no_owner) == VK_SUCCESS);
+   assert(r3v_native_cmd_buffer_transition_zmask_owner(
+             &representation_command, &no_owner, &owner_a) == VK_SUCCESS);
+   const struct r3v_native_zmask_owner_state owner_before_refusal =
+      representation_command.current_zmask_owner;
+   assert(r3v_native_cmd_buffer_transition_zmask_owner(
+             &representation_command, &owner_a, &owner_b) != VK_SUCCESS);
+   assert(r3v_native_zmask_owner_equal(
+      &representation_command.current_zmask_owner, &owner_before_refusal));
    r3v_native_cmd_buffer_release_recording(&representation_command);
    r3v_native_cmd_buffer_release_recording(&command);
    return 0;
