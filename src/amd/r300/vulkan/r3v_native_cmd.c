@@ -205,9 +205,50 @@ r3v_native_cmd_buffer_append_image_state(
       &cmd_buffer->image_states[cmd_buffer->image_state_count++];
    *state = (struct r3v_native_cmd_image_state){
       .image = image,
-      .representation = image->committed_submission.representation,
+      .required_representation = image->committed_submission.representation,
+      .required_representation_set = true,
    };
    *state_out = state;
+   return VK_SUCCESS;
+}
+
+static bool
+r3v_native_image_representation_valid(
+   enum r3v_native_image_representation representation)
+{
+   return representation >= R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR &&
+          representation <= R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED;
+}
+
+VkResult
+r3v_native_cmd_buffer_transition_image_representation(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   enum r3v_native_image_representation required_representation,
+   enum r3v_native_image_representation resulting_representation)
+{
+   if (cmd_buffer == NULL || image == NULL ||
+       !r3v_native_image_representation_valid(required_representation) ||
+       !r3v_native_image_representation_valid(resulting_representation))
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const uint32_t original_count = cmd_buffer->image_state_count;
+   struct r3v_native_cmd_image_state *state = NULL;
+   VkResult result = r3v_native_cmd_buffer_append_image_state(
+      cmd_buffer, image, &state);
+   if (result != VK_SUCCESS)
+      return result;
+   const struct r3v_native_cmd_image_state original = *state;
+   const enum r3v_native_image_representation current_representation =
+      state->current_representation_set ? state->current_representation
+                                        : state->required_representation;
+   if (current_representation != required_representation) {
+      *state = original;
+      cmd_buffer->image_state_count = original_count;
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   state->current_representation = resulting_representation;
+   state->current_representation_set = true;
    return VK_SUCCESS;
 }
 

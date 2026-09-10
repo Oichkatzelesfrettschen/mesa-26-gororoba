@@ -1528,8 +1528,18 @@ r3v_native_merge_secondary_image_states(
          primary, source->image, &destination);
       if (result != VK_SUCCESS)
          return result;
-      if (destination->representation != source->representation)
-         return VK_ERROR_INITIALIZATION_FAILED;
+      if (source->required_representation_set) {
+         const enum r3v_native_image_representation current_representation =
+            destination->current_representation_set
+               ? destination->current_representation
+               : destination->required_representation;
+         if (current_representation != source->required_representation)
+            return VK_ERROR_INITIALIZATION_FAILED;
+      }
+      if (source->current_representation_set) {
+         destination->current_representation = source->current_representation;
+         destination->current_representation_set = true;
+      }
       if (source->required_layout_set) {
          if (destination->current_layout_set &&
              source->required_layout != R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&

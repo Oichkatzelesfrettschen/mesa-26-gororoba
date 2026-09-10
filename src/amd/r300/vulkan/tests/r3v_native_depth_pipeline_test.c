@@ -329,5 +329,42 @@ main(void)
              R3V_NATIVE_IMAGE_PRODUCER_ZB, true) != VK_SUCCESS);
    assert(memcmp(&command.image_states[0], &before_read_only_write,
                  sizeof(before_read_only_write)) == 0);
+
+   struct r3v_native_cmd_buffer representation_command = {0};
+   representation_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   representation_command.vk.pool = &pool;
+   struct r3v_native_image representation_image = {
+      .committed_submission = {
+         .representation = R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+      },
+   };
+   assert(r3v_native_cmd_buffer_transition_image_representation(
+             &representation_command, &representation_image,
+             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR) == VK_SUCCESS);
+   assert(representation_command.image_state_count == 1u);
+   assert(representation_command.image_states[0].required_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(representation_command.image_states[0].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR);
+   assert(representation_command.image_states[0].required_representation_set);
+   assert(representation_command.image_states[0].current_representation_set);
+   assert(representation_image.committed_submission.representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+
+   assert(r3v_native_cmd_buffer_transition_image_representation(
+             &representation_command, &representation_image,
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) == VK_SUCCESS);
+   const struct r3v_native_cmd_image_state before_refusal =
+      representation_command.image_states[0];
+   assert(r3v_native_cmd_buffer_transition_image_representation(
+             &representation_command, &representation_image,
+             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) != VK_SUCCESS);
+   assert(memcmp(&representation_command.image_states[0], &before_refusal,
+                 sizeof(before_refusal)) == 0);
+   r3v_native_cmd_buffer_release_recording(&representation_command);
+   r3v_native_cmd_buffer_release_recording(&command);
    return 0;
 }

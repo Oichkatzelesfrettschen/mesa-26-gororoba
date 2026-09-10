@@ -2459,7 +2459,8 @@ r3v_native_queue_preflight_image_states(
          }
          struct r3v_native_image_committed_state *pending =
             &states[pending_index].state;
-         if (pending->representation != recorded->representation ||
+         if ((recorded->required_representation_set &&
+              pending->representation != recorded->required_representation) ||
              (recorded->required_layout_set &&
               recorded->required_layout !=
                  R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
@@ -2470,9 +2471,11 @@ r3v_native_queue_preflight_image_states(
                "r3v-native: command buffer %u image state requires layout "
                "%u from representation %u, found layout %u representation %u",
                command_index, recorded->required_layout,
-               recorded->representation, pending->api_layout,
+               recorded->required_representation, pending->api_layout,
                pending->representation);
          }
+         if (recorded->current_representation_set)
+            pending->representation = recorded->current_representation;
          if (recorded->current_layout_set)
             pending->api_layout = recorded->current_layout;
          if (recorded->producer_set)
@@ -2499,6 +2502,9 @@ r3v_native_queue_publish_image_states(const struct vk_queue_submit *submit)
            image_index < cmd_buffer->image_state_count; image_index++) {
          const struct r3v_native_cmd_image_state *recorded =
             &cmd_buffer->image_states[image_index];
+         if (recorded->current_representation_set)
+            recorded->image->committed_submission.representation =
+               recorded->current_representation;
          if (recorded->current_layout_set)
             recorded->image->committed_submission.api_layout =
                recorded->current_layout;
