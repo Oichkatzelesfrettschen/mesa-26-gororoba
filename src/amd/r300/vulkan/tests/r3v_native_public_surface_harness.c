@@ -285,6 +285,7 @@ struct pipeline_shape {
    /* 0 omits depth/stencil state, 1 supplies disabled state, and 2 enables
     * the depth test. */
    int depth_stencil;
+   VkBool32 stencil_split;
    VkFormat attribute_format;
    uint32_t stride;
    VkBool32 blend_enable;
@@ -361,6 +362,7 @@ assert_word_range(const uint8_t *bytes, uint64_t offset, uint64_t size,
 static void
 check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
                              VkBuffer vertex_buffer,
+                             VkDeviceMemory vertex_memory,
                              VkDeviceMemory color_memory, VkQueue queue)
 {
    /* The drm-shim fixture supplies the RS485M device ID but no board
@@ -895,6 +897,97 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
          assert(native_repeated_draw->deferred_draw_count == 0u);
          assert(native_repeated_draw->render_pass_count == 0u);
          vkDestroyPipeline(device, repeated_pipeline, NULL);
+
+         /* R300 shares one stencil reference/mask register between faces.
+          * Submission-time facing classification writes that register before
+          * each source primitive's seven reserved clipped triangles. */
+         struct pipeline_shape stencil_shape = repeated_shape;
+         stencil_shape.stencil_split = VK_TRUE;
+         VkPipeline stencil_pipeline = VK_NULL_HANDLE;
+         stencil_shape.extent_width = 64;
+         stencil_shape.extent_height = 64;
+         assert(make_pipeline(&stencil_shape, depth_only_pass, layout,
+                              &stencil_pipeline) == VK_SUCCESS);
+         const float opposite_facing_triangles[24] = {
+            -0.75f, -0.75f, 0.5f, 1.0f,
+             0.00f,  0.75f, 0.5f, 1.0f,
+             0.75f, -0.75f, 0.5f, 1.0f,
+            -0.75f, -0.75f, 0.5f, 1.0f,
+             0.75f, -0.75f, 0.5f, 1.0f,
+             0.00f,  0.75f, 0.5f, 1.0f,
+         };
+         void *vertex_map = NULL;
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &vertex_map) == VK_SUCCESS);
+         memcpy(vertex_map, opposite_facing_triangles,
+                sizeof(opposite_facing_triangles));
+         vkUnmapMemory(device, vertex_memory);
+
+         VkFramebuffer stencil_framebuffer = VK_NULL_HANDLE;
+         assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = depth_only_pass,
+            .attachmentCount = 1,
+            .pAttachments = &depth_aspect_views[aspect],
+            .width = 64,
+            .height = 64,
+            .layers = 1,
+         }, NULL, &stencil_framebuffer) == VK_SUCCESS);
+         VkRenderPassBeginInfo stencil_begin = depth_only_begin;
+         stencil_begin.framebuffer = stencil_framebuffer;
+         stencil_begin.renderArea.extent = (VkExtent2D){ 64, 64 };
+         VkCommandBuffer stencil_command = fresh_cmd();
+         vkCmdBeginRenderPass(stencil_command, &stencil_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(stencil_command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           stencil_pipeline);
+         vkCmdBindVertexBuffers(stencil_command, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(stencil_command, 6, 1, 0, 0);
+         vkCmdEndRenderPass(stencil_command);
+         assert(vkEndCommandBuffer(stencil_command) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_stencil,
+                        stencil_command);
+         assert(native_stencil->deferred_draw_count == 1u);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   repeated_device, native_stencil) == VK_SUCCESS);
+         const struct r3v_native_deferred_draw *stencil_draw =
+            &native_stencil->deferred_draws[0];
+         const uint32_t expected_references[2] = {
+            0x00550f22u,
+            0x00aaf011u,
+         };
+         uint32_t observed_references[2] = {0};
+         uint32_t observed_count = 0u;
+         const uint32_t *stencil_ib =
+            &native_stencil->ib[stencil_draw->ib_span_offset];
+         for (uint32_t word = 0u;
+              word + 2u < stencil_draw->ib_span_dwords;) {
+            const uint32_t header = stencil_ib[word];
+            const uint32_t type = header >> 30;
+            const uint32_t payload =
+               type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+            assert(type != 1u &&
+                   payload <= stencil_draw->ib_span_dwords - word - 1u);
+            if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+                (stencil_ib[word + 2u] >> 30) == 3u &&
+                (stencil_ib[word + 2u] & 0xff00u) ==
+                   R300_PACKET3_3D_LOAD_VBPNTR) {
+               assert(observed_count < ARRAY_SIZE(observed_references));
+               observed_references[observed_count++] = stencil_ib[word + 1u];
+            }
+            word += 1u + payload;
+         }
+         assert(observed_count == ARRAY_SIZE(observed_references));
+         assert(memcmp(observed_references, expected_references,
+                       sizeof(expected_references)) == 0);
+         vkDestroyFramebuffer(device, stencil_framebuffer, NULL);
+         vkDestroyPipeline(device, stencil_pipeline, NULL);
+
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &vertex_map) == VK_SUCCESS);
+         memcpy(vertex_map, ndc_triangle, sizeof(ndc_triangle));
+         vkUnmapMemory(device, vertex_memory);
       }
 
       if (aspect == 0) {
@@ -1279,6 +1372,25 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                  .depthTestEnable =
                     shape->depth_stencil == 2 ? VK_TRUE : VK_FALSE,
                  .depthCompareOp = VK_COMPARE_OP_LESS,
+                 .stencilTestEnable = shape->stencil_split,
+                 .front = {
+                    .failOp = VK_STENCIL_OP_KEEP,
+                    .passOp = VK_STENCIL_OP_REPLACE,
+                    .depthFailOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP,
+                    .compareOp = VK_COMPARE_OP_ALWAYS,
+                    .compareMask = 0xf0u,
+                    .writeMask = 0xaau,
+                    .reference = 0x11u,
+                 },
+                 .back = {
+                    .failOp = VK_STENCIL_OP_KEEP,
+                    .passOp = VK_STENCIL_OP_REPLACE,
+                    .depthFailOp = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+                    .compareOp = VK_COMPARE_OP_ALWAYS,
+                    .compareMask = 0x0fu,
+                    .writeMask = 0x55u,
+                    .reference = 0x22u,
+                 },
               }
             : NULL,
       .pDynamicState =
@@ -4338,8 +4450,8 @@ main(void)
       vkFreeMemory(device, mem_b, NULL);
    }
 
-   check_depth_attachment_begin(view, layout, vertex_buffer, color_memory,
-                                queue);
+   check_depth_attachment_begin(view, layout, vertex_buffer, vertex_memory,
+                                color_memory, queue);
 
    /* Pre-commit refusal leaves bytes unchanged: the closed gate refuses
     * before the deferred draw, so the carrier keeps its pre-submit

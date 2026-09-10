@@ -526,7 +526,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    struct r300_tcl_bypass_triangle_ib window_cell = {0};
    const bool retain_window_cell =
       clip_space && cmd_buffer->ib == NULL && sampled == NULL && !varying &&
-      triangle_count == 1;
+      triangle_count == 1 &&
+      (depth_state == NULL ||
+       !depth_state->stencil.back_reference_requires_draw_split);
    int emit_result = 0;
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
@@ -543,6 +545,16 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       shape, varying, flat_color0, noperspective_carrier,
       noperspective_q_lane, noperspective_mixed_carrier, rs_probe_candidate,
       triangle_count, sampled, clip_space, &cell);
+   const bool ordered_stencil =
+      depth_state != NULL &&
+      depth_state->stencil.back_reference_requires_draw_split;
+   if (emit_result == 0 && ordered_stencil)
+      emit_result =
+         !clip_space
+            ? -EINVAL
+            : r300_tcl_bypass_triangle_split_ordered_stencil(
+                 &cell, triangle_count,
+                 depth_state->stencil.front_reference_mask);
    /* The adaptive NoPerspective route retains the TC1 reciprocal
     * carrier cell beside the installed direct cell: the same shape and
     * memories, the carrier record, and every probe word at its control
@@ -553,6 +565,10 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       emit_result = emit_triangle_cell_for_position_space(
          shape, varying, false, true, false, false, (uint8_t)R3V_RS_PROBE_NONE,
          triangle_count, sampled, clip_space, alternate_carrier_out);
+      if (emit_result == 0 && ordered_stencil)
+         emit_result = r300_tcl_bypass_triangle_split_ordered_stencil(
+            alternate_carrier_out, triangle_count,
+            depth_state->stencil.front_reference_mask);
       if (emit_result != 0)
          r300_tcl_bypass_triangle_release(&cell);
    }
@@ -1151,7 +1167,9 @@ expand_clip_space_triangles(
    const uint32_t *source_records, uint32_t source_triangle_count,
    uint32_t record_dwords, uint32_t target_width, uint32_t target_height,
    VkCullModeFlags cull_mode, VkFrontFace front_face, bool sample_mask_zero,
-   uint32_t *output_records, uint32_t output_capacity_dwords)
+   uint32_t *output_records, uint32_t output_capacity_dwords,
+   uint32_t *stencil_reference_masks, uint32_t front_reference_mask,
+   uint32_t back_reference_mask)
 {
    /* The position, then whole vec4 vectors up to the mixed carrier's
     * three: 4, 8, 12, or 16 dwords. */
@@ -1228,6 +1246,8 @@ expand_clip_space_triangles(
       if (fan_triangle_count >
           R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT)
          return -EOVERFLOW;
+      bool source_front_facing = true;
+      bool source_facing_known = false;
       for (uint32_t fan = 0; fan < fan_triangle_count; fan++) {
          const struct r3v_native_clip_vertex *fan_vertices[3] = {
             &polygon[0], &polygon[fan + 1], &polygon[fan + 2],
@@ -1249,8 +1269,15 @@ expand_clip_space_triangles(
          const double area2 =
             ((double)window[1][0] - window[0][0]) *
                ((double)window[2][1] - window[0][1]) -
-            ((double)window[2][0] - window[0][0]) *
-               ((double)window[1][1] - window[0][1]);
+               ((double)window[2][0] - window[0][0]) *
+                  ((double)window[1][1] - window[0][1]);
+         if (!source_facing_known && area2 != 0.0) {
+            const bool counter_clockwise = area2 > 0.0;
+            source_front_facing =
+               counter_clockwise ==
+               (front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            source_facing_known = true;
+         }
          bool collapse = sample_mask_zero;
          if (!collapse && area2 != 0.0 && cull_mode != VK_CULL_MODE_NONE) {
             const bool counter_clockwise = area2 > 0.0;
@@ -1274,6 +1301,9 @@ expand_clip_space_triangles(
                    (size_t)record_dwords * sizeof(float));
          }
       }
+      if (stencil_reference_masks != NULL)
+         stencil_reference_masks[triangle] =
+            source_front_facing ? front_reference_mask : back_reference_mask;
    }
    return 0;
 }
@@ -1549,10 +1579,14 @@ r3v_native_cmd_buffer_select_deferred_routes(
 
 static VkResult
 execute_one_deferred_draw(struct r3v_native_device *device,
-                          struct r3v_native_deferred_draw *draw,
-                          struct r3v_native_memory *carrier,
-                          bool load_at_begin)
+                          struct r3v_native_cmd_buffer *cmd_buffer,
+                          uint32_t draw_index, bool load_at_begin)
 {
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carriers[draw_index];
    if (!draw->pending)
       return VK_SUCCESS;
 
@@ -1710,8 +1744,12 @@ draw_stream:
        R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    uint32_t *staged_heap = NULL;
    uint32_t *expanded_heap = NULL;
+   uint32_t *stencil_reference_masks = NULL;
    uint32_t *staged = staged_stack;
    uint32_t *expanded = expanded_stack;
+   const bool ordered_stencil =
+      draw->has_depth_pipeline &&
+      draw->depth_pipeline.hardware.stencil.back_reference_requires_draw_split;
    if (published_staged_dwords > ARRAY_SIZE(staged_stack)) {
       staged_heap = vk_alloc(&device->vk.alloc,
                              (size_t)published_staged_dwords *
@@ -1730,6 +1768,15 @@ draw_stream:
       if (expanded_heap == NULL)
          result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       expanded = expanded_heap;
+   }
+   if (result == VK_SUCCESS && ordered_stencil) {
+      stencil_reference_masks =
+         vk_alloc(&device->vk.alloc,
+                  (size_t)source_triangle_count *
+                     sizeof(*stencil_reference_masks),
+                  8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (stencil_reference_masks == NULL)
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    bool owns_carrier_map = result == VK_SUCCESS && carrier->map == NULL;
@@ -1966,7 +2013,10 @@ draw_stream:
             staged, source_triangle_count, published_record_dwords,
             draw->target_width,
             draw->target_height, draw->cull_mode, draw->front_face,
-            draw->sample_mask_zero, expanded, expanded_dwords);
+            draw->sample_mask_zero, expanded, expanded_dwords,
+            stencil_reference_masks,
+            draw->depth_pipeline.hardware.stencil.front_reference_mask,
+            draw->depth_pipeline.hardware.stencil.back_reference_mask);
          int expanded_carrier = 0;
          if (clipped == 0 && draw->post_vs.q_lane_width != 0) {
             struct r300_noperspective_q_lane_plan plan;
@@ -2012,8 +2062,14 @@ draw_stream:
                    (size_t)expanded_dwords * sizeof(uint32_t));
          }
       } else if (result == VK_SUCCESS) {
-         memcpy(carrier->map, staged,
-                (size_t)published_staged_dwords * sizeof(uint32_t));
+         if (ordered_stencil)
+            result = vk_errorf(
+               device, VK_ERROR_INITIALIZATION_FAILED,
+               "r3v-native: ordered two-sided stencil requires the "
+               "clip-space primitive-facing route");
+         else
+            memcpy(carrier->map, staged,
+                   (size_t)published_staged_dwords * sizeof(uint32_t));
       }
       if (result == VK_SUCCESS) {
          const size_t publication_bytes =
@@ -2024,12 +2080,24 @@ draw_stream:
                                      publication_bytes);
       }
    }
+   if (result == VK_SUCCESS && ordered_stencil &&
+       (draw->ib_span_offset > cmd_buffer->ib_size_dwords ||
+        draw->ib_span_dwords >
+           cmd_buffer->ib_size_dwords - draw->ib_span_offset ||
+        r300_tcl_bypass_triangle_patch_ordered_stencil(
+           &cmd_buffer->ib[draw->ib_span_offset], draw->ib_span_dwords,
+           stencil_reference_masks, source_triangle_count) != 0)) {
+      result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                         "r3v-native: ordered stencil segment patching "
+                         "failed");
+   }
    if (owns_carrier_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
       carrier->map = NULL;
    }
    vk_free(&device->vk.alloc, expanded_heap);
    vk_free(&device->vk.alloc, staged_heap);
+   vk_free(&device->vk.alloc, stencil_reference_masks);
    vk_free(&device->vk.alloc, vertex_ids_heap);
 
    for (uint32_t i = 0; i < owned_map_count; i++) {
@@ -2060,12 +2128,10 @@ r3v_native_cmd_buffer_execute_deferred_draws(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   const uint32_t count = MAX2(cmd_buffer->deferred_draw_count, 1u);
+   const uint32_t count = cmd_buffer->deferred_draw_count;
    for (uint32_t i = 0; i < count; i++) {
       const VkResult result = execute_one_deferred_draw(
-         device, &cmd_buffer->deferred_draws[i],
-         cmd_buffer->owned_carriers[i],
-         cmd_buffer->deferred_draws[i].load_at_begin);
+         device, cmd_buffer, i, cmd_buffer->deferred_draws[i].load_at_begin);
       if (result != VK_SUCCESS)
          return result;
    }
@@ -2172,9 +2238,7 @@ r3v_native_cmd_buffer_execute_deferred_draw(
 {
    if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
       return vk_error(device, VK_ERROR_DEVICE_LOST);
-   return execute_one_deferred_draw(
-      device, &cmd_buffer->deferred_draws[draw_index],
-      cmd_buffer->owned_carriers[draw_index], false);
+   return execute_one_deferred_draw(device, cmd_buffer, draw_index, false);
 }
 
 /* The producer footprint over the triangle's three records: the odd
