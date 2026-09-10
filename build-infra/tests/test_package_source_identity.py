@@ -45,6 +45,7 @@ def package_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (root / BUILD_ROOT_RELATIVE).parent.mkdir(mode=0o700)
     for relative in (
         "Makefile",
+        "scripts/resolve-python-interpreter.sh",
         "scripts/source_root_control.py",
         "scripts/meson_profile_dflags.py",
         f"configs/alternates/{PROFILE}.meson",

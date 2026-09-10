@@ -4,10 +4,12 @@
 # behind fails here rather than at makepkg on the target.
 set -u
 root=$(cd "$(dirname "$0")" && pwd)
+python_resolver=$root/../scripts/resolve-python-interpreter.sh
+python=$(MESA_PYTHON_INPUT=${PYTHON:-} sh "$python_resolver") || exit 1
 status=0
 for pkgbuild in "$root"/*/PKGBUILD; do
   dir=$(dirname "$pkgbuild")
-  python3 - "$pkgbuild" "$dir" <<'PY' || status=1
+  "$python" - "$pkgbuild" "$dir" <<'PY' || status=1
 import hashlib, re, sys
 pkgbuild, directory = sys.argv[1], sys.argv[2]
 text = open(pkgbuild, encoding="utf-8").read()
