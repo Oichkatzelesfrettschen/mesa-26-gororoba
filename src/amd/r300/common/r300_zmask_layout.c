@@ -18,21 +18,31 @@
 static const uint32_t zmask_blocks_x_per_dw[R300_ZMASK_MAX_PIPES] = {4, 8, 12, 8};
 static const uint32_t zmask_blocks_y_per_dw[R300_ZMASK_MAX_PIPES] = {4, 4, 4, 8};
 
-static uint32_t
-round_up(uint32_t value, uint32_t alignment)
+static bool
+round_up(uint32_t value, uint32_t alignment, uint64_t *rounded)
 {
-   return ((value + alignment - 1u) / alignment) * alignment;
+   const uint64_t units = ((uint64_t)value + alignment - 1u) / alignment;
+   *rounded = units * alignment;
+   return *rounded <= UINT32_MAX;
 }
 
 /* r300_pixels_to_dwords: the aligned pixel area divided by the pixels one
  * dword covers.
  */
-static uint32_t
+static bool
 pixels_to_dwords(uint32_t stride, uint32_t height, uint32_t xblock,
-                 uint32_t yblock)
+                 uint32_t yblock, uint64_t *dwords)
 {
-   return (round_up(stride, xblock) * round_up(height, yblock)) /
-          (xblock * yblock);
+   if (xblock == 0u || yblock == 0u)
+      return false;
+
+   const uint64_t xunits = ((uint64_t)stride + xblock - 1u) / xblock;
+   const uint64_t yunits = ((uint64_t)height + yblock - 1u) / yblock;
+   if (xunits == 0u || yunits == 0u || xunits > UINT64_MAX / yunits)
+      return false;
+
+   *dwords = xunits * yunits;
+   return true;
 }
 
 int
@@ -55,9 +65,16 @@ r300_zmask_layout_compute_at_block(
       return -EINVAL;
    if (params->height == 0u)
       return -EINVAL;
+   if (params->stride_in_pixels == 0u)
+      return -EINVAL;
+
+   const uint64_t capacity = (uint64_t)params->zmask_ram_dwords_per_pipe *
+                             params->pipes;
+   if (capacity > UINT32_MAX)
+      return -EINVAL;
 
    memset(out, 0, sizeof(*out));
-   out->zmask_ram_dwords = params->zmask_ram_dwords_per_pipe * params->pipes;
+   out->zmask_ram_dwords = (uint32_t)capacity;
 
    /* The gate r300_setup_hyperz_properties opens the ZMASK loop with: a
     * depth or stencil format of exactly 32 bits per pixel on a microtiled
@@ -80,16 +97,25 @@ r300_zmask_layout_compute_at_block(
    const uint32_t xblock = zmask_blocks_x_per_dw[index] * zcompsize;
    const uint32_t yblock = zmask_blocks_y_per_dw[index] * zcompsize;
 
-   const uint32_t stride = round_up(params->stride_in_pixels, 16u);
-   const uint32_t dwords =
-      pixels_to_dwords(stride, params->height, xblock, yblock);
-
-   if (dwords > out->zmask_ram_dwords)
+   uint64_t stride;
+   if (!round_up(params->stride_in_pixels, 16u, &stride))
       return 0;
 
-   out->dwords = dwords;
+   uint64_t dwords;
+   if (!pixels_to_dwords((uint32_t)stride, params->height, xblock, yblock,
+                         &dwords))
+      return 0;
+
+   if (dwords == 0u || dwords > capacity || dwords > UINT32_MAX)
+      return 0;
+
+   uint64_t pitch;
+   if (!round_up((uint32_t)stride, xblock, &pitch) || pitch == 0u)
+      return 0;
+
+   out->dwords = (uint32_t)dwords;
    out->zcomp8x8 = zcompsize == 8u;
-   out->stride_in_pixels = round_up(stride, xblock);
+   out->stride_in_pixels = (uint32_t)pitch;
    out->fits_zmask_ram = true;
    return 0;
 }
