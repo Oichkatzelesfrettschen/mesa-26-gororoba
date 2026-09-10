@@ -107,6 +107,47 @@ r3v_native_queue_status_from_transport(bool ioctl_accepted,
                                : R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE;
 }
 
+struct r3v_native_ordered_transport_progress {
+   bool ioctl_seen;
+   bool any_ioctl_accepted;
+   bool all_ioctls_accepted;
+   bool all_completions_retired;
+};
+
+/* Positional streams can cross several CS boundaries.  Acceptance and
+ * retirement describe the complete stream only when every entered segment
+ * reaches the corresponding boundary; any accepted segment still makes a
+ * later stream failure a completion failure rather than a pre-ioctl refusal.
+ */
+static inline struct r3v_native_ordered_transport_progress
+r3v_native_ordered_transport_progress_init(void)
+{
+   return (struct r3v_native_ordered_transport_progress){
+      .all_ioctls_accepted = true,
+      .all_completions_retired = true,
+   };
+}
+
+static inline void
+r3v_native_ordered_transport_progress_record(
+   struct r3v_native_ordered_transport_progress *progress,
+   bool ioctl_accepted, bool completion_retired)
+{
+   progress->ioctl_seen = true;
+   progress->any_ioctl_accepted |= ioctl_accepted;
+   progress->all_ioctls_accepted &= ioctl_accepted;
+   progress->all_completions_retired &=
+      ioctl_accepted && completion_retired;
+}
+
+static inline enum r3v_native_queue_status
+r3v_native_ordered_transport_failure_status(
+   const struct r3v_native_ordered_transport_progress *progress)
+{
+   return r3v_native_queue_status_from_transport(
+      progress->any_ioctl_accepted, false);
+}
+
 /* A submit with no executable IB finishes without a transport boundary.
  * r3v_native_queue_submit (rg --fixed-strings "r3v_native_queue_submit"
  * src/amd/r300/vulkan/r3v_native_queue.c) records executable-buffer presence

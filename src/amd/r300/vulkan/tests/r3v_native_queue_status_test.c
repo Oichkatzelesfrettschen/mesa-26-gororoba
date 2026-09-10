@@ -49,6 +49,30 @@ main(int argc, char **argv)
           R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
    assert(r3v_native_queue_status_from_transport(true, false) ==
           R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE);
+   struct r3v_native_ordered_transport_progress progress =
+      r3v_native_ordered_transport_progress_init();
+   r3v_native_ordered_transport_progress_record(&progress, true, true);
+   assert(progress.ioctl_seen && progress.any_ioctl_accepted &&
+          progress.all_ioctls_accepted && progress.all_completions_retired);
+   r3v_native_ordered_transport_progress_record(&progress, false, false);
+   assert(progress.ioctl_seen && progress.any_ioctl_accepted &&
+          !progress.all_ioctls_accepted &&
+          !progress.all_completions_retired);
+   assert(r3v_native_ordered_transport_failure_status(&progress) ==
+          R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE);
+   progress = r3v_native_ordered_transport_progress_init();
+   r3v_native_ordered_transport_progress_record(&progress, true, true);
+   r3v_native_ordered_transport_progress_record(&progress, true, false);
+   assert(progress.all_ioctls_accepted &&
+          !progress.all_completions_retired);
+   assert(r3v_native_ordered_transport_failure_status(&progress) ==
+          R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE);
+   progress = r3v_native_ordered_transport_progress_init();
+   r3v_native_ordered_transport_progress_record(&progress, false, false);
+   assert(!progress.any_ioctl_accepted && !progress.all_ioctls_accepted &&
+          !progress.all_completions_retired);
+   assert(r3v_native_ordered_transport_failure_status(&progress) ==
+          R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
    /* A successful submit containing only zero-IB work has no transport
     * boundary to report.
     */

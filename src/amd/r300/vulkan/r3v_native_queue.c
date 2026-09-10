@@ -1879,8 +1879,8 @@ r3v_native_queue_submit_ordered_segment(
    struct r3v_native_cmd_buffer *cmd_buffer,
    const struct radeon_drm_vk_reloc_list *relocs,
    struct radeon_drm_vk_completion *completion,
-   uint32_t begin_dwords, uint32_t end_dwords, bool *ioctl_seen,
-   bool *completion_retired)
+   uint32_t begin_dwords, uint32_t end_dwords,
+   struct r3v_native_ordered_transport_progress *progress)
 {
    if (begin_dwords == end_dwords)
       return VK_SUCCESS;
@@ -1911,11 +1911,11 @@ r3v_native_queue_submit_ordered_segment(
    if (device->transport_enter_ns == 0)
       device->transport_enter_ns = r3v_native_raw_now_ns();
    int transport_result = radeon_drm_vk_cs_submit(&device->drm, &cs);
-   *ioctl_seen = true;
    if (r3v_native_submission_trace_emit(
           device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
       trace_result = -EIO;
    const bool accepted = transport_result == 0;
+   bool completion_retired = false;
    if (accepted) {
       device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
       if (r3v_native_submission_trace_emit(
@@ -1927,9 +1927,10 @@ r3v_native_queue_submit_ordered_segment(
              device,
              R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
          trace_result = -EIO;
-      if (transport_result == 0)
-         *completion_retired = true;
+      completion_retired = transport_result == 0;
    }
+   r3v_native_ordered_transport_progress_record(progress, accepted,
+                                                completion_retired);
    device->transport_return_ns = r3v_native_raw_now_ns();
    if (transport_result == 0 && trace_result != 0)
       transport_result = trace_result;
@@ -1965,8 +1966,8 @@ r3v_native_queue_execute_positional_stream(
    struct radeon_drm_vk_completion *completion)
 {
    uint32_t submitted_dwords = 0u;
-   bool ioctl_seen = false;
-   bool completion_retired = false;
+   struct r3v_native_ordered_transport_progress progress =
+      r3v_native_ordered_transport_progress_init();
 
    for (uint32_t index = 0u;
         index < cmd_buffer->ordered_operation_count; index++) {
@@ -1978,7 +1979,7 @@ r3v_native_queue_execute_positional_stream(
 
       VkResult result = r3v_native_queue_submit_ordered_segment(
          device, cmd_buffer, relocs, completion, submitted_dwords,
-         operation->ib_position_dwords, &ioctl_seen, &completion_retired);
+         operation->ib_position_dwords, &progress);
       if (result != VK_SUCCESS)
          goto finish;
       submitted_dwords = operation->ib_position_dwords;
@@ -2002,20 +2003,24 @@ r3v_native_queue_execute_positional_stream(
    if (submitted_dwords != cmd_buffer->ib_size_dwords) {
       VkResult result = r3v_native_queue_submit_ordered_segment(
          device, cmd_buffer, relocs, completion, submitted_dwords,
-         cmd_buffer->ib_size_dwords, &ioctl_seen, &completion_retired);
+         cmd_buffer->ib_size_dwords, &progress);
       if (result != VK_SUCCESS)
          goto finish;
    }
 
-   if (ioctl_seen)
-      r3v_native_fill_route_record_transport(cmd_buffer, true,
-                                             completion_retired);
+   if (progress.ioctl_seen)
+      r3v_native_fill_route_record_transport(
+         cmd_buffer, progress.all_ioctls_accepted,
+         progress.all_ioctls_accepted && progress.all_completions_retired);
    return VK_SUCCESS;
 
 finish:
-   if (ioctl_seen)
-      r3v_native_fill_route_record_transport(cmd_buffer, true,
-                                             completion_retired);
+   if (progress.ioctl_seen) {
+      r3v_native_fill_route_record_transport(
+         cmd_buffer, progress.all_ioctls_accepted, false);
+      device->queue_status =
+         r3v_native_ordered_transport_failure_status(&progress);
+   }
    return VK_ERROR_DEVICE_LOST;
 }
 
@@ -2562,7 +2567,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
       const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          vk_cmd, struct r3v_native_cmd_buffer, vk);
-      if ((cmd_buffer->query_op_count != 0u ||
+      if (cmd_buffer->ordered_operation_count == 0u &&
+          (cmd_buffer->query_op_count != 0u ||
            cmd_buffer->event_op_count != 0u) &&
           (cmd_buffer->deferred_copy_count != 0u ||
            cmd_buffer->deferred_draw_count != 0u ||
