@@ -117,14 +117,10 @@ r3v_native_image_barrier_visibility(VkPipelineStageFlags stages,
 }
 
 static VkResult
-r3v_native_append_depth_image_dependency(
-   struct r3v_native_cmd_buffer *cmd_buffer,
-   const struct r3v_native_image *image, uint32_t *ib_position_out)
+r3v_native_append_global_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t *ib_position_out)
 {
    *ib_position_out = cmd_buffer->ib_size_dwords;
-   if (!image->depth_family)
-      return VK_SUCCESS;
-
    const uint32_t dependency[] = {
       CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0),
       R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
@@ -146,6 +142,17 @@ r3v_native_append_depth_image_dependency(
    if (result == VK_SUCCESS)
       cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
    return result;
+}
+
+static VkResult
+r3v_native_append_depth_image_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_image *image, uint32_t *ib_position_out)
+{
+   *ib_position_out = cmd_buffer->ib_size_dwords;
+   if (image == NULL || !image->depth_family)
+      return VK_SUCCESS;
+   return r3v_native_append_global_dependency(cmd_buffer, ib_position_out);
 }
 
 static bool
@@ -441,6 +448,24 @@ r3v_native_copy_buffer_range_ok(const struct r3v_native_buffer *buffer,
        buffer->vk.size > buffer->memory->bo.size - buffer->offset ||
        offset > buffer->vk.size || size > buffer->vk.size - offset)
       return false;
+   return true;
+}
+
+static bool
+r3v_native_buffer_barrier_range_ok(const struct r3v_native_buffer *buffer,
+                                   VkDeviceSize offset, VkDeviceSize size,
+                                   VkDeviceSize *normalized_size)
+{
+   if (buffer == NULL || buffer->memory == NULL ||
+       buffer->offset > buffer->memory->bo.size ||
+       buffer->vk.size > buffer->memory->bo.size - buffer->offset ||
+       offset > buffer->vk.size)
+      return false;
+   if (size == VK_WHOLE_SIZE)
+      size = buffer->vk.size - offset;
+   if (size > buffer->vk.size - offset || normalized_size == NULL)
+      return false;
+   *normalized_size = size;
    return true;
 }
 
@@ -1564,6 +1589,13 @@ r3v_native_append_secondary_operation(
       return r3v_native_cmd_buffer_append_ordered_operation(primary,
                                                              &operation);
    }
+   case R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER:
+   case R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER: {
+      struct r3v_native_ordered_operation operation = *source_operation;
+      operation.ib_position_dwords = primary->ib_size_dwords;
+      return r3v_native_cmd_buffer_append_ordered_operation(primary,
+                                                             &operation);
+   }
    case R3V_NATIVE_ORDERED_OPERATION_EVENT: {
       const uint32_t source_index = source_operation->payload.event.event_index;
       if (source_index >= secondary->event_op_count ||
@@ -1727,21 +1759,32 @@ r3v_CmdPipelineBarrier(
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
+   for (uint32_t i = 0u; i < memoryBarrierCount; i++) {
+      const VkMemoryBarrier *barrier = &pMemoryBarriers[i];
+      if (barrier->sType != VK_STRUCTURE_TYPE_MEMORY_BARRIER ||
+          barrier->pNext != NULL)
+         goto refuse;
+   }
    for (uint32_t i = 0; i < bufferMemoryBarrierCount; i++) {
       const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
+      VkDeviceSize normalized_size;
+      VK_FROM_HANDLE(r3v_native_buffer, buffer, barrier->buffer);
       if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
-                                            barrier->dstQueueFamilyIndex)) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
-      }
+                                            barrier->dstQueueFamilyIndex) ||
+          barrier->sType != VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER ||
+          barrier->pNext != NULL ||
+          !r3v_native_buffer_barrier_range_ok(
+             buffer, barrier->offset, barrier->size, &normalized_size))
+         goto refuse;
    }
    for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
       const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
       if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
                                             barrier->dstQueueFamilyIndex) ||
+          barrier->sType != VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER ||
+          barrier->pNext != NULL ||
           !r3v_native_image_barrier_layouts_ok(barrier)) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
+         goto refuse;
       }
 
       VK_FROM_HANDLE(r3v_native_image, image, barrier->image);
@@ -1770,10 +1813,52 @@ r3v_CmdPipelineBarrier(
       }
    }
 
-   if (r3v_native_cmd_buffer_reserve_ordered_operations(
-          cmd_buffer, imageMemoryBarrierCount) != VK_SUCCESS) {
-      r3v_native_cmd_poison(commandBuffer);
-      return;
+   const uint64_t ordered_count = (uint64_t)memoryBarrierCount +
+                                  bufferMemoryBarrierCount +
+                                  imageMemoryBarrierCount;
+   if (ordered_count > UINT32_MAX ||
+       r3v_native_cmd_buffer_reserve_ordered_operations(
+          cmd_buffer, (uint32_t)ordered_count) != VK_SUCCESS)
+      goto refuse;
+
+   if (memoryBarrierCount != 0u || bufferMemoryBarrierCount != 0u) {
+      for (uint32_t i = 0u; i < memoryBarrierCount; i++) {
+         const VkMemoryBarrier *barrier = &pMemoryBarriers[i];
+         if (r3v_native_cmd_buffer_append_ordered_operation(
+                cmd_buffer, &(struct r3v_native_ordered_operation){
+                   .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+                   .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                   .payload.memory_barrier = {
+                      .src_stage_mask = srcStageMask,
+                      .dst_stage_mask = dstStageMask,
+                      .src_access_mask = barrier->srcAccessMask,
+                      .dst_access_mask = barrier->dstAccessMask,
+                   },
+                }) != VK_SUCCESS)
+            goto refuse;
+      }
+      for (uint32_t i = 0u; i < bufferMemoryBarrierCount; i++) {
+         const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
+         VK_FROM_HANDLE(r3v_native_buffer, buffer, barrier->buffer);
+         VkDeviceSize normalized_size;
+         if (!r3v_native_buffer_barrier_range_ok(
+                buffer, barrier->offset, barrier->size, &normalized_size) ||
+             r3v_native_cmd_buffer_append_ordered_operation(
+                cmd_buffer, &(struct r3v_native_ordered_operation){
+                   .kind = R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
+                   .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                   .payload.memory_barrier = {
+                      .src_stage_mask = srcStageMask,
+                      .dst_stage_mask = dstStageMask,
+                      .src_access_mask = barrier->srcAccessMask,
+                      .dst_access_mask = barrier->dstAccessMask,
+                      .buffer = buffer,
+                      .offset = barrier->offset,
+                      .size = normalized_size,
+                   },
+                }) != VK_SUCCESS)
+            goto refuse;
+      }
    }
    for (uint32_t i = 0u; i < imageMemoryBarrierCount; i++) {
       const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
@@ -1817,6 +1902,10 @@ r3v_CmdPipelineBarrier(
          return;
       }
    }
+   return;
+
+refuse:
+   r3v_native_cmd_poison(commandBuffer);
 }
 
 /* Every pipeline layout the pipeline admissions accept carries zero

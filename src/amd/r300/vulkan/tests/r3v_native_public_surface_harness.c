@@ -3262,6 +3262,15 @@ main(void)
       assert(copy_native->deferred_copy_count == 4);
       assert(copy_native->deferred_copies[0].kind ==
              R3V_NATIVE_COPY_BUFFER_TO_BUFFER);
+      bool recorded_buffer_barrier = false;
+      for (uint32_t operation_index = 0u;
+           operation_index < copy_native->ordered_operation_count;
+           operation_index++) {
+         recorded_buffer_barrier |=
+            copy_native->ordered_operations[operation_index].kind ==
+            R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER;
+      }
+      assert(recorded_buffer_barrier);
       assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
 
       /* Transfer barriers follow the image usage bits: source-only images

@@ -348,6 +348,16 @@ struct r3v_native_image_barrier_record {
    VkAccessFlags dst_access_mask;
 };
 
+struct r3v_native_memory_barrier_record {
+   VkPipelineStageFlags src_stage_mask;
+   VkPipelineStageFlags dst_stage_mask;
+   VkAccessFlags src_access_mask;
+   VkAccessFlags dst_access_mask;
+   struct r3v_native_buffer *buffer;
+   VkDeviceSize offset;
+   VkDeviceSize size;
+};
+
 /* One ordered operation.  Each legacy operation kind carries the index of
  * its existing array entry; image barriers carry their complete copied
  * record because no legacy array owns the Vulkan barrier storage. */
@@ -357,6 +367,8 @@ enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
+   R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+   R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
    R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN,
    R3V_NATIVE_ORDERED_OPERATION_DRAW,
    R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END,
@@ -390,6 +402,7 @@ struct r3v_native_ordered_operation {
          uint32_t rb2d_copy_index;
       } rb2d_copy;
       struct r3v_native_image_barrier_record image_barrier;
+      struct r3v_native_memory_barrier_record memory_barrier;
       struct {
          uint32_t deferred_draw_index;
       } render_pass_begin;

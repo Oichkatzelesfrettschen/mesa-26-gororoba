@@ -223,6 +223,16 @@ r3v_native_ordered_image_composition_geometry_valid(
              operation->payload.image_barrier.image == NULL)
             return false;
          break;
+      case R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER:
+         if (render_pass_open)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER:
+         if (render_pass_open ||
+             operation->payload.memory_barrier.buffer == NULL ||
+             operation->payload.memory_barrier.size == 0u)
+            return false;
+         break;
       case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN:
          if (render_pass_open ||
              operation->payload.render_pass_begin.deferred_draw_index >=
