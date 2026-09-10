@@ -714,8 +714,85 @@ r3v_native_record_zmask_fast_clear(VkCommandBuffer command_buffer,
                                    VkImage image, uint32_t depth_code,
                                    uint32_t stencil)
 {
-   return r3v_native_record_zmask_fast_clear_state(
-      command_buffer, image, depth_code, stencil, NULL, NULL, NULL);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   VK_FROM_HANDLE(r3v_native_image, destination, image);
+   if (cmd_buffer == NULL || destination == NULL ||
+       cmd_buffer->vk.base.device == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   const struct r3v_native_zmask_owner_state current_owner =
+      cmd_buffer->current_zmask_owner_set
+         ? cmd_buffer->current_zmask_owner
+         : cmd_buffer->required_zmask_owner_set
+              ? cmd_buffer->required_zmask_owner
+              : device->zmask_owner;
+   if (current_owner.image == NULL || current_owner.image == destination)
+      return r3v_native_record_zmask_fast_clear_state(
+         command_buffer, image, depth_code, stencil, NULL, NULL, NULL);
+
+   enum r3v_native_image_representation owner_representation;
+   switch (current_owner.metadata.status) {
+   case R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR:
+      owner_representation =
+         R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR;
+      break;
+   case R3V_NATIVE_ZMASK_METADATA_COMPRESSED:
+      owner_representation = R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED;
+      break;
+   default:
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   const uint32_t original_ib_size = cmd_buffer->ib_size_dwords;
+   const uint32_t original_reference_count = cmd_buffer->reference_count;
+   const uint32_t original_operation_count =
+      cmd_buffer->ordered_operation_count;
+   const uint32_t original_image_state_count = cmd_buffer->image_state_count;
+   const enum r3v_native_cell_kind original_cell_kind = cmd_buffer->cell_kind;
+   const bool original_required_owner_set =
+      cmd_buffer->required_zmask_owner_set;
+   const bool original_current_owner_set = cmd_buffer->current_zmask_owner_set;
+   const struct r3v_native_zmask_owner_state original_required_owner =
+      cmd_buffer->required_zmask_owner;
+   const struct r3v_native_zmask_owner_state original_current_owner =
+      cmd_buffer->current_zmask_owner;
+   struct r3v_native_cmd_image_state *original_image_states = NULL;
+   if (original_image_state_count != 0u) {
+      original_image_states =
+         malloc((size_t)original_image_state_count *
+                sizeof(*original_image_states));
+      if (original_image_states == NULL)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      memcpy(original_image_states, cmd_buffer->image_states,
+             (size_t)original_image_state_count *
+                sizeof(*original_image_states));
+   }
+
+   VkResult result = r3v_native_record_zmask_materialize(
+      command_buffer, r3v_native_image_to_handle(current_owner.image),
+      owner_representation, &current_owner.metadata);
+   if (result == VK_SUCCESS)
+      result = r3v_native_record_zmask_fast_clear_state(
+         command_buffer, image, depth_code, stencil, NULL, NULL, NULL);
+   if (result != VK_SUCCESS) {
+      cmd_buffer->ib_size_dwords = original_ib_size;
+      cmd_buffer->reference_count = original_reference_count;
+      cmd_buffer->ordered_operation_count = original_operation_count;
+      cmd_buffer->image_state_count = original_image_state_count;
+      cmd_buffer->cell_kind = original_cell_kind;
+      cmd_buffer->required_zmask_owner_set = original_required_owner_set;
+      cmd_buffer->current_zmask_owner_set = original_current_owner_set;
+      cmd_buffer->required_zmask_owner = original_required_owner;
+      cmd_buffer->current_zmask_owner = original_current_owner;
+      if (original_image_state_count != 0u)
+         memcpy(cmd_buffer->image_states, original_image_states,
+                (size_t)original_image_state_count *
+                   sizeof(*original_image_states));
+   }
+   free(original_image_states);
+   return result;
 }
 
 VkResult

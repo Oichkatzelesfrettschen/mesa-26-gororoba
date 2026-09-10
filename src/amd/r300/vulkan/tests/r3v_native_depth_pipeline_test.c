@@ -603,28 +603,76 @@ main(void)
                  (size_t)fast_clear_primary.ib_size_dwords *
                     sizeof(fast_clear_primary.ib[0])) == 0);
 
-   struct r3v_native_image conflicting_owner_image = fast_clear_image;
-   conflicting_owner_image.committed_submission.representation =
+   struct r3v_native_memory switching_owner_memory = materialize_memory;
+   switching_owner_memory.bo.handle = 4u;
+   struct r3v_native_image switching_owner_image = fast_clear_image;
+   switching_owner_image.memory = &switching_owner_memory;
+   switching_owner_image.committed_submission.representation =
       R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR;
-   conflicting_owner_image.committed_submission.zmask_metadata =
+   switching_owner_image.committed_submission.zmask_metadata =
       fast_clear_metadata;
-   conflicting_owner_image.depth_bound.contract =
-      &conflicting_owner_image.depth_contract;
+   switching_owner_image.depth_bound.contract =
+      &switching_owner_image.depth_contract;
    assert(r3v_native_zmask_owner_from_image(
-             &conflicting_owner_image, &fast_clear_metadata,
+             &switching_owner_image, &fast_clear_metadata,
              &materialize_device.zmask_owner) == VK_SUCCESS);
-   struct r3v_native_cmd_buffer fast_clear_conflict = {0};
-   fast_clear_conflict.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
-   fast_clear_conflict.vk.base.device = &materialize_device.vk;
-   fast_clear_conflict.vk.pool = &pool;
+   struct r3v_native_cmd_buffer owner_switch_command = {0};
+   owner_switch_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   owner_switch_command.vk.base.device = &materialize_device.vk;
+   owner_switch_command.vk.pool = &pool;
    assert(r3v_native_record_zmask_fast_clear(
-             r3v_native_cmd_buffer_to_handle(&fast_clear_conflict),
+             r3v_native_cmd_buffer_to_handle(&owner_switch_command),
              r3v_native_image_to_handle(&fast_clear_image), 0x400000u,
-             0xa5u) != VK_SUCCESS);
-   assert(fast_clear_conflict.ib == NULL);
-   assert(fast_clear_conflict.reference_count == 0u);
-   assert(fast_clear_conflict.ordered_operation_count == 0u);
-   assert(fast_clear_conflict.image_state_count == 0u);
+             0xa5u) == VK_SUCCESS);
+   assert(owner_switch_command.ordered_operation_count == 2u);
+   assert(owner_switch_command.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(owner_switch_command.ordered_operations[0]
+             .payload.image_materialize.image == &switching_owner_image);
+   assert(owner_switch_command.ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+   assert(owner_switch_command.ordered_operations[1]
+             .payload.image_fast_clear.image == &fast_clear_image);
+   assert(owner_switch_command.current_zmask_owner.image ==
+          &fast_clear_image);
+   assert(r3v_native_record_zmask_fast_clear(
+             r3v_native_cmd_buffer_to_handle(&owner_switch_command),
+             r3v_native_image_to_handle(&switching_owner_image), 0x600000u,
+             0x3cu) == VK_SUCCESS);
+   assert(owner_switch_command.ordered_operation_count == 4u);
+   assert(owner_switch_command.ordered_operations[2].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(owner_switch_command.ordered_operations[2]
+             .payload.image_materialize.image == &fast_clear_image);
+   assert(owner_switch_command.ordered_operations[3].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+   assert(owner_switch_command.ordered_operations[3]
+             .payload.image_fast_clear.image == &switching_owner_image);
+   assert(owner_switch_command.current_zmask_owner.image ==
+          &switching_owner_image);
+   assert(owner_switch_command.image_states[0].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR);
+   assert(owner_switch_command.image_states[1].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+
+   struct r3v_native_image invalid_switch_destination = fast_clear_image;
+   invalid_switch_destination.zmask_layout_admitted = false;
+   invalid_switch_destination.depth_bound.contract =
+      &invalid_switch_destination.depth_contract;
+   struct r3v_native_cmd_buffer failed_owner_switch = {0};
+   failed_owner_switch.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   failed_owner_switch.vk.base.device = &materialize_device.vk;
+   failed_owner_switch.vk.pool = &pool;
+   assert(r3v_native_record_zmask_fast_clear(
+             r3v_native_cmd_buffer_to_handle(&failed_owner_switch),
+             r3v_native_image_to_handle(&invalid_switch_destination),
+             0x400000u, 0xa5u) != VK_SUCCESS);
+   assert(failed_owner_switch.ib_size_dwords == 0u);
+   assert(failed_owner_switch.reference_count == 0u);
+   assert(failed_owner_switch.ordered_operation_count == 0u);
+   assert(failed_owner_switch.image_state_count == 0u);
+   assert(!failed_owner_switch.required_zmask_owner_set);
+   assert(!failed_owner_switch.current_zmask_owner_set);
    materialize_device.zmask_owner = no_owner;
 
    assert(r3v_native_record_zmask_materialize(
@@ -802,7 +850,8 @@ main(void)
    assert(conflicting_image.committed_submission.zmask_metadata.generation ==
           fast_clear_metadata.generation);
    r3v_native_cmd_buffer_release_recording(&conflicting_reference_command);
-   r3v_native_cmd_buffer_release_recording(&fast_clear_conflict);
+   r3v_native_cmd_buffer_release_recording(&failed_owner_switch);
+   r3v_native_cmd_buffer_release_recording(&owner_switch_command);
    r3v_native_cmd_buffer_release_recording(&fast_clear_primary);
    r3v_native_cmd_buffer_release_recording(&fast_clear_secondary);
    r3v_native_cmd_buffer_release_recording(&fast_clear_command);
