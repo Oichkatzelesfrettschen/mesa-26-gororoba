@@ -1974,7 +1974,7 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
       if (invalid == 0)
          bad.bufferOffset = 1;
       if (invalid == 1)
-         bad.imageExtent.width = 2;
+         bad.imageExtent.width = 28;
       if (invalid == 2)
          bad.imageSubresource.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
       if (invalid == 3)

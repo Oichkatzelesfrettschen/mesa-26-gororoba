@@ -78,24 +78,26 @@ test_public_persistence_binding(void)
       { .handle = 23, .read_domains = RADEON_GEM_DOMAIN_GTT,
         .write_domain = RADEON_GEM_DOMAIN_GTT, .memory = &depth_a },
    };
+   struct r3v_native_deferred_draw draw = {
+      .pending = true,
+      .target_width = 64,
+      .target_height = 64,
+      .depth_memory = &depth_a,
+      .depth_bound = { .contract = &contract },
+      .depth_pipeline = {
+         .hardware = { .depth_function = R300_ZS_LESS },
+         .depth_test_enable = true,
+      },
+      .has_depth_pipeline = true,
+   };
    struct r3v_native_cmd_buffer command = {
       .vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER,
       .cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE,
       .references = references,
       .reference_count = 3,
       .deferred_draw_count = 1,
-      .deferred_draws = {{
-         .pending = true,
-         .target_width = 64,
-         .target_height = 64,
-         .depth_memory = &depth_a,
-         .depth_bound = { .contract = &contract },
-         .depth_pipeline = {
-            .hardware = { .depth_function = R300_ZS_LESS },
-            .depth_test_enable = true,
-         },
-         .has_depth_pipeline = true,
-      }},
+      .deferred_draw_capacity = 1,
+      .deferred_draws = &draw,
    };
    assert(r3v_native_bind_zb_tiled_persistence(
              r3v_native_cmd_buffer_to_handle(&command),

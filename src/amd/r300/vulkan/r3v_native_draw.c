@@ -206,12 +206,12 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(vk_framebuffer, framebuffer,
                   pRenderPassBegin->framebuffer);
 
-   /* The bounded contract is R3V_NATIVE_DEFERRED_DRAW_MAX passes per
-    * command buffer, each carrying its own load-op clear, carrier, and
-    * vertex execution.  A pass past that bound has no deferred record to
-    * fill, so it refuses instead of recording a pass whose load op never
-    * executes.  Copies already recorded are the pre-draw group the queue
-    * executes ahead of the first pass, so they stand.
+   /* The command buffer keeps one record for each render pass and one
+    * additional record for each repeated draw.  Render-pass count remains a
+    * separate route bound, while draw storage grows through the command-pool
+    * allocator before any pass state or dependency is recorded.  Copies
+    * already recorded are the pre-draw group the queue executes ahead of the
+    * first pass, so they stand.
     *
     * Concatenating recorded cells produces a stream no offline emitter
     * reproduces, so the arming digest has nothing to compare a second
@@ -225,12 +225,18 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    if (cmd_buffer->pass_target != NULL ||
        cmd_buffer->active_query_pool != NULL ||
        cmd_buffer->render_pass_count >= R3V_NATIVE_RENDER_PASS_MAX ||
-       cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
        framebuffer->layers != 1 ||
        framebuffer->attachment_count != pass->attachment_count) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
+   const VkResult draw_storage_result =
+      r3v_native_cmd_buffer_reserve_deferred_draws(cmd_buffer, 1u);
+   if (draw_storage_result != VK_SUCCESS) {
+      poison(commandBuffer, draw_storage_result);
       return;
    }
 
@@ -645,7 +651,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
         cmd_buffer->deferred_draws[cmd_buffer->active_pass_draw_index]
               .clear_rect_count > R3V_NATIVE_PASS_CLEAR_RECT_MAX) ||
        (cmd_buffer->draw_recorded &&
-        cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX)) {
+        cmd_buffer->deferred_draw_count == UINT32_MAX)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -662,6 +668,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
     * repeated draw appends a new record while retaining the pass record for
     * its load operation and attachment clears. */
    const bool first_draw_in_pass = !cmd_buffer->draw_recorded;
+   if (!first_draw_in_pass) {
+      const VkResult draw_storage_result =
+         r3v_native_cmd_buffer_reserve_deferred_draws(cmd_buffer, 1u);
+      if (draw_storage_result != VK_SUCCESS) {
+         poison(commandBuffer, draw_storage_result);
+         return;
+      }
+   }
    const uint32_t pass_slot = cmd_buffer->active_pass_draw_index;
    const uint32_t draw_slot = first_draw_in_pass
                                  ? pass_slot
@@ -1125,14 +1139,30 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    if (!first_draw_in_pass)
       cmd_buffer->deferred_draw_count++;
    cmd_buffer->draw_recorded = true;
-   VkResult ordered_result = r3v_native_cmd_buffer_require_image_layout(
-      cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
-      R3V_NATIVE_IMAGE_PRODUCER_RB3D, true);
-   if (ordered_result == VK_SUCCESS && cmd_buffer->pass_depth_target != NULL)
+   const struct r300_zb_depth_state_params *depth_state =
+      &pipeline->depth_pipeline.hardware;
+   const bool writes_depth_stencil =
+      depth_state->depth_write ||
+      (depth_state->stencil.enabled &&
+       (depth_state->stencil.front.write_mask != 0u ||
+        (depth_state->stencil.two_sided &&
+         depth_state->stencil.back.write_mask != 0u)));
+   VkResult ordered_result = VK_SUCCESS;
+   if (pass_draw->depth_only) {
       ordered_result = r3v_native_cmd_buffer_require_image_layout(
-         cmd_buffer, cmd_buffer->pass_depth_target,
-         cmd_buffer->pass_depth_layout, R3V_NATIVE_IMAGE_PRODUCER_ZB,
-         pipeline->depth_pipeline.hardware.depth_write);
+         cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+         R3V_NATIVE_IMAGE_PRODUCER_ZB, writes_depth_stencil);
+   } else {
+      ordered_result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+         R3V_NATIVE_IMAGE_PRODUCER_RB3D, true);
+      if (ordered_result == VK_SUCCESS &&
+          cmd_buffer->pass_depth_target != NULL)
+         ordered_result = r3v_native_cmd_buffer_require_image_layout(
+            cmd_buffer, cmd_buffer->pass_depth_target,
+            cmd_buffer->pass_depth_layout, R3V_NATIVE_IMAGE_PRODUCER_ZB,
+            writes_depth_stencil);
+   }
    if (ordered_result == VK_SUCCESS)
       ordered_result = r3v_native_cmd_buffer_append_ordered_operation(
          cmd_buffer, &(struct r3v_native_ordered_operation){

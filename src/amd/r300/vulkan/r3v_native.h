@@ -693,12 +693,10 @@ struct r3v_native_pass_clear_rect {
    uint32_t stencil;
 };
 
-/* The command buffer carries at most two render-pass records and two draw
- * records.  A second draw in one pass uses the second record, which keeps
- * the load operation on the pass's first record while preserving one
- * carrier and one ordered draw operation per API draw.
- */
-#define R3V_NATIVE_DEFERRED_DRAW_MAX 2u
+/* The initial allocation covers the common one-pass/two-draw shape.  The
+ * command-pool-backed arrays grow as recording adds draw records, so the
+ * record count is independent of the allocation size. */
+#define R3V_NATIVE_DEFERRED_DRAW_INITIAL_CAPACITY 2u
 #define R3V_NATIVE_RENDER_PASS_MAX 2u
 
 struct r3v_native_deferred_draw {
@@ -1005,12 +1003,12 @@ struct r3v_native_cmd_buffer {
    VkDeviceSize bound_index_offset;
    uint32_t bound_index_bytes;
    bool draw_recorded;
-   struct r3v_native_memory *owned_carriers[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   struct r3v_native_memory **owned_carriers;
    /* Depth-only triangle cells still require a color relocation because
     * the fixed fragment program exports color.  Each sink is a private
     * GTT BO, separate from the application depth image, and lives until
     * command-buffer reset or destruction. */
-   struct r3v_native_memory *owned_color_sinks[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   struct r3v_native_memory **owned_color_sinks;
    /* The fetched producer's slot-position BO, allocated at the first
     * fetched admission and released with the buffer; it holds the
     * (v + 0.5, 0.5, 0, 1) record per vertex the fetched body's first
@@ -1084,9 +1082,9 @@ struct r3v_native_cmd_buffer {
     * second pass takes a second of each; the queue executes them in
     * this order and concatenates their cells into one indirect buffer.
     */
-   struct r3v_native_deferred_draw
-      deferred_draws[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   struct r3v_native_deferred_draw *deferred_draws;
    uint32_t deferred_draw_count;
+   uint32_t deferred_draw_capacity;
    uint32_t render_pass_count;
    uint32_t active_pass_draw_index;
    /* Recorded transfer copies, executed in recorded order at submission
@@ -2082,6 +2080,9 @@ bool r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass);
  */
 void r3v_native_cmd_buffer_release_recording(
    struct r3v_native_cmd_buffer *cmd_buffer);
+
+VkResult r3v_native_cmd_buffer_reserve_deferred_draws(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);
 
 VkResult r3v_native_cmd_buffer_reserve_ordered_operations(
    struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);

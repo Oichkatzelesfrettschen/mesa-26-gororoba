@@ -548,6 +548,10 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    const bool ordered_stencil =
       depth_state != NULL &&
       depth_state->stencil.back_reference_requires_draw_split;
+   if (emit_result == 0 && depth_state != NULL)
+      emit_result = r300_tcl_bypass_triangle_insert_depth_state(&cell,
+                                                                depth_state,
+                                                                z_top_enable);
    if (emit_result == 0 && ordered_stencil)
       emit_result =
          !clip_space
@@ -565,6 +569,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       emit_result = emit_triangle_cell_for_position_space(
          shape, varying, false, true, false, false, (uint8_t)R3V_RS_PROBE_NONE,
          triangle_count, sampled, clip_space, alternate_carrier_out);
+      if (emit_result == 0 && depth_state != NULL)
+         emit_result = r300_tcl_bypass_triangle_insert_depth_state(
+            alternate_carrier_out, depth_state, z_top_enable);
       if (emit_result == 0 && ordered_stencil)
          emit_result = r300_tcl_bypass_triangle_split_ordered_stencil(
             alternate_carrier_out, triangle_count,
@@ -572,10 +579,6 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       if (emit_result != 0)
          r300_tcl_bypass_triangle_release(&cell);
    }
-   if (emit_result == 0 && depth_state != NULL)
-      emit_result = r300_tcl_bypass_triangle_insert_depth_state(&cell,
-                                                                depth_state,
-                                                                z_top_enable);
    if (emit_result == 0 && depth_state != NULL && depth_clear != NULL)
       emit_result = prepend_depth_clear(depth_clear, &cell);
    if (emit_result == 0 && depth_state != NULL && retain_window_cell)
@@ -585,10 +588,6 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
        retain_window_cell)
       emit_result = prepend_depth_clear(depth_clear, &window_cell);
-   if (emit_result == 0 && depth_state != NULL &&
-       alternate_carrier_out != NULL)
-      emit_result = r300_tcl_bypass_triangle_insert_depth_state(
-         alternate_carrier_out, depth_state, z_top_enable);
    if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
        alternate_carrier_out != NULL)
       emit_result = prepend_depth_clear(depth_clear, alternate_carrier_out);

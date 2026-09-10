@@ -56,6 +56,83 @@ out_of_memory:
 }
 
 VkResult
+r3v_native_cmd_buffer_reserve_deferred_draws(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count)
+{
+   if (additional_count > UINT32_MAX - cmd_buffer->deferred_draw_count)
+      goto out_of_memory;
+
+   const uint32_t required_count =
+      cmd_buffer->deferred_draw_count + additional_count;
+   if (required_count <= cmd_buffer->deferred_draw_capacity)
+      return VK_SUCCESS;
+
+   uint32_t new_capacity = cmd_buffer->deferred_draw_capacity != 0u
+                              ? cmd_buffer->deferred_draw_capacity
+                              : R3V_NATIVE_DEFERRED_DRAW_INITIAL_CAPACITY;
+   while (new_capacity < required_count) {
+      if (new_capacity > UINT32_MAX / 2u)
+         goto out_of_memory;
+      new_capacity *= 2u;
+   }
+
+   if ((size_t)new_capacity > SIZE_MAX / sizeof(*cmd_buffer->deferred_draws) ||
+       (size_t)new_capacity > SIZE_MAX / sizeof(*cmd_buffer->owned_carriers) ||
+       (size_t)new_capacity > SIZE_MAX / sizeof(*cmd_buffer->owned_color_sinks))
+      goto out_of_memory;
+
+   /* Reserve all three related arrays as one transaction.  A draw record
+    * becomes visible only after every array has storage, so a failed growth
+    * leaves the prior recording and its ownership vectors intact. */
+   struct r3v_native_deferred_draw *new_draws = vk_alloc(
+      &cmd_buffer->vk.pool->alloc,
+      (size_t)new_capacity * sizeof(*new_draws), 8,
+      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   struct r3v_native_memory **new_carriers = vk_alloc(
+      &cmd_buffer->vk.pool->alloc,
+      (size_t)new_capacity * sizeof(*new_carriers), 8,
+      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   struct r3v_native_memory **new_color_sinks = vk_alloc(
+      &cmd_buffer->vk.pool->alloc,
+      (size_t)new_capacity * sizeof(*new_color_sinks), 8,
+      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (new_draws == NULL || new_carriers == NULL || new_color_sinks == NULL) {
+      vk_free(&cmd_buffer->vk.pool->alloc, new_draws);
+      vk_free(&cmd_buffer->vk.pool->alloc, new_carriers);
+      vk_free(&cmd_buffer->vk.pool->alloc, new_color_sinks);
+      goto out_of_memory;
+   }
+
+   memset(new_draws, 0, (size_t)new_capacity * sizeof(*new_draws));
+   memset(new_carriers, 0, (size_t)new_capacity * sizeof(*new_carriers));
+   memset(new_color_sinks, 0,
+          (size_t)new_capacity * sizeof(*new_color_sinks));
+   if (cmd_buffer->deferred_draw_count != 0u) {
+      memcpy(new_draws, cmd_buffer->deferred_draws,
+             (size_t)cmd_buffer->deferred_draw_count * sizeof(*new_draws));
+      memcpy(new_carriers, cmd_buffer->owned_carriers,
+             (size_t)cmd_buffer->deferred_draw_count *
+                sizeof(*new_carriers));
+      memcpy(new_color_sinks, cmd_buffer->owned_color_sinks,
+             (size_t)cmd_buffer->deferred_draw_count *
+                sizeof(*new_color_sinks));
+   }
+
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_draws);
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carriers);
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_color_sinks);
+   cmd_buffer->deferred_draws = new_draws;
+   cmd_buffer->owned_carriers = new_carriers;
+   cmd_buffer->owned_color_sinks = new_color_sinks;
+   cmd_buffer->deferred_draw_capacity = new_capacity;
+   return VK_SUCCESS;
+
+out_of_memory:
+   vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+   return VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+VkResult
 r3v_native_cmd_buffer_reserve_ordered_operations(
    struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count)
 {
@@ -425,7 +502,7 @@ void
 r3v_native_cmd_buffer_release_recording(
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   for (uint32_t i = 0; i < R3V_NATIVE_DEFERRED_DRAW_MAX; i++) {
+   for (uint32_t i = 0; i < cmd_buffer->deferred_draw_capacity; i++) {
       if (cmd_buffer->owned_carriers[i] == NULL)
          continue;
       struct r3v_native_device *device = container_of(
@@ -434,7 +511,7 @@ r3v_native_cmd_buffer_release_recording(
       vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carriers[i]);
       cmd_buffer->owned_carriers[i] = NULL;
    }
-   for (uint32_t i = 0; i < R3V_NATIVE_DEFERRED_DRAW_MAX; i++) {
+   for (uint32_t i = 0; i < cmd_buffer->deferred_draw_capacity; i++) {
       if (cmd_buffer->owned_color_sinks[i] == NULL)
          continue;
       struct r3v_native_device *device = container_of(
@@ -497,10 +574,15 @@ r3v_native_cmd_buffer_release_recording(
    cmd_buffer->bound_index_offset = 0;
    cmd_buffer->bound_index_bytes = 0;
    cmd_buffer->draw_recorded = false;
-   for (uint32_t i = 0; i < R3V_NATIVE_DEFERRED_DRAW_MAX; i++)
+   for (uint32_t i = 0; i < cmd_buffer->deferred_draw_capacity; i++)
       free(cmd_buffer->deferred_draws[i].alternate_ib);
-   memset(cmd_buffer->deferred_draws, 0,
-          sizeof(cmd_buffer->deferred_draws));
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_draws);
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_carriers);
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->owned_color_sinks);
+   cmd_buffer->deferred_draws = NULL;
+   cmd_buffer->owned_carriers = NULL;
+   cmd_buffer->owned_color_sinks = NULL;
+   cmd_buffer->deferred_draw_capacity = 0;
    cmd_buffer->deferred_draw_count = 0;
    cmd_buffer->render_pass_count = 0;
    cmd_buffer->active_pass_draw_index = 0;
@@ -716,6 +798,13 @@ r3v_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
    vk_command_buffer_begin(cmd_buffer, pBeginInfo);
+   if (vk_command_buffer_get_record_result(cmd_buffer) == VK_SUCCESS) {
+      const VkResult draw_storage_result =
+         r3v_native_cmd_buffer_reserve_deferred_draws(
+            container_of(cmd_buffer, struct r3v_native_cmd_buffer, vk), 1u);
+      if (draw_storage_result != VK_SUCCESS)
+         return draw_storage_result;
+   }
    return vk_command_buffer_get_record_result(cmd_buffer);
 }
 

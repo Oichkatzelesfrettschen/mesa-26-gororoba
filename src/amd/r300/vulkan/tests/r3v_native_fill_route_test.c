@@ -924,6 +924,7 @@ test_multi_pass_depth_topology(void)
    struct r3v_native_memory other_depth = {0};
    struct r3v_native_depth_image_contract contract = {0};
    struct r3v_native_depth_image_contract other_contract = {0};
+   struct r3v_native_deferred_draw deferred_draws[2] = {0};
    struct r3v_native_bo_reference references[4] = {
       [0] = { .handle = 11, .read_domains = RADEON_GEM_DOMAIN_GTT,
               .memory = &first_vertex },
@@ -943,7 +944,9 @@ test_multi_pass_depth_topology(void)
    command.cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS;
    command.references = references;
    command.reference_count = 4;
+   command.deferred_draws = deferred_draws;
    command.deferred_draw_count = 2;
+   command.deferred_draw_capacity = 2;
    for (uint32_t draw = 0; draw < 2; draw++) {
       command.deferred_draws[draw].pending = true;
       command.deferred_draws[draw].target_width = 64;
