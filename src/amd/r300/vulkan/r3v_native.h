@@ -246,6 +246,8 @@ r3v_native_packed_depth_stencil_layout(VkImageLayout layout)
 enum r3v_native_image_representation {
    R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR = 0,
    R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+   R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+   R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
 };
 
 enum r3v_native_image_producer {
@@ -284,12 +286,15 @@ struct r3v_native_cmd_image_state {
    struct r3v_native_image *image;
    enum r3v_native_image_api_layout required_layout;
    enum r3v_native_image_api_layout current_layout;
-   enum r3v_native_image_representation representation;
+   enum r3v_native_image_representation required_representation;
+   enum r3v_native_image_representation current_representation;
    enum r3v_native_image_producer producer;
    uint32_t visible_to;
    enum r3v_native_image_content_status content;
    bool required_layout_set;
    bool current_layout_set;
+   bool required_representation_set;
+   bool current_representation_set;
    bool producer_set;
    bool visibility_set;
    bool content_set;
@@ -2129,6 +2134,11 @@ VkResult r3v_native_cmd_buffer_require_image_layout(
 VkResult r3v_native_cmd_buffer_transition_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout old_layout, VkImageLayout new_layout);
+
+VkResult r3v_native_cmd_buffer_transition_image_representation(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   enum r3v_native_image_representation required_representation,
+   enum r3v_native_image_representation resulting_representation);
 
 VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
