@@ -277,6 +277,38 @@ r3v_submit_transaction_refuse(struct r3v_submit_transaction *t,
    return true;
 }
 
+void
+r3v_hyperz_grant_transaction_begin(
+   struct r3v_hyperz_grant_transaction *transaction)
+{
+   if (transaction != NULL)
+      *transaction = (struct r3v_hyperz_grant_transaction){0};
+}
+
+void
+r3v_hyperz_grant_transaction_record_acquisition(
+   struct r3v_hyperz_grant_transaction *transaction)
+{
+   if (transaction != NULL)
+      transaction->newly_acquired = true;
+}
+
+void
+r3v_hyperz_grant_transaction_record_ioctl(
+   struct r3v_hyperz_grant_transaction *transaction, bool accepted)
+{
+   if (transaction != NULL)
+      transaction->any_ioctl_accepted |= accepted;
+}
+
+bool
+r3v_hyperz_grant_transaction_requires_release(
+   const struct r3v_hyperz_grant_transaction *transaction)
+{
+   return transaction != NULL && transaction->newly_acquired &&
+          !transaction->any_ioctl_accepted;
+}
+
 bool
 r3v_route_table_admits_device(const struct r300_operation_route_row *t,
                               uint32_t count, const char **reason)

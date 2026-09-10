@@ -222,6 +222,23 @@ bool r3v_submit_transaction_refuse(struct r3v_submit_transaction *t,
  * memory changed. */
 bool r3v_submit_transaction_reversible(const struct r3v_submit_transaction *t);
 
+/* A HyperZ grant acquired while preparing one submission is provisional
+ * until a CS ioctl accepts work under that grant.  A pre-existing descriptor
+ * grant never enters this transaction. */
+struct r3v_hyperz_grant_transaction {
+   bool newly_acquired;
+   bool any_ioctl_accepted;
+};
+
+void r3v_hyperz_grant_transaction_begin(
+   struct r3v_hyperz_grant_transaction *transaction);
+void r3v_hyperz_grant_transaction_record_acquisition(
+   struct r3v_hyperz_grant_transaction *transaction);
+void r3v_hyperz_grant_transaction_record_ioctl(
+   struct r3v_hyperz_grant_transaction *transaction, bool accepted);
+bool r3v_hyperz_grant_transaction_requires_release(
+   const struct r3v_hyperz_grant_transaction *transaction);
+
 /* Whether a route table admits a device.
  *
  * The ledger's own well-formedness comes first; it bounds every route

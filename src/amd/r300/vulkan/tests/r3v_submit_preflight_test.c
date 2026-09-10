@@ -352,6 +352,35 @@ test_transaction_orders_refusal_before_effect(void)
    r3v_submit_transaction_begin(NULL);
 }
 
+static void
+test_hyperz_grant_transaction(void)
+{
+   struct r3v_hyperz_grant_transaction transaction;
+
+   r3v_hyperz_grant_transaction_begin(&transaction);
+   assert(!transaction.newly_acquired);
+   assert(!transaction.any_ioctl_accepted);
+   assert(!r3v_hyperz_grant_transaction_requires_release(&transaction));
+
+   r3v_hyperz_grant_transaction_record_acquisition(&transaction);
+   assert(r3v_hyperz_grant_transaction_requires_release(&transaction));
+   r3v_hyperz_grant_transaction_record_ioctl(&transaction, false);
+   assert(r3v_hyperz_grant_transaction_requires_release(&transaction));
+   r3v_hyperz_grant_transaction_record_ioctl(&transaction, true);
+   assert(!r3v_hyperz_grant_transaction_requires_release(&transaction));
+   r3v_hyperz_grant_transaction_record_ioctl(&transaction, false);
+   assert(transaction.any_ioctl_accepted);
+
+   r3v_hyperz_grant_transaction_begin(&transaction);
+   r3v_hyperz_grant_transaction_record_ioctl(&transaction, true);
+   assert(!r3v_hyperz_grant_transaction_requires_release(&transaction));
+
+   r3v_hyperz_grant_transaction_begin(NULL);
+   r3v_hyperz_grant_transaction_record_acquisition(NULL);
+   r3v_hyperz_grant_transaction_record_ioctl(NULL, true);
+   assert(!r3v_hyperz_grant_transaction_requires_release(NULL));
+}
+
 /* The device caches one gate value per route identity, so the table decides
  * the shape of that array.  The shipped table is well-formed; the refusals
  * are calibrated on mutated copies, which is the only input that reaches
@@ -449,6 +478,7 @@ main(void)
    test_preflight_admits_the_shipped_shapes();
    test_preflight_refuses_each_shape();
    test_transaction_orders_refusal_before_effect();
+   test_hyperz_grant_transaction();
    test_route_table_admission();
    test_gate_state_from_cache();
    printf("r3v_submit_preflight_test: all checks passed\n");
