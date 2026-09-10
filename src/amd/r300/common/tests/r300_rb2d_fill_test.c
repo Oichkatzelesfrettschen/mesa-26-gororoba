@@ -238,6 +238,39 @@ test_field_packing(void)
    assert(saw_y_x && saw_width_height);
 }
 
+static uint32_t
+packet0_value(const struct r300_rb2d_fill_ib *ib, uint32_t reg)
+{
+   const uint32_t header = reg >> 2;
+
+   for (uint32_t i = 0; i + 1u < ib->ib_size_dwords; i++) {
+      if (ib->ib[i] == header)
+         return ib->ib[i + 1u];
+   }
+
+   assert(!"PACKET0 register is absent");
+   return 0u;
+}
+
+static void
+test_write_mask_emission(void)
+{
+   struct r300_rb2d_fill_plan plan = base_plan();
+   struct r300_rb2d_fill_ib ib;
+   uint32_t words[WORDS];
+
+   assert(r300_rb2d_fill_emit_into(&plan, words, WORDS, &ib) == 0);
+   assert((packet0_value(&ib, RADEON_DP_GUI_MASTER_CNTL) &
+           RADEON_GMC_WR_MSK_DIS) != 0u);
+   assert(packet0_value(&ib, RADEON_DP_WRITE_MSK) == UINT32_MAX);
+
+   plan.write_mask = 0xffffff00u;
+   assert(r300_rb2d_fill_emit_into(&plan, words, WORDS, &ib) == 0);
+   assert((packet0_value(&ib, RADEON_DP_GUI_MASTER_CNTL) &
+           RADEON_GMC_WR_MSK_DIS) == 0u);
+   assert(packet0_value(&ib, RADEON_DP_WRITE_MSK) == 0xffffff00u);
+}
+
 /* The fixed direct-write control is one instance of this plan, so its
  * stream is the plan's stream: same length, same bytes, same relocation
  * site.  This is the property that lets the retained RB2D witness carry
@@ -331,6 +364,7 @@ main(void)
    test_plan_rules();
    test_emit_refusals();
    test_field_packing();
+   test_write_mask_emission();
    test_control_cell_parity();
    printf("r300_rb2d_fill_test: all checks passed\n");
    return 0;

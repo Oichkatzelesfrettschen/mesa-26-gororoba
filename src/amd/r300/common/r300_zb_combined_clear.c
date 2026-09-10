@@ -52,7 +52,8 @@ r300_zb_combined_clear_plan(const struct r300_zb_combined_clear_request *request
       return R300_ZB_COMBINED_CLEAR_REFUSE_PITCH;
    if (request->format != R300_RB2D_FORMAT_ARGB8888)
       return R300_ZB_COMBINED_CLEAR_REFUSE_FORMAT;
-   if (request->aspect_mask != R300_ZB_COMBINED_CLEAR_ASPECTS)
+   if (request->aspect_mask == 0u ||
+       (request->aspect_mask & ~R300_ZB_COMBINED_CLEAR_ASPECTS) != 0u)
       return R300_ZB_COMBINED_CLEAR_REFUSE_ASPECT;
    if (request->depth_code > 0x00ffffffu)
       return R300_ZB_COMBINED_CLEAR_REFUSE_DEPTH;
@@ -78,19 +79,38 @@ r300_zb_combined_clear_plan(const struct r300_zb_combined_clear_request *request
                           request->stencil, &word) != 0)
       return R300_ZB_COMBINED_CLEAR_REFUSE_DEPTH;
 
+   if (layout.storage_bytes == 0u ||
+       layout.storage_bytes % R300_ZB_MACROTILE_BYTES != 0u)
+      return R300_ZB_COMBINED_CLEAR_REFUSE_OVERFLOW;
+   /* A uniform packed clear is invariant under the tiled address
+    * permutation.  Reinterpret each complete macrotile as one linear RB2D
+    * row so every storage word changes while both guards stay outside the
+    * rectangle. */
+   const uint32_t fill_width_pixels =
+      R300_ZB_MACROTILE_BYTES / request->surface->bytes_per_pixel;
+   const uint32_t fill_height =
+      (uint32_t)(layout.storage_bytes / R300_ZB_MACROTILE_BYTES);
+
    const struct r300_rb2d_fill_rect rect = {
-      .x = 0u, .y = 0u, .width = layout.width, .height = layout.height,
+      .x = 0u,
+      .y = 0u,
+      .width = fill_width_pixels,
+      .height = fill_height,
       .value = word,
    };
    const struct r300_rb2d_fill_plan fill = {
       .surface = {
          .base_offset_bytes = (uint32_t)bo_surface_base,
-         .pitch_bytes = request->pitch_bytes,
-         .width_pixels = layout.width,
-         .height_pixels = layout.height,
+         .pitch_bytes = R300_ZB_MACROTILE_BYTES,
+         .width_pixels = fill_width_pixels,
+         .height_pixels = fill_height,
          .format = request->format,
       },
-      .write_mask = 0xfu,
+      .write_mask = request->aspect_mask == R300_ZB_COMBINED_CLEAR_ASPECTS
+                       ? UINT32_MAX
+                       : request->aspect_mask == R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH
+                            ? 0xffffff00u
+                            : 0x000000ffu,
       .rects = &rect,
       .rect_count = 1u,
    };

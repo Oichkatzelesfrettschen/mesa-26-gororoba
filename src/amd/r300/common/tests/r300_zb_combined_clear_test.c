@@ -29,11 +29,25 @@ int main(void)
    memset(&plan, 0xa5, sizeof(plan));
    assert(r300_zb_combined_clear_plan(&request, &plan) ==
           R300_ZB_COMBINED_CLEAR_OK);
-   assert(plan.rect.width == 64u && plan.rect.height == 64u);
+   assert(plan.rect.width == 512u && plan.rect.height == 10u);
    assert(plan.rect.value == 0x123456a5u);
    assert(plan.fill.surface.base_offset_bytes == 2048u);
-   assert(plan.fill.surface.pitch_bytes == 256u);
+   assert(plan.fill.surface.pitch_bytes == 2048u);
+   assert((uint64_t)plan.fill.surface.pitch_bytes *
+             plan.fill.surface.height_pixels ==
+          20480u);
+   assert(plan.fill.write_mask == UINT32_MAX);
    assert(plan.fill.rects == &plan.rect);
+
+   request.aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+   assert(r300_zb_combined_clear_plan(&request, &plan) ==
+          R300_ZB_COMBINED_CLEAR_OK);
+   assert(plan.fill.write_mask == 0xffffff00u);
+   request.aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+   assert(r300_zb_combined_clear_plan(&request, &plan) ==
+          R300_ZB_COMBINED_CLEAR_OK);
+   assert(plan.fill.write_mask == 0x000000ffu);
+   request = valid_request();
 
    struct r300_zb_depth_surface copied_surface = *request.surface;
    request.surface = &copied_surface;
@@ -68,7 +82,7 @@ int main(void)
       {.surface = request.surface, .surface_base_bytes = 2048u,
        .mapped_surface_bytes = request.mapped_surface_bytes,
        .pitch_bytes = 256u, .format = request.format,
-       .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH,
+       .aspect_mask = 4u,
        .depth_code = request.depth_code, .stencil = request.stencil},
       {.surface = request.surface, .surface_base_bytes = 2048u,
        .binding_offset_bytes = UINT64_MAX,
@@ -76,6 +90,10 @@ int main(void)
        .pitch_bytes = 256u, .format = request.format,
        .aspect_mask = request.aspect_mask, .depth_code = request.depth_code,
        .stencil = request.stencil},
+      {.surface = request.surface, .surface_base_bytes = 2048u,
+       .mapped_surface_bytes = request.mapped_surface_bytes,
+       .pitch_bytes = 256u, .format = request.format, .aspect_mask = 0u,
+       .depth_code = request.depth_code, .stencil = request.stencil},
       {.surface = request.surface, .surface_base_bytes = 2048u,
        .mapped_surface_bytes = 2048u + 24575u,
        .pitch_bytes = 256u, .format = request.format,
