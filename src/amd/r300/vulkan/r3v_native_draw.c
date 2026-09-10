@@ -64,9 +64,11 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
        attachment->format != VK_FORMAT_D24_UNORM_S8_UINT ||
        depth_view->image->format != VK_FORMAT_D24_UNORM_S8_UINT ||
        !r3v_native_view_type_executes(depth_view->view_type) ||
-       area->offset.x != 0 || area->offset.y != 0 ||
-       area->extent.width > framebuffer->width ||
-       area->extent.height > framebuffer->height ||
+       area->offset.x < 0 || area->offset.y < 0 ||
+       (uint32_t)area->offset.x > framebuffer->width ||
+       (uint32_t)area->offset.y > framebuffer->height ||
+       area->extent.width > framebuffer->width - (uint32_t)area->offset.x ||
+       area->extent.height > framebuffer->height - (uint32_t)area->offset.y ||
        framebuffer->width > depth_view->image->width ||
        framebuffer->height > depth_view->image->height ||
        begin->clearValueCount < ((depth_clear || stencil_clear) ? 1u : 0u) ||
@@ -650,6 +652,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          poison(commandBuffer, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          return;
       }
+      cmd_buffer->owned_color_sinks[pass_slot] = color_sink;
       color_sink_image = *cmd_buffer->pass_target;
       color_sink_image.memory = color_sink;
       color_sink_image.memory_offset = 0;
@@ -962,10 +965,6 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
-      if (color_sink != NULL) {
-         radeon_drm_vk_bo_free(&device->drm, &color_sink->bo);
-         vk_free(&cmd_buffer->vk.pool->alloc, color_sink);
-      }
       poison(commandBuffer, result);
       return;
    }
@@ -986,7 +985,6 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    }
 
    cmd_buffer->owned_carriers[pass_slot] = carrier;
-   cmd_buffer->owned_color_sinks[pass_slot] = color_sink;
    /* The pass's load-op clear and attachment-clear rectangles were resolved
     * at CmdBeginRenderPass or CmdClearAttachments; the draw record replaces
     * the deferred draw whole, so both payloads travel across that

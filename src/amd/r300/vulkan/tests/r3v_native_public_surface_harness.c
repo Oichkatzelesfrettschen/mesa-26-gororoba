@@ -793,6 +793,56 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
              R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
       assert(native_depth_only->ordered_operations[2].kind ==
              R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+
+      if (aspect == 0) {
+         VkRenderPassBeginInfo offset_begin = depth_only_begin;
+         offset_begin.renderArea = (VkRect2D){
+            .offset = { 5, 7 },
+            .extent = { 16, 12 },
+         };
+         VkCommandBuffer offset_command = fresh_cmd();
+         vkCmdBeginRenderPass(offset_command, &offset_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdEndRenderPass(offset_command);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_offset,
+                        offset_command);
+         assert(vkEndCommandBuffer(offset_command) == VK_SUCCESS);
+         assert(native_offset->ordered_operation_count == 3u);
+         const struct r3v_native_ordered_operation *offset_clear =
+            &native_offset->ordered_operations[0];
+         assert(offset_clear->kind ==
+                R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
+         assert(offset_clear->payload.rb2d_depth_clear.x == 5u);
+         assert(offset_clear->payload.rb2d_depth_clear.y == 7u);
+         assert(offset_clear->payload.rb2d_depth_clear.width == 16u);
+         assert(offset_clear->payload.rb2d_depth_clear.height == 12u);
+
+         VkRenderPassBeginInfo outside_begin = offset_begin;
+         outside_begin.renderArea.offset.x = 17;
+         VkCommandBuffer outside_command = fresh_cmd();
+         vkCmdBeginRenderPass(outside_command, &outside_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_outside,
+                        outside_command);
+         assert(native_outside->deferred_draw_count == 0u);
+         assert(vkEndCommandBuffer(outside_command) ==
+                R3V_NATIVE_REFUSAL_RESULT);
+
+         VkCommandBuffer sink_failure_command = fresh_cmd();
+         vkCmdBeginRenderPass(sink_failure_command, &depth_only_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(sink_failure_command,
+                           VK_PIPELINE_BIND_POINT_GRAPHICS, depth_pipeline);
+         vkCmdDraw(sink_failure_command, 3, 1, 0, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_sink_failure,
+                        sink_failure_command);
+         assert(native_sink_failure->owned_color_sinks[0] != NULL);
+         vkCmdEndRenderPass(sink_failure_command);
+         assert(vkEndCommandBuffer(sink_failure_command) ==
+                R3V_NATIVE_REFUSAL_RESULT);
+         r3v_native_cmd_buffer_release_recording(native_sink_failure);
+         assert(native_sink_failure->owned_color_sinks[0] == NULL);
+      }
       vkDestroyFramebuffer(device, depth_only_framebuffer, NULL);
    }
    vkDestroyRenderPass(device, depth_only_pass, NULL);
