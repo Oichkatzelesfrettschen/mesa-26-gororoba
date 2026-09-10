@@ -814,8 +814,15 @@ struct r3v_native_cmd_buffer {
    struct r3v_native_rb2d_copy_operation *rb2d_copy_operations;
    uint32_t rb2d_copy_operation_count;
    uint32_t rb2d_copy_operation_capacity;
+   /* Each public persistence command owns a distinct CPU-vertex carrier.
+    * The binding snapshots that command-local allocation while the device
+    * identity below binds the color and paired depth allocations shared by
+    * the three submissions. */
    bool zb_persistence_configured;
    enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
+   struct r3v_native_memory *zb_persistence_vertex;
+   uint64_t zb_persistence_vertex_generation;
+   uint32_t zb_persistence_vertex_handle;
    struct r3v_native_memory *zb_persistence_depth_a;
    struct r3v_native_memory *zb_persistence_depth_b;
    /* The declared experiment and arm a recorded discovery cell carries,
@@ -991,19 +998,36 @@ struct r3v_native_zb_persistence_identity {
    bool valid;
    uint32_t ib_size_dwords;
    char ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
-   struct r3v_native_memory *vertex;
    struct r3v_native_memory *color;
    struct r3v_native_memory *depth_a;
    struct r3v_native_memory *depth_b;
-   uint64_t vertex_generation;
    uint64_t color_generation;
    uint64_t depth_a_generation;
    uint64_t depth_b_generation;
-   uint32_t vertex_handle;
    uint32_t color_handle;
    uint32_t depth_a_handle;
    uint32_t depth_b_handle;
 };
+
+enum r3v_native_zb_persistence_identity_mismatch {
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH = 0,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE = 1u << 0,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ORDINAL = 1u << 1,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_SIZE = 1u << 2,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_DIGEST = 1u << 3,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_REFERENCE_COUNT = 1u << 4,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_VERTEX_BINDING = 1u << 5,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_COLOR_BINDING = 1u << 6,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_DEPTH_PAIR = 1u << 7,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ACTIVE_DEPTH = 1u << 8,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_GENERATION = 1u << 9,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_HANDLE = 1u << 10,
+};
+
+uint32_t r3v_native_zb_persistence_identity_mismatches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal);
 
 bool r3v_native_zb_persistence_identity_matches(
    const struct r3v_native_zb_persistence_identity *identity,

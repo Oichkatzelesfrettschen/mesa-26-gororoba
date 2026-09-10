@@ -52,6 +52,12 @@ r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
    cmd_buffer->rb2d_copy_operations = NULL;
    cmd_buffer->rb2d_copy_operation_count = 0u;
    cmd_buffer->rb2d_copy_operation_capacity = 0u;
+   cmd_buffer->zb_persistence_configured = false;
+   cmd_buffer->zb_persistence_vertex = NULL;
+   cmd_buffer->zb_persistence_vertex_generation = 0u;
+   cmd_buffer->zb_persistence_vertex_handle = 0u;
+   cmd_buffer->zb_persistence_depth_a = NULL;
+   cmd_buffer->zb_persistence_depth_b = NULL;
    cmd_buffer->ib = NULL;
    cmd_buffer->ib_size_dwords = 0;
    cmd_buffer->window_space_ib = NULL;

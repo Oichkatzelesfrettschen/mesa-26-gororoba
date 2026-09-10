@@ -26,6 +26,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <inttypes.h>
 #include <radeon_drm.h>
 #include <stdint.h>
 #include <fcntl.h>
@@ -557,6 +558,11 @@ r3v_native_cell_geometry_unfrozen(
                    !surface->logical_image_readback ||
                    vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
                    vertex->write_domain != 0 || vertex->memory == NULL ||
+                   vertex->memory != cmd_buffer->zb_persistence_vertex ||
+                   vertex->memory->generation !=
+                      cmd_buffer->zb_persistence_vertex_generation ||
+                   vertex->memory->bo.handle !=
+                      cmd_buffer->zb_persistence_vertex_handle ||
                    color->read_domains != 0 ||
                    color->write_domain != RADEON_GEM_DOMAIN_GTT ||
                    color->memory == NULL || depth->memory == NULL ||
@@ -923,18 +929,26 @@ r3v_native_cell_is_serial(enum r3v_native_cell_kind kind)
           kind == R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
 }
 
-bool
-r3v_native_zb_persistence_identity_matches(
+uint32_t
+r3v_native_zb_persistence_identity_mismatches(
    const struct r3v_native_zb_persistence_identity *identity,
    const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
    uint32_t ordinal)
 {
-   if (!identity->valid || !cmd_buffer->zb_persistence_configured ||
-       cmd_buffer->zb_persistence_ordinal != ordinal ||
-       cmd_buffer->ib_size_dwords != identity->ib_size_dwords ||
-       strcmp(identity->ib_blake3, ib_digest) != 0 ||
-       cmd_buffer->reference_count != R300_ZB_DEPTH_CONTROL_SLOT_COUNT)
-      return false;
+   uint32_t mismatches = R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
+   if (!identity->valid || !cmd_buffer->zb_persistence_configured)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE;
+   if (cmd_buffer->zb_persistence_ordinal != ordinal)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ORDINAL;
+   if (cmd_buffer->ib_size_dwords != identity->ib_size_dwords)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_SIZE;
+   if (strcmp(identity->ib_blake3, ib_digest) != 0)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_DIGEST;
+   if (cmd_buffer->reference_count != R300_ZB_DEPTH_CONTROL_SLOT_COUNT)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_REFERENCE_COUNT;
+   if (mismatches & (R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE |
+                     R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_REFERENCE_COUNT))
+      return mismatches;
    const struct r3v_native_memory *vertex =
       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
    const struct r3v_native_memory *color =
@@ -944,21 +958,47 @@ r3v_native_zb_persistence_identity_matches(
    const struct r3v_native_memory *expected_active =
       ordinal == R3V_NATIVE_ZB_PERSISTENCE_B ? identity->depth_b
                                              : identity->depth_a;
-   if (vertex == NULL || color == NULL || identity->depth_a == NULL ||
-       identity->depth_b == NULL)
-      return false;
-   return vertex == identity->vertex && color == identity->color &&
-          cmd_buffer->zb_persistence_depth_a == identity->depth_a &&
-          cmd_buffer->zb_persistence_depth_b == identity->depth_b &&
-          active == expected_active &&
-          vertex->generation == identity->vertex_generation &&
-          color->generation == identity->color_generation &&
-          identity->depth_a->generation == identity->depth_a_generation &&
-          identity->depth_b->generation == identity->depth_b_generation &&
-          vertex->bo.handle == identity->vertex_handle &&
-          color->bo.handle == identity->color_handle &&
-          identity->depth_a->bo.handle == identity->depth_a_handle &&
-          identity->depth_b->bo.handle == identity->depth_b_handle;
+   if (vertex == NULL || color == NULL || active == NULL ||
+       identity->depth_a == NULL || identity->depth_b == NULL ||
+       cmd_buffer->zb_persistence_vertex == NULL)
+      return mismatches | R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE;
+   if (vertex != cmd_buffer->zb_persistence_vertex)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_VERTEX_BINDING;
+   if (color != identity->color)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_COLOR_BINDING;
+   if (cmd_buffer->zb_persistence_depth_a != identity->depth_a ||
+       cmd_buffer->zb_persistence_depth_b != identity->depth_b)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_DEPTH_PAIR;
+   if (active != expected_active)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ACTIVE_DEPTH;
+   if (vertex->generation != cmd_buffer->zb_persistence_vertex_generation ||
+       color->generation != identity->color_generation ||
+       identity->depth_a->generation != identity->depth_a_generation ||
+       identity->depth_b->generation != identity->depth_b_generation)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_GENERATION;
+   if (vertex->bo.handle != cmd_buffer->zb_persistence_vertex_handle ||
+       color->bo.handle != identity->color_handle ||
+       identity->depth_a->bo.handle != identity->depth_a_handle ||
+       identity->depth_b->bo.handle != identity->depth_b_handle ||
+       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].handle !=
+          vertex->bo.handle ||
+       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].handle !=
+          color->bo.handle ||
+       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH].handle !=
+          active->bo.handle)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_HANDLE;
+   return mismatches;
+}
+
+bool
+r3v_native_zb_persistence_identity_matches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal)
+{
+   return r3v_native_zb_persistence_identity_mismatches(
+             identity, cmd_buffer, ib_digest, ordinal) ==
+          R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
 }
 
 void
@@ -968,17 +1008,13 @@ r3v_native_zb_persistence_identity_capture(
 {
    identity->ib_size_dwords = cmd_buffer->ib_size_dwords;
    memcpy(identity->ib_blake3, ib_digest, sizeof(identity->ib_blake3));
-   identity->vertex =
-      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
    identity->color =
       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].memory;
    identity->depth_a = cmd_buffer->zb_persistence_depth_a;
    identity->depth_b = cmd_buffer->zb_persistence_depth_b;
-   identity->vertex_generation = identity->vertex->generation;
    identity->color_generation = identity->color->generation;
    identity->depth_a_generation = identity->depth_a->generation;
    identity->depth_b_generation = identity->depth_b->generation;
-   identity->vertex_handle = identity->vertex->bo.handle;
    identity->color_handle = identity->color->bo.handle;
    identity->depth_a_handle = identity->depth_a->bo.handle;
    identity->depth_b_handle = identity->depth_b->bo.handle;
@@ -1674,19 +1710,30 @@ r3v_native_queue_prepare_submission(VkDevice _device,
       R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
    const bool serial_continuation =
       serial_kind && device->serial_submissions_consumed > 0;
+   const uint32_t persistence_mismatches =
+      serial_continuation && persistence_kind
+         ? r3v_native_zb_persistence_identity_mismatches(
+              &device->zb_persistence_identity, cmd_buffer, ib_digest,
+              device->serial_submissions_consumed)
+         : R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
    VkResult result = VK_SUCCESS;
    if (serial_continuation &&
        !(persistence_kind
-            ? r3v_native_zb_persistence_identity_matches(
-                 &device->zb_persistence_identity, cmd_buffer, ib_digest,
-                 device->serial_submissions_consumed)
+            ? persistence_mismatches ==
+                 R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH
             : r3v_native_serial_semantic_identity_matches(
                  &device->serial_semantic_identity, cmd_buffer, ib_digest,
                  &prepared->relocs))) {
-      result = vk_errorf(
-         device, VK_ERROR_DEVICE_LOST,
-         "r3v-native: serial continuation changed the command-buffer or "
-         "relocation identity; refusing before evidence retention");
+      result = persistence_kind
+         ? vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                     "r3v-native: persistence continuation identity "
+                     "mismatch 0x%08" PRIx32
+                     "; refusing before evidence retention",
+                     persistence_mismatches)
+         : vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                     "r3v-native: serial continuation changed the "
+                     "command-buffer or relocation identity; refusing "
+                     "before evidence retention");
       goto prepare_fail;
    }
    if (facts.attempt_token_present && !serial_continuation) {
@@ -2256,6 +2303,12 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             device->serial_submissions_consumed;
          facts.persistence_ordinal = cmd_buffer->zb_persistence_ordinal;
          facts.burst_recorded_draws = cmd_buffer->burst_draws;
+         const uint32_t persistence_mismatches =
+            serial_continuation && persistence_kind
+               ? r3v_native_zb_persistence_identity_mismatches(
+                    &device->zb_persistence_identity, cmd_buffer, ib_digest,
+                    device->serial_submissions_consumed)
+               : R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
 
          /* The serial kind admits its own token within the declared
           * bound; the full serial predicate is the evaluation below, and
@@ -2275,18 +2328,23 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
          if (serial_continuation &&
              !(persistence_kind
-                  ? r3v_native_zb_persistence_identity_matches(
-                       &device->zb_persistence_identity, cmd_buffer, ib_digest,
-                       device->serial_submissions_consumed)
+                  ? persistence_mismatches ==
+                       R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH
                   : r3v_native_serial_semantic_identity_matches(
                        &device->serial_semantic_identity, cmd_buffer, ib_digest,
                        &relocs))) {
             free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
-            return vk_errorf(
-               device, VK_ERROR_DEVICE_LOST,
-               "r3v-native: serial continuation changed the command-buffer "
-               "or relocation identity; refusing before evidence retention");
+            return persistence_kind
+               ? vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                           "r3v-native: persistence continuation identity "
+                           "mismatch 0x%08" PRIx32
+                           "; refusing before evidence retention",
+                           persistence_mismatches)
+               : vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                           "r3v-native: serial continuation changed the "
+                           "command-buffer or relocation identity; refusing "
+                           "before evidence retention");
          }
       }
 

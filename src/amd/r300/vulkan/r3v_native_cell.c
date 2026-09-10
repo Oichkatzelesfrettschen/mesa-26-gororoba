@@ -3412,6 +3412,12 @@ r3v_native_record_zb_tiled_persistence(
    cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
    cmd_buffer->zb_persistence_configured = true;
    cmd_buffer->zb_persistence_ordinal = ordinal;
+   cmd_buffer->zb_persistence_vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   cmd_buffer->zb_persistence_vertex_generation =
+      cmd_buffer->zb_persistence_vertex->generation;
+   cmd_buffer->zb_persistence_vertex_handle =
+      cmd_buffer->zb_persistence_vertex->bo.handle;
    cmd_buffer->zb_persistence_depth_a = depth_a;
    cmd_buffer->zb_persistence_depth_b = depth_b;
    return VK_SUCCESS;
@@ -3451,6 +3457,12 @@ r3v_native_bind_zb_tiled_persistence(
    cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
    cmd_buffer->zb_persistence_configured = true;
    cmd_buffer->zb_persistence_ordinal = ordinal;
+   cmd_buffer->zb_persistence_vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   cmd_buffer->zb_persistence_vertex_generation =
+      cmd_buffer->zb_persistence_vertex->generation;
+   cmd_buffer->zb_persistence_vertex_handle =
+      cmd_buffer->zb_persistence_vertex->bo.handle;
    cmd_buffer->zb_persistence_depth_a = depth_a;
    cmd_buffer->zb_persistence_depth_b = depth_b;
    return VK_SUCCESS;
