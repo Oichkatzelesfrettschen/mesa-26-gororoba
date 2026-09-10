@@ -2051,6 +2051,28 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
   }
   r3v_native_cell_env = environment(r3v_native_cell_vars)
+  r3v_native_hyperz_ownership_queue_test = executable(
+    'r3v_native_hyperz_ownership_queue_test',
+    files('tests/r3v_native_hyperz_ownership_queue_test.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args, '-UNDEBUG'],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach hyperz_ownership_result : ['success', 'withhold', 'refuse']
+    test(
+      'r3v-native-hyperz-ownership-queue-@0@'.format(
+        hyperz_ownership_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [hyperz_ownership_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # The compute recording calibration runs under the compute gate: the
   # surface the runner records through stands behind it.
   r3v_native_compute_record_env = environment(
