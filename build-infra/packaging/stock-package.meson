@@ -7,6 +7,7 @@ b_lto = false
 gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['ati_r300']
 vulkan-layers = ['anti-lag', 'device-select']
+tools = ['nir', 'glsl', 'dlclose-skip', 'drm-shim']
 build-tests = true
 werror = true
 dri-drivers-path = '/usr/lib/dri'

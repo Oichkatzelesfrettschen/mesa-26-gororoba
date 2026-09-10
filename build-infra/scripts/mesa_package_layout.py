@@ -11,6 +11,7 @@ import os
 import posixpath
 import re
 import shlex
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,7 @@ REQUIRED_OPTIONS = {
     "gallium-drivers": ["r300", "zink"],
     "vulkan-drivers": ["ati_r300"],
     "vulkan-layers": ["anti-lag", "device-select"],
+    "tools": ["nir", "glsl", "dlclose-skip", "drm-shim"],
     "dri-drivers-path": "/usr/lib/dri",
     "gbm-backends-path": "/usr/lib/gbm",
     "build-tests": True,
@@ -326,16 +328,25 @@ def publish_stage(builddir: Path, stage: Path) -> None:
     )
 
 
-def payload_hashes(stage: Path) -> dict[str, str]:
-    hashes: dict[str, str] = {}
+def payload_hashes(stage: Path) -> dict[str, dict[str, str]]:
+    hashes: dict[str, dict[str, str]] = {}
     for path in sorted(stage.rglob("*")):
         relative = str(path.relative_to(stage))
         if relative == "usr/share/mesa-gororoba/build-identity.json":
             continue
+        mode = f"{stat.S_IMODE(path.lstat().st_mode):04o}"
         if path.is_symlink():
-            hashes[relative] = "symlink:" + str(path.readlink())
+            hashes[relative] = {
+                "mode": mode,
+                "target": str(path.readlink()),
+                "type": "symlink",
+            }
         elif path.is_file():
-            hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+            hashes[relative] = {
+                "mode": mode,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "type": "file",
+            }
     return hashes
 
 

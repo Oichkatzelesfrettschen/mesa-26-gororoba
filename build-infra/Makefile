@@ -959,7 +959,7 @@ help:
 	@echo "  build             locked ninja -C \$$(BUILDDIR); NINJA_TARGETS=one target, NINJA_ARGS=-k0"
 	@echo "  clean-registered-build skip an absent builddir; otherwise run strict clean"
 	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
-	@echo "  clean-all         remove the fixed repo-local build/ tree (all profiles)"
+	@echo "  clean-all         remove regenerable repo-local build artifacts and retain installed staging"
 	@echo "  distclean         atomically clean + archive \$$(PREFIX) under one lease"
 	@echo "  audit             verify host tools, env policy, profile-audit, and profile requirements"
 	@echo "  profile-audit     fail when a profile selects drivers outside its allowlist row"
@@ -1884,20 +1884,31 @@ clean:
 	}; \
 	echo "cleaned: $(BUILDDIR)"
 
-# Remove the entire repo-local build/ tree (every profile's builddir), not just
-# the active PROFILE's.  The tree is gitignored (/build), so this only drops
-# regenerable artifacts and never touches the source or an installed PREFIX.
+# Remove every regenerable entry in the repo-local build tree.  Experimental
+# installs retain their prefix and absolute configuration under the two named
+# roots, so clean-all leaves those deployment artifacts available for rollback.
 clean-all:
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root); \
 	$(call CHECK_LAYOUT,clean-all); \
-	$(REMOVE_TREE) "$(BUILD_ROOT)" || { \
-		echo "failed to remove build root: $(BUILD_ROOT)" >&2; exit 2; \
-	}; \
-	{ [ ! -e "$(BUILD_ROOT)" ] && [ ! -L "$(BUILD_ROOT)" ]; } || { \
-		echo "build root remains after removal: $(BUILD_ROOT)" >&2; exit 2; \
-	}; \
-	echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"
+	retained=0; \
+	for entry in "$(BUILD_ROOT)"/* "$(BUILD_ROOT)"/.[!.]* "$(BUILD_ROOT)"/..?*; do \
+		{ [ -e "$$entry" ] || [ -L "$$entry" ]; } || continue; \
+		case "$$(basename "$$entry")" in \
+			prefix|installation-root) retained=1; continue ;; \
+		esac; \
+		$(REMOVE_TREE) "$$entry" || { \
+			echo "failed to remove generated build entry: $$entry" >&2; exit 2; \
+		}; \
+	done; \
+	if [ "$$retained" -eq 0 ]; then \
+		rmdir "$(BUILD_ROOT)" || { \
+			echo "build root retains an unclassified entry: $(BUILD_ROOT)" >&2; exit 2; \
+		}; \
+		echo "cleaned: $(BUILD_ROOT) (all profile builddirs)"; \
+	else \
+		echo "cleaned regenerable build entries; retained prefix and installation-root"; \
+	fi
 
 distclean:
 	@$(ACQUIRE_BUILD_LOCK) \

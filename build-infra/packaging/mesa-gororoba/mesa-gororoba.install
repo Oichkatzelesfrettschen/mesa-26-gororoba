@@ -6,6 +6,10 @@ Mesa owns its selected release or debug payload under /usr.
 The r300/zink Gallium drivers and R3V library share the stock GLX/EGL/GBM paths.
 The R3V manifest is selected explicitly with mesa-gororoba-run.
 Sanitizer experiments use build-owned staging through build-infra.
+RS482 hosts using xf86-video-ati need the packaged DRI3 policy copied from
+  /usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf
+to /etc/X11/xorg.conf.d before the display stack restarts. Verify that glxinfo
+reports "ATI RS480" after the policy becomes active.
 Restart the display stack after replacing its loaded Mesa libraries.
 EOF
 }

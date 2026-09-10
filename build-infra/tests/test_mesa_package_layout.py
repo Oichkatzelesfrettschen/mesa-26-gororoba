@@ -230,6 +230,15 @@ def test_payload_mutation_after_qualification(
         layout.verify_stage(configured_build, staged_payload, None)
 
 
+def test_payload_mode_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    (staged_payload / "usr/lib/libgbm.so.1").chmod(0o600)
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
+
+
 def test_recipe_profile_mismatch(configured_build: Path, staged_payload: Path) -> None:
     layout.publish_stage(configured_build, staged_payload)
     with pytest.raises(ValueError, match="recipe"):
