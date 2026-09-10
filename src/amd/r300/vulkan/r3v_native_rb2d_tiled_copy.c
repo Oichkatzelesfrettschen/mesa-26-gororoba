@@ -175,7 +175,7 @@ r3v_native_record_rb2d_copy(
       },
       {
          .handle = destination_memory->bo.handle,
-         .read_domains = 0u,
+         .read_domains = mask != UINT32_MAX ? RADEON_GEM_DOMAIN_GTT : 0u,
          .write_domain = RADEON_GEM_DOMAIN_GTT,
          .memory = destination_memory,
       },

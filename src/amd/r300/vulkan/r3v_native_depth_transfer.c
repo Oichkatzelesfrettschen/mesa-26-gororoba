@@ -32,8 +32,15 @@ r3v_native_record_depth_image_to_image_copy(
    VK_FROM_HANDLE(r3v_native_image, source_image, source_image_handle);
    VK_FROM_HANDLE(r3v_native_image, destination_image,
                   destination_image_handle);
+   const VkImageAspectFlags source_aspects =
+      region != NULL ? region->srcSubresource.aspectMask : 0u;
+   const VkImageAspectFlags destination_aspects =
+      region != NULL ? region->dstSubresource.aspectMask : 0u;
    const VkImageAspectFlags packed_aspects =
       VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+   const bool aspect_copy = source_aspects == VK_IMAGE_ASPECT_DEPTH_BIT ||
+                            source_aspects == VK_IMAGE_ASPECT_STENCIL_BIT ||
+                            source_aspects == packed_aspects;
 
    if (source_image == NULL || destination_image == NULL || region == NULL ||
        !source_image->depth_family || !destination_image->depth_family ||
@@ -50,8 +57,7 @@ r3v_native_record_depth_image_to_image_copy(
         source_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) ||
        (destination_layout != VK_IMAGE_LAYOUT_GENERAL &&
         destination_layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ||
-       region->srcSubresource.aspectMask != packed_aspects ||
-       region->dstSubresource.aspectMask != packed_aspects ||
+       !aspect_copy || destination_aspects != source_aspects ||
        region->srcSubresource.mipLevel != 0u ||
        region->dstSubresource.mipLevel != 0u ||
        region->srcSubresource.baseArrayLayer != 0u ||
@@ -116,10 +122,15 @@ r3v_native_record_depth_image_to_image_copy(
     * Image copies carry an array of independent regions, so append the
     * validated segment plan directly and leave the command buffer in the
     * segment geometry used by the common RB2D validator. */
+   const uint32_t write_mask =
+      source_aspects == VK_IMAGE_ASPECT_DEPTH_BIT
+         ? 0xffffff00u
+         : source_aspects == VK_IMAGE_ASPECT_STENCIL_BIT ? 0x000000ffu
+                                                        : UINT32_MAX;
    return r3v_native_record_rb2d_copy(
       command_buffer, r3v_native_memory_to_handle(source_image->memory),
       r3v_native_memory_to_handle(destination_image->memory), &copy_plan,
-      UINT32_MAX);
+      write_mask);
 }
 
 VkResult

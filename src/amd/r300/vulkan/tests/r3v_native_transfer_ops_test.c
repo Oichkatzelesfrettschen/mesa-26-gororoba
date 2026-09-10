@@ -1242,6 +1242,45 @@ check_depth_image_copy_recording(const struct fixture *f,
             "depth image copy case %u records successfully", case_index);
    }
 
+   static const struct {
+      VkImageAspectFlags aspect;
+      uint32_t write_mask;
+   } aspect_cases[] = {
+      {VK_IMAGE_ASPECT_DEPTH_BIT, 0xffffff00u},
+      {VK_IMAGE_ASPECT_STENCIL_BIT, 0x000000ffu},
+   };
+   for (uint32_t case_index = 0u; case_index < ARRAY_SIZE(aspect_cases);
+        case_index++) {
+      if (begin(f))
+         return 1;
+      const VkImageCopy region = {
+         .srcSubresource = {
+            .aspectMask = aspect_cases[case_index].aspect,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = aspect_cases[case_index].aspect,
+            .layerCount = 1u,
+         },
+         .extent = {32u, 16u, 1u},
+      };
+      vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                     destination_image, VK_IMAGE_LAYOUT_GENERAL, 1u,
+                     &region);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, aspect_cmd, f->cmd);
+      CHECK(aspect_cmd->rb2d_copy_operation_count == 1u &&
+               aspect_cmd->rb2d_copy_operations[0].write_mask ==
+                  aspect_cases[case_index].write_mask &&
+               aspect_cmd->references[1].read_domains ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               aspect_cmd->references[1].write_domain ==
+                  RADEON_GEM_DOMAIN_GTT,
+            "aspect image copy case %u records masked destination read-modify-write",
+            case_index);
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "aspect image copy case %u records successfully", case_index);
+   }
+
    if (begin(f))
       return 1;
    const VkImageCopy regions[] = {
