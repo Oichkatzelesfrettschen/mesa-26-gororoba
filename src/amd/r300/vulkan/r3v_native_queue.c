@@ -2461,6 +2461,10 @@ r3v_native_queue_preflight_image_states(
             &states[pending_index].state;
          if ((recorded->required_representation_set &&
               pending->representation != recorded->required_representation) ||
+             (recorded->required_zmask_metadata_set &&
+              !r3v_native_zmask_metadata_equal(
+                 &pending->zmask_metadata,
+                 &recorded->required_zmask_metadata)) ||
              (recorded->required_layout_set &&
               recorded->required_layout !=
                  R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
@@ -2476,6 +2480,8 @@ r3v_native_queue_preflight_image_states(
          }
          if (recorded->current_representation_set)
             pending->representation = recorded->current_representation;
+         if (recorded->current_zmask_metadata_set)
+            pending->zmask_metadata = recorded->current_zmask_metadata;
          if (recorded->current_layout_set)
             pending->api_layout = recorded->current_layout;
          if (recorded->producer_set)
@@ -2505,6 +2511,9 @@ r3v_native_queue_publish_image_states(const struct vk_queue_submit *submit)
          if (recorded->current_representation_set)
             recorded->image->committed_submission.representation =
                recorded->current_representation;
+         if (recorded->current_zmask_metadata_set)
+            recorded->image->committed_submission.zmask_metadata =
+               recorded->current_zmask_metadata;
          if (recorded->current_layout_set)
             recorded->image->committed_submission.api_layout =
                recorded->current_layout;

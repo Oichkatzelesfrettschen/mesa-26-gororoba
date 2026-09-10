@@ -364,6 +364,55 @@ main(void)
              R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) != VK_SUCCESS);
    assert(memcmp(&representation_command.image_states[0], &before_refusal,
                  sizeof(before_refusal)) == 0);
+
+   const struct r3v_native_zmask_metadata_state retired_metadata = {0};
+   const struct r3v_native_zmask_metadata_state initialized_metadata = {
+      .status = R3V_NATIVE_ZMASK_METADATA_INITIALIZED,
+      .generation = 1u,
+   };
+   const struct r3v_native_zmask_metadata_state fast_clear_metadata = {
+      .status = R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR,
+      .clear_depth_code = 0x400000u,
+      .clear_stencil = 0xa5u,
+      .generation = 2u,
+   };
+   assert(r3v_native_cmd_buffer_transition_zmask_metadata(
+             &representation_command, &representation_image,
+             &retired_metadata, &initialized_metadata) == VK_SUCCESS);
+   assert(r3v_native_cmd_buffer_transition_zmask_metadata(
+             &representation_command, &representation_image,
+             &initialized_metadata, &fast_clear_metadata) == VK_SUCCESS);
+   assert(r3v_native_zmask_metadata_equal(
+      &representation_command.image_states[0].required_zmask_metadata,
+      &retired_metadata));
+   assert(r3v_native_zmask_metadata_equal(
+      &representation_command.image_states[0].current_zmask_metadata,
+      &fast_clear_metadata));
+   assert(representation_command.image_states[0]
+             .required_zmask_metadata_set);
+   assert(representation_command.image_states[0]
+             .current_zmask_metadata_set);
+   assert(r3v_native_zmask_metadata_equal(
+      &representation_image.committed_submission.zmask_metadata,
+      &retired_metadata));
+
+   const struct r3v_native_cmd_image_state before_metadata_refusal =
+      representation_command.image_states[0];
+   assert(r3v_native_cmd_buffer_transition_zmask_metadata(
+             &representation_command, &representation_image,
+             &retired_metadata, &fast_clear_metadata) != VK_SUCCESS);
+   assert(memcmp(&representation_command.image_states[0],
+                 &before_metadata_refusal,
+                 sizeof(before_metadata_refusal)) == 0);
+   struct r3v_native_zmask_metadata_state invalid_metadata =
+      fast_clear_metadata;
+   invalid_metadata.clear_stencil = 0x100u;
+   assert(r3v_native_cmd_buffer_transition_zmask_metadata(
+             &representation_command, &representation_image,
+             &fast_clear_metadata, &invalid_metadata) != VK_SUCCESS);
+   assert(memcmp(&representation_command.image_states[0],
+                 &before_metadata_refusal,
+                 sizeof(before_metadata_refusal)) == 0);
    r3v_native_cmd_buffer_release_recording(&representation_command);
    r3v_native_cmd_buffer_release_recording(&command);
    return 0;

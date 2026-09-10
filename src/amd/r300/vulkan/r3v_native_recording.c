@@ -1540,6 +1540,19 @@ r3v_native_merge_secondary_image_states(
          destination->current_representation = source->current_representation;
          destination->current_representation_set = true;
       }
+      if (source->required_zmask_metadata_set) {
+         const struct r3v_native_zmask_metadata_state *current_metadata =
+            destination->current_zmask_metadata_set
+               ? &destination->current_zmask_metadata
+               : &destination->required_zmask_metadata;
+         if (!r3v_native_zmask_metadata_equal(
+                current_metadata, &source->required_zmask_metadata))
+            return VK_ERROR_INITIALIZATION_FAILED;
+      }
+      if (source->current_zmask_metadata_set) {
+         destination->current_zmask_metadata = source->current_zmask_metadata;
+         destination->current_zmask_metadata_set = true;
+      }
       if (source->required_layout_set) {
          if (destination->current_layout_set &&
              source->required_layout != R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&

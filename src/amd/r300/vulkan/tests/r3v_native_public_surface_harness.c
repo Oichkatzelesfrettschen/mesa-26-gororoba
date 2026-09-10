@@ -550,6 +550,14 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       }, VK_NULL_HANDLE) == VK_SUCCESS);
 
    VK_FROM_HANDLE(r3v_native_image, native_depth_image, depth_image);
+   assert(native_depth_image->zmask_layout_admitted);
+   assert(native_depth_image->zmask_layout.fits_zmask_ram);
+   assert(native_depth_image->zmask_layout.stride_in_pixels == 64u);
+   assert(native_depth_image->zmask_layout.dwords == 16u);
+   assert(native_depth_image->zmask_layout.zmask_ram_dwords == 5120u);
+   assert(!native_depth_image->zmask_layout.zcomp8x8);
+   assert(native_depth_image->committed_submission.zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
    const struct r300_zb_depth_layout *depth_layout =
       &native_depth_image->depth_contract.layout;
    const uint64_t binding_offset =
