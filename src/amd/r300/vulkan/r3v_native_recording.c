@@ -1887,6 +1887,8 @@ r3v_native_append_secondary_operation(
          r3v_native_memory_to_handle(source->destination_memory), &plan,
          source->write_mask);
    }
+   case R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE:
+      return r3v_native_record_zmask_ownership_only(commandBuffer);
    case R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE:
       return r3v_native_replay_zmask_initialize(commandBuffer,
                                                 source_operation);

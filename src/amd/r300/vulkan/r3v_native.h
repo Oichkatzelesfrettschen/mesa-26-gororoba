@@ -482,6 +482,7 @@ enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE,
@@ -1665,6 +1666,7 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
+   const char *zmask_ownership_gate;
    const char *zmask_initialize_gate;
    const char *zmask_fast_clear_gate;
    /* The compute route gate table, one entry per route identity read from
@@ -2253,6 +2255,9 @@ VkResult r3v_native_record_zmask_materialize(
    enum r3v_native_image_representation source_representation,
    const struct r3v_native_zmask_metadata_state *source_metadata);
 
+VkResult r3v_native_record_zmask_ownership_only(
+   VkCommandBuffer command_buffer);
+
 VkResult r3v_native_record_zmask_initialize(VkCommandBuffer command_buffer,
                                             VkImage image);
 
@@ -2775,6 +2780,9 @@ enum r300_zb_hyperz_verdict r3v_native_hyperz_submission_prepare(
    struct r3v_hyperz_grant_transaction *transaction,
    struct r300_zb_hyperz_site *site, int *request_result,
    uint32_t *returned_ownership);
+
+int r3v_native_hyperz_request_ownership(struct r3v_native_device *device,
+                                        uint32_t *returned_ownership);
 
 /* Releases HyperZ ownership held by the descriptor; a device holding none
  * succeeds without an ioctl.  A failed kernel release leaves the local state

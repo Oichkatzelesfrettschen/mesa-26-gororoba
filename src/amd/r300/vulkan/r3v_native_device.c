@@ -169,6 +169,8 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
    device->r2vb_fetched_gate =
       exact_gate("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
+   device->zmask_ownership_gate =
+      exact_gate("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL");
    device->zmask_initialize_gate =
       exact_gate("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL");
    device->zmask_fast_clear_gate =

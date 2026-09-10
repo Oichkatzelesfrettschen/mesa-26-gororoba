@@ -240,6 +240,43 @@ test_malformed_stream_reaches_no_ioctl(void)
    radeon_drm_vk_device_finish(&device.drm);
 }
 
+static void
+test_explicit_ownership_request(void)
+{
+   struct r3v_native_device device;
+   init_device(&device);
+   uint32_t returned_ownership = 0u;
+
+   assert(r3v_native_hyperz_request_ownership(
+             &device, &returned_ownership) == 0);
+   assert(returned_ownership == 1u);
+   assert(device.hyperz_ownership == R300_ZB_HYPERZ_OWNED);
+   assert(hyperz_info_mock.call_count == 1u);
+   assert(hyperz_info_mock.selectors[0] == 1u);
+
+   returned_ownership = 0u;
+   assert(r3v_native_hyperz_request_ownership(
+             &device, &returned_ownership) == 0);
+   assert(returned_ownership == 1u);
+   assert(hyperz_info_mock.call_count == 1u);
+   radeon_drm_vk_device_finish(&device.drm);
+
+   init_device(&device);
+   hyperz_info_mock.acquire_reply = 0u;
+   returned_ownership = UINT32_MAX;
+   assert(r3v_native_hyperz_request_ownership(
+             &device, &returned_ownership) == 0);
+   assert(returned_ownership == 0u);
+   assert(device.hyperz_ownership == R300_ZB_HYPERZ_UNOWNED);
+   assert(hyperz_info_mock.call_count == 1u);
+   radeon_drm_vk_device_finish(&device.drm);
+
+   assert(r3v_native_hyperz_request_ownership(NULL,
+                                              &returned_ownership) ==
+          -EINVAL);
+   assert(r3v_native_hyperz_request_ownership(&device, NULL) == -EINVAL);
+}
+
 int
 main(void)
 {
@@ -249,5 +286,6 @@ main(void)
    test_withheld_and_failed_grants_remain_unowned();
    test_failed_release_preserves_owned_state();
    test_malformed_stream_reaches_no_ioctl();
+   test_explicit_ownership_request();
    return 0;
 }
