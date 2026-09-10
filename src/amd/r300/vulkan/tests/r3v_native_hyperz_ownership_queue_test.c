@@ -68,16 +68,27 @@ main(int argc, char **argv)
       strcmp(argv[1], "fast-clear-cs-refuse") == 0;
    const bool fast_clear_completion_fail =
       strcmp(argv[1], "fast-clear-completion-fail") == 0;
+   const bool materialize_success =
+      strcmp(argv[1], "materialize-success") == 0;
+   const bool materialize_cs_refuse =
+      strcmp(argv[1], "materialize-cs-refuse") == 0;
+   const bool materialize_completion_fail =
+      strcmp(argv[1], "materialize-completion-fail") == 0;
    const bool initialize = initialize_success || initialize_cs_refuse ||
                            initialize_completion_fail;
    const bool fast_clear = fast_clear_success || fast_clear_cs_refuse ||
                            fast_clear_completion_fail;
-   const bool metadata_operation = initialize || fast_clear;
-   const bool cs_refuse = initialize_cs_refuse || fast_clear_cs_refuse;
+   const bool materialize = materialize_success || materialize_cs_refuse ||
+                            materialize_completion_fail;
+   const bool records_fast_clear = fast_clear || materialize;
+   const bool metadata_operation = initialize || records_fast_clear;
+   const bool cs_refuse = initialize_cs_refuse || fast_clear_cs_refuse ||
+                          materialize_cs_refuse;
    const bool completion_fail = initialize_completion_fail ||
-                                fast_clear_completion_fail;
+                                fast_clear_completion_fail ||
+                                materialize_completion_fail;
    const bool success = ownership_success || initialize_success ||
-                        fast_clear_success;
+                        fast_clear_success || materialize_success;
    assert(ownership_success || withhold || refuse || metadata_operation);
    if (withhold)
       assert(setenv("R3V_NATIVE_SHIM_HYPERZ_WITHHOLD", "1", 1) == 0);
@@ -105,7 +116,7 @@ main(int argc, char **argv)
    if (initialize)
       assert(setenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL", "1", 1) ==
              0);
-   if (fast_clear)
+   if (records_fast_clear)
       assert(setenv("R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL", "1", 1) ==
              0);
 
@@ -313,6 +324,24 @@ main(int argc, char **argv)
          vkCmdClearDepthStencilImage(command_buffer, image,
                                      VK_IMAGE_LAYOUT_GENERAL, &clear, 1u,
                                      &range);
+         if (materialize) {
+            struct r3v_native_cmd_buffer *recording_command =
+               r3v_native_cmd_buffer_from_handle(command_buffer);
+            assert(recording_command->image_state_count == 1u);
+            const struct r3v_native_cmd_image_state *recording_state =
+               &recording_command->image_states[0];
+            assert(recording_state->image == native_image);
+            assert(recording_state->current_representation_set);
+            assert(recording_state->current_representation ==
+                   R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR);
+            assert(recording_state->current_zmask_metadata_set);
+            assert(recording_state->current_zmask_metadata.status ==
+                   R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR);
+            assert(r3v_native_record_zmask_materialize(
+                      command_buffer, image,
+                      R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+                      &recording_state->current_zmask_metadata) == VK_SUCCESS);
+         }
       }
    } else {
       assert(r3v_native_record_zmask_ownership_only(command_buffer) ==
@@ -325,20 +354,40 @@ main(int argc, char **argv)
    assert(metadata_operation ? native_command->ib_size_dwords != 0u
                              : native_command->ib_size_dwords == 0u);
    assert(native_command->reference_count ==
-          (metadata_operation ? 1u : 0u));
+          (materialize ? 3u : metadata_operation ? 1u : 0u));
    assert(native_command->image_state_count ==
           (metadata_operation ? 1u : 0u));
-   const uint32_t metadata_operation_index = fast_clear ? 1u : 0u;
+   if (materialize) {
+      struct r3v_native_image *recorded_image =
+         r3v_native_image_from_handle(image);
+      assert(recorded_image->committed_submission.representation ==
+             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+      assert(recorded_image->committed_submission.zmask_metadata.status ==
+             R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      assert(native_device->zmask_owner.image == NULL);
+      assert(native_device->zmask_owner.metadata.status ==
+             R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   }
+   const uint32_t metadata_operation_index = records_fast_clear ? 1u : 0u;
    assert(native_command->ordered_operation_count ==
-          (fast_clear ? 2u : 1u));
-   if (fast_clear)
+          (materialize ? 3u : records_fast_clear ? 2u : 1u));
+   if (records_fast_clear)
       assert(native_command->ordered_operations[0].kind ==
              R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
    assert(native_command->ordered_operations[metadata_operation_index].kind ==
           (initialize
               ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE
-              : fast_clear ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR
-                           : R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE));
+              : records_fast_clear
+                   ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR
+                   : R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE));
+   if (materialize) {
+      assert(native_command->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+      assert(native_command->ordered_operations[1].ib_position_dwords <
+             native_command->ordered_operations[2].ib_position_dwords);
+      assert(native_command->ordered_operations[2].ib_position_dwords ==
+             native_command->ib_size_dwords);
+   }
    if (metadata_operation) {
       char digest[2u * BLAKE3_OUT_LEN + 1u];
       r300_triangle_ib_digest_hex(native_command->ib,
@@ -363,7 +412,7 @@ main(int argc, char **argv)
    assert(cs_count() == (metadata_operation ? 1u : 0u));
    const bool retains_ownership =
       ownership_success || initialize_success || fast_clear_success ||
-      completion_fail;
+      materialize_success || completion_fail;
    assert(ownership_held() == retains_ownership);
    assert(native_command->image_state_count ==
           (metadata_operation ? 1u : 0u));
@@ -384,7 +433,7 @@ main(int argc, char **argv)
    assert(native_device->queue_status ==
           (ownership_success
               ? R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION
-              : initialize_success || fast_clear_success
+              : initialize_success || fast_clear_success || materialize_success
                    ? R3V_NATIVE_QUEUE_STATUS_COMPLETED
                    : completion_fail
                         ? R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE
