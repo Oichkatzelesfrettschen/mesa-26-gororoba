@@ -737,6 +737,9 @@ main(void)
    assert(fast_clear_command.ordered_operation_count == 1u);
    assert(fast_clear_command.ordered_operations[0].kind ==
           R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+   assert(fast_clear_command.ordered_operations[0]
+             .payload.image_fast_clear.authority ==
+          R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL);
    assert(fast_clear_command.reference_count == 1u);
    assert(fast_clear_command.references[0].memory == &materialize_memory);
    assert(fast_clear_command.image_states[0].current_representation ==
@@ -805,6 +808,9 @@ main(void)
                           1u, &fast_clear_secondary_handle);
    assert(fast_clear_primary.vk.record_result == VK_SUCCESS);
    assert(fast_clear_primary.ordered_operation_count == 1u);
+   assert(fast_clear_primary.ordered_operations[0]
+             .payload.image_fast_clear.authority ==
+          R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL);
    assert(fast_clear_primary.ordered_operations[0]
              .payload.image_fast_clear.resulting_metadata.generation ==
           frozen_fast_clear_generation);

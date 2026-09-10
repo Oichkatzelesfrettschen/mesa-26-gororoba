@@ -414,6 +414,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->queue.vk.driver_submit = r3v_native_queue_submit;
 
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
+   device->zmask_automatic_qualified = false;
    if (!r3v_native_manifest_dir_copy(device)) {
       vk_queue_finish(&device->queue.vk);
       radeon_drm_vk_device_finish(&device->drm);
