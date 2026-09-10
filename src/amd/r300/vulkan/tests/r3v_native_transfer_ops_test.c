@@ -1533,6 +1533,55 @@ check_depth_image_copy_recording(const struct fixture *f,
    CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
          "a partial depth image copy records successfully");
 
+   VkImageCreateInfo smaller_info = *image_info;
+   smaller_info.extent.width = 32u;
+   smaller_info.extent.height = 32u;
+   VkImage smaller_destination = VK_NULL_HANDLE;
+   VkDeviceMemory smaller_memory = VK_NULL_HANDLE;
+   REQUIRE(vkCreateImage(f->device, &smaller_info, NULL,
+                         &smaller_destination) == VK_SUCCESS,
+           "differently sized depth destination creation");
+   VkMemoryRequirements smaller_requirements;
+   vkGetImageMemoryRequirements(f->device, smaller_destination,
+                                &smaller_requirements);
+   const VkMemoryAllocateInfo smaller_allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = smaller_requirements.size,
+      .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &smaller_allocation, NULL,
+                            &smaller_memory) == VK_SUCCESS,
+           "differently sized depth destination allocation");
+   REQUIRE(vkBindImageMemory(f->device, smaller_destination, smaller_memory,
+                             0u) == VK_SUCCESS,
+           "differently sized depth destination binding");
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy differently_sized = {
+      .srcSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {32u, 32u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                  smaller_destination, VK_IMAGE_LAYOUT_GENERAL, 1u,
+                  &differently_sized);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, differently_sized_cmd, f->cmd);
+   CHECK(differently_sized_cmd->rb2d_copy_operation_count == 2u,
+         "an in-bounds copy resolves differently sized images independently");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "a differently sized depth image copy records successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release differently sized depth image references");
+   vkDestroyImage(f->device, smaller_destination, NULL);
+   vkFreeMemory(f->device, smaller_memory, NULL);
+
    if (begin(f))
       return 1;
    const VkImageCopy combined_aspect = {

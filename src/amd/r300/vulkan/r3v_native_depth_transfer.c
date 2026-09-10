@@ -278,8 +278,6 @@ r3v_native_depth_image_to_image_copy_valid(
           source_image->memory != NULL && destination_image->memory != NULL &&
           source_image->format == VK_FORMAT_D24_UNORM_S8_UINT &&
           destination_image->format == source_image->format &&
-          source_image->width == destination_image->width &&
-          source_image->height == destination_image->height &&
           (source_image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u &&
           (destination_image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0u &&
           (source_layout == VK_IMAGE_LAYOUT_GENERAL ||
