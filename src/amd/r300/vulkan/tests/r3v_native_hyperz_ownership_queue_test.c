@@ -34,6 +34,12 @@ PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 typedef uint64_t (*counter_fn)(void);
 typedef bool (*ownership_fn)(void);
 
+struct zmask_queue_test_image {
+   VkImage handle;
+   VkDeviceMemory memory;
+   struct r3v_native_image *native;
+};
+
 static void *
 required_shim_symbol(const char *name)
 {
@@ -42,6 +48,143 @@ required_shim_symbol(const char *name)
    assert(symbol != NULL);
    assert(dlerror() == NULL);
    return symbol;
+}
+
+static struct zmask_queue_test_image
+create_zmask_queue_test_image(VkDevice device, PFN_vkCreateImage create_image,
+                              PFN_vkGetImageMemoryRequirements get_requirements,
+                              PFN_vkAllocateMemory allocate_memory,
+                              PFN_vkBindImageMemory bind_memory)
+{
+   struct zmask_queue_test_image image = {0};
+   assert(create_image(
+             device,
+             &(VkImageCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = VK_FORMAT_D24_UNORM_S8_UINT,
+                .extent = {64u, 64u, 1u},
+                .mipLevels = 1u,
+                .arrayLayers = 1u,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+             },
+             NULL, &image.handle) == VK_SUCCESS);
+   VkMemoryRequirements requirements;
+   get_requirements(device, image.handle, &requirements);
+   assert(allocate_memory(
+             device,
+             &(VkMemoryAllocateInfo){
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize = requirements.size + requirements.alignment,
+                .memoryTypeIndex = 0u,
+             },
+             NULL, &image.memory) == VK_SUCCESS);
+   assert(bind_memory(device, image.handle, image.memory,
+                      requirements.alignment) == VK_SUCCESS);
+   image.native = r3v_native_image_from_handle(image.handle);
+   assert(image.native->zmask_layout_admitted);
+   assert(image.native->committed_submission.representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(image.native->committed_submission.zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   return image;
+}
+
+static void
+record_zmask_queue_test_clear(PFN_vkCmdPipelineBarrier pipeline_barrier,
+                              PFN_vkCmdClearDepthStencilImage clear_image,
+                              VkCommandBuffer command_buffer, VkImage image,
+                              VkImageLayout old_layout, float depth,
+                              uint32_t stencil)
+{
+   const VkImageMemoryBarrier layout_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = old_layout,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image,
+      .subresourceRange = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .levelCount = 1u,
+         .layerCount = 1u,
+      },
+   };
+   pipeline_barrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u, NULL,
+                    1u, &layout_barrier);
+   const VkClearDepthStencilValue clear = {
+      .depth = depth,
+      .stencil = stencil,
+   };
+   const VkImageSubresourceRange range = {
+      .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+      .levelCount = 1u,
+      .layerCount = 1u,
+   };
+   clear_image(command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1u,
+               &range);
+}
+
+static void
+arm_zmask_queue_test_command(VkCommandBuffer command_buffer)
+{
+   struct r3v_native_cmd_buffer *native_command =
+      r3v_native_cmd_buffer_from_handle(command_buffer);
+   char digest[2u * BLAKE3_OUT_LEN + 1u];
+   r300_triangle_ib_digest_hex(native_command->ib,
+                               native_command->ib_size_dwords, digest);
+   assert(setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", digest, 1) == 0);
+}
+
+static void
+select_zmask_queue_test_manifest(struct r3v_native_device *device,
+                                 const char *root, uint32_t ordinal)
+{
+   char directory[PATH_MAX];
+   const int length = snprintf(directory, sizeof(directory), "%s/submit-%u",
+                               root, ordinal);
+   assert(length > 0 && (size_t)length < sizeof(directory));
+   assert(mkdir(directory, 0700) == 0);
+   assert((size_t)length < sizeof(device->manifest_dir_storage));
+   memcpy(device->manifest_dir_storage, directory, (size_t)length + 1u);
+   device->manifest_dir = device->manifest_dir_storage;
+   assert(setenv("R3V_NATIVE_MANIFEST_DIR", directory, 1) == 0);
+}
+
+static VkResult
+submit_zmask_queue_test_command(struct r3v_native_device *device,
+                                PFN_vkQueueSubmit queue_submit, VkQueue queue,
+                                VkCommandBuffer command_buffer)
+{
+   arm_zmask_queue_test_command(command_buffer);
+   device->submit_hazard_accepted = true;
+   return queue_submit(
+      queue, 1u,
+      &(VkSubmitInfo){
+         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .commandBufferCount = 1u,
+         .pCommandBuffers = &command_buffer,
+      },
+      VK_NULL_HANDLE);
+}
+
+static void
+assert_zmask_queue_test_image(
+   const struct zmask_queue_test_image *image,
+   enum r3v_native_image_representation representation,
+   enum r3v_native_zmask_metadata_status metadata_status)
+{
+   assert(image->native->committed_submission.representation ==
+          representation);
+   assert(image->native->committed_submission.zmask_metadata.status ==
+          metadata_status);
 }
 
 #define LOAD_INSTANCE(name) \
@@ -74,13 +217,18 @@ main(int argc, char **argv)
       strcmp(argv[1], "materialize-cs-refuse") == 0;
    const bool materialize_completion_fail =
       strcmp(argv[1], "materialize-completion-fail") == 0;
+   const bool image_switch_success =
+      strcmp(argv[1], "image-switch-success") == 0;
+   const bool image_switch_cs_refuse =
+      strcmp(argv[1], "image-switch-cs-refuse") == 0;
    const bool initialize = initialize_success || initialize_cs_refuse ||
                            initialize_completion_fail;
    const bool fast_clear = fast_clear_success || fast_clear_cs_refuse ||
                            fast_clear_completion_fail;
    const bool materialize = materialize_success || materialize_cs_refuse ||
                             materialize_completion_fail;
-   const bool records_fast_clear = fast_clear || materialize;
+   const bool image_switch = image_switch_success || image_switch_cs_refuse;
+   const bool records_fast_clear = fast_clear || materialize || image_switch;
    const bool metadata_operation = initialize || records_fast_clear;
    const bool cs_refuse = initialize_cs_refuse || fast_clear_cs_refuse ||
                           materialize_cs_refuse;
@@ -233,6 +381,262 @@ main(int argc, char **argv)
                 .queueFamilyIndex = 0u,
              },
              NULL, &command_pool) == VK_SUCCESS);
+   if (image_switch) {
+      VkQueue queue = VK_NULL_HANDLE;
+      vkGetDeviceQueue(device, 0u, 0u, &queue);
+      assert(queue != VK_NULL_HANDLE);
+
+      VkCommandBuffer command_buffers[4] = {0};
+      assert(vkAllocateCommandBuffers(
+                device,
+                &(VkCommandBufferAllocateInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                   .commandPool = command_pool,
+                   .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                   .commandBufferCount = ARRAY_SIZE(command_buffers),
+                },
+                command_buffers) == VK_SUCCESS);
+      struct zmask_queue_test_image image_a = create_zmask_queue_test_image(
+         device, vkCreateImage, vkGetImageMemoryRequirements, vkAllocateMemory,
+         vkBindImageMemory);
+      struct zmask_queue_test_image image_b = create_zmask_queue_test_image(
+         device, vkCreateImage, vkGetImageMemoryRequirements, vkAllocateMemory,
+         vkBindImageMemory);
+      native_device->submit_hazard_accepted = true;
+
+      assert(vkBeginCommandBuffer(
+                command_buffers[0],
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                }) == VK_SUCCESS);
+      record_zmask_queue_test_clear(
+         vkCmdPipelineBarrier, vkCmdClearDepthStencilImage, command_buffers[0],
+         image_a.handle, VK_IMAGE_LAYOUT_UNDEFINED, 0.25f, 0xa5u);
+      assert(vkEndCommandBuffer(command_buffers[0]) == VK_SUCCESS);
+      struct r3v_native_cmd_buffer *clear_a =
+         r3v_native_cmd_buffer_from_handle(command_buffers[0]);
+      assert(clear_a->ordered_operation_count == 2u);
+      assert(clear_a->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
+      assert(clear_a->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+      assert(clear_a->ordered_operations[1].payload.image_fast_clear.image ==
+             image_a.native);
+      assert(clear_a->ordered_operations[1].ib_position_dwords ==
+             clear_a->ib_size_dwords);
+      assert(clear_a->reference_count == 1u);
+      assert(clear_a->image_state_count == 1u);
+      select_zmask_queue_test_manifest(native_device, manifest_directory, 0u);
+      assert(submit_zmask_queue_test_command(native_device, vkQueueSubmit, queue,
+                                             command_buffers[0]) == VK_SUCCESS);
+      assert(cs_count() == 1u);
+      assert(acquire_count() == 1u);
+      assert(release_count() == 0u);
+      assert(ownership_held());
+      assert(native_device->transport_cs_ioctl_count == 1u);
+      assert(native_device->queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(native_device->zmask_owner.image == image_a.native);
+      assert_zmask_queue_test_image(
+         &image_a, R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+         R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR);
+      assert_zmask_queue_test_image(
+         &image_b, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      const uint32_t image_a_depth =
+         image_a.native->committed_submission.zmask_metadata.clear_depth_code;
+      assert(image_a_depth == 0x400000u);
+      assert(image_a.native->committed_submission.zmask_metadata.clear_stencil ==
+             0xa5u);
+
+      assert(vkBeginCommandBuffer(
+                command_buffers[1],
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                }) == VK_SUCCESS);
+      record_zmask_queue_test_clear(
+         vkCmdPipelineBarrier, vkCmdClearDepthStencilImage, command_buffers[1],
+         image_b.handle, VK_IMAGE_LAYOUT_UNDEFINED, 0.75f, 0x5au);
+      assert(vkEndCommandBuffer(command_buffers[1]) == VK_SUCCESS);
+      struct r3v_native_cmd_buffer *switch_to_b =
+         r3v_native_cmd_buffer_from_handle(command_buffers[1]);
+      assert(switch_to_b->ordered_operation_count == 3u);
+      assert(switch_to_b->reference_count == 4u);
+      assert(switch_to_b->image_state_count == 2u);
+      assert(switch_to_b->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
+      assert(switch_to_b->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+      assert(switch_to_b->ordered_operations[1]
+                .payload.image_materialize.image == image_a.native);
+      assert(switch_to_b->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+      assert(switch_to_b->ordered_operations[2]
+                .payload.image_fast_clear.image == image_b.native);
+      assert(switch_to_b->ordered_operations[0].ib_position_dwords == 0u);
+      assert(switch_to_b->ordered_operations[1].ib_position_dwords <
+             switch_to_b->ordered_operations[2].ib_position_dwords);
+      assert(switch_to_b->ordered_operations[2].ib_position_dwords ==
+             switch_to_b->ib_size_dwords);
+      assert_zmask_queue_test_image(
+         &image_a, R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+         R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR);
+      assert_zmask_queue_test_image(
+         &image_b, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         R3V_NATIVE_ZMASK_METADATA_RETIRED);
+
+      if (image_switch_cs_refuse)
+         assert(setenv("R3V_NATIVE_SHIM_CS_REFUSE", "1", 1) == 0);
+      select_zmask_queue_test_manifest(native_device, manifest_directory, 1u);
+      result = submit_zmask_queue_test_command(native_device, vkQueueSubmit, queue,
+                                               command_buffers[1]);
+      assert(result == (image_switch_success ? VK_SUCCESS
+                                             : VK_ERROR_DEVICE_LOST));
+      assert(cs_count() == 2u);
+      assert(acquire_count() == 1u);
+      assert(release_count() == 0u);
+      assert(ownership_held());
+      assert(native_device->transport_cs_ioctl_count == 1u);
+      if (image_switch_cs_refuse) {
+         assert(native_device->queue_status ==
+                R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED);
+         assert(native_device->zmask_owner.image == image_a.native);
+         assert_zmask_queue_test_image(
+            &image_a, R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+            R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR);
+         assert_zmask_queue_test_image(
+            &image_b, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+            R3V_NATIVE_ZMASK_METADATA_RETIRED);
+         assert(image_a.native->committed_submission.zmask_metadata
+                   .clear_depth_code == image_a_depth);
+         assert(image_a.native->committed_submission.zmask_metadata
+                   .clear_stencil == 0xa5u);
+         vkDestroyImage(device, image_a.handle, NULL);
+         vkDestroyImage(device, image_b.handle, NULL);
+         vkFreeMemory(device, image_a.memory, NULL);
+         vkFreeMemory(device, image_b.memory, NULL);
+         vkDestroyCommandPool(device, command_pool, NULL);
+         vkDestroyDevice(device, NULL);
+         assert(release_count() == 1u);
+         assert(!ownership_held());
+         vkDestroyInstance(instance, NULL);
+         return 0;
+      }
+
+      assert(native_device->queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(native_device->transport_cs_ioctl_count == 1u);
+      assert(native_device->zmask_owner.image == image_b.native);
+      assert_zmask_queue_test_image(
+         &image_a, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      assert_zmask_queue_test_image(
+         &image_b, R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+         R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR);
+      assert(image_b.native->committed_submission.zmask_metadata.clear_stencil ==
+             0x5au);
+      assert(image_b.native->committed_submission.zmask_metadata
+                .clear_depth_code != image_a_depth);
+
+      assert(vkBeginCommandBuffer(
+                command_buffers[2],
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                }) == VK_SUCCESS);
+      record_zmask_queue_test_clear(
+         vkCmdPipelineBarrier, vkCmdClearDepthStencilImage, command_buffers[2],
+         image_a.handle, VK_IMAGE_LAYOUT_GENERAL, 0.25f, 0xa5u);
+      assert(vkEndCommandBuffer(command_buffers[2]) == VK_SUCCESS);
+      struct r3v_native_cmd_buffer *switch_to_a =
+         r3v_native_cmd_buffer_from_handle(command_buffers[2]);
+      assert(switch_to_a->ordered_operation_count == 3u);
+      assert(switch_to_a->reference_count == 4u);
+      assert(switch_to_a->image_state_count == 2u);
+      assert(switch_to_a->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
+      assert(switch_to_a->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+      assert(switch_to_a->ordered_operations[1]
+                .payload.image_materialize.image == image_b.native);
+      assert(switch_to_a->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+      assert(switch_to_a->ordered_operations[2]
+                .payload.image_fast_clear.image == image_a.native);
+      assert(switch_to_a->ordered_operations[0].ib_position_dwords == 0u);
+      assert(switch_to_a->ordered_operations[1].ib_position_dwords <
+             switch_to_a->ordered_operations[2].ib_position_dwords);
+      assert(switch_to_a->ordered_operations[2].ib_position_dwords ==
+             switch_to_a->ib_size_dwords);
+      select_zmask_queue_test_manifest(native_device, manifest_directory, 2u);
+      assert(submit_zmask_queue_test_command(native_device, vkQueueSubmit, queue,
+                                             command_buffers[2]) == VK_SUCCESS);
+      assert(cs_count() == 3u);
+      assert(acquire_count() == 1u);
+      assert(native_device->transport_cs_ioctl_count == 1u);
+      assert(native_device->queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(native_device->zmask_owner.image == image_a.native);
+      assert_zmask_queue_test_image(
+         &image_a, R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+         R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR);
+      assert_zmask_queue_test_image(
+         &image_b, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      assert(image_a.native->committed_submission.zmask_metadata
+                .clear_depth_code == image_a_depth);
+      assert(image_a.native->committed_submission.zmask_metadata
+                .clear_stencil == 0xa5u);
+
+      assert(vkBeginCommandBuffer(
+                command_buffers[3],
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                }) == VK_SUCCESS);
+      assert(r3v_native_record_zmask_materialize(
+                command_buffers[3], image_a.handle,
+                R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+                &image_a.native->committed_submission.zmask_metadata) ==
+             VK_SUCCESS);
+      assert(vkEndCommandBuffer(command_buffers[3]) == VK_SUCCESS);
+      struct r3v_native_cmd_buffer *retire_a =
+         r3v_native_cmd_buffer_from_handle(command_buffers[3]);
+      assert(retire_a->ordered_operation_count == 1u);
+      assert(retire_a->reference_count == 3u);
+      assert(retire_a->image_state_count == 1u);
+      assert(retire_a->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+      assert(retire_a->ordered_operations[0]
+                .payload.image_materialize.image == image_a.native);
+      assert(retire_a->ordered_operations[0].ib_position_dwords ==
+             retire_a->ib_size_dwords);
+      select_zmask_queue_test_manifest(native_device, manifest_directory, 3u);
+      assert(submit_zmask_queue_test_command(native_device, vkQueueSubmit, queue,
+                                             command_buffers[3]) == VK_SUCCESS);
+      assert(cs_count() == 4u);
+      assert(acquire_count() == 1u);
+      assert(release_count() == 0u);
+      assert(ownership_held());
+      assert(native_device->transport_cs_ioctl_count == 1u);
+      assert(native_device->queue_status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(native_device->zmask_owner.image == NULL);
+      assert(native_device->zmask_owner.metadata.status ==
+             R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      assert_zmask_queue_test_image(
+         &image_a, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         R3V_NATIVE_ZMASK_METADATA_RETIRED);
+      assert_zmask_queue_test_image(
+         &image_b, R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         R3V_NATIVE_ZMASK_METADATA_RETIRED);
+
+      vkDestroyImage(device, image_a.handle, NULL);
+      vkDestroyImage(device, image_b.handle, NULL);
+      vkFreeMemory(device, image_a.memory, NULL);
+      vkFreeMemory(device, image_b.memory, NULL);
+      vkDestroyCommandPool(device, command_pool, NULL);
+      vkDestroyDevice(device, NULL);
+      assert(release_count() == 1u);
+      assert(cs_count() == 4u);
+      assert(!ownership_held());
+      vkDestroyInstance(instance, NULL);
+      return 0;
+   }
    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
    assert(vkAllocateCommandBuffers(
              device,
