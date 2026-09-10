@@ -2656,7 +2656,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       r3v_xvfb_wrapper,
       args : [r3v_native_wsi_surface_contract.full_path()],
       env : r3v_native_cell_env,
-      depends : [libradeon_noop_drm_shim],
+      depends : [libradeon_noop_drm_shim,
+                 r3v_native_wsi_surface_contract],
       timeout : 120,
       suite : ['r3v'],
     )
@@ -2678,7 +2679,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
         env : environment(r3v_native_cell_vars + {
           'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
         }),
-        depends : [libradeon_noop_drm_shim],
+        depends : [libradeon_noop_drm_shim,
+                   r3v_native_wsi_surface_contract],
         timeout : 120,
         suite : ['r3v'],
       )
@@ -3925,7 +3927,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       c_args : [no_override_init_args],
       gnu_symbol_visibility : 'hidden',
     ),
-    env : r3v_native_cell_env,
+    env : environment(r3v_native_cell_vars + {
+      'R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL' : '1',
+    }),
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
     suite : ['r3v'],

@@ -2019,6 +2019,11 @@ main(void)
                 .ppEnabledExtensionNames = device_extensions,
              },
              NULL, &device) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_device, zmask_fixture_device, device);
+   assert(zmask_fixture_device->zmask_fast_clear_gate != NULL);
+   assert(zmask_fixture_device->zmask_materialize_scratch_initialized);
+   zmask_fixture_device->zmask_fast_clear_gate = NULL;
+   unsetenv("R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL");
 
 #define LOAD(name) name = (PFN_##name)gdpa(device, #name); assert(name);
    DEVICE_COMMANDS(LOAD)
