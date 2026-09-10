@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,17 +59,41 @@ radeon_ioctl_noop(int fd, unsigned long request, void *arg)
  * default.
  */
 static uint64_t radeon_cs_ioctls;
+static uint64_t radeon_hyperz_acquire_ioctls;
+static uint64_t radeon_hyperz_release_ioctls;
+static _Atomic(struct shim_fd *) radeon_hyperz_owner;
 
 /* The accessor is radeon-specific, so it is declared here rather than in
  * drm_shim.h beside the generic shim's own test hooks; the declaration
  * stands ahead of the definition because the object builds with prototypes
  * required. */
 PUBLIC uint64_t drm_shim_test_radeon_cs_ioctls(void);
+PUBLIC uint64_t drm_shim_test_radeon_hyperz_acquire_ioctls(void);
+PUBLIC uint64_t drm_shim_test_radeon_hyperz_release_ioctls(void);
+PUBLIC bool drm_shim_test_radeon_hyperz_owned(void);
 
 PUBLIC uint64_t
 drm_shim_test_radeon_cs_ioctls(void)
 {
    return radeon_cs_ioctls;
+}
+
+PUBLIC uint64_t
+drm_shim_test_radeon_hyperz_acquire_ioctls(void)
+{
+   return radeon_hyperz_acquire_ioctls;
+}
+
+PUBLIC uint64_t
+drm_shim_test_radeon_hyperz_release_ioctls(void)
+{
+   return radeon_hyperz_release_ioctls;
+}
+
+PUBLIC bool
+drm_shim_test_radeon_hyperz_owned(void)
+{
+   return atomic_load(&radeon_hyperz_owner) != NULL;
 }
 
 static int
@@ -111,6 +136,37 @@ radeon_ioctl_info(int fd, unsigned long request, void *arg)
    case RADEON_INFO_GPU_RESET_COUNTER:
       *value = 0;
       return 0;
+
+   case RADEON_INFO_WANT_HYPERZ: {
+      struct shim_fd *applier = drm_shim_fd_lookup(fd);
+      if (applier == NULL)
+         return -EBADF;
+      if (*value == 1u) {
+         radeon_hyperz_acquire_ioctls++;
+         const char *failure = getenv("R3V_NATIVE_SHIM_HYPERZ_REFUSE");
+         if (failure != NULL && strcmp(failure, "1") == 0)
+            return -EINVAL;
+         const char *withhold = getenv("R3V_NATIVE_SHIM_HYPERZ_WITHHOLD");
+         if (withhold != NULL && strcmp(withhold, "1") == 0) {
+            *value = 0u;
+            return 0;
+         }
+         struct shim_fd *unowned = NULL;
+         (void)atomic_compare_exchange_strong(&radeon_hyperz_owner,
+                                              &unowned, applier);
+         *value = atomic_load(&radeon_hyperz_owner) == applier ? 1u : 0u;
+         return 0;
+      }
+      if (*value == 0u) {
+         radeon_hyperz_release_ioctls++;
+         struct shim_fd *owner = applier;
+         (void)atomic_compare_exchange_strong(&radeon_hyperz_owner, &owner,
+                                              NULL);
+         *value = atomic_load(&radeon_hyperz_owner) == applier ? 1u : 0u;
+         return 0;
+      }
+      return -EINVAL;
+   }
 
    case RADEON_INFO_NUM_BYTES_MOVED:
    case RADEON_INFO_VRAM_USAGE:
@@ -1386,6 +1442,65 @@ test_info_widths(int fd)
                  "0x%08x",
                  ret, guarded_va_start.value);
    }
+}
+
+static void
+test_hyperz_ownership(int fd)
+{
+   uint32_t selector = 1u;
+   int ret = test_radeon_info(fd, RADEON_INFO_WANT_HYPERZ, &selector);
+   TEST_CHECK(ret == 0 && selector == 1u &&
+                 atomic_load(&radeon_hyperz_owner) != NULL,
+              "HyperZ acquisition returned %d, selector %u, owned %u",
+              ret, selector, atomic_load(&radeon_hyperz_owner) != NULL);
+   TEST_CHECK(radeon_hyperz_acquire_ioctls == 1u,
+              "HyperZ acquisition count is %llu instead of 1",
+              (unsigned long long)radeon_hyperz_acquire_ioctls);
+
+   int competing_fd = open("/dev/dri/renderD128", O_RDWR);
+   TEST_CHECK(competing_fd >= 0,
+              "competing HyperZ descriptor open failed with errno %d",
+              errno);
+   if (competing_fd >= 0) {
+      selector = 1u;
+      ret = test_radeon_info(competing_fd, RADEON_INFO_WANT_HYPERZ,
+                             &selector);
+      TEST_CHECK(ret == 0 && selector == 0u,
+                 "competing HyperZ acquisition returned %d and selector %u",
+                 ret, selector);
+      selector = 0u;
+      ret = test_radeon_info(competing_fd, RADEON_INFO_WANT_HYPERZ,
+                             &selector);
+      TEST_CHECK(ret == 0 && selector == 0u &&
+                    atomic_load(&radeon_hyperz_owner) != NULL,
+                 "competing HyperZ release returned %d, selector %u, "
+                 "owned %u",
+                 ret, selector, atomic_load(&radeon_hyperz_owner) != NULL);
+      close(competing_fd);
+   }
+
+   selector = 0u;
+   ret = test_radeon_info(fd, RADEON_INFO_WANT_HYPERZ, &selector);
+   TEST_CHECK(ret == 0 && selector == 0u &&
+                 atomic_load(&radeon_hyperz_owner) == NULL,
+              "HyperZ release returned %d, selector %u, owned %u",
+              ret, selector, atomic_load(&radeon_hyperz_owner) != NULL);
+   TEST_CHECK(radeon_hyperz_acquire_ioctls == 2u,
+              "HyperZ acquisition count is %llu instead of 2",
+              (unsigned long long)radeon_hyperz_acquire_ioctls);
+   TEST_CHECK(radeon_hyperz_release_ioctls == 2u,
+              "HyperZ release count is %llu instead of 2",
+              (unsigned long long)radeon_hyperz_release_ioctls);
+
+   selector = 2u;
+   errno = EDOM;
+   ret = test_radeon_info(fd, RADEON_INFO_WANT_HYPERZ, &selector);
+   TEST_CHECK(ret == -1 && errno == EINVAL && selector == 2u &&
+                 atomic_load(&radeon_hyperz_owner) == NULL,
+              "invalid HyperZ selector returned %d, errno %d, selector %u, "
+              "owned %u",
+              ret, errno, selector,
+              atomic_load(&radeon_hyperz_owner) != NULL);
 }
 
 static void
@@ -7244,6 +7359,7 @@ main(int argc, char **argv)
 
    if (argc == 5 && strcmp(argv[4], "full") == 0) {
       test_info_widths(fd);
+      test_hyperz_ownership(fd);
       test_gem_busy(fd);
       test_synthetic_filesystem(fd, parsed_device_id);
       if (radeon_family == CHIP_RS480)
