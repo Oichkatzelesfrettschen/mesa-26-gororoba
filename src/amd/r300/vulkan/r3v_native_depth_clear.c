@@ -48,12 +48,13 @@ r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
    VK_FROM_HANDLE(r3v_native_image, image, image_handle);
 
    if (cmd == NULL || image == NULL || !image->depth_family ||
-       image->memory == NULL || cmd->ib_size_dwords != 0u ||
-       cmd->reference_count != 0u ||
-       cmd->cell_kind != R3V_NATIVE_CELL_KIND_UNDECLARED ||
-       cmd->deferred_copy_count != 0u || cmd->deferred_draw_count != 0u ||
+       image->memory == NULL ||
        cmd->deferred_dispatch.pending || cmd->pass_target != NULL)
       return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd, 1u) !=
+       VK_SUCCESS)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    struct r300_zb_combined_clear_plan plan;
    if (build_plan(image, aspect_mask, depth_code, stencil, &plan) !=
@@ -62,11 +63,8 @@ r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
 
    const uint32_t capacity = R300_RB2D_FILL_DWORDS(1u);
    uint32_t *words = calloc(capacity, sizeof(*words));
-   struct r3v_native_bo_reference *references =
-      calloc(1u, sizeof(*references));
-   if (words == NULL || references == NULL) {
+   if (words == NULL) {
       free(words);
-      free(references);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
@@ -76,27 +74,49 @@ r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
    if (emit_result != 0 || emitted.ib_size_dwords != capacity ||
        r300_rb2d_fill_validate_reloc_sites(&emitted) != 0) {
       free(words);
-      free(references);
       return emit_result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
                                     : VK_ERROR_INITIALIZATION_FAILED;
    }
 
    const bool preserves_component = plan.fill.write_mask != UINT32_MAX;
-   references[0] = (struct r3v_native_bo_reference){
+   const struct r3v_native_bo_reference reference = {
       .handle = image->memory->bo.handle,
       .read_domains = preserves_component ? RADEON_GEM_DOMAIN_GTT : 0u,
       .write_domain = RADEON_GEM_DOMAIN_GTT,
       .memory = image->memory,
    };
-   r3v_native_cmd_buffer_install_ib(
-      cmd, R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR, words, capacity, references,
-      1u);
-   cmd->zb_depth_clear_configured = true;
-   cmd->zb_depth_clear_image = image;
-   cmd->zb_depth_clear_aspect_mask = aspect_mask;
-   cmd->zb_depth_clear_depth_code = depth_code;
-   cmd->zb_depth_clear_stencil = stencil;
-   return VK_SUCCESS;
+   const uint32_t relocation_dword = emitted.reloc_sites[0].ib_index;
+   const uint32_t relocation_reference = 0u;
+   const uint32_t ib_position = cmd->ib_size_dwords;
+   VkResult append_result = r3v_native_cmd_buffer_append_raw_ib(
+      container_of(cmd->vk.base.device, struct r3v_native_device, vk), cmd,
+      words, capacity, &reference, 1u, &relocation_dword,
+      &relocation_reference, 1u);
+   free(words);
+   if (append_result != VK_SUCCESS)
+      return append_result;
+
+   if (ib_position == 0u) {
+      cmd->cell_kind = R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR;
+      cmd->zb_depth_clear_configured = true;
+      cmd->zb_depth_clear_image = image;
+      cmd->zb_depth_clear_aspect_mask = aspect_mask;
+      cmd->zb_depth_clear_depth_code = depth_code;
+      cmd->zb_depth_clear_stencil = stencil;
+   } else {
+      cmd->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
+   }
+   return r3v_native_cmd_buffer_append_ordered_operation(
+      cmd, &(struct r3v_native_ordered_operation){
+              .kind = R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
+              .ib_position_dwords = ib_position,
+              .payload.rb2d_depth_clear = {
+                 .image = image,
+                 .aspect_mask = aspect_mask,
+                 .depth_code = depth_code,
+                 .stencil = stencil,
+              },
+           });
 }
 
 bool

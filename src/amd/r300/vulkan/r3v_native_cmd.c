@@ -17,6 +17,349 @@
 #include <stdlib.h>
 #include <string.h>
 
+static VkResult
+r3v_native_cmd_buffer_reserve_array(struct vk_command_buffer *vk_cmd_buffer,
+                                    void **storage, uint32_t count,
+                                    uint32_t *capacity, uint32_t additional,
+                                    size_t element_size, uint32_t initial)
+{
+   if (additional > UINT32_MAX - count)
+      goto out_of_memory;
+   const uint32_t required = count + additional;
+   if (required <= *capacity)
+      return VK_SUCCESS;
+
+   uint32_t new_capacity = *capacity != 0 ? *capacity : initial;
+   while (new_capacity < required) {
+      if (new_capacity > UINT32_MAX / 2u)
+         goto out_of_memory;
+      new_capacity *= 2u;
+   }
+   if ((size_t)new_capacity > SIZE_MAX / element_size)
+      goto out_of_memory;
+
+   void *new_storage = vk_alloc(&vk_cmd_buffer->pool->alloc,
+                                (size_t)new_capacity * element_size, 8,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (new_storage == NULL)
+      goto out_of_memory;
+   if (*storage != NULL && count != 0)
+      memcpy(new_storage, *storage, (size_t)count * element_size);
+   vk_free(&vk_cmd_buffer->pool->alloc, *storage);
+   *storage = new_storage;
+   *capacity = new_capacity;
+   return VK_SUCCESS;
+
+out_of_memory:
+   vk_command_buffer_set_error(vk_cmd_buffer, VK_ERROR_OUT_OF_HOST_MEMORY);
+   return VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+VkResult
+r3v_native_cmd_buffer_reserve_ordered_operations(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count)
+{
+   return r3v_native_cmd_buffer_reserve_array(
+      &cmd_buffer->vk, (void **)&cmd_buffer->ordered_operations,
+      cmd_buffer->ordered_operation_count,
+      &cmd_buffer->ordered_operation_capacity, additional_count,
+      sizeof(*cmd_buffer->ordered_operations),
+      R3V_NATIVE_ORDERED_OPERATION_INITIAL_CAPACITY);
+}
+
+VkResult
+r3v_native_cmd_buffer_append_ordered_operation(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_ordered_operation *operation)
+{
+   if (operation == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   VkResult result = r3v_native_cmd_buffer_reserve_ordered_operations(
+      cmd_buffer, 1u);
+   if (result != VK_SUCCESS)
+      return result;
+   cmd_buffer->ordered_operations[cmd_buffer->ordered_operation_count++] =
+      *operation;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_reserve_image_states(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count)
+{
+   return r3v_native_cmd_buffer_reserve_array(
+      &cmd_buffer->vk, (void **)&cmd_buffer->image_states,
+      cmd_buffer->image_state_count, &cmd_buffer->image_state_capacity,
+      additional_count, sizeof(*cmd_buffer->image_states),
+      R3V_NATIVE_CMD_IMAGE_STATE_INITIAL_CAPACITY);
+}
+
+struct r3v_native_cmd_image_state *
+r3v_native_cmd_buffer_find_image_state(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image)
+{
+   if (image == NULL)
+      return NULL;
+   for (uint32_t index = 0; index < cmd_buffer->image_state_count; index++) {
+      if (cmd_buffer->image_states[index].image == image)
+         return &cmd_buffer->image_states[index];
+   }
+   return NULL;
+}
+
+VkResult
+r3v_native_cmd_buffer_append_image_state(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   struct r3v_native_cmd_image_state **state_out)
+{
+   if (image == NULL || state_out == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_cmd_image_state *existing =
+      r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
+   if (existing != NULL) {
+      *state_out = existing;
+      return VK_SUCCESS;
+   }
+
+   VkResult result = r3v_native_cmd_buffer_reserve_image_states(cmd_buffer, 1u);
+   if (result != VK_SUCCESS)
+      return result;
+   struct r3v_native_cmd_image_state *state =
+      &cmd_buffer->image_states[cmd_buffer->image_state_count++];
+   *state = (struct r3v_native_cmd_image_state){
+      .image = image,
+      .representation = image->committed_submission.representation,
+   };
+   *state_out = state;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_require_image_layout(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   VkImageLayout layout, enum r3v_native_image_producer producer,
+   bool writes_content)
+{
+   struct r3v_native_cmd_image_state *state = NULL;
+   VkResult result = r3v_native_cmd_buffer_append_image_state(
+      cmd_buffer, image, &state);
+   if (result != VK_SUCCESS)
+      return result;
+
+   const enum r3v_native_image_api_layout required_layout =
+      (enum r3v_native_image_api_layout)layout;
+   if (state->current_layout_set) {
+      if (state->current_layout != required_layout)
+         return VK_ERROR_INITIALIZATION_FAILED;
+   } else {
+      state->required_layout = required_layout;
+      state->required_layout_set = true;
+      state->current_layout = required_layout;
+      state->current_layout_set = true;
+   }
+   if (writes_content) {
+      state->producer = producer;
+      state->visible_to =
+         producer == R3V_NATIVE_IMAGE_PRODUCER_HOST
+            ? R3V_NATIVE_IMAGE_VISIBLE_HOST
+         : producer == R3V_NATIVE_IMAGE_PRODUCER_RB2D
+            ? R3V_NATIVE_IMAGE_VISIBLE_RB2D
+         : producer == R3V_NATIVE_IMAGE_PRODUCER_RB3D
+            ? R3V_NATIVE_IMAGE_VISIBLE_RB3D
+            : R3V_NATIVE_IMAGE_VISIBLE_ZB;
+      state->content = R3V_NATIVE_IMAGE_CONTENT_INITIALIZED;
+      state->producer_set = true;
+      state->visibility_set = true;
+      state->content_set = true;
+   }
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_transition_image_layout(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   VkImageLayout old_layout, VkImageLayout new_layout)
+{
+   struct r3v_native_cmd_image_state *state = NULL;
+   VkResult result = r3v_native_cmd_buffer_append_image_state(
+      cmd_buffer, image, &state);
+   if (result != VK_SUCCESS)
+      return result;
+
+   const enum r3v_native_image_api_layout old_api_layout =
+      (enum r3v_native_image_api_layout)old_layout;
+   if (state->current_layout_set) {
+      if (old_layout != VK_IMAGE_LAYOUT_UNDEFINED &&
+          state->current_layout != old_api_layout)
+         return VK_ERROR_INITIALIZATION_FAILED;
+   } else {
+      state->required_layout = old_api_layout;
+      state->required_layout_set = true;
+   }
+   state->current_layout = (enum r3v_native_image_api_layout)new_layout;
+   state->current_layout_set = true;
+   if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+      state->content = R3V_NATIVE_IMAGE_CONTENT_DISCARDED;
+   if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+      state->content_set = true;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_append_raw_ib(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const uint32_t *appended_dwords, uint32_t appended_dword_count,
+   const struct r3v_native_bo_reference *new_references,
+   uint32_t new_reference_count,
+   const uint32_t *relocation_dword_indices,
+   const uint32_t *relocation_reference_ordinals, uint32_t relocation_count)
+{
+   if ((appended_dword_count != 0 && appended_dwords == NULL) ||
+       (new_reference_count != 0 && new_references == NULL) ||
+       (relocation_count != 0 &&
+        (relocation_dword_indices == NULL ||
+         relocation_reference_ordinals == NULL)) ||
+       (appended_dword_count == 0 && new_reference_count != 0) ||
+       (cmd_buffer->ib_size_dwords != 0 && cmd_buffer->ib == NULL) ||
+       (cmd_buffer->reference_count != 0 && cmd_buffer->references == NULL))
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   if (appended_dword_count > UINT32_MAX - cmd_buffer->ib_size_dwords ||
+       new_reference_count > UINT32_MAX - cmd_buffer->reference_count)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   const uint32_t combined_dword_count =
+      cmd_buffer->ib_size_dwords + appended_dword_count;
+   const uint32_t combined_reference_capacity =
+      cmd_buffer->reference_count + new_reference_count;
+   if ((size_t)combined_dword_count > SIZE_MAX / sizeof(uint32_t) ||
+       (size_t)combined_reference_capacity >
+          SIZE_MAX / sizeof(*cmd_buffer->references) ||
+       (size_t)new_reference_count > SIZE_MAX / sizeof(uint32_t))
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   uint32_t *appended_copy = NULL;
+   uint32_t *combined_ib = NULL;
+   struct r3v_native_bo_reference *combined_references = NULL;
+   uint32_t *reference_indices = NULL;
+   if (appended_dword_count != 0) {
+      appended_copy = malloc((size_t)appended_dword_count * sizeof(*appended_copy));
+      if (appended_copy == NULL)
+         goto out_of_memory;
+      memcpy(appended_copy, appended_dwords,
+             (size_t)appended_dword_count * sizeof(*appended_copy));
+   }
+   if (combined_dword_count != 0) {
+      combined_ib = malloc((size_t)combined_dword_count * sizeof(*combined_ib));
+      if (combined_ib == NULL)
+         goto out_of_memory;
+      if (cmd_buffer->ib_size_dwords != 0)
+         memcpy(combined_ib, cmd_buffer->ib,
+                (size_t)cmd_buffer->ib_size_dwords * sizeof(*combined_ib));
+      if (appended_dword_count != 0)
+         memcpy(combined_ib + cmd_buffer->ib_size_dwords, appended_copy,
+                (size_t)appended_dword_count * sizeof(*combined_ib));
+   }
+   if (combined_reference_capacity != 0) {
+      combined_references = malloc((size_t)combined_reference_capacity *
+                                   sizeof(*combined_references));
+      if (combined_references == NULL)
+         goto out_of_memory;
+      if (cmd_buffer->reference_count != 0)
+         memcpy(combined_references, cmd_buffer->references,
+                (size_t)cmd_buffer->reference_count *
+                   sizeof(*combined_references));
+   }
+   if (new_reference_count != 0) {
+      reference_indices = malloc((size_t)new_reference_count *
+                                 sizeof(*reference_indices));
+      if (reference_indices == NULL)
+         goto out_of_memory;
+   }
+
+   uint32_t merged_count = cmd_buffer->reference_count;
+   for (uint32_t input_index = 0; input_index < new_reference_count;
+        input_index++) {
+      const struct r3v_native_bo_reference *input =
+         &new_references[input_index];
+      uint32_t merged_index = merged_count;
+      for (uint32_t existing_index = 0; existing_index < merged_count;
+           existing_index++) {
+         struct r3v_native_bo_reference *existing =
+            &combined_references[existing_index];
+         if (existing->handle != input->handle)
+            continue;
+         if (existing->memory != input->memory) {
+            free(reference_indices);
+            free(combined_references);
+            free(combined_ib);
+            free(appended_copy);
+            return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+         }
+         existing->read_domains |= input->read_domains;
+         existing->write_domain |= input->write_domain;
+         merged_index = existing_index;
+         break;
+      }
+      if (merged_index == merged_count)
+         combined_references[merged_count++] = *input;
+      reference_indices[input_index] = merged_index;
+   }
+
+   for (uint32_t relocation_index = 0; relocation_index < relocation_count;
+        relocation_index++) {
+      const uint32_t dword_index = relocation_dword_indices[relocation_index];
+      const uint32_t reference_ordinal =
+         relocation_reference_ordinals[relocation_index];
+      if (dword_index >= appended_dword_count ||
+          reference_ordinal >= new_reference_count) {
+         free(reference_indices);
+         free(combined_references);
+         free(combined_ib);
+         free(appended_copy);
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
+      for (uint32_t previous = 0; previous < relocation_index; previous++) {
+         if (relocation_dword_indices[previous] == dword_index) {
+            free(reference_indices);
+            free(combined_references);
+            free(combined_ib);
+            free(appended_copy);
+            return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+         }
+      }
+      if (reference_indices[reference_ordinal] > UINT32_MAX / 4u) {
+         free(reference_indices);
+         free(combined_references);
+         free(combined_ib);
+         free(appended_copy);
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      appended_copy[dword_index] =
+         reference_indices[reference_ordinal] * 4u;
+   }
+   if (appended_dword_count != 0)
+      memcpy(combined_ib + cmd_buffer->ib_size_dwords, appended_copy,
+             (size_t)appended_dword_count * sizeof(*combined_ib));
+
+   free(cmd_buffer->ib);
+   free(cmd_buffer->references);
+   free(reference_indices);
+   free(appended_copy);
+   cmd_buffer->ib = combined_ib;
+   cmd_buffer->ib_size_dwords = combined_dword_count;
+   cmd_buffer->references = combined_references;
+   cmd_buffer->reference_count = merged_count;
+   return VK_SUCCESS;
+
+out_of_memory:
+   free(reference_indices);
+   free(combined_references);
+   free(combined_ib);
+   free(appended_copy);
+   return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+}
+
 void
 r3v_native_cmd_buffer_release_ib(struct r3v_native_cmd_buffer *cmd_buffer)
 {
@@ -106,7 +449,20 @@ r3v_native_cmd_buffer_release_recording(
    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->deferred_copies);
    cmd_buffer->deferred_copies = NULL;
    cmd_buffer->deferred_copy_capacity = 0;
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->ordered_operations);
+   cmd_buffer->ordered_operations = NULL;
+   cmd_buffer->ordered_operation_count = 0;
+   cmd_buffer->ordered_operation_capacity = 0;
+   vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->image_states);
+   cmd_buffer->image_states = NULL;
+   cmd_buffer->image_state_count = 0;
+   cmd_buffer->image_state_capacity = 0;
    cmd_buffer->pass_target = NULL;
+   cmd_buffer->pass_depth_target = NULL;
+   cmd_buffer->pass_color_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_color_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_depth_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
    cmd_buffer->pass_target_layer_offset = 0;
    cmd_buffer->bound_pipeline = NULL;
    cmd_buffer->bound_graphics_set = NULL;
@@ -253,7 +609,14 @@ r3v_native_cmd_buffer_append_ib(
    cmd_buffer->ib_size_dwords = total;
    cmd_buffer->references = merged;
    cmd_buffer->reference_count = merged_count;
-   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS;
+   if (cmd_buffer->cell_kind == R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR ||
+       cmd_buffer->cell_kind ==
+          R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION ||
+       cmd_buffer->cell_kind ==
+          R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION)
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
+   else
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS;
    return VK_SUCCESS;
 }
 

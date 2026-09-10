@@ -159,6 +159,101 @@ r3v_native_evidence_require_fresh(const char *dir,
  * the gate's own kind check names it first.
  */
 bool
+r3v_native_ordered_image_composition_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer == NULL || cmd_buffer->ib == NULL ||
+       cmd_buffer->ib_size_dwords == 0u || cmd_buffer->references == NULL ||
+       cmd_buffer->reference_count == 0u ||
+       cmd_buffer->ordered_operation_count < 2u ||
+       cmd_buffer->ordered_operations == NULL)
+      return false;
+
+   for (uint32_t reference_index = 0u;
+        reference_index < cmd_buffer->reference_count; reference_index++) {
+      const struct r3v_native_bo_reference *reference =
+         &cmd_buffer->references[reference_index];
+      if (reference->memory == NULL ||
+          reference->handle != reference->memory->bo.handle ||
+          (reference->read_domains == 0u && reference->write_domain == 0u))
+         return false;
+   }
+
+   bool render_pass_open = false;
+   uint32_t previous_position = 0u;
+   for (uint32_t operation_index = 0u;
+        operation_index < cmd_buffer->ordered_operation_count;
+        operation_index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[operation_index];
+      if (operation->ib_position_dwords < previous_position ||
+          operation->ib_position_dwords > cmd_buffer->ib_size_dwords)
+         return false;
+      previous_position = operation->ib_position_dwords;
+
+      switch (operation->kind) {
+      case R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR:
+         if (render_pass_open ||
+             operation->payload.rb2d_depth_clear.image == NULL ||
+             operation->payload.rb2d_depth_clear.image->memory == NULL)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY:
+         if (render_pass_open ||
+             operation->payload.rb2d_copy.rb2d_copy_index >=
+                cmd_buffer->rb2d_copy_operation_count)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER:
+         if (render_pass_open ||
+             operation->payload.image_barrier.image == NULL)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN:
+         if (render_pass_open ||
+             operation->payload.render_pass_begin.deferred_draw_index >=
+                cmd_buffer->deferred_draw_count)
+            return false;
+         render_pass_open = true;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_DRAW: {
+         const uint32_t draw_index =
+            operation->payload.draw.deferred_draw_index;
+         if (!render_pass_open || draw_index >= cmd_buffer->deferred_draw_count ||
+             operation->ib_position_dwords !=
+                cmd_buffer->deferred_draws[draw_index].ib_span_offset ||
+             cmd_buffer->deferred_draws[draw_index].ib_span_dwords == 0u)
+            return false;
+         break;
+      }
+      case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END:
+         if (!render_pass_open ||
+             operation->payload.render_pass_end.deferred_draw_index >=
+                cmd_buffer->deferred_draw_count)
+            return false;
+         render_pass_open = false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_HOST_COPY:
+         if (operation->payload.host_copy.deferred_copy_index >=
+             cmd_buffer->deferred_copy_count)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_EVENT:
+         if (operation->payload.event.event_index >= cmd_buffer->event_op_count)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_QUERY:
+         if (operation->payload.query.query_index >= cmd_buffer->query_op_count)
+            return false;
+         break;
+      default:
+         return false;
+      }
+   }
+   return !render_pass_open;
+}
+
+bool
 r3v_native_cell_geometry_unfrozen(
    const struct r3v_native_cmd_buffer *cmd_buffer)
 {
@@ -719,6 +814,8 @@ r3v_native_cell_geometry_unfrozen(
       return !r3v_native_rb2d_tiled_copy_geometry_valid(cmd_buffer);
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR:
       return !r3v_native_depth_image_clear_geometry_valid(cmd_buffer);
+   case R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION:
+      return !r3v_native_ordered_image_composition_geometry_valid(cmd_buffer);
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
    case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION: {
@@ -1943,6 +2040,110 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
    return VK_SUCCESS;
 }
 
+struct r3v_native_submission_image_state {
+   struct r3v_native_image *image;
+   struct r3v_native_image_committed_state state;
+};
+
+static VkResult
+r3v_native_queue_preflight_image_states(
+   struct r3v_native_device *device, const struct vk_queue_submit *submit)
+{
+   uint32_t state_capacity = 0u;
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[command_index],
+         struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->image_state_count > UINT32_MAX - state_capacity)
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      state_capacity += cmd_buffer->image_state_count;
+   }
+
+   struct r3v_native_submission_image_state *states =
+      state_capacity != 0u ? calloc(state_capacity, sizeof(*states)) : NULL;
+   if (state_capacity != 0u && states == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   uint32_t state_count = 0u;
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[command_index],
+         struct r3v_native_cmd_buffer, vk);
+      for (uint32_t image_index = 0u;
+           image_index < cmd_buffer->image_state_count; image_index++) {
+         const struct r3v_native_cmd_image_state *recorded =
+            &cmd_buffer->image_states[image_index];
+         uint32_t pending_index = 0u;
+         while (pending_index < state_count &&
+                states[pending_index].image != recorded->image)
+            pending_index++;
+         if (pending_index == state_count) {
+            states[state_count++] =
+               (struct r3v_native_submission_image_state){
+                  .image = recorded->image,
+                  .state = recorded->image->committed_submission,
+               };
+         }
+         struct r3v_native_image_committed_state *pending =
+            &states[pending_index].state;
+         if (pending->representation != recorded->representation ||
+             (recorded->required_layout_set &&
+              recorded->required_layout !=
+                 R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
+              pending->api_layout != recorded->required_layout)) {
+            free(states);
+            return vk_errorf(
+               device, R3V_NATIVE_REFUSAL_RESULT,
+               "r3v-native: command buffer %u image state requires layout "
+               "%u from representation %u, found layout %u representation %u",
+               command_index, recorded->required_layout,
+               recorded->representation, pending->api_layout,
+               pending->representation);
+         }
+         if (recorded->current_layout_set)
+            pending->api_layout = recorded->current_layout;
+         if (recorded->producer_set)
+            pending->producer = recorded->producer;
+         if (recorded->visibility_set)
+            pending->visible_to = recorded->visible_to;
+         if (recorded->content_set)
+            pending->content = recorded->content;
+      }
+   }
+   free(states);
+   return VK_SUCCESS;
+}
+
+static void
+r3v_native_queue_publish_image_states(const struct vk_queue_submit *submit)
+{
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[command_index],
+         struct r3v_native_cmd_buffer, vk);
+      for (uint32_t image_index = 0u;
+           image_index < cmd_buffer->image_state_count; image_index++) {
+         const struct r3v_native_cmd_image_state *recorded =
+            &cmd_buffer->image_states[image_index];
+         if (recorded->current_layout_set)
+            recorded->image->committed_submission.api_layout =
+               recorded->current_layout;
+         if (recorded->producer_set)
+            recorded->image->committed_submission.producer =
+               recorded->producer;
+         if (recorded->visibility_set)
+            recorded->image->committed_submission.visible_to =
+               recorded->visible_to;
+         if (recorded->content_set)
+            recorded->image->committed_submission.content =
+               recorded->content;
+      }
+   }
+}
+
 VkResult
 r3v_native_queue_submit(struct vk_queue *queue_base,
                         struct vk_queue_submit *submit)
@@ -1984,6 +2185,21 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           executable);
       }
    }
+
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct vk_command_buffer *vk_cmd =
+         submit->command_buffers[command_index];
+      if (vk_cmd->record_result != VK_SUCCESS) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: command buffer %u carries recording "
+                          "error %d", command_index, vk_cmd->record_result);
+      }
+   }
+   VkResult image_preflight =
+      r3v_native_queue_preflight_image_states(device, submit);
+   if (image_preflight != VK_SUCCESS)
+      return image_preflight;
 
    /* Route resolution and the submit's policy verdict, both ahead of the
     * wait loop below.  A permanent binary wait is consumed where it is
@@ -2058,21 +2274,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                           "r3v-native: semaphore wait %u failed: %d", w,
                           wait_result);
-      }
-   }
-
-   /* Recording fails closed: an unsupported command poisons the buffer's
-    * record_result and vkEndCommandBuffer returns the error.  The runtime
-    * moves every submitted buffer to PENDING before driver_submit runs, so
-    * record_result is the signal that survives to this boundary; a poisoned
-    * buffer refuses the whole submit before any buffer runs.
-    */
-   for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
-      const struct vk_command_buffer *vk_cmd = submit->command_buffers[i];
-      if (vk_cmd->record_result != VK_SUCCESS) {
-         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: command buffer %u carries recording "
-                          "error %d", i, vk_cmd->record_result);
       }
    }
 
@@ -3014,6 +3215,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
    device->queue_status = r3v_native_queue_status_finalize_submit(
       device->queue_status, submit_has_executable_ib);
+   r3v_native_queue_publish_image_states(submit);
 
    /* The bounded completion wait above retired every buffer.  Consuming
     * permanent binary waits before signaling keeps the semaphore state ready

@@ -275,6 +275,18 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    image->depth_family = depth_family;
    if (depth_family)
       image->depth_contract = depth_contract;
+   image->committed_submission = (struct r3v_native_image_committed_state){
+      .api_layout =
+         (enum r3v_native_image_api_layout)pCreateInfo->initialLayout,
+      .representation = depth_family
+                           ? R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED
+                           : R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR,
+      .producer = R3V_NATIVE_IMAGE_PRODUCER_HOST,
+      .visible_to = R3V_NATIVE_IMAGE_VISIBLE_HOST,
+      .content = pCreateInfo->initialLayout == VK_IMAGE_LAYOUT_PREINITIALIZED
+                    ? R3V_NATIVE_IMAGE_CONTENT_INITIALIZED
+                    : R3V_NATIVE_IMAGE_CONTENT_DISCARDED,
+   };
    image->memory = NULL;
    image->memory_offset = 0;
    *pImage = r3v_native_image_to_handle(image);

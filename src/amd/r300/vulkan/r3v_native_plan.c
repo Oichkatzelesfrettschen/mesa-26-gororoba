@@ -47,6 +47,8 @@ static const struct {
    {R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION,
     "rb2d_carrier_qualification"},
    {R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR, "zb_depth_clear"},
+   {R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION,
+    "ordered_image_composition"},
    {R3V_NATIVE_CELL_KIND_R2VB_PRODUCER, "r2vb_producer"},
    {R3V_NATIVE_CELL_KIND_R2VB_REINGEST, "r2vb_reingest"},
    {R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE, "r2vb_float2_tuple"},

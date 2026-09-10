@@ -163,6 +163,82 @@ struct r3v_native_pipeline;
 struct r3v_native_buffer;
 struct r3v_native_arming_provider;
 
+/* The symbolic API layout carried by an ordered image state.  Values retain
+ * the Vulkan layout numbers so a recorder can copy validated API input
+ * without introducing a second conversion table. */
+enum r3v_native_image_api_layout {
+   R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED = VK_IMAGE_LAYOUT_UNDEFINED,
+   R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL = VK_IMAGE_LAYOUT_GENERAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_COLOR_ATTACHMENT_OPTIMAL =
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_SHADER_READ_ONLY_OPTIMAL =
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_TRANSFER_SRC_OPTIMAL =
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_TRANSFER_DST_OPTIMAL =
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_PREINITIALIZED =
+      VK_IMAGE_LAYOUT_PREINITIALIZED,
+};
+
+/* The first representation is zero so calloc and vk_zalloc produce a valid
+ * state for images created before representation-specific admission exists. */
+enum r3v_native_image_representation {
+   R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR = 0,
+   R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+};
+
+enum r3v_native_image_producer {
+   R3V_NATIVE_IMAGE_PRODUCER_HOST = 0,
+   R3V_NATIVE_IMAGE_PRODUCER_RB2D,
+   R3V_NATIVE_IMAGE_PRODUCER_RB3D,
+   R3V_NATIVE_IMAGE_PRODUCER_ZB,
+};
+
+enum r3v_native_image_visibility {
+   R3V_NATIVE_IMAGE_VISIBLE_HOST = 1u << 0,
+   R3V_NATIVE_IMAGE_VISIBLE_RB2D = 1u << 1,
+   R3V_NATIVE_IMAGE_VISIBLE_RB3D = 1u << 2,
+   R3V_NATIVE_IMAGE_VISIBLE_ZB = 1u << 3,
+};
+
+enum r3v_native_image_content_status {
+   R3V_NATIVE_IMAGE_CONTENT_DISCARDED = 0,
+   R3V_NATIVE_IMAGE_CONTENT_INITIALIZED,
+};
+
+/* State committed by the last completed submission.  A zeroed state denotes
+ * an undefined layout, the zero-safe representation, host ownership, and
+ * discarded contents. */
+struct r3v_native_image_committed_state {
+   enum r3v_native_image_api_layout api_layout;
+   enum r3v_native_image_representation representation;
+   enum r3v_native_image_producer producer;
+   uint32_t visible_to;
+   enum r3v_native_image_content_status content;
+};
+
+/* State assembled while recording one command buffer.  The image pointer is
+ * the key; one entry covers every operation that names that image. */
+struct r3v_native_cmd_image_state {
+   struct r3v_native_image *image;
+   enum r3v_native_image_api_layout required_layout;
+   enum r3v_native_image_api_layout current_layout;
+   enum r3v_native_image_representation representation;
+   enum r3v_native_image_producer producer;
+   uint32_t visible_to;
+   enum r3v_native_image_content_status content;
+   bool required_layout_set;
+   bool current_layout_set;
+   bool producer_set;
+   bool visibility_set;
+   bool content_set;
+};
+
 enum r3v_native_rb2d_copy_geometry {
    R3V_NATIVE_RB2D_COPY_GEOMETRY_TILE = 0,
    R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS,
@@ -259,10 +335,75 @@ struct r3v_native_deferred_copy {
    bool gpu_routed;
 };
 
+/* A copied image barrier keeps command-buffer recording independent of the
+ * application's VkImageMemoryBarrier storage. */
+struct r3v_native_image_barrier_record {
+   struct r3v_native_image *image;
+   enum r3v_native_image_api_layout old_layout;
+   enum r3v_native_image_api_layout new_layout;
+   VkImageAspectFlags aspect_mask;
+   VkPipelineStageFlags src_stage_mask;
+   VkPipelineStageFlags dst_stage_mask;
+   VkAccessFlags src_access_mask;
+   VkAccessFlags dst_access_mask;
+};
+
+/* One ordered operation.  Each legacy operation kind carries the index of
+ * its existing array entry; image barriers carry their complete copied
+ * record because no legacy array owns the Vulkan barrier storage. */
+enum r3v_native_ordered_operation_kind {
+   R3V_NATIVE_ORDERED_OPERATION_HOST_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
+   R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
+   R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN,
+   R3V_NATIVE_ORDERED_OPERATION_DRAW,
+   R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END,
+   R3V_NATIVE_ORDERED_OPERATION_EVENT,
+   R3V_NATIVE_ORDERED_OPERATION_QUERY,
+};
+
+struct r3v_native_ordered_operation {
+   enum r3v_native_ordered_operation_kind kind;
+   uint32_t ib_position_dwords;
+   union {
+      struct {
+         uint32_t deferred_copy_index;
+      } host_copy;
+      struct {
+         struct r3v_native_image *image;
+         uint32_t aspect_mask;
+         uint32_t depth_code;
+         uint32_t stencil;
+      } rb2d_depth_clear;
+      struct {
+         uint32_t rb2d_copy_index;
+      } rb2d_copy;
+      struct r3v_native_image_barrier_record image_barrier;
+      struct {
+         uint32_t deferred_draw_index;
+      } render_pass_begin;
+      struct {
+         uint32_t deferred_draw_index;
+      } draw;
+      struct {
+         uint32_t deferred_draw_index;
+      } render_pass_end;
+      struct {
+         uint32_t event_index;
+      } event;
+      struct {
+         uint32_t query_index;
+      } query;
+   } payload;
+};
+
 /* The first command-pool allocation keeps ordinary copy recordings compact;
  * r3v_native_copy_slot grows the storage when a recording reaches it.
  */
 #define R3V_NATIVE_DEFERRED_COPY_INITIAL_CAPACITY 16
+#define R3V_NATIVE_ORDERED_OPERATION_INITIAL_CAPACITY 16
+#define R3V_NATIVE_CMD_IMAGE_STATE_INITIAL_CAPACITY 8
 
 /* The compute descriptor surface: a set layout admits storage-buffer
  * bindings under the compute stage inside the binding bound, a pool
@@ -742,6 +883,11 @@ struct r3v_native_cmd_buffer {
    uint32_t reference_count;
 
    struct r3v_native_image *pass_target;
+   struct r3v_native_image *pass_depth_target;
+   VkImageLayout pass_color_layout;
+   VkImageLayout pass_depth_layout;
+   VkImageLayout pass_color_final_layout;
+   VkImageLayout pass_depth_final_layout;
    /* Byte offset of the attached view's layer inside the target image;
     * the clear, the overlap test, and the cell's RB3D_COLOROFFSET0
     * payload all address the layer from the bind offset plus this.
@@ -870,6 +1016,15 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
+
+   /* Ordered records preserve the API command sequence while the legacy
+    * operation arrays remain the payload owners for their existing users. */
+   struct r3v_native_ordered_operation *ordered_operations;
+   uint32_t ordered_operation_count;
+   uint32_t ordered_operation_capacity;
+   struct r3v_native_cmd_image_state *image_states;
+   uint32_t image_state_count;
+   uint32_t image_state_capacity;
 
    /* What the fill route resolved for this command buffer, valid while
     * fill_route_active.  It is the record a hardware claim rests on: the
@@ -1583,6 +1738,7 @@ struct r3v_native_image {
    /* Bound memory and the allocation offset at which the image starts. */
    struct r3v_native_memory *memory;
    VkDeviceSize memory_offset;
+   struct r3v_native_image_committed_state committed_submission;
    /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;
@@ -1838,6 +1994,33 @@ bool r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass);
 void r3v_native_cmd_buffer_release_recording(
    struct r3v_native_cmd_buffer *cmd_buffer);
 
+VkResult r3v_native_cmd_buffer_reserve_ordered_operations(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);
+
+VkResult r3v_native_cmd_buffer_append_ordered_operation(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_ordered_operation *operation);
+
+VkResult r3v_native_cmd_buffer_reserve_image_states(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);
+
+struct r3v_native_cmd_image_state *r3v_native_cmd_buffer_find_image_state(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image);
+
+VkResult r3v_native_cmd_buffer_append_image_state(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   struct r3v_native_cmd_image_state **state_out);
+
+VkResult r3v_native_cmd_buffer_require_image_layout(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   VkImageLayout layout, enum r3v_native_image_producer producer,
+   bool writes_content);
+
+VkResult r3v_native_cmd_buffer_transition_image_layout(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   VkImageLayout old_layout, VkImageLayout new_layout);
+
 /* Installs a complete IB and reference list into a native command buffer,
  * taking ownership of both allocations.  The fixed-cell emitters are the
  * only writers.  The kind travels with the installation, so every
@@ -1871,6 +2054,20 @@ VkResult r3v_native_cmd_buffer_append_ib(
    const struct r3v_native_bo_reference *references,
    const uint32_t *reference_slots, uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell);
+
+/* Appends a raw PM4 stream transactionally.  Each relocation site names the
+ * payload dword in appended_dwords and the ordinal of its input reference;
+ * the temporary copy receives merged relocation indices before the combined
+ * IB and reference arrays replace the command buffer. */
+VkResult r3v_native_cmd_buffer_append_raw_ib(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const uint32_t *appended_dwords, uint32_t appended_dword_count,
+   const struct r3v_native_bo_reference *new_references,
+   uint32_t new_reference_count,
+   const uint32_t *relocation_dword_indices,
+   const uint32_t *relocation_reference_ordinals,
+   uint32_t relocation_count);
 
 /* Returns an installed stream and its relocation list to the allocator and
  * clears the cell kind, leaving the command buffer with no transport.  A
@@ -2385,6 +2582,8 @@ VkResult r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
                                              uint32_t depth_code,
                                              uint32_t stencil);
 bool r3v_native_depth_image_clear_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+bool r3v_native_ordered_image_composition_geometry_valid(
    const struct r3v_native_cmd_buffer *cmd_buffer);
 
 VkResult r3v_native_record_zb_tiled_validation(

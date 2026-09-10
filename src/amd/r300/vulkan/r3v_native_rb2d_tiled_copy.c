@@ -82,6 +82,9 @@ r3v_native_record_rb2d_tiled_copy_masked(
        request->source.buffer_bytes != source_memory->bo.size ||
        request->destination.buffer_bytes != destination_memory->bo.size)
       return VK_ERROR_INITIALIZATION_FAILED;
+   if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd_buffer, 1u) !=
+       VK_SUCCESS)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
    if (cmd_buffer->rb2d_tiled_copy_configured)
       return VK_ERROR_INITIALIZATION_FAILED;
 
@@ -128,11 +131,15 @@ r3v_native_record_rb2d_copy(
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
    if ((!cmd_buffer->rb2d_tiled_copy_configured &&
-        (cmd_buffer->ib_size_dwords != 0u || cmd_buffer->reference_count != 0u ||
-         cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_UNDECLARED)) ||
+        cmd_buffer->ib_size_dwords != 0u &&
+        cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+        cmd_buffer->cell_kind !=
+           R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION) ||
        (cmd_buffer->rb2d_tiled_copy_configured &&
         cmd_buffer->cell_kind !=
-           R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION))
+           R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION &&
+        cmd_buffer->cell_kind !=
+           R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION))
       return VK_ERROR_INITIALIZATION_FAILED;
    if (cmd_buffer->rb2d_tiled_copy_configured &&
        cmd_buffer->rb2d_copy_geometry ==
@@ -258,7 +265,13 @@ r3v_native_record_rb2d_copy(
    cmd_buffer->ib_size_dwords = old_ib_dwords + ib_dwords;
    cmd_buffer->references = merged;
    cmd_buffer->reference_count = merged_count;
-   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION;
+   cmd_buffer->cell_kind =
+      old_ib_dwords == 0u
+         ? R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION
+         : cmd_buffer->cell_kind ==
+                 R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION
+              ? R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION
+              : R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
    cmd_buffer->rb2d_copy_operations = operations;
    cmd_buffer->rb2d_copy_operation_count = old_operation_count + 1u;
    cmd_buffer->rb2d_copy_operation_capacity = old_operation_count + 1u;
@@ -271,7 +284,14 @@ r3v_native_record_rb2d_copy(
    cmd_buffer->rb2d_copy_byte_carrier = plan->byte_carrier;
    cmd_buffer->rb2d_tiled_copy_write_mask = mask;
    cmd_buffer->rb2d_tiled_copy_configured = true;
-   return VK_SUCCESS;
+   return r3v_native_cmd_buffer_append_ordered_operation(
+      cmd_buffer, &(struct r3v_native_ordered_operation){
+                     .kind = R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+                     .ib_position_dwords = old_ib_dwords,
+                     .payload.rb2d_copy = {
+                        .rb2d_copy_index = old_operation_count,
+                     },
+                  });
 }
 
 bool

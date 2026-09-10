@@ -145,7 +145,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
                    .format = R300_RB2D_FORMAT_ARGB8888,
                    .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
                    .depth_code = depth_code,
-                   .stencil = clear.stencil,
+                   .stencil = clear.stencil & UINT8_MAX,
                 }, &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
             poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
             return;
@@ -163,7 +163,53 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    const uint32_t clear_dword = r300_tcl_bypass_triangle_pack_unorm8_dword(
       view->image->lanes, pRenderPassBegin->pClearValues[0].color.float32);
 
+   const struct vk_subpass *subpass = &pass->subpasses[0];
+   const VkImageLayout color_layout = subpass->color_attachments[0].layout;
+   const VkImageLayout color_final_layout = pass->attachments[0].final_layout;
+   VkResult state_result = r3v_native_cmd_buffer_transition_image_layout(
+      cmd_buffer, view->image, pass->attachments[0].initial_layout,
+      color_layout);
+   if (state_result == VK_SUCCESS)
+      state_result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, view->image, color_layout,
+         R3V_NATIVE_IMAGE_PRODUCER_RB3D,
+         pass->attachments[0].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
+
+   VkImageLayout depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   VkImageLayout depth_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   if (state_result == VK_SUCCESS && depth_view != NULL) {
+      depth_layout = subpass->depth_stencil_attachment->layout;
+      depth_final_layout = pass->attachments[1].final_layout;
+      state_result = r3v_native_cmd_buffer_transition_image_layout(
+         cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,
+         depth_layout);
+      if (state_result == VK_SUCCESS)
+         state_result = r3v_native_cmd_buffer_require_image_layout(
+            cmd_buffer, depth_view->image, depth_layout,
+            R3V_NATIVE_IMAGE_PRODUCER_ZB, depth_loads_clear);
+   }
+   if (state_result == VK_SUCCESS)
+      state_result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN,
+                        .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                        .payload.render_pass_begin = {
+                           .deferred_draw_index =
+                              cmd_buffer->deferred_draw_count,
+                        },
+                     });
+   if (state_result != VK_SUCCESS) {
+      poison(commandBuffer, state_result);
+      return;
+   }
+
    cmd_buffer->pass_target = view->image;
+   cmd_buffer->pass_depth_target =
+      depth_view != NULL ? depth_view->image : NULL;
+   cmd_buffer->pass_color_layout = color_layout;
+   cmd_buffer->pass_depth_layout = depth_layout;
+   cmd_buffer->pass_color_final_layout = color_final_layout;
+   cmd_buffer->pass_depth_final_layout = depth_final_layout;
    cmd_buffer->pass_target_layer_offset = view->layer_offset_bytes;
    cmd_buffer->draw_recorded = false;
    cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count++] =
@@ -202,7 +248,33 @@ r3v_CmdEndRenderPass(VkCommandBuffer commandBuffer)
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
+   VkResult state_result = r3v_native_cmd_buffer_transition_image_layout(
+      cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+      cmd_buffer->pass_color_final_layout);
+   if (state_result == VK_SUCCESS && cmd_buffer->pass_depth_target != NULL)
+      state_result = r3v_native_cmd_buffer_transition_image_layout(
+         cmd_buffer, cmd_buffer->pass_depth_target,
+         cmd_buffer->pass_depth_layout, cmd_buffer->pass_depth_final_layout);
+   if (state_result == VK_SUCCESS)
+      state_result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END,
+                        .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                        .payload.render_pass_end = {
+                           .deferred_draw_index =
+                              cmd_buffer->deferred_draw_count - 1u,
+                        },
+                     });
+   if (state_result != VK_SUCCESS) {
+      poison(commandBuffer, state_result);
+      return;
+   }
    cmd_buffer->pass_target = NULL;
+   cmd_buffer->pass_depth_target = NULL;
+   cmd_buffer->pass_color_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_color_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_depth_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
    cmd_buffer->pass_target_layer_offset = 0;
 }
 
@@ -649,9 +721,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
     * carrier cell; the span the direct cell occupies in the command
     * buffer's IB is what the selection at submission replaces. */
    const uint32_t ib_span_offset =
-      cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1
-         ? cmd_buffer->ib_size_dwords
-         : 0;
+      cmd_buffer->ib != NULL ? cmd_buffer->ib_size_dwords : 0;
    struct r300_tcl_bypass_triangle_ib alternate_cell = {0};
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
       device, cmd_buffer, carrier, cmd_buffer->pass_target,
@@ -764,6 +834,25 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    memcpy(cmd_buffer->deferred_draws[pass_slot].streams, streams,
           sizeof(streams));
    cmd_buffer->draw_recorded = true;
+   VkResult ordered_result = r3v_native_cmd_buffer_require_image_layout(
+      cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+      R3V_NATIVE_IMAGE_PRODUCER_RB3D, true);
+   if (ordered_result == VK_SUCCESS && cmd_buffer->pass_depth_target != NULL)
+      ordered_result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, cmd_buffer->pass_depth_target,
+         cmd_buffer->pass_depth_layout, R3V_NATIVE_IMAGE_PRODUCER_ZB,
+         pipeline->depth_pipeline.hardware.depth_write);
+   if (ordered_result == VK_SUCCESS)
+      ordered_result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_DRAW,
+                        .ib_position_dwords = ib_span_offset,
+                        .payload.draw = {
+                           .deferred_draw_index = pass_slot,
+                        },
+                     });
+   if (ordered_result != VK_SUCCESS)
+      poison(commandBuffer, ordered_result);
 }
 
 /* The instance range both draws accept: at least one instance (the cell

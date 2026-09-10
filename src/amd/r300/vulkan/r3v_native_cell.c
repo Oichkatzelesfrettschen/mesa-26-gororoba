@@ -679,7 +679,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * before the next one runs -- the coherency edge the composed cell
     * holds on silicon.  A first pass installs.
     */
-   if (cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1) {
+   if (cmd_buffer->ib != NULL) {
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
          device, cmd_buffer, &cell, references, reference_slots, slot_count,
          alternate_carrier_out);
