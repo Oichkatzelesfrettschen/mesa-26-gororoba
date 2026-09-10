@@ -207,8 +207,60 @@ r3v_native_cmd_buffer_append_image_state(
       .image = image,
       .required_representation = image->committed_submission.representation,
       .required_representation_set = true,
+      .required_zmask_metadata = image->committed_submission.zmask_metadata,
+      .required_zmask_metadata_set = true,
    };
    *state_out = state;
+   return VK_SUCCESS;
+}
+
+static bool
+r3v_native_zmask_metadata_valid(
+   const struct r3v_native_zmask_metadata_state *metadata)
+{
+   if (metadata == NULL ||
+       metadata->status > R3V_NATIVE_ZMASK_METADATA_COMPRESSED)
+      return false;
+   if (metadata->status == R3V_NATIVE_ZMASK_METADATA_RETIRED)
+      return metadata->clear_depth_code == 0u && metadata->clear_stencil == 0u &&
+             metadata->generation == 0u;
+   if (metadata->status == R3V_NATIVE_ZMASK_METADATA_INITIALIZED)
+      return metadata->clear_depth_code == 0u && metadata->clear_stencil == 0u &&
+             metadata->generation != 0u;
+   return metadata->clear_depth_code <= 0xffffffu &&
+          metadata->clear_stencil <= 0xffu && metadata->generation != 0u;
+}
+
+VkResult
+r3v_native_cmd_buffer_transition_zmask_metadata(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   const struct r3v_native_zmask_metadata_state *required_metadata,
+   const struct r3v_native_zmask_metadata_state *resulting_metadata)
+{
+   if (cmd_buffer == NULL || image == NULL ||
+       !r3v_native_zmask_metadata_valid(required_metadata) ||
+       !r3v_native_zmask_metadata_valid(resulting_metadata))
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const uint32_t original_count = cmd_buffer->image_state_count;
+   struct r3v_native_cmd_image_state *state = NULL;
+   VkResult result = r3v_native_cmd_buffer_append_image_state(
+      cmd_buffer, image, &state);
+   if (result != VK_SUCCESS)
+      return result;
+   const struct r3v_native_cmd_image_state original = *state;
+   const struct r3v_native_zmask_metadata_state *current_metadata =
+      state->current_zmask_metadata_set ? &state->current_zmask_metadata
+                                        : &state->required_zmask_metadata;
+   if (!r3v_native_zmask_metadata_equal(current_metadata,
+                                         required_metadata)) {
+      *state = original;
+      cmd_buffer->image_state_count = original_count;
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   state->current_zmask_metadata = *resulting_metadata;
+   state->current_zmask_metadata_set = true;
    return VK_SUCCESS;
 }
 

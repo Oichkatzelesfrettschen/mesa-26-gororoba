@@ -24,6 +24,7 @@
 #include "amd/r300/common/r300_zb_combined_clear.h"
 #include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
+#include "amd/r300/common/r300_zmask_layout.h"
 #include "r3v_native_depth_image_contract.h"
 #include "r3v_native_depth_pipeline.h"
 #include "r3v_interpolation_lowering.h"
@@ -269,6 +270,31 @@ enum r3v_native_image_content_status {
    R3V_NATIVE_IMAGE_CONTENT_INITIALIZED,
 };
 
+enum r3v_native_zmask_metadata_status {
+   R3V_NATIVE_ZMASK_METADATA_RETIRED = 0,
+   R3V_NATIVE_ZMASK_METADATA_INITIALIZED,
+   R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR,
+   R3V_NATIVE_ZMASK_METADATA_COMPRESSED,
+};
+
+struct r3v_native_zmask_metadata_state {
+   enum r3v_native_zmask_metadata_status status;
+   uint32_t clear_depth_code;
+   uint32_t clear_stencil;
+   uint64_t generation;
+};
+
+static inline bool
+r3v_native_zmask_metadata_equal(
+   const struct r3v_native_zmask_metadata_state *left,
+   const struct r3v_native_zmask_metadata_state *right)
+{
+   return left->status == right->status &&
+          left->clear_depth_code == right->clear_depth_code &&
+          left->clear_stencil == right->clear_stencil &&
+          left->generation == right->generation;
+}
+
 /* State committed by the last completed submission.  A zeroed state denotes
  * an undefined layout, the zero-safe representation, host ownership, and
  * discarded contents. */
@@ -278,6 +304,7 @@ struct r3v_native_image_committed_state {
    enum r3v_native_image_producer producer;
    uint32_t visible_to;
    enum r3v_native_image_content_status content;
+   struct r3v_native_zmask_metadata_state zmask_metadata;
 };
 
 /* State assembled while recording one command buffer.  The image pointer is
@@ -291,6 +318,8 @@ struct r3v_native_cmd_image_state {
    enum r3v_native_image_producer producer;
    uint32_t visible_to;
    enum r3v_native_image_content_status content;
+   struct r3v_native_zmask_metadata_state required_zmask_metadata;
+   struct r3v_native_zmask_metadata_state current_zmask_metadata;
    bool required_layout_set;
    bool current_layout_set;
    bool required_representation_set;
@@ -298,6 +327,8 @@ struct r3v_native_cmd_image_state {
    bool producer_set;
    bool visibility_set;
    bool content_set;
+   bool required_zmask_metadata_set;
+   bool current_zmask_metadata_set;
 };
 
 enum r3v_native_rb2d_copy_geometry {
@@ -1848,6 +1879,8 @@ struct r3v_native_image {
    struct r3v_native_memory *memory;
    VkDeviceSize memory_offset;
    struct r3v_native_image_committed_state committed_submission;
+   struct r300_zmask_layout zmask_layout;
+   bool zmask_layout_admitted;
    /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;
@@ -2139,6 +2172,11 @@ VkResult r3v_native_cmd_buffer_transition_image_representation(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    enum r3v_native_image_representation required_representation,
    enum r3v_native_image_representation resulting_representation);
+
+VkResult r3v_native_cmd_buffer_transition_zmask_metadata(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   const struct r3v_native_zmask_metadata_state *required_metadata,
+   const struct r3v_native_zmask_metadata_state *resulting_metadata);
 
 VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
