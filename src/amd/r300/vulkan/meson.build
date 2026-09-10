@@ -2855,6 +2855,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
            'VK_DRIVER_FILES' : _dev_icd.full_path(),
            'R3V_DRM_SHIM_SUBSYSTEM_ID' : '1028:022a',
            'R3V_DRM_SHIM_DMI_PRODUCT_NAME' : 'Vostro 1000',
+           'R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL' : '1',
          }),
          depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
          suite : ['r3v'])
@@ -3613,7 +3614,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   test(
     'r3v-native-zmask-public-lifecycle',
     r3v_native_zmask_public_lifecycle_test,
-    env : r3v_native_cell_env,
+    env : environment(r3v_native_cell_vars + {
+      'R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL' : '1',
+    }),
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
     suite : ['r3v'],

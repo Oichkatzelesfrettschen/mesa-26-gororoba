@@ -800,12 +800,15 @@ record_lifecycle(struct public_context *context, struct readback *readback,
                  PFN_vkCmdCopyImageToBuffer copy_image_to_buffer,
                  bool hardware_requested, const char *evidence_dir)
 {
+   struct r3v_native_device *device =
+      r3v_native_device_from_handle(context->device);
+   const char *fast_clear_gate = device->zmask_fast_clear_gate;
+   device->zmask_fast_clear_gate = NULL;
    struct lifecycle_results results = {
       .ordinary_control = record_ordinary_control(context),
       .hardware = true,
    };
-   struct r3v_native_device *device =
-      r3v_native_device_from_handle(context->device);
+   device->zmask_fast_clear_gate = fast_clear_gate;
    device->zmask_automatic_qualified = true;
    const bool fixtures_created =
       copy_image_to_buffer != NULL && create_readback(context, readback) &&
@@ -863,6 +866,8 @@ main(int argc, char **argv)
    struct r3v_native_device *device = r3v_native_device_from_handle(context.device);
    device->vk.physical->instance->enable_debug_logging = true;
    assert(!device->zmask_automatic_qualified);
+   assert(device->zmask_fast_clear_gate != NULL);
+   assert(device->zmask_materialize_scratch_initialized);
    struct readback readback = {0};
    struct partial_draw partial = {0};
    PFN_vkCmdCopyImageToBuffer copy_image_to_buffer =
