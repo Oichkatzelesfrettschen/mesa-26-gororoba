@@ -146,6 +146,15 @@ check_empty_stage(enum r300_zmask_clear_stage stage, bool wants_ownership,
 }
 
 static void
+check_next_word(const struct r300_zmask_clear_plan *plan, uint32_t *index,
+                uint32_t expected)
+{
+   assert(*index < plan->dword_count);
+   assert(plan->words[*index] == expected);
+   (*index)++;
+}
+
+static void
 check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
                  const struct r300_zmask_layout *layout)
 {
@@ -161,24 +170,26 @@ check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
    assert(plan.dword_count == 15);
 
    uint32_t i = 0;
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_ZMASK_OFFSET, 2));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i++] == layout->stride_in_pixels);
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_ZMASK_WRINDEX, 1));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_ZMASK_RDINDEX, 1));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i++] == PACKET0_HEADER(R300_GB_Z_PEQ_CONFIG, 1));
-   assert(plan.words[i++] ==
-          (layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
-                            : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4));
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_BW_CNTL, 1));
-   assert(plan.words[i++] == expected_bw_cntl);
-   assert(plan.words[i++] ==
-          PACKET3_HEADER(R300_PACKET3_3D_CLEAR_ZMASK, 3));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i] == layout->dwords);
-   assert(plan.words[i + 1] == 0);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_OFFSET, 2));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, layout->stride_in_pixels);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_WRINDEX, 1));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_RDINDEX, 1));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_GB_Z_PEQ_CONFIG, 1));
+   check_next_word(
+      &plan, &i,
+      layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
+                       : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_BW_CNTL, 1));
+   check_next_word(&plan, &i, expected_bw_cntl);
+   check_next_word(&plan, &i,
+                   PACKET3_HEADER(R300_PACKET3_3D_CLEAR_ZMASK, 3));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, layout->dwords);
+   check_next_word(&plan, &i, 0u);
+   assert(i == plan.dword_count);
 
    /* HiZ, RD_COMP and WR_COMP stay off in both bind stages. */
    assert((expected_bw_cntl &
@@ -216,33 +227,74 @@ check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
 }
 
 static void
+check_binding_refusal_preserves_output(
+   const struct r300_zmask_layout *layout,
+   const struct r300_zmask_clear_plan *sentinel)
+{
+   for (int stage = R300_ZMASK_CLEAR_STAGE_BIND_CLEAR;
+        stage <= R300_ZMASK_CLEAR_STAGE_FAST_FILL; stage++) {
+      struct r300_zmask_clear_plan plan = *sentinel;
+      assert(r300_zmask_clear_plan_build(
+                (enum r300_zmask_clear_stage)stage, layout, &plan) == -EINVAL);
+      assert(memcmp(&plan, sentinel, sizeof(plan)) == 0);
+   }
+}
+
+static void
 check_refusals(void)
 {
    struct r300_zmask_layout layout = rs480_layout(true);
-   struct r300_zmask_clear_plan plan;
+   const struct r300_zmask_clear_plan sentinel = {
+      .words = {0x12345678u, 0x87654321u},
+      .dword_count = 0xabcdef01u,
+      .requires_hyperz_ownership = true,
+      .writes_hyperz_registers = true,
+   };
+   struct r300_zmask_clear_plan plan = sentinel;
 
    assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
                                       NULL, &plan) == -EINVAL);
+   assert(memcmp(&plan, &sentinel, sizeof(plan)) == 0);
    assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
                                       &layout, NULL) == -EINVAL);
    assert(r300_zmask_clear_plan_build((enum r300_zmask_clear_stage)99,
                                       &layout, &plan) == -EINVAL);
+   assert(memcmp(&plan, &sentinel, sizeof(plan)) == 0);
 
    /* A level whose ZMASK does not fit binds nothing: a zero pitch and a
     * zero clear count would describe a bind of no RAM. */
    struct r300_zmask_layout unfit = layout;
    unfit.fits_zmask_ram = false;
+   check_binding_refusal_preserves_output(&unfit, &sentinel);
+
+   unfit = layout;
    unfit.dwords = 0;
+   check_binding_refusal_preserves_output(&unfit, &sentinel);
+
+   unfit = layout;
    unfit.stride_in_pixels = 0;
-   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
-                                      &unfit, &plan) == -EINVAL);
-   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL,
-                                      &unfit, &plan) == -EINVAL);
+   check_binding_refusal_preserves_output(&unfit, &sentinel);
+
    /* Stages A and B carry no layout dependency. */
    assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY,
                                       &unfit, &plan) == 0);
    assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY,
                                       &unfit, &plan) == 0);
+
+   const struct r300_zmask_layout valid = rs480_layout_at(
+      true, r300_zmask_clear_stage_block(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR));
+   struct r300_zmask_layout forged = valid;
+   forged.zmask_ram_dwords = 0u;
+   check_binding_refusal_preserves_output(&forged, &sentinel);
+
+   forged = valid;
+   forged.zmask_ram_dwords = forged.dwords - 1u;
+   check_binding_refusal_preserves_output(&forged, &sentinel);
+
+   forged = valid;
+   forged.zmask_ram_dwords = forged.dwords;
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+                                      &forged, &plan) == 0);
 }
 
 
@@ -280,6 +332,13 @@ check_block_disagreement_refused(void)
     * the count travel together. */
    struct r300_zmask_layout mismatched = eight;
    mismatched.dwords = four.dwords;
+   const struct r300_zmask_clear_plan sentinel = {
+      .words = {0x12345678u, 0x87654321u},
+      .dword_count = 0xabcdef01u,
+      .requires_hyperz_ownership = true,
+      .writes_hyperz_registers = true,
+   };
+   check_binding_refusal_preserves_output(&mismatched, &sentinel);
    assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
                                       &mismatched, &plan) == -EINVAL);
 

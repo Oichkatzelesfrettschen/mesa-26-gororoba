@@ -73,9 +73,11 @@ struct r300_zmask_layout {
 /* Computes the layout at the largest compression block the level admits:
  * R300_ZCOMP_8X8 on a macrotiled single-sample level on a capable part,
  * and R300_ZCOMP_4X4 otherwise.  pipes outside [1, R300_ZMASK_MAX_PIPES]
- * or a zero height is -EINVAL; a level ZMASK never covers -- a non-depth
- * format, a format other than 32 bits per pixel, or an untiled level --
- * yields a zeroed layout and returns 0.
+ * or a zero stride/height is -EINVAL.  A per-pipe RAM budget whose pipe
+ * product exceeds the output representation is also invalid.  A level ZMASK
+ * never covers -- a non-depth format, a format other than 32 bits per pixel,
+ * an untiled level, an unencodable aligned pitch, or coverage beyond the RAM
+ * budget -- yields a zeroed layout and returns 0.
  */
 int r300_zmask_layout_compute(const struct r300_zmask_layout_params *params,
                               struct r300_zmask_layout *out);

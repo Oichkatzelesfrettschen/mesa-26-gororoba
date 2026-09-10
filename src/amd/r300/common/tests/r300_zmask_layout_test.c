@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 /* align(): the power-of-two mask form Gallium uses for the height and
  * for the sixteen-pixel stride step.
@@ -224,11 +225,98 @@ check_refusals(void)
    assert(layout.zmask_ram_dwords == RV3xx_ZMASK_SIZE);
 }
 
+static void
+check_checked_admission(void)
+{
+   struct r300_zmask_layout_params params = {
+      .stride_in_pixels = 64,
+      .height = 64,
+      .depth_bytes_per_pixel = 4,
+      .is_depth_or_stencil = true,
+      .microtile = true,
+      .macrotile = false,
+      .num_samples = 1,
+      .pipes = 1,
+      .zmask_ram_dwords_per_pipe = RV3xx_ZMASK_SIZE,
+   };
+   struct r300_zmask_layout layout;
+   const struct r300_zmask_layout sentinel = {
+      .stride_in_pixels = 0x12345678u,
+      .dwords = 0xdeadbeefu,
+      .fits_zmask_ram = true,
+      .zmask_ram_dwords = 0x87654321u,
+      .zcomp8x8 = true,
+   };
+
+   assert(r300_zmask_layout_compute_at_block(&params, R300_ZCOMP_4X4,
+                                             &layout) == 0);
+   assert(layout.fits_zmask_ram && layout.dwords == 16u &&
+          layout.stride_in_pixels == 64u);
+
+   params.stride_in_pixels = 0;
+   layout = sentinel;
+   assert(r300_zmask_layout_compute(&params, &layout) == -EINVAL);
+   assert(memcmp(&layout, &sentinel, sizeof(layout)) == 0);
+
+   params.stride_in_pixels = 64;
+   params.zmask_ram_dwords_per_pipe = 0;
+   assert(r300_zmask_layout_compute(&params, &layout) == 0);
+   assert(!layout.fits_zmask_ram && layout.dwords == 0u &&
+          layout.stride_in_pixels == 0u && layout.zmask_ram_dwords == 0u);
+
+   params.zmask_ram_dwords_per_pipe = RV3xx_ZMASK_SIZE;
+   params.stride_in_pixels = UINT32_MAX;
+   params.height = 64;
+   assert(r300_zmask_layout_compute(&params, &layout) == 0);
+   assert(!layout.fits_zmask_ram && layout.dwords == 0u &&
+          layout.stride_in_pixels == 0u &&
+          layout.zmask_ram_dwords == RV3xx_ZMASK_SIZE);
+
+   params.stride_in_pixels = 64;
+   params.height = UINT32_MAX;
+   assert(r300_zmask_layout_compute(&params, &layout) == 0);
+   assert(!layout.fits_zmask_ram && layout.dwords == 0u &&
+          layout.stride_in_pixels == 0u &&
+          layout.zmask_ram_dwords == RV3xx_ZMASK_SIZE);
+
+   params.stride_in_pixels = 65552;
+   params.height = 65536;
+   assert(r300_zmask_layout_compute_at_block(&params, R300_ZCOMP_4X4,
+                                             &layout) == 0);
+   assert(!layout.fits_zmask_ram && layout.dwords == 0u &&
+          layout.stride_in_pixels == 0u &&
+          layout.zmask_ram_dwords == RV3xx_ZMASK_SIZE);
+
+   params.zmask_ram_dwords_per_pipe = UINT32_MAX;
+   params.pipes = 2;
+   layout = sentinel;
+   assert(r300_zmask_layout_compute(&params, &layout) == -EINVAL);
+   assert(memcmp(&layout, &sentinel, sizeof(layout)) == 0);
+}
+
+static void
+check_legacy_false_fit_reproduction(void)
+{
+   /* The unchecked transcription preserves the arithmetic defects the
+    * checked helper replaces.  The coverage cases reached the old
+    * dwords <= capacity comparison, and the final product wrapped the
+    * capacity itself to zero.
+    */
+   assert(gallium_pixels_to_dwords(0u, 64u, 16u, 16u) == 0u);
+   assert(gallium_align(UINT32_MAX, 16u) == 0u);
+   assert(gallium_pixels_to_dwords(64u, UINT32_MAX, 16u, 16u) == 0u);
+   assert(gallium_pixels_to_dwords(65552u, 65536u, 16u, 16u) ==
+          4096u);
+   assert(0x40000000u * 4u == 0u);
+}
+
 int
 main(void)
 {
    check_ram_table();
    check_refusals();
+   check_legacy_false_fit_reproduction();
+   check_checked_admission();
 
    uint32_t points = 0;
    for (uint32_t pipes = 1; pipes <= R300_ZMASK_MAX_PIPES; pipes++)
