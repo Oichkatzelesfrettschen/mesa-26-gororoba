@@ -66,6 +66,16 @@ r3v_chip_name_from_pci_device_id(uint32_t pci_device_id)
    }
 }
 
+static bool
+r3v_rs485m_depth_image_supported(
+   const struct r3v_physical_device *const device)
+{
+   return device != NULL &&
+          device->pci_vendor_id == R300_PCI_VENDOR_ATI &&
+          device->pci_device_id == R300_PCI_DEVICE_RS48X_5974 &&
+          device->platform_id == R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M;
+}
+
 /* R3xx hardware limits are split between the Vulkan 1.0 physical-device
  * minimums the ICD must advertise and the smaller RS485M execution caps that
  * the resource paths tile or reject at creation time.  The executable Mesa
@@ -817,6 +827,18 @@ r3v_get_format_properties(const struct r3v_physical_device *const device,
    case VK_FORMAT_R32G32B32A32_SFLOAT:
       properties->bufferFeatures = VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
       break;
+   case VK_FORMAT_D24_UNORM_S8_UINT:
+      /* The RS485M depth contract is the qualified optimal-tiled Z24/S8
+       * image: the retained resolver and the native ZB route cover the
+       * depth/stencil attachment and the two image-transfer operations
+       * over one packed word.  Linear D24/S8 has no executing route, so
+       * its feature mask remains zero. */
+      if (r3v_rs485m_depth_image_supported(device))
+         properties->optimalTilingFeatures =
+            VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+            VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+      break;
    default:
       break;
    }
@@ -908,7 +930,17 @@ r3v_get_image_format_properties(
     */
    const VkImageUsageFlags r3v_native_transfer_usage =
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   const VkImageUsageFlags r3v_native_depth_usage =
+      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+      r3v_native_transfer_usage;
+   const bool r3v_native_depth_query =
+      info->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+      r3v_rs485m_depth_image_supported(device) && info->type == VK_IMAGE_TYPE_2D &&
+      info->tiling == VK_IMAGE_TILING_OPTIMAL && info->flags == 0 &&
+      info->usage != 0 &&
+      (info->usage & ~r3v_native_depth_usage) == 0;
    const bool r3v_native_render_query =
+      !r3v_native_depth_query &&
       (info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
       (info->usage & ~(VkImageUsageFlags)(
                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -920,9 +952,11 @@ r3v_get_image_format_properties(
                                           r3v_native_transfer_usage)) == 0;
    const VkImageCreateFlags r3v_native_admitted_flags =
       r3v_native_sampling_query ? VK_IMAGE_CREATE_ALIAS_BIT : 0;
-   if ((info->type != VK_IMAGE_TYPE_2D && info->type != VK_IMAGE_TYPE_1D) ||
+   if ((!r3v_native_depth_query &&
+        (info->type != VK_IMAGE_TYPE_2D && info->type != VK_IMAGE_TYPE_1D)) ||
        (info->flags & ~r3v_native_admitted_flags) ||
-       (!r3v_native_render_query && !r3v_native_sampling_query))
+       (!r3v_native_depth_query && !r3v_native_render_query &&
+        !r3v_native_sampling_query))
       goto unsupported;
 
    VkFormatFeatureFlags2 image_features = 0;
@@ -955,16 +989,20 @@ r3v_get_image_format_properties(
     * width bound.
     */
    const uint32_t r3v_native_family_extent =
-      r3v_native_render_query ? R3V_NATIVE_RENDER_MAX_EXTENT
-                              : R3V_NATIVE_TRANSFER_DIMENSION_MAX;
+      r3v_native_depth_query
+         ? 64u
+         : r3v_native_render_query ? R3V_NATIVE_RENDER_MAX_EXTENT
+                                   : R3V_NATIVE_TRANSFER_DIMENSION_MAX;
    max_mip_levels = 1;
    /* The render family's layer count answers to the cell's
     * RB3D_COLOROFFSET0 ceiling, the sampling family's to the reported
     * device limit, and vkCreateImage admits each at the same number.
     */
-   max_array_layers = r3v_native_render_query
-                         ? R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS
-                         : R3V_NATIVE_MAX_ARRAY_LAYERS;
+   max_array_layers = r3v_native_depth_query
+                         ? 1u
+                         : r3v_native_render_query
+                              ? R3V_NATIVE_RENDER_MAX_ARRAY_LAYERS
+                              : R3V_NATIVE_MAX_ARRAY_LAYERS;
    switch (info->type) {
    case VK_IMAGE_TYPE_1D:
       max_extent = (VkExtent3D){ r3v_native_family_extent, 1, 1 };
