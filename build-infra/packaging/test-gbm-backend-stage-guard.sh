@@ -68,8 +68,11 @@ if [ "${FAKE_GBM_BACKEND:-0}" = 1 ]; then
 fi
 
 if [ "${FAKE_STAGE_LAYOUT}" = debug ]; then
+  icd_dir="$destination${FAKE_PREFIX:?}/share/vulkan/icd.d"
   implicit_dir="$destination${FAKE_PREFIX:?}/share/vulkan/implicit_layer.d"
-  mkdir -p "$implicit_dir"
+  mkdir -p "$icd_dir" "$implicit_dir"
+  touch "$libdir/libvulkan_r3v.so"
+  printf '%s\n' '{"ICD":{"api_version":"1.0.354","library_path":"libvulkan_r3v.so"},"file_format_version":"1.0.1"}' > "$icd_dir/r3v_icd.x86_64.json"
   if [ "${FAKE_ANTI_LAG_LIBRARY:-0}" = 1 ]; then
     touch "$libdir/libVkLayer_MESA_anti_lag.so"
   fi
@@ -213,5 +216,9 @@ expect_debug_failure missing-device-select-manifest \
   "/opt/mesa-gororoba-debug-optimized/share/vulkan/implicit_layer.d/VkLayer_MESA_device_select.json" \
   1 1 1 1 0
 run_debug complete-stage 1 1 1 1 1 > "$WORKDIR/debug-complete-stage.out" 2>&1
+[ "$(readlink "$WORKDIR/debug-complete-stage/usr/lib/libvulkan_r3v.so")" = \
+  "/opt/mesa-gororoba-debug-optimized/lib/libvulkan_r3v.so" ]
+[ "$(readlink "$WORKDIR/debug-complete-stage/usr/share/vulkan/icd.d/r3v_icd.x86_64.json")" = \
+  "/opt/mesa-gororoba-debug-optimized/share/vulkan/icd.d/r3v_icd.x86_64.json" ]
 
 echo "gbm backend stage-guard fixtures: PASS"

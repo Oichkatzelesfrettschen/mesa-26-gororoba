@@ -53,7 +53,7 @@ for _legacy_name in GOROROBA_DEBUG_BUILDDIR GOROROBA_DEBUG_SRCROOT; do
 done
 unset _legacy_name
 pkgver=26.2.0
-pkgrel=31
+pkgrel=32
 epoch=2
 pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, ati_r300/r3v ICD + anti-lag/device-select implicit Vulkan layers, files under /opt'
 arch=('x86_64')
@@ -142,10 +142,6 @@ _link_into_usr() {
     # vulkan-mesa-layers owns the explicit overlay under /usr.
     case "${rel}/${base}" in
       lib/libVkLayer_MESA_overlay.so) continue ;;
-      # The r3v ICD stays an /opt development artifact behind its own
-      # launcher until its package-default promotion gate: the system loader
-      # follows every manifest in /usr/share/vulkan/icd.d.
-      share/vulkan/icd.d/r3v_icd*.json) continue ;;
     esac
     case "${base}" in
       *.a) continue ;;
