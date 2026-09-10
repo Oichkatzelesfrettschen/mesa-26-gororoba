@@ -693,16 +693,20 @@ struct r3v_native_pass_clear_rect {
    uint32_t stencil;
 };
 
-/* Render passes one command buffer records.  The bound is two: the
- * recorded cells concatenate into one indirect buffer whose digest no
- * offline emitter reproduces, so a multi-pass buffer executes only
- * while the submit hazard gate is closed, and widening the bound widens
- * that unarmed surface alone.
+/* The command buffer carries at most two render-pass records and two draw
+ * records.  A second draw in one pass uses the second record, which keeps
+ * the load operation on the pass's first record while preserving one
+ * carrier and one ordered draw operation per API draw.
  */
 #define R3V_NATIVE_DEFERRED_DRAW_MAX 2u
+#define R3V_NATIVE_RENDER_PASS_MAX 2u
 
 struct r3v_native_deferred_draw {
    bool pending;
+   /* The record owns the render-pass load operation when true.  Repeated
+    * draws in the same pass carry false so submission executes the load only
+    * at the pass begin position. */
+   bool load_at_begin;
    /* The attribute slots the vertex job reads, one bit per slot; zero
     * is a pass carrying its load-op clear alone.  streams[slot] is
     * filled for each set bit.
@@ -1083,6 +1087,8 @@ struct r3v_native_cmd_buffer {
    struct r3v_native_deferred_draw
       deferred_draws[R3V_NATIVE_DEFERRED_DRAW_MAX];
    uint32_t deferred_draw_count;
+   uint32_t render_pass_count;
+   uint32_t active_pass_draw_index;
    /* Recorded transfer copies, executed in recorded order at submission
     * through host mappings of the bound memory.  Each copy carries the
     * group its record position places it in, so a command buffer holding

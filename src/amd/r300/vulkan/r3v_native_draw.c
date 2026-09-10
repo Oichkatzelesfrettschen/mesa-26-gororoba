@@ -173,9 +173,11 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
    cmd_buffer->pass_render_height = framebuffer->height;
    cmd_buffer->pass_target_layer_offset = depth_view->layer_offset_bytes;
    cmd_buffer->draw_recorded = false;
+   cmd_buffer->active_pass_draw_index = cmd_buffer->deferred_draw_count;
    cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count++] =
       (struct r3v_native_deferred_draw){
          .pending = true,
+         .load_at_begin = true,
          .target_memory = depth_view->image->memory,
          .target_width = depth_view->image->width,
          .target_height = depth_view->image->height,
@@ -186,6 +188,7 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
          .has_depth_clear = (depth_clear || stencil_clear) &&
                             full_depth_extent,
       };
+   cmd_buffer->render_pass_count++;
    if ((depth_clear || stencil_clear) && full_depth_extent)
       cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
          .depth_clear.fill.rects =
@@ -221,6 +224,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     */
    if (cmd_buffer->pass_target != NULL ||
        cmd_buffer->active_query_pool != NULL ||
+       cmd_buffer->render_pass_count >= R3V_NATIVE_RENDER_PASS_MAX ||
        cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
@@ -417,9 +421,11 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    cmd_buffer->pass_render_height = framebuffer->height;
    cmd_buffer->pass_target_layer_offset = view->layer_offset_bytes;
    cmd_buffer->draw_recorded = false;
+   cmd_buffer->active_pass_draw_index = cmd_buffer->deferred_draw_count;
    cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count++] =
       (struct r3v_native_deferred_draw){
       .pending = true,
+      .load_at_begin = true,
       .target_memory = view->image->memory,
       .target_fill_offset =
          view->image->memory_offset + view->layer_offset_bytes,
@@ -433,6 +439,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       .depth_clear = depth_clear,
       .has_depth_clear = depth_loads_clear && clear_covers_depth_image,
    };
+   cmd_buffer->render_pass_count++;
    if (depth_loads_clear)
       cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
          .depth_clear.fill.rects =
@@ -632,9 +639,13 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    struct r3v_native_pipeline *pipeline = cmd_buffer->bound_pipeline;
 
    if (cmd_buffer->pass_target == NULL || pipeline == NULL ||
-       cmd_buffer->draw_recorded || cmd_buffer->deferred_draw_count == 0 ||
-       cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
-             .clear_rect_count > R3V_NATIVE_PASS_CLEAR_RECT_MAX) {
+       cmd_buffer->deferred_draw_count == 0 ||
+       cmd_buffer->active_pass_draw_index >= cmd_buffer->deferred_draw_count ||
+       (!cmd_buffer->draw_recorded &&
+        cmd_buffer->deferred_draws[cmd_buffer->active_pass_draw_index]
+              .clear_rect_count > R3V_NATIVE_PASS_CLEAR_RECT_MAX) ||
+       (cmd_buffer->draw_recorded &&
+        cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -647,10 +658,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
-   /* The draw fills the pass CmdBeginRenderPass opened, which is the
-    * last record in the list.
-    */
-   const uint32_t pass_slot = cmd_buffer->deferred_draw_count - 1;
+   /* The first draw fills the record opened by CmdBeginRenderPass.  A
+    * repeated draw appends a new record while retaining the pass record for
+    * its load operation and attachment clears. */
+   const bool first_draw_in_pass = !cmd_buffer->draw_recorded;
+   const uint32_t pass_slot = cmd_buffer->active_pass_draw_index;
+   const uint32_t draw_slot = first_draw_in_pass
+                                 ? pass_slot
+                                 : cmd_buffer->deferred_draw_count;
    const struct r3v_native_deferred_draw *pass_draw =
       &cmd_buffer->deferred_draws[pass_slot];
    const bool pass_has_depth = pass_draw->depth_memory != NULL;
@@ -687,7 +702,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          poison(commandBuffer, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          return;
       }
-      cmd_buffer->owned_color_sinks[pass_slot] = color_sink;
+      cmd_buffer->owned_color_sinks[draw_slot] = color_sink;
       color_sink_image = *cmd_buffer->pass_target;
       color_sink_image.memory = color_sink;
       color_sink_image.memory_offset = 0;
@@ -994,9 +1009,9 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       pass_has_depth ? pass_draw->depth_memory : NULL,
       pass_has_depth ? &pass_draw->depth_bound : NULL,
       pass_has_depth ? &pipeline->depth_pipeline : NULL,
-      pass_draw->has_depth_clear
+      (first_draw_in_pass && pass_draw->has_depth_clear)
          ? &pass_draw->depth_clear : NULL,
-      adaptive_noperspective ? &alternate_cell : NULL);
+         adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
       vk_free(&cmd_buffer->vk.pool->alloc, carrier);
@@ -1019,26 +1034,32 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       r300_tcl_bypass_triangle_release(&alternate_cell);
    }
 
-   cmd_buffer->owned_carriers[pass_slot] = carrier;
+   cmd_buffer->owned_carriers[draw_slot] = carrier;
    /* The pass's load-op clear and attachment-clear rectangles were resolved
     * at CmdBeginRenderPass or CmdClearAttachments; the draw record replaces
     * the deferred draw whole, so both payloads travel across that
     * replacement.
     */
-   const uint32_t clear_dword =
-      cmd_buffer->deferred_draws[pass_slot].clear_dword;
+   const uint32_t clear_dword = pass_draw->clear_dword;
    const struct r3v_native_depth_image_bound depth_bound =
       pass_draw->depth_bound;
-   struct r300_zb_combined_clear_plan depth_clear = pass_draw->depth_clear;
-   const uint32_t clear_rect_count = pass_draw->clear_rect_count;
+   struct r300_zb_combined_clear_plan depth_clear =
+      first_draw_in_pass ? pass_draw->depth_clear
+                         : (struct r300_zb_combined_clear_plan){0};
+   const uint32_t clear_rect_count =
+      first_draw_in_pass ? pass_draw->clear_rect_count : 0u;
    struct r3v_native_pass_clear_rect clear_rects[
       R3V_NATIVE_PASS_CLEAR_RECT_MAX];
-   memcpy(clear_rects, pass_draw->clear_rects, sizeof(clear_rects));
+   if (first_draw_in_pass)
+      memcpy(clear_rects, pass_draw->clear_rects, sizeof(clear_rects));
+   else
+      memset(clear_rects, 0, sizeof(clear_rects));
    if (depth_clear.fill.rects != NULL)
       depth_clear.fill.rects = &depth_clear.rect;
-   cmd_buffer->deferred_draws[pass_slot] =
+   cmd_buffer->deferred_draws[draw_slot] =
       (struct r3v_native_deferred_draw){
       .pending = true,
+      .load_at_begin = first_draw_in_pass,
       .stream_mask = pipeline->attribute_mask,
       .first_vertex = args->first_vertex,
       .vertex_count = args->vertex_count,
@@ -1081,25 +1102,28 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
                               : color_target->layer_pitch_bytes,
       .target_row_bytes = color_target->row_pitch_bytes,
       .clear_dword = clear_dword,
-      .color_load_in_ib = !pass_draw->depth_only &&
+      .color_load_in_ib = first_draw_in_pass && !pass_draw->depth_only &&
                           pass_has_depth && ib_span_offset != 0,
       .target_width = color_target->width,
       .target_height = color_target->height,
+      .depth_only = pass_draw->depth_only,
       .depth_memory = pass_draw->depth_memory,
       .depth_bound = depth_bound,
       .depth_pipeline = pipeline->depth_pipeline,
       .has_depth_pipeline = pipeline->has_depth_pipeline,
       .depth_clear = depth_clear,
-      .has_depth_clear = pass_draw->has_depth_clear,
+      .has_depth_clear = first_draw_in_pass && pass_draw->has_depth_clear,
       .clear_rect_count = clear_rect_count,
    };
-   if (pass_draw->has_depth_clear)
-      cmd_buffer->deferred_draws[pass_slot].depth_clear.fill.rects =
-         &cmd_buffer->deferred_draws[pass_slot].depth_clear.rect;
-   memcpy(cmd_buffer->deferred_draws[pass_slot].streams, streams,
+   if (first_draw_in_pass && pass_draw->has_depth_clear)
+      cmd_buffer->deferred_draws[draw_slot].depth_clear.fill.rects =
+         &cmd_buffer->deferred_draws[draw_slot].depth_clear.rect;
+   memcpy(cmd_buffer->deferred_draws[draw_slot].streams, streams,
           sizeof(streams));
-   memcpy(cmd_buffer->deferred_draws[pass_slot].clear_rects, clear_rects,
+   memcpy(cmd_buffer->deferred_draws[draw_slot].clear_rects, clear_rects,
           sizeof(clear_rects));
+   if (!first_draw_in_pass)
+      cmd_buffer->deferred_draw_count++;
    cmd_buffer->draw_recorded = true;
    VkResult ordered_result = r3v_native_cmd_buffer_require_image_layout(
       cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
@@ -1115,7 +1139,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
                         .kind = R3V_NATIVE_ORDERED_OPERATION_DRAW,
                         .ib_position_dwords = ib_span_offset,
                         .payload.draw = {
-                           .deferred_draw_index = pass_slot,
+                           .deferred_draw_index = draw_slot,
                         },
                      });
    if (ordered_result != VK_SUCCESS)

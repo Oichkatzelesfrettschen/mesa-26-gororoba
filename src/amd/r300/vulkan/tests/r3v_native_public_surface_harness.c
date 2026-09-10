@@ -840,6 +840,64 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
              R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
 
       if (aspect == 0) {
+         /* Two draws in one depth-only pass retain one pass load record and
+          * append one carrier and one ordered draw record per API draw. */
+         struct pipeline_shape repeated_shape = {
+            .depth_stencil = 2,
+            .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .stride = 16,
+            .extent_width = 32,
+            .extent_height = 32,
+            .fragment_words = r3v_reference_fragment_spirv,
+            .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+         };
+         VkPipeline repeated_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&repeated_shape, depth_only_pass, layout,
+                              &repeated_pipeline) == VK_SUCCESS);
+         VkCommandBuffer repeated_draw_command = fresh_cmd();
+         vkCmdBeginRenderPass(repeated_draw_command, &depth_only_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(repeated_draw_command,
+                           VK_PIPELINE_BIND_POINT_GRAPHICS, repeated_pipeline);
+         vkCmdBindVertexBuffers(repeated_draw_command, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_repeated_draw,
+                        repeated_draw_command);
+         vkCmdDraw(repeated_draw_command, 3, 1, 0, 0);
+         vkCmdDraw(repeated_draw_command, 3, 1, 0, 0);
+         vkCmdEndRenderPass(repeated_draw_command);
+         assert(vkEndCommandBuffer(repeated_draw_command) == VK_SUCCESS);
+         assert(native_repeated_draw->render_pass_count == 1u);
+         assert(native_repeated_draw->deferred_draw_count == 2u);
+         assert(native_repeated_draw->deferred_draws[0].load_at_begin);
+         assert(!native_repeated_draw->deferred_draws[1].load_at_begin);
+         assert(native_repeated_draw->owned_carriers[0] != NULL &&
+                native_repeated_draw->owned_carriers[1] != NULL &&
+                native_repeated_draw->owned_carriers[0] !=
+                   native_repeated_draw->owned_carriers[1]);
+         uint32_t draw_operation_count = 0u;
+         for (uint32_t operation = 0u;
+              operation < native_repeated_draw->ordered_operation_count;
+              operation++) {
+            if (native_repeated_draw->ordered_operations[operation].kind !=
+                R3V_NATIVE_ORDERED_OPERATION_DRAW)
+               continue;
+            assert(native_repeated_draw->ordered_operations[operation]
+                      .payload.draw.deferred_draw_index ==
+                   draw_operation_count);
+            draw_operation_count++;
+         }
+         assert(draw_operation_count == 2u);
+         VK_FROM_HANDLE(r3v_native_device, repeated_device, device);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   repeated_device, native_repeated_draw) == VK_SUCCESS);
+         r3v_native_cmd_buffer_release_recording(native_repeated_draw);
+         assert(native_repeated_draw->deferred_draw_count == 0u);
+         assert(native_repeated_draw->render_pass_count == 0u);
+         vkDestroyPipeline(device, repeated_pipeline, NULL);
+      }
+
+      if (aspect == 0) {
          VkRenderPassBeginInfo offset_begin = depth_only_begin;
          offset_begin.renderArea = (VkRect2D){
             .offset = { 5, 7 },

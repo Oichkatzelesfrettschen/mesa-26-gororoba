@@ -502,6 +502,8 @@ r3v_native_cmd_buffer_release_recording(
    memset(cmd_buffer->deferred_draws, 0,
           sizeof(cmd_buffer->deferred_draws));
    cmd_buffer->deferred_draw_count = 0;
+   cmd_buffer->render_pass_count = 0;
+   cmd_buffer->active_pass_draw_index = 0;
    cmd_buffer->deferred_copy_count = 0;
    /* The routed record describes the copies this reset just dropped, so it
     * goes with them.  A record surviving the reset would report the next

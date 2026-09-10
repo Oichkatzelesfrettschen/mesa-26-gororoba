@@ -119,6 +119,8 @@ prepend_rb2d_fill(const struct r300_rb2d_fill_plan *fill,
       slot * 4u;
    for (uint32_t site = 1; site < composed.reloc_site_count; site++)
       composed.reloc_sites[site].ib_index += clear_dwords;
+   for (uint32_t alias = 0; alias < composed.vertex_reloc_alias_count; alias++)
+      composed.vertex_reloc_aliases[alias] += clear_dwords;
 
    result = r300_tcl_bypass_triangle_validate_reloc_sites(&composed);
    if (result != 0) {
@@ -579,7 +581,7 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * prepend the linear color fill to every retained form of the later
     * pass's span. */
    if (emit_result == 0 && depth_state != NULL && cmd_buffer->ib != NULL &&
-       cmd_buffer->deferred_draw_count > 1) {
+       cmd_buffer->deferred_draw_count > 1 && !cmd_buffer->draw_recorded) {
       const struct r3v_native_deferred_draw *draw =
          &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1];
       const struct r300_rb2d_fill_rect rect = {
@@ -2062,7 +2064,8 @@ r3v_native_cmd_buffer_execute_deferred_draws(
    for (uint32_t i = 0; i < count; i++) {
       const VkResult result = execute_one_deferred_draw(
          device, &cmd_buffer->deferred_draws[i],
-         cmd_buffer->owned_carriers[i], true);
+         cmd_buffer->owned_carriers[i],
+         cmd_buffer->deferred_draws[i].load_at_begin);
       if (result != VK_SUCCESS)
          return result;
    }
