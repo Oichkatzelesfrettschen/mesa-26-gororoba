@@ -1854,6 +1854,37 @@ check_depth_image_copy_recording(const struct fixture *f,
          "a differently sized depth image copy records successfully");
    REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
            "release differently sized depth image references");
+
+   VK_FROM_HANDLE(r3v_native_device, native_device, f->device);
+   native_device->zmask_automatic_qualified = true;
+   if (begin(f))
+      return 1;
+   const VkClearDepthStencilValue smaller_clear = {
+      .depth = 0.25f,
+      .stencil = 0x5au,
+   };
+   const VkImageSubresourceRange smaller_clear_range = {
+      .aspectMask =
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+      .baseMipLevel = 0u,
+      .levelCount = 1u,
+      .baseArrayLayer = 0u,
+      .layerCount = 1u,
+   };
+   vkCmdClearDepthStencilImage(f->cmd, smaller_destination,
+                               VK_IMAGE_LAYOUT_GENERAL, &smaller_clear, 1u,
+                               &smaller_clear_range);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, smaller_clear_cmd, f->cmd);
+   CHECK(smaller_clear_cmd->cell_kind == R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+            smaller_clear_cmd->ordered_operation_count == 1u &&
+            smaller_clear_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
+         "a 32x32 combined clear retains the ordinary RB2D route under automatic qualification");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "a 32x32 combined clear records successfully");
+   native_device->zmask_automatic_qualified = false;
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release smaller depth clear references");
    vkDestroyImage(f->device, smaller_destination, NULL);
    vkFreeMemory(f->device, smaller_memory, NULL);
 
