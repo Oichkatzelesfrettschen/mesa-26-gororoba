@@ -428,6 +428,13 @@ if with_tests
     suite : ['r300'],
   )
 
+  test(
+    'r300-display-reg-generator-validation',
+    prog_python,
+    args : [files('tests/r300_display_reg_gen_test.py')],
+    suite : ['r300'],
+  )
+
   # Admission-versus-CSO identity: the plan's throwaway measurement and the
   # actual fragment-shader CSO precompile run the same program under the same
   # flat-producer contract, on the plan's canonical baseline and on both
