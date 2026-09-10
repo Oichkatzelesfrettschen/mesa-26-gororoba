@@ -29,13 +29,13 @@ int main(void)
    memset(&plan, 0xa5, sizeof(plan));
    assert(r300_zb_combined_clear_plan(&request, &plan) ==
           R300_ZB_COMBINED_CLEAR_OK);
-   assert(plan.rect.width == 512u && plan.rect.height == 10u);
+   assert(plan.rect.width == 512u && plan.rect.height == 8u);
    assert(plan.rect.value == 0x123456a5u);
    assert(plan.fill.surface.base_offset_bytes == 2048u);
    assert(plan.fill.surface.pitch_bytes == 2048u);
    assert((uint64_t)plan.fill.surface.pitch_bytes *
              plan.fill.surface.height_pixels ==
-          20480u);
+          16384u);
    assert(plan.fill.write_mask == UINT32_MAX);
    assert(plan.fill.rects == &plan.rect);
 

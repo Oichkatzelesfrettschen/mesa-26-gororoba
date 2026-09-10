@@ -1052,8 +1052,8 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
                write_mask == cases[case_index].write_mask &&
                ((master & RADEON_GMC_WR_MSK_DIS) != 0u) ==
                   !cases[case_index].preserves_component &&
-               extent == ((512u << 16) | 10u),
-            "depth clear case %u emits the physical envelope and mask",
+               extent == ((512u << 16) | 8u),
+            "depth clear case %u emits the logical macrotile span and mask",
             case_index);
       CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
             "depth clear case %u records successfully", case_index);

@@ -80,16 +80,27 @@ r300_zb_combined_clear_plan(const struct r300_zb_combined_clear_request *request
       return R300_ZB_COMBINED_CLEAR_REFUSE_DEPTH;
 
    if (layout.storage_bytes == 0u ||
-       layout.storage_bytes % R300_ZB_MACROTILE_BYTES != 0u)
+       layout.storage_bytes % R300_ZB_MACROTILE_BYTES != 0u ||
+       layout.macrotile_width == 0u || layout.macrotile_height == 0u ||
+       request->surface->width % layout.macrotile_width != 0u ||
+       request->surface->height % layout.macrotile_height != 0u)
       return R300_ZB_COMBINED_CLEAR_REFUSE_OVERFLOW;
    /* A uniform packed clear is invariant under the tiled address
-    * permutation.  Reinterpret each complete macrotile as one linear RB2D
-    * row so every storage word changes while both guards stay outside the
-    * rectangle. */
+    * permutation.  Reinterpret each complete logical macrotile as one
+    * linear RB2D row.  The row count follows the logical extent rather than
+    * the rounded storage height, so padding rows remain untouched. */
    const uint32_t fill_width_pixels =
       R300_ZB_MACROTILE_BYTES / request->surface->bytes_per_pixel;
-   const uint32_t fill_height =
-      (uint32_t)(layout.storage_bytes / R300_ZB_MACROTILE_BYTES);
+   const uint32_t logical_macrotile_columns =
+      request->surface->width / layout.macrotile_width;
+   const uint32_t logical_macrotile_rows =
+      request->surface->height / layout.macrotile_height;
+   const uint64_t logical_macrotile_count =
+      (uint64_t)logical_macrotile_columns * logical_macrotile_rows;
+   if (logical_macrotile_count == 0u ||
+       logical_macrotile_count > UINT32_MAX)
+      return R300_ZB_COMBINED_CLEAR_REFUSE_OVERFLOW;
+   const uint32_t fill_height = (uint32_t)logical_macrotile_count;
 
    const struct r300_rb2d_fill_rect rect = {
       .x = 0u,
