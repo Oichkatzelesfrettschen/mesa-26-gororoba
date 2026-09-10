@@ -78,7 +78,7 @@ r3v_native_record_depth_image_copy(
        region->imageExtent.width) * texel_bytes;
    if (row_bytes > UINT32_MAX || last_byte < region->bufferOffset ||
        last_byte > native_buffer->vk.size)
-      { fprintf(stderr, "depth refusal line %d\n", __LINE__); return VK_ERROR_INITIALIZATION_FAILED; }
+      return VK_ERROR_INITIALIZATION_FAILED;
 
    struct r300_rb2d_copy_segment segments[R300_RB2D_COPY_MAX_SEGMENTS];
    uint32_t segment_count = 0u;
