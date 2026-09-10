@@ -15,6 +15,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t
@@ -520,12 +521,157 @@ main(void)
              &materialize_image.depth_contract, 4096u,
              materialize_memory.bo.size, &materialize_image.depth_bound) == 0);
 
-   materialize_device.zmask_fast_clear_gate = "1";
    struct r3v_native_image fast_clear_image = materialize_image;
    fast_clear_image.committed_submission.representation =
       R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED;
    fast_clear_image.committed_submission.zmask_metadata = retired_metadata;
    fast_clear_image.depth_bound.contract = &fast_clear_image.depth_contract;
+
+   struct r3v_native_cmd_buffer initialize_command = {0};
+   initialize_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   initialize_command.vk.base.device = &materialize_device.vk;
+   initialize_command.vk.pool = &pool;
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&initialize_command),
+             r3v_native_image_to_handle(&fast_clear_image)) ==
+          VK_ERROR_FEATURE_NOT_PRESENT);
+   assert(initialize_command.ib_size_dwords == 0u);
+   assert(initialize_command.reference_count == 0u);
+   assert(initialize_command.ordered_operation_count == 0u);
+   assert(initialize_command.image_state_count == 0u);
+
+   assert(unsetenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL") == 0);
+   r3v_native_device_refresh_delivery_gates(&materialize_device);
+   assert(materialize_device.zmask_initialize_gate == NULL);
+   assert(setenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL", "0", 1) == 0);
+   r3v_native_device_refresh_delivery_gates(&materialize_device);
+   assert(materialize_device.zmask_initialize_gate == NULL);
+   assert(setenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL", "1", 1) == 0);
+   r3v_native_device_refresh_delivery_gates(&materialize_device);
+   assert(materialize_device.zmask_initialize_gate != NULL);
+   assert(unsetenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL") == 0);
+   materialize_device.zmask_initialize_gate = "1";
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&initialize_command),
+             r3v_native_image_to_handle(&fast_clear_image)) == VK_SUCCESS);
+   assert(initialize_command.ordered_operation_count == 1u);
+   assert(initialize_command.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE);
+   assert(initialize_command.reference_count == 1u);
+   assert(initialize_command.references[0].memory == &materialize_memory);
+   assert(initialize_command.image_states[0].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   const struct r3v_native_zmask_metadata_state first_initialized_metadata =
+      initialize_command.image_states[0].current_zmask_metadata;
+   assert(first_initialized_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_INITIALIZED);
+   assert(first_initialized_metadata.clear_depth_code == 0u);
+   assert(first_initialized_metadata.clear_stencil == 0u);
+   assert(first_initialized_metadata.generation != 0u);
+   assert(initialize_command.current_zmask_owner.image == &fast_clear_image);
+   assert(r3v_native_ordered_image_composition_geometry_valid(
+      &initialize_command));
+   initialize_command.ordered_operations[0]
+      .payload.image_zmask_initialize.image = NULL;
+   assert(!r3v_native_ordered_image_composition_geometry_valid(
+      &initialize_command));
+   initialize_command.ordered_operations[0]
+      .payload.image_zmask_initialize.image = &fast_clear_image;
+   assert(fast_clear_image.committed_submission.representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(fast_clear_image.committed_submission.zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   struct r300_zmask_clear_plan expected_initialize;
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+                                      &fast_clear_image.zmask_layout,
+                                      &expected_initialize) == 0);
+   assert(initialize_command.ib_size_dwords ==
+          expected_initialize.dword_count);
+   assert(memcmp(initialize_command.ib, expected_initialize.words,
+                 (size_t)expected_initialize.dword_count *
+                    sizeof(expected_initialize.words[0])) == 0);
+
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&initialize_command),
+             r3v_native_image_to_handle(&fast_clear_image)) == VK_SUCCESS);
+   assert(initialize_command.ordered_operation_count == 2u);
+   assert(initialize_command.ordered_operations[1]
+             .payload.image_zmask_initialize.source_metadata.generation ==
+          first_initialized_metadata.generation);
+   assert(initialize_command.image_states[0]
+             .current_zmask_metadata.generation !=
+          first_initialized_metadata.generation);
+
+   struct r3v_native_cmd_buffer initialize_secondary = {0};
+   initialize_secondary.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   initialize_secondary.vk.base.device = &materialize_device.vk;
+   initialize_secondary.vk.pool = &pool;
+   initialize_secondary.vk.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&initialize_secondary),
+             r3v_native_image_to_handle(&fast_clear_image)) == VK_SUCCESS);
+   const uint64_t frozen_initialize_generation =
+      initialize_secondary.ordered_operations[0]
+         .payload.image_zmask_initialize.resulting_metadata.generation;
+   const uint64_t initialize_counter_before_replay =
+      materialize_device.zmask_metadata_generation_counter;
+   struct r3v_native_cmd_buffer initialize_primary = {0};
+   initialize_primary.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   initialize_primary.vk.base.device = &materialize_device.vk;
+   initialize_primary.vk.pool = &pool;
+   initialize_primary.vk.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+   VkCommandBuffer initialize_secondary_handle =
+      r3v_native_cmd_buffer_to_handle(&initialize_secondary);
+   r3v_CmdExecuteCommands(r3v_native_cmd_buffer_to_handle(&initialize_primary),
+                          1u, &initialize_secondary_handle);
+   assert(initialize_primary.vk.record_result == VK_SUCCESS);
+   assert(initialize_primary.ordered_operation_count == 1u);
+   assert(initialize_primary.ordered_operations[0]
+             .payload.image_zmask_initialize.resulting_metadata.generation ==
+          frozen_initialize_generation);
+   assert(materialize_device.zmask_metadata_generation_counter ==
+          initialize_counter_before_replay);
+   assert(initialize_primary.ib_size_dwords ==
+          initialize_secondary.ib_size_dwords);
+   assert(memcmp(initialize_primary.ib, initialize_secondary.ib,
+                 (size_t)initialize_primary.ib_size_dwords *
+                    sizeof(initialize_primary.ib[0])) == 0);
+
+   struct r3v_native_memory initialized_owner_memory = materialize_memory;
+   initialized_owner_memory.bo.handle = 4u;
+   struct r3v_native_image initialized_owner_image = fast_clear_image;
+   initialized_owner_image.memory = &initialized_owner_memory;
+   initialized_owner_image.committed_submission.zmask_metadata =
+      initialized_metadata;
+   initialized_owner_image.depth_bound.contract =
+      &initialized_owner_image.depth_contract;
+   assert(r3v_native_zmask_owner_from_image(
+             &initialized_owner_image, &initialized_metadata,
+             &materialize_device.zmask_owner) == VK_SUCCESS);
+   struct r3v_native_cmd_buffer initialized_switch_command = {0};
+   initialized_switch_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   initialized_switch_command.vk.base.device = &materialize_device.vk;
+   initialized_switch_command.vk.pool = &pool;
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&initialized_switch_command),
+             r3v_native_image_to_handle(&fast_clear_image)) == VK_SUCCESS);
+   assert(initialized_switch_command.ordered_operation_count == 1u);
+   assert(initialized_switch_command.image_state_count == 2u);
+   assert(initialized_switch_command.image_states[0].image ==
+          &fast_clear_image);
+   assert(initialized_switch_command.image_states[0]
+             .current_zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_INITIALIZED);
+   assert(initialized_switch_command.image_states[1].image ==
+          &initialized_owner_image);
+   assert(initialized_switch_command.image_states[1]
+             .current_zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   assert(initialized_switch_command.current_zmask_owner.image ==
+          &fast_clear_image);
+   materialize_device.zmask_owner = no_owner;
+
+   materialize_device.zmask_fast_clear_gate = "1";
    struct r3v_native_cmd_buffer fast_clear_command = {0};
    fast_clear_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
    fast_clear_command.vk.base.device = &materialize_device.vk;
@@ -668,6 +814,25 @@ main(void)
    assert(owner_switch_command.image_states[1].current_representation ==
           R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
 
+   struct r3v_native_cmd_buffer initialize_fast_clear_owner = {0};
+   initialize_fast_clear_owner.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   initialize_fast_clear_owner.vk.base.device = &materialize_device.vk;
+   initialize_fast_clear_owner.vk.pool = &pool;
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&initialize_fast_clear_owner),
+             r3v_native_image_to_handle(&fast_clear_image)) == VK_SUCCESS);
+   assert(initialize_fast_clear_owner.ordered_operation_count == 2u);
+   assert(initialize_fast_clear_owner.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(initialize_fast_clear_owner.ordered_operations[0]
+             .payload.image_materialize.image == &switching_owner_image);
+   assert(initialize_fast_clear_owner.ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE);
+   assert(initialize_fast_clear_owner.ordered_operations[1]
+             .payload.image_zmask_initialize.image == &fast_clear_image);
+   assert(initialize_fast_clear_owner.current_zmask_owner.image ==
+          &fast_clear_image);
+
    struct r3v_native_image invalid_switch_destination = fast_clear_image;
    invalid_switch_destination.zmask_layout_admitted = false;
    invalid_switch_destination.depth_bound.contract =
@@ -686,6 +851,47 @@ main(void)
    assert(failed_owner_switch.image_state_count == 0u);
    assert(!failed_owner_switch.required_zmask_owner_set);
    assert(!failed_owner_switch.current_zmask_owner_set);
+
+   struct r3v_native_cmd_buffer failed_initialize_switch = {0};
+   failed_initialize_switch.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   failed_initialize_switch.vk.base.device = &materialize_device.vk;
+   failed_initialize_switch.vk.pool = &pool;
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&failed_initialize_switch),
+             r3v_native_image_to_handle(&invalid_switch_destination)) !=
+          VK_SUCCESS);
+   assert(failed_initialize_switch.ib_size_dwords == 0u);
+   assert(failed_initialize_switch.reference_count == 0u);
+   assert(failed_initialize_switch.ordered_operation_count == 0u);
+   assert(failed_initialize_switch.image_state_count == 0u);
+   assert(!failed_initialize_switch.required_zmask_owner_set);
+   assert(!failed_initialize_switch.current_zmask_owner_set);
+
+   struct r3v_native_zmask_metadata_state compressed_metadata = {
+      .status = R3V_NATIVE_ZMASK_METADATA_COMPRESSED,
+      .clear_depth_code = 0x400000u,
+      .clear_stencil = 0xa5u,
+      .generation = 9u,
+   };
+   switching_owner_image.committed_submission.representation =
+      R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED;
+   switching_owner_image.committed_submission.zmask_metadata =
+      compressed_metadata;
+   assert(r3v_native_zmask_owner_from_image(
+             &switching_owner_image, &compressed_metadata,
+             &materialize_device.zmask_owner) == VK_SUCCESS);
+   struct r3v_native_cmd_buffer compressed_owner_initialize = {0};
+   compressed_owner_initialize.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   compressed_owner_initialize.vk.base.device = &materialize_device.vk;
+   compressed_owner_initialize.vk.pool = &pool;
+   assert(r3v_native_record_zmask_initialize(
+             r3v_native_cmd_buffer_to_handle(&compressed_owner_initialize),
+             r3v_native_image_to_handle(&fast_clear_image)) ==
+          VK_ERROR_FEATURE_NOT_PRESENT);
+   assert(compressed_owner_initialize.ib_size_dwords == 0u);
+   assert(compressed_owner_initialize.reference_count == 0u);
+   assert(compressed_owner_initialize.ordered_operation_count == 0u);
+   assert(compressed_owner_initialize.image_state_count == 0u);
    materialize_device.zmask_owner = no_owner;
 
    assert(r3v_native_record_zmask_materialize(
@@ -867,7 +1073,10 @@ main(void)
    assert(conflicting_image.committed_submission.zmask_metadata.generation ==
           fast_clear_metadata.generation);
    r3v_native_cmd_buffer_release_recording(&conflicting_reference_command);
+   r3v_native_cmd_buffer_release_recording(&compressed_owner_initialize);
+   r3v_native_cmd_buffer_release_recording(&failed_initialize_switch);
    r3v_native_cmd_buffer_release_recording(&failed_owner_switch);
+   r3v_native_cmd_buffer_release_recording(&initialize_fast_clear_owner);
    r3v_native_cmd_buffer_release_recording(&owner_switch_command);
    r3v_native_cmd_buffer_release_recording(&fast_clear_primary);
    r3v_native_cmd_buffer_release_recording(&fast_clear_secondary);
@@ -876,6 +1085,10 @@ main(void)
    r3v_native_cmd_buffer_release_recording(&stale_backing_command);
    r3v_native_cmd_buffer_release_recording(&materialize_primary);
    r3v_native_cmd_buffer_release_recording(&materialize_secondary);
+   r3v_native_cmd_buffer_release_recording(&initialized_switch_command);
+   r3v_native_cmd_buffer_release_recording(&initialize_primary);
+   r3v_native_cmd_buffer_release_recording(&initialize_secondary);
+   r3v_native_cmd_buffer_release_recording(&initialize_command);
    r3v_native_cmd_buffer_release_recording(&representation_command);
    r3v_native_cmd_buffer_release_recording(&command);
    return 0;

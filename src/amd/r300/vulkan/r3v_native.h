@@ -482,6 +482,7 @@ enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
@@ -506,6 +507,12 @@ struct r3v_native_ordered_operation {
          uint32_t first_rect;
          uint32_t rect_count;
       } color_clear;
+      struct {
+         struct r3v_native_image *image;
+         struct r3v_native_zmask_owner_state source_owner;
+         struct r3v_native_zmask_metadata_state source_metadata;
+         struct r3v_native_zmask_metadata_state resulting_metadata;
+      } image_zmask_initialize;
       struct {
          struct r3v_native_image *image;
          uint32_t x;
@@ -1658,6 +1665,7 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
+   const char *zmask_initialize_gate;
    const char *zmask_fast_clear_gate;
    /* The compute route gate table, one entry per route identity read from
     * that route's own gate the same way (the literal "1" or NULL).  A gate
@@ -2244,6 +2252,13 @@ VkResult r3v_native_record_zmask_materialize(
    VkCommandBuffer command_buffer, VkImage image,
    enum r3v_native_image_representation source_representation,
    const struct r3v_native_zmask_metadata_state *source_metadata);
+
+VkResult r3v_native_record_zmask_initialize(VkCommandBuffer command_buffer,
+                                            VkImage image);
+
+VkResult r3v_native_replay_zmask_initialize(
+   VkCommandBuffer command_buffer,
+   const struct r3v_native_ordered_operation *source_operation);
 
 VkResult r3v_native_record_zmask_fast_clear(
    VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,

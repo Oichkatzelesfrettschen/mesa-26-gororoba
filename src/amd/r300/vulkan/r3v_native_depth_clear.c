@@ -542,6 +542,303 @@ r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
    return result;
 }
 
+static VkResult
+r3v_native_record_zmask_initialize_state(
+   VkCommandBuffer command_buffer, VkImage image_handle,
+   const struct r3v_native_zmask_owner_state *expected_owner,
+   const struct r3v_native_zmask_metadata_state *expected_metadata,
+   const struct r3v_native_zmask_metadata_state *fixed_resulting_metadata)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   VK_FROM_HANDLE(r3v_native_image, image, image_handle);
+   if (cmd_buffer == NULL || image == NULL || !image->depth_family ||
+       image->memory == NULL || !image->zmask_layout_admitted ||
+       image->depth_bound.contract != &image->depth_contract ||
+       cmd_buffer->vk.base.device == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   if (device->zmask_initialize_gate == NULL)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+
+   struct r3v_native_cmd_image_state *state =
+      r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
+   const enum r3v_native_image_representation representation =
+      state != NULL && state->current_representation_set
+         ? state->current_representation
+         : state != NULL ? state->required_representation
+                         : image->committed_submission.representation;
+   const struct r3v_native_zmask_metadata_state metadata =
+      state != NULL && state->current_zmask_metadata_set
+         ? state->current_zmask_metadata
+         : state != NULL ? state->required_zmask_metadata
+                         : image->committed_submission.zmask_metadata;
+   const struct r3v_native_zmask_owner_state source_owner =
+      cmd_buffer->current_zmask_owner_set
+         ? cmd_buffer->current_zmask_owner
+         : cmd_buffer->required_zmask_owner_set
+              ? cmd_buffer->required_zmask_owner
+              : device->zmask_owner;
+   if (representation != R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED ||
+       (metadata.status != R3V_NATIVE_ZMASK_METADATA_RETIRED &&
+        metadata.status != R3V_NATIVE_ZMASK_METADATA_INITIALIZED) ||
+       (expected_owner != NULL &&
+        !r3v_native_zmask_owner_equal(&source_owner, expected_owner)) ||
+       (expected_metadata != NULL &&
+        !r3v_native_zmask_metadata_equal(&metadata, expected_metadata)))
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const struct r3v_native_zmask_owner_state no_owner = {0};
+   if (metadata.status == R3V_NATIVE_ZMASK_METADATA_RETIRED) {
+      if (source_owner.image == image)
+         return VK_ERROR_INITIALIZATION_FAILED;
+   } else if (source_owner.image != image ||
+              !r3v_native_zmask_metadata_equal(&source_owner.metadata,
+                                                &metadata)) {
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   if (source_owner.image != NULL && source_owner.image != image) {
+      struct r3v_native_cmd_image_state *owner_state =
+         r3v_native_cmd_buffer_find_image_state(cmd_buffer,
+                                                source_owner.image);
+      const enum r3v_native_image_representation owner_representation =
+         owner_state != NULL && owner_state->current_representation_set
+            ? owner_state->current_representation
+            : owner_state != NULL ? owner_state->required_representation
+                                  : source_owner.image->committed_submission
+                                       .representation;
+      const struct r3v_native_zmask_metadata_state owner_metadata =
+         owner_state != NULL && owner_state->current_zmask_metadata_set
+            ? owner_state->current_zmask_metadata
+            : owner_state != NULL ? owner_state->required_zmask_metadata
+                                  : source_owner.image->committed_submission
+                                       .zmask_metadata;
+      if (owner_representation !=
+             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED ||
+          owner_metadata.status != R3V_NATIVE_ZMASK_METADATA_INITIALIZED ||
+          !r3v_native_zmask_metadata_equal(&owner_metadata,
+                                            &source_owner.metadata))
+         return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   struct r3v_native_zmask_metadata_state resulting_metadata = {
+      .status = R3V_NATIVE_ZMASK_METADATA_INITIALIZED,
+      .generation = fixed_resulting_metadata != NULL
+                       ? fixed_resulting_metadata->generation
+                       : p_atomic_inc_return(
+                            &device->zmask_metadata_generation_counter),
+   };
+   if (fixed_resulting_metadata != NULL)
+      resulting_metadata = *fixed_resulting_metadata;
+   if (resulting_metadata.status != R3V_NATIVE_ZMASK_METADATA_INITIALIZED ||
+       resulting_metadata.clear_depth_code != 0u ||
+       resulting_metadata.clear_stencil != 0u ||
+       resulting_metadata.generation == 0u)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r300_zmask_clear_plan plan;
+   if (r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+                                   &image->zmask_layout, &plan) != 0)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd_buffer, 1u) !=
+       VK_SUCCESS)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   const uint32_t original_ib_size = cmd_buffer->ib_size_dwords;
+   const uint32_t original_reference_count = cmd_buffer->reference_count;
+   const uint32_t original_operation_count =
+      cmd_buffer->ordered_operation_count;
+   const uint32_t original_image_state_count = cmd_buffer->image_state_count;
+   const enum r3v_native_cell_kind original_cell_kind = cmd_buffer->cell_kind;
+   const bool original_required_owner_set =
+      cmd_buffer->required_zmask_owner_set;
+   const bool original_current_owner_set = cmd_buffer->current_zmask_owner_set;
+   const struct r3v_native_zmask_owner_state original_required_owner =
+      cmd_buffer->required_zmask_owner;
+   const struct r3v_native_zmask_owner_state original_current_owner =
+      cmd_buffer->current_zmask_owner;
+   struct r3v_native_cmd_image_state *original_image_states = NULL;
+   if (original_image_state_count != 0u) {
+      original_image_states =
+         malloc((size_t)original_image_state_count *
+                sizeof(*original_image_states));
+      if (original_image_states == NULL)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      memcpy(original_image_states, cmd_buffer->image_states,
+             (size_t)original_image_state_count *
+                sizeof(*original_image_states));
+   }
+
+   VkResult result = r3v_native_cmd_buffer_transition_image_representation(
+      cmd_buffer, image, representation, representation);
+   if (result == VK_SUCCESS && source_owner.image != NULL &&
+       source_owner.image != image) {
+      const struct r3v_native_zmask_metadata_state retired_metadata = {0};
+      result = r3v_native_cmd_buffer_transition_zmask_metadata(
+         cmd_buffer, source_owner.image, &source_owner.metadata,
+         &retired_metadata);
+      if (result == VK_SUCCESS)
+         result = r3v_native_cmd_buffer_transition_zmask_owner(
+            cmd_buffer, &source_owner, &no_owner);
+   }
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_zmask_metadata(
+         cmd_buffer, image, &metadata, &resulting_metadata);
+
+   struct r3v_native_zmask_owner_state resulting_owner;
+   if (result == VK_SUCCESS)
+      result = r3v_native_zmask_owner_from_image(
+         image, &resulting_metadata, &resulting_owner);
+   const struct r3v_native_zmask_owner_state owner_before_initialize =
+      source_owner.image != NULL && source_owner.image != image ? no_owner
+                                                                : source_owner;
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_zmask_owner(
+         cmd_buffer, &owner_before_initialize, &resulting_owner);
+
+   const struct r3v_native_bo_reference reference = {
+      .handle = image->memory->bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .write_domain = RADEON_GEM_DOMAIN_GTT,
+      .memory = image->memory,
+   };
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_append_raw_ib(
+         device, cmd_buffer, plan.words, plan.dword_count, &reference, 1u,
+         NULL, NULL, 0u);
+   if (result == VK_SUCCESS) {
+      cmd_buffer->ordered_operations[cmd_buffer->ordered_operation_count++] =
+         (struct r3v_native_ordered_operation){
+            .kind = R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE,
+            .ib_position_dwords = cmd_buffer->ib_size_dwords,
+            .payload.image_zmask_initialize = {
+               .image = image,
+               .source_owner = source_owner,
+               .source_metadata = metadata,
+               .resulting_metadata = resulting_metadata,
+            },
+         };
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
+      free(original_image_states);
+      return VK_SUCCESS;
+   }
+
+   cmd_buffer->ib_size_dwords = original_ib_size;
+   cmd_buffer->reference_count = original_reference_count;
+   cmd_buffer->ordered_operation_count = original_operation_count;
+   cmd_buffer->image_state_count = original_image_state_count;
+   cmd_buffer->cell_kind = original_cell_kind;
+   cmd_buffer->required_zmask_owner_set = original_required_owner_set;
+   cmd_buffer->current_zmask_owner_set = original_current_owner_set;
+   cmd_buffer->required_zmask_owner = original_required_owner;
+   cmd_buffer->current_zmask_owner = original_current_owner;
+   if (original_image_state_count != 0u)
+      memcpy(cmd_buffer->image_states, original_image_states,
+             (size_t)original_image_state_count *
+                sizeof(*original_image_states));
+   free(original_image_states);
+   return result;
+}
+
+VkResult
+r3v_native_record_zmask_initialize(VkCommandBuffer command_buffer,
+                                   VkImage image)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   if (cmd_buffer == NULL || cmd_buffer->vk.base.device == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   const struct r3v_native_zmask_owner_state current_owner =
+      cmd_buffer->current_zmask_owner_set
+         ? cmd_buffer->current_zmask_owner
+         : cmd_buffer->required_zmask_owner_set
+              ? cmd_buffer->required_zmask_owner
+              : device->zmask_owner;
+   VK_FROM_HANDLE(r3v_native_image, destination, image);
+   if (destination == NULL || current_owner.image == NULL ||
+       current_owner.image == destination ||
+       current_owner.metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_INITIALIZED)
+      return r3v_native_record_zmask_initialize_state(
+         command_buffer, image, NULL, NULL, NULL);
+   if (current_owner.metadata.status == R3V_NATIVE_ZMASK_METADATA_COMPRESSED)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   if (current_owner.metadata.status != R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const uint32_t original_ib_size = cmd_buffer->ib_size_dwords;
+   const uint32_t original_reference_count = cmd_buffer->reference_count;
+   const uint32_t original_operation_count =
+      cmd_buffer->ordered_operation_count;
+   const uint32_t original_image_state_count = cmd_buffer->image_state_count;
+   const enum r3v_native_cell_kind original_cell_kind = cmd_buffer->cell_kind;
+   const bool original_required_owner_set =
+      cmd_buffer->required_zmask_owner_set;
+   const bool original_current_owner_set = cmd_buffer->current_zmask_owner_set;
+   const struct r3v_native_zmask_owner_state original_required_owner =
+      cmd_buffer->required_zmask_owner;
+   const struct r3v_native_zmask_owner_state original_current_owner =
+      cmd_buffer->current_zmask_owner;
+   struct r3v_native_cmd_image_state *original_image_states = NULL;
+   if (original_image_state_count != 0u) {
+      original_image_states =
+         malloc((size_t)original_image_state_count *
+                sizeof(*original_image_states));
+      if (original_image_states == NULL)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      memcpy(original_image_states, cmd_buffer->image_states,
+             (size_t)original_image_state_count *
+                sizeof(*original_image_states));
+   }
+
+   VkResult result = r3v_native_record_zmask_materialize(
+      command_buffer, r3v_native_image_to_handle(current_owner.image),
+      R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+      &current_owner.metadata);
+   if (result == VK_SUCCESS)
+      result = r3v_native_record_zmask_initialize_state(
+         command_buffer, image, NULL, NULL, NULL);
+   if (result != VK_SUCCESS) {
+      cmd_buffer->ib_size_dwords = original_ib_size;
+      cmd_buffer->reference_count = original_reference_count;
+      cmd_buffer->ordered_operation_count = original_operation_count;
+      cmd_buffer->image_state_count = original_image_state_count;
+      cmd_buffer->cell_kind = original_cell_kind;
+      cmd_buffer->required_zmask_owner_set = original_required_owner_set;
+      cmd_buffer->current_zmask_owner_set = original_current_owner_set;
+      cmd_buffer->required_zmask_owner = original_required_owner;
+      cmd_buffer->current_zmask_owner = original_current_owner;
+      if (original_image_state_count != 0u)
+         memcpy(cmd_buffer->image_states, original_image_states,
+                (size_t)original_image_state_count *
+                   sizeof(*original_image_states));
+   }
+   free(original_image_states);
+   return result;
+}
+
+VkResult
+r3v_native_replay_zmask_initialize(
+   VkCommandBuffer command_buffer,
+   const struct r3v_native_ordered_operation *source_operation)
+{
+   if (source_operation == NULL ||
+       source_operation->kind !=
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE ||
+       source_operation->payload.image_zmask_initialize.image == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   return r3v_native_record_zmask_initialize_state(
+      command_buffer,
+      r3v_native_image_to_handle(
+         source_operation->payload.image_zmask_initialize.image),
+      &source_operation->payload.image_zmask_initialize.source_owner,
+      &source_operation->payload.image_zmask_initialize.source_metadata,
+      &source_operation->payload.image_zmask_initialize.resulting_metadata);
+}
+
 static bool
 r3v_native_zmask_fast_clear_source_valid(
    enum r3v_native_image_representation representation,
