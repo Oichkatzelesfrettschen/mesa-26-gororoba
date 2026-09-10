@@ -226,6 +226,7 @@ check_timeline_wait_consumption(void)
    f(vkDestroyPipeline) f(vkCreateCommandPool) f(vkDestroyCommandPool)     \
    f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
+   f(vkCmdExecuteCommands)                                                 \
    f(vkCmdClearAttachments) f(vkCmdSetViewport) f(vkCmdSetScissor)          \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdBindIndexBuffer) \
    f(vkCmdDraw) f(vkCmdDrawIndexed)                                      \
@@ -257,6 +258,26 @@ fresh_cmd(void)
                            .sType =
                               VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                         });
+   return cmd;
+}
+
+static VkCommandBuffer
+fresh_secondary_cmd(void)
+{
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   assert(vkAllocateCommandBuffers(
+             device,
+             &(VkCommandBufferAllocateInfo){
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                .commandBufferCount = 1,
+             },
+             &cmd) == VK_SUCCESS);
+   assert(vkBeginCommandBuffer(
+             cmd, &(VkCommandBufferBeginInfo){
+                     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                  }) == VK_SUCCESS);
    return cmd;
 }
 
@@ -450,6 +471,21 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
          native_command->references[reference].handle ==
          native_depth_memory->bo.handle;
    assert(depth_reference_count == 1);
+   assert(native_command->ordered_operation_count == 3u);
+   assert(native_command->ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+   assert(native_command->ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_DRAW);
+   assert(native_command->ordered_operations[2].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+   assert(native_command->image_state_count == 2u);
+   for (uint32_t state_index = 0u;
+        state_index < native_command->image_state_count; state_index++) {
+      assert(native_command->image_states[state_index].required_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED);
+      assert(native_command->image_states[state_index].current_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL);
+   }
 
    const uint32_t clear_launch = find_last_register_write(
       native_command->ib, native_command->ib_size_dwords,
@@ -3263,7 +3299,7 @@ main(void)
       VK_FROM_HANDLE(r3v_native_cmd_buffer, growth_failure_native,
                      growth_failure_cmd);
       allocation_control = (struct deferred_copy_allocation_control){
-         .command_allocations_before_failure = 1,
+         .command_allocations_before_failure = 3,
       };
       const VkAllocationCallbacks growth_saved_allocator =
          growth_failure_native->vk.pool->alloc;
@@ -3476,6 +3512,17 @@ main(void)
                 R3V_NATIVE_COPY_GROUP_BEFORE_DRAW);
          assert(native_ordered->deferred_copies[2].group ==
                 R3V_NATIVE_COPY_GROUP_AFTER_DRAW);
+         assert(native_ordered->ordered_operation_count == 5u);
+         assert(native_ordered->ordered_operations[0].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
+         assert(native_ordered->ordered_operations[1].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
+         assert(native_ordered->ordered_operations[2].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+         assert(native_ordered->ordered_operations[3].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+         assert(native_ordered->ordered_operations[4].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
 
          const uint64_t ordered_sync_before =
             native_device->drm.cache_sync_count;
@@ -3847,6 +3894,78 @@ main(void)
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                              &wrap_offset);
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
+
+      VkImageMemoryBarrier reverse_first = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .image = img_a,
+         .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1u,
+            .layerCount = 1u,
+         },
+      };
+      VkCommandBuffer recorded_first = fresh_cmd();
+      vkCmdPipelineBarrier(recorded_first, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                           NULL, 1u, &reverse_first);
+      assert(vkEndCommandBuffer(recorded_first) == VK_SUCCESS);
+
+      VkImageMemoryBarrier recorded_second_barrier = reverse_first;
+      recorded_second_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      recorded_second_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkCommandBuffer recorded_second = fresh_cmd();
+      vkCmdPipelineBarrier(recorded_second, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                           NULL, 1u, &recorded_second_barrier);
+      assert(vkEndCommandBuffer(recorded_second) == VK_SUCCESS);
+      assert(vkQueueSubmit(queue, 1u,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1u,
+                              .pCommandBuffers = &recorded_second,
+                           }, VK_NULL_HANDLE) == VK_SUCCESS);
+      assert(vkQueueSubmit(queue, 1u,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1u,
+                              .pCommandBuffers = &recorded_first,
+                           }, VK_NULL_HANDLE) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_image, reverse_image, img_a);
+      assert(reverse_image->committed_submission.api_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+      VkCommandBuffer secondary_transfer = fresh_secondary_cmd();
+      VkImageMemoryBarrier secondary_barrier = reverse_first;
+      secondary_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      secondary_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      vkCmdPipelineBarrier(secondary_transfer,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                           NULL, 1u, &secondary_barrier);
+      vkCmdFillBuffer(secondary_transfer, staging, 0u, 16u, 0x6a5a4a3au);
+      assert(vkEndCommandBuffer(secondary_transfer) == VK_SUCCESS);
+      VkCommandBuffer secondary_primary = fresh_cmd();
+      vkCmdExecuteCommands(secondary_primary, 1u, &secondary_transfer);
+      assert(vkEndCommandBuffer(secondary_primary) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, secondary_native,
+                     secondary_primary);
+      assert(secondary_native->ordered_operation_count == 2u);
+      assert(secondary_native->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
+      assert(secondary_native->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
+      assert(vkQueueSubmit(queue, 1u,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1u,
+                              .pCommandBuffers = &secondary_primary,
+                           }, VK_NULL_HANDLE) == VK_SUCCESS);
+      assert(reverse_image->committed_submission.api_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL);
 
       vkDestroyBuffer(device, staging, NULL);
       vkFreeMemory(device, staging_mem, NULL);

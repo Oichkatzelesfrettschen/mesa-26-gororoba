@@ -22,6 +22,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../r3v_native.h"
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/radeon_legacy_2d_reg.h"
 
 static unsigned failures;
@@ -1324,6 +1325,100 @@ check_depth_image_copy_recording(const struct fixture *f,
          "depth image copy appends independent regions to one command");
    CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
          "multiple non-overlapping depth image copy regions record");
+
+   if (begin(f))
+      return 1;
+   VkImageMemoryBarrier source_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = source_image,
+      .subresourceRange = {
+         .aspectMask =
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .levelCount = 1u,
+         .layerCount = 1u,
+      },
+   };
+   VkImageMemoryBarrier destination_barrier = source_barrier;
+   destination_barrier.image = destination_image;
+   destination_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                        NULL, 1u, &source_barrier);
+   const VkClearDepthStencilValue composition_clear = {
+      .depth = 0.25f,
+      .stencil = 0x15au,
+   };
+   const VkImageSubresourceRange composition_range =
+      source_barrier.subresourceRange;
+   vkCmdClearDepthStencilImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                               &composition_clear, 1u, &composition_range);
+   source_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   source_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   source_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   source_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                        NULL, 1u, &source_barrier);
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                        NULL, 1u, &destination_barrier);
+   const VkImageCopy composition_copy = {
+      .srcSubresource = {
+         .aspectMask =
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask =
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {32u, 16u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u,
+                  &composition_copy);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, composition_cmd, f->cmd);
+   CHECK(composition_cmd->ordered_operation_count == 5u &&
+            composition_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+            composition_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR &&
+            composition_cmd->ordered_operations[2].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+            composition_cmd->ordered_operations[3].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+            composition_cmd->ordered_operations[4].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+         "clear barriers and copy retain Vulkan recording order");
+   CHECK(composition_cmd->cell_kind ==
+            R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION &&
+            composition_cmd->ib != NULL &&
+            composition_cmd->reference_count == 2u,
+         "ordered depth composition carries a bounded native geometry");
+   if (composition_cmd->ordered_operation_count == 5u) {
+      const uint32_t dependency_position =
+         composition_cmd->ordered_operations[2].ib_position_dwords;
+      CHECK(composition_cmd->ib[dependency_position] ==
+               CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0) &&
+               composition_cmd->ib[dependency_position + 2u] ==
+                  CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0) &&
+               composition_cmd->ib[dependency_position + 4u] ==
+                  CP_PACKET0(RADEON_DSTCACHE_CTLSTAT, 0) &&
+               composition_cmd->ib[dependency_position + 6u] ==
+                  CP_PACKET0(RADEON_WAIT_UNTIL, 0),
+            "depth barrier places ZB RB3D and RB2D publication before the copy");
+      CHECK(composition_cmd->ordered_operations[4].ib_position_dwords >
+               dependency_position + 7u,
+            "copy stream follows the complete cross-engine dependency");
+   }
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "clear barrier and copy composition records successfully");
 
    if (begin(f))
       return 1;
