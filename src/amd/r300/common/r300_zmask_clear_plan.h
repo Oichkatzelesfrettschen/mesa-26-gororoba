@@ -71,8 +71,9 @@ enum r300_zmask_compression r300_zmask_clear_stage_block(
  * count; a pitch and a clear count of zero would otherwise describe a
  * bind of nothing.  An unknown stage is -EINVAL.
  *
- * A binding stage additionally refuses a layout whose block size
- * disagrees with r300_zmask_clear_stage_block.  GB_Z_PEQ_CONFIG and the
+ * A binding stage additionally refuses a layout whose metadata count exceeds
+ * its nonzero RAM capacity or whose block size disagrees with
+ * r300_zmask_clear_stage_block.  GB_Z_PEQ_CONFIG and the
  * 3D_CLEAR_ZMASK dword count both follow the block size, so a layout
  * computed at one block paired with a stage that programs the other
  * writes a plane-equation format the clear coverage contradicts: the
@@ -81,7 +82,8 @@ enum r300_zmask_compression r300_zmask_clear_stage_block(
  * the metadata the surface needs untouched.  Resolving the layout
  * through r300_zmask_layout_compute_at_block with the stage's own block
  * makes the pair agree by construction, and this refusal holds the two
- * together for a caller that assembles them another way.
+ * together for a caller that assembles them another way.  Every refusal
+ * leaves the caller's output unchanged.
  */
 int r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
                                 const struct r300_zmask_layout *layout,

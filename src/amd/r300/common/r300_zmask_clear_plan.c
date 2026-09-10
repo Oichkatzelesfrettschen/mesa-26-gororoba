@@ -63,21 +63,24 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
    if (layout == NULL || out == NULL)
       return -EINVAL;
 
-   memset(out, 0, sizeof(*out));
+   struct r300_zmask_clear_plan plan;
+   memset(&plan, 0, sizeof(plan));
 
    struct r300_pm4_builder b;
-   r300_pm4_builder_init(&b, out->words, R300_ZMASK_CLEAR_PLAN_MAX_DWORDS);
+   r300_pm4_builder_init(&b, plan.words, R300_ZMASK_CLEAR_PLAN_MAX_DWORDS);
 
    switch (stage) {
    case R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY:
       break;
    case R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY:
-      out->requires_hyperz_ownership = true;
+      plan.requires_hyperz_ownership = true;
       break;
    case R300_ZMASK_CLEAR_STAGE_BIND_CLEAR:
    case R300_ZMASK_CLEAR_STAGE_FAST_FILL:
       if (!layout->fits_zmask_ram || layout->dwords == 0u ||
-          layout->stride_in_pixels == 0u)
+          layout->stride_in_pixels == 0u ||
+          layout->zmask_ram_dwords == 0u ||
+          layout->dwords > layout->zmask_ram_dwords)
          return -EINVAL;
       /* The block the layout was computed at is the block this stage
        * programs.  A layout resolved at the other one is refused rather
@@ -85,8 +88,8 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
       if (layout->zcomp8x8 !=
           (r300_zmask_clear_stage_block(stage) == R300_ZCOMP_8X8))
          return -EINVAL;
-      out->requires_hyperz_ownership = true;
-      out->writes_hyperz_registers = true;
+      plan.requires_hyperz_ownership = true;
+      plan.writes_hyperz_registers = true;
       /* SC_HYPERZ stays unwritten: the scan converter's HiZ bit belongs
        * to the HiZ stage past this ladder.
        */
@@ -99,11 +102,11 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
       return -EINVAL;
    }
 
-   const int err = r300_pm4_builder_finish(&b, &out->dword_count);
-   if (err != 0) {
-      memset(out, 0, sizeof(*out));
+   const int err = r300_pm4_builder_finish(&b, &plan.dword_count);
+   if (err != 0)
       return err;
-   }
+
+   *out = plan;
    return 0;
 }
 
