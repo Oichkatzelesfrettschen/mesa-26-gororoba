@@ -22,6 +22,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_zb_depth_layout.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
 #include "amd/r300/common/r300_reg.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
@@ -73,6 +74,73 @@ r3v_native_cell_vk_result_from_errno(int emit_result)
 {
    return emit_result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
                                  : VK_ERROR_INITIALIZATION_FAILED;
+}
+
+static int
+prepend_rb2d_fill(const struct r300_rb2d_fill_plan *fill,
+                  enum r300_tcl_bypass_triangle_slot slot,
+                  struct r300_tcl_bypass_triangle_ib *cell)
+{
+   if (fill == NULL || cell == NULL || cell->ib == NULL ||
+       cell->reloc_site_count >= R300_TRIANGLE_MAX_RELOC_SITES)
+      return -EINVAL;
+
+   const uint32_t clear_dwords = R300_RB2D_FILL_DWORDS(fill->rect_count);
+   if (clear_dwords > UINT32_MAX - cell->ib_size_dwords)
+      return -EOVERFLOW;
+   const uint32_t total_dwords = clear_dwords + cell->ib_size_dwords;
+   uint32_t *words = calloc(total_dwords, sizeof(*words));
+   if (words == NULL)
+      return -ENOMEM;
+
+   struct r300_rb2d_fill_ib clear_ib = { 0 };
+   int result = r300_rb2d_fill_emit_into(fill, words, clear_dwords,
+                                         &clear_ib);
+   if (result != 0 || clear_ib.reloc_site_count != 1u) {
+      free(words);
+      return result != 0 ? result : -EINVAL;
+   }
+   memcpy(words + clear_dwords, cell->ib,
+          (size_t)cell->ib_size_dwords * sizeof(*words));
+
+   struct r300_tcl_bypass_triangle_ib composed = *cell;
+   composed.ib = words;
+   composed.ib_size_dwords = total_dwords;
+   composed.owns_ib = true;
+   memmove(&composed.reloc_sites[1], &composed.reloc_sites[0],
+           (size_t)cell->reloc_site_count * sizeof(composed.reloc_sites[0]));
+   composed.reloc_sites[0] =
+      (struct r300_tcl_bypass_triangle_reloc_site){
+         .ib_index = clear_ib.reloc_sites[0].ib_index,
+         .slot = slot,
+      };
+   composed.reloc_site_count++;
+   composed.ib[composed.reloc_sites[0].ib_index] =
+      slot * 4u;
+   for (uint32_t site = 1; site < composed.reloc_site_count; site++)
+      composed.reloc_sites[site].ib_index += clear_dwords;
+   for (uint32_t alias = 0; alias < composed.vertex_reloc_alias_count; alias++)
+      composed.vertex_reloc_aliases[alias] += clear_dwords;
+
+   result = r300_tcl_bypass_triangle_validate_reloc_sites(&composed);
+   if (result != 0) {
+      free(words);
+      return result;
+   }
+   if (cell->owns_ib)
+      free(cell->ib);
+   *cell = composed;
+   return 0;
+}
+
+static int
+prepend_depth_clear(const struct r300_zb_combined_clear_plan *clear,
+                    struct r300_tcl_bypass_triangle_ib *cell)
+{
+   return clear == NULL
+             ? -EINVAL
+             : prepend_rb2d_fill(&clear->fill, R300_TRIANGLE_SLOT_DEPTH,
+                                  cell);
 }
 
 /* The triangle cell binds both roles at byte offset zero.  A shared GEM BO
@@ -384,6 +452,23 @@ emit_triangle_cell_for_position_space(
    return r300_tcl_bypass_triangle_render_shape_emit(shape, cell);
 }
 
+VkResult
+r3v_native_cell_set_color_channel_mask(
+   struct r300_tcl_bypass_triangle_ib *cell, uint32_t mask)
+{
+   if (cell == NULL || cell->ib == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   const uint32_t header = CP_PACKET0(RB3D_COLOR_CHANNEL_MASK, 0);
+   bool found = false;
+   for (uint32_t word = 0; word + 1 < cell->ib_size_dwords; word++) {
+      if (cell->ib[word] != header)
+         continue;
+      cell->ib[word + 1] = mask;
+      found = true;
+   }
+   return found ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+}
+
 /* Cell emission and installation with no memory writes: the emitted IB
  * and its references depend only on the two BO handles, so the recorded
  * digest is independent of when the carrier and target bytes land.
@@ -402,6 +487,13 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                uint32_t triangle_count,
                                const struct r3v_native_sampled_texture
                                   *sampled,
+                               struct r3v_native_memory *depth_memory,
+                               const struct r300_zb_depth_state_params
+                                  *depth_state,
+                               bool z_top_enable,
+                               const struct r300_zb_combined_clear_plan
+                                  *depth_clear,
+                               bool color_writes_disabled,
                                struct r300_tcl_bypass_triangle_ib
                                   *alternate_carrier_out)
 {
@@ -452,7 +544,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
    struct r300_tcl_bypass_triangle_ib window_cell = {0};
    const bool retain_window_cell =
       clip_space && cmd_buffer->ib == NULL && sampled == NULL && !varying &&
-      triangle_count == 1;
+      triangle_count == 1 &&
+      (depth_state == NULL ||
+       !depth_state->stencil.back_reference_requires_draw_split);
    int emit_result = 0;
    if (retain_window_cell) {
       emit_result = emit_triangle_cell_for_position_space(
@@ -469,6 +563,20 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       shape, varying, flat_color0, noperspective_carrier,
       noperspective_q_lane, noperspective_mixed_carrier, rs_probe_candidate,
       triangle_count, sampled, clip_space, &cell);
+   const bool ordered_stencil =
+      depth_state != NULL &&
+      depth_state->stencil.back_reference_requires_draw_split;
+   if (emit_result == 0 && depth_state != NULL)
+      emit_result = r300_tcl_bypass_triangle_insert_depth_state(&cell,
+                                                                depth_state,
+                                                                z_top_enable);
+   if (emit_result == 0 && ordered_stencil)
+      emit_result =
+         !clip_space
+            ? -EINVAL
+            : r300_tcl_bypass_triangle_split_ordered_stencil(
+                 &cell, triangle_count,
+                 depth_state->stencil.front_reference_mask);
    /* The adaptive NoPerspective route retains the TC1 reciprocal
     * carrier cell beside the installed direct cell: the same shape and
     * memories, the carrier record, and every probe word at its control
@@ -479,14 +587,78 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       emit_result = emit_triangle_cell_for_position_space(
          shape, varying, false, true, false, false, (uint8_t)R3V_RS_PROBE_NONE,
          triangle_count, sampled, clip_space, alternate_carrier_out);
+      if (emit_result == 0 && depth_state != NULL)
+         emit_result = r300_tcl_bypass_triangle_insert_depth_state(
+            alternate_carrier_out, depth_state, z_top_enable);
+      if (emit_result == 0 && ordered_stencil)
+         emit_result = r300_tcl_bypass_triangle_split_ordered_stencil(
+            alternate_carrier_out, triangle_count,
+            depth_state->stencil.front_reference_mask);
       if (emit_result != 0)
          r300_tcl_bypass_triangle_release(&cell);
    }
-   if (emit_result != 0)
+   if (emit_result == 0 && depth_state != NULL && depth_clear != NULL)
+      emit_result = prepend_depth_clear(depth_clear, &cell);
+   if (emit_result == 0 && depth_state != NULL && retain_window_cell)
+      emit_result = r300_tcl_bypass_triangle_insert_depth_state(&window_cell,
+                                                                depth_state,
+                                                                z_top_enable);
+   if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
+       retain_window_cell)
+      emit_result = prepend_depth_clear(depth_clear, &window_cell);
+   if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
+       alternate_carrier_out != NULL)
+      emit_result = prepend_depth_clear(depth_clear, alternate_carrier_out);
+   if (emit_result == 0 && color_writes_disabled) {
+      emit_result = r3v_native_cell_set_color_channel_mask(&cell, 0u);
+      if (emit_result == VK_SUCCESS && retain_window_cell)
+         emit_result =
+            r3v_native_cell_set_color_channel_mask(&window_cell, 0u);
+      if (emit_result == VK_SUCCESS && alternate_carrier_out != NULL)
+         emit_result = r3v_native_cell_set_color_channel_mask(
+            alternate_carrier_out, 0u);
+   }
+   /* CPU preparation can realize the first pass's load operation before
+    * submission.  A later pass needs a device command between draw spans;
+    * prepend the linear color fill to every retained form of the later
+    * pass's span. */
+   if (emit_result == 0 && depth_state != NULL && cmd_buffer->ib != NULL &&
+       cmd_buffer->deferred_draw_count > 1 && !cmd_buffer->draw_recorded) {
+      const struct r3v_native_deferred_draw *draw =
+         &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1];
+      const struct r300_rb2d_fill_rect rect = {
+         .x = 0,
+         .y = 0,
+         .width = shape->width,
+         .height = shape->height,
+         .value = draw->clear_dword,
+      };
+      const struct r300_rb2d_fill_plan fill = {
+         .surface = {
+            .base_offset_bytes = shape->target_offset,
+            .pitch_bytes = shape->pitch_pixels * 4u,
+            .width_pixels = shape->width,
+            .height_pixels = shape->height,
+            .format = R300_RB2D_FORMAT_ARGB8888,
+         },
+         .write_mask = UINT32_MAX,
+         .rects = &rect,
+         .rect_count = 1,
+      };
+      emit_result =
+         prepend_rb2d_fill(&fill, R300_TRIANGLE_SLOT_COLOR, &cell);
+      if (emit_result == 0 && alternate_carrier_out != NULL)
+         emit_result = prepend_rb2d_fill(
+            &fill, R300_TRIANGLE_SLOT_COLOR, alternate_carrier_out);
+   }
+   if (emit_result != 0) {
+      r300_tcl_bypass_triangle_release(&cell);
       r300_tcl_bypass_triangle_release(&window_cell);
-   if (emit_result != 0)
+      if (alternate_carrier_out != NULL)
+         r300_tcl_bypass_triangle_release(alternate_carrier_out);
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
+   }
 
    /* Reference order is relocation-slot order: the queue records the index
     * returned by radeon_drm_vk_reloc_list_add for each reference, and the
@@ -495,9 +667,10 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * list reaches the queue, so deduplication cannot leave a slot payload
     * outside the relocation chunk.
     */
-   const uint32_t slot_count = sampled != NULL
-                                  ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
-                                  : R300_TRIANGLE_RENDER_SLOT_COUNT;
+   const uint32_t base_slot_count = sampled != NULL
+                                       ? R300_TRIANGLE_SAMPLED_SLOT_COUNT
+                                       : R300_TRIANGLE_RENDER_SLOT_COUNT;
+   const uint32_t slot_count = base_slot_count + (depth_state != NULL ? 1u : 0u);
    struct r3v_native_bo_reference *references =
       calloc(slot_count, sizeof(*references));
    if (references == NULL) {
@@ -528,6 +701,20 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
             .memory = sampled->memory,
          };
    }
+   uint32_t reference_slots[R300_TRIANGLE_SLOT_COUNT] = {
+      R300_TRIANGLE_SLOT_VERTEX,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+   };
+   if (depth_state != NULL) {
+      references[base_slot_count] = (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+      reference_slots[base_slot_count] = R300_TRIANGLE_SLOT_DEPTH;
+   }
 
    /* A second recorded pass appends its cell to the installed stream:
     * each half opens with its own first-draw contract, so the
@@ -536,9 +723,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
     * before the next one runs -- the coherency edge the composed cell
     * holds on silicon.  A first pass installs.
     */
-   if (cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1) {
+   if (cmd_buffer->ib != NULL) {
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
-         device, cmd_buffer, &cell, references, slot_count,
+         device, cmd_buffer, &cell, references, reference_slots, slot_count,
          alternate_carrier_out);
       free(references);
       if (appended != VK_SUCCESS) {
@@ -556,6 +743,31 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       return VK_SUCCESS;
    }
 
+   if (depth_state != NULL) {
+      uint32_t slot_indices[R300_TRIANGLE_SLOT_COUNT] = { 0 };
+      for (uint32_t reference = 0; reference < slot_count; reference++)
+         slot_indices[reference_slots[reference]] = reference;
+      const int bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+         &cell, slot_indices, R300_TRIANGLE_SLOT_COUNT);
+      int alternate_bound = 0;
+      if (bound == 0 && retain_window_cell)
+         alternate_bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+            &window_cell, slot_indices, R300_TRIANGLE_SLOT_COUNT);
+      if (bound == 0 && alternate_bound == 0 &&
+          alternate_carrier_out != NULL)
+         alternate_bound = r300_tcl_bypass_triangle_bind_reloc_indices(
+            alternate_carrier_out, slot_indices, R300_TRIANGLE_SLOT_COUNT);
+      if (bound != 0 || alternate_bound != 0) {
+         free(references);
+         r300_tcl_bypass_triangle_release(&cell);
+         r300_tcl_bypass_triangle_release(&window_cell);
+         if (alternate_carrier_out != NULL)
+            r300_tcl_bypass_triangle_release(alternate_carrier_out);
+         return vk_error(
+            device, r3v_native_cell_vk_result_from_errno(
+                       bound != 0 ? bound : alternate_bound));
+      }
+   }
    r3v_native_cmd_buffer_install_ib(cmd_buffer,
                                     sampled != NULL
                                        ? R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED
@@ -601,7 +813,7 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
                                          false, false, false, false, 0, 1, NULL,
-                                         NULL);
+                                         NULL, NULL, false, NULL, false, NULL);
 }
 
 VkResult
@@ -615,6 +827,11 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled,
+   struct r3v_native_memory *depth_memory,
+   const struct r3v_native_depth_image_bound *depth_bound,
+   const struct r3v_native_depth_pipeline_state *depth_pipeline,
+   const struct r300_zb_combined_clear_plan *depth_clear,
+   bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell)
 {
    struct r3v_native_memory *color_memory = target_image->memory;
@@ -667,13 +884,37 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    shape.target_offset = (uint32_t)target_base;
    if (!varying)
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
+   struct r300_zb_depth_state_params depth_state;
+   const struct r300_zb_depth_state_params *selected_depth_state = NULL;
+   if (depth_memory != NULL || depth_bound != NULL || depth_pipeline != NULL ||
+       depth_clear != NULL) {
+      if (depth_memory == NULL || depth_bound == NULL ||
+          depth_bound->contract == NULL || depth_pipeline == NULL ||
+          depth_bound->surface_base_bytes > UINT32_MAX)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      depth_state = depth_pipeline->hardware;
+      depth_state.pitch_pixels = depth_bound->contract->surface.pitch_pixels;
+      depth_state.depth_format = depth_bound->contract->surface.depth_format;
+      depth_state.pitch_tile_bits = r300_zb_depth_surface_tile_bits(
+         &depth_bound->contract->surface);
+      depth_state.depth_offset_bytes =
+         (uint32_t)depth_bound->surface_base_bytes;
+      depth_state.depth_relocation_payload = R300_TRIANGLE_SLOT_DEPTH * 4u;
+      selected_depth_state = &depth_state;
+   }
    return emit_and_install_triangle_cell(device, cmd_buffer, carrier_memory,
                                          color_memory, &shape, true, varying,
                                          flat_color0, noperspective_carrier,
                                          noperspective_q_lane,
                                          noperspective_mixed_carrier,
                                          rs_probe_candidate, triangle_count,
-                                         sampled, alternate_carrier_cell);
+                                         sampled, depth_memory,
+                                         selected_depth_state,
+                                         depth_pipeline != NULL &&
+                                            depth_pipeline->early_fragment_tests,
+                                         depth_clear,
+                                         color_writes_disabled,
+                                         alternate_carrier_cell);
 }
 
 /* Vulkan 1.0 Fixed-Function Vertex Post-Processing defines the view volume
@@ -954,7 +1195,9 @@ expand_clip_space_triangles(
    const uint32_t *source_records, uint32_t source_triangle_count,
    uint32_t record_dwords, uint32_t target_width, uint32_t target_height,
    VkCullModeFlags cull_mode, VkFrontFace front_face, bool sample_mask_zero,
-   uint32_t *output_records, uint32_t output_capacity_dwords)
+   uint32_t *output_records, uint32_t output_capacity_dwords,
+   uint32_t *stencil_reference_masks, uint32_t front_reference_mask,
+   uint32_t back_reference_mask)
 {
    /* The position, then whole vec4 vectors up to the mixed carrier's
     * three: 4, 8, 12, or 16 dwords. */
@@ -1031,6 +1274,8 @@ expand_clip_space_triangles(
       if (fan_triangle_count >
           R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT)
          return -EOVERFLOW;
+      bool source_front_facing = true;
+      bool source_facing_known = false;
       for (uint32_t fan = 0; fan < fan_triangle_count; fan++) {
          const struct r3v_native_clip_vertex *fan_vertices[3] = {
             &polygon[0], &polygon[fan + 1], &polygon[fan + 2],
@@ -1052,8 +1297,15 @@ expand_clip_space_triangles(
          const double area2 =
             ((double)window[1][0] - window[0][0]) *
                ((double)window[2][1] - window[0][1]) -
-            ((double)window[2][0] - window[0][0]) *
-               ((double)window[1][1] - window[0][1]);
+               ((double)window[2][0] - window[0][0]) *
+                  ((double)window[1][1] - window[0][1]);
+         if (!source_facing_known && area2 != 0.0) {
+            const bool counter_clockwise = area2 > 0.0;
+            source_front_facing =
+               counter_clockwise ==
+               (front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            source_facing_known = true;
+         }
          bool collapse = sample_mask_zero;
          if (!collapse && area2 != 0.0 && cull_mode != VK_CULL_MODE_NONE) {
             const bool counter_clockwise = area2 > 0.0;
@@ -1077,6 +1329,9 @@ expand_clip_space_triangles(
                    (size_t)record_dwords * sizeof(float));
          }
       }
+      if (stencil_reference_masks != NULL)
+         stencil_reference_masks[triangle] =
+            source_front_facing ? front_reference_mask : back_reference_mask;
    }
    return 0;
 }
@@ -1352,59 +1607,59 @@ r3v_native_cmd_buffer_select_deferred_routes(
 
 static VkResult
 execute_one_deferred_draw(struct r3v_native_device *device,
-                          struct r3v_native_deferred_draw *draw,
-                          struct r3v_native_memory *carrier)
+                          struct r3v_native_cmd_buffer *cmd_buffer,
+                          uint32_t draw_index, bool load_at_begin)
 {
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   struct r3v_native_memory *carrier = cmd_buffer->owned_carriers[draw_index];
    if (!draw->pending)
       return VK_SUCCESS;
+
+   /* Render-pass load operations execute at BEGIN_RENDER_PASS.  A CPU
+    * executor may still realize the load while the draw stream is deferred;
+    * a color or depth load already encoded in the native IB remains in the
+    * stream and is skipped here. */
+   VkResult load_result = VK_SUCCESS;
+   if (load_at_begin && !draw->depth_only && !draw->color_load_in_ib)
+      load_result = fill_color(device, draw->target_memory,
+                               draw->target_fill_offset,
+                               draw->target_fill_bytes, draw->clear_dword);
+   if (load_result != VK_SUCCESS)
+      return load_result;
+   if (draw->stream_mask != 0u && draw->has_depth_clear)
+      goto draw_stream;
 
    /* CmdBeginRenderPass records the load-op clear before a draw exists.  An
     * empty subpass has no vertex stream or carrier to execute, but its clear
     * still realizes at queue submission.
     */
    if (draw->stream_mask == 0) {
-      VkResult clear_result =
-         fill_color(device, draw->target_memory, draw->target_fill_offset,
-                    draw->target_fill_bytes, draw->clear_dword);
-      if (clear_result != VK_SUCCESS || draw->clear_rect_count == 0)
-         return clear_result;
-      /* The recorded attachment clears land after the load-op clear,
-       * in API order, over the target's own row pitch from its bind
-       * offset.
-       */
-      struct r3v_native_memory *target = draw->target_memory;
-      bool owns_map = target->map == NULL;
-      if (owns_map &&
-          radeon_drm_vk_bo_map(&device->drm, &target->bo,
-                               &target->map) != 0) {
-         return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                          "r3v-native: pass target memory is not "
-                          "CPU-mappable for the attachment clear");
-      }
-      for (uint32_t r = 0; r < draw->clear_rect_count; r++) {
-         const struct r3v_native_pass_clear_rect *rect =
-            &draw->clear_rects[r];
-         for (uint32_t row = 0; row < rect->height; row++) {
-            uint32_t *texels =
-               (uint32_t *)((uint8_t *)target->map +
-                            draw->target_fill_offset +
-                            (uint64_t)(rect->y + row) *
-                               draw->target_row_bytes) +
-               rect->x;
-            for (uint32_t x = 0; x < rect->width; x++)
-               texels[x] = rect->dword;
-         }
-      }
-      radeon_drm_vk_bo_cache_sync(&device->drm,
-                                  (uint8_t *)target->map +
-                                     draw->target_fill_offset,
-                                  draw->target_fill_bytes);
-      if (owns_map) {
-         radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
-         target->map = NULL;
+      VkResult clear_result = VK_SUCCESS;
+      if (draw->has_depth_clear) {
+         const struct r300_rb2d_fill_plan *depth_fill =
+            &draw->depth_clear.fill;
+         if (draw->depth_memory == NULL || depth_fill->rect_count != 1u ||
+             depth_fill->rects == NULL || depth_fill->rects[0].x != 0u ||
+             depth_fill->rects[0].y != 0u ||
+             depth_fill->rects[0].width != depth_fill->surface.width_pixels ||
+             depth_fill->rects[0].height != depth_fill->surface.height_pixels)
+            return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+         const uint64_t depth_bytes =
+            (uint64_t)depth_fill->surface.pitch_bytes *
+            depth_fill->surface.height_pixels;
+         clear_result = fill_color(device, draw->depth_memory,
+                                   depth_fill->surface.base_offset_bytes,
+                                   depth_bytes, draw->depth_clear.packed_word);
+         if (clear_result != VK_SUCCESS)
+            return clear_result;
       }
       return VK_SUCCESS;
    }
+
+draw_stream:
 
    /* Every stream the job reads maps for the execution; two slots may
     * share one memory (one buffer bound to two bindings, or two buffers
@@ -1463,9 +1718,11 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                                 owned_maps[i]->map);
          owned_maps[i]->map = NULL;
       }
-      return fill_color(device, draw->target_memory,
-                        draw->target_fill_offset, draw->target_fill_bytes,
-                        draw->clear_dword);
+      return draw->color_load_in_ib
+                ? VK_SUCCESS
+                : fill_color(device, draw->target_memory,
+                             draw->target_fill_offset,
+                             draw->target_fill_bytes, draw->clear_dword);
    }
 
    /* The CPU route stages the vertex-job outputs and the fixed-capacity
@@ -1515,8 +1772,12 @@ execute_one_deferred_draw(struct r3v_native_device *device,
        R300_TRIANGLE_VARYING_VERTEX_DWORDS];
    uint32_t *staged_heap = NULL;
    uint32_t *expanded_heap = NULL;
+   uint32_t *stencil_reference_masks = NULL;
    uint32_t *staged = staged_stack;
    uint32_t *expanded = expanded_stack;
+   const bool ordered_stencil =
+      draw->has_depth_pipeline &&
+      draw->depth_pipeline.hardware.stencil.back_reference_requires_draw_split;
    if (published_staged_dwords > ARRAY_SIZE(staged_stack)) {
       staged_heap = vk_alloc(&device->vk.alloc,
                              (size_t)published_staged_dwords *
@@ -1535,6 +1796,15 @@ execute_one_deferred_draw(struct r3v_native_device *device,
       if (expanded_heap == NULL)
          result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       expanded = expanded_heap;
+   }
+   if (result == VK_SUCCESS && ordered_stencil) {
+      stencil_reference_masks =
+         vk_alloc(&device->vk.alloc,
+                  (size_t)source_triangle_count *
+                     sizeof(*stencil_reference_masks),
+                  8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (stencil_reference_masks == NULL)
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    bool owns_carrier_map = result == VK_SUCCESS && carrier->map == NULL;
@@ -1771,7 +2041,10 @@ execute_one_deferred_draw(struct r3v_native_device *device,
             staged, source_triangle_count, published_record_dwords,
             draw->target_width,
             draw->target_height, draw->cull_mode, draw->front_face,
-            draw->sample_mask_zero, expanded, expanded_dwords);
+            draw->sample_mask_zero, expanded, expanded_dwords,
+            stencil_reference_masks,
+            draw->depth_pipeline.hardware.stencil.front_reference_mask,
+            draw->depth_pipeline.hardware.stencil.back_reference_mask);
          int expanded_carrier = 0;
          if (clipped == 0 && draw->post_vs.q_lane_width != 0) {
             struct r300_noperspective_q_lane_plan plan;
@@ -1817,8 +2090,14 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                    (size_t)expanded_dwords * sizeof(uint32_t));
          }
       } else if (result == VK_SUCCESS) {
-         memcpy(carrier->map, staged,
-                (size_t)published_staged_dwords * sizeof(uint32_t));
+         if (ordered_stencil)
+            result = vk_errorf(
+               device, VK_ERROR_INITIALIZATION_FAILED,
+               "r3v-native: ordered two-sided stencil requires the "
+               "clip-space primitive-facing route");
+         else
+            memcpy(carrier->map, staged,
+                   (size_t)published_staged_dwords * sizeof(uint32_t));
       }
       if (result == VK_SUCCESS) {
          const size_t publication_bytes =
@@ -1829,12 +2108,24 @@ execute_one_deferred_draw(struct r3v_native_device *device,
                                      publication_bytes);
       }
    }
+   if (result == VK_SUCCESS && ordered_stencil &&
+       (draw->ib_span_offset > cmd_buffer->ib_size_dwords ||
+        draw->ib_span_dwords >
+           cmd_buffer->ib_size_dwords - draw->ib_span_offset ||
+        r300_tcl_bypass_triangle_patch_ordered_stencil(
+           &cmd_buffer->ib[draw->ib_span_offset], draw->ib_span_dwords,
+           stencil_reference_masks, source_triangle_count) != 0)) {
+      result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                         "r3v-native: ordered stencil segment patching "
+                         "failed");
+   }
    if (owns_carrier_map) {
       radeon_drm_vk_bo_unmap(&device->drm, &carrier->bo, carrier->map);
       carrier->map = NULL;
    }
    vk_free(&device->vk.alloc, expanded_heap);
    vk_free(&device->vk.alloc, staged_heap);
+   vk_free(&device->vk.alloc, stencil_reference_masks);
    vk_free(&device->vk.alloc, vertex_ids_heap);
 
    for (uint32_t i = 0; i < owned_map_count; i++) {
@@ -1853,8 +2144,7 @@ execute_one_deferred_draw(struct r3v_native_device *device,
    /* pending stays set: every submission re-reads the stream and
     * re-clears, the execution-time semantics each submit carries.
     */
-   return fill_color(device, draw->target_memory, draw->target_fill_offset,
-                     draw->target_fill_bytes, draw->clear_dword);
+   return VK_SUCCESS;
 }
 /* Submission-time execution of every recorded render pass, in record
  * order: each carries its own load-op clear, its own carrier, and its
@@ -1866,15 +2156,117 @@ r3v_native_cmd_buffer_execute_deferred_draws(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer)
 {
-   const uint32_t count = MAX2(cmd_buffer->deferred_draw_count, 1u);
+   const uint32_t count = cmd_buffer->deferred_draw_count;
    for (uint32_t i = 0; i < count; i++) {
       const VkResult result = execute_one_deferred_draw(
-         device, &cmd_buffer->deferred_draws[i],
-         cmd_buffer->owned_carriers[i]);
+         device, cmd_buffer, i, cmd_buffer->deferred_draws[i].load_at_begin);
       if (result != VK_SUCCESS)
          return result;
    }
    return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw_load(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index)
+{
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   if (!draw->pending)
+      return VK_SUCCESS;
+   if (!draw->depth_only && !draw->color_load_in_ib) {
+      VkResult result = fill_color(device, draw->target_memory,
+                                   draw->target_fill_offset,
+                                   draw->target_fill_bytes, draw->clear_dword);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   if (draw->stream_mask == 0u && draw->has_depth_clear) {
+      const struct r300_rb2d_fill_plan *depth_fill = &draw->depth_clear.fill;
+      if (draw->depth_memory == NULL || depth_fill->rect_count != 1u ||
+          depth_fill->rects == NULL || depth_fill->rects[0].x != 0u ||
+          depth_fill->rects[0].y != 0u ||
+          depth_fill->rects[0].width != depth_fill->surface.width_pixels ||
+          depth_fill->rects[0].height != depth_fill->surface.height_pixels)
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      const uint64_t depth_bytes =
+         (uint64_t)depth_fill->surface.pitch_bytes *
+         depth_fill->surface.height_pixels;
+      return fill_color(device, draw->depth_memory,
+                        depth_fill->surface.base_offset_bytes, depth_bytes,
+                        draw->depth_clear.packed_word);
+   }
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index,
+   uint32_t first_rect, uint32_t rect_count)
+{
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   struct r3v_native_deferred_draw *draw =
+      &cmd_buffer->deferred_draws[draw_index];
+   if (!draw->pending || draw->target_memory == NULL ||
+       first_rect > draw->clear_rect_count ||
+       rect_count > draw->clear_rect_count - first_rect)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+
+   struct r3v_native_memory *target = draw->target_memory;
+   const bool owns_map = target->map == NULL;
+   if (owns_map && radeon_drm_vk_bo_map(&device->drm, &target->bo,
+                                        &target->map) != 0)
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: pass target memory is not "
+                       "CPU-mappable for the attachment clear");
+
+   for (uint32_t index = first_rect; index < first_rect + rect_count; index++) {
+      const struct r3v_native_pass_clear_rect *rect =
+         &draw->clear_rects[index];
+      if (rect->aspect_mask != VK_IMAGE_ASPECT_COLOR_BIT ||
+          rect->x > draw->target_width ||
+          rect->width > draw->target_width - rect->x ||
+          rect->y > draw->target_height ||
+          rect->height > draw->target_height - rect->y) {
+         if (owns_map) {
+            radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
+            target->map = NULL;
+         }
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      }
+      for (uint32_t row = 0; row < rect->height; row++) {
+         uint32_t *texels =
+            (uint32_t *)((uint8_t *)target->map + draw->target_fill_offset +
+                         (uint64_t)(rect->y + row) * draw->target_row_bytes) +
+            rect->x;
+         for (uint32_t x = 0; x < rect->width; x++)
+            texels[x] = rect->dword;
+      }
+   }
+   radeon_drm_vk_bo_cache_sync(&device->drm,
+                               (uint8_t *)target->map +
+                                  draw->target_fill_offset,
+                               draw->target_fill_bytes);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &target->bo, target->map);
+      target->map = NULL;
+   }
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index)
+{
+   if (cmd_buffer == NULL || draw_index >= cmd_buffer->deferred_draw_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   return execute_one_deferred_draw(device, cmd_buffer, draw_index, false);
 }
 
 /* The producer footprint over the triangle's three records: the odd
@@ -2881,10 +3273,13 @@ r3v_native_zb_depth_surface_bytes(enum r3v_native_zb_depth_surface selection)
       r3v_native_zb_depth_surface_descriptor(selection);
    if (surface == NULL)
       return 0u;
-   /* Both selectable surfaces are linear in both tile classes, so the
-    * storage extent equals the parser footprint and one product names
-    * the allocation.  A tiled selector would take
-    * r300_zb_depth_layout_compute instead, whose envelope exceeds this. */
+   if (selection == R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
+      struct r300_zb_depth_layout layout;
+      if (r300_zb_depth_layout_compute(surface, 2048, &layout) != 0 ||
+          layout.total_bytes > UINT32_MAX - 4096u)
+         return 0u;
+      return (uint32_t)layout.total_bytes + 4096u;
+   }
    return surface->pitch_pixels * surface->allocation_rows *
           surface->bytes_per_pixel;
 }
@@ -2931,7 +3326,9 @@ r3v_native_record_zb_depth_control_surface(
 
    const struct r300_zb_depth_surface *surface =
       r3v_native_zb_depth_surface_descriptor(surface_selection);
-   if (surface == NULL) {
+   if (surface == NULL ||
+       surface_selection ==
+          R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: depth control names no surface for "
                        "selector %d", (int)surface_selection);
@@ -3076,6 +3473,170 @@ r3v_native_record_zb_depth_control_surface(
    cell.ib = NULL;
    r300_zb_depth_control_release(&cell);
 
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_zb_tiled_validation(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   const uint32_t vertices[24], bool depth_write)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, depth_memory, depthMemory);
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL ||
+       depth_memory == NULL || vertices == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   const enum r3v_native_zb_depth_surface selection =
+      R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL;
+   if (vertex_memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
+       color_memory->bo.size != R300_ZB_DEPTH_CONTROL_COLOR_BYTES ||
+       depth_memory->bo.size != r3v_native_zb_depth_surface_bytes(selection) ||
+       vertex_memory->bo.handle == color_memory->bo.handle ||
+       vertex_memory->bo.handle == depth_memory->bo.handle ||
+       color_memory->bo.handle == depth_memory->bo.handle)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   struct r300_zb_depth_control_ib cell;
+   int result = r300_zb_depth_tiled_validation_emit(depth_write, &cell);
+   if (result != 0)
+      return vk_error(device, r3v_native_cell_vk_result_from_errno(result));
+   if (r300_zb_depth_control_validate_reloc_sites(&cell) != 0) {
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+   struct r3v_native_bo_reference *references =
+      calloc(R300_ZB_DEPTH_CONTROL_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   const bool owns_map = vertex_memory->map == NULL;
+   if (owns_map && radeon_drm_vk_bo_map(
+          &device->drm, &vertex_memory->bo, &vertex_memory->map) != 0) {
+      free(references);
+      r300_zb_depth_control_release(&cell);
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   }
+   memcpy(vertex_memory->map, vertices, 24u * sizeof(*vertices));
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex_memory->map,
+                              24u * sizeof(*vertices));
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &vertex_memory->bo,
+                            vertex_memory->map);
+      vertex_memory->map = NULL;
+   }
+   references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX] =
+      (struct r3v_native_bo_reference){
+         .handle = vertex_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .memory = vertex_memory,
+      };
+   references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR] =
+      (struct r3v_native_bo_reference){
+         .handle = color_memory->bo.handle,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color_memory,
+      };
+   references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH] =
+      (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+   r3v_native_cmd_buffer_install_ib(
+      cmd_buffer, R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL, cell.ib,
+      cell.ib_size_dwords, references, R300_ZB_DEPTH_CONTROL_SLOT_COUNT);
+   cmd_buffer->zb_depth_surface = selection;
+   cell.ib = NULL;
+   r300_zb_depth_control_release(&cell);
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB, const uint32_t vertices[24],
+   enum r3v_native_zb_persistence_ordinal ordinal)
+{
+   VK_FROM_HANDLE(r3v_native_memory, depth_a, depthMemoryA);
+   VK_FROM_HANDLE(r3v_native_memory, depth_b, depthMemoryB);
+   const uint32_t depth_bytes = r3v_native_zb_depth_surface_bytes(
+      R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL);
+   if (depth_a == NULL || depth_b == NULL || depth_a == depth_b ||
+       depth_a->bo.handle == depth_b->bo.handle ||
+       depth_a->bo.size != depth_bytes || depth_b->bo.size != depth_bytes ||
+       ordinal > R3V_NATIVE_ZB_PERSISTENCE_A_FINAL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   const VkDeviceMemory active_depth =
+      ordinal == R3V_NATIVE_ZB_PERSISTENCE_B ? depthMemoryB : depthMemoryA;
+   VkResult result = r3v_native_record_zb_tiled_validation(
+      commandBuffer, vertexMemory, colorMemory, active_depth, vertices, false);
+   if (result != VK_SUCCESS)
+      return result;
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
+   cmd_buffer->zb_persistence_configured = true;
+   cmd_buffer->zb_persistence_ordinal = ordinal;
+   cmd_buffer->zb_persistence_vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   cmd_buffer->zb_persistence_vertex_generation =
+      cmd_buffer->zb_persistence_vertex->generation;
+   cmd_buffer->zb_persistence_vertex_handle =
+      cmd_buffer->zb_persistence_vertex->bo.handle;
+   cmd_buffer->zb_persistence_depth_a = depth_a;
+   cmd_buffer->zb_persistence_depth_b = depth_b;
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_bind_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB,
+   enum r3v_native_zb_persistence_ordinal ordinal)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, depth_a, depthMemoryA);
+   VK_FROM_HANDLE(r3v_native_memory, depth_b, depthMemoryB);
+   const uint32_t depth_bytes = r3v_native_zb_depth_surface_bytes(
+      R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL);
+   const struct r3v_native_memory *active_depth =
+      ordinal == R3V_NATIVE_ZB_PERSISTENCE_B ? depth_b : depth_a;
+   if (cmd_buffer == NULL || depth_a == NULL || depth_b == NULL ||
+       depth_a == depth_b || depth_a->bo.handle == depth_b->bo.handle ||
+       depth_a->bo.size != depth_bytes || depth_b->bo.size != depth_bytes ||
+       ordinal > R3V_NATIVE_ZB_PERSISTENCE_A_FINAL ||
+       cmd_buffer->cell_kind != R3V_NATIVE_CELL_KIND_TRIANGLE ||
+       cmd_buffer->deferred_draw_count != 1u ||
+       !cmd_buffer->deferred_draws[0].pending ||
+       cmd_buffer->deferred_draws[0].depth_memory != active_depth ||
+       !cmd_buffer->deferred_draws[0].has_depth_pipeline ||
+       cmd_buffer->deferred_draws[0].has_depth_clear ||
+       cmd_buffer->deferred_draws[0].depth_pipeline.hardware.depth_write ||
+       !cmd_buffer->deferred_draws[0].depth_pipeline.depth_test_enable ||
+       cmd_buffer->deferred_draws[0].depth_pipeline.hardware.depth_test_disabled ||
+       cmd_buffer->deferred_draws[0].depth_pipeline.hardware.depth_function !=
+          R300_ZS_LESS ||
+       r3v_native_cell_geometry_unfrozen(cmd_buffer))
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
+   cmd_buffer->zb_persistence_configured = true;
+   cmd_buffer->zb_persistence_ordinal = ordinal;
+   cmd_buffer->zb_persistence_vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   cmd_buffer->zb_persistence_vertex_generation =
+      cmd_buffer->zb_persistence_vertex->generation;
+   cmd_buffer->zb_persistence_vertex_handle =
+      cmd_buffer->zb_persistence_vertex->bo.handle;
+   cmd_buffer->zb_persistence_depth_a = depth_a;
+   cmd_buffer->zb_persistence_depth_b = depth_b;
    return VK_SUCCESS;
 }
 
@@ -4104,7 +4665,8 @@ r3v_native_record_composed_render_sample(
       uint32_t read_domains;
       uint32_t write_domain;
    };
-   const struct r3v_tcl_bypass_composed_slot slots[R300_TRIANGLE_SLOT_COUNT] = {
+   const struct r3v_tcl_bypass_composed_slot
+      slots[R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = { render_vertex, RADEON_GEM_DOMAIN_GTT, 0 },
       [R300_TRIANGLE_SLOT_COLOR] = { render_color, 0, RADEON_GEM_DOMAIN_GTT },
       [R300_TRIANGLE_SLOT_TEXTURE] = { render_color, RADEON_GEM_DOMAIN_GTT, 0 },
@@ -4123,9 +4685,9 @@ r3v_native_record_composed_render_sample(
     * handle, domains ORed.  The map reads back the array's own
     * positions, so the payloads and the entries cannot drift apart.
     */
-   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t slot_index[R300_TRIANGLE_COMPOSED_SLOT_COUNT];
    uint32_t reference_count = 0;
-   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_COMPOSED_SLOT_COUNT; slot++) {
       uint32_t found = reference_count;
       for (uint32_t i = 0; i < reference_count; i++) {
          if (references[i].handle == slots[slot].memory->bo.handle) {
@@ -4149,7 +4711,7 @@ r3v_native_record_composed_render_sample(
       r300_tcl_bypass_triangle_composed_render_sample_emit(composed, &cell);
    if (emit_result == 0) {
       emit_result = r300_tcl_bypass_triangle_bind_reloc_indices(
-         &cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
+         &cell, slot_index, R300_TRIANGLE_COMPOSED_SLOT_COUNT);
       if (emit_result != 0)
          r300_tcl_bypass_triangle_release(&cell);
    }
@@ -4264,7 +4826,7 @@ r3v_native_record_multi_pass(VkCommandBuffer commandBuffer,
       }
       const VkResult appended = r3v_native_cmd_buffer_append_ib(
          device, cmd_buffer, &cell, references,
-         R300_TRIANGLE_RENDER_SLOT_COUNT, NULL);
+         NULL, R300_TRIANGLE_RENDER_SLOT_COUNT, NULL);
       free(references);
       r300_tcl_bypass_triangle_release(&cell);
       if (appended != VK_SUCCESS)
@@ -4375,7 +4937,8 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
     * while AARESOLVE_MODE redirects the downsampled output.  The
     * destination carries its own write; the two vertex arrays are read.
     */
-   const struct r3v_tcl_bypass_msaa_slot slots[R300_TRIANGLE_SLOT_COUNT] = {
+   const struct r3v_tcl_bypass_msaa_slot
+      slots[R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = { render_vertex, RADEON_GEM_DOMAIN_GTT,
                                       0 },
       [R300_TRIANGLE_SLOT_COLOR] = { surface, 0, RADEON_GEM_DOMAIN_VRAM },
@@ -4397,9 +4960,9 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   uint32_t slot_index[R300_TRIANGLE_SLOT_COUNT];
+   uint32_t slot_index[R300_TRIANGLE_COMPOSED_SLOT_COUNT];
    uint32_t reference_count = 0;
-   for (uint32_t slot = 0; slot < R300_TRIANGLE_SLOT_COUNT; slot++) {
+   for (uint32_t slot = 0; slot < R300_TRIANGLE_COMPOSED_SLOT_COUNT; slot++) {
       uint32_t found = reference_count;
       for (uint32_t i = 0; i < reference_count; i++) {
          if (references[i].handle == slots[slot].memory->bo.handle) {
@@ -4419,7 +4982,7 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
    }
 
    emit_result = r300_tcl_bypass_triangle_bind_reloc_indices(
-      &cell, slot_index, R300_TRIANGLE_SLOT_COUNT);
+      &cell, slot_index, R300_TRIANGLE_COMPOSED_SLOT_COUNT);
    if (emit_result != 0) {
       free(references);
       if (surface_is_new) {

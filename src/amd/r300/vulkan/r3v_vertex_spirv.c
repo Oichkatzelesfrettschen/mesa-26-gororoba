@@ -5,6 +5,7 @@
  */
 
 #include "r3v_vertex_spirv.h"
+#include "r3v_native_depth_pipeline.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -98,6 +99,26 @@ enum {
    BUILTIN_CULL_DISTANCE = 4,
    BUILTIN_VERTEX_INDEX = 42,
    BUILTIN_INSTANCE_INDEX = 43,
+   BUILTIN_FRAG_DEPTH = 22,
+   OP_IMAGE_WRITE = 99,
+   OP_KILL = 252,
+   OP_ATOMIC_LOAD = 227,
+   OP_ATOMIC_EXCHANGE = 228,
+   OP_ATOMIC_COMPARE_EXCHANGE = 229,
+   OP_ATOMIC_COMPARE_EXCHANGE_WEAK = 230,
+   OP_ATOMIC_I_INCREMENT = 231,
+   OP_ATOMIC_I_DECREMENT = 232,
+   OP_ATOMIC_I_ADD = 233,
+   OP_ATOMIC_I_SUB = 234,
+   OP_ATOMIC_S_MIN = 235,
+   OP_ATOMIC_U_MIN = 236,
+   OP_ATOMIC_S_MAX = 237,
+   OP_ATOMIC_U_MAX = 238,
+   OP_ATOMIC_AND = 239,
+   OP_ATOMIC_OR = 240,
+   OP_ATOMIC_XOR = 241,
+   OP_TERMINATE_INVOCATION = 4416,
+   OP_DEMOTE_TO_HELPER_INVOCATION = 5380,
 };
 
 /* Per-result-id record: the module walk classifies every id once, and
@@ -187,6 +208,8 @@ enum id_kind {
  */
 enum fragment_shape {
    FRAGMENT_SHAPE_NONE = 0,
+   /* A depth-only fragment entry with no inputs, outputs, or side effects. */
+   FRAGMENT_SHAPE_NO_COLOR,
    FRAGMENT_SHAPE_CONSTANT_COLOR,
    FRAGMENT_SHAPE_VARYING_PASSTHROUGH,
    /* The location-0 varying's xy sampling the set-0 binding-0 combined
@@ -781,6 +804,8 @@ admit_module(const uint32_t *words, size_t word_count,
             return refuse(r, "variable type outside a matching pointer");
          switch (storage_class) {
          case SC_INPUT:
+            if (fragment && shape == FRAGMENT_SHAPE_NO_COLOR)
+               return refuse(r, "input in no-color fragment program");
             if (fragment && shape == FRAGMENT_SHAPE_CONSTANT_COLOR)
                return refuse(r, "fragment shader reads an input");
             if (fragment) {
@@ -850,6 +875,8 @@ admit_module(const uint32_t *words, size_t word_count,
             input_mask |= 1u << entry->location;
             break;
          case SC_OUTPUT:
+            if (fragment && shape == FRAGMENT_SHAPE_NO_COLOR)
+               return refuse(r, "output in no-color fragment program");
             if (!fragment && vector_type_width(r, ptr->b) != 0 &&
                 !entry->has_builtin && entry->has_location) {
                /* The varyings: locations 0 and 1, each a float scalar
@@ -1397,7 +1424,7 @@ admit_module(const uint32_t *words, size_t word_count,
       return refuse(r, "module preamble outside the admitted grammar");
    if (in_function || !function_seen || !returned)
       return refuse(r, "entry function did not complete");
-   if (!stored)
+   if (!stored && !(fragment && shape == FRAGMENT_SHAPE_NO_COLOR))
       return refuse(r, fragment ? "missing color-0 store"
                                 : "missing position store");
    /* A declared varying the program never writes would reach the
@@ -1480,6 +1507,19 @@ bool r3v_fragment_constant_color_from_spirv(const uint32_t *words,
                       color_bits, NULL, reason);
 }
 
+bool r3v_fragment_no_color_from_spirv(const uint32_t *words,
+                                      size_t word_count,
+                                      const char *entry_name,
+                                      const char **reason)
+{
+   struct r300_vertex_job scratch;
+   uint32_t unused_color[4];
+   memset(&scratch, 0, sizeof(scratch));
+   return admit_words(words, word_count, EXEC_MODEL_FRAGMENT,
+                      FRAGMENT_SHAPE_NO_COLOR, entry_name, &scratch,
+                      unused_color, NULL, reason);
+}
+
 bool r3v_fragment_varying_passthrough_from_spirv(const uint32_t *words,
                                                   size_t word_count,
                                                   const char *entry_name,
@@ -1533,4 +1573,108 @@ bool r3v_fragment_narrow_passthrough_from_spirv(const uint32_t *words,
                       FRAGMENT_SHAPE_NARROW_PASSTHROUGH, entry_name,
                       &scratch, unused_color, width, reason) &&
           *width >= 1 && *width <= 3;
+}
+
+static bool
+fragment_side_effect_storage(uint32_t storage_class)
+{
+   /* Function and Private variables are invocation-local.  The remaining
+    * writable classes expose state to another invocation or to the host. */
+   return storage_class == 4 ||  /* Workgroup */
+          storage_class == 5 ||  /* CrossWorkgroup */
+          storage_class == 9 ||  /* PushConstant */
+          storage_class == 10 || /* AtomicCounter */
+          storage_class == 11 || /* Image */
+          storage_class == 12 || /* StorageBuffer */
+          storage_class == 5349; /* PhysicalStorageBuffer */
+}
+
+bool
+r3v_fragment_depth_shader_flags_from_spirv(
+   const uint32_t *words, size_t word_count, const char *entry_name,
+   struct r3v_native_depth_shader_flags *flags, const char **reason)
+{
+   if (flags != NULL)
+      memset(flags, 0, sizeof(*flags));
+   if (reason != NULL)
+      *reason = "unrecognized module";
+   if (words == NULL || flags == NULL || reason == NULL ||
+       entry_name == NULL || word_count < 5 || words[0] != SPV_MAGIC)
+      return false;
+
+   const uint32_t bound = words[3];
+   if (bound == 0 || bound > R3V_VERTEX_SPIRV_ID_BOUND_MAX) {
+      *reason = "result-id bound outside the admitted module size";
+      return false;
+   }
+   uint8_t *storage = calloc(bound, sizeof(*storage));
+   uint8_t *frag_depth = calloc(bound, sizeof(*frag_depth));
+   if (storage == NULL || frag_depth == NULL) {
+      free(storage);
+      free(frag_depth);
+      *reason = "fragment flag id-table allocation failed";
+      return false;
+   }
+
+   bool entry_seen = false;
+   bool entry_matches = false;
+   size_t at = 5;
+   while (at < word_count) {
+      const uint32_t first = words[at];
+      const uint32_t opcode = first & 0xffffu;
+      const uint32_t len = first >> 16;
+      if (len == 0 || at + len > word_count) {
+         *reason = "instruction overruns the module";
+         goto fail;
+      }
+      const uint32_t *w = &words[at];
+      if (opcode == OP_ENTRY_POINT && len >= 4) {
+         entry_seen = true;
+         const size_t name_bytes = (len - 3) * sizeof(uint32_t);
+         const size_t want = strlen(entry_name);
+         entry_matches = w[1] == EXEC_MODEL_FRAGMENT && want + 1 <= name_bytes &&
+                         memcmp(&w[3], entry_name, want + 1) == 0;
+      } else if (opcode == OP_EXECUTION_MODE && len >= 3 &&
+                 w[2] == 9 /* EarlyFragmentTests */) {
+         flags->requested_early_fragment_tests = true;
+      } else if (opcode == OP_DECORATE && len >= 4 && w[2] == DECOR_BUILTIN &&
+                 w[3] == BUILTIN_FRAG_DEPTH && w[1] < bound) {
+         frag_depth[w[1]] = 1;
+      } else if (opcode == OP_TYPE_POINTER && len == 4 && w[1] < bound) {
+         storage[w[1]] = (uint8_t)(w[2] == 5349 ? 255 : w[2] + 1);
+      } else if (opcode == OP_VARIABLE && len >= 4 && w[2] < bound) {
+         const uint32_t type_id = w[1];
+         storage[w[2]] = type_id < bound ? storage[type_id] : 0;
+         if (w[3] == 11)
+            storage[w[2]] = 12; /* Image storage is observable. */
+      } else if (opcode == OP_STORE && len >= 3) {
+         const uint32_t pointer = w[1];
+         if (pointer < bound && frag_depth[pointer])
+            flags->writes_depth = true;
+         if (pointer < bound && fragment_side_effect_storage(
+                                  storage[pointer] == 255 ? 5349 :
+                                  storage[pointer] ? storage[pointer] - 1 : 7))
+            flags->has_observable_side_effects = true;
+      } else if (opcode == OP_IMAGE_WRITE || opcode == OP_ATOMIC_LOAD ||
+                 (opcode >= OP_ATOMIC_EXCHANGE && opcode <= OP_ATOMIC_XOR)) {
+         flags->has_observable_side_effects = true;
+      } else if (opcode == OP_KILL || opcode == OP_TERMINATE_INVOCATION ||
+                 opcode == OP_DEMOTE_TO_HELPER_INVOCATION) {
+         flags->discards_fragments = true;
+      }
+      at += len;
+   }
+   if (!entry_seen || !entry_matches) {
+      *reason = "fragment entry point outside the request";
+      goto fail;
+   }
+   free(storage);
+   free(frag_depth);
+   return true;
+
+fail:
+   free(storage);
+   free(frag_depth);
+   memset(flags, 0, sizeof(*flags));
+   return false;
 }

@@ -146,7 +146,7 @@ main(int argc, char **argv)
    }
    if (r300_tcl_bypass_triangle_bind_reloc_indices(
           &armed, r300_tcl_bypass_triangle_msaa_slot_index,
-          R300_TRIANGLE_SLOT_COUNT) != 0) {
+          R300_TRIANGLE_COMPOSED_SLOT_COUNT) != 0) {
       fprintf(stderr, "the resolve cell refused to bind\n");
       r300_tcl_bypass_triangle_release(&armed);
       return 1;

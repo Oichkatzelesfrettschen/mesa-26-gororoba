@@ -38,4 +38,48 @@ echo "loader environment caller-function deletion: REJECTED"
 check_environment_file "$here/mesa-gororoba/mesa-gororoba-env.sh"
 check_environment_file "$here/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
 
+check_profile_does_not_force_vulkan_selection() (
+  unset VK_DRIVER_FILES VK_ICD_FILENAMES
+  # shellcheck disable=SC1090
+  . "$here/mesa-gororoba/mesa-gororoba-profile.sh"
+  if [ "${VK_DRIVER_FILES+x}" = x ] || [ "${VK_ICD_FILENAMES+x}" = x ]; then
+    echo "interactive profile forced Vulkan driver selection" >&2
+    exit 1
+  fi
+)
+
+check_development_wrapper_path_and_overrides() (
+  MESA_INSTALL_PREFIX=/opt/mesa-loader-fixture
+  export MESA_INSTALL_PREFIX
+  unset VK_DRIVER_FILES VK_ICD_FILENAMES
+  # shellcheck disable=SC1090
+  . "$here/mesa-gororoba/mesa-gororoba-env.sh"
+  expected="$MESA_INSTALL_PREFIX/share/vulkan/icd.d/r3v_icd.x86_64.json"
+  [ "${VK_DRIVER_FILES:-}" = "$expected" ] || {
+    echo "development wrapper selected an unexpected VK_DRIVER_FILES path" >&2
+    exit 1
+  }
+  [ "${VK_ICD_FILENAMES:-}" = "$expected" ] || {
+    echo "development wrapper selected an unexpected VK_ICD_FILENAMES path" >&2
+    exit 1
+  }
+
+  VK_DRIVER_FILES=/caller/driver.json
+  VK_ICD_FILENAMES=/caller/icd.json
+  export VK_DRIVER_FILES VK_ICD_FILENAMES
+  # shellcheck disable=SC1090
+  . "$here/mesa-gororoba/mesa-gororoba-env.sh"
+  [ "$VK_DRIVER_FILES" = /caller/driver.json ] || {
+    echo "development wrapper replaced caller VK_DRIVER_FILES" >&2
+    exit 1
+  }
+  [ "$VK_ICD_FILENAMES" = /caller/icd.json ] || {
+    echo "development wrapper replaced caller VK_ICD_FILENAMES" >&2
+    exit 1
+  }
+)
+
+check_profile_does_not_force_vulkan_selection
+check_development_wrapper_path_and_overrides
+
 echo "loader environment caller-function scope: PASS"

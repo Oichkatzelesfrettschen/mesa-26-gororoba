@@ -4092,7 +4092,7 @@ package-mesa:
 	mkdir -p "$(MESA_PKG_DIR)/tmp" "$(MESA_REPO_DIR)"
 	find "$(MESA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(MESA_PKG_DIR)/" {} +
 	[ -z "$(MESA_COMMIT)" ] || sh $(CURDIR)/packaging/pin-source-commit.sh "$(MESA_PKG_DIR)/PKGBUILD" "$(MESA_COMMIT)"
-	cd "$(MESA_PKG_DIR)" && TMPDIR="$(MESA_PKG_DIR)/tmp" SRCDEST="$(MESA_PKG_DIR)" BUILDDIR="$(MESA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
+	cd "$(MESA_PKG_DIR)" && TMPDIR="$(MESA_PKG_DIR)/tmp" SRCDEST="$(MESA_PKG_DIR)" BUILDDIR="$(MESA_PKG_DIR)" makepkg -f --noconfirm
 	built=$$(sh $(CURDIR)/packaging/select-built-package.sh "$(MESA_PKG_DIR)") && \
 	  cp "$$built" "$(MESA_REPO_DIR)/" && \
 	  repo-add "$(MESA_REPO_DIR)/$(MESA_REPO_NAME).db.tar.zst" \

@@ -9,11 +9,16 @@
 
 #include "r3v_entrypoints.h"
 
+#include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/radeon_legacy_2d_reg.h"
+
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
+#include "vk_render_pass.h"
 
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The native command buffer executes only an installed fixed IB, and
@@ -86,12 +91,149 @@ r3v_native_render_layout_ok(VkImageLayout layout)
           layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 }
 
+static uint32_t
+r3v_native_image_barrier_visibility(VkPipelineStageFlags stages,
+                                    VkAccessFlags access)
+{
+   uint32_t visibility = 0u;
+   if ((access & (VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT)) != 0u ||
+       (stages & VK_PIPELINE_STAGE_HOST_BIT) != 0u)
+      visibility |= R3V_NATIVE_IMAGE_VISIBLE_HOST;
+   if ((access & (VK_ACCESS_TRANSFER_READ_BIT |
+                  VK_ACCESS_TRANSFER_WRITE_BIT)) != 0u ||
+       (stages & VK_PIPELINE_STAGE_TRANSFER_BIT) != 0u)
+      visibility |= R3V_NATIVE_IMAGE_VISIBLE_RB2D;
+   if ((access & (VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)) !=
+          0u ||
+       (stages & (VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)) != 0u)
+      visibility |= R3V_NATIVE_IMAGE_VISIBLE_RB3D;
+   if ((access & (VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)) != 0u ||
+       (stages & (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT)) != 0u)
+      visibility |= R3V_NATIVE_IMAGE_VISIBLE_ZB;
+   return visibility;
+}
+
+static VkResult
+r3v_native_append_global_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t *ib_position_out)
+{
+   *ib_position_out = cmd_buffer->ib_size_dwords;
+   const uint32_t dependency[] = {
+      CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0),
+      R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+         R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE,
+      CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0),
+      R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+         R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS,
+      CP_PACKET0(RADEON_DSTCACHE_CTLSTAT, 0),
+      RADEON_RB2D_DC_FLUSH_ALL,
+      CP_PACKET0(RADEON_WAIT_UNTIL, 0),
+      RADEON_WAIT_3D_IDLECLEAN | RADEON_WAIT_2D_IDLECLEAN |
+         RADEON_WAIT_HOST_IDLECLEAN | RADEON_WAIT_DMA_GUI_IDLE,
+   };
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   VkResult result = r3v_native_cmd_buffer_append_raw_ib(
+      device, cmd_buffer, dependency, ARRAY_SIZE(dependency), NULL, 0u,
+      NULL, NULL, 0u);
+   if (result == VK_SUCCESS)
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
+   return result;
+}
+
+static VkResult
+r3v_native_append_barrier_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   VkPipelineStageFlags source_stages, VkPipelineStageFlags destination_stages,
+   VkAccessFlags source_access, VkAccessFlags destination_access,
+   uint32_t *ib_position_out)
+{
+   *ib_position_out = cmd_buffer->ib_size_dwords;
+   const uint32_t source_visibility =
+      r3v_native_image_barrier_visibility(source_stages, source_access);
+   const uint32_t destination_visibility =
+      r3v_native_image_barrier_visibility(destination_stages,
+                                          destination_access);
+   if (source_visibility == 0u || destination_visibility == 0u ||
+       source_visibility == destination_visibility)
+      return VK_SUCCESS;
+   return r3v_native_append_global_dependency(cmd_buffer, ib_position_out);
+}
+
+VkResult
+r3v_native_cmd_buffer_append_render_pass_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct vk_subpass_dependency *dependency)
+{
+   if (cmd_buffer == NULL || dependency == NULL ||
+       dependency->src_stage_mask > UINT32_MAX ||
+       dependency->dst_stage_mask > UINT32_MAX ||
+       dependency->src_access_mask > UINT32_MAX ||
+       dependency->dst_access_mask > UINT32_MAX)
+      return R3V_NATIVE_REFUSAL_RESULT;
+
+   VkResult result = r3v_native_cmd_buffer_reserve_ordered_operations(
+      cmd_buffer, 1u);
+   uint32_t ib_position = 0u;
+   if (result == VK_SUCCESS)
+      result = r3v_native_append_global_dependency(cmd_buffer, &ib_position);
+   if (result != VK_SUCCESS)
+      return result;
+
+   return r3v_native_cmd_buffer_append_ordered_operation(
+      cmd_buffer, &(struct r3v_native_ordered_operation){
+         .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+         .ib_position_dwords = ib_position,
+         .payload.memory_barrier = {
+            .src_stage_mask = (VkPipelineStageFlags)dependency->src_stage_mask,
+            .dst_stage_mask = (VkPipelineStageFlags)dependency->dst_stage_mask,
+            .src_access_mask = (VkAccessFlags)dependency->src_access_mask,
+            .dst_access_mask = (VkAccessFlags)dependency->dst_access_mask,
+         },
+      });
+}
+
+static VkResult
+r3v_native_append_depth_image_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_image *image, uint32_t *ib_position_out)
+{
+   *ib_position_out = cmd_buffer->ib_size_dwords;
+   if (image == NULL || !image->depth_family)
+      return VK_SUCCESS;
+   return r3v_native_append_global_dependency(cmd_buffer, ib_position_out);
+}
+
+static bool
+r3v_native_depth_layout_ok(const struct r3v_native_image *image,
+                           VkImageLayout layout)
+{
+   layout = r3v_native_packed_depth_stencil_layout(layout);
+   if (layout == VK_IMAGE_LAYOUT_GENERAL)
+      return true;
+   if ((image->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0u &&
+       (layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+        layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL))
+      return true;
+   return ((image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u &&
+           layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) ||
+          ((image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0u &&
+           layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+}
+
 static bool
 r3v_native_image_layout_ok(const struct r3v_native_image *image,
                            VkImageLayout layout)
 {
    if (layout == VK_IMAGE_LAYOUT_GENERAL)
       return true;
+   if (image->depth_family)
+      return r3v_native_depth_layout_ok(image, layout);
    /* Each usage bit brings its own layouts, so a render target that also
     * carries transfer usage reaches both vocabularies.
     */
@@ -132,9 +274,13 @@ r3v_native_image_layout_ok(const struct r3v_native_image *image,
  * r3v_native_queue_family_pair_ok src/amd/r300/vulkan/)`.
  */
 static bool
-r3v_native_image_barrier_range_ok(const VkImageSubresourceRange *range)
+r3v_native_image_barrier_range_ok(const struct r3v_native_image *image,
+                                  const VkImageSubresourceRange *range)
 {
-   return range->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT &&
+   const VkImageAspectFlags required_aspects = image->depth_family
+      ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
+      : VK_IMAGE_ASPECT_COLOR_BIT;
+   return range->aspectMask == required_aspects &&
           range->baseMipLevel == 0 &&
           (range->levelCount == 1 ||
            range->levelCount == VK_REMAINING_MIP_LEVELS) &&
@@ -157,7 +303,8 @@ r3v_native_image_barrier_layouts_ok(const VkImageMemoryBarrier *barrier)
       r3v_native_image_layout_ok(image, barrier->newLayout);
 
    return image != NULL && image->memory != NULL &&
-          r3v_native_image_barrier_range_ok(&barrier->subresourceRange) &&
+          r3v_native_image_barrier_range_ok(image,
+                                             &barrier->subresourceRange) &&
           old_layout_ok && new_layout_ok;
 }
 
@@ -240,6 +387,22 @@ r3v_native_copy_slot(VkCommandBuffer commandBuffer)
    return &cmd_buffer->deferred_copies[cmd_buffer->deferred_copy_count];
 }
 
+static void
+r3v_native_commit_deferred_copy(VkCommandBuffer commandBuffer)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   const uint32_t copy_index = cmd_buffer->deferred_copy_count++;
+   if (r3v_native_cmd_buffer_append_ordered_operation(
+          cmd_buffer, &(struct r3v_native_ordered_operation){
+                         .kind = R3V_NATIVE_ORDERED_OPERATION_HOST_COPY,
+                         .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                         .payload.host_copy = {
+                            .deferred_copy_index = copy_index,
+                         },
+                      }) != VK_SUCCESS)
+      r3v_native_cmd_poison(commandBuffer);
+}
+
 /* The record position that fixes a copy's execution group: a pending
  * deferred draw means the pass already recorded its load-op clear, so
  * the copy follows the draw; every earlier copy precedes it.
@@ -316,6 +479,10 @@ r3v_native_copy_buffer_ok(const struct r3v_native_buffer *buffer,
    if (region->bufferImageHeight != 0 &&
        region->bufferImageHeight < region->imageExtent.height)
       return false;
+   /* bufferImageHeight is the distance to the next slice.  A depth-one
+    * region accesses imageExtent.height rows in the current slice, so the
+    * final row uses that extent while the slice stride remains available to
+    * the multi-slice layout contract. */
    const uint64_t last_byte =
       region->bufferOffset +
       ((uint64_t)(region->imageExtent.height - 1) * row_length +
@@ -340,6 +507,104 @@ r3v_native_copy_buffer_range_ok(const struct r3v_native_buffer *buffer,
    return true;
 }
 
+static bool
+r3v_native_buffer_barrier_range_ok(const struct r3v_native_buffer *buffer,
+                                   VkDeviceSize offset, VkDeviceSize size,
+                                   VkDeviceSize *normalized_size)
+{
+   if (buffer == NULL || buffer->memory == NULL ||
+       buffer->offset > buffer->memory->bo.size ||
+       buffer->vk.size > buffer->memory->bo.size - buffer->offset ||
+       offset > buffer->vk.size)
+      return false;
+   if (size == VK_WHOLE_SIZE)
+      size = buffer->vk.size - offset;
+   if (size > buffer->vk.size - offset || normalized_size == NULL)
+      return false;
+   *normalized_size = size;
+   return true;
+}
+
+static bool
+r3v_native_bound_ranges_overlap(const struct r3v_native_memory *source_memory,
+                                uint64_t source_offset,
+                                const struct r3v_native_memory *destination_memory,
+                                uint64_t destination_offset, uint64_t byte_count)
+{
+   if (source_memory == NULL || destination_memory == NULL ||
+       (source_memory != destination_memory &&
+        source_memory->bo.handle != destination_memory->bo.handle))
+      return false;
+   if (source_offset > UINT64_MAX - byte_count ||
+       destination_offset > UINT64_MAX - byte_count)
+      return true;
+   return source_offset < destination_offset + byte_count &&
+          destination_offset < source_offset + byte_count;
+}
+
+static bool
+r3v_native_linear_image_ranges_disjoint(
+   const struct r3v_native_image *source, uint32_t source_x,
+   uint32_t source_y, const struct r3v_native_image *destination,
+   uint32_t destination_x, uint32_t destination_y, uint32_t width,
+   uint32_t height)
+{
+   if (source == NULL || destination == NULL || source->memory == NULL ||
+       destination->memory == NULL ||
+       (source->memory != destination->memory &&
+        source->memory->bo.handle != destination->memory->bo.handle))
+      return true;
+   const uint64_t byte_count =
+      (uint64_t)width * source->texel_bytes;
+   for (uint32_t row = 0u; row < height; row++) {
+      const uint64_t source_offset =
+         source->memory_offset +
+         (uint64_t)(source_y + row) * source->row_pitch_bytes +
+         (uint64_t)source_x * source->texel_bytes;
+      const uint64_t destination_offset =
+         destination->memory_offset +
+         (uint64_t)(destination_y + row) * destination->row_pitch_bytes +
+         (uint64_t)destination_x * destination->texel_bytes;
+      if (r3v_native_bound_ranges_overlap(
+             source->memory, source_offset, destination->memory,
+             destination_offset, byte_count))
+         return false;
+   }
+   return true;
+}
+
+static bool
+r3v_native_linear_image_buffer_ranges_disjoint(
+   const struct r3v_native_image *image, uint32_t image_x,
+   uint32_t image_y, const struct r3v_native_buffer *buffer,
+   uint64_t buffer_offset, uint32_t buffer_row_length, uint32_t width,
+   uint32_t height, bool buffer_to_image)
+{
+   if (image == NULL || buffer == NULL || image->memory == NULL ||
+       buffer->memory == NULL ||
+       (image->memory != buffer->memory &&
+        image->memory->bo.handle != buffer->memory->bo.handle))
+      return true;
+   const uint64_t byte_count = (uint64_t)width * image->texel_bytes;
+   for (uint32_t row = 0u; row < height; row++) {
+      const uint64_t image_offset =
+         image->memory_offset +
+         (uint64_t)(image_y + row) * image->row_pitch_bytes +
+         (uint64_t)image_x * image->texel_bytes;
+      const uint64_t buffer_row =
+         buffer->offset + buffer_offset +
+         (uint64_t)row * buffer_row_length * image->texel_bytes;
+      const uint64_t source_offset = buffer_to_image ? buffer_row : image_offset;
+      const uint64_t destination_offset = buffer_to_image ? image_offset : buffer_row;
+      if (r3v_native_bound_ranges_overlap(
+             buffer_to_image ? buffer->memory : image->memory, source_offset,
+             buffer_to_image ? image->memory : buffer->memory, destination_offset,
+             byte_count))
+         return false;
+   }
+   return true;
+}
+
 static void
 r3v_native_record_event_op(VkCommandBuffer commandBuffer, VkEvent _event,
                            enum r3v_native_event_op_kind kind)
@@ -352,8 +617,16 @@ r3v_native_record_event_op(VkCommandBuffer commandBuffer, VkEvent _event,
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
-   cmd_buffer->event_ops[cmd_buffer->event_op_count++] =
+   const uint32_t event_index = cmd_buffer->event_op_count++;
+   cmd_buffer->event_ops[event_index] =
       (struct r3v_native_event_op){ .kind = kind, .event = event };
+   if (r3v_native_cmd_buffer_append_ordered_operation(
+          cmd_buffer, &(struct r3v_native_ordered_operation){
+                         .kind = R3V_NATIVE_ORDERED_OPERATION_EVENT,
+                         .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                         .payload.event = { .event_index = event_index },
+                      }) != VK_SUCCESS)
+      r3v_native_cmd_poison(commandBuffer);
 }
 
 static struct r3v_native_query_op *
@@ -485,17 +758,16 @@ r3v_CmdBlitImage(
          .width = extent.width,
          .height = extent.height,
       };
-      cmd_buffer->deferred_copy_count++;
+      r3v_native_commit_deferred_copy(commandBuffer);
    }
 }
 
-/* In-pass attachment clears admit over a draw-less pass alone: the
- * host applies each rectangle after the load-op clear on the zero-IB
- * path, and a pass carrying the device draw refuses the clear because
- * the draw executes after every host write and would reorder against
- * it.  Each rectangle names the one color attachment's single layer
- * and closes inside the render area, which the begin admission pinned
- * to the target extent.
+/* In-pass attachment clears preserve command order at recording. Color
+ * rectangles remain deferred beside the host color path and carry an
+ * ordered operation so a clear before or after a draw executes at that
+ * position. Depth/stencil rectangles become resolver-addressed RB2D
+ * commands at their stream position, with a component write mask
+ * preserving the unselected aspect.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearAttachments(
@@ -513,31 +785,45 @@ r3v_CmdClearAttachments(
       cmd_buffer->deferred_draw_count != 0
          ? &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
          : &cmd_buffer->deferred_draws[0];
+   struct r3v_native_image *depth_target = cmd_buffer->pass_depth_target;
+   if (depth_target == NULL && cmd_buffer->pass_target != NULL &&
+       cmd_buffer->pass_target->depth_family)
+      depth_target = cmd_buffer->pass_target;
 
-   if (cmd_buffer->pass_target == NULL || cmd_buffer->draw_recorded ||
-       draw->stream_mask != 0) {
+   if (cmd_buffer->pass_target == NULL ||
+       (attachmentCount != 0u && pAttachments == NULL) ||
+       (rectCount != 0u && pRects == NULL) ||
+       draw->clear_rect_count > R3V_NATIVE_PASS_CLEAR_RECT_MAX) {
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
+   uint64_t color_rect_count = draw->clear_rect_count;
    for (uint32_t a = 0; a < attachmentCount; a++) {
       const VkClearAttachment *att = &pAttachments[a];
-      if (att->aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
-          att->colorAttachment != 0) {
+      const bool color = att->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT;
+      const bool depth_stencil =
+         att->aspectMask != 0u &&
+         (att->aspectMask & ~(VK_IMAGE_ASPECT_DEPTH_BIT |
+                              VK_IMAGE_ASPECT_STENCIL_BIT)) == 0u;
+      if ((!color && !depth_stencil) ||
+          (color && att->colorAttachment != 0) ||
+          (color && (cmd_buffer->pass_target == NULL ||
+                     cmd_buffer->pass_target->depth_family)) ||
+          (depth_stencil && depth_target == NULL)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
-      /* The attachment's format selects the live VkClearColorValue
-       * member and the render family's formats are UNORM, so the clear
-       * reaches its texel through the color buffer's own UNORM8
-       * conversion under the target's lane order.
-       */
-      const uint32_t packed = r300_tcl_bypass_triangle_pack_unorm8_dword(
-         cmd_buffer->pass_target->lanes, att->clearValue.color.float32);
+      if (depth_stencil &&
+          (att->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u &&
+          !r3v_native_depth_clear_code(att->clearValue.depthStencil.depth,
+                                       &(uint32_t){0})) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
       for (uint32_t r = 0; r < rectCount; r++) {
          const VkClearRect *rect = &pRects[r];
          const VkRect2D *area = &rect->rect;
-         if (draw->clear_rect_count == R3V_NATIVE_PASS_CLEAR_RECT_MAX ||
-             rect->baseArrayLayer != 0 || rect->layerCount != 1 ||
+         if (rect->baseArrayLayer != 0 || rect->layerCount != 1 ||
              area->offset.x < 0 || area->offset.y < 0 ||
              area->extent.width == 0 || area->extent.height == 0 ||
              (uint32_t)area->offset.x > draw->target_width ||
@@ -549,14 +835,73 @@ r3v_CmdClearAttachments(
             r3v_native_cmd_poison(commandBuffer);
             return;
          }
-         draw->clear_rects[draw->clear_rect_count++] =
+         if (color && ++color_rect_count > R3V_NATIVE_PASS_CLEAR_RECT_MAX) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+      }
+   }
+
+   for (uint32_t a = 0; a < attachmentCount; a++) {
+      const VkClearAttachment *att = &pAttachments[a];
+      const bool color = att->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT;
+      if (color) {
+         const uint32_t first_rect = draw->clear_rect_count;
+         const uint32_t packed =
+            r300_tcl_bypass_triangle_pack_unorm8_dword(
+               cmd_buffer->pass_target->lanes,
+               att->clearValue.color.float32);
+         for (uint32_t r = 0; r < rectCount; r++) {
+            const VkRect2D *area = &pRects[r].rect;
+            draw->clear_rects[draw->clear_rect_count++] =
             (struct r3v_native_pass_clear_rect){
                .x = (uint32_t)area->offset.x,
                .y = (uint32_t)area->offset.y,
                .width = area->extent.width,
                .height = area->extent.height,
+               .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
                .dword = util_cpu_to_le32(packed),
             };
+         }
+         if (r3v_native_cmd_buffer_append_ordered_operation(
+                cmd_buffer, &(struct r3v_native_ordered_operation){
+                   .kind = R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
+                   .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                   .payload.color_clear = {
+                      .deferred_draw_index =
+                         cmd_buffer->deferred_draw_count - 1u,
+                      .first_rect = first_rect,
+                      .rect_count = rectCount,
+                   },
+                }) != VK_SUCCESS) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+         continue;
+      }
+
+      uint32_t depth_code = 0u;
+      uint32_t aspect_mask = 0u;
+      if ((att->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u) {
+         (void)r3v_native_depth_clear_code(att->clearValue.depthStencil.depth,
+                                           &depth_code);
+         aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+      }
+      if ((att->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) != 0u)
+         aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+      const uint32_t stencil =
+         att->clearValue.depthStencil.stencil & UINT8_MAX;
+      for (uint32_t r = 0; r < rectCount; r++) {
+         const VkRect2D *area = &pRects[r].rect;
+         if (r3v_native_record_depth_image_clear_logical_rect(
+                commandBuffer,
+                r3v_native_image_to_handle(depth_target),
+                (uint32_t)area->offset.x, (uint32_t)area->offset.y,
+                area->extent.width, area->extent.height, aspect_mask,
+                depth_code, stencil) != VK_SUCCESS) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
       }
    }
 }
@@ -654,14 +999,10 @@ r3v_CmdClearColorImage(
          .height = image->height,
       };
       memcpy(op->clear_texel, texel, sizeof(texel));
-      cmd_buffer->deferred_copy_count++;
+      r3v_native_commit_deferred_copy(commandBuffer);
    }
 }
 
-/* Depth/stencil clears name a depth or stencil aspect, and image
- * creation admits the one color format, so no image this command can
- * clear exists and the recording refuses.
- */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearDepthStencilImage(
    VkCommandBuffer commandBuffer,
@@ -671,7 +1012,61 @@ r3v_CmdClearDepthStencilImage(
    uint32_t rangeCount,
    const VkImageSubresourceRange *pRanges)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_image, native_image, image);
+   if (native_image == NULL || !native_image->depth_family ||
+       native_image->memory == NULL ||
+       !(native_image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+       !r3v_native_transfer_destination_layout_ok(imageLayout) ||
+       pDepthStencil == NULL || rangeCount == 0u || pRanges == NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+
+   const VkImageAspectFlags valid_aspects =
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+   VkImageAspectFlags requested_aspects = 0u;
+   for (uint32_t range_index = 0u; range_index < rangeCount; range_index++) {
+      const VkImageSubresourceRange *range = &pRanges[range_index];
+      if (range->aspectMask == 0u ||
+          (range->aspectMask & ~valid_aspects) != 0u ||
+          range->baseMipLevel != 0u ||
+          (range->levelCount != 1u &&
+           range->levelCount != VK_REMAINING_MIP_LEVELS) ||
+          range->baseArrayLayer != 0u ||
+          (range->layerCount != 1u &&
+           range->layerCount != VK_REMAINING_ARRAY_LAYERS)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      requested_aspects |= range->aspectMask;
+   }
+
+   uint32_t aspect_mask = 0u;
+   uint32_t depth_code = 0u;
+   uint32_t stencil = 0u;
+   if ((requested_aspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u) {
+      aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+      if (!r3v_native_depth_clear_code(pDepthStencil->depth, &depth_code)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
+   if ((requested_aspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0u) {
+      aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+      /* The API value is uint32_t, while the packed D24S8 destination
+       * carries the low eight bits of stencil.  The complete range and
+       * aspect request was validated above before conversion. */
+      stencil = pDepthStencil->stencil & UINT8_MAX;
+   }
+
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   if (r3v_native_cmd_buffer_require_image_layout(
+          cmd_buffer, native_image, imageLayout,
+          R3V_NATIVE_IMAGE_PRODUCER_RB2D, true) != VK_SUCCESS ||
+       r3v_native_record_depth_image_clear(
+          commandBuffer, image, aspect_mask, depth_code, stencil) !=
+       VK_SUCCESS)
+      r3v_native_cmd_poison(commandBuffer);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -686,23 +1081,39 @@ r3v_CmdCopyBuffer(
    VK_FROM_HANDLE(r3v_native_buffer, src, srcBuffer);
    VK_FROM_HANDLE(r3v_native_buffer, dst, dstBuffer);
 
-   for (uint32_t r = 0; r < regionCount; r++) {
+   if (pRegions == NULL && regionCount != 0u) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   for (uint32_t r = 0u; r < regionCount; r++) {
       const VkBufferCopy *region = &pRegions[r];
-      struct r3v_native_deferred_copy *op =
-         r3v_native_copy_slot(commandBuffer);
-      if (op == NULL ||
-          !r3v_native_copy_buffer_range_ok(
+      if (!r3v_native_copy_buffer_range_ok(
              src, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, region->srcOffset,
              region->size) ||
           !r3v_native_copy_buffer_range_ok(
              dst, VK_BUFFER_USAGE_TRANSFER_DST_BIT, region->dstOffset,
              region->size) ||
-          /* Vulkan leaves overlapping copy regions undefined, so a
-           * same-buffer region pair whose byte ranges intersect
-           * refuses. */
-          (src == dst &&
-           region->srcOffset < region->dstOffset + region->size &&
-           region->dstOffset < region->srcOffset + region->size)) {
+          r3v_native_bound_ranges_overlap(
+             src != NULL ? src->memory : NULL,
+             src != NULL && src->memory != NULL &&
+                   src->offset <= UINT64_MAX - region->srcOffset
+                ? src->offset + region->srcOffset
+                : UINT64_MAX,
+             dst != NULL ? dst->memory : NULL,
+             dst != NULL && dst->memory != NULL &&
+                   dst->offset <= UINT64_MAX - region->dstOffset
+                ? dst->offset + region->dstOffset
+                : UINT64_MAX,
+             region->size)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
+   for (uint32_t r = 0; r < regionCount; r++) {
+      const VkBufferCopy *region = &pRegions[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      if (op == NULL) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
@@ -715,7 +1126,7 @@ r3v_CmdCopyBuffer(
          .dst_offset = region->dstOffset,
          .size = region->size,
       };
-      cmd_buffer->deferred_copy_count++;
+      r3v_native_commit_deferred_copy(commandBuffer);
    }
 }
 
@@ -732,13 +1143,42 @@ r3v_CmdCopyBufferToImage(
    VK_FROM_HANDLE(r3v_native_buffer, buffer, srcBuffer);
    VK_FROM_HANDLE(r3v_native_image, image, dstImage);
 
-   for (uint32_t r = 0; r < regionCount; r++) {
-      const VkBufferImageCopy *region = &pRegions[r];
-      struct r3v_native_deferred_copy *op =
-         r3v_native_copy_slot(commandBuffer);
+   if (pRegions == NULL && regionCount != 0u) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   if (regionCount == 0u)
+      return;
+   if (image != NULL && image->depth_family) {
+      for (uint32_t r = 0u; r < regionCount; r++) {
+         if (!r3v_native_validate_depth_image_copy(
+                commandBuffer, srcBuffer, dstImage, &pRegions[r],
+                dstImageLayout, true)) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+      }
+      if (r3v_native_cmd_buffer_require_image_layout(
+             cmd_buffer, image, dstImageLayout,
+             R3V_NATIVE_IMAGE_PRODUCER_RB2D, true) != VK_SUCCESS) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      for (uint32_t r = 0u; r < regionCount; r++) {
+         if (r3v_native_record_depth_image_copy(
+                commandBuffer, srcBuffer, dstImage, &pRegions[r],
+                dstImageLayout, true) != VK_SUCCESS) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+      }
+      return;
+   }
+
+   for (uint32_t r = 0u; r < regionCount; r++) {
       uint32_t row_length;
-      if (op == NULL ||
-          !r3v_native_transfer_destination_layout_ok(dstImageLayout) ||
+      const VkBufferImageCopy *region = &pRegions[r];
+      if (!r3v_native_transfer_destination_layout_ok(dstImageLayout) ||
           !r3v_native_copy_subresource_ok(&region->imageSubresource) ||
           !r3v_native_copy_rect_ok(image, region->imageOffset,
                                    region->imageExtent) ||
@@ -746,10 +1186,28 @@ r3v_CmdCopyBufferToImage(
           !r3v_native_copy_buffer_ok(buffer,
                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                      region, image->texel_bytes,
-                                     &row_length)) {
+                                     &row_length) ||
+          !r3v_native_linear_image_buffer_ranges_disjoint(
+             image, (uint32_t)region->imageOffset.x,
+             (uint32_t)region->imageOffset.y, buffer,
+             region->bufferOffset, row_length, region->imageExtent.width,
+             region->imageExtent.height, true)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
+   }
+   for (uint32_t r = 0; r < regionCount; r++) {
+      const VkBufferImageCopy *region = &pRegions[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      uint32_t row_length;
+      if (op == NULL) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      row_length = region->bufferRowLength != 0u
+                      ? region->bufferRowLength
+                      : region->imageExtent.width;
       *op = (struct r3v_native_deferred_copy){
          .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_BUFFER_TO_IMAGE,
@@ -762,7 +1220,7 @@ r3v_CmdCopyBufferToImage(
          .width = region->imageExtent.width,
          .height = region->imageExtent.height,
       };
-      cmd_buffer->deferred_copy_count++;
+      r3v_native_commit_deferred_copy(commandBuffer);
    }
 }
 
@@ -780,12 +1238,61 @@ r3v_CmdCopyImage(
    VK_FROM_HANDLE(r3v_native_image, src, srcImage);
    VK_FROM_HANDLE(r3v_native_image, dst, dstImage);
 
-   for (uint32_t r = 0; r < regionCount; r++) {
+   if (pRegions == NULL && regionCount != 0u) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   if (regionCount == 0u)
+      return;
+
+   if ((src != NULL && src->depth_family) ||
+       (dst != NULL && dst->depth_family)) {
+      if (pRegions == NULL && regionCount != 0u) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      if (regionCount == 0u)
+         return;
+      if (src == NULL || dst == NULL || !src->depth_family ||
+          !dst->depth_family ||
+          (regionCount != 0u &&
+           !r3v_native_validate_depth_image_to_image_copy(
+              srcImage, srcImageLayout, dstImage, dstImageLayout,
+              &pRegions[0]))) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      for (uint32_t r = 1u; r < regionCount; r++) {
+         if (!r3v_native_validate_depth_image_to_image_copy(
+                srcImage, srcImageLayout, dstImage, dstImageLayout,
+                &pRegions[r])) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+      }
+      if (r3v_native_cmd_buffer_require_image_layout(
+             cmd_buffer, src, srcImageLayout,
+             R3V_NATIVE_IMAGE_PRODUCER_RB2D, false) != VK_SUCCESS ||
+          r3v_native_cmd_buffer_require_image_layout(
+             cmd_buffer, dst, dstImageLayout,
+             R3V_NATIVE_IMAGE_PRODUCER_RB2D, true) != VK_SUCCESS) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      for (uint32_t r = 0; r < regionCount; r++) {
+         if (r3v_native_record_depth_image_to_image_copy(
+                commandBuffer, srcImage, srcImageLayout, dstImage,
+                dstImageLayout, &pRegions[r]) != VK_SUCCESS) {
+            r3v_native_cmd_poison(commandBuffer);
+            break;
+         }
+      }
+      return;
+   }
+
+   for (uint32_t r = 0u; r < regionCount; r++) {
       const VkImageCopy *region = &pRegions[r];
-      struct r3v_native_deferred_copy *op =
-         r3v_native_copy_slot(commandBuffer);
-      if (op == NULL ||
-          !r3v_native_transfer_source_layout_ok(srcImageLayout) ||
+      if (!r3v_native_transfer_source_layout_ok(srcImageLayout) ||
           !r3v_native_transfer_destination_layout_ok(dstImageLayout) ||
           !r3v_native_copy_subresource_ok(&region->srcSubresource) ||
           !r3v_native_copy_subresource_ok(&region->dstSubresource) ||
@@ -795,16 +1302,27 @@ r3v_CmdCopyImage(
                                    region->extent) ||
           (src->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
           (dst->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0 ||
-          /* vkCmdCopyImage requires size-compatible formats: the byte
-           * copy moves texels of one size. */
           src->texel_bytes != dst->texel_bytes ||
-          /* Vulkan leaves overlapping copy regions undefined, so a
-           * same-image rectangle pair that intersects refuses. */
+          !r3v_native_linear_image_ranges_disjoint(
+             src, (uint32_t)region->srcOffset.x,
+             (uint32_t)region->srcOffset.y, dst,
+             (uint32_t)region->dstOffset.x,
+             (uint32_t)region->dstOffset.y, region->extent.width,
+             region->extent.height) ||
           (src == dst &&
            r3v_native_rects_overlap(region->srcOffset.x, region->srcOffset.y,
                                     region->dstOffset.x, region->dstOffset.y,
                                     region->extent.width,
                                     region->extent.height))) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
+   for (uint32_t r = 0; r < regionCount; r++) {
+      const VkImageCopy *region = &pRegions[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      if (op == NULL) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
@@ -820,7 +1338,7 @@ r3v_CmdCopyImage(
          .width = region->extent.width,
          .height = region->extent.height,
       };
-      cmd_buffer->deferred_copy_count++;
+      r3v_native_commit_deferred_copy(commandBuffer);
    }
 }
 
@@ -837,13 +1355,42 @@ r3v_CmdCopyImageToBuffer(
    VK_FROM_HANDLE(r3v_native_image, image, srcImage);
    VK_FROM_HANDLE(r3v_native_buffer, buffer, dstBuffer);
 
-   for (uint32_t r = 0; r < regionCount; r++) {
-      const VkBufferImageCopy *region = &pRegions[r];
-      struct r3v_native_deferred_copy *op =
-         r3v_native_copy_slot(commandBuffer);
+   if (pRegions == NULL && regionCount != 0u) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+   if (regionCount == 0u)
+      return;
+   if (image != NULL && image->depth_family) {
+      for (uint32_t r = 0u; r < regionCount; r++) {
+         if (!r3v_native_validate_depth_image_copy(
+                commandBuffer, dstBuffer, srcImage, &pRegions[r],
+                srcImageLayout, false)) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+      }
+      if (r3v_native_cmd_buffer_require_image_layout(
+             cmd_buffer, image, srcImageLayout,
+             R3V_NATIVE_IMAGE_PRODUCER_RB2D, false) != VK_SUCCESS) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      for (uint32_t r = 0u; r < regionCount; r++) {
+         if (r3v_native_record_depth_image_copy(
+                commandBuffer, dstBuffer, srcImage, &pRegions[r],
+                srcImageLayout, false) != VK_SUCCESS) {
+            r3v_native_cmd_poison(commandBuffer);
+            return;
+         }
+      }
+      return;
+   }
+
+   for (uint32_t r = 0u; r < regionCount; r++) {
       uint32_t row_length;
-      if (op == NULL ||
-          !r3v_native_transfer_source_layout_ok(srcImageLayout) ||
+      const VkBufferImageCopy *region = &pRegions[r];
+      if (!r3v_native_transfer_source_layout_ok(srcImageLayout) ||
           !r3v_native_copy_subresource_ok(&region->imageSubresource) ||
           !r3v_native_copy_rect_ok(image, region->imageOffset,
                                    region->imageExtent) ||
@@ -851,10 +1398,28 @@ r3v_CmdCopyImageToBuffer(
           !r3v_native_copy_buffer_ok(buffer,
                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                      region, image->texel_bytes,
-                                     &row_length)) {
+                                     &row_length) ||
+          !r3v_native_linear_image_buffer_ranges_disjoint(
+             image, (uint32_t)region->imageOffset.x,
+             (uint32_t)region->imageOffset.y, buffer,
+             region->bufferOffset, row_length, region->imageExtent.width,
+             region->imageExtent.height, false)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
+   }
+   for (uint32_t r = 0; r < regionCount; r++) {
+      const VkBufferImageCopy *region = &pRegions[r];
+      struct r3v_native_deferred_copy *op =
+         r3v_native_copy_slot(commandBuffer);
+      uint32_t row_length;
+      if (op == NULL) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      row_length = region->bufferRowLength != 0u
+                      ? region->bufferRowLength
+                      : region->imageExtent.width;
       *op = (struct r3v_native_deferred_copy){
          .group = r3v_native_copy_group_at_record(cmd_buffer),
          .kind = R3V_NATIVE_COPY_IMAGE_TO_BUFFER,
@@ -867,7 +1432,7 @@ r3v_CmdCopyImageToBuffer(
          .width = region->imageExtent.width,
          .height = region->imageExtent.height,
       };
-      cmd_buffer->deferred_copy_count++;
+      r3v_native_commit_deferred_copy(commandBuffer);
    }
 }
 
@@ -939,17 +1504,428 @@ r3v_CmdEndQuery(
       .first_query = query,
       .query_count = 1,
    };
-   cmd_buffer->query_op_count++;
+   const uint32_t query_index = cmd_buffer->query_op_count++;
+   if (r3v_native_cmd_buffer_append_ordered_operation(
+          cmd_buffer, &(struct r3v_native_ordered_operation){
+                         .kind = R3V_NATIVE_ORDERED_OPERATION_QUERY,
+                         .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                         .payload.query = { .query_index = query_index },
+                      }) != VK_SUCCESS)
+      r3v_native_cmd_poison(commandBuffer);
    cmd_buffer->active_query_pool = NULL;
 }
 
-/* The execute appends the secondary's host-executed ops to the primary
- * in recorded order: each copy takes the group the primary's record
- * position fixes, and event and query ops publish with the primary's
- * own at submission.  A secondary holding state the append cannot
- * carry -- an IB, a deferred draw or dispatch, dynamic
- * viewport/scissor, an open query span -- or a poisoned recording
- * refuses.
+static VkResult
+r3v_native_merge_secondary_image_states(
+   struct r3v_native_cmd_buffer *primary,
+   const struct r3v_native_cmd_buffer *secondary)
+{
+   for (uint32_t index = 0u; index < secondary->image_state_count; index++) {
+      const struct r3v_native_cmd_image_state *source =
+         &secondary->image_states[index];
+      struct r3v_native_cmd_image_state *destination = NULL;
+      VkResult result = r3v_native_cmd_buffer_append_image_state(
+         primary, source->image, &destination);
+      if (result != VK_SUCCESS)
+         return result;
+      if (destination->representation != source->representation)
+         return VK_ERROR_INITIALIZATION_FAILED;
+      if (source->required_layout_set) {
+         if (destination->current_layout_set &&
+             source->required_layout != R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
+             destination->current_layout != source->required_layout &&
+             (!source->current_layout_set ||
+              destination->current_layout != source->current_layout))
+            return VK_ERROR_INITIALIZATION_FAILED;
+         if (!destination->required_layout_set) {
+            destination->required_layout = source->required_layout;
+            destination->required_layout_set = true;
+         }
+      }
+      if (source->current_layout_set) {
+         destination->current_layout = source->current_layout;
+         destination->current_layout_set = true;
+      }
+      if (source->producer_set) {
+         destination->producer = source->producer;
+         destination->producer_set = true;
+      }
+      if (source->visibility_set) {
+         destination->visible_to = source->visible_to;
+         destination->visibility_set = true;
+      }
+      if (source->content_set) {
+         destination->content = source->content;
+         destination->content_set = true;
+      }
+   }
+   return VK_SUCCESS;
+}
+
+/* Secondary replay has several independently owned recording arrays.  A
+ * shallow command-buffer copy would let a failed replay free or overwrite the
+ * primary's arrays, so the transaction owns private copies of every array a
+ * replay operation can extend. */
+static void
+r3v_native_secondary_transaction_release(
+   struct r3v_native_cmd_buffer *transaction)
+{
+   if (transaction->deferred_copies != NULL) {
+      for (uint32_t index = 0u; index < transaction->deferred_copy_count;
+           index++)
+         vk_free(&transaction->vk.pool->alloc,
+                 transaction->deferred_copies[index].update_data);
+   }
+   vk_free(&transaction->vk.pool->alloc, transaction->deferred_copies);
+   vk_free(&transaction->vk.pool->alloc, transaction->ordered_operations);
+   vk_free(&transaction->vk.pool->alloc, transaction->image_states);
+   free(transaction->rb2d_copy_operations);
+   free(transaction->ib);
+   free(transaction->references);
+   transaction->deferred_copies = NULL;
+   transaction->ordered_operations = NULL;
+   transaction->image_states = NULL;
+   transaction->rb2d_copy_operations = NULL;
+   transaction->ib = NULL;
+   transaction->references = NULL;
+}
+
+static void
+r3v_native_secondary_primary_release_arrays(
+   struct r3v_native_cmd_buffer *primary)
+{
+   if (primary->deferred_copies != NULL) {
+      for (uint32_t index = 0u; index < primary->deferred_copy_count;
+           index++)
+         vk_free(&primary->vk.pool->alloc,
+                 primary->deferred_copies[index].update_data);
+   }
+   vk_free(&primary->vk.pool->alloc, primary->deferred_copies);
+   vk_free(&primary->vk.pool->alloc, primary->ordered_operations);
+   vk_free(&primary->vk.pool->alloc, primary->image_states);
+   free(primary->rb2d_copy_operations);
+   free(primary->ib);
+   free(primary->references);
+}
+
+static VkResult
+r3v_native_secondary_transaction_begin(
+   const struct r3v_native_cmd_buffer *primary,
+   struct r3v_native_cmd_buffer *transaction)
+{
+   *transaction = *primary;
+   transaction->deferred_copies = NULL;
+   transaction->ordered_operations = NULL;
+   transaction->image_states = NULL;
+   transaction->rb2d_copy_operations = NULL;
+   transaction->ib = NULL;
+   transaction->references = NULL;
+
+   if (primary->deferred_copy_count > primary->deferred_copy_capacity ||
+       primary->ordered_operation_count > primary->ordered_operation_capacity ||
+       primary->image_state_count > primary->image_state_capacity ||
+       primary->rb2d_copy_operation_count >
+          primary->rb2d_copy_operation_capacity)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (primary->ib_size_dwords != 0u) {
+      if (primary->ib == NULL ||
+          (size_t)primary->ib_size_dwords > SIZE_MAX / sizeof(*primary->ib))
+         goto invalid;
+      transaction->ib = malloc((size_t)primary->ib_size_dwords *
+                               sizeof(*primary->ib));
+      if (transaction->ib == NULL)
+         goto out_of_memory;
+      memcpy(transaction->ib, primary->ib,
+             (size_t)primary->ib_size_dwords * sizeof(*primary->ib));
+   }
+   if (primary->reference_count != 0u) {
+      if (primary->references == NULL ||
+          (size_t)primary->reference_count >
+             SIZE_MAX / sizeof(*primary->references))
+         goto invalid;
+      transaction->references = malloc((size_t)primary->reference_count *
+                                        sizeof(*primary->references));
+      if (transaction->references == NULL)
+         goto out_of_memory;
+      memcpy(transaction->references, primary->references,
+             (size_t)primary->reference_count * sizeof(*primary->references));
+   }
+   if (primary->deferred_copy_capacity != 0u) {
+      if (primary->deferred_copies == NULL ||
+          (size_t)primary->deferred_copy_capacity >
+             SIZE_MAX / sizeof(*primary->deferred_copies))
+         goto invalid;
+      transaction->deferred_copies = vk_alloc(
+         &transaction->vk.pool->alloc,
+         (size_t)primary->deferred_copy_capacity *
+            sizeof(*primary->deferred_copies),
+         8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (transaction->deferred_copies == NULL)
+         goto out_of_memory;
+      memcpy(transaction->deferred_copies, primary->deferred_copies,
+             (size_t)primary->deferred_copy_count *
+                sizeof(*primary->deferred_copies));
+      for (uint32_t index = 0u; index < primary->deferred_copy_count; index++)
+         transaction->deferred_copies[index].update_data = NULL;
+      for (uint32_t index = 0u; index < primary->deferred_copy_count; index++) {
+         const struct r3v_native_deferred_copy *source =
+            &primary->deferred_copies[index];
+         if (source->update_data == NULL || source->size == 0u)
+            continue;
+         if (source->size > SIZE_MAX)
+            goto out_of_memory;
+         transaction->deferred_copies[index].update_data = vk_alloc(
+            &transaction->vk.pool->alloc, (size_t)source->size, 8,
+            VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (transaction->deferred_copies[index].update_data == NULL)
+            goto out_of_memory;
+         memcpy(transaction->deferred_copies[index].update_data,
+                source->update_data, (size_t)source->size);
+      }
+   }
+   if (primary->ordered_operation_capacity != 0u) {
+      if (primary->ordered_operations == NULL ||
+          (size_t)primary->ordered_operation_capacity >
+             SIZE_MAX / sizeof(*primary->ordered_operations))
+         goto invalid;
+      transaction->ordered_operations = vk_alloc(
+         &transaction->vk.pool->alloc,
+         (size_t)primary->ordered_operation_capacity *
+            sizeof(*primary->ordered_operations),
+         8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (transaction->ordered_operations == NULL)
+         goto out_of_memory;
+      memcpy(transaction->ordered_operations, primary->ordered_operations,
+             (size_t)primary->ordered_operation_count *
+                sizeof(*primary->ordered_operations));
+   }
+   if (primary->image_state_capacity != 0u) {
+      if (primary->image_states == NULL ||
+          (size_t)primary->image_state_capacity >
+             SIZE_MAX / sizeof(*primary->image_states))
+         goto invalid;
+      transaction->image_states = vk_alloc(
+         &transaction->vk.pool->alloc,
+         (size_t)primary->image_state_capacity *
+            sizeof(*primary->image_states),
+         8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (transaction->image_states == NULL)
+         goto out_of_memory;
+      memcpy(transaction->image_states, primary->image_states,
+             (size_t)primary->image_state_count *
+                sizeof(*primary->image_states));
+   }
+   if (primary->rb2d_copy_operation_capacity != 0u) {
+      if (primary->rb2d_copy_operations == NULL ||
+          (size_t)primary->rb2d_copy_operation_capacity >
+             SIZE_MAX / sizeof(*primary->rb2d_copy_operations))
+         goto invalid;
+      transaction->rb2d_copy_operations = malloc(
+         (size_t)primary->rb2d_copy_operation_capacity *
+         sizeof(*primary->rb2d_copy_operations));
+      if (transaction->rb2d_copy_operations == NULL)
+         goto out_of_memory;
+      memcpy(transaction->rb2d_copy_operations,
+             primary->rb2d_copy_operations,
+             (size_t)primary->rb2d_copy_operation_count *
+                sizeof(*primary->rb2d_copy_operations));
+   }
+   return VK_SUCCESS;
+
+invalid:
+   r3v_native_secondary_transaction_release(transaction);
+   return VK_ERROR_INITIALIZATION_FAILED;
+
+out_of_memory:
+   r3v_native_secondary_transaction_release(transaction);
+   return VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+static void
+r3v_native_secondary_transaction_commit(
+   struct r3v_native_cmd_buffer *primary,
+   struct r3v_native_cmd_buffer *transaction)
+{
+   const struct vk_command_buffer primary_vk = primary->vk;
+   r3v_native_secondary_primary_release_arrays(primary);
+   *primary = *transaction;
+   primary->vk = primary_vk;
+   transaction->deferred_copies = NULL;
+   transaction->ordered_operations = NULL;
+   transaction->image_states = NULL;
+   transaction->rb2d_copy_operations = NULL;
+   transaction->ib = NULL;
+   transaction->references = NULL;
+}
+
+static VkResult
+r3v_native_append_secondary_operation(
+   VkCommandBuffer commandBuffer,
+   const struct r3v_native_cmd_buffer *secondary,
+   const struct r3v_native_ordered_operation *source_operation)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, primary, commandBuffer);
+   switch (source_operation->kind) {
+   case R3V_NATIVE_ORDERED_OPERATION_HOST_COPY: {
+      const uint32_t source_index =
+         source_operation->payload.host_copy.deferred_copy_index;
+      if (source_index >= secondary->deferred_copy_count)
+         return VK_ERROR_INITIALIZATION_FAILED;
+      struct r3v_native_deferred_copy *destination =
+         r3v_native_copy_slot(commandBuffer);
+      if (destination == NULL)
+         return primary->vk.record_result;
+      *destination = secondary->deferred_copies[source_index];
+      destination->group = r3v_native_copy_group_at_record(primary);
+      if (destination->update_data != NULL) {
+         const uint8_t *source_data = destination->update_data;
+         destination->update_data = NULL;
+         void *data = vk_alloc(&primary->vk.pool->alloc, destination->size, 8,
+                               VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (data == NULL)
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+         memcpy(data, source_data, destination->size);
+         destination->update_data = data;
+      }
+      r3v_native_commit_deferred_copy(commandBuffer);
+      return primary->vk.record_result;
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR:
+      return r3v_native_record_depth_image_clear_logical_rect(
+         commandBuffer,
+         r3v_native_image_to_handle(
+            source_operation->payload.rb2d_depth_clear.image),
+         source_operation->payload.rb2d_depth_clear.x,
+         source_operation->payload.rb2d_depth_clear.y,
+         source_operation->payload.rb2d_depth_clear.width,
+         source_operation->payload.rb2d_depth_clear.height,
+         source_operation->payload.rb2d_depth_clear.aspect_mask,
+         source_operation->payload.rb2d_depth_clear.depth_code,
+         source_operation->payload.rb2d_depth_clear.stencil);
+   case R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY: {
+      const uint32_t source_index =
+         source_operation->payload.rb2d_copy.rb2d_copy_index;
+      if (source_index >= secondary->rb2d_copy_operation_count)
+         return VK_ERROR_INITIALIZATION_FAILED;
+      const struct r3v_native_rb2d_copy_operation *source =
+         &secondary->rb2d_copy_operations[source_index];
+      const struct r300_rb2d_copy_plan plan = {
+         .segments = source->segments,
+         .segment_count = source->segment_count,
+         .source_buffer_bytes = source->source_buffer_bytes,
+         .destination_buffer_bytes = source->destination_buffer_bytes,
+         .same_buffer = false,
+         .byte_carrier = source->byte_carrier,
+      };
+      return r3v_native_record_rb2d_copy(
+         commandBuffer, r3v_native_memory_to_handle(source->source_memory),
+         r3v_native_memory_to_handle(source->destination_memory), &plan,
+         source->write_mask);
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER: {
+      const struct r3v_native_image_barrier_record *barrier =
+         &source_operation->payload.image_barrier;
+      VkResult result = r3v_native_cmd_buffer_transition_image_layout(
+         primary, barrier->image, (VkImageLayout)barrier->old_layout,
+         (VkImageLayout)barrier->new_layout);
+      if (result != VK_SUCCESS)
+         return result;
+      struct r3v_native_cmd_image_state *state =
+         r3v_native_cmd_buffer_find_image_state(primary, barrier->image);
+      state->visible_to = r3v_native_image_barrier_visibility(
+         barrier->dst_stage_mask, barrier->dst_access_mask);
+      state->visibility_set = true;
+      struct r3v_native_ordered_operation operation = *source_operation;
+      VkResult dependency_result = r3v_native_append_depth_image_dependency(
+         primary, barrier->image, &operation.ib_position_dwords);
+      if (dependency_result != VK_SUCCESS)
+         return dependency_result;
+      return r3v_native_cmd_buffer_append_ordered_operation(primary,
+                                                             &operation);
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER:
+   case R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER: {
+      struct r3v_native_ordered_operation operation = *source_operation;
+      const VkPipelineStageFlags source_stages =
+         operation.payload.memory_barrier.src_stage_mask;
+      const VkPipelineStageFlags destination_stages =
+         operation.payload.memory_barrier.dst_stage_mask;
+      const VkAccessFlags source_access =
+         operation.payload.memory_barrier.src_access_mask;
+      const VkAccessFlags destination_access =
+         operation.payload.memory_barrier.dst_access_mask;
+      const VkResult dependency_result = r3v_native_append_barrier_dependency(
+         primary, source_stages, destination_stages, source_access,
+         destination_access, &operation.ib_position_dwords);
+      if (dependency_result != VK_SUCCESS)
+         return dependency_result;
+      return r3v_native_cmd_buffer_append_ordered_operation(primary,
+                                                             &operation);
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_EVENT: {
+      const uint32_t source_index = source_operation->payload.event.event_index;
+      if (source_index >= secondary->event_op_count ||
+          primary->event_op_count == R3V_NATIVE_EVENT_OP_MAX)
+         return VK_ERROR_INITIALIZATION_FAILED;
+      const uint32_t destination_index = primary->event_op_count++;
+      primary->event_ops[destination_index] = secondary->event_ops[source_index];
+      return r3v_native_cmd_buffer_append_ordered_operation(
+         primary, &(struct r3v_native_ordered_operation){
+                     .kind = R3V_NATIVE_ORDERED_OPERATION_EVENT,
+                     .ib_position_dwords = primary->ib_size_dwords,
+                     .payload.event = { .event_index = destination_index },
+                  });
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_QUERY: {
+      const uint32_t source_index = source_operation->payload.query.query_index;
+      if (source_index >= secondary->query_op_count ||
+          primary->query_op_count == R3V_NATIVE_QUERY_OP_MAX)
+         return VK_ERROR_INITIALIZATION_FAILED;
+      const uint32_t destination_index = primary->query_op_count++;
+      primary->query_ops[destination_index] = secondary->query_ops[source_index];
+      return r3v_native_cmd_buffer_append_ordered_operation(
+         primary, &(struct r3v_native_ordered_operation){
+                     .kind = R3V_NATIVE_ORDERED_OPERATION_QUERY,
+                     .ib_position_dwords = primary->ib_size_dwords,
+                     .payload.query = { .query_index = destination_index },
+                  });
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN:
+   case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR:
+   case R3V_NATIVE_ORDERED_OPERATION_DRAW:
+   case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END:
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
+   return VK_ERROR_INITIALIZATION_FAILED;
+}
+
+static bool
+r3v_native_secondary_shape_valid(
+   const struct r3v_native_cmd_buffer *secondary)
+{
+   return secondary->ordered_operation_count <=
+             secondary->ordered_operation_capacity &&
+          (secondary->ordered_operation_count == 0u ||
+           secondary->ordered_operations != NULL) &&
+          secondary->deferred_copy_count <=
+             secondary->deferred_copy_capacity &&
+          (secondary->deferred_copy_count == 0u ||
+           secondary->deferred_copies != NULL) &&
+          secondary->image_state_count <= secondary->image_state_capacity &&
+          (secondary->image_state_count == 0u ||
+           secondary->image_states != NULL) &&
+          secondary->rb2d_copy_operation_count <=
+             secondary->rb2d_copy_operation_capacity &&
+          (secondary->rb2d_copy_operation_count == 0u ||
+           secondary->rb2d_copy_operations != NULL) &&
+          secondary->event_op_count <= R3V_NATIVE_EVENT_OP_MAX &&
+          secondary->query_op_count <= R3V_NATIVE_QUERY_OP_MAX;
+}
+
+/* Secondary transfer, dependency, event, and query records are replayed at
+ * the primary's execute position.  Replay assigns primary-owned payload
+ * indices and PM4 positions while preserving the secondary's operation order.
  */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdExecuteCommands(
@@ -959,65 +1935,74 @@ r3v_CmdExecuteCommands(
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
+   if (commandBufferCount != 0u && pCommandBuffers == NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+
    if (cmd_buffer->pass_target != NULL ||
        cmd_buffer->active_query_pool != NULL ||
        cmd_buffer->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
+   if (commandBufferCount == 0u)
+      return;
+
+   struct r3v_native_cmd_buffer transaction;
+   VkResult transaction_result = r3v_native_secondary_transaction_begin(
+      cmd_buffer, &transaction);
+   if (transaction_result != VK_SUCCESS) {
+      vk_command_buffer_set_error(
+         &cmd_buffer->vk,
+         transaction_result == VK_ERROR_OUT_OF_HOST_MEMORY
+            ? transaction_result
+            : R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
    for (uint32_t i = 0; i < commandBufferCount; i++) {
       VK_FROM_HANDLE(r3v_native_cmd_buffer, secondary, pCommandBuffers[i]);
       if (secondary == NULL ||
           secondary->vk.level != VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
           secondary->vk.record_result != VK_SUCCESS ||
-          secondary->ib_size_dwords != 0 ||
+          !r3v_native_secondary_shape_valid(secondary) ||
           secondary->deferred_draw_count != 0 || secondary->draw_recorded ||
           secondary->deferred_dispatch.pending ||
           secondary->active_query_pool != NULL ||
           secondary->viewport_set || secondary->scissor_set) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
+         transaction_result = VK_ERROR_INITIALIZATION_FAILED;
+         goto replay_failed;
       }
-      if (cmd_buffer->event_op_count + secondary->event_op_count >
-             R3V_NATIVE_EVENT_OP_MAX ||
-          cmd_buffer->query_op_count + secondary->query_op_count >
-             R3V_NATIVE_QUERY_OP_MAX) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
-      }
-      for (uint32_t c = 0; c < secondary->deferred_copy_count; c++) {
-         struct r3v_native_deferred_copy *op =
-            r3v_native_copy_slot(commandBuffer);
-         if (op == NULL)
-            return;
-         *op = secondary->deferred_copies[c];
-         op->group = r3v_native_copy_group_at_record(cmd_buffer);
-         /* Each recording frees its own update_data, so the appended
-          * op takes a copy rather than aliasing the secondary's. */
-         if (op->update_data != NULL) {
-            uint8_t *data = vk_alloc(&cmd_buffer->vk.pool->alloc,
-                                     op->size, 8,
-                                     VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-            if (data == NULL) {
-               vk_command_buffer_set_error(&cmd_buffer->vk,
-                                           VK_ERROR_OUT_OF_HOST_MEMORY);
-               r3v_native_cmd_poison(commandBuffer);
-               return;
-            }
-            memcpy(data, op->update_data, op->size);
-            op->update_data = data;
+      for (uint32_t operation_index = 0u;
+           operation_index < secondary->ordered_operation_count;
+           operation_index++) {
+         const VkResult append_result =
+            r3v_native_append_secondary_operation(
+               r3v_native_cmd_buffer_to_handle(&transaction), secondary,
+               &secondary->ordered_operations[operation_index]);
+         if (append_result != VK_SUCCESS) {
+            transaction_result = transaction.vk.record_result != VK_SUCCESS
+                                    ? transaction.vk.record_result
+                                    : append_result;
+            goto replay_failed;
          }
-         cmd_buffer->deferred_copy_count++;
       }
-      for (uint32_t e = 0; e < secondary->event_op_count; e++) {
-         cmd_buffer->event_ops[cmd_buffer->event_op_count++] =
-            secondary->event_ops[e];
-      }
-      for (uint32_t q = 0; q < secondary->query_op_count; q++) {
-         cmd_buffer->query_ops[cmd_buffer->query_op_count++] =
-            secondary->query_ops[q];
-      }
+      transaction_result = r3v_native_merge_secondary_image_states(
+         &transaction, secondary);
+      if (transaction_result != VK_SUCCESS)
+         goto replay_failed;
    }
+   r3v_native_secondary_transaction_commit(cmd_buffer, &transaction);
+   return;
+
+replay_failed:
+   r3v_native_secondary_transaction_release(&transaction);
+   vk_command_buffer_set_error(
+      &cmd_buffer->vk,
+      transaction_result == VK_ERROR_OUT_OF_HOST_MEMORY
+         ? transaction_result
+         : R3V_NATIVE_REFUSAL_RESULT);
 }
 
 /* The fill is a dword-pattern store through the host mapping of the
@@ -1059,7 +2044,7 @@ r3v_CmdFillBuffer(
       .size = fill_size,
       .clear_dword = util_cpu_to_le32(data),
    };
-   cmd_buffer->deferred_copy_count++;
+   r3v_native_commit_deferred_copy(commandBuffer);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1068,6 +2053,46 @@ r3v_CmdNextSubpass(
    VkSubpassContents contents)
 {
    r3v_native_cmd_poison(commandBuffer);
+}
+
+static bool
+r3v_native_render_pass_barrier_covered(
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   VkPipelineStageFlags source_stages, VkPipelineStageFlags destination_stages,
+   VkDependencyFlags dependency_flags, uint32_t memory_barrier_count,
+   const VkMemoryBarrier *memory_barriers)
+{
+   const struct vk_render_pass *pass = cmd_buffer->active_render_pass;
+   if (pass == NULL)
+      return false;
+
+   for (uint32_t dependency_index = 0u;
+        dependency_index < pass->dependency_count; dependency_index++) {
+      const struct vk_subpass_dependency *dependency =
+         &pass->dependencies[dependency_index];
+      if (dependency->src_subpass != 0u || dependency->dst_subpass != 0u ||
+          dependency->flags != dependency_flags ||
+          ((VkPipelineStageFlags2)source_stages &
+           ~dependency->src_stage_mask) != 0u ||
+          ((VkPipelineStageFlags2)destination_stages &
+           ~dependency->dst_stage_mask) != 0u)
+         continue;
+
+      bool access_covered = true;
+      for (uint32_t barrier_index = 0u;
+           barrier_index < memory_barrier_count; barrier_index++) {
+         if (((VkAccessFlags2)memory_barriers[barrier_index].srcAccessMask &
+              ~dependency->src_access_mask) != 0u ||
+             ((VkAccessFlags2)memory_barriers[barrier_index].dstAccessMask &
+              ~dependency->dst_access_mask) != 0u) {
+            access_covered = false;
+            break;
+         }
+      }
+      if (access_covered)
+         return true;
+   }
+   return false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1085,57 +2110,208 @@ r3v_CmdPipelineBarrier(
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   /* The deferred ops execute in recorded order on one host thread and
-    * every destination publishes before the submission retires.  The
-    * executors and publication symbols resolve with (rg --fixed-strings
-    * r3v_native_cmd_buffer_execute_deferred_copies src/amd/r300/vulkan/;
-    * rg --fixed-strings r3v_native_cmd_buffer_execute_deferred_draw
-    * src/amd/r300/vulkan/; rg --fixed-strings radeon_drm_vk_bo_cache_sync
-    * src/amd/r300/vulkan/), so
-    * execution dependencies, availability, and visibility all hold by
-    * construction and the barrier records nothing.  Admission still
-    * bounds the vocabulary to what that construction covers: barriers
-    * outside a render pass (the pass's one draw has no self-dependency
-    * lowering), no ownership transfer -- the device exposes one queue
-    * family, so an ownership-transferring pair names a family that
-    * does not exist -- and image barriers over the qualified transfer or
-    * render-family color subresource with its supported layout vocabulary.
-    * Equal queue-family fields still name either the native family (0) or
-    * the no-ownership-transfer sentinel.
-    * Vulkan 1.3 `vkCmdPipelineBarrier` valid usage binds image layout and
-    * queue ownership to r3v_native_image_barrier_layouts_ok and
-    * r3v_native_queue_family_pair_ok.  The copy-command valid-usage rules
-    * bind transfer layouts to image usage through
-    * r3v_native_image_layout_ok, which composes
-    * r3v_native_transfer_source_layout_ok,
-    * r3v_native_transfer_destination_layout_ok, and
-    * r3v_native_render_layout_ok.  Symbol discovery uses
-    * `(rg --fixed-strings r3v_native_image_barrier_layouts_ok
-    * src/amd/r300/vulkan/)`, `(rg --fixed-strings r3v_native_image_layout_ok
-    * src/amd/r300/vulkan/)`, and `(rg --fixed-strings
-    * r3v_native_queue_family_pair_ok src/amd/r300/vulkan/)`.
-    */
-   if (cmd_buffer->pass_target != NULL) {
+   if ((memoryBarrierCount != 0u && pMemoryBarriers == NULL) ||
+       (bufferMemoryBarrierCount != 0u && pBufferMemoryBarriers == NULL) ||
+       (imageMemoryBarrierCount != 0u && pImageMemoryBarriers == NULL)) {
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
+   for (uint32_t i = 0u; i < memoryBarrierCount; i++) {
+      const VkMemoryBarrier *barrier = &pMemoryBarriers[i];
+      if (barrier->sType != VK_STRUCTURE_TYPE_MEMORY_BARRIER ||
+          barrier->pNext != NULL)
+         goto refuse;
+   }
    for (uint32_t i = 0; i < bufferMemoryBarrierCount; i++) {
       const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
+      VkDeviceSize normalized_size;
+      VK_FROM_HANDLE(r3v_native_buffer, buffer, barrier->buffer);
       if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
-                                            barrier->dstQueueFamilyIndex)) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
-      }
+                                            barrier->dstQueueFamilyIndex) ||
+          barrier->sType != VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER ||
+          barrier->pNext != NULL ||
+          !r3v_native_buffer_barrier_range_ok(
+             buffer, barrier->offset, barrier->size, &normalized_size))
+         goto refuse;
    }
    for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
       const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
       if (!r3v_native_queue_family_pair_ok(barrier->srcQueueFamilyIndex,
                                             barrier->dstQueueFamilyIndex) ||
+          barrier->sType != VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER ||
+          barrier->pNext != NULL ||
           !r3v_native_image_barrier_layouts_ok(barrier)) {
+         goto refuse;
+      }
+
+      VK_FROM_HANDLE(r3v_native_image, image, barrier->image);
+      enum r3v_native_image_api_layout effective_layout =
+         R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED;
+      bool effective_layout_set = false;
+      const struct r3v_native_cmd_image_state *recorded_state =
+         r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
+      if (recorded_state != NULL && recorded_state->current_layout_set) {
+         effective_layout = recorded_state->current_layout;
+         effective_layout_set = true;
+      }
+      for (uint32_t previous = 0u; previous < i; previous++) {
+         if (pImageMemoryBarriers[previous].image == barrier->image) {
+            effective_layout = (enum r3v_native_image_api_layout)
+               pImageMemoryBarriers[previous].newLayout;
+            effective_layout_set = true;
+         }
+      }
+      if (barrier->oldLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
+          effective_layout_set &&
+          effective_layout != (enum r3v_native_image_api_layout)
+                                 barrier->oldLayout) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
    }
+
+   if (cmd_buffer->pass_target != NULL) {
+      if (bufferMemoryBarrierCount != 0u || imageMemoryBarrierCount != 0u ||
+          !r3v_native_render_pass_barrier_covered(
+             cmd_buffer, srcStageMask, dstStageMask, dependencyFlags,
+             memoryBarrierCount, pMemoryBarriers))
+         goto refuse;
+
+      VkAccessFlags source_access = 0u;
+      VkAccessFlags destination_access = 0u;
+      for (uint32_t barrier_index = 0u;
+           barrier_index < memoryBarrierCount; barrier_index++) {
+         source_access |= pMemoryBarriers[barrier_index].srcAccessMask;
+         destination_access |= pMemoryBarriers[barrier_index].dstAccessMask;
+      }
+      const struct vk_subpass_dependency dependency = {
+         .src_stage_mask = srcStageMask,
+         .dst_stage_mask = dstStageMask,
+         .src_access_mask = source_access,
+         .dst_access_mask = destination_access,
+      };
+      if (r3v_native_cmd_buffer_append_render_pass_dependency(
+             cmd_buffer, &dependency) != VK_SUCCESS)
+         goto refuse;
+      return;
+   }
+
+   const uint64_t ordered_count = (uint64_t)memoryBarrierCount +
+                                  bufferMemoryBarrierCount +
+                                  imageMemoryBarrierCount;
+   const bool execution_only = ordered_count == 0u;
+   if (ordered_count > UINT32_MAX ||
+       r3v_native_cmd_buffer_reserve_ordered_operations(
+          cmd_buffer, execution_only ? 1u : (uint32_t)ordered_count) !=
+          VK_SUCCESS)
+      goto refuse;
+
+   if (execution_only &&
+       r3v_native_cmd_buffer_append_ordered_operation(
+          cmd_buffer, &(struct r3v_native_ordered_operation){
+             .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+             .ib_position_dwords = cmd_buffer->ib_size_dwords,
+             .payload.memory_barrier = {
+                .src_stage_mask = srcStageMask,
+                .dst_stage_mask = dstStageMask,
+             },
+          }) != VK_SUCCESS)
+      goto refuse;
+
+   if (memoryBarrierCount != 0u || bufferMemoryBarrierCount != 0u) {
+      for (uint32_t i = 0u; i < memoryBarrierCount; i++) {
+         const VkMemoryBarrier *barrier = &pMemoryBarriers[i];
+         uint32_t ib_position = cmd_buffer->ib_size_dwords;
+         if (r3v_native_append_barrier_dependency(
+                cmd_buffer, srcStageMask, dstStageMask, barrier->srcAccessMask,
+                barrier->dstAccessMask, &ib_position) != VK_SUCCESS)
+            goto refuse;
+         if (r3v_native_cmd_buffer_append_ordered_operation(
+                cmd_buffer, &(struct r3v_native_ordered_operation){
+                   .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+                   .ib_position_dwords = ib_position,
+                   .payload.memory_barrier = {
+                      .src_stage_mask = srcStageMask,
+                      .dst_stage_mask = dstStageMask,
+                      .src_access_mask = barrier->srcAccessMask,
+                      .dst_access_mask = barrier->dstAccessMask,
+                   },
+                }) != VK_SUCCESS)
+            goto refuse;
+      }
+      for (uint32_t i = 0u; i < bufferMemoryBarrierCount; i++) {
+         const VkBufferMemoryBarrier *barrier = &pBufferMemoryBarriers[i];
+         VK_FROM_HANDLE(r3v_native_buffer, buffer, barrier->buffer);
+         VkDeviceSize normalized_size;
+         uint32_t ib_position = cmd_buffer->ib_size_dwords;
+         if (!r3v_native_buffer_barrier_range_ok(
+                buffer, barrier->offset, barrier->size, &normalized_size) ||
+             r3v_native_append_barrier_dependency(
+                cmd_buffer, srcStageMask, dstStageMask, barrier->srcAccessMask,
+                barrier->dstAccessMask, &ib_position) != VK_SUCCESS ||
+             r3v_native_cmd_buffer_append_ordered_operation(
+                cmd_buffer, &(struct r3v_native_ordered_operation){
+                   .kind = R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
+                   .ib_position_dwords = ib_position,
+                   .payload.memory_barrier = {
+                      .src_stage_mask = srcStageMask,
+                      .dst_stage_mask = dstStageMask,
+                      .src_access_mask = barrier->srcAccessMask,
+                      .dst_access_mask = barrier->dstAccessMask,
+                      .buffer = buffer,
+                      .offset = barrier->offset,
+                      .size = normalized_size,
+                   },
+                }) != VK_SUCCESS)
+            goto refuse;
+      }
+   }
+   for (uint32_t i = 0u; i < imageMemoryBarrierCount; i++) {
+      const VkImageMemoryBarrier *barrier = &pImageMemoryBarriers[i];
+      VK_FROM_HANDLE(r3v_native_image, image, barrier->image);
+      if (r3v_native_cmd_buffer_transition_image_layout(
+             cmd_buffer, image, barrier->oldLayout,
+             barrier->newLayout) != VK_SUCCESS) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      struct r3v_native_cmd_image_state *image_state =
+         r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
+      image_state->visible_to = r3v_native_image_barrier_visibility(
+         dstStageMask, barrier->dstAccessMask);
+      image_state->visibility_set = true;
+      uint32_t ib_position = 0u;
+      if (r3v_native_append_depth_image_dependency(
+             cmd_buffer, image, &ib_position) != VK_SUCCESS) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      if (r3v_native_cmd_buffer_append_ordered_operation(
+             cmd_buffer,
+             &(struct r3v_native_ordered_operation){
+                .kind = R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
+                .ib_position_dwords = ib_position,
+                .payload.image_barrier = {
+                   .image = image,
+                   .old_layout = (enum r3v_native_image_api_layout)
+                      barrier->oldLayout,
+                   .new_layout = (enum r3v_native_image_api_layout)
+                      barrier->newLayout,
+                   .aspect_mask = barrier->subresourceRange.aspectMask,
+                   .src_stage_mask = srcStageMask,
+                   .dst_stage_mask = dstStageMask,
+                   .src_access_mask = barrier->srcAccessMask,
+                   .dst_access_mask = barrier->dstAccessMask,
+                },
+             }) != VK_SUCCESS) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
+   return;
+
+refuse:
+   r3v_native_cmd_poison(commandBuffer);
 }
 
 /* Every pipeline layout the pipeline admissions accept carries zero
@@ -1192,7 +2368,14 @@ r3v_CmdResetQueryPool(
       .first_query = firstQuery,
       .query_count = queryCount,
    };
-   cmd_buffer->query_op_count++;
+   const uint32_t query_index = cmd_buffer->query_op_count++;
+   if (r3v_native_cmd_buffer_append_ordered_operation(
+          cmd_buffer, &(struct r3v_native_ordered_operation){
+                         .kind = R3V_NATIVE_ORDERED_OPERATION_QUERY,
+                         .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                         .payload.query = { .query_index = query_index },
+                      }) != VK_SUCCESS)
+      r3v_native_cmd_poison(commandBuffer);
 }
 
 /* Resolve reads a multisampled source, and image creation admits
@@ -1371,7 +2554,7 @@ r3v_CmdUpdateBuffer(
       .size = dataSize,
       .update_data = data,
    };
-   cmd_buffer->deferred_copy_count++;
+   r3v_native_commit_deferred_copy(commandBuffer);
 }
 
 /* The wait carries synchronization alone: barrier work travels

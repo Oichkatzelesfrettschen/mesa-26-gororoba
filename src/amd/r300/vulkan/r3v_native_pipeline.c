@@ -22,31 +22,103 @@
 
 #include <string.h>
 
-/* The render-pass shape whose one subpass the cell realizes: a single
- * single-sample color attachment in either render-family lane order,
- * cleared on load and stored, referenced as the one color output of
- * the one subpass.  The attachment format names a lane order; the
- * framebuffer's view then binds the image whose own format
- * r3v_CmdBeginRenderPass holds equal to it, so the emitted
- * US_OUT_FMT_0 payload matches the target the pass declares.
- */
+static bool
+r3v_native_color_attachment_layout_ok(VkImageLayout layout, bool initial)
+{
+   return (initial && layout == VK_IMAGE_LAYOUT_UNDEFINED) ||
+          layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+}
+
+static bool
+r3v_native_depth_attachment_layout_ok(VkImageLayout layout, bool initial)
+{
+   layout = r3v_native_packed_depth_stencil_layout(layout);
+   return (initial && layout == VK_IMAGE_LAYOUT_UNDEFINED) ||
+          layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
+          layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+}
+
+static bool
+r3v_native_attachment_load_op_ok(VkAttachmentLoadOp op)
+{
+   return op == VK_ATTACHMENT_LOAD_OP_LOAD ||
+          op == VK_ATTACHMENT_LOAD_OP_CLEAR ||
+          op == VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+
+static bool
+r3v_native_attachment_store_op_ok(VkAttachmentStoreOp op)
+{
+   return op == VK_ATTACHMENT_STORE_OP_STORE ||
+          op == VK_ATTACHMENT_STORE_OP_DONT_CARE;
+}
+
+static bool
+r3v_native_depth_attachment_matches(const struct vk_render_pass_attachment *depth,
+                                    const struct vk_subpass *subpass,
+                                    uint32_t attachment)
+{
+   return depth->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          depth->aspects ==
+             (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
+          depth->samples == VK_SAMPLE_COUNT_1_BIT &&
+          r3v_native_attachment_load_op_ok(depth->load_op) &&
+          r3v_native_attachment_load_op_ok(depth->stencil_load_op) &&
+          r3v_native_attachment_store_op_ok(depth->store_op) &&
+          r3v_native_attachment_store_op_ok(depth->stencil_store_op) &&
+          r3v_native_depth_attachment_layout_ok(depth->initial_layout, true) &&
+          r3v_native_depth_attachment_layout_ok(depth->final_layout, false) &&
+          subpass->depth_stencil_attachment != NULL &&
+          subpass->depth_stencil_attachment->attachment == attachment &&
+          r3v_native_depth_attachment_layout_ok(
+             subpass->depth_stencil_attachment->layout, false);
+}
+
+/* The render-pass shape whose one subpass the cell realizes. Color and depth
+ * attachments may appear together, or the subpass may contain only the
+ * D24S8 depth/stencil attachment. Packed depth/stencil load and store
+ * operations are admitted independently; each clear aspect is lowered to a
+ * component mask before execution. */
 bool
 r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
 {
-   if (pass == NULL || pass->is_multiview || pass->attachment_count != 1 ||
+   if (pass == NULL || pass->is_multiview ||
+       (pass->attachment_count != 1 && pass->attachment_count != 2) ||
        pass->subpass_count != 1)
       return false;
-   const struct vk_render_pass_attachment *att = &pass->attachments[0];
-   enum r300_triangle_lane_order lanes;
-   if (!r3v_native_render_lane_order(att->format, &lanes) ||
-       att->samples != 1 ||
-       att->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
-       att->store_op != VK_ATTACHMENT_STORE_OP_STORE)
-      return false;
    const struct vk_subpass *subpass = &pass->subpasses[0];
-   return subpass->input_count == 0 && subpass->color_count == 1 &&
-          subpass->color_attachments[0].attachment == 0 &&
-          subpass->depth_stencil_attachment == NULL;
+   if (subpass->input_count != 0)
+      return false;
+
+   const bool depth_only = subpass->color_count == 0 &&
+                           subpass->depth_stencil_attachment != NULL;
+   if (depth_only)
+      return pass->attachment_count == 1 &&
+             r3v_native_depth_attachment_matches(&pass->attachments[0],
+                                                 subpass, 0);
+
+   if (subpass->color_count != 1 ||
+       subpass->color_attachments[0].attachment != 0 ||
+       (pass->attachment_count == 1 &&
+        subpass->depth_stencil_attachment != NULL))
+      return false;
+   const struct vk_render_pass_attachment *color = &pass->attachments[0];
+   enum r300_triangle_lane_order lanes;
+   if (!r3v_native_render_lane_order(color->format, &lanes) ||
+       color->samples != 1 ||
+       color->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
+       color->store_op != VK_ATTACHMENT_STORE_OP_STORE ||
+       !r3v_native_color_attachment_layout_ok(color->initial_layout, true) ||
+       !r3v_native_color_attachment_layout_ok(color->final_layout, false) ||
+       !r3v_native_color_attachment_layout_ok(
+          subpass->color_attachments[0].layout, false))
+      return false;
+   if (pass->attachment_count == 1)
+      return true;
+   return r3v_native_depth_attachment_matches(&pass->attachments[1],
+                                               subpass, 1);
 }
 
 /* SPIR-V ingestion for the semantic front end: the direct word-stream
@@ -240,7 +312,9 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
                         struct r300_vertex_job *job, bool *varying,
                         bool *sampled, uint32_t *narrow_width,
                         bool *mixed_fragment, uint32_t color_bits[4],
-                        struct r3v_shader_interface_link *interface)
+                        bool *no_color_output,
+                        struct r3v_shader_interface_link *interface,
+                        struct r3v_native_depth_shader_flags *depth_shader)
 {
    if (info->stageCount != 2)
       return false;
@@ -267,6 +341,10 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    if (vs_data == NULL || fs_data == NULL)
       return false;
 
+   if (!r3v_fragment_depth_shader_flags_from_spirv(
+          fs_data, fs_words, fragment->pName, depth_shader, &reason))
+      return false;
+
    /* The stage boundary links first: every qualifier the modules
     * declare is recorded and matched across the two stages before the
     * job lowering reads the vertex body, so a qualifier the lowering
@@ -289,6 +367,7 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
    *sampled = false;
    *narrow_width = 0;
    *mixed_fragment = false;
+   *no_color_output = false;
    if (r300_vertex_job_varying_count(job) == 2) {
       /* The two-location job's one fragment shape is the mixed
        * carrier lane program over locations 0 and 1; the route
@@ -314,6 +393,23 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
          fs_data, fs_words, fragment->pName, &reason);
       return *sampled;
    }
+   bool fragment_has_output = false;
+   for (uint32_t location = 0;
+        location < R3V_SHADER_INTERFACE_MAX_LOCATIONS; location++) {
+      if (interface->fragment.outputs[location].present) {
+         fragment_has_output = true;
+         break;
+      }
+   }
+   if (!fragment_has_output) {
+      /* A depth-only fragment shader may omit all color outputs.  The draw
+       * still needs a private color sink for the fixed cell, so the caller
+       * supplies the sink route without inventing an application color
+       * output. */
+      *no_color_output = r3v_fragment_no_color_from_spirv(
+         fs_data, fs_words, fragment->pName, &reason);
+      return *no_color_output;
+   }
    return r3v_fragment_constant_color_from_spirv(fs_data, fs_words,
                                                   fragment->pName,
                                                   color_bits, &reason) &&
@@ -329,7 +425,8 @@ stages_build_vertex_job(const VkGraphicsPipelineCreateInfo *info,
 static bool
 fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
                          uint32_t *target_width, uint32_t *target_height,
-                         bool *dynamic_out)
+                         bool has_color_attachment,
+                         bool has_depth_attachment, bool *dynamic_out)
 {
    const VkPipelineInputAssemblyStateCreateInfo *ia =
       info->pInputAssemblyState;
@@ -392,7 +489,7 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
        (rs->cullMode & ~(VkCullModeFlags)VK_CULL_MODE_FRONT_AND_BACK) != 0 ||
        (rs->frontFace != VK_FRONT_FACE_COUNTER_CLOCKWISE &&
         rs->frontFace != VK_FRONT_FACE_CLOCKWISE) ||
-       rs->depthBiasEnable != VK_FALSE || rs->lineWidth != 1.0f)
+       rs->lineWidth != 1.0f)
       return false;
 
    /* Single-sample rasterization with the coverage semantics of the
@@ -410,37 +507,41 @@ fixed_state_matches_cell(const VkGraphicsPipelineCreateInfo *info,
     * admitted blend vocabulary is the arithmetic that equals that
     * write: blending only as the identity configuration (source
     * factor ONE, destination ZERO, op ADD on both channels), the logic
-    * op only as COPY, and the write mask as all channels or none -- a
-    * zero mask writes no channel, so the host collapses the draw's
-    * triangles and the target keeps its clear.
+    * op only as COPY, and the write mask as all channels or none.  A
+    * depth-only subpass has no color attachment and therefore supplies
+    * no blend attachment state.
     */
    const VkPipelineColorBlendStateCreateInfo *cb = info->pColorBlendState;
-   if (cb == NULL || cb->attachmentCount != 1 ||
+   if (cb == NULL ||
+       (has_color_attachment ? cb->attachmentCount != 1
+                             : cb->attachmentCount != 0) ||
        (cb->logicOpEnable != VK_FALSE && cb->logicOp != VK_LOGIC_OP_COPY))
       return false;
-   const VkPipelineColorBlendAttachmentState *blend = &cb->pAttachments[0];
-   if (blend->blendEnable != VK_FALSE &&
-       (blend->srcColorBlendFactor != VK_BLEND_FACTOR_ONE ||
-        blend->dstColorBlendFactor != VK_BLEND_FACTOR_ZERO ||
-        blend->colorBlendOp != VK_BLEND_OP_ADD ||
-        blend->srcAlphaBlendFactor != VK_BLEND_FACTOR_ONE ||
-        blend->dstAlphaBlendFactor != VK_BLEND_FACTOR_ZERO ||
-        blend->alphaBlendOp != VK_BLEND_OP_ADD))
-      return false;
-   const VkColorComponentFlags full_mask =
-      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-   if (blend->colorWriteMask != full_mask && blend->colorWriteMask != 0)
-      return false;
+   if (has_color_attachment) {
+      if (cb->pAttachments == NULL)
+         return false;
+      const VkPipelineColorBlendAttachmentState *blend =
+         &cb->pAttachments[0];
+      if (blend->blendEnable != VK_FALSE &&
+          (blend->srcColorBlendFactor != VK_BLEND_FACTOR_ONE ||
+           blend->dstColorBlendFactor != VK_BLEND_FACTOR_ZERO ||
+           blend->colorBlendOp != VK_BLEND_OP_ADD ||
+           blend->srcAlphaBlendFactor != VK_BLEND_FACTOR_ONE ||
+           blend->dstAlphaBlendFactor != VK_BLEND_FACTOR_ZERO ||
+           blend->alphaBlendOp != VK_BLEND_OP_ADD))
+         return false;
+      const VkColorComponentFlags full_mask =
+         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+      if (blend->colorWriteMask != full_mask && blend->colorWriteMask != 0)
+         return false;
+   }
 
-   /* The pass shape carries no depth/stencil attachment, so the only
-    * depth/stencil state a valid program presents is the fully
-    * disabled one; any enabled test, bounds, or write refuses until a
-    * depth surface exists.
-    */
+   /* Color-only passes carry disabled depth/stencil state.  D24S8 state is
+    * lowered after the render-pass attachment contract is checked. */
    const VkPipelineDepthStencilStateCreateInfo *ds =
       info->pDepthStencilState;
-   if (ds != NULL &&
+   if (!has_depth_attachment && ds != NULL &&
        (ds->flags != 0 || ds->depthTestEnable != VK_FALSE ||
         ds->depthWriteEnable != VK_FALSE ||
         ds->depthBoundsTestEnable != VK_FALSE ||
@@ -474,6 +575,16 @@ create_pipeline(struct r3v_native_device *device,
 
    VK_FROM_HANDLE(vk_render_pass, pass, info->renderPass);
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
+   const bool render_pass_shape = r3v_native_render_pass_matches_cell(pass);
+   const bool depth_only_render_pass =
+      pass != NULL && pass->attachment_count == 1 &&
+      pass->subpass_count == 1 && pass->subpasses[0].color_count == 0 &&
+      pass->subpasses[0].depth_stencil_attachment != NULL;
+   const bool has_depth_attachment =
+      render_pass_shape &&
+      (pass->attachment_count == 2 || depth_only_render_pass);
+   const bool has_color_attachment =
+      render_pass_shape && pass->subpasses[0].color_count != 0;
 
    uint32_t target_width = 0, target_height = 0;
    bool dynamic_viewport_scissor = false;
@@ -483,18 +594,33 @@ create_pipeline(struct r3v_native_device *device,
    uint32_t narrow_width = 0;
    bool mixed_fragment = false;
    uint32_t color_bits[4] = { 0 };
+   bool no_color_output = false;
+   struct r3v_native_depth_shader_flags depth_shader = { 0 };
    struct r3v_native_pipeline admitted = { 0 };
    if (info->flags != 0 ||
        !stages_build_vertex_job(info, &job, &varying, &sampled,
                                 &narrow_width, &mixed_fragment, color_bits,
-                                &admitted.shader_interface) ||
+                                &no_color_output,
+                                &admitted.shader_interface, &depth_shader) ||
        !vertex_input_admit(info->pVertexInputState, &job, &admitted) ||
        r300_cpu_vertex_job_validate(&job) != 0 ||
        !fixed_state_matches_cell(info, &target_width, &target_height,
+                                 has_color_attachment,
+                                 has_depth_attachment,
                                  &dynamic_viewport_scissor) ||
+       (no_color_output && !has_depth_attachment) ||
        layout == NULL || layout->push_range_count != 0 ||
-       !r3v_native_render_pass_matches_cell(pass) || info->subpass != 0)
+       !render_pass_shape || info->subpass != 0)
       return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+
+   if (has_depth_attachment) {
+      if (info->pDepthStencilState == NULL ||
+          r3v_native_depth_pipeline_lower_rasterization(
+             info->pDepthStencilState, info->pRasterizationState,
+             &depth_shader, &admitted.depth_pipeline) != 0)
+         return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+      admitted.has_depth_pipeline = true;
+   }
    /* The sampled module names set 0 binding 0, so its layout carries
     * exactly that combined-image-sampler binding under the fragment
     * stage; every other pipeline carries no set.
@@ -537,13 +663,17 @@ create_pipeline(struct r3v_native_device *device,
    pipeline->cull_mode = info->pRasterizationState->cullMode;
    pipeline->front_face = info->pRasterizationState->frontFace;
    pipeline->sample_mask_zero =
-      (info->pMultisampleState->pSampleMask != NULL &&
-       (info->pMultisampleState->pSampleMask[0] & 1u) == 0) ||
+      info->pMultisampleState->pSampleMask != NULL &&
+      (info->pMultisampleState->pSampleMask[0] & 1u) == 0;
+   pipeline->color_writes_disabled =
+      has_color_attachment &&
       info->pColorBlendState->pAttachments[0].colorWriteMask == 0;
    pipeline->dynamic_viewport_scissor = dynamic_viewport_scissor;
    pipeline->target_width = target_width;
    pipeline->target_height = target_height;
    pipeline->vertex_job = job;
+   pipeline->depth_pipeline = admitted.depth_pipeline;
+   pipeline->has_depth_pipeline = admitted.has_depth_pipeline;
    pipeline->shader_interface = admitted.shader_interface;
    r3v_post_vs_lowering_from_interface(&pipeline->shader_interface,
                                        &pipeline->post_vs);

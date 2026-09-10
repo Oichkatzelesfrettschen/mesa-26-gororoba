@@ -215,7 +215,8 @@ r300_rb2d_emit_common_state(struct r300_rb2d_emitter *e, uint32_t write_mask)
                 RADEON_GMC_DST_PITCH_OFFSET_CNTL |
                    RADEON_GMC_BRUSH_SOLID_COLOR |
                    (format->code << 8) | RADEON_ROP3_P |
-                   RADEON_GMC_CLR_CMP_CNTL_DIS | RADEON_GMC_WR_MSK_DIS);
+                   RADEON_GMC_CLR_CMP_CNTL_DIS |
+                   (write_mask == UINT32_MAX ? RADEON_GMC_WR_MSK_DIS : 0u));
    r300_pm4_reg(b, RADEON_DP_CNTL,
                 RADEON_DST_X_LEFT_TO_RIGHT | RADEON_DST_Y_TOP_TO_BOTTOM);
    r300_pm4_reg(b, RADEON_DP_WRITE_MSK, write_mask);

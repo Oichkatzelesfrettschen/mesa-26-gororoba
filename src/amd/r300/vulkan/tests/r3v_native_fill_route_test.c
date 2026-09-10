@@ -909,6 +909,106 @@ test_expected_pitch_declaration_parses_fail_closed(void)
    unsetenv("R3V_NATIVE_RB2D_V2_EXPECTED_PITCH_BYTES");
 }
 
+/* The public two-pass depth route has one merged depth relocation between
+ * the first and second carrier entries.  The queue predicate admits that
+ * exact topology while retaining the existing vertex-only and color-only
+ * topology for passes without a depth attachment. */
+static void
+test_multi_pass_depth_topology(void)
+{
+   struct r3v_native_cmd_buffer command = {0};
+   struct r3v_native_memory first_vertex = {0};
+   struct r3v_native_memory second_vertex = {0};
+   struct r3v_native_memory color = {0};
+   struct r3v_native_memory depth = {0};
+   struct r3v_native_memory other_depth = {0};
+   struct r3v_native_depth_image_contract contract = {0};
+   struct r3v_native_depth_image_contract other_contract = {0};
+   struct r3v_native_deferred_draw deferred_draws[2] = {0};
+   struct r3v_native_bo_reference references[4] = {
+      [0] = { .handle = 11, .read_domains = RADEON_GEM_DOMAIN_GTT,
+              .memory = &first_vertex },
+      [1] = { .handle = 12, .write_domain = RADEON_GEM_DOMAIN_GTT,
+              .memory = &color },
+      [2] = { .handle = 13, .read_domains = RADEON_GEM_DOMAIN_GTT,
+              .write_domain = RADEON_GEM_DOMAIN_GTT, .memory = &depth },
+      [3] = { .handle = 14, .read_domains = RADEON_GEM_DOMAIN_GTT,
+              .memory = &second_vertex },
+   };
+
+   first_vertex.bo.handle = 11;
+   second_vertex.bo.handle = 14;
+   color.bo.handle = 12;
+   depth.bo.handle = 13;
+   other_depth.bo.handle = 15;
+   command.cell_kind = R3V_NATIVE_CELL_KIND_TRIANGLE_MULTI_PASS;
+   command.references = references;
+   command.reference_count = 4;
+   command.deferred_draws = deferred_draws;
+   command.deferred_draw_count = 2;
+   command.deferred_draw_capacity = 2;
+   for (uint32_t draw = 0; draw < 2; draw++) {
+      command.deferred_draws[draw].pending = true;
+      command.deferred_draws[draw].target_width = 64;
+      command.deferred_draws[draw].target_height = 64;
+      command.deferred_draws[draw].depth_memory = &depth;
+      command.deferred_draws[draw].depth_bound =
+         (struct r3v_native_depth_image_bound){
+            .contract = &contract,
+            .binding_offset_bytes = 4096,
+            .surface_base_bytes = 2048,
+            .bo_bytes = 65536,
+         };
+      command.deferred_draws[draw].has_depth_pipeline = true;
+   }
+
+   CHECK(!r3v_native_cell_geometry_unfrozen(&command),
+         "the shared depth topology is admitted");
+
+   command.references[2].write_domain = 0;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "a read-only depth relocation is refused");
+   command.references[2].write_domain = RADEON_GEM_DOMAIN_GTT;
+   command.references[2].read_domains = 0;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "a write-only depth relocation is refused");
+   command.references[2].read_domains = RADEON_GEM_DOMAIN_GTT;
+
+   command.deferred_draws[1].depth_memory = &other_depth;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "mismatched depth memory is refused");
+   command.deferred_draws[1].depth_memory = &depth;
+   command.deferred_draws[1].depth_bound.contract = &other_contract;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "mismatched depth contracts are refused");
+   command.deferred_draws[1].depth_bound.contract = &contract;
+
+   command.references[2].handle = 99;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "a depth relocation for another BO is refused");
+   command.references[2].handle = depth.bo.handle;
+   command.references[3].write_domain = RADEON_GEM_DOMAIN_GTT;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "a second depth-direction relocation is refused");
+   command.references[3].write_domain = 0;
+
+   command.deferred_draws[1].depth_memory = NULL;
+   command.deferred_draws[1].has_depth_pipeline = false;
+   command.reference_count = 3;
+   CHECK(r3v_native_cell_geometry_unfrozen(&command),
+         "one pending depth pass is refused");
+
+   command.deferred_draws[0].depth_memory = NULL;
+   command.deferred_draws[0].has_depth_pipeline = false;
+   command.references[2] = (struct r3v_native_bo_reference){
+      .handle = second_vertex.bo.handle,
+      .read_domains = RADEON_GEM_DOMAIN_GTT,
+      .memory = &second_vertex,
+   };
+   CHECK(!r3v_native_cell_geometry_unfrozen(&command),
+         "the existing non-depth topology remains admitted");
+}
+
 int
 main(void)
 {
@@ -929,6 +1029,7 @@ main(void)
    test_record_follows_its_transport(&ref);
    test_resubmission_readmits(&ref);
    test_expected_pitch_declaration_parses_fail_closed();
+   test_multi_pass_depth_topology();
 
    if (failures != 0) {
       fprintf(stderr, "%u check(s) failed\n", failures);

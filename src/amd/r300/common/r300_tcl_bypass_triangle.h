@@ -18,6 +18,7 @@ struct r300_noperspective_q_lane_plan;
 struct r300_noperspective_mixed_carrier_plan;
 struct r300_flat_color0_plan;
 struct r300_rs_tex_adj_probe_plan;
+struct r300_zb_depth_state_params;
 
 /* BO slots the cell references; the transport binds slot order to the
  * relocation-list order at submission.
@@ -39,7 +40,8 @@ enum r300_tcl_bypass_triangle_slot {
     */
    R300_TRIANGLE_SLOT_COMPOSED_VERTEX = 3,
    R300_TRIANGLE_SLOT_COMPOSED_COLOR = 4,
-   R300_TRIANGLE_SLOT_COUNT = 5,
+   R300_TRIANGLE_SLOT_DEPTH = 5,
+   R300_TRIANGLE_SLOT_COUNT = 6,
 };
 
 /* The unsampled cells reference the vertex and color slots alone, so
@@ -208,7 +210,8 @@ struct r300_tcl_bypass_triangle_reloc_site {
    (1u + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
 #define R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT \
    (2u + R300_TRIANGLE_CLIP_MAX_DRAW_SEGMENTS)
-#define R300_TRIANGLE_MAX_RELOC_SITES R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT
+#define R300_TRIANGLE_MAX_RELOC_SITES \
+   (R300_TRIANGLE_CLIP_SAMPLED_SITE_COUNT + 2u)
 static_assert(R300_TRIANGLE_SLOT_COUNT <= 32,
               "slot uniqueness is proven in a 32-bit mask");
 
@@ -218,6 +221,13 @@ struct r300_tcl_bypass_triangle_ib {
    struct r300_tcl_bypass_triangle_reloc_site
       reloc_sites[R300_TRIANGLE_MAX_RELOC_SITES];
    uint32_t reloc_site_count;
+   /* Ordered stencil lowering can split one clip-capacity vertex stream into
+    * one draw per source primitive.  Every additional draw reuses the vertex
+    * BO relocation.  The primary vertex site stays in reloc_sites; these
+    * indices name the repeated NOP payloads without inflating the fixed slot
+    * topology carried by every ordinary cell. */
+   uint32_t *vertex_reloc_aliases;
+   uint32_t vertex_reloc_alias_count;
    /* Set when the emission allocated ib, so the release frees what it owns
     * and leaves caller storage alone.
     */
@@ -253,6 +263,26 @@ void r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib);
  */
 int r300_tcl_bypass_triangle_validate_reloc_sites(
    const struct r300_tcl_bypass_triangle_ib *ib);
+
+int r300_tcl_bypass_triangle_insert_depth_state(
+   struct r300_tcl_bypass_triangle_ib *ib,
+   const struct r300_zb_depth_state_params *state, bool z_top_enable);
+
+/* Re-segments a clip-capacity stream into one ordered draw for each source
+ * triangle.  Each segment consumes exactly seven reserved output triangles,
+ * writes one placeholder STENCILREFMASK value, and rebases its vertex fetch.
+ * The operation is transactional and preserves ordinary cells byte-for-byte
+ * when source_triangle_count is zero. */
+int r300_tcl_bypass_triangle_split_ordered_stencil(
+   struct r300_tcl_bypass_triangle_ib *ib, uint32_t source_triangle_count,
+   uint32_t initial_reference_mask);
+
+/* Replaces the ordered segment placeholders after submission-time facing
+ * classification.  The reference_masks array follows source primitive order.
+ */
+int r300_tcl_bypass_triangle_patch_ordered_stencil(
+   uint32_t *ib, uint32_t ib_size_dwords, const uint32_t *reference_masks,
+   uint32_t reference_mask_count);
 
 /* Builds the cell's fragment binary from the compiled constant-color US
  * block (r300_tcl_bypass_triangle_fs_block.h, baked by
@@ -722,7 +752,8 @@ int r300_tcl_bypass_triangle_composed_render_sample_emit(
  * emitter binds with to reach the digest the recorded cell carries.
  */
 extern const uint32_t
-   r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT];
+   r300_tcl_bypass_triangle_composed_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT];
 
 /* The multisample resolve cell: one stream renders the reference
  * triangle into a sample-expanded color surface with GB_AA_CONFIG's
@@ -801,7 +832,8 @@ int r300_tcl_bypass_triangle_msaa_resolve_emit(
  * entry.
  */
 extern const uint32_t
-   r300_tcl_bypass_triangle_msaa_slot_index[R300_TRIANGLE_SLOT_COUNT];
+   r300_tcl_bypass_triangle_msaa_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT];
 
 /* The resolve half's vertices: one triangle at (0, 0), (2w, 0), (0, 2h)
  * whose interior covers the whole extent, so the scissor bounds the

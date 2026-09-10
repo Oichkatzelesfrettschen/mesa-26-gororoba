@@ -16,6 +16,7 @@
 #include "r300_pm4_builder.h"
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_zb_depth_state.h"
 #include "r300_us_source_read.h"
 #include "tests/r300_retained_route_digests.h"
 #include "tests/r300_varying_cell_digests.h"
@@ -291,6 +292,111 @@ test_reloc_sites_bind_slots(void)
 
    r300_tcl_bypass_triangle_release(&cell);
    r300_fragment_binary_finish(&fs);
+}
+
+static void
+test_depth_state_insertion(void)
+{
+   struct r300_fragment_binary fs;
+   struct r300_tcl_bypass_triangle_ib cell;
+   make_cell(&fs, &cell);
+   const uint32_t before = cell.ib_size_dwords;
+   const struct r300_zb_depth_state_params depth = {
+      .pitch_pixels = 64,
+      .depth_format = R300_DEPTHFORMAT_16BIT_INT_Z,
+      .depth_offset_bytes = 0x2000,
+      .depth_function = R300_ZS_LESS,
+      .depth_write = true,
+   };
+   assert(r300_tcl_bypass_triangle_insert_depth_state(&cell, &depth, true) == 0);
+   assert(cell.ib_size_dwords == before + r300_zb_depth_state_dwords() + 2u);
+   assert(cell.reloc_site_count == 3);
+   assert(cell.reloc_sites[0].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert(cell.reloc_sites[1].slot == R300_TRIANGLE_SLOT_DEPTH);
+   assert(cell.reloc_sites[2].slot == R300_TRIANGLE_SLOT_VERTEX);
+   assert(cell.ib[cell.reloc_sites[1].ib_index + 9u] ==
+          CP_PACKET0(R300_ZB_ZTOP, 0));
+   assert(cell.ib[cell.reloc_sites[1].ib_index + 10u] == 1u);
+   assert(cell.reloc_sites[1].ib_index < r300_triangle_draw_dword(&cell));
+   assert(cell.ib[cell.reloc_sites[2].ib_index - 5u] ==
+          CP_PACKET3(R300_PACKET3_3D_LOAD_VBPNTR, 2));
+   assert(cell.reloc_sites[1].ib_index <
+          cell.reloc_sites[2].ib_index - 5u);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+
+   make_cell(&fs, &cell);
+   assert(r300_tcl_bypass_triangle_insert_depth_state(&cell, &depth, false) ==
+          0);
+   assert(cell.ib[cell.reloc_sites[1].ib_index + 10u] == 0u);
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
+static void
+test_ordered_stencil_primitive_segments(void)
+{
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             64u, 64u, false, 3u, &cell) == 0);
+   assert(r300_tcl_bypass_triangle_split_ordered_stencil(
+             &cell, 3u, 0x00ff5au) == 0);
+   assert(cell.reloc_site_count == 2u);
+   assert(cell.vertex_reloc_alias_count == 2u);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   const uint32_t references[] = {0x00112233u, 0x00445566u, 0x00778899u};
+   assert(r300_tcl_bypass_triangle_patch_ordered_stencil(
+             cell.ib, cell.ib_size_dwords, references,
+             ARRAY_SIZE(references)) == 0);
+   uint32_t seen = 0u;
+   for (uint32_t index = 0u; index + 2u < cell.ib_size_dwords;) {
+      const uint32_t header = cell.ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      assert(type != 1u);
+      assert(payload <= cell.ib_size_dwords - index - 1u);
+      if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+          (cell.ib[index + 2u] >> 30) == 3u &&
+          (cell.ib[index + 2u] & 0xff00u) ==
+             R300_PACKET3_3D_LOAD_VBPNTR) {
+         assert(seen < ARRAY_SIZE(references));
+         assert(cell.ib[index + 1u] == references[seen]);
+         assert((cell.ib[index + 9u] >> R300_PRIM_NUM_VERTICES_SHIFT) ==
+                3u * R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT);
+         seen++;
+      }
+      index += 1u + payload;
+   }
+   assert(seen == ARRAY_SIZE(references));
+
+   /* Binding updates both the primary vertex relocation and every alias. */
+   const uint32_t slot_indices[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = 5u,
+      [R300_TRIANGLE_SLOT_COLOR] = 2u,
+   };
+   /* Restore the emitted placeholder form required by the relocation
+    * validator before binding. */
+   for (uint32_t index = 0u; index + 2u < cell.ib_size_dwords;) {
+      const uint32_t header = cell.ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+          (cell.ib[index + 2u] >> 30) == 3u)
+         cell.ib[index + 1u] = 0x00ff5au;
+      index += 1u + payload;
+   }
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &cell, slot_indices, ARRAY_SIZE(slot_indices)) == 0);
+   assert(cell.ib[cell.reloc_sites[1].ib_index] == 20u);
+   for (uint32_t alias = 0u; alias < cell.vertex_reloc_alias_count; alias++)
+      assert(cell.ib[cell.vertex_reloc_aliases[alias]] == 20u);
+
+   r300_tcl_bypass_triangle_release(&cell);
 }
 
 /* The checks the site validator proves against the stream itself: a site is
@@ -2121,7 +2227,7 @@ test_multi_pass_cell(void)
    /* The bound form binds no further. */
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &two, r300_tcl_bypass_triangle_composed_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) != 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) != 0);
    r300_tcl_bypass_triangle_release(&two);
 
    /* Every binding the merge produces, with its reference count. */
@@ -2437,6 +2543,7 @@ test_composed_reloc_payloads_bind_to_merged_indices(void)
    handle_of_slot[R300_TRIANGLE_SLOT_TEXTURE] = 7;
    handle_of_slot[R300_TRIANGLE_SLOT_COMPOSED_VERTEX] = 9;
    handle_of_slot[R300_TRIANGLE_SLOT_COMPOSED_COLOR] = 11;
+   handle_of_slot[R300_TRIANGLE_SLOT_DEPTH] = 13;
 
    uint32_t merged[R300_TRIANGLE_SLOT_COUNT];
    uint32_t merged_handles[R300_TRIANGLE_SLOT_COUNT];
@@ -2453,16 +2560,16 @@ test_composed_reloc_payloads_bind_to_merged_indices(void)
          merged_handles[merged_count++] = handle_of_slot[slot];
       merged[slot] = found;
    }
-   /* Five slots over four buffer objects, so the texture shares the
+   /* Six slots over five buffer objects, so the texture shares the
     * color's entry and every later slot shifts down one.
     */
-   assert(merged_count == 4);
+   assert(merged_count == 5);
    assert(merged[R300_TRIANGLE_SLOT_TEXTURE] ==
           merged[R300_TRIANGLE_SLOT_COLOR]);
    assert(merged[R300_TRIANGLE_SLOT_COMPOSED_COLOR] == 3);
 
    /* The emitted payload names the slot, which the merged chunk no
-    * longer agrees with at three of the five sites.
+    * longer agrees with at three of the five active sites.
     */
    uint32_t disagreements = 0;
    for (uint32_t i = 0; i < ib.reloc_site_count; i++) {
@@ -2980,10 +3087,10 @@ test_msaa_resolve_cell(void)
    /* The merged map binds without refusing, and binding twice refuses. */
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &ib, r300_tcl_bypass_triangle_msaa_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) == 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) == 0);
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &ib, r300_tcl_bypass_triangle_msaa_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) != 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) != 0);
    r300_tcl_bypass_triangle_release(&ib);
 
    /* Refusals: a sample count with no subsample set, a destination
@@ -3137,7 +3244,7 @@ test_msaa_clear_cell(void)
     */
    assert(r300_tcl_bypass_triangle_bind_reloc_indices(
              &cleared, r300_tcl_bypass_triangle_msaa_slot_index,
-             R300_TRIANGLE_SLOT_COUNT) == 0);
+             R300_TRIANGLE_COMPOSED_SLOT_COUNT) == 0);
    assert(cleared.ib[cleared.reloc_sites[0].ib_index] ==
           cleared.ib[cleared.reloc_sites[2].ib_index]);
    assert(cleared.ib[cleared.reloc_sites[1].ib_index] ==
@@ -3463,6 +3570,8 @@ main(void)
    test_reloc_site_mutations_refuse();
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
+   test_depth_state_insertion();
+   test_ordered_stencil_primitive_segments();
    test_reloc_site_validator_refuses_each_defect();
    test_emission_is_deterministic();
    test_contract_emission_is_self_contained();

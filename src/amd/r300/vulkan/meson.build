@@ -30,6 +30,12 @@ r3v_loader_base_files = files(
 # test runs in every configuration and calibrates on known-bad tables.
 if with_tests
   test(
+    'r3v-public-depth-stencil-obligations',
+    prog_python,
+    args : [files('tests/r3v_public_depth_stencil_obligations_test.py')],
+    suite : ['r3v'],
+  )
+  test(
     'r3v-memory-properties-contract',
     executable(
       'r3v_memory_properties_contract_test',
@@ -295,6 +301,9 @@ r3v_native_files = files(
   'r3v_native_device.c',
   'r3v_native_draw.c',
   'r3v_native_fill_route.c',
+  'r3v_native_rb2d_tiled_copy.c',
+  'r3v_native_depth_image_contract.c',
+  'r3v_native_depth_pipeline.c',
   'r3v_native_image.c',
   'r3v_native_identity.c',
   'r3v_native_memory.c',
@@ -306,6 +315,8 @@ r3v_native_files = files(
   'r3v_native_queue.c',
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
+  'r3v_native_depth_transfer.c',
+  'r3v_native_depth_clear.c',
   'r3v_fill_route.c',
   'r3v_measurement_claim.c',
   'r3v_measurement_declaration.c',
@@ -1415,6 +1426,32 @@ r3v_native_attended_direct_write = executable(
 # first run is the B14 depth-control workload debut, unobserved by any
 # reader.  Built and never registered as a test, because running it is
 # a hardware authorization rather than a build-graph result.
+r3v_native_depth_image_contract_test = executable(
+  'r3v_native_depth_image_contract_test',
+  files('tests/r3v_native_depth_image_contract_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-depth-image-contract', r3v_native_depth_image_contract_test,
+     suite : ['r3v'])
+
+r3v_native_depth_pipeline_test = executable(
+  'r3v_native_depth_pipeline_test',
+  files('tests/r3v_native_depth_pipeline_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-depth-pipeline', r3v_native_depth_pipeline_test,
+     suite : ['r3v'])
+
 r3v_native_zb_depth_surface_catalogue_test = executable(
   'r3v_native_zb_depth_surface_catalogue_test',
   files('tests/r3v_native_zb_depth_surface_catalogue_test.c'),
@@ -1430,6 +1467,90 @@ test(
   r3v_native_zb_depth_surface_catalogue_test,
   suite : ['r3v'],
 )
+
+r3v_native_zb_persistence_identity_test = executable(
+  'r3v_native_zb_persistence_identity_test',
+  files('tests/r3v_native_zb_persistence_identity_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-zb-persistence-identity',
+     r3v_native_zb_persistence_identity_test, suite : ['r3v'])
+
+r3v_native_rb2d_tiled_copy_qualification = executable(
+  'r3v_native_rb2d_tiled_copy_qualification',
+  files('tests/r3v_native_rb2d_tiled_copy_qualification.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+foreach mode : ['prepare', 'selftest']
+  test('r3v-native-rb2d-tiled-copy-byte-' + mode,
+       r3v_native_rb2d_tiled_copy_qualification,
+       args : ['--byte-span', '7573', '8197', '3', '--' + mode],
+       suite : ['r3v'])
+endforeach
+test('r3v-native-rb2d-tiled-copy-fixtures',
+     r3v_native_rb2d_tiled_copy_qualification,
+     args : ['--selftest'], suite : ['r3v'])
+test('r3v-native-rb2d-tiled-copy-prepare',
+     r3v_native_rb2d_tiled_copy_qualification,
+     args : ['--prepare'], suite : ['r3v'])
+foreach component : ['depth', 'stencil']
+  test('r3v-native-rb2d-tiled-copy-' + component + '-fixtures',
+       r3v_native_rb2d_tiled_copy_qualification,
+       args : ['--' + component + '-only', '--selftest'], suite : ['r3v'])
+  test('r3v-native-rb2d-tiled-copy-' + component + '-prepare',
+       r3v_native_rb2d_tiled_copy_qualification,
+       args : ['--' + component + '-only', '--prepare'], suite : ['r3v'])
+endforeach
+
+# Hardware execution is explicit; the registered test uses CPU fixtures only.
+r3v_native_zb_tiled_validation = executable(
+  'r3v_native_zb_tiled_validation',
+  files('tests/r3v_native_zb_tiled_validation.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+test('r3v-native-zb-tiled-validation-fixtures',
+     r3v_native_zb_tiled_validation, args : ['--selftest'], suite : ['r3v'])
+test('r3v-native-zb-persistence-prepare',
+     r3v_native_zb_tiled_validation,
+     args : ['unused-evidence', '--persistence', '--prepare'], suite : ['r3v'])
+
+# Public Vulkan D24S8 attachment qualification.  The automatic cases stop at
+# the independent oracle and command-recording boundaries; live submissions
+# remain explicit attended executions.
+r3v_native_attended_public_zb_depth = executable(
+  'r3v_native_attended_public_zb_depth',
+  files('tests/r3v_native_attended_public_zb_depth.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+test('r3v-native-public-zb-depth-fixtures',
+     r3v_native_attended_public_zb_depth,
+     args : ['--selftest'], suite : ['r3v'])
 
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',
@@ -1800,7 +1921,7 @@ if with_tests
           '../common/r300_r2vb_fetch_pass.c',
           '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_producer_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -1829,7 +1950,7 @@ if with_tests
           '../common/r300_pm4_builder.c',
           '../common/r300_r2vb_carrier_delivery.c',
           '../common/r300_r2vb_producer_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -1911,6 +2032,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   r3v_native_cell_vars = {
     'LD_PRELOAD' : libradeon_noop_drm_shim.full_path(),
     'RADEON_GPU_ID' : '0x5974',
+    'R3V_DRM_SHIM_SUBSYSTEM_ID' : '1028:022a',
+    'R3V_DRM_SHIM_DMI_PRODUCT_NAME' : 'Vostro 1000',
     'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
   }
   r3v_native_cell_env = environment(r3v_native_cell_vars)
@@ -2602,10 +2725,28 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_transfer_ops_test = executable(
       'r3v_native_transfer_ops_test',
       files('tests/r3v_native_transfer_ops_test.c'),
-      include_directories : [inc_include, include_directories('.')],
-      dependencies : [dep_vulkan_loader],
+      include_directories : [inc_include, inc_src, include_directories('.')],
+      dependencies : [dep_vulkan_loader] + r3v_native_deps,
       c_args : [no_override_init_args],
     )
+    test('r3v-native-depth-image-storage', r3v_native_transfer_ops_test,
+         args : ['--depth-storage'],
+         env : environment(r3v_native_cell_vars + {
+           'VK_DRIVER_FILES' : _dev_icd.full_path(),
+           'R3V_DRM_SHIM_SUBSYSTEM_ID' : '1028:022a',
+           'R3V_DRM_SHIM_DMI_PRODUCT_NAME' : 'Vostro 1000',
+         }),
+         depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+         suite : ['r3v'])
+    test('r3v-native-depth-image-unresolved-board', r3v_native_transfer_ops_test,
+         args : ['--depth-storage-refuse-platform'],
+         env : environment(r3v_native_cell_vars + {
+           'VK_DRIVER_FILES' : _dev_icd.full_path(),
+           'R3V_DRM_SHIM_SUBSYSTEM_ID' : '1028:0000',
+           'R3V_DRM_SHIM_DMI_PRODUCT_NAME' : 'Vostro 1000',
+         }),
+         depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
+         suite : ['r3v'])
     test(
       'r3v-native-transfer-ops',
       r3v_native_transfer_ops_test,
@@ -3318,6 +3459,58 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     timeout : 60,
     suite : ['r3v'],
   )
+  foreach public_depth_mode : ['read', 'write', 'nearfar', 'farnear']
+    test(
+      'r3v-native-public-zb-depth-record-' + public_depth_mode,
+      r3v_native_attended_public_zb_depth,
+      args : [meson.current_build_dir(), '2', public_depth_mode,
+              '--record-only'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+    test(
+      'r3v-native-public-zb-depth-prepare-' + public_depth_mode,
+      r3v_native_attended_public_zb_depth,
+      args : [meson.current_build_dir(), '2', public_depth_mode,
+              '--prepare'],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  test(
+    'r3v-native-public-zb-depth-record-persistence',
+    r3v_native_attended_public_zb_depth,
+    args : [meson.current_build_dir(), '--persistence', '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-public-zb-depth-prepare-persistence',
+    r3v_native_attended_public_zb_depth,
+    args : [meson.current_build_dir(), '--persistence', '--prepare'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  foreach composition_mode : ['record-only', 'prepare']
+    test(
+      'r3v-native-public-zb-depth-composition-' + composition_mode,
+      r3v_native_attended_public_zb_depth,
+      args : [meson.current_build_dir(), '--composition',
+              '--' + composition_mode],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # The Flat two-draw runner's recording boundary on the fixture: the
   # Flat pipeline's interface record, both deferred draws' lowering over
   # their own vertex order, and the recorded stream's digest against
@@ -4001,7 +4194,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_first_draw_state.c',
           '../common/r300_fragment_binary.c',
           '../common/r300_pm4_builder.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -4166,7 +4359,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_carrier_delivery.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_r2vb_public_route.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -4200,7 +4393,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_fetch_pass.c',
           '../common/r300_r2vb_fetched_producer.c',
           '../common/r300_r2vb_producer_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -4227,7 +4420,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_carrier_delivery.c',
           '../common/r300_r2vb_producer_pass.c',
           '../common/r300_r2vb_reingest_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -4254,7 +4447,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_r2vb_carrier_delivery.c',
           '../common/r300_r2vb_float2_tuple_pass.c',
           '../common/r300_r2vb_producer_pass.c',
-          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
@@ -4285,7 +4478,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
             '../common/r300_first_draw_state.c',
             '../common/r300_fragment_binary.c',
             '../common/r300_pm4_builder.c',
-            '../common/r300_tcl_bypass_triangle.c',
+            '../common/r300_tcl_bypass_triangle.c', '../common/r300_zb_depth_state.c',
           '../common/r300_flat_color0_plan.c', '../common/r300_rs_tex_adj_probe.c', '../common/r300_noperspective_reciprocal_plan.c', '../common/r300_noperspective_q_lane_plan.c', '../common/r300_noperspective_mixed_carrier_plan.c'),
       include_directories : [r3v_native_inc, include_directories('.')],
       dependencies : [idep_mesautil],

@@ -47,7 +47,13 @@ enum r300_zb_depth_control_slot {
    R300_ZB_DEPTH_CONTROL_SLOT_COUNT = 3,
 };
 
+struct r300_zb_depth_test_options {
+   uint32_t depth_function;
+   bool depth_write;
+};
+
 struct r300_zb_depth_control_params {
+   const struct r300_zb_depth_test_options *test_options;
    /* Byte offset of the first vertex inside the vertex BO. */
    uint32_t vertex_offset;
    /* RB3D_COLORPITCH0 value: pitch in pixels plus format and endian
@@ -192,6 +198,9 @@ int r300_zb_depth_control_reference_contract(
  * authority produces one byte-identical IB from one construction.
  * Returns 0 or a negative errno; the caller owns the returned IB.
  */
+int r300_zb_depth_tiled_validation_emit(
+   bool depth_write, struct r300_zb_depth_control_ib *out);
+
 int r300_zb_depth_control_reference_emit(
    struct r300_zb_depth_control_ib *out);
 

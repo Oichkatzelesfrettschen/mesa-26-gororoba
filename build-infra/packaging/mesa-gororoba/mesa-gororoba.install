@@ -4,18 +4,19 @@
 _notes() {
   cat <<'EOF'
 mesa-gororoba installed an RS482-scoped fork build into the system Mesa prefix:
-  * GL: r300 hardware + llvmpipe software fallback (egl/glx/gles/gbm/glvnd).
-  * Vulkan: ati_r300 (r3v) ICD staged under /usr/share/mesa-gororoba/vulkan/icd.d,
-    selected by mesa-gororoba-run and the profile.d/environment.d policy; it
-    is not on the system loader's default search path until its promotion gate.
+  * GL: r300 hardware (egl/glx/gles/gbm/glvnd); software rasterizers are
+    excluded so hardware-path failures remain visible.
+  * Vulkan: ati_r300 (r3v) ICD installed under /usr/share/vulkan/icd.d with its
+    library under /usr/lib, so ordinary applications use the standard loader
+    search path.  mesa-gororoba-run remains available for prefix-specific
+    development selection.
   * VA-API: r300 MPEG-1/2 decode through the normal libva DRI path.
-  * Loader policy: profile.d and environment.d entries prefer r300 for shells
-    and user sessions; mesa-gororoba-run scopes the same variables to one
-    command.
+  * Loader policy: profile.d and environment.d entries prefer r300 for GL and
+    VA shells and user sessions; mesa-gororoba-run scopes explicit Vulkan and
+    GL variables to one development command.
 Consequences to know:
-  * llvm coupling: llvmpipe links libLLVM.so of the build host's llvm major.
-    If the installed llvm-libs major differs, llvmpipe paths fail to dlopen --
-    rebuild mesa-gororoba against the current llvm.
+  * The package builds without LLVM and llvmpipe.  The vertex stage uses the
+    C draw path required by the RS482-focused hybrid TCL configuration.
   * mesa-gororoba replaces stock mesa and vulkan-radeon.  To roll back,
     reinstall the distro mesa and vulkan-radeon packages, then reboot the
     display stack.
@@ -26,8 +27,9 @@ Consequences to know:
       mesa-gororoba-run vulkaninfo --summary
   * GLX on Mesa 26 needs an X server with DRI3 for hardware clients.  On RS482,
     xf86-video-ati radeon EXA exposes server-side DRI2 and can make glxinfo
-    fall back to llvmpipe even when Xorg logs "AIGLX: Loaded and initialized
-    r300".  For RS482 hosts, install the sample modesetting+glamor policy from:
+    fail to expose hardware GL even when Xorg logs "AIGLX: Loaded and
+    initialized r300".  For RS482 hosts, install the sample
+    modesetting+glamor policy from:
       /usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf
     to the host's /etc/X11/xorg.conf.d policy path, then restart the display
     manager and verify glxinfo reports "ATI RS480".

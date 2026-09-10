@@ -6,10 +6,8 @@
  * cell through public entry points alone, and every contract deviation
  * refuses.  The hazard gate stays closed, so each vkQueueSubmit refuses
  * before the ioctl and before the deferred vertex gather and load-op
- * clear; the harness verifies that a refused submit leaves the carrier
- * and the target untouched, and proves the execution-time boundary --
- * the stream re-read and the clear realized at execution -- by driving
- * the deferred executor directly.
+ * clear. The harness authorizes the one shim submission for the composed
+ * ordering case, while the surrounding refusal cases keep the gate closed.
  */
 
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
@@ -22,6 +20,7 @@
 #define VK_NO_PROTOTYPES
 
 #include "r3v_native.h"
+#include "r3v_physical_device.h"
 #include "r3v_cpu_sync.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_multi_pass_arms.h"
@@ -38,9 +37,9 @@
 #include "amd/r300/common/r300_noperspective_reciprocal_plan.h"
 #include "amd/r300/common/r300_r2vb_public_route.h"
 #include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/radeon_legacy_2d_reg.h"
 
 #include "vk_semaphore.h"
-
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "util/u_math.h"
@@ -64,6 +63,7 @@ VKAPI_ATTR void VKAPI_CALL r3v_GetDeviceBufferMemoryRequirements(
    VkMemoryRequirements2 *pMemoryRequirements);
 
 #define CLEAR_SENTINEL ((float)0xa5 / 255.0f)
+#define COLOR_SEED 0x5c5c5c5cu
 
 /* The application payload is NDC: the public route's CPU vertex node
  * applies the Vulkan viewport transform, and over the 64x64 target
@@ -221,8 +221,10 @@ check_timeline_wait_consumption(void)
    f(vkDestroyShaderModule) f(vkCreatePipelineLayout)                      \
    f(vkDestroyPipelineLayout) f(vkCreateGraphicsPipelines)                 \
    f(vkDestroyPipeline) f(vkCreateCommandPool) f(vkDestroyCommandPool)     \
-   f(vkAllocateCommandBuffers) f(vkBeginCommandBuffer)                     \
+   f(vkAllocateCommandBuffers) f(vkResetCommandBuffer)                      \
+   f(vkBeginCommandBuffer)                                                   \
    f(vkEndCommandBuffer) f(vkCmdBeginRenderPass) f(vkCmdEndRenderPass)     \
+   f(vkCmdExecuteCommands)                                                 \
    f(vkCmdClearAttachments) f(vkCmdSetViewport) f(vkCmdSetScissor)          \
    f(vkCmdBindPipeline) f(vkCmdBindVertexBuffers) f(vkCmdBindIndexBuffer) \
    f(vkCmdDraw) f(vkCmdDrawIndexed)                                      \
@@ -255,6 +257,932 @@ fresh_cmd(void)
                               VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                         });
    return cmd;
+}
+
+static VkCommandBuffer
+fresh_secondary_cmd(void)
+{
+   VkCommandBuffer cmd = VK_NULL_HANDLE;
+   assert(vkAllocateCommandBuffers(
+             device,
+             &(VkCommandBufferAllocateInfo){
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                .commandBufferCount = 1,
+             },
+             &cmd) == VK_SUCCESS);
+   assert(vkBeginCommandBuffer(
+             cmd, &(VkCommandBufferBeginInfo){
+                     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                  }) == VK_SUCCESS);
+   return cmd;
+}
+
+/* One contract-shaped graphics pipeline over the given vertex format and
+ * stride.  Each field lets a refusal leg deviate by one public state member.
+ */
+struct pipeline_shape {
+   /* 0 omits depth/stencil state, 1 supplies disabled state, and 2 enables
+    * the depth test. */
+   int depth_stencil;
+   /* Request depth writes independently from depth-test enablement. */
+   VkBool32 depth_write;
+   VkBool32 stencil_split;
+   VkFormat attribute_format;
+   uint32_t stride;
+   VkBool32 blend_enable;
+   /* Select the ONE, ZERO, ADD identity when blending is enabled. */
+   VkBool32 blend_identity;
+   /* Use the valid depth-only pipeline color-blend shape. */
+   VkBool32 color_attachment_count_zero;
+   /* Remove every color channel from the attachment write mask. */
+   VkBool32 write_mask_zero;
+   /* Enable the selected logic operation. */
+   VkBool32 logic_op_enable;
+   VkLogicOp logic_op;
+   VkCullModeFlags cull_mode;
+   VkFrontFace front_face;
+   /* A null vertex module selects the position pass-through module. */
+   const uint32_t *vertex_words;
+   size_t vertex_bytes;
+   const uint32_t *fragment_words;
+   size_t fragment_bytes;
+   /* Zero selects the maximum target extent. */
+   uint32_t extent_width;
+   uint32_t extent_height;
+   /* Declare viewport and scissor dynamic. */
+   VkBool32 dynamic_viewport_scissor;
+};
+
+static VkResult
+make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
+              VkPipelineLayout layout, VkPipeline *pipeline);
+
+static VkCommandBuffer
+record_triangle_draw(const VkRenderPassBeginInfo *begin_pass,
+                     VkPipeline pipeline, VkBuffer vertex_buffer,
+                     uint32_t vertex_count, uint32_t instance_count,
+                     uint32_t first_vertex);
+
+static uint32_t
+find_last_register_write(const uint32_t *ib, uint32_t ib_size_dwords,
+                         uint32_t register_offset)
+{
+   const uint32_t header = CP_PACKET0(register_offset, 0);
+   uint32_t found = UINT32_MAX;
+
+   for (uint32_t word = 0; word + 1 < ib_size_dwords; word++) {
+      if (ib[word] != header)
+         continue;
+      found = word;
+   }
+   assert(found != UINT32_MAX);
+   return found;
+}
+
+static bool
+contains_register_write(const uint32_t *ib, uint32_t ib_size_dwords,
+                        uint32_t register_offset)
+{
+   const uint32_t header = CP_PACKET0(register_offset, 0);
+
+   for (uint32_t word = 0; word + 1 < ib_size_dwords; word++) {
+      if (ib[word] == header)
+         return true;
+   }
+   return false;
+}
+
+static void
+assert_word_range(const uint8_t *bytes, uint64_t offset, uint64_t size,
+                  uint32_t expected)
+{
+   assert(offset % sizeof(uint32_t) == 0 && size % sizeof(uint32_t) == 0);
+   const uint32_t *words = (const uint32_t *)(bytes + offset);
+   for (uint64_t word = 0; word < size / sizeof(*words); word++)
+      assert(words[word] == expected);
+}
+
+static void
+check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
+                             VkBuffer vertex_buffer,
+                             VkDeviceMemory vertex_memory,
+                             VkDeviceMemory color_memory, VkQueue queue)
+{
+   /* The drm-shim fixture supplies the RS485M device ID but no board
+    * subsystem or DMI tuple.  Declare the fixture's qualified board before
+    * exercising the RS485M image contract; production physical-device
+    * discovery still requires the complete tuple. */
+   VK_FROM_HANDLE(r3v_native_device, native_device, device);
+   native_device->pdevice->platform_id =
+      R300_PLATFORM_ID_DELL_VOSTRO1000_RS485M;
+
+   VkImage depth_image = VK_NULL_HANDLE;
+   assert(vkCreateImage(device, &(VkImageCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   }, NULL, &depth_image) == VK_SUCCESS);
+   VkMemoryRequirements requirements;
+   vkGetImageMemoryRequirements(device, depth_image, &requirements);
+   VkDeviceMemory depth_memory = VK_NULL_HANDLE;
+   assert(vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = requirements.size + 4096, .memoryTypeIndex = 0,
+   }, NULL, &depth_memory) == VK_SUCCESS);
+   assert(vkBindImageMemory(device, depth_image, depth_memory, 4096) ==
+          VK_SUCCESS);
+   VkImageView depth_view = VK_NULL_HANDLE;
+   assert(vkCreateImageView(device, &(VkImageViewCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = depth_image, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT |
+                            VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 },
+   }, NULL, &depth_view) == VK_SUCCESS);
+   const VkAttachmentDescription attachments[2] = {
+      { .format = R3V_NATIVE_TARGET_FORMAT, .samples = 1,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .finalLayout = VK_IMAGE_LAYOUT_GENERAL },
+      { .format = VK_FORMAT_D24_UNORM_S8_UINT, .samples = 1,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .finalLayout = VK_IMAGE_LAYOUT_GENERAL },
+   };
+   const VkAttachmentReference color_ref = { 0, VK_IMAGE_LAYOUT_GENERAL };
+   const VkAttachmentReference depth_ref = { 1, VK_IMAGE_LAYOUT_GENERAL };
+   VkRenderPass pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 2, .pAttachments = attachments,
+      .subpassCount = 1,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .colorAttachmentCount = 1, .pColorAttachments = &color_ref,
+         .pDepthStencilAttachment = &depth_ref,
+      },
+   }, NULL, &pass) == VK_SUCCESS);
+   VkImageView framebuffer_views[2] = { color_view, depth_view };
+   VkFramebuffer framebuffer = VK_NULL_HANDLE;
+   assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = pass, .attachmentCount = 2,
+      .pAttachments = framebuffer_views, .width = 64, .height = 64,
+      .layers = 1,
+   }, NULL, &framebuffer) == VK_SUCCESS);
+   VkClearValue clears[2] = {
+      { .color = { .float32 = { 0, 0, 0, 1 } } },
+      { .depthStencil = { 1.0f, 0 } },
+   };
+   VkRenderPassBeginInfo begin = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = pass, .framebuffer = framebuffer,
+      .renderArea = { { 0, 0 }, { 64, 64 } },
+      .clearValueCount = 2, .pClearValues = clears,
+   };
+   const struct pipeline_shape depth_shape = {
+      .depth_stencil = 2,
+      .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .stride = 16,
+      .fragment_words = r3v_reference_fragment_spirv,
+      .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+   };
+   VkPipeline depth_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&depth_shape, pass, layout, &depth_pipeline) ==
+             VK_SUCCESS &&
+          depth_pipeline != VK_NULL_HANDLE);
+   struct pipeline_shape masked_depth_shape = depth_shape;
+   masked_depth_shape.depth_write = VK_TRUE;
+   masked_depth_shape.write_mask_zero = VK_TRUE;
+   VkPipeline masked_depth_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&masked_depth_shape, pass, layout,
+                        &masked_depth_pipeline) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_pipeline, native_masked_depth,
+                  masked_depth_pipeline);
+   assert(native_masked_depth->has_depth_pipeline);
+   assert(native_masked_depth->depth_pipeline.hardware.depth_write);
+   assert(!native_masked_depth->sample_mask_zero);
+   assert(native_masked_depth->color_writes_disabled);
+   vkDestroyPipeline(device, masked_depth_pipeline, NULL);
+   VkCommandBuffer command_buffer = record_triangle_draw(
+      &begin, depth_pipeline, vertex_buffer, 3, 1, 0);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_command, command_buffer);
+   VK_FROM_HANDLE(r3v_native_memory, native_depth_memory, depth_memory);
+
+   uint32_t depth_reference_count = 0;
+   for (uint32_t reference = 0; reference < native_command->reference_count;
+        reference++)
+      depth_reference_count +=
+         native_command->references[reference].handle ==
+         native_depth_memory->bo.handle;
+   assert(depth_reference_count == 1);
+   assert(native_command->ordered_operation_count == 3u);
+   assert(native_command->ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+   assert(native_command->ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_DRAW);
+   assert(native_command->ordered_operations[2].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+   assert(native_command->image_state_count == 2u);
+   for (uint32_t state_index = 0u;
+        state_index < native_command->image_state_count; state_index++) {
+      assert(native_command->image_states[state_index].required_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED);
+      assert(native_command->image_states[state_index].current_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL);
+   }
+
+   const uint32_t clear_launch = find_last_register_write(
+      native_command->ib, native_command->ib_size_dwords,
+      RADEON_DST_WIDTH_HEIGHT);
+   const uint32_t depth_state = find_last_register_write(
+      native_command->ib, native_command->ib_size_dwords, R300_ZB_FORMAT);
+   const uint32_t bandwidth_control = find_last_register_write(
+      native_command->ib, native_command->ib_size_dwords, R300_ZB_BW_CNTL);
+   const uint32_t triangle_draw = r300_triangle_draw_dword(
+      &(struct r300_tcl_bypass_triangle_ib){
+         .ib = native_command->ib,
+         .ib_size_dwords = native_command->ib_size_dwords,
+      });
+   assert(clear_launch < depth_state && depth_state < triangle_draw);
+   assert(bandwidth_control > depth_state &&
+          bandwidth_control < triangle_draw);
+   assert(native_command->ib[bandwidth_control + 1] ==
+          (R300_HIZ_DISABLE | R300_FAST_FILL_DISABLE |
+           R300_RD_COMP_DISABLE | R300_WR_COMP_DISABLE));
+   for (uint32_t word = 0; word < native_command->ib_size_dwords; word++) {
+      assert(native_command->ib[word] != CP_PACKET0(R300_ZB_ZMASK_OFFSET, 0));
+      assert(native_command->ib[word] != CP_PACKET0(R300_ZB_ZMASK_PITCH, 0));
+   }
+
+   const uint32_t untouched_word = 0xa5a5a5a5u;
+   uint8_t *depth_bytes = NULL;
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   memset(depth_bytes, 0xa5, requirements.size + 4096u);
+   vkUnmapMemory(device, depth_memory);
+
+   VkCommandBuffer empty_command = fresh_cmd();
+   vkCmdBeginRenderPass(empty_command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdEndRenderPass(empty_command);
+   assert(vkEndCommandBuffer(empty_command) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_empty, empty_command);
+   assert(native_empty->ib_size_dwords == 0u &&
+          native_empty->deferred_draws[0].has_depth_clear);
+   assert(vkQueueSubmit(
+      queue, 1,
+      &(VkSubmitInfo){
+         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .commandBufferCount = 1,
+         .pCommandBuffers = &empty_command,
+      }, VK_NULL_HANDLE) == VK_SUCCESS);
+
+   VK_FROM_HANDLE(r3v_native_image, native_depth_image, depth_image);
+   const struct r300_zb_depth_layout *depth_layout =
+      &native_depth_image->depth_contract.layout;
+   const uint64_t binding_offset =
+      native_depth_image->depth_bound.binding_offset_bytes;
+   const uint64_t allocation_bytes = requirements.size + 4096u;
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   assert_word_range(depth_bytes, 0u, binding_offset, untouched_word);
+   assert_word_range(depth_bytes,
+                     binding_offset + depth_layout->prefix_guard_offset_bytes,
+                     depth_layout->prefix_guard_bytes, untouched_word);
+   const struct r300_zb_depth_surface *depth_surface =
+      &native_depth_image->depth_contract.surface;
+   const uint64_t storage_base =
+      native_depth_image->depth_bound.surface_base_bytes;
+   const uint64_t contract_base =
+      native_depth_image->depth_contract.surface_base_bytes;
+   for (uint64_t offset = storage_base;
+        offset < storage_base + depth_layout->storage_bytes;
+        offset += sizeof(uint32_t)) {
+      struct r300_zb_depth_address_coordinate coordinate;
+      assert(depth_surface->address_resolver->coordinate(
+                depth_surface, contract_base, depth_layout->total_bytes,
+                offset - binding_offset,
+                &coordinate) == 0);
+      uint32_t observed;
+      memcpy(&observed, depth_bytes + offset, sizeof(observed));
+      assert(observed ==
+             (coordinate.region == R300_ZB_DEPTH_ADDRESS_LOGICAL
+                 ? 0xffffff00u : untouched_word));
+   }
+   assert_word_range(depth_bytes,
+                     binding_offset + depth_layout->suffix_guard_offset_bytes,
+                     depth_layout->suffix_guard_bytes, untouched_word);
+   const uint64_t tail_offset = binding_offset + depth_layout->total_bytes;
+   assert(tail_offset <= allocation_bytes);
+   assert_word_range(depth_bytes, tail_offset,
+                     allocation_bytes - tail_offset, untouched_word);
+   vkUnmapMemory(device, depth_memory);
+
+   /* A LOAD pass carries the attachment and its ZB state without an RB2D
+    * clear prefix.  Seed every logical pixel with an asymmetric packed
+    * value, retain the entire allocation, and execute the public command's
+    * host preparation.  The preparation publishes the carrier and clears
+    * the color attachment while preserving every depth allocation byte.
+    */
+   VkAttachmentDescription load_attachments[2] = {
+      attachments[0], attachments[1]
+   };
+   load_attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   load_attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   VkRenderPass load_pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 2, .pAttachments = load_attachments,
+      .subpassCount = 1,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .colorAttachmentCount = 1, .pColorAttachments = &color_ref,
+         .pDepthStencilAttachment = &depth_ref,
+      },
+   }, NULL, &load_pass) == VK_SUCCESS);
+   VkFramebuffer load_framebuffer = VK_NULL_HANDLE;
+   assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = load_pass, .attachmentCount = 2,
+      .pAttachments = framebuffer_views, .width = 64, .height = 64,
+      .layers = 1,
+   }, NULL, &load_framebuffer) == VK_SUCCESS);
+   VkPipeline load_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&depth_shape, load_pass, layout, &load_pipeline) ==
+             VK_SUCCESS &&
+          load_pipeline != VK_NULL_HANDLE);
+   VkRenderPassBeginInfo load_begin = begin;
+   load_begin.renderPass = load_pass;
+   load_begin.framebuffer = load_framebuffer;
+   load_begin.clearValueCount = 1;
+
+   uint8_t *depth_before = malloc((size_t)allocation_bytes);
+   assert(depth_before != NULL);
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   memset(depth_bytes, 0xa5, (size_t)allocation_bytes);
+   for (uint32_t y = 0; y < 64; y++) {
+      for (uint32_t x = 0; x < 64; x++) {
+         uint64_t offset;
+         assert(depth_surface->address_resolver->byte_offset(
+                   depth_surface, contract_base, x, y, &offset) == 0);
+         offset += binding_offset;
+         const uint32_t packed =
+            ((((x * 0x1f123bu) ^ (y * 0x12d687u)) & 0xffffffu) << 8) |
+            ((x * 17u + y * 29u) & 0xffu);
+         memcpy(depth_bytes + offset, &packed, sizeof(packed));
+      }
+   }
+   memcpy(depth_before, depth_bytes, (size_t)allocation_bytes);
+   vkUnmapMemory(device, depth_memory);
+
+   VkCommandBuffer load_command = record_triangle_draw(
+      &load_begin, load_pipeline, vertex_buffer, 3, 1, 0);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_load, load_command);
+   assert(native_load->deferred_draws[0].depth_memory == native_depth_memory &&
+          native_load->deferred_draws[0].has_depth_pipeline &&
+          !native_load->deferred_draws[0].has_depth_clear);
+   assert(contains_register_write(native_load->ib,
+                                  native_load->ib_size_dwords,
+                                  R300_ZB_FORMAT));
+   assert(!contains_register_write(native_load->ib,
+                                   native_load->ib_size_dwords,
+                                   RADEON_DST_WIDTH_HEIGHT));
+   depth_reference_count = 0;
+   for (uint32_t reference = 0; reference < native_load->reference_count;
+        reference++)
+      depth_reference_count +=
+         native_load->references[reference].handle ==
+         native_depth_memory->bo.handle;
+   assert(depth_reference_count == 1);
+   assert(r3v_native_cmd_buffer_execute_deferred_draws(
+             native_device, native_load) == VK_SUCCESS);
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   assert(memcmp(depth_bytes, depth_before, (size_t)allocation_bytes) == 0);
+   vkUnmapMemory(device, depth_memory);
+
+   VkRenderPassBeginInfo refused_load_begin = load_begin;
+   refused_load_begin.clearValueCount = 0;
+   refused_load_begin.pClearValues = NULL;
+   VkCommandBuffer refused_load_command = fresh_cmd();
+   vkCmdBeginRenderPass(refused_load_command, &refused_load_begin,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_refused_load,
+                  refused_load_command);
+   assert(native_refused_load->deferred_draw_count == 0 &&
+          native_refused_load->pass_target == NULL);
+   assert(vkEndCommandBuffer(refused_load_command) ==
+          R3V_NATIVE_REFUSAL_RESULT);
+   assert(vkMapMemory(device, depth_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&depth_bytes) == VK_SUCCESS);
+   assert(memcmp(depth_bytes, depth_before, (size_t)allocation_bytes) == 0);
+   vkUnmapMemory(device, depth_memory);
+   free(depth_before);
+
+   vkDestroyPipeline(device, load_pipeline, NULL);
+   vkDestroyFramebuffer(device, load_framebuffer, NULL);
+   vkDestroyRenderPass(device, load_pass, NULL);
+
+   VkImageView variants[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE,
+                               VK_NULL_HANDLE };
+   const VkImageViewCreateInfo view_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = depth_image, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+   };
+   assert(vkCreateImageView(device, &view_info, NULL, &variants[0]) == VK_SUCCESS);
+   variants[1] = color_view;
+   VkImageViewCreateInfo slice_info = view_info;
+   slice_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+   assert(vkCreateImageView(device, &slice_info, NULL, &variants[2]) == VK_SUCCESS);
+   for (unsigned i = 0; i < 5; i++) {
+      VkImageView selected = i == 0 ? variants[0] :
+                            i == 1 ? variants[1] :
+                            i == 2 ? variants[2] : depth_view;
+      framebuffer_views[1] = selected;
+      VkFramebuffer bad = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+         .renderPass = pass, .attachmentCount = 2,
+         .pAttachments = framebuffer_views,
+         .width = i == 3 ? 63 : 64, .height = 64, .layers = 1,
+      }, NULL, &bad) == VK_SUCCESS);
+      begin.framebuffer = bad;
+      if (i == 4)
+         begin.clearValueCount = 1;
+      VkCommandBuffer bad_command_buffer = fresh_cmd();
+      vkCmdBeginRenderPass(bad_command_buffer, &begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      assert(vkEndCommandBuffer(bad_command_buffer) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+      vkDestroyFramebuffer(device, bad, NULL);
+      begin.clearValueCount = 2;
+   }
+
+   /* A depth/stencil attachment view may select one logical aspect while
+    * the attachment format still names the packed depth/stencil resource.
+    * The depth-only pass derives its hardware aspects from that format.  A
+    * 32x32 framebuffer and render area exercise the partial logical clear
+    * while the attached image remains 64x64. */
+   VkImageView stencil_view = VK_NULL_HANDLE;
+   VkImageViewCreateInfo stencil_view_info = view_info;
+   stencil_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+   assert(vkCreateImageView(device, &stencil_view_info, NULL, &stencil_view) ==
+          VK_SUCCESS);
+   const VkAttachmentDescription depth_only_attachment = {
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
+   };
+   const VkAttachmentReference depth_only_reference = {
+      .attachment = 0,
+      .layout = VK_IMAGE_LAYOUT_GENERAL,
+   };
+   VkRenderPass depth_only_pass = VK_NULL_HANDLE;
+   const VkSubpassDependency depth_only_dependencies[] = {
+      {
+         .srcSubpass = VK_SUBPASS_EXTERNAL,
+         .dstSubpass = 0u,
+         .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+         .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+      },
+      {
+         .srcSubpass = 0u,
+         .dstSubpass = 0u,
+         .srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+         .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+         .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+      },
+      {
+         .srcSubpass = 0u,
+         .dstSubpass = VK_SUBPASS_EXTERNAL,
+         .srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+         .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+      },
+   };
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 1,
+      .pAttachments = &depth_only_attachment,
+      .subpassCount = 1,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .pDepthStencilAttachment = &depth_only_reference,
+      },
+      .dependencyCount = ARRAY_SIZE(depth_only_dependencies),
+      .pDependencies = depth_only_dependencies,
+   }, NULL, &depth_only_pass) == VK_SUCCESS);
+   const VkImageView depth_aspect_views[] = { variants[0], stencil_view };
+   for (unsigned aspect = 0; aspect < ARRAY_SIZE(depth_aspect_views); aspect++) {
+      VkFramebuffer depth_only_framebuffer = VK_NULL_HANDLE;
+      assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+         .renderPass = depth_only_pass,
+         .attachmentCount = 1,
+         .pAttachments = &depth_aspect_views[aspect],
+         .width = 32,
+         .height = 32,
+         .layers = 1,
+      }, NULL, &depth_only_framebuffer) == VK_SUCCESS);
+      const VkClearValue depth_only_clear = {
+         .depthStencil = { 0.5f, 0x15a },
+      };
+      const VkRenderPassBeginInfo depth_only_begin = {
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+         .renderPass = depth_only_pass,
+         .framebuffer = depth_only_framebuffer,
+         .renderArea = { .extent = { 32, 32 } },
+         .clearValueCount = 1,
+         .pClearValues = &depth_only_clear,
+      };
+      VkCommandBuffer depth_only_command = fresh_cmd();
+      vkCmdBeginRenderPass(depth_only_command, &depth_only_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      const VkMemoryBarrier self_barrier = {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+         .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      };
+      vkCmdPipelineBarrier(depth_only_command,
+                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                           VK_DEPENDENCY_BY_REGION_BIT, 1u, &self_barrier,
+                           0u, NULL, 0u, NULL);
+      vkCmdEndRenderPass(depth_only_command);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_only,
+                     depth_only_command);
+      const VkResult depth_only_end_result =
+         vkEndCommandBuffer(depth_only_command);
+      assert(depth_only_end_result == VK_SUCCESS);
+      assert(r3v_native_ordered_image_composition_geometry_valid(
+                native_depth_only));
+      assert(native_depth_only->deferred_draw_count == 1u);
+      assert(native_depth_only->deferred_draws[0].depth_only);
+      assert(!native_depth_only->deferred_draws[0].has_depth_clear);
+      assert(native_depth_only->ordered_operation_count == 6u);
+      assert(native_depth_only->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
+      assert(native_depth_only->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
+      assert(native_depth_only->ordered_operations[1]
+                .payload.rb2d_depth_clear.width == 32u);
+      assert(native_depth_only->ordered_operations[1]
+                .payload.rb2d_depth_clear.height == 32u);
+      assert(native_depth_only->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+      assert(native_depth_only->ordered_operations[3].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
+      assert(native_depth_only->ordered_operations[4].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+      assert(native_depth_only->ordered_operations[5].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
+
+      if (aspect == 0) {
+         /* Two draws in one depth-only pass retain one pass load record and
+          * append one carrier and one ordered draw record per API draw. */
+         struct pipeline_shape repeated_shape = {
+            .depth_stencil = 2,
+            .color_attachment_count_zero = VK_TRUE,
+            .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .stride = 16,
+            .extent_width = 32,
+            .extent_height = 32,
+            .fragment_words = r3v_reference_fragment_spirv,
+            .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+         };
+         VkPipeline repeated_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&repeated_shape, depth_only_pass, layout,
+                              &repeated_pipeline) == VK_SUCCESS);
+         VkCommandBuffer repeated_draw_command = fresh_cmd();
+         vkCmdBeginRenderPass(repeated_draw_command, &depth_only_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(repeated_draw_command,
+                           VK_PIPELINE_BIND_POINT_GRAPHICS, repeated_pipeline);
+         vkCmdBindVertexBuffers(repeated_draw_command, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_repeated_draw,
+                        repeated_draw_command);
+         vkCmdDraw(repeated_draw_command, 3, 1, 0, 0);
+         vkCmdDraw(repeated_draw_command, 3, 1, 0, 0);
+         vkCmdEndRenderPass(repeated_draw_command);
+         assert(vkEndCommandBuffer(repeated_draw_command) == VK_SUCCESS);
+         assert(native_repeated_draw->render_pass_count == 1u);
+         assert(native_repeated_draw->deferred_draw_count == 2u);
+         assert(native_repeated_draw->deferred_draws[0].load_at_begin);
+
+         /* A depth-only fragment shader may omit every color output.  The
+          * native draw still uses its private sink while depth/stencil
+          * processing remains active. */
+         struct pipeline_shape no_color_output_shape = repeated_shape;
+         no_color_output_shape.fragment_words =
+            r3v_reference_fragment_no_output_spirv;
+         no_color_output_shape.fragment_bytes =
+            sizeof(r3v_reference_fragment_no_output_spirv);
+         VkPipeline no_color_output_pipeline = VK_NULL_HANDLE;
+         assert(make_pipeline(&no_color_output_shape, depth_only_pass, layout,
+                              &no_color_output_pipeline) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_pipeline, native_no_color_output,
+                        no_color_output_pipeline);
+         assert(native_no_color_output->has_depth_pipeline);
+         assert(!native_no_color_output->varying);
+         assert(!native_no_color_output->sampled);
+         vkDestroyPipeline(device, no_color_output_pipeline, NULL);
+         assert(!native_repeated_draw->deferred_draws[1].load_at_begin);
+         assert(native_repeated_draw->owned_carriers[0] != NULL &&
+                native_repeated_draw->owned_carriers[1] != NULL &&
+                native_repeated_draw->owned_carriers[0] !=
+                   native_repeated_draw->owned_carriers[1]);
+         uint32_t draw_operation_count = 0u;
+         for (uint32_t operation = 0u;
+              operation < native_repeated_draw->ordered_operation_count;
+              operation++) {
+            if (native_repeated_draw->ordered_operations[operation].kind !=
+                R3V_NATIVE_ORDERED_OPERATION_DRAW)
+               continue;
+            assert(native_repeated_draw->ordered_operations[operation]
+                      .payload.draw.deferred_draw_index ==
+                   draw_operation_count);
+            draw_operation_count++;
+         }
+         assert(draw_operation_count == 2u);
+         VK_FROM_HANDLE(r3v_native_device, repeated_device, device);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   repeated_device, native_repeated_draw) == VK_SUCCESS);
+         r3v_native_cmd_buffer_release_recording(native_repeated_draw);
+         assert(native_repeated_draw->deferred_draw_count == 0u);
+         assert(native_repeated_draw->render_pass_count == 0u);
+         vkDestroyPipeline(device, repeated_pipeline, NULL);
+
+         /* R300 shares one stencil reference/mask register between faces.
+          * Submission-time facing classification writes that register before
+          * each source primitive's seven reserved clipped triangles. */
+         struct pipeline_shape stencil_shape = repeated_shape;
+         stencil_shape.stencil_split = VK_TRUE;
+         VkPipeline stencil_pipeline = VK_NULL_HANDLE;
+         stencil_shape.extent_width = 64;
+         stencil_shape.extent_height = 64;
+         assert(make_pipeline(&stencil_shape, depth_only_pass, layout,
+                              &stencil_pipeline) == VK_SUCCESS);
+         const float opposite_facing_triangles[24] = {
+            -0.75f, -0.75f, 0.5f, 1.0f,
+             0.00f,  0.75f, 0.5f, 1.0f,
+             0.75f, -0.75f, 0.5f, 1.0f,
+            -0.75f, -0.75f, 0.5f, 1.0f,
+             0.75f, -0.75f, 0.5f, 1.0f,
+             0.00f,  0.75f, 0.5f, 1.0f,
+         };
+         uint8_t retained_vertex_bytes[sizeof(opposite_facing_triangles)];
+         void *vertex_map = NULL;
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &vertex_map) == VK_SUCCESS);
+         memcpy(retained_vertex_bytes, vertex_map,
+                sizeof(retained_vertex_bytes));
+         memcpy(vertex_map, opposite_facing_triangles,
+                sizeof(opposite_facing_triangles));
+         vkUnmapMemory(device, vertex_memory);
+
+         VkFramebuffer stencil_framebuffer = VK_NULL_HANDLE;
+         assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = depth_only_pass,
+            .attachmentCount = 1,
+            .pAttachments = &depth_aspect_views[aspect],
+            .width = 64,
+            .height = 64,
+            .layers = 1,
+         }, NULL, &stencil_framebuffer) == VK_SUCCESS);
+         VkRenderPassBeginInfo stencil_begin = depth_only_begin;
+         stencil_begin.framebuffer = stencil_framebuffer;
+         stencil_begin.renderArea.extent = (VkExtent2D){ 64, 64 };
+         VkCommandBuffer stencil_command = fresh_cmd();
+         vkCmdBeginRenderPass(stencil_command, &stencil_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(stencil_command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           stencil_pipeline);
+         vkCmdBindVertexBuffers(stencil_command, 0, 1, &vertex_buffer,
+                                &(VkDeviceSize){ 0 });
+         vkCmdDraw(stencil_command, 6, 1, 0, 0);
+         vkCmdEndRenderPass(stencil_command);
+         assert(vkEndCommandBuffer(stencil_command) == VK_SUCCESS);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_stencil,
+                        stencil_command);
+         assert(native_stencil->deferred_draw_count == 1u);
+         assert(r3v_native_cmd_buffer_execute_deferred_draws(
+                   repeated_device, native_stencil) == VK_SUCCESS);
+         const struct r3v_native_deferred_draw *stencil_draw =
+            &native_stencil->deferred_draws[0];
+         const uint32_t expected_references[2] = {
+            0x00550f22u,
+            0x00aaf011u,
+         };
+         uint32_t observed_references[2] = {0};
+         uint32_t observed_count = 0u;
+         const uint32_t *stencil_ib =
+            &native_stencil->ib[stencil_draw->ib_span_offset];
+         for (uint32_t word = 0u;
+              word + 2u < stencil_draw->ib_span_dwords;) {
+            const uint32_t header = stencil_ib[word];
+            const uint32_t type = header >> 30;
+            const uint32_t payload =
+               type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+            assert(type != 1u &&
+                   payload <= stencil_draw->ib_span_dwords - word - 1u);
+            if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+                (stencil_ib[word + 2u] >> 30) == 3u &&
+                (stencil_ib[word + 2u] & 0xff00u) ==
+                   R300_PACKET3_3D_LOAD_VBPNTR) {
+               assert(observed_count < ARRAY_SIZE(observed_references));
+               observed_references[observed_count++] = stencil_ib[word + 1u];
+            }
+            word += 1u + payload;
+         }
+         assert(observed_count == ARRAY_SIZE(observed_references));
+         assert(memcmp(observed_references, expected_references,
+                       sizeof(expected_references)) == 0);
+         vkDestroyFramebuffer(device, stencil_framebuffer, NULL);
+         vkDestroyPipeline(device, stencil_pipeline, NULL);
+
+         assert(vkMapMemory(device, vertex_memory, 0, VK_WHOLE_SIZE, 0,
+                            &vertex_map) == VK_SUCCESS);
+         memcpy(vertex_map, retained_vertex_bytes,
+                sizeof(retained_vertex_bytes));
+         vkUnmapMemory(device, vertex_memory);
+      }
+
+      if (aspect == 0) {
+         VkRenderPassBeginInfo offset_begin = depth_only_begin;
+         offset_begin.renderArea = (VkRect2D){
+            .offset = { 5, 7 },
+            .extent = { 16, 12 },
+         };
+         VkCommandBuffer offset_command = fresh_cmd();
+         vkCmdBeginRenderPass(offset_command, &offset_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdEndRenderPass(offset_command);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_offset,
+                        offset_command);
+         assert(vkEndCommandBuffer(offset_command) == VK_SUCCESS);
+         assert(native_offset->ordered_operation_count == 5u);
+         const struct r3v_native_ordered_operation *offset_clear =
+            &native_offset->ordered_operations[1];
+         assert(offset_clear->kind ==
+                R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR);
+         assert(offset_clear->payload.rb2d_depth_clear.x == 5u);
+         assert(offset_clear->payload.rb2d_depth_clear.y == 7u);
+         assert(offset_clear->payload.rb2d_depth_clear.width == 16u);
+         assert(offset_clear->payload.rb2d_depth_clear.height == 12u);
+
+         VkRenderPassBeginInfo outside_begin = offset_begin;
+         outside_begin.renderArea.offset.x = 17;
+         VkCommandBuffer outside_command = fresh_cmd();
+         vkCmdBeginRenderPass(outside_command, &outside_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_outside,
+                        outside_command);
+         assert(native_outside->deferred_draw_count == 0u);
+         assert(vkEndCommandBuffer(outside_command) ==
+                R3V_NATIVE_REFUSAL_RESULT);
+
+         VkCommandBuffer sink_failure_command = fresh_cmd();
+         vkCmdBeginRenderPass(sink_failure_command, &depth_only_begin,
+                              VK_SUBPASS_CONTENTS_INLINE);
+         vkCmdBindPipeline(sink_failure_command,
+                           VK_PIPELINE_BIND_POINT_GRAPHICS, depth_pipeline);
+         vkCmdDraw(sink_failure_command, 3, 1, 0, 0);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, native_sink_failure,
+                        sink_failure_command);
+         assert(native_sink_failure->owned_color_sinks[0] != NULL);
+         vkCmdEndRenderPass(sink_failure_command);
+         assert(vkEndCommandBuffer(sink_failure_command) ==
+                R3V_NATIVE_REFUSAL_RESULT);
+         r3v_native_cmd_buffer_release_recording(native_sink_failure);
+         assert(native_sink_failure->owned_color_sinks == NULL);
+      }
+      vkDestroyFramebuffer(device, depth_only_framebuffer, NULL);
+   }
+
+   VkAttachmentDescription read_only_attachment = depth_only_attachment;
+   read_only_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   read_only_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   read_only_attachment.initialLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+   read_only_attachment.finalLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+   const VkAttachmentReference read_only_reference = {
+      .attachment = 0u,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+   };
+   VkRenderPass read_only_pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 1u,
+      .pAttachments = &read_only_attachment,
+      .subpassCount = 1u,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .pDepthStencilAttachment = &read_only_reference,
+      },
+   }, NULL, &read_only_pass) == VK_SUCCESS);
+   VkFramebuffer read_only_framebuffer = VK_NULL_HANDLE;
+   assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = read_only_pass,
+      .attachmentCount = 1u,
+      .pAttachments = &depth_aspect_views[0],
+      .width = 32u,
+      .height = 32u,
+      .layers = 1u,
+   }, NULL, &read_only_framebuffer) == VK_SUCCESS);
+   const struct pipeline_shape read_only_shape = {
+      .depth_stencil = 2,
+      .color_attachment_count_zero = VK_TRUE,
+      .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .stride = 16u,
+      .extent_width = 32u,
+      .extent_height = 32u,
+      .fragment_words = r3v_reference_fragment_spirv,
+      .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+   };
+   VkPipeline read_only_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&read_only_shape, read_only_pass, layout,
+                        &read_only_pipeline) == VK_SUCCESS);
+   const VkRenderPassBeginInfo read_only_begin = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = read_only_pass,
+      .framebuffer = read_only_framebuffer,
+      .renderArea = { .extent = { 32u, 32u } },
+   };
+   VkCommandBuffer read_only_command = fresh_cmd();
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_read_only,
+                  read_only_command);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
+   vkCmdBeginRenderPass(read_only_command, &read_only_begin,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
+   vkCmdBindPipeline(read_only_command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                     read_only_pipeline);
+   vkCmdBindVertexBuffers(read_only_command, 0u, 1u, &vertex_buffer,
+                          &(VkDeviceSize){0});
+   vkCmdDraw(read_only_command, 3u, 1u, 0u, 0u);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
+   vkCmdEndRenderPass(read_only_command);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
+   assert(vkEndCommandBuffer(read_only_command) == VK_SUCCESS);
+   assert(native_read_only->image_state_count == 1u);
+   assert(native_read_only->image_states[0].current_layout ==
+          R3V_NATIVE_IMAGE_API_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+   assert(!native_read_only->image_states[0].producer_set);
+   assert(!native_read_only->image_states[0].content_set);
+   vkDestroyPipeline(device, read_only_pipeline, NULL);
+   vkDestroyFramebuffer(device, read_only_framebuffer, NULL);
+   vkDestroyRenderPass(device, read_only_pass, NULL);
+
+   vkDestroyRenderPass(device, depth_only_pass, NULL);
+   vkDestroyImageView(device, stencil_view, NULL);
+
+   uint32_t *color_words = NULL;
+   assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                      (void **)&color_words) == VK_SUCCESS);
+   for (uint32_t word = 0;
+        word < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096u) / 4; word++)
+      color_words[word] = COLOR_SEED;
+   vkUnmapMemory(device, color_memory);
+   vkDestroyImageView(device, variants[2], NULL);
+   vkDestroyImageView(device, variants[0], NULL);
+   vkDestroyFramebuffer(device, framebuffer, NULL);
+   vkDestroyPipeline(device, depth_pipeline, NULL);
+   vkDestroyRenderPass(device, pass, NULL);
+   vkDestroyImageView(device, depth_view, NULL);
+   vkDestroyImage(device, depth_image, NULL);
+   vkFreeMemory(device, depth_memory, NULL);
 }
 
 static VkCommandBuffer
@@ -437,40 +1365,6 @@ make_module(const uint32_t *words, size_t bytes)
    return module;
 }
 
-/* One contract-shaped graphics pipeline over the given vertex format
- * and stride; the mutate hook lets the negative legs deviate exactly
- * one member.
- */
-struct pipeline_shape {
-   /* Attach a depth/stencil state: DISABLED passes the all-disabled
-    * struct, ENABLED turns the depth test on (the refusal leg). */
-   int depth_stencil; /* 0 none, 1 disabled, 2 enabled */
-   VkFormat attribute_format;
-   uint32_t stride;
-   VkBool32 blend_enable;
-   /* With blend_enable, select the identity configuration (ONE, ZERO,
-    * ADD) instead of the zero-initialized factors. */
-   VkBool32 blend_identity;
-   /* Zero the color write mask (the no-channel shape). */
-   VkBool32 write_mask_zero;
-   /* Enable the logic op; the op itself. */
-   VkBool32 logic_op_enable;
-   VkLogicOp logic_op;
-   VkCullModeFlags cull_mode;
-   VkFrontFace front_face;
-   /* Zero selects the position pass-through vertex module. */
-   const uint32_t *vertex_words;
-   size_t vertex_bytes;
-   const uint32_t *fragment_words;
-   size_t fragment_bytes;
-   /* Viewport/scissor extent; zero selects the maximum target extent. */
-   uint32_t extent_width;
-   uint32_t extent_height;
-   /* Declare viewport and scissor dynamic; the vkCmdSet values then
-    * carry the extent. */
-   VkBool32 dynamic_viewport_scissor;
-};
-
 static VkResult
 make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
               VkPipelineLayout layout, VkPipeline *pipeline)
@@ -569,11 +1463,12 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
          &(VkPipelineColorBlendStateCreateInfo){
             .sType =
                VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .attachmentCount = 1,
+            .attachmentCount = shape->color_attachment_count_zero ? 0 : 1,
             .logicOpEnable = shape->logic_op_enable,
             .logicOp = shape->logic_op,
-            .pAttachments =
-               &(VkPipelineColorBlendAttachmentState){
+            .pAttachments = shape->color_attachment_count_zero
+                               ? NULL
+                               : &(VkPipelineColorBlendAttachmentState){
                   .blendEnable = shape->blend_enable,
                   .srcColorBlendFactor = shape->blend_identity
                                             ? VK_BLEND_FACTOR_ONE
@@ -592,7 +1487,7 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                              VK_COLOR_COMPONENT_G_BIT |
                              VK_COLOR_COMPONENT_B_BIT |
                              VK_COLOR_COMPONENT_A_BIT,
-               },
+                                 },
          },
       .pDepthStencilState =
          shape->depth_stencil != 0
@@ -601,7 +1496,27 @@ make_pipeline(const struct pipeline_shape *shape, VkRenderPass pass,
                     VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                  .depthTestEnable =
                     shape->depth_stencil == 2 ? VK_TRUE : VK_FALSE,
+                 .depthWriteEnable = shape->depth_write,
                  .depthCompareOp = VK_COMPARE_OP_LESS,
+                 .stencilTestEnable = shape->stencil_split,
+                 .front = {
+                    .failOp = VK_STENCIL_OP_KEEP,
+                    .passOp = VK_STENCIL_OP_REPLACE,
+                    .depthFailOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP,
+                    .compareOp = VK_COMPARE_OP_ALWAYS,
+                    .compareMask = 0xf0u,
+                    .writeMask = 0xaau,
+                    .reference = 0x11u,
+                 },
+                 .back = {
+                    .failOp = VK_STENCIL_OP_KEEP,
+                    .passOp = VK_STENCIL_OP_REPLACE,
+                    .depthFailOp = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+                    .compareOp = VK_COMPARE_OP_ALWAYS,
+                    .compareMask = 0x0fu,
+                    .writeMask = 0x55u,
+                    .reference = 0x22u,
+                 },
               }
             : NULL,
       .pDynamicState =
@@ -715,6 +1630,34 @@ check_image_usage_surface(
       } else {
          assert(image == VK_NULL_HANDLE);
       }
+   }
+
+   const VkPhysicalDeviceImageFormatInfo2 invalid_depth_queries[] = {
+      {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .type = VK_IMAGE_TYPE_1D,
+         .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = transfer_usage,
+      },
+      {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .type = VK_IMAGE_TYPE_2D,
+         .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = transfer_usage,
+         .flags = VK_IMAGE_CREATE_ALIAS_BIT,
+      },
+   };
+   for (size_t i = 0;
+        i < sizeof(invalid_depth_queries) / sizeof(invalid_depth_queries[0]);
+        i++) {
+      VkImageFormatProperties2 properties = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+      };
+      assert(query_properties(physical_device, &invalid_depth_queries[i],
+                              &properties) == VK_ERROR_FORMAT_NOT_SUPPORTED);
+      assert(properties.imageFormatProperties.maxExtent.width == 0);
    }
 }
 
@@ -964,7 +1907,6 @@ main(void)
     * untouched-memory verdicts below compare against a defined byte
     * pattern rather than fresh-allocation content.
     */
-#define COLOR_SEED 0x5c5c5c5cu
    {
       uint32_t *seed_map = NULL;
       assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
@@ -1622,6 +2564,50 @@ main(void)
                    native_two_draw->references[b].handle);
       }
 
+      /* Repeated draws grow the command-pool-backed record and ownership
+       * arrays past the initial two-entry allocation.  The third record keeps
+       * its own carrier and remains visible in source order. */
+      VkCommandBuffer three_draw_cmd = fresh_cmd();
+      vkCmdBeginRenderPass(three_draw_cmd, &first_begin,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      vkCmdBindPipeline(three_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        pipeline);
+      vkCmdBindVertexBuffers(three_draw_cmd, 0, 1, &vertex_buffer,
+                             &(VkDeviceSize){ 0 });
+      vkCmdDraw(three_draw_cmd, 3, 1, 0, 0);
+      vkCmdDraw(three_draw_cmd, 3, 1, 0, 0);
+      vkCmdDraw(three_draw_cmd, 3, 1, 0, 0);
+      vkCmdEndRenderPass(three_draw_cmd);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_three_draw,
+                     three_draw_cmd);
+      assert(native_three_draw->deferred_draw_count == 3);
+      assert(native_three_draw->deferred_draw_capacity >= 4);
+      assert(native_three_draw->owned_carriers[0] != NULL &&
+             native_three_draw->owned_carriers[1] != NULL &&
+             native_three_draw->owned_carriers[2] != NULL);
+      assert(native_three_draw->owned_carriers[0] !=
+             native_three_draw->owned_carriers[1]);
+      assert(native_three_draw->owned_carriers[1] !=
+             native_three_draw->owned_carriers[2]);
+      assert(vkEndCommandBuffer(three_draw_cmd) == VK_SUCCESS);
+      assert(vkResetCommandBuffer(three_draw_cmd, 0) == VK_SUCCESS);
+      assert(native_three_draw->deferred_draw_count == 0);
+      assert(native_three_draw->deferred_draw_capacity == 0);
+      assert(native_three_draw->deferred_draws == NULL);
+      assert(native_three_draw->owned_carriers == NULL);
+      assert(native_three_draw->owned_color_sinks == NULL);
+      assert(vkBeginCommandBuffer(
+                three_draw_cmd,
+                &(VkCommandBufferBeginInfo){
+                   .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                }) == VK_SUCCESS);
+      assert(native_three_draw->deferred_draw_count == 0);
+      assert(native_three_draw->deferred_draw_capacity == 2);
+      assert(native_three_draw->deferred_draws != NULL);
+      assert(native_three_draw->owned_carriers != NULL);
+      assert(native_three_draw->owned_color_sinks != NULL);
+      assert(vkEndCommandBuffer(three_draw_cmd) == VK_SUCCESS);
+
       /* The offline two-pass emitter reproduces the recorded stream:
        * both passes are the reference shape, the first with the
        * reference fragment module's green and the second with the blue
@@ -2101,12 +3087,10 @@ main(void)
       vkUnmapMemory(device, color_memory);
    }
 
-   /* In-pass attachment clears over a draw-less pass: each rectangle
-    * lands after the load-op clear on the zero-IB path, exact bytes at
-    * the rect corners and the sentinel outside; a rect past the render
-    * area refuses; a draw after a recorded clear refuses (the device
-    * draw executes after every host write); a clear outside a pass
-    * refuses.
+   /* In-pass attachment clears retain their command position.  The
+    * draw-less path applies a rectangle after the load-op clear, and the
+    * drawn path applies the same rectangle after the draw.  A rectangle
+    * past the render area and a clear outside a pass refuse.
     */
    {
       VkCommandBuffer clear_cmd = fresh_cmd();
@@ -2162,14 +3146,71 @@ main(void)
       VkCommandBuffer clear_draw_cmd = fresh_cmd();
       vkCmdBeginRenderPass(clear_draw_cmd, &begin_pass,
                            VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdClearAttachments(clear_draw_cmd, 1, &red, 1, &rect);
       vkCmdBindPipeline(clear_draw_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         pipeline);
       vkCmdBindVertexBuffers(clear_draw_cmd, 0, 1, &vertex_buffer,
                              &(VkDeviceSize){ 0 });
       vkCmdDraw(clear_draw_cmd, 3, 1, 0, 0);
-      assert(vkEndCommandBuffer(clear_draw_cmd) ==
-             R3V_NATIVE_REFUSAL_RESULT);
+      vkCmdClearAttachments(clear_draw_cmd, 1, &red, 1, &rect);
+      vkCmdEndRenderPass(clear_draw_cmd);
+      assert(vkEndCommandBuffer(clear_draw_cmd) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_clear_draw,
+                     clear_draw_cmd);
+      assert(native_clear_draw->ordered_operation_count >= 4u);
+      assert(native_clear_draw->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_DRAW);
+      assert(native_clear_draw->ordered_operations[2].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR);
+      assert(r3v_native_ordered_image_composition_geometry_valid(
+                native_clear_draw));
+      char clear_draw_digest[BLAKE3_OUT_LEN * 2 + 1];
+      r300_triangle_ib_digest_hex(native_clear_draw->ib,
+                                  native_clear_draw->ib_size_dwords,
+                                  clear_draw_digest);
+      char clear_draw_manifest_template[] =
+         "/tmp/r3v-public-post-draw-clear-XXXXXX";
+      const char *clear_draw_manifest_dir =
+         mkdtemp(clear_draw_manifest_template);
+      assert(clear_draw_manifest_dir != NULL);
+      struct utsname clear_draw_host;
+      assert(uname(&clear_draw_host) == 0);
+      setenv("R3V_NATIVE_MANIFEST_DIR", clear_draw_manifest_dir, 1);
+      setenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED", "1", 1);
+      setenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3", clear_draw_digest, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE",
+             clear_draw_host.release, 1);
+      setenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+             R3V_NATIVE_SHIM_MODULE_SRCVERSION, 1);
+      r3v_native_device_from_handle(device)->manifest_dir =
+         clear_draw_manifest_dir;
+      r3v_native_device_from_handle(device)->submit_hazard_accepted = true;
+      r3v_native_install_shim_arming(r3v_native_device_from_handle(device));
+      const VkResult post_draw_submit = vkQueueSubmit(
+                queue, 1,
+                &(VkSubmitInfo){
+                   .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                   .commandBufferCount = 1,
+                   .pCommandBuffers = &clear_draw_cmd,
+                },
+                VK_NULL_HANDLE);
+      assert(post_draw_submit == VK_SUCCESS);
+      unsetenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
+      unsetenv("R3V_NATIVE_AUTHORIZED_IB_BLAKE3");
+      unsetenv("R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE");
+      unsetenv("R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION");
+      unsetenv("R3V_NATIVE_MANIFEST_DIR");
+      r3v_native_device_from_handle(device)->arming_provider = NULL;
+      r3v_native_device_from_handle(device)->manifest_dir = NULL;
+      r3v_native_device_from_handle(device)->submit_hazard_accepted = false;
+      uint32_t *post_draw_clear_map = NULL;
+      assert(vkMapMemory(device, color_memory, 0, VK_WHOLE_SIZE, 0,
+                         (void **)&post_draw_clear_map) == VK_SUCCESS);
+      assert(post_draw_clear_map[8 * row_words + 8] == 0xffff0000u);
+      assert(post_draw_clear_map[7 * row_words + 8] != 0xffff0000u);
+      for (unsigned i = 0; i < (R3V_NATIVE_TARGET_MEMORY_BYTES + 4096) / 4;
+           i++)
+         post_draw_clear_map[i] = COLOR_SEED;
+      vkUnmapMemory(device, color_memory);
 
       VkCommandBuffer outside_cmd = fresh_cmd();
       vkCmdClearAttachments(outside_cmd, 1, &red, 1, &rect);
@@ -2178,8 +3219,8 @@ main(void)
 
    /* Blend, logic op, and write mask: the identity blend (ONE, ZERO,
     * ADD) and the COPY logic op equal the straight write and admit; a
-    * zero write mask admits and collapses the draw; the zeroed blend
-    * factors and any other logic op refuse.
+    * zero write mask admits while retaining sample/depth coverage; the
+    * zeroed blend factors and any other logic op refuse.
     */
    {
       struct pipeline_shape cb_shape = contract_shape;
@@ -2205,6 +3246,9 @@ main(void)
       cb_shape.write_mask_zero = VK_TRUE;
       assert(make_pipeline(&cb_shape, pass, layout, &cb_pipeline) ==
              VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_pipeline, native_mask_pipeline, cb_pipeline);
+      assert(!native_mask_pipeline->sample_mask_zero);
+      assert(native_mask_pipeline->color_writes_disabled);
       vkDestroyPipeline(device, cb_pipeline, NULL);
    }
 
@@ -2656,6 +3700,15 @@ main(void)
       assert(copy_native->deferred_copy_count == 4);
       assert(copy_native->deferred_copies[0].kind ==
              R3V_NATIVE_COPY_BUFFER_TO_BUFFER);
+      bool recorded_buffer_barrier = false;
+      for (uint32_t operation_index = 0u;
+           operation_index < copy_native->ordered_operation_count;
+           operation_index++) {
+         recorded_buffer_barrier |=
+            copy_native->ordered_operations[operation_index].kind ==
+            R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER;
+      }
+      assert(recorded_buffer_barrier);
       assert(vkEndCommandBuffer(copy_cmd) == VK_SUCCESS);
 
       /* Transfer barriers follow the image usage bits: source-only images
@@ -2859,7 +3912,7 @@ main(void)
       VK_FROM_HANDLE(r3v_native_cmd_buffer, growth_failure_native,
                      growth_failure_cmd);
       allocation_control = (struct deferred_copy_allocation_control){
-         .command_allocations_before_failure = 1,
+         .command_allocations_before_failure = 3,
       };
       const VkAllocationCallbacks growth_saved_allocator =
          growth_failure_native->vk.pool->alloc;
@@ -3072,6 +4125,17 @@ main(void)
                 R3V_NATIVE_COPY_GROUP_BEFORE_DRAW);
          assert(native_ordered->deferred_copies[2].group ==
                 R3V_NATIVE_COPY_GROUP_AFTER_DRAW);
+         assert(native_ordered->ordered_operation_count == 5u);
+         assert(native_ordered->ordered_operations[0].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
+         assert(native_ordered->ordered_operations[1].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
+         assert(native_ordered->ordered_operations[2].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+         assert(native_ordered->ordered_operations[3].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+         assert(native_ordered->ordered_operations[4].kind ==
+                R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
 
          const uint64_t ordered_sync_before =
             native_device->drm.cache_sync_count;
@@ -3444,6 +4508,109 @@ main(void)
                              &wrap_offset);
       assert(vkEndCommandBuffer(bad_copy) == R3V_NATIVE_REFUSAL_RESULT);
 
+      VkImageMemoryBarrier reverse_first = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+         .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .image = img_a,
+         .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1u,
+            .layerCount = 1u,
+         },
+      };
+      VkCommandBuffer recorded_first = fresh_cmd();
+      vkCmdPipelineBarrier(recorded_first, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                           NULL, 1u, &reverse_first);
+      assert(vkEndCommandBuffer(recorded_first) == VK_SUCCESS);
+
+      VkImageMemoryBarrier recorded_second_barrier = reverse_first;
+      recorded_second_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      recorded_second_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkCommandBuffer recorded_second = fresh_cmd();
+      vkCmdPipelineBarrier(recorded_second, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                           NULL, 1u, &recorded_second_barrier);
+      assert(vkEndCommandBuffer(recorded_second) == VK_SUCCESS);
+      assert(vkQueueSubmit(queue, 1u,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1u,
+                              .pCommandBuffers = &recorded_second,
+                           }, VK_NULL_HANDLE) == VK_SUCCESS);
+      assert(vkQueueSubmit(queue, 1u,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1u,
+                              .pCommandBuffers = &recorded_first,
+                           }, VK_NULL_HANDLE) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_image, reverse_image, img_a);
+      assert(reverse_image->committed_submission.api_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+      VkCommandBuffer secondary_transfer = fresh_secondary_cmd();
+      VkImageMemoryBarrier secondary_barrier = reverse_first;
+      secondary_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      secondary_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      vkCmdPipelineBarrier(secondary_transfer,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                           NULL, 1u, &secondary_barrier);
+      vkCmdFillBuffer(secondary_transfer, staging, 0u, 16u, 0x6a5a4a3au);
+      assert(vkEndCommandBuffer(secondary_transfer) == VK_SUCCESS);
+      VkCommandBuffer secondary_primary = fresh_cmd();
+      vkCmdExecuteCommands(secondary_primary, 1u, &secondary_transfer);
+      assert(vkEndCommandBuffer(secondary_primary) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, secondary_native,
+                     secondary_primary);
+      assert(secondary_native->ordered_operation_count == 2u);
+      assert(secondary_native->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
+      assert(secondary_native->ordered_operations[1].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_HOST_COPY);
+      assert(vkQueueSubmit(queue, 1u,
+                           &(VkSubmitInfo){
+                              .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1u,
+                              .pCommandBuffers = &secondary_primary,
+                           }, VK_NULL_HANDLE) == VK_SUCCESS);
+      assert(reverse_image->committed_submission.api_layout ==
+             R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL);
+
+      /* Replay stages all secondary effects before touching the primary.  A
+       * valid fill followed by an invalid ordered record therefore leaves the
+       * freshly begun primary empty while reporting the command error. */
+      VkCommandBuffer late_invalid_secondary = fresh_secondary_cmd();
+      vkCmdFillBuffer(late_invalid_secondary, staging, 0u, 16u,
+                      0x12345678u);
+      assert(vkEndCommandBuffer(late_invalid_secondary) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, late_invalid_native,
+                     late_invalid_secondary);
+      assert(late_invalid_native->ordered_operation_count <
+             late_invalid_native->ordered_operation_capacity);
+      late_invalid_native->ordered_operations[
+         late_invalid_native->ordered_operation_count++] =
+         (struct r3v_native_ordered_operation){
+            .kind = (enum r3v_native_ordered_operation_kind)UINT32_MAX,
+         };
+      VkCommandBuffer transactional_primary = fresh_cmd();
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, transactional_native,
+                     transactional_primary);
+      vkCmdExecuteCommands(transactional_primary, 1u,
+                           &late_invalid_secondary);
+      assert(transactional_native->deferred_copy_count == 0u);
+      assert(transactional_native->ordered_operation_count == 0u);
+      assert(transactional_native->image_state_count == 0u);
+      assert(transactional_native->event_op_count == 0u);
+      assert(transactional_native->query_op_count == 0u);
+      assert(transactional_native->ib == NULL);
+      assert(transactional_native->references == NULL);
+      assert(vkEndCommandBuffer(transactional_primary) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
       vkDestroyBuffer(device, staging, NULL);
       vkFreeMemory(device, staging_mem, NULL);
       vkDestroyImage(device, source_only, NULL);
@@ -3455,6 +4622,9 @@ main(void)
       vkFreeMemory(device, mem_a, NULL);
       vkFreeMemory(device, mem_b, NULL);
    }
+
+   check_depth_attachment_begin(view, layout, vertex_buffer, vertex_memory,
+                                color_memory, queue);
 
    /* Pre-commit refusal leaves bytes unchanged: the closed gate refuses
     * before the deferred draw, so the carrier keeps its pre-submit

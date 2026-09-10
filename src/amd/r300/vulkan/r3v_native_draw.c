@@ -27,6 +27,175 @@ poison(VkCommandBuffer commandBuffer, VkResult error)
    vk_command_buffer_set_error(cmd_buffer, error);
 }
 
+static bool
+depth_only_render_pass(const struct vk_render_pass *pass)
+{
+   return pass != NULL && pass->attachment_count == 1 &&
+          pass->subpass_count == 1 && pass->subpasses[0].color_count == 0 &&
+          pass->subpasses[0].depth_stencil_attachment != NULL;
+}
+
+static VkResult
+record_render_pass_dependencies(struct r3v_native_cmd_buffer *cmd_buffer,
+                                const struct vk_render_pass *pass,
+                                uint32_t source_subpass,
+                                uint32_t destination_subpass)
+{
+   for (uint32_t dependency_index = 0u;
+        dependency_index < pass->dependency_count; dependency_index++) {
+      const struct vk_subpass_dependency *dependency =
+         &pass->dependencies[dependency_index];
+      if (dependency->src_subpass != source_subpass ||
+          dependency->dst_subpass != destination_subpass)
+         continue;
+      const VkResult result =
+         r3v_native_cmd_buffer_append_render_pass_dependency(cmd_buffer,
+                                                              dependency);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   return VK_SUCCESS;
+}
+
+static void
+begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
+                             struct r3v_native_cmd_buffer *cmd_buffer,
+                             const struct vk_render_pass *pass,
+                             const struct vk_framebuffer *framebuffer,
+                             const VkRenderPassBeginInfo *begin)
+{
+   VK_FROM_HANDLE(r3v_native_image_view, depth_view,
+                  framebuffer->attachments[0]);
+   const struct vk_render_pass_attachment *attachment = &pass->attachments[0];
+   const struct vk_subpass *subpass = &pass->subpasses[0];
+   const VkRect2D *area = &begin->renderArea;
+   const bool depth_clear = attachment->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
+   const bool stencil_clear =
+      attachment->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
+   const bool full_depth_extent =
+      depth_view != NULL && depth_view->image != NULL &&
+      depth_view->image->depth_contract.logical_extent.width ==
+         depth_view->image->depth_contract.surface.width &&
+      depth_view->image->depth_contract.logical_extent.height ==
+         depth_view->image->depth_contract.surface.height &&
+      area->offset.x == 0 && area->offset.y == 0 &&
+      area->extent.width == depth_view->image->width &&
+      area->extent.height == depth_view->image->height;
+   if (depth_view == NULL || depth_view->image == NULL ||
+       depth_view->image->memory == NULL || !depth_view->image->depth_family ||
+       attachment->format != VK_FORMAT_D24_UNORM_S8_UINT ||
+       depth_view->image->format != VK_FORMAT_D24_UNORM_S8_UINT ||
+       !r3v_native_view_type_executes(depth_view->view_type) ||
+       area->offset.x < 0 || area->offset.y < 0 ||
+       (uint32_t)area->offset.x > framebuffer->width ||
+       (uint32_t)area->offset.y > framebuffer->height ||
+       area->extent.width > framebuffer->width - (uint32_t)area->offset.x ||
+       area->extent.height > framebuffer->height - (uint32_t)area->offset.y ||
+       framebuffer->width > depth_view->image->width ||
+       framebuffer->height > depth_view->image->height ||
+       begin->clearValueCount < ((depth_clear || stencil_clear) ? 1u : 0u) ||
+       ((depth_clear || stencil_clear) && begin->pClearValues == NULL)) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
+   struct r300_zb_combined_clear_plan depth_plan = {0};
+   uint32_t aspect_mask = 0u;
+   uint32_t depth_code = 0u;
+   uint32_t stencil = 0u;
+   if (depth_clear || stencil_clear) {
+      const VkClearDepthStencilValue clear = begin->pClearValues[0].depthStencil;
+      if (depth_clear) {
+         if (!r3v_native_depth_clear_code(clear.depth, &depth_code)) {
+            poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+            return;
+         }
+         aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+      }
+      if (stencil_clear) {
+         aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+         stencil = clear.stencil & UINT8_MAX;
+      }
+      if (r300_zb_combined_clear_plan(
+             &(struct r300_zb_combined_clear_request){
+                .surface = &depth_view->image->depth_contract.surface,
+                .surface_base_bytes =
+                   depth_view->image->depth_contract.surface_base_bytes,
+                .binding_offset_bytes =
+                   depth_view->image->depth_bound.binding_offset_bytes,
+                .mapped_surface_bytes = depth_view->image->depth_bound.bo_bytes,
+                .pitch_bytes = depth_view->image->depth_contract.layout.pitch_bytes,
+                .format = R300_RB2D_FORMAT_ARGB8888,
+                .aspect_mask = aspect_mask,
+                .depth_code = depth_code,
+                .stencil = stencil,
+             },
+             &depth_plan) != R300_ZB_COMBINED_CLEAR_OK) {
+         poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+         return;
+      }
+   }
+   const VkImageLayout layout = subpass->depth_stencil_attachment->layout;
+   VkResult result = r3v_native_cmd_buffer_transition_image_layout(
+      cmd_buffer, depth_view->image, attachment->initial_layout, layout);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, depth_view->image, layout,
+         R3V_NATIVE_IMAGE_PRODUCER_ZB, depth_clear || stencil_clear);
+   if (result == VK_SUCCESS)
+      if ((depth_clear || stencil_clear) && !full_depth_extent)
+         result = r3v_native_record_depth_image_clear_logical_rect(
+            commandBuffer, r3v_native_image_to_handle(depth_view->image),
+            area->offset.x, area->offset.y, area->extent.width,
+            area->extent.height, aspect_mask, depth_code, stencil);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN,
+                        .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                        .payload.render_pass_begin = {
+                           .deferred_draw_index = cmd_buffer->deferred_draw_count,
+                        },
+                     });
+   if (result != VK_SUCCESS) {
+      poison(commandBuffer, result);
+      return;
+   }
+
+   cmd_buffer->pass_target = depth_view->image;
+   cmd_buffer->active_render_pass = pass;
+   cmd_buffer->pass_depth_target = NULL;
+   cmd_buffer->pass_color_layout = layout;
+   cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_color_final_layout = attachment->final_layout;
+   cmd_buffer->pass_depth_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_render_width = framebuffer->width;
+   cmd_buffer->pass_render_height = framebuffer->height;
+   cmd_buffer->pass_target_layer_offset = depth_view->layer_offset_bytes;
+   cmd_buffer->draw_recorded = false;
+   cmd_buffer->active_pass_draw_index = cmd_buffer->deferred_draw_count;
+   cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count++] =
+      (struct r3v_native_deferred_draw){
+         .pending = true,
+         .load_at_begin = true,
+         .target_memory = depth_view->image->memory,
+         .target_width = depth_view->image->width,
+         .target_height = depth_view->image->height,
+         .depth_only = true,
+         .depth_memory = depth_view->image->memory,
+         .depth_bound = depth_view->image->depth_bound,
+         .depth_clear = depth_plan,
+         .has_depth_clear = (depth_clear || stencil_clear) &&
+                            full_depth_extent,
+      };
+   cmd_buffer->render_pass_count++;
+   if ((depth_clear || stencil_clear) && full_depth_extent)
+      cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+         .depth_clear.fill.rects =
+            &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+                .depth_clear.rect;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
                        const VkRenderPassBeginInfo *pRenderPassBegin,
@@ -37,12 +206,12 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(vk_framebuffer, framebuffer,
                   pRenderPassBegin->framebuffer);
 
-   /* The bounded contract is R3V_NATIVE_DEFERRED_DRAW_MAX passes per
-    * command buffer, each carrying its own load-op clear, carrier, and
-    * vertex execution.  A pass past that bound has no deferred record to
-    * fill, so it refuses instead of recording a pass whose load op never
-    * executes.  Copies already recorded are the pre-draw group the queue
-    * executes ahead of the first pass, so they stand.
+   /* The command buffer keeps one record for each render pass and one
+    * additional record for each repeated draw.  Render-pass count remains a
+    * separate route bound, while draw storage grows through the command-pool
+    * allocator before any pass state or dependency is recorded.  Copies
+    * already recorded are the pre-draw group the queue executes ahead of the
+    * first pass, so they stand.
     *
     * Concatenating recorded cells produces a stream no offline emitter
     * reproduces, so the arming digest has nothing to compare a second
@@ -55,11 +224,19 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     */
    if (cmd_buffer->pass_target != NULL ||
        cmd_buffer->active_query_pool != NULL ||
-       cmd_buffer->deferred_draw_count >= R3V_NATIVE_DEFERRED_DRAW_MAX ||
+       cmd_buffer->render_pass_count >= R3V_NATIVE_RENDER_PASS_MAX ||
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
-       framebuffer->layers != 1 || framebuffer->attachment_count != 1) {
+       framebuffer->layers != 1 ||
+       framebuffer->attachment_count != pass->attachment_count) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
+   const VkResult draw_storage_result =
+      r3v_native_cmd_buffer_reserve_deferred_draws(cmd_buffer, 1u);
+   if (draw_storage_result != VK_SUCCESS) {
+      poison(commandBuffer, draw_storage_result);
       return;
    }
 
@@ -73,6 +250,19 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       return;
    }
 
+   const VkResult dependency_result = record_render_pass_dependencies(
+      cmd_buffer, pass, VK_SUBPASS_EXTERNAL, 0u);
+   if (dependency_result != VK_SUCCESS) {
+      poison(commandBuffer, dependency_result);
+      return;
+   }
+
+   if (depth_only_render_pass(pass)) {
+      begin_depth_only_render_pass(commandBuffer, cmd_buffer, pass, framebuffer,
+                                   pRenderPassBegin);
+      return;
+   }
+
    /* The framebuffer and render area name the attached image's own
     * extent in full: the load-op clear realizes over the image
     * footprint, so a partial render area would clear more than it
@@ -81,6 +271,9 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
     * image's own format.
     */
    VK_FROM_HANDLE(r3v_native_image_view, view, framebuffer->attachments[0]);
+   VK_FROM_HANDLE(r3v_native_image_view, depth_view,
+                  framebuffer->attachment_count == 2
+                     ? framebuffer->attachments[1] : VK_NULL_HANDLE);
    const VkRect2D *area = &pRenderPassBegin->renderArea;
    /* The color backend places one slice's base in RB3D_COLOROFFSET0, so
     * the attachment takes a view whose slice the creation resolved.
@@ -94,11 +287,77 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
        area->offset.x != 0 || area->offset.y != 0 ||
        area->extent.width != view->image->width ||
        area->extent.height != view->image->height ||
-       pRenderPassBegin->clearValueCount < 1) {
+       pRenderPassBegin->clearValueCount <
+          (framebuffer->attachment_count == 2 &&
+           (pass->attachments[1].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR ||
+            pass->attachments[1].stencil_load_op ==
+               VK_ATTACHMENT_LOAD_OP_CLEAR)
+              ? framebuffer->attachment_count
+              : 1u) ||
+       (framebuffer->attachment_count == 2 &&
+        (depth_view == NULL || depth_view->image == NULL ||
+         depth_view->image->memory == NULL ||
+         !depth_view->image->depth_family ||
+         depth_view->image->format != VK_FORMAT_D24_UNORM_S8_UINT ||
+         !r3v_native_view_type_executes(depth_view->view_type) ||
+         depth_view->image->width < framebuffer->width ||
+         depth_view->image->height < framebuffer->height))) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
 
+   struct r300_zb_combined_clear_plan depth_clear = { 0 };
+   struct r3v_native_depth_image_bound depth_bound = { 0 };
+   struct r3v_native_memory *depth_memory = NULL;
+   uint32_t depth_clear_depth_code = 0u;
+   uint32_t depth_clear_aspect_mask = 0u;
+   uint32_t depth_clear_stencil = 0u;
+   const bool depth_loads_clear =
+      framebuffer->attachment_count == 2 &&
+      (pass->attachments[1].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR ||
+       pass->attachments[1].stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
+   const bool clear_covers_depth_image = depth_view != NULL &&
+      depth_view->image != NULL &&
+      area->extent.width == depth_view->image->width &&
+      area->extent.height == depth_view->image->height;
+   if (framebuffer->attachment_count == 2) {
+      depth_bound = depth_view->image->depth_bound;
+      depth_memory = depth_view->image->memory;
+      if (depth_loads_clear) {
+         const VkClearDepthStencilValue clear =
+            pRenderPassBegin->pClearValues[1].depthStencil;
+         if (pass->attachments[1].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+            if (!r3v_native_depth_clear_code(clear.depth,
+                                             &depth_clear_depth_code)) {
+               poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+               return;
+            }
+            depth_clear_aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+         }
+         if (pass->attachments[1].stencil_load_op ==
+             VK_ATTACHMENT_LOAD_OP_CLEAR)
+            depth_clear_aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+         depth_clear_stencil = clear.stencil & UINT8_MAX;
+         if (r300_zb_combined_clear_plan(
+                &(struct r300_zb_combined_clear_request){
+                   .surface = &depth_view->image->depth_contract.surface,
+                   .surface_base_bytes =
+                      depth_view->image->depth_contract.surface_base_bytes,
+                   .binding_offset_bytes =
+                      depth_view->image->depth_bound.binding_offset_bytes,
+                   .mapped_surface_bytes = depth_view->image->depth_bound.bo_bytes,
+                   .pitch_bytes =
+                      depth_view->image->depth_contract.layout.pitch_bytes,
+                   .format = R300_RB2D_FORMAT_ARGB8888,
+                   .aspect_mask = depth_clear_aspect_mask,
+                   .depth_code = depth_clear_depth_code,
+                   .stencil = depth_clear_stencil,
+                }, &depth_clear) != R300_ZB_COMBINED_CLEAR_OK) {
+            poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+            return;
+         }
+      }
+   }
    /* The load-op clear realizes as a host fill of the target's
     * footprint, so the pass's clear color travels as the one texel that
     * fill writes: the attachment's format selects the live
@@ -109,12 +368,70 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    const uint32_t clear_dword = r300_tcl_bypass_triangle_pack_unorm8_dword(
       view->image->lanes, pRenderPassBegin->pClearValues[0].color.float32);
 
+   const struct vk_subpass *subpass = &pass->subpasses[0];
+   const VkImageLayout color_layout = subpass->color_attachments[0].layout;
+   const VkImageLayout color_final_layout = pass->attachments[0].final_layout;
+   VkResult state_result = r3v_native_cmd_buffer_transition_image_layout(
+      cmd_buffer, view->image, pass->attachments[0].initial_layout,
+      color_layout);
+   if (state_result == VK_SUCCESS)
+      state_result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, view->image, color_layout,
+         R3V_NATIVE_IMAGE_PRODUCER_RB3D,
+         pass->attachments[0].load_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
+
+   VkImageLayout depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   VkImageLayout depth_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   if (state_result == VK_SUCCESS && depth_view != NULL) {
+      depth_layout = subpass->depth_stencil_attachment->layout;
+      depth_final_layout = pass->attachments[1].final_layout;
+      state_result = r3v_native_cmd_buffer_transition_image_layout(
+         cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,
+         depth_layout);
+      if (state_result == VK_SUCCESS)
+         state_result = r3v_native_cmd_buffer_require_image_layout(
+            cmd_buffer, depth_view->image, depth_layout,
+            R3V_NATIVE_IMAGE_PRODUCER_ZB, depth_loads_clear);
+      if (state_result == VK_SUCCESS && depth_loads_clear &&
+          !clear_covers_depth_image)
+         state_result = r3v_native_record_depth_image_clear_logical_rect(
+            commandBuffer, r3v_native_image_to_handle(depth_view->image),
+            0u, 0u, area->extent.width, area->extent.height,
+            depth_clear_aspect_mask, depth_clear_depth_code,
+            depth_clear_stencil);
+   }
+   if (state_result == VK_SUCCESS)
+      state_result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN,
+                        .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                        .payload.render_pass_begin = {
+                           .deferred_draw_index =
+                              cmd_buffer->deferred_draw_count,
+                        },
+                     });
+   if (state_result != VK_SUCCESS) {
+      poison(commandBuffer, state_result);
+      return;
+   }
+
    cmd_buffer->pass_target = view->image;
+   cmd_buffer->active_render_pass = pass;
+   cmd_buffer->pass_depth_target =
+      depth_view != NULL ? depth_view->image : NULL;
+   cmd_buffer->pass_color_layout = color_layout;
+   cmd_buffer->pass_depth_layout = depth_layout;
+   cmd_buffer->pass_color_final_layout = color_final_layout;
+   cmd_buffer->pass_depth_final_layout = depth_final_layout;
+   cmd_buffer->pass_render_width = framebuffer->width;
+   cmd_buffer->pass_render_height = framebuffer->height;
    cmd_buffer->pass_target_layer_offset = view->layer_offset_bytes;
    cmd_buffer->draw_recorded = false;
+   cmd_buffer->active_pass_draw_index = cmd_buffer->deferred_draw_count;
    cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count++] =
       (struct r3v_native_deferred_draw){
       .pending = true,
+      .load_at_begin = true,
       .target_memory = view->image->memory,
       .target_fill_offset =
          view->image->memory_offset + view->layer_offset_bytes,
@@ -123,7 +440,17 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
       .clear_dword = clear_dword,
       .target_width = view->image->width,
       .target_height = view->image->height,
+      .depth_memory = depth_memory,
+      .depth_bound = depth_bound,
+      .depth_clear = depth_clear,
+      .has_depth_clear = depth_loads_clear && clear_covers_depth_image,
    };
+   cmd_buffer->render_pass_count++;
+   if (depth_loads_clear)
+      cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+         .depth_clear.fill.rects =
+            &cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
+                .depth_clear.rect;
 }
 
 /* A pass with no draw still carries its load-op clear through deferred_draw.
@@ -135,11 +462,43 @@ r3v_CmdEndRenderPass(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (cmd_buffer->pass_target == NULL) {
+   if (cmd_buffer->pass_target == NULL || cmd_buffer->active_render_pass == NULL) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
+   VkResult state_result = r3v_native_cmd_buffer_transition_image_layout(
+      cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+      cmd_buffer->pass_color_final_layout);
+   if (state_result == VK_SUCCESS && cmd_buffer->pass_depth_target != NULL)
+      state_result = r3v_native_cmd_buffer_transition_image_layout(
+         cmd_buffer, cmd_buffer->pass_depth_target,
+         cmd_buffer->pass_depth_layout, cmd_buffer->pass_depth_final_layout);
+   if (state_result == VK_SUCCESS)
+      state_result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END,
+                        .ib_position_dwords = cmd_buffer->ib_size_dwords,
+                        .payload.render_pass_end = {
+                           .deferred_draw_index =
+                              cmd_buffer->deferred_draw_count - 1u,
+                        },
+                     });
+   if (state_result == VK_SUCCESS)
+      state_result = record_render_pass_dependencies(
+         cmd_buffer, cmd_buffer->active_render_pass, 0u, VK_SUBPASS_EXTERNAL);
+   if (state_result != VK_SUCCESS) {
+      poison(commandBuffer, state_result);
+      return;
+   }
    cmd_buffer->pass_target = NULL;
+   cmd_buffer->pass_depth_target = NULL;
+   cmd_buffer->active_render_pass = NULL;
+   cmd_buffer->pass_color_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_color_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_depth_final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   cmd_buffer->pass_render_width = 0;
+   cmd_buffer->pass_render_height = 0;
    cmd_buffer->pass_target_layer_offset = 0;
 }
 
@@ -285,15 +644,14 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
    struct r3v_native_pipeline *pipeline = cmd_buffer->bound_pipeline;
 
-   /* A recorded attachment clear executes on the host after the
-    * load-op clear, and the device draw executes after every host
-    * write, so a clear-then-draw pass would reorder the clear over the
-    * draw's output; the pass carries one or the other.
-    */
    if (cmd_buffer->pass_target == NULL || pipeline == NULL ||
-       cmd_buffer->draw_recorded || cmd_buffer->deferred_draw_count == 0 ||
-       cmd_buffer->deferred_draws[cmd_buffer->deferred_draw_count - 1]
-             .clear_rect_count != 0) {
+       cmd_buffer->deferred_draw_count == 0 ||
+       cmd_buffer->active_pass_draw_index >= cmd_buffer->deferred_draw_count ||
+       (!cmd_buffer->draw_recorded &&
+        cmd_buffer->deferred_draws[cmd_buffer->active_pass_draw_index]
+              .clear_rect_count > R3V_NATIVE_PASS_CLEAR_RECT_MAX) ||
+       (cmd_buffer->draw_recorded &&
+        cmd_buffer->deferred_draw_count == UINT32_MAX)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -306,10 +664,77 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
-   /* The draw fills the pass CmdBeginRenderPass opened, which is the
-    * last record in the list.
-    */
-   const uint32_t pass_slot = cmd_buffer->deferred_draw_count - 1;
+   /* The first draw fills the record opened by CmdBeginRenderPass.  A
+    * repeated draw appends a new record while retaining the pass record for
+    * its load operation and attachment clears. */
+   const bool first_draw_in_pass = !cmd_buffer->draw_recorded;
+   if (!first_draw_in_pass) {
+      const VkResult draw_storage_result =
+         r3v_native_cmd_buffer_reserve_deferred_draws(cmd_buffer, 1u);
+      if (draw_storage_result != VK_SUCCESS) {
+         poison(commandBuffer, draw_storage_result);
+         return;
+      }
+   }
+   const uint32_t pass_slot = cmd_buffer->active_pass_draw_index;
+   const uint32_t draw_slot = first_draw_in_pass
+                                 ? pass_slot
+                                 : cmd_buffer->deferred_draw_count;
+   const struct r3v_native_deferred_draw *pass_draw =
+      &cmd_buffer->deferred_draws[pass_slot];
+   const bool pass_has_depth = pass_draw->depth_memory != NULL;
+   if (pass_has_depth != pipeline->has_depth_pipeline ||
+       (pass_has_depth && pass_draw->depth_memory == NULL)) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
+   struct r3v_native_image color_sink_image = {0};
+   struct r3v_native_memory *color_sink = NULL;
+   if (pass_draw->depth_only) {
+      /* The fixed cell always emits a fragment color.  A depth-only Vulkan
+       * subpass therefore binds a private linear B8G8R8A8 sink to the cell's
+       * color relocation while the application D24S8 image remains the
+       * depth relocation.  The sink's extra row preserves the render
+       * family's containment oracle even though the public pass has no
+       * color attachment. */
+      color_sink = vk_zalloc(&cmd_buffer->vk.pool->alloc, sizeof(*color_sink),
+                             8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (color_sink == NULL) {
+         poison(commandBuffer, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return;
+      }
+      const uint32_t sink_row_pitch =
+         r3v_native_render_row_pitch_bytes(cmd_buffer->pass_render_width);
+      const uint64_t sink_bytes = r3v_native_render_footprint_bytes(
+         sink_row_pitch, cmd_buffer->pass_render_height);
+      if (radeon_drm_vk_bo_create(&device->drm, sink_bytes,
+                                  R3V_NATIVE_MEMORY_ALIGNMENT,
+                                  RADEON_GEM_DOMAIN_GTT, 0, false,
+                                  &color_sink->bo) != 0) {
+         vk_free(&cmd_buffer->vk.pool->alloc, color_sink);
+         poison(commandBuffer, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return;
+      }
+      cmd_buffer->owned_color_sinks[draw_slot] = color_sink;
+      color_sink_image = *cmd_buffer->pass_target;
+      color_sink_image.memory = color_sink;
+      color_sink_image.memory_offset = 0;
+      color_sink_image.width = cmd_buffer->pass_render_width;
+      color_sink_image.height = cmd_buffer->pass_render_height;
+      color_sink_image.format = VK_FORMAT_B8G8R8A8_UNORM;
+      color_sink_image.texel_bytes = 4;
+      color_sink_image.lanes = R300_TRIANGLE_LANES_B8G8R8A8;
+      color_sink_image.row_pitch_bytes = sink_row_pitch;
+      color_sink_image.layer_pitch_bytes = sink_bytes;
+      color_sink_image.footprint_bytes = sink_bytes;
+      color_sink_image.depth_family = false;
+      color_sink_image.depth_contract = (struct r3v_native_depth_image_contract){0};
+      color_sink_image.depth_bound = (struct r3v_native_depth_image_bound){0};
+   }
+   struct r3v_native_image *color_target = pass_draw->depth_only
+                                               ? &color_sink_image
+                                               : cmd_buffer->pass_target;
 
    /* An indexed draw reads its indices from the bound index
     * buffer at execution, so the record proves the index range alone:
@@ -373,8 +798,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
          return;
       }
    }
-   if (claim_width != cmd_buffer->pass_target->width ||
-       claim_height != cmd_buffer->pass_target->height) {
+   if (claim_width != cmd_buffer->pass_render_width ||
+       claim_height != cmd_buffer->pass_render_height) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }
@@ -578,13 +1003,12 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
     * carrier cell; the span the direct cell occupies in the command
     * buffer's IB is what the selection at submission replaces. */
    const uint32_t ib_span_offset =
-      cmd_buffer->ib != NULL && cmd_buffer->deferred_draw_count > 1
-         ? cmd_buffer->ib_size_dwords
-         : 0;
+      cmd_buffer->ib != NULL ? cmd_buffer->ib_size_dwords : 0;
    struct r300_tcl_bypass_triangle_ib alternate_cell = {0};
    VkResult result = r3v_native_record_tcl_bypass_triangle_carrier(
-      device, cmd_buffer, carrier, cmd_buffer->pass_target,
-      cmd_buffer->pass_target_layer_offset, pipeline->varying,
+      device, cmd_buffer, carrier, color_target,
+      pass_draw->depth_only ? 0u : cmd_buffer->pass_target_layer_offset,
+      pipeline->varying,
       pipeline->interpolation_route ==
          R3V_INTERPOLATION_ROUTE_DIRECT_GA_COLOR0,
       pipeline->interpolation_route ==
@@ -596,6 +1020,12 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       rs_control_word,
       (args->vertex_count / 3) * args->instance_count,
       pipeline->color_bits, sampled,
+      pass_has_depth ? pass_draw->depth_memory : NULL,
+      pass_has_depth ? &pass_draw->depth_bound : NULL,
+      pass_has_depth ? &pipeline->depth_pipeline : NULL,
+      (first_draw_in_pass && pass_draw->has_depth_clear)
+         ? &pass_draw->depth_clear : NULL,
+      pipeline->color_writes_disabled,
       adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_bo_free(&device->drm, &carrier->bo);
@@ -619,16 +1049,32 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       r300_tcl_bypass_triangle_release(&alternate_cell);
    }
 
-   cmd_buffer->owned_carriers[pass_slot] = carrier;
-   /* The pass's load-op clear was resolved at CmdBeginRenderPass; the
-    * draw record replaces the deferred draw whole, so the clear texel
-    * travels across that replacement.
+   cmd_buffer->owned_carriers[draw_slot] = carrier;
+   /* The pass's load-op clear and attachment-clear rectangles were resolved
+    * at CmdBeginRenderPass or CmdClearAttachments; the draw record replaces
+    * the deferred draw whole, so both payloads travel across that
+    * replacement.
     */
-   const uint32_t clear_dword =
-      cmd_buffer->deferred_draws[pass_slot].clear_dword;
-   cmd_buffer->deferred_draws[pass_slot] =
+   const uint32_t clear_dword = pass_draw->clear_dword;
+   const struct r3v_native_depth_image_bound depth_bound =
+      pass_draw->depth_bound;
+   struct r300_zb_combined_clear_plan depth_clear =
+      first_draw_in_pass ? pass_draw->depth_clear
+                         : (struct r300_zb_combined_clear_plan){0};
+   const uint32_t clear_rect_count =
+      first_draw_in_pass ? pass_draw->clear_rect_count : 0u;
+   struct r3v_native_pass_clear_rect clear_rects[
+      R3V_NATIVE_PASS_CLEAR_RECT_MAX];
+   if (first_draw_in_pass)
+      memcpy(clear_rects, pass_draw->clear_rects, sizeof(clear_rects));
+   else
+      memset(clear_rects, 0, sizeof(clear_rects));
+   if (depth_clear.fill.rects != NULL)
+      depth_clear.fill.rects = &depth_clear.rect;
+   cmd_buffer->deferred_draws[draw_slot] =
       (struct r3v_native_deferred_draw){
       .pending = true,
+      .load_at_begin = first_draw_in_pass,
       .stream_mask = pipeline->attribute_mask,
       .first_vertex = args->first_vertex,
       .vertex_count = args->vertex_count,
@@ -643,6 +1089,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .cull_mode = pipeline->cull_mode,
       .front_face = pipeline->front_face,
       .sample_mask_zero = pipeline->sample_mask_zero,
+      .color_writes_disabled = pipeline->color_writes_disabled,
       .vertex_job = pipeline->vertex_job,
       .vertex_job_identity = pipeline->gpu_vertex_job_identity,
       .post_vs = pipeline->post_vs,
@@ -662,18 +1109,73 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .ib_span_dwords = ib_span_dwords,
       .alternate_ib = alternate_ib,
       .alternate_ib_dwords = alternate_ib_dwords,
-      .target_memory = cmd_buffer->pass_target->memory,
-      .target_fill_offset = cmd_buffer->pass_target->memory_offset +
-                            cmd_buffer->pass_target_layer_offset,
-      .target_fill_bytes = cmd_buffer->pass_target->layer_pitch_bytes,
-      .target_row_bytes = cmd_buffer->pass_target->row_pitch_bytes,
+      .target_memory = color_target->memory,
+      .target_fill_offset = color_target->memory_offset +
+                            (pass_draw->depth_only
+                                ? 0u : cmd_buffer->pass_target_layer_offset),
+      .target_fill_bytes = pass_draw->depth_only
+                              ? color_target->footprint_bytes
+                              : color_target->layer_pitch_bytes,
+      .target_row_bytes = color_target->row_pitch_bytes,
       .clear_dword = clear_dword,
-      .target_width = cmd_buffer->pass_target->width,
-      .target_height = cmd_buffer->pass_target->height,
+      .color_load_in_ib = first_draw_in_pass && !pass_draw->depth_only &&
+                          pass_has_depth && ib_span_offset != 0,
+      .target_width = color_target->width,
+      .target_height = color_target->height,
+      .depth_only = pass_draw->depth_only,
+      .depth_memory = pass_draw->depth_memory,
+      .depth_bound = depth_bound,
+      .depth_pipeline = pipeline->depth_pipeline,
+      .has_depth_pipeline = pipeline->has_depth_pipeline,
+      .depth_clear = depth_clear,
+      .has_depth_clear = first_draw_in_pass && pass_draw->has_depth_clear,
+      .clear_rect_count = clear_rect_count,
    };
-   memcpy(cmd_buffer->deferred_draws[pass_slot].streams, streams,
+   if (first_draw_in_pass && pass_draw->has_depth_clear)
+      cmd_buffer->deferred_draws[draw_slot].depth_clear.fill.rects =
+         &cmd_buffer->deferred_draws[draw_slot].depth_clear.rect;
+   memcpy(cmd_buffer->deferred_draws[draw_slot].streams, streams,
           sizeof(streams));
+   memcpy(cmd_buffer->deferred_draws[draw_slot].clear_rects, clear_rects,
+          sizeof(clear_rects));
+   if (!first_draw_in_pass)
+      cmd_buffer->deferred_draw_count++;
    cmd_buffer->draw_recorded = true;
+   const struct r300_zb_depth_state_params *depth_state =
+      &pipeline->depth_pipeline.hardware;
+   const bool writes_depth_stencil =
+      depth_state->depth_write ||
+      (depth_state->stencil.enabled &&
+       (depth_state->stencil.front.write_mask != 0u ||
+        (depth_state->stencil.two_sided &&
+         depth_state->stencil.back.write_mask != 0u)));
+   VkResult ordered_result = VK_SUCCESS;
+   if (pass_draw->depth_only) {
+      ordered_result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+         R3V_NATIVE_IMAGE_PRODUCER_ZB, writes_depth_stencil);
+   } else {
+      ordered_result = r3v_native_cmd_buffer_require_image_layout(
+         cmd_buffer, cmd_buffer->pass_target, cmd_buffer->pass_color_layout,
+         R3V_NATIVE_IMAGE_PRODUCER_RB3D, true);
+      if (ordered_result == VK_SUCCESS &&
+          cmd_buffer->pass_depth_target != NULL)
+         ordered_result = r3v_native_cmd_buffer_require_image_layout(
+            cmd_buffer, cmd_buffer->pass_depth_target,
+            cmd_buffer->pass_depth_layout, R3V_NATIVE_IMAGE_PRODUCER_ZB,
+            writes_depth_stencil);
+   }
+   if (ordered_result == VK_SUCCESS)
+      ordered_result = r3v_native_cmd_buffer_append_ordered_operation(
+         cmd_buffer, &(struct r3v_native_ordered_operation){
+                        .kind = R3V_NATIVE_ORDERED_OPERATION_DRAW,
+                        .ib_position_dwords = ib_span_offset,
+                        .payload.draw = {
+                           .deferred_draw_index = draw_slot,
+                        },
+                     });
+   if (ordered_result != VK_SUCCESS)
+      poison(commandBuffer, ordered_result);
 }
 
 /* The instance range both draws accept: at least one instance (the cell

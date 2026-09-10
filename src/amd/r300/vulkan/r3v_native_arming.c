@@ -83,6 +83,9 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
    case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION:
+   case R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION:
+   case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR:
+   case R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION:
    case R3V_NATIVE_CELL_KIND_R2VB_PRODUCER:
    case R3V_NATIVE_CELL_KIND_R2VB_REINGEST:
    case R3V_NATIVE_CELL_KIND_R2VB_FLOAT2_TUPLE:
@@ -90,6 +93,7 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
    case R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_BURST:
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_PUBLIC:
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL:
+   case R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL:
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY:
    case R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED:
    case R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER:
@@ -135,7 +139,13 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
     * token mid-run, an undeclared bound, and an exhausted bound each
     * refuse by name.
     */
-   if (facts->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL) {
+   if (facts->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL ||
+       facts->cell_kind == R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL) {
+      if (facts->cell_kind ==
+             R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL &&
+          facts->serial_authorized_submissions !=
+             R3V_NATIVE_ZB_PERSISTENCE_SUBMISSIONS)
+         return R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED;
       if (facts->serial_authorized_submissions < 1 ||
           facts->serial_authorized_submissions >
              R3V_NATIVE_ARMING_SERIAL_MAX_SUBMISSIONS)
@@ -143,6 +153,10 @@ r3v_native_arming_evaluate(const struct r3v_native_arming_facts *facts)
       if (facts->serial_submissions_consumed >=
           facts->serial_authorized_submissions)
          return R3V_NATIVE_ARMING_SERIAL_BOUND_EXHAUSTED;
+      if (facts->cell_kind ==
+             R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL &&
+          facts->persistence_ordinal != facts->serial_submissions_consumed)
+         return R3V_NATIVE_ARMING_SERIAL_BOUND_UNDECLARED;
       if (facts->serial_submissions_consumed == 0) {
          if (facts->attempt_token_present)
             return R3V_NATIVE_ARMING_ALREADY_ATTEMPTED;

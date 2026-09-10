@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_zb_depth_state.h"
 #include "r300_first_draw_state.h"
 #include "r300_flat_color0_plan.h"
 #include "r300_noperspective_reciprocal_fs_block.h"
@@ -436,7 +437,6 @@ emit_triangle_stream_into(
    r300_pm4_reg(&b, R300_RB3D_COLOROFFSET0, params->color_offset);
    write_reloc(&b, out, R300_TRIANGLE_SLOT_COLOR);
    r300_pm4_reg(&b, R300_RB3D_COLORPITCH0, params->color_pitch_format);
-
    /* Each hardware draw uses local vertex indices and a rebased byte offset,
     * so each 16-bit count field describes at most one 21,845-triangle
     * segment; the separate maximum-index field remains 24-bit. Segment
@@ -553,6 +553,7 @@ r300_tcl_bypass_triangle_release(struct r300_tcl_bypass_triangle_ib *ib)
 {
    if (ib->owns_ib)
       free(ib->ib);
+   free(ib->vertex_reloc_aliases);
    memset(ib, 0, sizeof(*ib));
 }
 
@@ -642,6 +643,59 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
       R300_TRIANGLE_SLOT_TEXTURE,
       R300_TRIANGLE_SLOT_COLOR,
    };
+   static const uint32_t depth_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t depth_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t depth_clear_render_prefix[] = {
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t depth_clear_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_clear_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_COLOR,
+   };
+   static const uint32_t color_clear_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+   };
+   static const uint32_t color_clear_depth_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_clear_depth_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_depth_clear_render_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
+   static const uint32_t color_depth_clear_sampled_prefix[] = {
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+      R300_TRIANGLE_SLOT_TEXTURE,
+      R300_TRIANGLE_SLOT_COLOR,
+      R300_TRIANGLE_SLOT_DEPTH,
+   };
    static const uint32_t composed_slots[] = {
       R300_TRIANGLE_SLOT_COLOR,
       R300_TRIANGLE_SLOT_VERTEX,
@@ -671,6 +725,34 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
          ib, render_prefix, ARRAY_SIZE(render_prefix)) ||
       reloc_repeated_vertex_sequence_matches(
          ib, sampled_prefix, ARRAY_SIZE(sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_render_prefix, ARRAY_SIZE(depth_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_sampled_prefix, ARRAY_SIZE(depth_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_clear_render_prefix,
+         ARRAY_SIZE(depth_clear_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, depth_clear_sampled_prefix,
+         ARRAY_SIZE(depth_clear_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_render_prefix,
+         ARRAY_SIZE(color_clear_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_sampled_prefix,
+         ARRAY_SIZE(color_clear_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_depth_render_prefix,
+         ARRAY_SIZE(color_clear_depth_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_clear_depth_sampled_prefix,
+         ARRAY_SIZE(color_clear_depth_sampled_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_depth_clear_render_prefix,
+         ARRAY_SIZE(color_depth_clear_render_prefix)) ||
+      reloc_repeated_vertex_sequence_matches(
+         ib, color_depth_clear_sampled_prefix,
+         ARRAY_SIZE(color_depth_clear_sampled_prefix)) ||
       reloc_sequence_matches(ib, composed_slots, ARRAY_SIZE(composed_slots)) ||
       reloc_sequence_matches(ib, msaa_slots, ARRAY_SIZE(msaa_slots)) ||
       reloc_sequence_matches(ib, msaa_clear_slots,
@@ -684,6 +766,316 @@ r300_tcl_bypass_triangle_validate_reloc_sites(
    for (uint32_t i = 1; i < ib->reloc_site_count; i++)
       if (ib->reloc_sites[i - 1].ib_index >= ib->reloc_sites[i].ib_index)
          return -EINVAL;
+   if ((ib->vertex_reloc_alias_count == 0u) !=
+       (ib->vertex_reloc_aliases == NULL))
+      return -EINVAL;
+   uint32_t previous_alias = 0u;
+   for (uint32_t alias = 0; alias < ib->vertex_reloc_alias_count; alias++) {
+      const uint32_t index = ib->vertex_reloc_aliases[alias];
+      if (index == 0u || index >= ib->ib_size_dwords ||
+          (alias != 0u && index <= previous_alias) ||
+          ib->ib[index - 1u] != CP_PACKET3(R300_PM4_PACKET3_NOP, 0) ||
+          ib->ib[index] !=
+             R300_TRIANGLE_RELOC_PAYLOAD(R300_TRIANGLE_SLOT_VERTEX))
+         return -EINVAL;
+      previous_alias = index;
+   }
+   return 0;
+}
+
+int
+r300_tcl_bypass_triangle_split_ordered_stencil(
+   struct r300_tcl_bypass_triangle_ib *ib, uint32_t source_triangle_count,
+   uint32_t initial_reference_mask)
+{
+   if (source_triangle_count == 0u)
+      return 0;
+   if (ib == NULL || ib->ib == NULL || !ib->owns_ib ||
+       source_triangle_count > R300_TRIANGLE_MAX_TRIANGLES ||
+       ib->vertex_reloc_aliases != NULL ||
+       r300_tcl_bypass_triangle_validate_reloc_sites(ib) != 0)
+      return -EINVAL;
+
+   uint32_t first_load = UINT32_MAX;
+   uint32_t after_last_draw = 0u;
+   uint32_t total_triangles = 0u;
+   uint32_t load_template[6] = {0};
+   for (uint32_t index = 0u; index < ib->ib_size_dwords;) {
+      const uint32_t header = ib->ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      if (type == 1u || payload > ib->ib_size_dwords - index - 1u)
+         return -EINVAL;
+      if (type == 3u &&
+          (header & 0xff00u) == R300_PACKET3_3D_LOAD_VBPNTR) {
+         if (payload != 3u || index + 7u >= ib->ib_size_dwords ||
+             ib->ib[index + 4u] !=
+                CP_PACKET3(R300_PM4_PACKET3_NOP, 0) ||
+             ib->ib[index + 6u] !=
+                CP_PACKET3(R300_PACKET3_3D_DRAW_VBUF_2, 0))
+            return -EINVAL;
+         const uint32_t vertex_count =
+            ib->ib[index + 7u] >> R300_PRIM_NUM_VERTICES_SHIFT;
+         if (vertex_count == 0u || vertex_count % 3u != 0u)
+            return -EINVAL;
+         if (first_load == UINT32_MAX) {
+            first_load = index;
+            memcpy(load_template, &ib->ib[index], sizeof(load_template));
+         }
+         if (total_triangles > UINT32_MAX - vertex_count / 3u)
+            return -EOVERFLOW;
+         total_triangles += vertex_count / 3u;
+         after_last_draw = index + 8u;
+         index += 8u;
+         continue;
+      }
+      index += 1u + payload;
+   }
+
+   const uint32_t triangles_per_source =
+      R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT;
+   if (first_load == UINT32_MAX ||
+       total_triangles != source_triangle_count * triangles_per_source)
+      return -EINVAL;
+   const uint32_t record_bytes = ((load_template[2] >> 8) & 0xffu) * 4u;
+   if (record_bytes == 0u)
+      return -EINVAL;
+   const uint32_t prefix_dwords = first_load;
+   const uint32_t suffix_dwords = ib->ib_size_dwords - after_last_draw;
+   const uint64_t expanded_dwords = (uint64_t)prefix_dwords + suffix_dwords +
+                                    (uint64_t)source_triangle_count * 10u;
+   if (expanded_dwords > UINT32_MAX)
+      return -EOVERFLOW;
+
+   uint32_t *words = calloc((size_t)expanded_dwords, sizeof(*words));
+   uint32_t *aliases = source_triangle_count > 1u
+                          ? calloc(source_triangle_count - 1u,
+                                   sizeof(*aliases))
+                          : NULL;
+   if (words == NULL || (source_triangle_count > 1u && aliases == NULL)) {
+      free(words);
+      free(aliases);
+      return -ENOMEM;
+   }
+   memcpy(words, ib->ib, (size_t)prefix_dwords * sizeof(*words));
+   uint32_t output = prefix_dwords;
+   uint32_t first_vertex_reloc = 0u;
+   for (uint32_t source = 0u; source < source_triangle_count; source++) {
+      words[output++] = CP_PACKET0(R300_ZB_STENCILREFMASK, 0);
+      words[output++] = initial_reference_mask;
+      memcpy(&words[output], load_template, sizeof(load_template));
+      const uint64_t segment_offset =
+         (uint64_t)source * triangles_per_source * 3u * record_bytes;
+      if (segment_offset > UINT32_MAX - load_template[3]) {
+         free(words);
+         free(aliases);
+         return -EOVERFLOW;
+      }
+      words[output + 3u] = load_template[3] + (uint32_t)segment_offset;
+      const uint32_t reloc_index = output + 5u;
+      if (source == 0u)
+         first_vertex_reloc = reloc_index;
+      else
+         aliases[source - 1u] = reloc_index;
+      output += 6u;
+      words[output++] = CP_PACKET3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
+      words[output++] =
+         R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
+         (triangles_per_source * 3u << R300_PRIM_NUM_VERTICES_SHIFT);
+   }
+   memcpy(&words[output], &ib->ib[after_last_draw],
+          (size_t)suffix_dwords * sizeof(*words));
+   output += suffix_dwords;
+   if (output != expanded_dwords) {
+      free(words);
+      free(aliases);
+      return -EINVAL;
+   }
+
+   struct r300_tcl_bypass_triangle_ib candidate = *ib;
+   candidate.ib = words;
+   candidate.ib_size_dwords = output;
+   candidate.vertex_reloc_aliases = aliases;
+   candidate.vertex_reloc_alias_count = source_triangle_count - 1u;
+   bool vertex_rewritten = false;
+   uint32_t retained_sites = 0u;
+   for (uint32_t site = 0u; site < ib->reloc_site_count; site++) {
+      struct r300_tcl_bypass_triangle_reloc_site retained =
+         ib->reloc_sites[site];
+      if (retained.slot == R300_TRIANGLE_SLOT_VERTEX) {
+         if (vertex_rewritten)
+            continue;
+         retained.ib_index = first_vertex_reloc;
+         vertex_rewritten = true;
+      }
+      candidate.reloc_sites[retained_sites++] = retained;
+   }
+   candidate.reloc_site_count = retained_sites;
+   if (!vertex_rewritten ||
+       r300_tcl_bypass_triangle_validate_reloc_sites(&candidate) != 0) {
+      free(words);
+      free(aliases);
+      return -EINVAL;
+   }
+   free(ib->ib);
+   free(ib->vertex_reloc_aliases);
+   *ib = candidate;
+   return 0;
+}
+
+int
+r300_tcl_bypass_triangle_patch_ordered_stencil(
+   uint32_t *ib, uint32_t ib_size_dwords, const uint32_t *reference_masks,
+   uint32_t reference_mask_count)
+{
+   if (ib == NULL || reference_masks == NULL || reference_mask_count == 0u)
+      return -EINVAL;
+   uint32_t patched = 0u;
+   for (uint32_t index = 0u; index + 2u < ib_size_dwords;) {
+      const uint32_t header = ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      if (type == 1u || payload > ib_size_dwords - index - 1u)
+         return -EINVAL;
+      if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+          index + 2u < ib_size_dwords &&
+          (ib[index + 2u] >> 30) == 3u &&
+          (ib[index + 2u] & 0xff00u) ==
+             R300_PACKET3_3D_LOAD_VBPNTR) {
+         if (patched >= reference_mask_count)
+            return -EINVAL;
+         ib[index + 1u] = reference_masks[patched++];
+      }
+      index += 1u + payload;
+   }
+   return patched == reference_mask_count ? 0 : -EINVAL;
+}
+
+int
+r300_tcl_bypass_triangle_insert_depth_state(
+   struct r300_tcl_bypass_triangle_ib *ib,
+   const struct r300_zb_depth_state_params *state, bool z_top_enable)
+{
+   if (state == NULL)
+      return 0;
+   if (ib == NULL || ib->ib == NULL || !ib->owns_ib ||
+       r300_tcl_bypass_triangle_validate_reloc_sites(ib) != 0 ||
+       ib->reloc_site_count >= R300_TRIANGLE_MAX_RELOC_SITES)
+      return -EINVAL;
+
+   uint32_t insert_index = 0;
+   uint32_t insert_site = ib->reloc_site_count;
+   bool found_vertex_packet = false;
+   /* Walk the complete PM4 stream before choosing an insertion point.  The
+    * vertex relocation follows LOAD_VBPNTR's three payload dwords and its
+    * relocation NOP, so inserting at the relocation payload would split the
+    * packet's required ordering.
+    */
+   for (uint32_t i = 0; i < ib->ib_size_dwords;) {
+      const uint32_t header = ib->ib[i];
+      const uint32_t type = header >> 30;
+      const uint32_t payload = type == 2 ? 0 : ((header >> 16) & 0x3fffu) + 1u;
+      if (type == 1)
+         return -EINVAL;
+      if (payload > ib->ib_size_dwords - i - 1u)
+         return -EINVAL;
+      if (type == 3 && !found_vertex_packet &&
+          (header & 0xff00u) == R300_PACKET3_3D_LOAD_VBPNTR) {
+         if (payload != 3u)
+            return -EINVAL;
+         for (uint32_t site_index = 0; site_index < ib->reloc_site_count;
+              site_index++) {
+            if (ib->reloc_sites[site_index].slot == R300_TRIANGLE_SLOT_VERTEX) {
+               if (ib->reloc_sites[site_index].ib_index != i + 5u)
+                  return -EINVAL;
+               insert_site = site_index;
+               break;
+            }
+         }
+         if (insert_site == ib->reloc_site_count)
+            return -EINVAL;
+         insert_index = i;
+         found_vertex_packet = true;
+      }
+      i += 1u + payload;
+   }
+   if (!found_vertex_packet)
+      return -EINVAL;
+
+   const uint32_t depth_dwords =
+      r300_zb_depth_state_dwords_for_params(state) + 2u;
+   uint32_t *depth_words = calloc(depth_dwords, sizeof(*depth_words));
+   if (depth_words == NULL)
+      return -ENOMEM;
+   struct r300_pm4_builder builder;
+   r300_pm4_builder_init(&builder, depth_words, depth_dwords);
+   struct r300_zb_depth_state_params depth = *state;
+   depth.depth_relocation_payload =
+      R300_TRIANGLE_RELOC_PAYLOAD(R300_TRIANGLE_SLOT_DEPTH);
+   uint32_t depth_reloc = 0;
+   int result = r300_zb_depth_state_emit(&builder, &depth, &depth_reloc);
+   uint32_t emitted_depth_dwords = 0;
+   if (result == 0) {
+      r300_pm4_reg(&builder, R300_ZB_ZTOP, z_top_enable ? 1u : 0u);
+      result = r300_pm4_builder_finish(&builder, &emitted_depth_dwords);
+      if (result == 0 && emitted_depth_dwords != depth_dwords)
+         result = -EINVAL;
+   }
+   if (result != 0) {
+      free(depth_words);
+      return result;
+   }
+
+   uint32_t *merged = calloc(ib->ib_size_dwords + depth_dwords,
+                             sizeof(*merged));
+   if (merged == NULL) {
+      free(depth_words);
+      return -ENOMEM;
+   }
+   memcpy(merged, ib->ib, (size_t)insert_index * sizeof(*merged));
+   memcpy(merged + insert_index, depth_words,
+          (size_t)depth_dwords * sizeof(*merged));
+   memcpy(merged + insert_index + depth_dwords, ib->ib + insert_index,
+          (size_t)(ib->ib_size_dwords - insert_index) * sizeof(*merged));
+   free(depth_words);
+
+   struct r300_tcl_bypass_triangle_reloc_site sites[
+      R300_TRIANGLE_MAX_RELOC_SITES];
+   uint32_t site = 0;
+   for (uint32_t i = 0; i < ib->reloc_site_count; i++) {
+      if (i == insert_site)
+         sites[site++] = (struct r300_tcl_bypass_triangle_reloc_site){
+            .ib_index = insert_index + depth_reloc,
+            .slot = R300_TRIANGLE_SLOT_DEPTH,
+         };
+      sites[site] = ib->reloc_sites[i];
+      if (sites[site].ib_index >= insert_index)
+         sites[site].ib_index += depth_dwords;
+      site++;
+   }
+   if (insert_site == ib->reloc_site_count)
+      sites[site++] = (struct r300_tcl_bypass_triangle_reloc_site){
+         .ib_index = insert_index + depth_reloc,
+         .slot = R300_TRIANGLE_SLOT_DEPTH,
+      };
+
+   struct r300_tcl_bypass_triangle_ib candidate = *ib;
+   candidate.ib = merged;
+   candidate.ib_size_dwords += depth_dwords;
+   candidate.reloc_site_count = site;
+   memcpy(candidate.reloc_sites, sites, sizeof(sites));
+   for (uint32_t alias = 0u; alias < candidate.vertex_reloc_alias_count;
+        alias++)
+      if (candidate.vertex_reloc_aliases[alias] >= insert_index)
+         candidate.vertex_reloc_aliases[alias] += depth_dwords;
+   if (r300_tcl_bypass_triangle_validate_reloc_sites(&candidate) != 0) {
+      free(merged);
+      return -EINVAL;
+   }
+   free(ib->ib);
+   *ib = candidate;
    return 0;
 }
 
@@ -2236,7 +2628,8 @@ composed_sample_emit(const struct r300_triangle_composed_render_sample *c,
 }
 
 const uint32_t
-   r300_tcl_bypass_triangle_composed_slot_index[R300_TRIANGLE_SLOT_COUNT] = {
+   r300_tcl_bypass_triangle_composed_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = 0,
       [R300_TRIANGLE_SLOT_COLOR] = 1,
       [R300_TRIANGLE_SLOT_TEXTURE] = 1,
@@ -2270,6 +2663,10 @@ r300_tcl_bypass_triangle_bind_reloc_indices(
       ib->ib[site->ib_index] =
          R300_TRIANGLE_RELOC_PAYLOAD(slot_indices[site->slot]);
    }
+   for (uint32_t alias = 0u; alias < ib->vertex_reloc_alias_count; alias++)
+      ib->ib[ib->vertex_reloc_aliases[alias]] =
+         R300_TRIANGLE_RELOC_PAYLOAD(
+            slot_indices[R300_TRIANGLE_SLOT_VERTEX]);
    return 0;
 }
 
@@ -2279,7 +2676,8 @@ r300_tcl_bypass_triangle_bind_reloc_indices(
  * color slot, which is the second half's destination in both cells.
  */
 const uint32_t
-   r300_tcl_bypass_triangle_msaa_slot_index[R300_TRIANGLE_SLOT_COUNT] = {
+   r300_tcl_bypass_triangle_msaa_slot_index
+      [R300_TRIANGLE_COMPOSED_SLOT_COUNT] = {
       [R300_TRIANGLE_SLOT_VERTEX] = 0,
       [R300_TRIANGLE_SLOT_COLOR] = 1,
       [R300_TRIANGLE_SLOT_TEXTURE] = 1,

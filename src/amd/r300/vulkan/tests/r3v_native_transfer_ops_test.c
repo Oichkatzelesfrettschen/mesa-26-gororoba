@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +20,10 @@
 #include <unistd.h>
 
 #include <vulkan/vulkan.h>
+
+#include "../r3v_native.h"
+#include "amd/r300/common/r300_reg.h"
+#include "amd/r300/common/radeon_legacy_2d_reg.h"
 
 static unsigned failures;
 
@@ -368,6 +373,45 @@ destroy_transfer_image(const struct fixture *f, struct transfer_image *img)
    vkFreeMemory(f->device, img->memory, NULL);
 }
 
+/* bufferImageHeight supplies the distance between slices.  A depth-one copy
+ * reads imageExtent.height rows from the current slice, so a large stride does
+ * not require storage for the unused rows between slices. */
+static int
+check_buffer_image_height_stride(const struct fixture *f)
+{
+   struct transfer_image image;
+   if (create_transfer_image(f, 4, 4, &image))
+      return 1;
+   struct staging staging;
+   if (create_staging(f, 32, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging))
+      return 1;
+   for (uint32_t index = 0u; index < 32u; index++)
+      staging.map[index] = (uint8_t)(index + 1u);
+
+   const VkBufferImageCopy region = {
+      .bufferRowLength = 4u,
+      .bufferImageHeight = 100u,
+      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u},
+      .imageExtent = {4u, 2u, 1u},
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image.image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "depth-one copy uses imageExtent.height rows with a large slice stride");
+   if (submit(f))
+      return 1;
+
+   CHECK(memcmp(image.map, staging.map, 16u) == 0,
+         "the first depth-one copy row span is transferred");
+   CHECK(memcmp(image.map + image.row_pitch, staging.map + 16u, 16u) == 0,
+         "the second depth-one copy row span is transferred");
+   destroy_staging(f, &staging);
+   destroy_transfer_image(f, &image);
+   return 0;
+}
+
 static uint32_t
 texel(const struct transfer_image *img, uint32_t x, uint32_t y)
 {
@@ -664,10 +708,7 @@ optimal_probe_setup_step(int code)
  * bad oracle branches at compile time on the same macro the driver
  * checks, since the test binary shares the project-wide b_ndebug
  * setting: a live assert must abort, and a compiled-out assert must
- * fall through to the same linear-span layout the transfer family
- * already executes for VK_IMAGE_TILING_LINEAR (r3v_native_transfer_
- * footprint_bytes) -- a driver that answered anything else there
- * would be the real defect. The call runs in a forked child with its
+ * return an empty layout rather than exposing opaque storage. The call runs in a forked child with its
  * own fresh instance and device, since reusing the parent's live
  * device across fork risks the drm-shim mock's per-process handle
  * bookkeeping, which this probe does not need to share; the wait is
@@ -803,19 +844,9 @@ check_optimal_subresource_layout_oracle(const struct fixture *f)
             "the known-bad child reports its computed layout (read %zd "
             "of %zu bytes)", n, sizeof(layout));
       if (n == (ssize_t)sizeof(layout)) {
-         const uint32_t expect_row_pitch = (4u * 4u + 63u) & ~63u;
-         const VkDeviceSize expect_size =
-            (VkDeviceSize)expect_row_pitch * 4u;
-         CHECK(layout.offset == 0 && layout.rowPitch == expect_row_pitch &&
-                  layout.size == expect_size,
-               "under NDEBUG, vkGetImageSubresourceLayout on the "
-               "OPTIMAL image falls through to the transfer family's "
-               "linear span (offset %llu rowPitch %llu size %llu, "
-               "expected offset 0 rowPitch %u size %llu)",
-               (unsigned long long)layout.offset,
-               (unsigned long long)layout.rowPitch,
-               (unsigned long long)layout.size, expect_row_pitch,
-               (unsigned long long)expect_size);
+         CHECK(layout.offset == 0 && layout.rowPitch == 0 && layout.size == 0 &&
+                  layout.arrayPitch == 0 && layout.depthPitch == 0,
+               "optimal image query returns an empty layout under NDEBUG");
       }
    }
 #else
@@ -989,11 +1020,1151 @@ create_fixture(struct fixture *f)
    return 0;
 }
 
+static bool
+command_packet0_value(const struct r3v_native_cmd_buffer *cmd, uint32_t reg,
+                      uint32_t *value)
+{
+   const uint32_t header = reg >> 2;
+   for (uint32_t index = 0u; index + 1u < cmd->ib_size_dwords; index++) {
+      if (cmd->ib[index] == header) {
+         *value = cmd->ib[index + 1u];
+         return true;
+      }
+   }
+   return false;
+}
+
+static int
+check_depth_clear_recording(const struct fixture *f, VkImage image)
+{
+   static const struct {
+      VkImageAspectFlags aspects;
+      VkClearDepthStencilValue clear;
+      uint32_t internal_aspects;
+      uint32_t write_mask;
+      bool preserves_component;
+   } cases[] = {
+      {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+       {.depth = 0.25f, .stencil = 0xa5u}, R300_ZB_COMBINED_CLEAR_ASPECTS,
+       UINT32_MAX, false},
+      {VK_IMAGE_ASPECT_DEPTH_BIT, {.depth = 0.25f, .stencil = 0x1ffu},
+       R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH, 0xffffff00u, true},
+      {VK_IMAGE_ASPECT_STENCIL_BIT, {.depth = NAN, .stencil = 0xa5u},
+       R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL, 0x000000ffu, true},
+   };
+
+   for (unsigned case_index = 0u; case_index < ARRAY_SIZE(cases);
+        case_index++) {
+      if (begin(f))
+         return 1;
+      const VkImageSubresourceRange range = {
+         .aspectMask = cases[case_index].aspects,
+         .baseMipLevel = 0u,
+         .levelCount = 1u,
+         .baseArrayLayer = 0u,
+         .layerCount = 1u,
+      };
+      vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                                  &cases[case_index].clear, 1u, &range);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cmd, f->cmd);
+      CHECK(native_cmd->cell_kind == R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+               native_cmd->zb_depth_clear_configured &&
+               native_cmd->zb_depth_clear_aspect_mask ==
+                  cases[case_index].internal_aspects,
+            "depth clear case %u records a GPU cell and aspect identity",
+            case_index);
+      CHECK(native_cmd->reference_count == 1u &&
+               native_cmd->references[0].write_domain ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               native_cmd->references[0].read_domains ==
+                  (cases[case_index].preserves_component
+                      ? RADEON_GEM_DOMAIN_GTT
+                      : 0u),
+            "depth clear case %u records exact destination access",
+            case_index);
+      uint32_t master = 0u, write_mask = 0u, extent = 0u;
+      CHECK(command_packet0_value(native_cmd, RADEON_DP_GUI_MASTER_CNTL,
+                                  &master) &&
+               command_packet0_value(native_cmd, RADEON_DP_WRITE_MSK,
+                                     &write_mask) &&
+               command_packet0_value(native_cmd, RADEON_DST_WIDTH_HEIGHT,
+                                     &extent) &&
+               write_mask == cases[case_index].write_mask &&
+               ((master & RADEON_GMC_WR_MSK_DIS) != 0u) ==
+                  !cases[case_index].preserves_component &&
+               extent == ((512u << 16) | 8u),
+            "depth clear case %u emits the logical macrotile span and mask",
+            case_index);
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "depth clear case %u records successfully", case_index);
+   }
+
+   static const struct {
+      uint32_t api_value;
+      uint8_t packed_value;
+   } stencil_values[] = {
+      {0x0000005au, 0x5au},
+      {0x00000100u, 0x00u},
+      {0x0000015au, 0x5au},
+      {UINT32_MAX, 0xffu},
+   };
+   static const VkImageAspectFlags conversion_aspects[] = {
+      VK_IMAGE_ASPECT_STENCIL_BIT,
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+   };
+   for (uint32_t aspect_index = 0u;
+        aspect_index < ARRAY_SIZE(conversion_aspects); aspect_index++) {
+      for (uint32_t value_index = 0u;
+           value_index < ARRAY_SIZE(stencil_values); value_index++) {
+         if (begin(f))
+            return 1;
+         const VkClearDepthStencilValue clear = {
+            .depth = 0.5f,
+            .stencil = stencil_values[value_index].api_value,
+         };
+         const VkImageSubresourceRange range = {
+            .aspectMask = conversion_aspects[aspect_index],
+            .baseMipLevel = 0u,
+            .levelCount = 1u,
+            .baseArrayLayer = 0u,
+            .layerCount = 1u,
+         };
+         vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                                     &clear, 1u, &range);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, converted_cmd, f->cmd);
+         uint32_t write_mask = 0u;
+         CHECK(converted_cmd->zb_depth_clear_stencil ==
+                  stencil_values[value_index].packed_value &&
+                  converted_cmd->cell_kind ==
+                     R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+                  command_packet0_value(converted_cmd, RADEON_DP_WRITE_MSK,
+                                        &write_mask) &&
+                  write_mask ==
+                     (conversion_aspects[aspect_index] ==
+                            VK_IMAGE_ASPECT_STENCIL_BIT
+                         ? 0x000000ffu
+                         : UINT32_MAX),
+               "stencil conversion case %u/%u records the low byte and aspect mask",
+               aspect_index, value_index);
+         CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+               "stencil conversion case %u/%u records successfully",
+               aspect_index, value_index);
+      }
+   }
+
+   if (begin(f))
+      return 1;
+   const VkClearDepthStencilValue split_clear = {
+      .depth = 0.5f,
+      .stencil = 0x15au,
+   };
+   const VkImageSubresourceRange split_ranges[] = {
+      {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .baseMipLevel = 0u,
+         .levelCount = VK_REMAINING_MIP_LEVELS,
+         .baseArrayLayer = 0u,
+         .layerCount = VK_REMAINING_ARRAY_LAYERS,
+      },
+      {
+         .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+         .baseMipLevel = 0u,
+         .levelCount = 1u,
+         .baseArrayLayer = 0u,
+         .layerCount = 1u,
+      },
+   };
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &split_clear, ARRAY_SIZE(split_ranges),
+                               split_ranges);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, split_cmd, f->cmd);
+   CHECK(split_cmd->zb_depth_clear_aspect_mask ==
+            R300_ZB_COMBINED_CLEAR_ASPECTS &&
+            split_cmd->zb_depth_clear_stencil == 0x5au,
+         "separate depth and stencil ranges normalize into one combined clear");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "separate depth and stencil ranges record successfully");
+
+   if (begin(f))
+      return 1;
+   VkImageSubresourceRange invalid_ranges[] = {
+      split_ranges[0],
+      split_ranges[1],
+   };
+   invalid_ranges[1].baseMipLevel = 1u;
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &split_clear, ARRAY_SIZE(invalid_ranges),
+                               invalid_ranges);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, invalid_cmd, f->cmd);
+   CHECK(invalid_cmd->cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED &&
+            invalid_cmd->ib == NULL && invalid_cmd->references == NULL &&
+            !invalid_cmd->zb_depth_clear_configured,
+         "an invalid later range preserves the command payload state");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "an invalid later range poisons the complete request");
+   return 0;
+}
+
+static int
+check_depth_image_copy_recording(const struct fixture *f,
+                                 const VkImageCreateInfo *image_info,
+                                 VkImage source_image,
+                                 VkDeviceSize allocation_size)
+{
+   VkImage destination_image = VK_NULL_HANDLE;
+   VkDeviceMemory destination_memory = VK_NULL_HANDLE;
+   REQUIRE(vkCreateImage(f->device, image_info, NULL, &destination_image) ==
+              VK_SUCCESS,
+           "depth copy destination image creation");
+   const VkMemoryAllocateInfo allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = allocation_size,
+      .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &allocation, NULL,
+                            &destination_memory) == VK_SUCCESS,
+           "depth copy destination allocation");
+   REQUIRE(vkBindImageMemory(f->device, destination_image,
+                             destination_memory, 0u) == VK_SUCCESS,
+           "depth copy destination binding");
+
+   static const struct {
+      VkOffset3D destination;
+      uint32_t segment_count;
+   } cases[] = {
+      {{0, 0, 0}, 1u},
+      {{32, 0, 0}, 2u},
+      {{0, 16, 0}, 4u},
+   };
+   for (uint32_t case_index = 0u; case_index < ARRAY_SIZE(cases);
+        case_index++) {
+      if (begin(f))
+         return 1;
+      const VkImageCopy region = {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .srcOffset = {0, 0, 0},
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .dstOffset = cases[case_index].destination,
+         .extent = {32u, 16u, 1u},
+      };
+      vkCmdCopyImage(f->cmd, source_image,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     destination_image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cmd, f->cmd);
+      CHECK(native_cmd->deferred_copy_count == 0u &&
+               native_cmd->rb2d_copy_operation_count == 1u &&
+               native_cmd->rb2d_copy_operations[0].segment_count ==
+                  cases[case_index].segment_count &&
+               native_cmd->references[0].read_domains ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               native_cmd->references[0].write_domain == 0u &&
+               native_cmd->references[1].read_domains ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               native_cmd->references[1].write_domain ==
+                  RADEON_GEM_DOMAIN_GTT,
+            "depth image copy case %u records the parity span plan",
+            case_index);
+      CHECK(native_cmd->rb2d_copy_operations[0]
+                   .segments[0].source_offset_bytes == 6144u &&
+               native_cmd->rb2d_copy_operations[0]
+                      .segments[0].destination_offset_bytes >= 2048u,
+            "depth image copy case %u includes both image bindings",
+            case_index);
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "depth image copy case %u records successfully", case_index);
+   }
+
+   static const struct {
+      VkImageAspectFlags aspect;
+      uint32_t write_mask;
+   } aspect_cases[] = {
+      {VK_IMAGE_ASPECT_DEPTH_BIT, 0xffffff00u},
+      {VK_IMAGE_ASPECT_STENCIL_BIT, 0x000000ffu},
+   };
+   for (uint32_t case_index = 0u; case_index < ARRAY_SIZE(aspect_cases);
+        case_index++) {
+      if (begin(f))
+         return 1;
+      const VkImageCopy region = {
+         .srcSubresource = {
+            .aspectMask = aspect_cases[case_index].aspect,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = aspect_cases[case_index].aspect,
+            .layerCount = 1u,
+         },
+         .extent = {32u, 16u, 1u},
+      };
+      vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                     destination_image, VK_IMAGE_LAYOUT_GENERAL, 1u,
+                     &region);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, aspect_cmd, f->cmd);
+      CHECK(aspect_cmd->rb2d_copy_operation_count == 1u &&
+               aspect_cmd->rb2d_copy_operations[0].write_mask ==
+                  aspect_cases[case_index].write_mask &&
+               aspect_cmd->references[1].read_domains ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               aspect_cmd->references[1].write_domain ==
+                  RADEON_GEM_DOMAIN_GTT,
+            "aspect image copy case %u records masked destination read-modify-write",
+            case_index);
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "aspect image copy case %u records successfully", case_index);
+   }
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy regions[] = {
+      {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .srcOffset = {32, 0, 0},
+         .extent = {32u, 16u, 1u},
+      },
+      {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstOffset = {32, 0, 0},
+         .extent = {32u, 16u, 1u},
+      },
+   };
+   vkCmdCopyImage(f->cmd, source_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ARRAY_SIZE(regions),
+                  regions);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, multi_region_cmd, f->cmd);
+   CHECK(multi_region_cmd->rb2d_copy_operation_count == ARRAY_SIZE(regions) &&
+            multi_region_cmd->rb2d_copy_operations[0].segment_count == 2u &&
+            multi_region_cmd->rb2d_copy_operations[1].segment_count == 2u,
+         "depth image copy appends independent regions to one command");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "multiple non-overlapping depth image copy regions record");
+
+   if (begin(f))
+      return 1;
+   VkImageCopy invalid_later_regions[] = {regions[0], regions[1]};
+   invalid_later_regions[1].srcOffset.x = 33;
+   if (invalid_later_regions[1].srcOffset.x +
+          invalid_later_regions[1].extent.width <= 64u)
+      invalid_later_regions[1].srcOffset.x = 64;
+   vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                  destination_image, VK_IMAGE_LAYOUT_GENERAL,
+                  ARRAY_SIZE(invalid_later_regions), invalid_later_regions);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, invalid_later_cmd, f->cmd);
+   CHECK(invalid_later_cmd->rb2d_copy_operation_count == 0u &&
+            invalid_later_cmd->ordered_operation_count == 0u &&
+            invalid_later_cmd->image_state_count == 0u &&
+            invalid_later_cmd->ib == NULL &&
+            invalid_later_cmd->references == NULL,
+         "an invalid later image region leaves the copy transaction empty");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "an invalid later image region poisons the complete request");
+
+   if (begin(f))
+      return 1;
+   VkImageMemoryBarrier source_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = source_image,
+      .subresourceRange = {
+         .aspectMask =
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .levelCount = 1u,
+         .layerCount = 1u,
+      },
+   };
+   VkImageMemoryBarrier destination_barrier = source_barrier;
+   destination_barrier.image = destination_image;
+   destination_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                        NULL, 1u, &source_barrier);
+   const VkClearDepthStencilValue composition_clear = {
+      .depth = 0.25f,
+      .stencil = 0x15au,
+   };
+   const VkImageSubresourceRange composition_range =
+      source_barrier.subresourceRange;
+   vkCmdClearDepthStencilImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                               &composition_clear, 1u, &composition_range);
+   source_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   source_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   source_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   source_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                        NULL, 1u, &source_barrier);
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u,
+                        NULL, 1u, &destination_barrier);
+   const VkImageCopy composition_copy = {
+      .srcSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {32u, 16u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u,
+                  &composition_copy);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, composition_cmd, f->cmd);
+   CHECK(composition_cmd->ordered_operation_count == 5u &&
+            composition_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+            composition_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR &&
+            composition_cmd->ordered_operations[2].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+            composition_cmd->ordered_operations[3].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER &&
+            composition_cmd->ordered_operations[4].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+         "clear barriers and copy retain Vulkan recording order");
+   CHECK(composition_cmd->cell_kind ==
+            R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION &&
+            composition_cmd->ib != NULL &&
+            composition_cmd->reference_count == 2u,
+         "ordered depth composition carries a bounded native geometry");
+   if (composition_cmd->ordered_operation_count == 5u) {
+      const uint32_t dependency_position =
+         composition_cmd->ordered_operations[2].ib_position_dwords;
+      CHECK(composition_cmd->ib[dependency_position] ==
+               CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0) &&
+               composition_cmd->ib[dependency_position + 2u] ==
+                  CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0) &&
+               composition_cmd->ib[dependency_position + 4u] ==
+                  CP_PACKET0(RADEON_DSTCACHE_CTLSTAT, 0) &&
+               composition_cmd->ib[dependency_position + 6u] ==
+                  CP_PACKET0(RADEON_WAIT_UNTIL, 0),
+            "depth barrier places ZB RB3D and RB2D publication before the copy");
+      CHECK(composition_cmd->ordered_operations[4].ib_position_dwords >
+               dependency_position + 7u,
+            "copy stream follows the complete cross-engine dependency");
+   }
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "clear barrier and copy composition records successfully");
+
+   const struct memory_barrier_case {
+      VkPipelineStageFlags source_stages;
+      VkPipelineStageFlags destination_stages;
+      VkAccessFlags source_access;
+      VkAccessFlags destination_access;
+      bool global_dependency;
+   } memory_barrier_cases[] = {
+      {
+         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+         VK_ACCESS_TRANSFER_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+         VK_ACCESS_TRANSFER_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+         true,
+      },
+      {
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_PIPELINE_STAGE_TRANSFER_BIT,
+         VK_ACCESS_TRANSFER_WRITE_BIT,
+         VK_ACCESS_TRANSFER_READ_BIT,
+         false,
+      },
+   };
+   for (uint32_t case_index = 0u;
+        case_index < ARRAY_SIZE(memory_barrier_cases); case_index++) {
+      if (begin(f))
+         return 1;
+      const struct memory_barrier_case *test_case =
+         &memory_barrier_cases[case_index];
+      const VkMemoryBarrier memory_barrier = {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+         .srcAccessMask = test_case->source_access,
+         .dstAccessMask = test_case->destination_access,
+      };
+      vkCmdPipelineBarrier(f->cmd, test_case->source_stages,
+                           test_case->destination_stages, 0u, 1u,
+                           &memory_barrier, 0u, NULL, 0u, NULL);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, memory_barrier_cmd, f->cmd);
+      CHECK(memory_barrier_cmd->ordered_operation_count == 1u,
+            "memory barrier case %u records one ordered operation", case_index);
+      if (memory_barrier_cmd->ordered_operation_count == 1u) {
+         const struct r3v_native_ordered_operation *operation =
+            &memory_barrier_cmd->ordered_operations[0];
+         CHECK(operation->kind == R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+               "memory barrier case %u retains its operation kind", case_index);
+         if (test_case->global_dependency) {
+            CHECK(memory_barrier_cmd->ib != NULL &&
+                     operation->ib_position_dwords + 6u <
+                        memory_barrier_cmd->ib_size_dwords &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords] ==
+                        CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0) &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords + 2u] ==
+                        CP_PACKET0(R300_RB3D_DSTCACHE_CTLSTAT, 0) &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords + 4u] ==
+                        CP_PACKET0(RADEON_DSTCACHE_CTLSTAT, 0) &&
+                     memory_barrier_cmd->ib[operation->ib_position_dwords + 6u] ==
+                        CP_PACKET0(RADEON_WAIT_UNTIL, 0),
+                  "memory barrier case %u carries the global dependency",
+                  case_index);
+         } else {
+            CHECK(memory_barrier_cmd->ib == NULL &&
+                     operation->ib_position_dwords == 0u,
+                  "memory barrier case %u avoids a same-engine dependency",
+                  case_index);
+         }
+      }
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "memory barrier case %u records successfully", case_index);
+   }
+
+   if (begin(f))
+      return 1;
+   VkMemoryBarrier invalid_memory_barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+   };
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 1u,
+                        &invalid_memory_barrier, 0u, NULL, 0u, NULL);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, invalid_memory_barrier_cmd, f->cmd);
+   CHECK(invalid_memory_barrier_cmd->ordered_operation_count == 0u &&
+            invalid_memory_barrier_cmd->ib == NULL &&
+            invalid_memory_barrier_cmd->references == NULL,
+         "an invalid memory barrier refuses before the dependency effect");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "an invalid memory barrier poisons the command");
+
+   VkCommandBuffer secondary_barrier = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateCommandBuffers(
+              f->device,
+              &(VkCommandBufferAllocateInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                 .commandPool = f->cmd_pool,
+                 .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                 .commandBufferCount = 1u,
+              },
+              &secondary_barrier) == VK_SUCCESS,
+           "secondary barrier command allocation");
+   REQUIRE(vkBeginCommandBuffer(
+              secondary_barrier,
+              &(VkCommandBufferBeginInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+              }) == VK_SUCCESS,
+           "secondary barrier command begin");
+   const VkMemoryBarrier secondary_memory_barrier = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+   };
+   vkCmdPipelineBarrier(secondary_barrier,
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 1u,
+                        &secondary_memory_barrier, 0u, NULL, 0u, NULL);
+   REQUIRE(vkEndCommandBuffer(secondary_barrier) == VK_SUCCESS,
+           "secondary barrier command end");
+   VkCommandBuffer replay_primary = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateCommandBuffers(
+              f->device,
+              &(VkCommandBufferAllocateInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                 .commandPool = f->cmd_pool,
+                 .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                 .commandBufferCount = 1u,
+              },
+              &replay_primary) == VK_SUCCESS,
+           "replay primary command allocation");
+   REQUIRE(vkBeginCommandBuffer(
+              replay_primary,
+              &(VkCommandBufferBeginInfo){
+                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+              }) == VK_SUCCESS,
+           "replay primary command begin");
+   vkCmdExecuteCommands(replay_primary, 1u, &secondary_barrier);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, replay_primary_cmd, replay_primary);
+   CHECK(replay_primary_cmd->ordered_operation_count == 1u &&
+            replay_primary_cmd->ib != NULL &&
+            replay_primary_cmd->ordered_operations[0].ib_position_dwords +
+                  6u < replay_primary_cmd->ib_size_dwords &&
+            replay_primary_cmd->ib[
+               replay_primary_cmd->ordered_operations[0].ib_position_dwords] ==
+               CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0),
+         "secondary replay reconstructs the cross-engine dependency");
+   REQUIRE(vkEndCommandBuffer(replay_primary) == VK_SUCCESS,
+           "replay primary command end");
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy full_image_regions[] = {
+      {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .extent = {64u, 64u, 1u},
+      },
+      {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .extent = {64u, 64u, 1u},
+      },
+   };
+   vkCmdCopyImage(f->cmd, source_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination_image,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  ARRAY_SIZE(full_image_regions), full_image_regions);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, full_cmd, f->cmd);
+   CHECK(full_cmd->deferred_copy_count == 0u &&
+            full_cmd->rb2d_copy_operation_count == 16u,
+         "complete depth and stencil image copies decompose into sixteen tiles");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "complete depth image copy records successfully");
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy partial = {
+      .srcSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {31u, 16u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                  destination_image, VK_IMAGE_LAYOUT_GENERAL, 1u, &partial);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, partial_cmd, f->cmd);
+   CHECK(partial_cmd->deferred_copy_count == 0u &&
+            partial_cmd->rb2d_copy_operation_count == 124u &&
+            partial_cmd->rb2d_copy_operations[0].segment_count == 4u &&
+            partial_cmd->rb2d_copy_operations[0].byte_carrier == true,
+            "a partial depth image copy resolves each depth component");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "a partial depth image copy records successfully");
+
+   VkImageCreateInfo smaller_info = *image_info;
+   smaller_info.extent.width = 32u;
+   smaller_info.extent.height = 32u;
+   VkImage smaller_destination = VK_NULL_HANDLE;
+   VkDeviceMemory smaller_memory = VK_NULL_HANDLE;
+   REQUIRE(vkCreateImage(f->device, &smaller_info, NULL,
+                         &smaller_destination) == VK_SUCCESS,
+           "differently sized depth destination creation");
+   VkMemoryRequirements smaller_requirements;
+   vkGetImageMemoryRequirements(f->device, smaller_destination,
+                                &smaller_requirements);
+   const VkMemoryAllocateInfo smaller_allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = smaller_requirements.size,
+      .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &smaller_allocation, NULL,
+                            &smaller_memory) == VK_SUCCESS,
+           "differently sized depth destination allocation");
+   REQUIRE(vkBindImageMemory(f->device, smaller_destination, smaller_memory,
+                             0u) == VK_SUCCESS,
+           "differently sized depth destination binding");
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy differently_sized = {
+      .srcSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {32u, 32u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                  smaller_destination, VK_IMAGE_LAYOUT_GENERAL, 1u,
+                  &differently_sized);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, differently_sized_cmd, f->cmd);
+   CHECK(differently_sized_cmd->rb2d_copy_operation_count == 2u,
+         "an in-bounds copy resolves differently sized images independently");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "a differently sized depth image copy records successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release differently sized depth image references");
+   vkDestroyImage(f->device, smaller_destination, NULL);
+   vkFreeMemory(f->device, smaller_memory, NULL);
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy combined_aspect = {
+      .srcSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {32u, 16u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                  destination_image, VK_IMAGE_LAYOUT_GENERAL, 1u,
+                  &combined_aspect);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, combined_cmd, f->cmd);
+   CHECK(combined_cmd->rb2d_copy_operation_count == 0u &&
+            combined_cmd->ib == NULL && combined_cmd->references == NULL,
+         "a combined depth-stencil image aspect refuses as one copy region");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "a combined depth-stencil image aspect poisons the command");
+
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release depth image copy references before object destruction");
+   vkDestroyImage(f->device, destination_image, NULL);
+   vkFreeMemory(f->device, destination_memory, NULL);
+   return 0;
+}
+
+static int
+check_depth_storage(const struct fixture *f, bool refuse_platform)
+{
+   VkImageCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .extent = {64, 64, 1}, .mipLevels = 1, .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkImage image = VK_NULL_HANDLE;
+   VkResult result = vkCreateImage(f->device, &info, NULL, &image);
+   if (refuse_platform) {
+      CHECK(result != VK_SUCCESS && image == VK_NULL_HANDLE,
+            "unresolved board refuses depth storage");
+      return 0;
+   }
+   REQUIRE(result == VK_SUCCESS, "qualified depth storage creation");
+   VkMemoryRequirements requirements;
+   vkGetImageMemoryRequirements(f->device, image, &requirements);
+   CHECK(requirements.size == 28672 && requirements.alignment == 4096,
+         "depth requirements include tiled padding, guards and tail");
+   VkDeviceMemory memory = VK_NULL_HANDLE;
+   const VkMemoryAllocateInfo allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = requirements.size + 4096, .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &allocation, NULL, &memory) == VK_SUCCESS,
+           "depth backing allocation");
+   CHECK(vkBindImageMemory(f->device, image, memory, 1) != VK_SUCCESS,
+         "unaligned depth binding refuses");
+   CHECK(vkBindImageMemory(f->device, image, memory, 8192) != VK_SUCCESS,
+         "depth binding requires complete storage envelope");
+   CHECK(vkBindImageMemory(f->device, image, memory, 4096) == VK_SUCCESS,
+         "nonzero aligned depth binding");
+   CHECK(vkBindImageMemory(f->device, image, memory, 4096) != VK_SUCCESS,
+         "depth rebinding refuses");
+   if (check_depth_clear_recording(f, image))
+      return 1;
+   if (check_depth_image_copy_recording(f, &info, image, requirements.size))
+      return 1;
+   const VkImageAspectFlags view_aspects[] = {
+      VK_IMAGE_ASPECT_DEPTH_BIT,
+      VK_IMAGE_ASPECT_STENCIL_BIT,
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+   };
+   for (unsigned aspect_index = 0;
+        aspect_index < sizeof(view_aspects) / sizeof(view_aspects[0]);
+        aspect_index++) {
+      const VkImageViewCreateInfo view_info = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .image = image,
+         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+         .format = VK_FORMAT_D24_UNORM_S8_UINT,
+         .subresourceRange = {view_aspects[aspect_index], 0, 1, 0, 1},
+      };
+      VkImageView view = VK_NULL_HANDLE;
+      CHECK(vkCreateImageView(f->device, &view_info, NULL, &view) == VK_SUCCESS,
+            "depth image view aspect mask %u", view_aspects[aspect_index]);
+      vkDestroyImageView(f->device, view, NULL);
+   }
+   const VkImageViewCreateInfo color_view_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = image,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = VK_FORMAT_D24_UNORM_S8_UINT,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+   };
+   VkImageView color_view = VK_NULL_HANDLE;
+   CHECK(vkCreateImageView(f->device, &color_view_info, NULL, &color_view) !=
+            VK_SUCCESS && color_view == VK_NULL_HANDLE,
+         "depth image refuses a color aspect view");
+   struct staging staging;
+   /* The explicit bufferImageHeight supplies the unused next-slice stride. */
+   if (create_staging(f, 400, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, &staging))
+      return 1;
+   struct staging undersized_staging;
+   if (create_staging(f, 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      &undersized_staging))
+      return 1;
+   VkBufferImageCopy region = {
+      .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+      .imageOffset = {37, 21, 0}, .imageExtent = {1, 1, 1},
+      .bufferImageHeight = 100,
+   };
+   if (begin(f))
+      return 1;
+   VkImageMemoryBarrier depth_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image,
+      .subresourceRange = {
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         0, 1, 0, 1,
+      },
+   };
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                        1, &depth_barrier);
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+   depth_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   depth_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   depth_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   depth_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                        1, &depth_barrier);
+   vkCmdCopyImageToBuffer(f->cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         staging.buffer, 1, &region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_copy, f->cmd);
+   CHECK(native_depth_copy->rb2d_copy_operation_count == 2u,
+         "depth transfer records two ordered operations");
+   if (native_depth_copy->rb2d_copy_operation_count == 2u) {
+      const struct r3v_native_rb2d_copy_operation *to_image =
+         &native_depth_copy->rb2d_copy_operations[0];
+      const struct r3v_native_rb2d_copy_operation *to_buffer =
+         &native_depth_copy->rb2d_copy_operations[1];
+      CHECK(to_image->segment_count == 1u &&
+               to_image->segments[0].source_offset_bytes == 0u &&
+               to_image->segments[0].destination_offset_bytes == 14133u &&
+               to_image->segments[0].byte_count == 3u,
+            "depth upload binds layout-local offset to image memory placement");
+      CHECK(to_buffer->segment_count == 1u &&
+               to_buffer->segments[0].source_offset_bytes == 14133u &&
+               to_buffer->segments[0].destination_offset_bytes == 0u &&
+               to_buffer->segments[0].byte_count == 3u,
+            "depth download preserves the bound image and buffer coordinates");
+   }
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "depth copies retain independent image/buffer origins in both directions");
+   VkBufferImageCopy undersized_region = region;
+   undersized_region.bufferImageHeight = 100;
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, undersized_staging.buffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                         &undersized_region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, compact_stride_cmd, f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
+            compact_stride_cmd->rb2d_copy_operation_count == 1u,
+         "a depth-one copy ignores unused bufferImageHeight rows");
+
+   const VkBufferCopy compact_copy = {.size = 4u};
+   if (begin(f))
+      return 1;
+   vkCmdCopyBuffer(f->cmd, staging.buffer, undersized_staging.buffer, 1u,
+                   &compact_copy);
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, host_then_depth_cmd, f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
+            host_then_depth_cmd->ordered_operation_count == 2u &&
+            host_then_depth_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_HOST_COPY &&
+            host_then_depth_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+         "host and depth transfers retain their forward recording order");
+
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+   vkCmdCopyBuffer(f->cmd, staging.buffer, undersized_staging.buffer, 1u,
+                   &compact_copy);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, depth_then_host_cmd, f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
+            depth_then_host_cmd->ordered_operation_count == 2u &&
+            depth_then_host_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY &&
+            depth_then_host_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_HOST_COPY,
+         "depth and host transfers retain their reverse recording order");
+   if (begin(f))
+      return 1;
+   depth_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+   vkCmdPipelineBarrier(f->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                        1, &depth_barrier);
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "combined D24S8 layout transition refuses a single-aspect range");
+   for (unsigned invalid = 0; invalid < 4; invalid++) {
+      VkBufferImageCopy bad = region;
+      VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
+      if (invalid == 0)
+         bad.bufferOffset = 1;
+      if (invalid == 1)
+         bad.imageExtent.width = 28;
+      if (invalid == 2)
+         bad.imageSubresource.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+      if (invalid == 3)
+         layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      if (begin(f))
+         return 1;
+      vkCmdCopyImageToBuffer(f->cmd, image, layout, staging.buffer, 1, &bad);
+      CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+            "invalid depth copy case %u refuses", invalid);
+   }
+   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_stencil_copy, f->cmd);
+   CHECK(native_stencil_copy->rb2d_copy_operation_count == 1u &&
+            native_stencil_copy->rb2d_copy_operations[0].segment_count == 1u &&
+            native_stencil_copy->rb2d_copy_operations[0]
+                  .segments[0].source_offset_bytes == 0u &&
+            native_stencil_copy->rb2d_copy_operations[0]
+                  .segments[0].destination_offset_bytes == 14132u &&
+            native_stencil_copy->rb2d_copy_operations[0]
+                  .segments[0].byte_count == 1u,
+         "stencil upload addresses the packed low byte independently");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "single stencil byte records independently");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release depth copy references before object destruction");
+   destroy_staging(f, &staging);
+   destroy_staging(f, &undersized_staging);
+   vkDestroyImage(f->device, image, NULL);
+   vkFreeMemory(f->device, memory, NULL);
+
+   VkImage shared_source = VK_NULL_HANDLE;
+   VkImage shared_destination = VK_NULL_HANDLE;
+   REQUIRE(vkCreateImage(f->device, &info, NULL, &shared_source) == VK_SUCCESS,
+           "shared-allocation source image creation");
+   REQUIRE(vkCreateImage(f->device, &info, NULL, &shared_destination) ==
+              VK_SUCCESS,
+           "shared-allocation destination image creation");
+   const VkMemoryAllocateInfo shared_allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = 65536u,
+      .memoryTypeIndex = 0,
+   };
+   VkDeviceMemory shared_memory = VK_NULL_HANDLE;
+   REQUIRE(vkAllocateMemory(f->device, &shared_allocation, NULL,
+                            &shared_memory) == VK_SUCCESS,
+           "shared-allocation memory allocation");
+   REQUIRE(vkBindImageMemory(f->device, shared_source, shared_memory, 4096u) ==
+              VK_SUCCESS,
+           "shared-allocation source binding");
+   REQUIRE(vkBindImageMemory(f->device, shared_destination, shared_memory,
+                             32768u) == VK_SUCCESS,
+           "shared-allocation destination binding");
+   const VkImageCopy shared_full_regions[] = {
+      {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1u,
+         },
+         .extent = {64u, 64u, 1u},
+      },
+      {
+         .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .extent = {64u, 64u, 1u},
+      },
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyImage(f->cmd, shared_source, VK_IMAGE_LAYOUT_GENERAL,
+                  shared_destination, VK_IMAGE_LAYOUT_GENERAL,
+                  ARRAY_SIZE(shared_full_regions), shared_full_regions);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, shared_cmd, f->cmd);
+   CHECK(shared_cmd->rb2d_copy_operation_count == 16u &&
+            shared_cmd->reference_count == 1u,
+         "disjoint image suballocations share one BO reference safely");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "disjoint image suballocations record successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release shared-allocation image references");
+
+   const VkBufferCreateInfo shared_buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 4u,
+      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer shared_buffer = VK_NULL_HANDLE;
+   REQUIRE(vkCreateBuffer(f->device, &shared_buffer_info, NULL,
+                          &shared_buffer) == VK_SUCCESS,
+           "shared-allocation buffer creation");
+   REQUIRE(vkBindBufferMemory(f->device, shared_buffer, shared_memory,
+                              61440u) == VK_SUCCESS,
+           "shared-allocation buffer binding");
+   const VkBufferImageCopy shared_buffer_region = {
+      .bufferOffset = 0u,
+      .imageSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .layerCount = 1u,
+      },
+      .imageOffset = {37, 21, 0},
+      .imageExtent = {1u, 1u, 1u},
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, shared_buffer, shared_source,
+                          VK_IMAGE_LAYOUT_GENERAL, 1u,
+                          &shared_buffer_region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, shared_buffer_cmd, f->cmd);
+   CHECK(shared_buffer_cmd->rb2d_copy_operation_count == 1u &&
+            shared_buffer_cmd->reference_count == 1u,
+         "disjoint image and buffer suballocations share one BO safely");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "disjoint image and buffer suballocations record successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release shared-allocation buffer references");
+   vkDestroyBuffer(f->device, shared_buffer, NULL);
+
+   const VkBufferCreateInfo overlapping_buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 16384u,
+      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer overlapping_buffer = VK_NULL_HANDLE;
+   REQUIRE(vkCreateBuffer(f->device, &overlapping_buffer_info, NULL,
+                          &overlapping_buffer) == VK_SUCCESS,
+           "overlapping-allocation buffer creation");
+   REQUIRE(vkBindBufferMemory(f->device, overlapping_buffer, shared_memory,
+                              4096u) == VK_SUCCESS,
+           "overlapping-allocation buffer binding");
+   const VkBufferImageCopy overlapping_region = {
+      .bufferOffset = 10036u,
+      .imageSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .imageOffset = {37, 21, 0},
+      .imageExtent = {1u, 1u, 1u},
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, overlapping_buffer, shared_source,
+                          VK_IMAGE_LAYOUT_GENERAL, 1u,
+                          &overlapping_region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, overlapping_cmd, f->cmd);
+   CHECK(overlapping_cmd->rb2d_copy_operation_count == 0u &&
+            overlapping_cmd->ib == NULL && overlapping_cmd->references == NULL,
+         "overlapping image and buffer ranges refuse before payload mutation");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "overlapping image and buffer ranges refuse");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release overlapping-allocation buffer references");
+   vkDestroyBuffer(f->device, overlapping_buffer, NULL);
+
+   vkDestroyImage(f->device, shared_destination, NULL);
+   vkDestroyImage(f->device, shared_source, NULL);
+   vkFreeMemory(f->device, shared_memory, NULL);
+
+   info.extent.height = 65;
+   image = VK_NULL_HANDLE;
+   CHECK(vkCreateImage(f->device, &info, NULL, &image) != VK_SUCCESS &&
+         image == VK_NULL_HANDLE, "storage padding remains nonrenderable");
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
+   bool depth_storage = false, refuse_platform = false;
    for (int i = 1; i < argc; i++) {
-      if (strcmp(argv[i], "--inject-scaled-linear-blit-admits") == 0) {
+      if (strcmp(argv[i], "--depth-storage") == 0) {
+         depth_storage = true;
+      } else if (strcmp(argv[i], "--depth-storage-refuse-platform") == 0) {
+         depth_storage = true;
+         refuse_platform = true;
+      } else if (strcmp(argv[i], "--inject-scaled-linear-blit-admits") == 0) {
          mutation = MUTATION_SCALED_LINEAR_BLIT_ADMITS;
       } else if (strcmp(argv[i], "--inject-overlap-copy-admits") == 0) {
          mutation = MUTATION_OVERLAP_COPY_ADMITS;
@@ -1006,7 +2177,9 @@ main(int argc, char **argv)
    struct fixture f = { 0 };
    if (create_fixture(&f))
       return 1;
-   int fatal = check_fill_and_update(&f) || check_copy_overlap(&f) ||
+   int fatal = depth_storage ? check_depth_storage(&f, refuse_platform) :
+               check_fill_and_update(&f) || check_copy_overlap(&f) ||
+               check_buffer_image_height_stride(&f) ||
                check_blit(&f) || check_texel_formats(&f) ||
                check_optimal_tiling(&f);
    vkDestroyCommandPool(f.device, f.cmd_pool, NULL);

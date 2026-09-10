@@ -44,7 +44,23 @@ mkdir -p "$libdir"
 touch "$libdir/libgbm.so.1" "$libdir/libGLX_mesa.so.0" "$libdir/libEGL_mesa.so.0"
 if [ "${FAKE_STAGE_LAYOUT}" = release ]; then
   mkdir -p "$icd_dir"
-  touch "$icd_dir/r3v_icd.x86_64.json"
+  case "${FAKE_R3V_PAYLOAD:-valid}" in
+    valid)
+      touch "$libdir/libvulkan_r3v.so"
+      printf '%s\n' '{"ICD":{"api_version":"1.0.354","library_path":"/usr/lib/libvulkan_r3v.so"},"file_format_version":"1.0.1"}' > "$icd_dir/r3v_icd.x86_64.json"
+      ;;
+    missing-library)
+      printf '%s\n' '{"ICD":{"api_version":"1.0.354","library_path":"/usr/lib/libvulkan_r3v.so"},"file_format_version":"1.0.1"}' > "$icd_dir/r3v_icd.x86_64.json"
+      ;;
+    build-directory-library)
+      touch "$libdir/libvulkan_r3v.so"
+      printf '%s\n' '{"ICD":{"api_version":"1.0.354","library_path":"/tmp/mesa-build/libvulkan_r3v.so"},"file_format_version":"1.0.1"}' > "$icd_dir/r3v_icd.x86_64.json"
+      ;;
+    missing-manifest)
+      touch "$libdir/libvulkan_r3v.so"
+      ;;
+    *) exit 1 ;;
+  esac
 fi
 if [ "${FAKE_GBM_BACKEND:-0}" = 1 ]; then
   mkdir -p "$libdir/gbm"
@@ -52,8 +68,11 @@ if [ "${FAKE_GBM_BACKEND:-0}" = 1 ]; then
 fi
 
 if [ "${FAKE_STAGE_LAYOUT}" = debug ]; then
+  icd_dir="$destination${FAKE_PREFIX:?}/share/vulkan/icd.d"
   implicit_dir="$destination${FAKE_PREFIX:?}/share/vulkan/implicit_layer.d"
-  mkdir -p "$implicit_dir"
+  mkdir -p "$icd_dir" "$implicit_dir"
+  touch "$libdir/libvulkan_r3v.so"
+  printf '%s\n' '{"ICD":{"api_version":"1.0.354","library_path":"libvulkan_r3v.so"},"file_format_version":"1.0.1"}' > "$icd_dir/r3v_icd.x86_64.json"
   if [ "${FAKE_ANTI_LAG_LIBRARY:-0}" = 1 ]; then
     touch "$libdir/libVkLayer_MESA_anti_lag.so"
   fi
@@ -91,6 +110,7 @@ PYTHON
 run_release() {
   local label="$1"
   local backend="$2"
+  local payload="${3:-valid}"
   local pkgdir="$WORKDIR/release-$label"
 
   (
@@ -98,6 +118,7 @@ run_release() {
     env PATH="$WORKDIR/bin:$PATH" \
         FAKE_STAGE_LAYOUT=release \
         FAKE_GBM_BACKEND="$backend" \
+        FAKE_R3V_PAYLOAD="$payload" \
         pkgdir="$pkgdir" \
         srcdir="$PWD" \
         bash -c '. ./PKGBUILD; package'
@@ -138,9 +159,10 @@ expect_release_failure() {
   local label="$1"
   local expected_diagnostic="$2"
   local backend="$3"
+  local payload="${4:-valid}"
   local output="$WORKDIR/$label.out"
 
-  if run_release "$label" "$backend" > "$output" 2>&1; then
+  if run_release "$label" "$backend" "$payload" > "$output" 2>&1; then
     echo "release package accepted $label" >&2
     exit 1
   fi
@@ -171,6 +193,12 @@ expect_debug_failure() {
 expect_release_failure missing-backend \
   "/usr/lib/gbm/dri_gbm.so" 0
 run_release complete-stage 1 > "$WORKDIR/release-complete-stage.out" 2>&1
+expect_release_failure missing-r3v-library \
+  "R3V ICD driver library is missing" 1 missing-library
+expect_release_failure missing-r3v-manifest \
+  "generated R3V ICD manifest is missing" 1 missing-manifest
+expect_release_failure build-directory-r3v-library \
+  "R3V ICD library_path resolves" 1 build-directory-library
 
 expect_debug_failure missing-backend \
   "/opt/mesa-gororoba-debug-optimized/lib/gbm/dri_gbm.so" \
@@ -188,5 +216,9 @@ expect_debug_failure missing-device-select-manifest \
   "/opt/mesa-gororoba-debug-optimized/share/vulkan/implicit_layer.d/VkLayer_MESA_device_select.json" \
   1 1 1 1 0
 run_debug complete-stage 1 1 1 1 1 > "$WORKDIR/debug-complete-stage.out" 2>&1
+[ "$(readlink "$WORKDIR/debug-complete-stage/usr/lib/libvulkan_r3v.so")" = \
+  "/opt/mesa-gororoba-debug-optimized/lib/libvulkan_r3v.so" ]
+[ "$(readlink "$WORKDIR/debug-complete-stage/usr/share/vulkan/icd.d/r3v_icd.x86_64.json")" = \
+  "/opt/mesa-gororoba-debug-optimized/share/vulkan/icd.d/r3v_icd.x86_64.json" ]
 
 echo "gbm backend stage-guard fixtures: PASS"

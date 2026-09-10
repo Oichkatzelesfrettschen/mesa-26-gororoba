@@ -14,6 +14,7 @@
 #include "amd/r300/common/r300_r2vb_float2_tuple_pass.h"
 #include "amd/r300/common/r300_r2vb_producer_pass.h"
 #include "amd/r300/common/r300_r2vb_reingest_pass.h"
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
@@ -25,6 +26,7 @@
 
 #include "util/mesa-blake3.h"
 
+#include <inttypes.h>
 #include <radeon_drm.h>
 #include <stdint.h>
 #include <fcntl.h>
@@ -157,6 +159,127 @@ r3v_native_evidence_require_fresh(const char *dir,
  * the gate's own kind check names it first.
  */
 bool
+r3v_native_ordered_image_composition_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer == NULL || cmd_buffer->ib == NULL ||
+       cmd_buffer->ib_size_dwords == 0u || cmd_buffer->references == NULL ||
+       cmd_buffer->reference_count == 0u ||
+       cmd_buffer->ordered_operation_count == 0u ||
+       cmd_buffer->ordered_operations == NULL)
+      return false;
+
+   for (uint32_t reference_index = 0u;
+        reference_index < cmd_buffer->reference_count; reference_index++) {
+      const struct r3v_native_bo_reference *reference =
+         &cmd_buffer->references[reference_index];
+      if (reference->memory == NULL ||
+          reference->handle != reference->memory->bo.handle ||
+          (reference->read_domains == 0u && reference->write_domain == 0u))
+         return false;
+   }
+
+   bool render_pass_open = false;
+   uint32_t previous_position = 0u;
+   for (uint32_t operation_index = 0u;
+        operation_index < cmd_buffer->ordered_operation_count;
+        operation_index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[operation_index];
+      if (operation->ib_position_dwords < previous_position ||
+          operation->ib_position_dwords > cmd_buffer->ib_size_dwords)
+         return false;
+      previous_position = operation->ib_position_dwords;
+
+      switch (operation->kind) {
+      case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR: {
+         const uint32_t draw_index =
+            operation->payload.color_clear.deferred_draw_index;
+         if (!render_pass_open || draw_index >= cmd_buffer->deferred_draw_count)
+            return false;
+         const struct r3v_native_deferred_draw *draw =
+            &cmd_buffer->deferred_draws[draw_index];
+         if (operation->payload.color_clear.first_rect >
+                draw->clear_rect_count ||
+             operation->payload.color_clear.rect_count >
+                draw->clear_rect_count -
+                   operation->payload.color_clear.first_rect)
+            return false;
+         break;
+      }
+      case R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR:
+         if (operation->payload.rb2d_depth_clear.image == NULL ||
+             operation->payload.rb2d_depth_clear.image->memory == NULL)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY:
+         if (render_pass_open ||
+             operation->payload.rb2d_copy.rb2d_copy_index >=
+                cmd_buffer->rb2d_copy_operation_count)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER:
+         if (render_pass_open ||
+             operation->payload.image_barrier.image == NULL)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER:
+         /* Render-pass dependencies use the same ordered memory-barrier
+          * record as explicit barriers.  The operation is valid at the
+          * execution position inside a pass; payload validation happens
+          * when the recorder appends the dependency. */
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER:
+         if (render_pass_open ||
+             operation->payload.memory_barrier.buffer == NULL ||
+             operation->payload.memory_barrier.size == 0u)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN:
+         if (render_pass_open ||
+             operation->payload.render_pass_begin.deferred_draw_index >=
+                cmd_buffer->deferred_draw_count)
+            return false;
+         render_pass_open = true;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_DRAW: {
+         const uint32_t draw_index =
+            operation->payload.draw.deferred_draw_index;
+         if (!render_pass_open || draw_index >= cmd_buffer->deferred_draw_count ||
+             operation->ib_position_dwords !=
+                cmd_buffer->deferred_draws[draw_index].ib_span_offset ||
+             cmd_buffer->deferred_draws[draw_index].ib_span_dwords == 0u)
+            return false;
+         break;
+      }
+      case R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END:
+         if (!render_pass_open ||
+             operation->payload.render_pass_end.deferred_draw_index >=
+                cmd_buffer->deferred_draw_count)
+            return false;
+         render_pass_open = false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_HOST_COPY:
+         if (operation->payload.host_copy.deferred_copy_index >=
+             cmd_buffer->deferred_copy_count)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_EVENT:
+         if (operation->payload.event.event_index >= cmd_buffer->event_op_count)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_QUERY:
+         if (operation->payload.query.query_index >= cmd_buffer->query_op_count)
+            return false;
+         break;
+      default:
+         return false;
+      }
+   }
+   return !render_pass_open;
+}
+
+bool
 r3v_native_cell_geometry_unfrozen(
    const struct r3v_native_cmd_buffer *cmd_buffer)
 {
@@ -171,6 +294,24 @@ r3v_native_cell_geometry_unfrozen(
        */
       if (!cmd_buffer->deferred_draws[0].pending)
          return false;
+      const struct r3v_native_deferred_draw *draw =
+         &cmd_buffer->deferred_draws[0];
+      const bool depth_attachment_recorded = draw->depth_memory != NULL;
+      if ((draw->has_depth_clear && !depth_attachment_recorded) ||
+          draw->has_depth_pipeline != depth_attachment_recorded ||
+          cmd_buffer->reference_count !=
+             R300_TRIANGLE_RENDER_SLOT_COUNT +
+                (depth_attachment_recorded ? 1u : 0u))
+         return true;
+      if (depth_attachment_recorded) {
+         const struct r3v_native_bo_reference *depth =
+            &cmd_buffer->references[R300_TRIANGLE_RENDER_SLOT_COUNT];
+         if (depth->memory != draw->depth_memory ||
+             depth->handle != draw->depth_memory->bo.handle ||
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT)
+            return true;
+      }
       const uint32_t width = cmd_buffer->deferred_draws[0].target_width;
       const uint32_t height = cmd_buffer->deferred_draws[0].target_height;
       const uint32_t pitch_pixels =
@@ -191,8 +332,16 @@ r3v_native_cell_geometry_unfrozen(
        * a third relocation: vertex and texture device-read, color
        * device-written.
        */
-      if (!cmd_buffer->deferred_draws[0].pending ||
-          cmd_buffer->reference_count != R300_TRIANGLE_SAMPLED_SLOT_COUNT)
+      if (!cmd_buffer->deferred_draws[0].pending)
+         return true;
+      const struct r3v_native_deferred_draw *draw =
+         &cmd_buffer->deferred_draws[0];
+      const bool depth_attachment_recorded = draw->depth_memory != NULL;
+      if ((draw->has_depth_clear && !depth_attachment_recorded) ||
+          draw->has_depth_pipeline != depth_attachment_recorded ||
+          cmd_buffer->reference_count !=
+             R300_TRIANGLE_SAMPLED_SLOT_COUNT +
+                (depth_attachment_recorded ? 1u : 0u))
          return true;
       const uint32_t s_width = cmd_buffer->deferred_draws[0].target_width;
       const uint32_t s_height = cmd_buffer->deferred_draws[0].target_height;
@@ -209,12 +358,22 @@ r3v_native_cell_geometry_unfrozen(
          &cmd_buffer->references[R300_TRIANGLE_SLOT_COLOR];
       const struct r3v_native_bo_reference *s_texture =
          &cmd_buffer->references[R300_TRIANGLE_SLOT_TEXTURE];
-      return s_vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
-             s_vertex->write_domain != 0 ||
-             s_color->read_domains != 0 ||
-             s_color->write_domain != RADEON_GEM_DOMAIN_GTT ||
-             s_texture->read_domains != RADEON_GEM_DOMAIN_GTT ||
-             s_texture->write_domain != 0;
+      if (s_vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          s_vertex->write_domain != 0 || s_color->read_domains != 0 ||
+          s_color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          s_texture->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          s_texture->write_domain != 0)
+         return true;
+      if (depth_attachment_recorded) {
+         const struct r3v_native_bo_reference *depth =
+            &cmd_buffer->references[R300_TRIANGLE_SAMPLED_SLOT_COUNT];
+         if (depth->memory != draw->depth_memory ||
+             depth->handle != draw->depth_memory->bo.handle ||
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT)
+            return true;
+      }
+      return false;
    }
    case R3V_NATIVE_CELL_KIND_TRIANGLE_RENDER_SHAPE: {
       /* The declared shape is the geometry and the digest carries it;
@@ -268,8 +427,10 @@ r3v_native_cell_geometry_unfrozen(
        * extents inside the render family.  One pending draw is neither
        * form.  The frozen binding facts are shared: two to four
        * entries, each a vertex page read alone or a color target
-       * written alone, since an entry carrying both directions is a
-       * role alias the emitter admits no binding for.
+       * written alone.  A public two-pass depth attachment adds one
+       * shared depth entry at index two, carrying both directions because
+       * the depth test reads and updates one validated target in both
+       * passes.
        */
       const bool first_pending = cmd_buffer->deferred_draws[0].pending;
       const bool second_pending = cmd_buffer->deferred_draws[1].pending;
@@ -277,6 +438,29 @@ r3v_native_cell_geometry_unfrozen(
          return true;
       if (first_pending) {
          if (cmd_buffer->deferred_draw_count != 2)
+            return true;
+         const struct r3v_native_deferred_draw *first =
+            &cmd_buffer->deferred_draws[0];
+         const struct r3v_native_deferred_draw *second =
+            &cmd_buffer->deferred_draws[1];
+         const bool first_has_depth = first->depth_memory != NULL;
+         const bool second_has_depth = second->depth_memory != NULL;
+         if (first_has_depth != second_has_depth ||
+             first->has_depth_pipeline != first_has_depth ||
+             second->has_depth_pipeline != second_has_depth)
+            return true;
+         if (first_has_depth &&
+             (first->depth_memory != second->depth_memory ||
+              first->depth_memory->bo.handle !=
+                 second->depth_memory->bo.handle ||
+              first->depth_bound.contract == NULL ||
+              second->depth_bound.contract == NULL ||
+              first->depth_bound.contract != second->depth_bound.contract ||
+              first->depth_bound.binding_offset_bytes !=
+                 second->depth_bound.binding_offset_bytes ||
+              first->depth_bound.surface_base_bytes !=
+                 second->depth_bound.surface_base_bytes ||
+              first->depth_bound.bo_bytes != second->depth_bound.bo_bytes))
             return true;
          for (uint32_t d = 0; d < 2; d++) {
             const uint32_t width = cmd_buffer->deferred_draws[d].target_width;
@@ -291,8 +475,12 @@ r3v_native_cell_geometry_unfrozen(
                return true;
          }
       }
+      const bool shared_depth = first_pending &&
+                                cmd_buffer->deferred_draws[0].depth_memory !=
+                                   NULL;
       if (cmd_buffer->reference_count < R300_TRIANGLE_RENDER_SLOT_COUNT ||
-          cmd_buffer->reference_count > 2 * R300_TRIANGLE_RENDER_SLOT_COUNT)
+          cmd_buffer->reference_count > 2 * R300_TRIANGLE_RENDER_SLOT_COUNT ||
+          (shared_depth && cmd_buffer->reference_count != 4u))
          return true;
       const struct r3v_native_bo_reference *c = cmd_buffer->references;
       if (c[R300_TRIANGLE_SLOT_VERTEX].read_domains != RADEON_GEM_DOMAIN_GTT ||
@@ -300,8 +488,20 @@ r3v_native_cell_geometry_unfrozen(
           c[R300_TRIANGLE_SLOT_COLOR].read_domains != 0 ||
           c[R300_TRIANGLE_SLOT_COLOR].write_domain != RADEON_GEM_DOMAIN_GTT)
          return true;
+      if (shared_depth) {
+         const struct r3v_native_bo_reference *depth =
+            &c[R300_TRIANGLE_RENDER_SLOT_COUNT];
+         if (depth->memory != cmd_buffer->deferred_draws[0].depth_memory ||
+             depth->handle !=
+                cmd_buffer->deferred_draws[0].depth_memory->bo.handle ||
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT)
+            return true;
+      }
       for (uint32_t i = R300_TRIANGLE_RENDER_SLOT_COUNT;
            i < cmd_buffer->reference_count; i++) {
+         if (shared_depth && i == R300_TRIANGLE_RENDER_SLOT_COUNT)
+            continue;
          const bool vertex_page = c[i].read_domains == RADEON_GEM_DOMAIN_GTT &&
                                   c[i].write_domain == 0;
          const bool color_target = c[i].read_domains == 0 &&
@@ -412,6 +612,7 @@ r3v_native_cell_geometry_unfrozen(
       return input->read_domains != RADEON_GEM_DOMAIN_GTT ||
              input->write_domain != 0 || input->memory == NULL;
    }
+   case R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL:
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL: {
       /* The depth control binds three exact footprints: the vertex page
        * device-read, the color target device-written, and the depth
@@ -428,6 +629,77 @@ r3v_native_cell_geometry_unfrozen(
          &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR];
       const struct r3v_native_bo_reference *depth =
          &cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH];
+      if (cmd_buffer->cell_kind ==
+          R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL) {
+         const struct r3v_native_memory *active_depth =
+            cmd_buffer->zb_persistence_ordinal ==
+                  R3V_NATIVE_ZB_PERSISTENCE_B
+               ? cmd_buffer->zb_persistence_depth_b
+               : cmd_buffer->zb_persistence_depth_a;
+         if (!cmd_buffer->zb_persistence_configured ||
+             cmd_buffer->zb_persistence_ordinal >
+                R3V_NATIVE_ZB_PERSISTENCE_A_FINAL ||
+             cmd_buffer->zb_persistence_depth_a == NULL ||
+             cmd_buffer->zb_persistence_depth_b == NULL ||
+             cmd_buffer->zb_persistence_depth_a ==
+                cmd_buffer->zb_persistence_depth_b ||
+             active_depth != depth->memory)
+            return true;
+
+         if (cmd_buffer->deferred_draws[0].pending) {
+            const struct r3v_native_deferred_draw *draw =
+               &cmd_buffer->deferred_draws[0];
+            const struct r300_zb_depth_surface *surface =
+               draw->depth_bound.contract != NULL
+                  ? &draw->depth_bound.contract->surface
+                  : NULL;
+            const struct r300_zb_depth_surface *qualified =
+               &r300_zb_depth_surface_rs485m_z24_macrotiled_logical;
+            return cmd_buffer->deferred_draw_count != 1u ||
+                   draw->target_width != qualified->width ||
+                   draw->target_height != qualified->height ||
+                   draw->has_depth_clear || !draw->has_depth_pipeline ||
+                   draw->color_load_in_ib ||
+                   !draw->depth_pipeline.depth_test_enable ||
+                   draw->depth_pipeline.hardware.depth_test_disabled ||
+                   draw->depth_pipeline.hardware.depth_write ||
+                   draw->depth_pipeline.hardware.depth_function !=
+                      R300_ZS_LESS ||
+                   surface == NULL ||
+                   surface->address_resolver != qualified->address_resolver ||
+                   surface->depth_format != qualified->depth_format ||
+                   surface->bytes_per_pixel != qualified->bytes_per_pixel ||
+                   surface->microtile != qualified->microtile ||
+                   surface->macrotile != qualified->macrotile ||
+                   surface->width != qualified->width ||
+                   surface->height != qualified->height ||
+                   surface->pitch_pixels != qualified->pitch_pixels ||
+                   surface->allocation_rows != qualified->allocation_rows ||
+                   !surface->logical_pixel_addressing ||
+                   !surface->logical_image_readback ||
+                   vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+                   vertex->write_domain != 0 || vertex->memory == NULL ||
+                   vertex->memory != cmd_buffer->zb_persistence_vertex ||
+                   vertex->memory->generation !=
+                      cmd_buffer->zb_persistence_vertex_generation ||
+                   vertex->memory->bo.handle !=
+                      cmd_buffer->zb_persistence_vertex_handle ||
+                   color->read_domains != 0 ||
+                   color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+                   color->memory == NULL || depth->memory == NULL ||
+                   depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+                   depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
+                   depth->memory->bo.size !=
+                      r3v_native_zb_depth_surface_bytes(
+                         R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) ||
+                   vertex->handle != vertex->memory->bo.handle ||
+                   color->handle != color->memory->bo.handle ||
+                   depth->handle != depth->memory->bo.handle ||
+                   vertex->handle == color->handle ||
+                   vertex->handle == depth->handle ||
+                   color->handle == depth->handle;
+         }
+      }
       if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
           vertex->write_domain != 0 || vertex->memory == NULL ||
           vertex->memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION)
@@ -466,6 +738,35 @@ r3v_native_cell_geometry_unfrozen(
                                                 &emitted_format) != 0 ||
           emitted_format != depth_surface->depth_format)
          return true;
+      if (cmd_buffer->zb_depth_surface ==
+         R3V_NATIVE_ZB_DEPTH_SURFACE_RS485M_Z24_MACROTILED_LOGICAL) {
+         bool matches = false;
+         const unsigned write_variants =
+            cmd_buffer->cell_kind ==
+                  R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL
+               ? 1u
+               : 2u;
+         for (unsigned write_enabled = 0; write_enabled < write_variants;
+              write_enabled++) {
+            struct r300_zb_depth_control_ib expected;
+            if (r300_zb_depth_tiled_validation_emit(write_enabled != 0,
+                                                    &expected) != 0)
+               return true;
+            matches = expected.ib_size_dwords == cmd_buffer->ib_size_dwords &&
+                      memcmp(expected.ib, cmd_buffer->ib,
+                             expected.ib_size_dwords * sizeof(uint32_t)) == 0;
+            r300_zb_depth_control_release(&expected);
+            if (matches)
+               break;
+         }
+         if (!matches || depth->memory == NULL ||
+             vertex->handle != vertex->memory->bo.handle ||
+             color->handle != color->memory->bo.handle ||
+             depth->handle != depth->memory->bo.handle ||
+             vertex->handle == color->handle ||
+             vertex->handle == depth->handle || color->handle == depth->handle)
+            return true;
+      }
       return
              depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
              depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
@@ -535,6 +836,12 @@ r3v_native_cell_geometry_unfrozen(
       return r300_zb_depth_discovery_check_state(
                 &declared, cmd_buffer->ib, cmd_buffer->ib_size_dwords) != 0;
    }
+   case R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION:
+      return !r3v_native_rb2d_tiled_copy_geometry_valid(cmd_buffer);
+   case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR:
+      return !r3v_native_depth_image_clear_geometry_valid(cmd_buffer);
+   case R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION:
+      return !r3v_native_ordered_image_composition_geometry_valid(cmd_buffer);
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
    case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION: {
@@ -740,6 +1047,105 @@ r3v_native_serial_semantic_identity_capture(
    identity->valid = true;
 }
 
+static bool
+r3v_native_cell_is_serial(enum r3v_native_cell_kind kind)
+{
+   return kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL ||
+          kind == R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
+}
+
+uint32_t
+r3v_native_zb_persistence_identity_mismatches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal)
+{
+   uint32_t mismatches = R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
+   if (!identity->valid || !cmd_buffer->zb_persistence_configured)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE;
+   if (cmd_buffer->zb_persistence_ordinal != ordinal)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ORDINAL;
+   if (cmd_buffer->ib_size_dwords != identity->ib_size_dwords)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_SIZE;
+   if (strcmp(identity->ib_blake3, ib_digest) != 0)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_DIGEST;
+   if (cmd_buffer->reference_count != R300_ZB_DEPTH_CONTROL_SLOT_COUNT)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_REFERENCE_COUNT;
+   if (mismatches & (R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE |
+                     R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_REFERENCE_COUNT))
+      return mismatches;
+   const struct r3v_native_memory *vertex =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].memory;
+   const struct r3v_native_memory *color =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].memory;
+   const struct r3v_native_memory *active =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH].memory;
+   const struct r3v_native_memory *expected_active =
+      ordinal == R3V_NATIVE_ZB_PERSISTENCE_B ? identity->depth_b
+                                             : identity->depth_a;
+   if (vertex == NULL || color == NULL || active == NULL ||
+       identity->depth_a == NULL || identity->depth_b == NULL ||
+       cmd_buffer->zb_persistence_vertex == NULL)
+      return mismatches | R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE;
+   if (vertex != cmd_buffer->zb_persistence_vertex)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_VERTEX_BINDING;
+   if (color != identity->color)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_COLOR_BINDING;
+   if (cmd_buffer->zb_persistence_depth_a != identity->depth_a ||
+       cmd_buffer->zb_persistence_depth_b != identity->depth_b)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_DEPTH_PAIR;
+   if (active != expected_active)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ACTIVE_DEPTH;
+   if (vertex->generation != cmd_buffer->zb_persistence_vertex_generation ||
+       color->generation != identity->color_generation ||
+       identity->depth_a->generation != identity->depth_a_generation ||
+       identity->depth_b->generation != identity->depth_b_generation)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_GENERATION;
+   if (vertex->bo.handle != cmd_buffer->zb_persistence_vertex_handle ||
+       color->bo.handle != identity->color_handle ||
+       identity->depth_a->bo.handle != identity->depth_a_handle ||
+       identity->depth_b->bo.handle != identity->depth_b_handle ||
+       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_VERTEX].handle !=
+          vertex->bo.handle ||
+       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].handle !=
+          color->bo.handle ||
+       cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_DEPTH].handle !=
+          active->bo.handle)
+      mismatches |= R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_HANDLE;
+   return mismatches;
+}
+
+bool
+r3v_native_zb_persistence_identity_matches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal)
+{
+   return r3v_native_zb_persistence_identity_mismatches(
+             identity, cmd_buffer, ib_digest, ordinal) ==
+          R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
+}
+
+void
+r3v_native_zb_persistence_identity_capture(
+   struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest)
+{
+   identity->ib_size_dwords = cmd_buffer->ib_size_dwords;
+   memcpy(identity->ib_blake3, ib_digest, sizeof(identity->ib_blake3));
+   identity->color =
+      cmd_buffer->references[R300_ZB_DEPTH_CONTROL_SLOT_COLOR].memory;
+   identity->depth_a = cmd_buffer->zb_persistence_depth_a;
+   identity->depth_b = cmd_buffer->zb_persistence_depth_b;
+   identity->color_generation = identity->color->generation;
+   identity->depth_a_generation = identity->depth_a->generation;
+   identity->depth_b_generation = identity->depth_b->generation;
+   identity->color_handle = identity->color->bo.handle;
+   identity->depth_a_handle = identity->depth_a->bo.handle;
+   identity->depth_b_handle = identity->depth_b->bo.handle;
+   identity->valid = true;
+}
+
 /* Retains the semantic cell -- the IB and the command buffer's own
  * relocation list, before the completion reference folds in -- as
  * content-bound evidence: ib.bin and relocs.bin land atomically, and
@@ -765,6 +1171,24 @@ r3v_native_queue_retention_dir(struct r3v_native_device *device,
                                const struct r3v_native_cmd_buffer *cmd_buffer,
                                char *storage, size_t size)
 {
+   if (cmd_buffer->cell_kind ==
+       R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL) {
+      static const char *const stage_names[] = {
+         "stage-0-a", "stage-1-b", "stage-2-a",
+      };
+      if (cmd_buffer->zb_persistence_ordinal >= ARRAY_SIZE(stage_names) ||
+          cmd_buffer->zb_persistence_ordinal !=
+             device->serial_submissions_consumed)
+         return NULL;
+      const int length = snprintf(
+         storage, size, "%s/%s", device->manifest_dir,
+         stage_names[cmd_buffer->zb_persistence_ordinal]);
+      if (length < 0 || (size_t)length >= size)
+         return NULL;
+      if (mkdir(storage, 0755) != 0 && errno != EEXIST)
+         return NULL;
+      return storage;
+   }
    if (!cmd_buffer->measurement_bound)
       return device->manifest_dir;
    const int length =
@@ -1257,6 +1681,351 @@ r3v_native_cmd_buffer_requires_inline_ordering(
    return r3v_recorded_work_census_ordered(&census);
 }
 
+/* Query and event records have no PM4 payload in the native carrier. Their
+ * operation records provide their execution point in the stream. */
+static VkResult
+r3v_native_queue_execute_ordered_query(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer, uint32_t query_index)
+{
+   if (query_index >= cmd_buffer->query_op_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   const struct r3v_native_query_op *op = &cmd_buffer->query_ops[query_index];
+   const uint8_t value = op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1u : 0u;
+   memset(&op->pool->state[op->first_query], value, op->query_count);
+   return VK_SUCCESS;
+}
+
+static VkResult
+r3v_native_queue_execute_ordered_event(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer, uint32_t event_index)
+{
+   if (event_index >= cmd_buffer->event_op_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   const struct r3v_native_event_op *op = &cmd_buffer->event_ops[event_index];
+   switch (op->kind) {
+   case R3V_NATIVE_EVENT_OP_SET:
+      op->event->signaled = true;
+      return VK_SUCCESS;
+   case R3V_NATIVE_EVENT_OP_RESET:
+      op->event->signaled = false;
+      return VK_SUCCESS;
+   case R3V_NATIVE_EVENT_OP_WAIT:
+      return op->event->signaled
+                ? VK_SUCCESS
+                : vk_error(device, VK_ERROR_DEVICE_LOST);
+   }
+   return vk_error(device, VK_ERROR_DEVICE_LOST);
+}
+
+static VkResult
+r3v_native_queue_execute_ordered_query_events(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->ordered_operation_count == 0u) {
+      for (uint32_t q = 0u; q < cmd_buffer->query_op_count; q++) {
+         VkResult result = r3v_native_queue_execute_ordered_query(
+            device, cmd_buffer, q);
+         if (result != VK_SUCCESS)
+            return result;
+      }
+      for (uint32_t e = 0u; e < cmd_buffer->event_op_count; e++) {
+         VkResult result = r3v_native_queue_execute_ordered_event(
+            device, cmd_buffer, e);
+         if (result != VK_SUCCESS)
+            return result;
+      }
+      return VK_SUCCESS;
+   }
+
+   for (uint32_t operation_index = 0u;
+        operation_index < cmd_buffer->ordered_operation_count;
+        operation_index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[operation_index];
+      VkResult result = VK_SUCCESS;
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_QUERY)
+         result = r3v_native_queue_execute_ordered_query(
+            device, cmd_buffer, operation->payload.query.query_index);
+      else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_EVENT)
+         result = r3v_native_queue_execute_ordered_event(
+            device, cmd_buffer, operation->payload.event.event_index);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   return VK_SUCCESS;
+}
+
+/* A PM4 stream is submitted as one CS and therefore already preserves the
+ * relative order of clears, barriers, copies, and render spans.  Host copies
+ * remain the two explicit execution regions represented by their recorded
+ * group.  Scan the ordered stream before invoking a group so an omitted
+ * legacy record cannot execute merely because its side array is populated. */
+static VkResult
+r3v_native_queue_execute_ordered_copies(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   enum r3v_native_copy_group group)
+{
+   if (cmd_buffer->ordered_operation_count == 0u)
+      return r3v_native_cmd_buffer_execute_deferred_copies(
+         device, cmd_buffer, group);
+
+   for (uint32_t operation_index = 0u;
+        operation_index < cmd_buffer->ordered_operation_count;
+        operation_index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[operation_index];
+      if (operation->kind != R3V_NATIVE_ORDERED_OPERATION_HOST_COPY)
+         continue;
+      const uint32_t copy_index =
+         operation->payload.host_copy.deferred_copy_index;
+      if (copy_index >= cmd_buffer->deferred_copy_count)
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      if (cmd_buffer->deferred_copies[copy_index].group != group)
+         continue;
+      return r3v_native_cmd_buffer_execute_deferred_copies(
+         device, cmd_buffer, group);
+   }
+   return VK_SUCCESS;
+}
+
+static bool
+r3v_native_cmd_buffer_has_positional_host_work(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   for (uint32_t index = 0u;
+        index < cmd_buffer->ordered_operation_count; index++) {
+      const enum r3v_native_ordered_operation_kind kind =
+         cmd_buffer->ordered_operations[index].kind;
+      if (kind == R3V_NATIVE_ORDERED_OPERATION_HOST_COPY ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_EVENT ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_QUERY)
+         return true;
+   }
+   return false;
+}
+
+static VkResult
+r3v_native_queue_execute_ordered_host_operation(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_ordered_operation *operation)
+{
+   switch (operation->kind) {
+   case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR:
+      return r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
+         device, cmd_buffer,
+         operation->payload.color_clear.deferred_draw_index,
+         operation->payload.color_clear.first_rect,
+         operation->payload.color_clear.rect_count);
+   case R3V_NATIVE_ORDERED_OPERATION_HOST_COPY:
+      return r3v_native_cmd_buffer_execute_deferred_copy(
+         device, cmd_buffer,
+         operation->payload.host_copy.deferred_copy_index);
+   case R3V_NATIVE_ORDERED_OPERATION_EVENT:
+      return r3v_native_queue_execute_ordered_event(
+         device, cmd_buffer, operation->payload.event.event_index);
+   case R3V_NATIVE_ORDERED_OPERATION_QUERY:
+      return r3v_native_queue_execute_ordered_query(
+         device, cmd_buffer, operation->payload.query.query_index);
+   default:
+      return VK_SUCCESS;
+   }
+}
+
+/* Executes a zero-IB stream in its recorded order.  Empty render passes still
+ * carry a deferred load operation, so the draw preparation belongs at its
+ * DRAW position beside host copies and synchronization records. */
+static VkResult
+r3v_native_queue_execute_ordered_host_stream(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->ordered_operation_count == 0u)
+      return r3v_native_queue_execute_ordered_query_events(device, cmd_buffer);
+
+   for (uint32_t index = 0u;
+        index < cmd_buffer->ordered_operation_count; index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[index];
+      VkResult result = VK_SUCCESS;
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw_load(
+            device, cmd_buffer,
+            operation->payload.render_pass_begin.deferred_draw_index);
+      } else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_DRAW) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw(
+            device, cmd_buffer,
+            operation->payload.draw.deferred_draw_index);
+      } else {
+         result = r3v_native_queue_execute_ordered_host_operation(
+            device, cmd_buffer, operation);
+      }
+      if (result != VK_SUCCESS)
+         return result;
+   }
+   return VK_SUCCESS;
+}
+
+/* A completion BO may be reused after its idle wait retires the previous
+ * segment.  Every segment carries the same validated relocation set, which
+ * pins all command resources for each DRM_RADEON_CS call; unused references
+ * are harmless and keep the recorded IB's relocation indices stable. */
+static VkResult
+r3v_native_queue_submit_ordered_segment(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   struct radeon_drm_vk_completion *completion,
+   uint32_t begin_dwords, uint32_t end_dwords,
+   struct r3v_native_ordered_transport_progress *progress)
+{
+   if (begin_dwords == end_dwords)
+      return VK_SUCCESS;
+   if (end_dwords > cmd_buffer->ib_size_dwords ||
+       begin_dwords > end_dwords)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+
+   for (uint32_t index = 0u; index < cmd_buffer->reference_count; index++) {
+      const struct r3v_native_bo_reference *reference =
+         &cmd_buffer->references[index];
+      if (reference->memory != NULL && reference->memory->map != NULL)
+         radeon_drm_vk_bo_cache_sync(&device->drm, reference->memory->map,
+                                     reference->memory->bo.size);
+   }
+
+   int trace_result = r3v_native_submission_trace_emit(
+      device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_ENTER);
+   if (trace_result != 0)
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: ordered transport trace refused before "
+                       "the submission ioctl");
+
+   struct radeon_drm_vk_cs cs;
+   radeon_drm_vk_cs_build(&cs, cmd_buffer->ib + begin_dwords,
+                          end_dwords - begin_dwords, relocs, 0, true);
+   device->transport_cs_ioctl_count++;
+   device->transport_return_ns = 0;
+   if (device->transport_enter_ns == 0)
+      device->transport_enter_ns = r3v_native_raw_now_ns();
+   int transport_result = radeon_drm_vk_cs_submit(&device->drm, &cs);
+   if (r3v_native_submission_trace_emit(
+          device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
+      trace_result = -EIO;
+   const bool accepted = transport_result == 0;
+   bool completion_retired = false;
+   if (accepted) {
+      device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
+      if (r3v_native_submission_trace_emit(
+             device, R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_BEGIN) != 0)
+         trace_result = -EIO;
+      transport_result = radeon_drm_vk_completion_await(&device->drm,
+                                                        completion);
+      if (r3v_native_submission_trace_emit(
+             device,
+             R3V_NATIVE_SUBMISSION_TRACE_COMPLETION_WAIT_RETURN) != 0)
+         trace_result = -EIO;
+      completion_retired = transport_result == 0;
+   }
+   r3v_native_ordered_transport_progress_record(progress, accepted,
+                                                completion_retired);
+   device->transport_return_ns = r3v_native_raw_now_ns();
+   if (transport_result == 0 && trace_result != 0)
+      transport_result = trace_result;
+   if (transport_result == 0) {
+      for (uint32_t index = 0u; index < cmd_buffer->reference_count; index++) {
+         const struct r3v_native_bo_reference *reference =
+            &cmd_buffer->references[index];
+         if (reference->memory != NULL && reference->memory->map != NULL)
+            radeon_drm_vk_bo_cache_sync(&device->drm, reference->memory->map,
+                                        reference->memory->bo.size);
+      }
+   }
+   if (transport_result != 0) {
+      device->queue_status = r3v_native_queue_status_from_transport(
+         accepted, false);
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: ordered segment submission failed: %d",
+                       transport_result);
+   }
+   return VK_SUCCESS;
+}
+
+/* Splits the installed PM4 stream at every host-visible operation.  The
+ * prefix ending at an operation's recorded position retires before the
+ * operation executes, and the trailing prefix is submitted after the final
+ * operation.  This makes a host read after an RB2D transfer observe the
+ * transfer's completed bytes while preserving the single recorded order. */
+static VkResult
+r3v_native_queue_execute_positional_stream(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct radeon_drm_vk_reloc_list *relocs,
+   struct radeon_drm_vk_completion *completion)
+{
+   uint32_t submitted_dwords = 0u;
+   struct r3v_native_ordered_transport_progress progress =
+      r3v_native_ordered_transport_progress_init();
+
+   for (uint32_t index = 0u;
+        index < cmd_buffer->ordered_operation_count; index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[index];
+      if (operation->ib_position_dwords < submitted_dwords ||
+          operation->ib_position_dwords > cmd_buffer->ib_size_dwords)
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+
+      VkResult result = r3v_native_queue_submit_ordered_segment(
+         device, cmd_buffer, relocs, completion, submitted_dwords,
+         operation->ib_position_dwords, &progress);
+      if (result != VK_SUCCESS)
+         goto finish;
+      submitted_dwords = operation->ib_position_dwords;
+
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_DRAW) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw(
+            device, cmd_buffer,
+            operation->payload.draw.deferred_draw_index);
+      } else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN) {
+         result = r3v_native_cmd_buffer_execute_deferred_draw_load(
+            device, cmd_buffer,
+            operation->payload.render_pass_begin.deferred_draw_index);
+      } else {
+         result = r3v_native_queue_execute_ordered_host_operation(
+            device, cmd_buffer, operation);
+      }
+      if (result != VK_SUCCESS)
+         goto finish;
+   }
+
+   if (submitted_dwords != cmd_buffer->ib_size_dwords) {
+      VkResult result = r3v_native_queue_submit_ordered_segment(
+         device, cmd_buffer, relocs, completion, submitted_dwords,
+         cmd_buffer->ib_size_dwords, &progress);
+      if (result != VK_SUCCESS)
+         goto finish;
+   }
+
+   if (progress.ioctl_seen)
+      r3v_native_fill_route_record_transport(
+         cmd_buffer, progress.all_ioctls_accepted,
+         progress.all_ioctls_accepted && progress.all_completions_retired);
+   return VK_SUCCESS;
+
+finish:
+   if (progress.ioctl_seen) {
+      r3v_native_fill_route_record_transport(
+         cmd_buffer, progress.all_ioctls_accepted, false);
+      device->queue_status =
+         r3v_native_ordered_transport_failure_status(&progress);
+   }
+   return VK_ERROR_DEVICE_LOST;
+}
+
 /* Walks the routed fill's record along the transport that carried it.
  *
  * The route leaves the record at PREPARED: it built a stream and nothing
@@ -1402,21 +2171,39 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    facts.nonmaximum_extent =
             r3v_native_cell_geometry_unfrozen(cmd_buffer);
    facts.serial_submissions_consumed = device->serial_submissions_consumed;
+   facts.persistence_ordinal = cmd_buffer->zb_persistence_ordinal;
    facts.burst_recorded_draws = cmd_buffer->burst_draws;
 
-   const bool serial_kind =
-      cmd_buffer->cell_kind == R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+   const bool serial_kind = r3v_native_cell_is_serial(cmd_buffer->cell_kind);
+   const bool persistence_kind =
+      cmd_buffer->cell_kind ==
+      R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
    const bool serial_continuation =
       serial_kind && device->serial_submissions_consumed > 0;
+   const uint32_t persistence_mismatches =
+      serial_continuation && persistence_kind
+         ? r3v_native_zb_persistence_identity_mismatches(
+              &device->zb_persistence_identity, cmd_buffer, ib_digest,
+              device->serial_submissions_consumed)
+         : R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
    VkResult result = VK_SUCCESS;
    if (serial_continuation &&
-       !r3v_native_serial_semantic_identity_matches(
-          &device->serial_semantic_identity, cmd_buffer, ib_digest,
-          &prepared->relocs)) {
-      result = vk_errorf(
-         device, VK_ERROR_DEVICE_LOST,
-         "r3v-native: serial continuation changed the command-buffer or "
-         "relocation identity; refusing before evidence retention");
+       !(persistence_kind
+            ? persistence_mismatches ==
+                 R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH
+            : r3v_native_serial_semantic_identity_matches(
+                 &device->serial_semantic_identity, cmd_buffer, ib_digest,
+                 &prepared->relocs))) {
+      result = persistence_kind
+         ? vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                     "r3v-native: persistence continuation identity "
+                     "mismatch 0x%08" PRIx32
+                     "; refusing before evidence retention",
+                     persistence_mismatches)
+         : vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                     "r3v-native: serial continuation changed the "
+                     "command-buffer or relocation identity; refusing "
+                     "before evidence retention");
       goto prepare_fail;
    }
    if (facts.attempt_token_present && !serial_continuation) {
@@ -1437,8 +2224,17 @@ r3v_native_queue_prepare_submission(VkDevice _device,
       goto prepare_fail;
    }
 
-   if (!(serial_kind && device->serial_submissions_consumed > 0) &&
-       r3v_native_queue_write_manifest(device, device->manifest_dir,
+   char retention_storage[1024];
+   const char *retention_dir = persistence_kind
+      ? r3v_native_queue_retention_dir(device, cmd_buffer, retention_storage,
+                                       sizeof(retention_storage))
+      : device->manifest_dir;
+   if (retention_dir == NULL) {
+      result = vk_error(device, VK_ERROR_DEVICE_LOST);
+      goto prepare_fail;
+   }
+   if ((persistence_kind || !serial_continuation) &&
+       r3v_native_queue_write_manifest(device, retention_dir,
                                        cmd_buffer->ib,
                                        cmd_buffer->ib_size_dwords,
                                        &prepared->relocs) != 0) {
@@ -1447,10 +2243,15 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                          "failed; refusing before any ioctl");
       goto prepare_fail;
    }
-   if (serial_kind && !serial_continuation)
-      r3v_native_serial_semantic_identity_capture(
-         &device->serial_semantic_identity, cmd_buffer, ib_digest,
-         &prepared->relocs);
+   if (serial_kind && !serial_continuation) {
+      if (persistence_kind)
+         r3v_native_zb_persistence_identity_capture(
+            &device->zb_persistence_identity, cmd_buffer, ib_digest);
+      else
+         r3v_native_serial_semantic_identity_capture(
+            &device->serial_semantic_identity, cmd_buffer, ib_digest,
+            &prepared->relocs);
+   }
 
    if (radeon_drm_vk_completion_init(&device->drm, &prepared->completion) !=
        0) {
@@ -1481,7 +2282,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
                           true);
 
    if (r3v_native_queue_write_submit_object(
-          device, device->manifest_dir, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
+          device, retention_dir, cmd_buffer->ib, cmd_buffer->ib_size_dwords,
           &prepared->relocs, &prepared->cs, cmd_buffer->references,
           prepared->reference_indices, cmd_buffer->reference_count,
           prepared->completion_index, prepared->completion.bo.handle,
@@ -1610,6 +2411,110 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
    return VK_SUCCESS;
 }
 
+struct r3v_native_submission_image_state {
+   struct r3v_native_image *image;
+   struct r3v_native_image_committed_state state;
+};
+
+static VkResult
+r3v_native_queue_preflight_image_states(
+   struct r3v_native_device *device, const struct vk_queue_submit *submit)
+{
+   uint32_t state_capacity = 0u;
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[command_index],
+         struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->image_state_count > UINT32_MAX - state_capacity)
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      state_capacity += cmd_buffer->image_state_count;
+   }
+
+   struct r3v_native_submission_image_state *states =
+      state_capacity != 0u ? calloc(state_capacity, sizeof(*states)) : NULL;
+   if (state_capacity != 0u && states == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   uint32_t state_count = 0u;
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[command_index],
+         struct r3v_native_cmd_buffer, vk);
+      for (uint32_t image_index = 0u;
+           image_index < cmd_buffer->image_state_count; image_index++) {
+         const struct r3v_native_cmd_image_state *recorded =
+            &cmd_buffer->image_states[image_index];
+         uint32_t pending_index = 0u;
+         while (pending_index < state_count &&
+                states[pending_index].image != recorded->image)
+            pending_index++;
+         if (pending_index == state_count) {
+            states[state_count++] =
+               (struct r3v_native_submission_image_state){
+                  .image = recorded->image,
+                  .state = recorded->image->committed_submission,
+               };
+         }
+         struct r3v_native_image_committed_state *pending =
+            &states[pending_index].state;
+         if (pending->representation != recorded->representation ||
+             (recorded->required_layout_set &&
+              recorded->required_layout !=
+                 R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
+              pending->api_layout != recorded->required_layout)) {
+            free(states);
+            return vk_errorf(
+               device, R3V_NATIVE_REFUSAL_RESULT,
+               "r3v-native: command buffer %u image state requires layout "
+               "%u from representation %u, found layout %u representation %u",
+               command_index, recorded->required_layout,
+               recorded->representation, pending->api_layout,
+               pending->representation);
+         }
+         if (recorded->current_layout_set)
+            pending->api_layout = recorded->current_layout;
+         if (recorded->producer_set)
+            pending->producer = recorded->producer;
+         if (recorded->visibility_set)
+            pending->visible_to = recorded->visible_to;
+         if (recorded->content_set)
+            pending->content = recorded->content;
+      }
+   }
+   free(states);
+   return VK_SUCCESS;
+}
+
+static void
+r3v_native_queue_publish_image_states(const struct vk_queue_submit *submit)
+{
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         submit->command_buffers[command_index],
+         struct r3v_native_cmd_buffer, vk);
+      for (uint32_t image_index = 0u;
+           image_index < cmd_buffer->image_state_count; image_index++) {
+         const struct r3v_native_cmd_image_state *recorded =
+            &cmd_buffer->image_states[image_index];
+         if (recorded->current_layout_set)
+            recorded->image->committed_submission.api_layout =
+               recorded->current_layout;
+         if (recorded->producer_set)
+            recorded->image->committed_submission.producer =
+               recorded->producer;
+         if (recorded->visibility_set)
+            recorded->image->committed_submission.visible_to =
+               recorded->visible_to;
+         if (recorded->content_set)
+            recorded->image->committed_submission.content =
+               recorded->content;
+      }
+   }
+}
+
 VkResult
 r3v_native_queue_submit(struct vk_queue *queue_base,
                         struct vk_queue_submit *submit)
@@ -1625,6 +2530,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
    device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED;
    device->transport_enter_ns = 0;
    device->transport_return_ns = 0;
+   device->transport_cs_ioctl_count = 0;
    device->transport_gpu_producer_delivery = false;
    device->transport_cell_kind = R3V_NATIVE_CELL_KIND_UNDECLARED;
    bool submit_has_executable_ib = false;
@@ -1651,6 +2557,35 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           executable);
       }
    }
+
+   for (uint32_t command_index = 0u;
+        command_index < submit->command_buffer_count; command_index++) {
+      const struct vk_command_buffer *vk_cmd =
+         submit->command_buffers[command_index];
+      if (vk_cmd->record_result != VK_SUCCESS) {
+         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                          "r3v-native: command buffer %u carries recording "
+                          "error %d", command_index, vk_cmd->record_result);
+      }
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         vk_cmd, struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->ordered_operation_count == 0u &&
+          (cmd_buffer->query_op_count != 0u ||
+           cmd_buffer->event_op_count != 0u) &&
+          (cmd_buffer->deferred_copy_count != 0u ||
+           cmd_buffer->deferred_draw_count != 0u ||
+           cmd_buffer->deferred_dispatch.pending ||
+           cmd_buffer->ib_size_dwords != 0u)) {
+         return vk_errorf(
+            device, R3V_NATIVE_REFUSAL_RESULT,
+            "r3v-native: query and event records require a command buffer "
+            "without transfer, draw, dispatch, or PM4 work");
+      }
+   }
+   VkResult image_preflight =
+      r3v_native_queue_preflight_image_states(device, submit);
+   if (image_preflight != VK_SUCCESS)
+      return image_preflight;
 
    /* Route resolution and the submit's policy verdict, both ahead of the
     * wait loop below.  A permanent binary wait is consumed where it is
@@ -1728,21 +2663,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       }
    }
 
-   /* Recording fails closed: an unsupported command poisons the buffer's
-    * record_result and vkEndCommandBuffer returns the error.  The runtime
-    * moves every submitted buffer to PENDING before driver_submit runs, so
-    * record_result is the signal that survives to this boundary; a poisoned
-    * buffer refuses the whole submit before any buffer runs.
-    */
-   for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
-      const struct vk_command_buffer *vk_cmd = submit->command_buffers[i];
-      if (vk_cmd->record_result != VK_SUCCESS) {
-         return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                          "r3v-native: command buffer %u carries recording "
-                          "error %d", i, vk_cmd->record_result);
-      }
-   }
-
    /* The adaptive NoPerspective route resolves here, after the waits
     * and ahead of every digest, arming verdict, and retention below:
     * the CPU vertex execution judges each draw's triangles against the
@@ -1809,35 +2729,16 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
-      /* Recorded query transitions publish here, in recorded order:
-       * an end makes its query available with the exact zero count,
-       * a reset returns its range to unavailable.
-       */
-      for (uint32_t q = 0; q < cmd_buffer->query_op_count; q++) {
-         const struct r3v_native_query_op *op = &cmd_buffer->query_ops[q];
-         const uint8_t value =
-            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1 : 0;
-         memset(&op->pool->state[op->first_query], value, op->query_count);
-      }
-
-      /* Recorded event transitions and waits execute here, in order:
-       * a wait finding its event unsignaled is unsatisfiable on the
-       * synchronous timeline and the submission is lost.
-       */
-      for (uint32_t e = 0; e < cmd_buffer->event_op_count; e++) {
-         const struct r3v_native_event_op *op = &cmd_buffer->event_ops[e];
-         switch (op->kind) {
-         case R3V_NATIVE_EVENT_OP_SET:
-            op->event->signaled = true;
-            break;
-         case R3V_NATIVE_EVENT_OP_RESET:
-            op->event->signaled = false;
-            break;
-         case R3V_NATIVE_EVENT_OP_WAIT:
-            if (!op->event->signaled)
-               return vk_error(device, VK_ERROR_DEVICE_LOST);
-            break;
-         }
+      const bool positional_host_work =
+         r3v_native_cmd_buffer_has_positional_host_work(cmd_buffer);
+      /* Query and event transitions follow the ordered operation stream when
+       * a transport boundary can separate them from PM4. Legacy carriers
+       * without a host boundary retain their category execution. */
+      if (!positional_host_work) {
+         VkResult query_event_result =
+            r3v_native_queue_execute_ordered_query_events(device, cmd_buffer);
+         if (query_event_result != VK_SUCCESS)
+            return query_event_result;
       }
 
       /* A zero-IB command buffer can still carry a deferred load-op clear
@@ -1847,6 +2748,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * submission.
        */
       if (cmd_buffer->ib_size_dwords == 0) {
+         if (positional_host_work) {
+            VkResult ordered_result =
+               r3v_native_queue_execute_ordered_host_stream(device,
+                                                            cmd_buffer);
+            if (ordered_result != VK_SUCCESS)
+               return ordered_result;
+            continue;
+         }
          /* Recorded transfer copies execute per submission through host
           * mappings -- Vulkan's execution-time ordering, the same
           * contract the deferred draw holds.  The pre-draw group runs
@@ -1857,9 +2766,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           * for a submission whose earlier copies may already have
           * landed.
           */
-         if (r3v_native_cmd_buffer_execute_deferred_copies(
-                device, cmd_buffer,
-                R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) != VK_SUCCESS)
+         if (r3v_native_queue_execute_ordered_copies(
+                device, cmd_buffer, R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) !=
+             VK_SUCCESS)
             return vk_error(device, VK_ERROR_DEVICE_LOST);
 
          VkResult dispatched =
@@ -1885,9 +2794,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           * follows the deferred draw on this path as it follows the
           * completion wait on the transport path.
           */
-         if (r3v_native_cmd_buffer_execute_deferred_copies(
-                device, cmd_buffer,
-                R3V_NATIVE_COPY_GROUP_AFTER_DRAW) != VK_SUCCESS)
+         if (r3v_native_queue_execute_ordered_copies(
+                device, cmd_buffer, R3V_NATIVE_COPY_GROUP_AFTER_DRAW) !=
+             VK_SUCCESS)
             return vk_error(device, VK_ERROR_DEVICE_LOST);
          continue;
       }
@@ -1930,9 +2839,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       facts.platform_id = r3v_native_arming_platform(device);
       facts.pci_vendor_id = device->pdevice->pci_vendor_id;
       facts.pci_device_id = device->pdevice->pci_device_id;
-      const bool serial_kind =
+      const bool serial_kind = r3v_native_cell_is_serial(cmd_buffer->cell_kind);
+      const bool persistence_kind =
          cmd_buffer->cell_kind ==
-         R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL;
+         R3V_NATIVE_CELL_KIND_ZB_TILED_PERSISTENCE_SERIAL;
       const bool serial_continuation =
          serial_kind && device->serial_submissions_consumed > 0;
       if (device->submit_hazard_accepted) {
@@ -1969,7 +2879,14 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          facts.measurement_session_active = cmd_buffer->measurement_bound;
          facts.serial_submissions_consumed =
             device->serial_submissions_consumed;
+         facts.persistence_ordinal = cmd_buffer->zb_persistence_ordinal;
          facts.burst_recorded_draws = cmd_buffer->burst_draws;
+         const uint32_t persistence_mismatches =
+            serial_continuation && persistence_kind
+               ? r3v_native_zb_persistence_identity_mismatches(
+                    &device->zb_persistence_identity, cmd_buffer, ib_digest,
+                    device->serial_submissions_consumed)
+               : R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH;
 
          /* The serial kind admits its own token within the declared
           * bound; the full serial predicate is the evaluation below, and
@@ -1988,15 +2905,24 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
 
          if (serial_continuation &&
-             !r3v_native_serial_semantic_identity_matches(
-                &device->serial_semantic_identity, cmd_buffer, ib_digest,
-                &relocs)) {
+             !(persistence_kind
+                  ? persistence_mismatches ==
+                       R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH
+                  : r3v_native_serial_semantic_identity_matches(
+                       &device->serial_semantic_identity, cmd_buffer, ib_digest,
+                       &relocs))) {
             free(reference_indices);
             radeon_drm_vk_reloc_list_finish(&relocs);
-            return vk_errorf(
-               device, VK_ERROR_DEVICE_LOST,
-               "r3v-native: serial continuation changed the command-buffer "
-               "or relocation identity; refusing before evidence retention");
+            return persistence_kind
+               ? vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                           "r3v-native: persistence continuation identity "
+                           "mismatch 0x%08" PRIx32
+                           "; refusing before evidence retention",
+                           persistence_mismatches)
+               : vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                           "r3v-native: serial continuation changed the "
+                           "command-buffer or relocation identity; refusing "
+                           "before evidence retention");
          }
       }
 
@@ -2021,7 +2947,8 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
             R3V_MEASUREMENT_SESSION_MAX_CASES &&
          device->measurement_case_retained[cmd_buffer->measurement_case_index];
       const bool semantic_cell_retained =
-         (serial_kind && device->serial_submissions_consumed > 0) ||
+         (serial_kind && !persistence_kind &&
+          device->serial_submissions_consumed > 0) ||
          measurement_case_retained;
       /* Resolved for the writers that will run: the semantic manifest below
        * and the submit object further down.  A campaign's case creates its
@@ -2078,10 +3005,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
       if (serial_kind && !serial_continuation &&
-          device->submit_hazard_accepted)
-         r3v_native_serial_semantic_identity_capture(
-            &device->serial_semantic_identity, cmd_buffer, ib_digest,
-            &relocs);
+          device->submit_hazard_accepted) {
+         if (persistence_kind)
+            r3v_native_zb_persistence_identity_capture(
+               &device->zb_persistence_identity, cmd_buffer, ib_digest);
+         else
+            r3v_native_serial_semantic_identity_capture(
+               &device->serial_semantic_identity, cmd_buffer, ib_digest,
+               &relocs);
+      }
 
       /* Finite completion: a 4-byte write-domain BO rides the relocation
        * chunk, the kernel fences it at submit, and the bounded
@@ -2346,14 +3278,15 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
+      if (!positional_host_work) {
       /* The pre-draw copies land with the draw's own writes, past every
        * gate and ahead of the publish loop below, so a copy into a BO the
        * IB references reaches memory before the ioctl and a refused
        * submission leaves application memory untouched.
        */
-      if (r3v_native_cmd_buffer_execute_deferred_copies(
-             device, cmd_buffer,
-             R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) != VK_SUCCESS) {
+      if (r3v_native_queue_execute_ordered_copies(
+             device, cmd_buffer, R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) !=
+          VK_SUCCESS) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -2405,6 +3338,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                                         reference->memory->bo.size);
          }
       }
+      }
 
       /* The first admission writes the token; a serial continuation runs
        * under the token this instance already wrote, and the evaluation
@@ -2427,8 +3361,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: one-shot disarm failed; refusing "
                           "before the ioctl");
       }
-      if (cmd_buffer->cell_kind ==
-          R3V_NATIVE_CELL_KIND_R2VB_STATUS_LOAD_SERIAL) {
+      if (serial_kind) {
          device->serial_submissions_consumed++;
       }
 
@@ -2540,6 +3473,43 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
+      if (positional_host_work) {
+         device->transport_gpu_producer_delivery =
+            cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+         device->transport_cell_kind = cmd_buffer->cell_kind;
+         VkResult ordered_result = r3v_native_queue_execute_positional_stream(
+            device, cmd_buffer, &relocs, &completion);
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         if (ordered_result != VK_SUCCESS) {
+            if (cmd_buffer->measurement_bound)
+               r3v_measurement_session_close(
+                  &device->measurement_session,
+                  "an ordered segment submission failed");
+            return ordered_result;
+         }
+         VkResult gpu_verdict =
+            r3v_native_deferred_draw_verify_gpu_producer(device, cmd_buffer);
+         if (gpu_verdict == VK_SUCCESS)
+            gpu_verdict =
+               r3v_native_deferred_dispatch_verify_gpu(device, cmd_buffer);
+         if (gpu_verdict != VK_SUCCESS)
+            return gpu_verdict;
+         device->queue_status = R3V_NATIVE_QUEUE_STATUS_COMPLETED;
+         if (device->plan_capture_active &&
+             r3v_native_plan_capture_lands_now(&device->plan_capture)) {
+            const int written = r3v_native_plan_capture_write(
+               &device->plan_capture, device->pdevice->pci_vendor_id,
+               device->pdevice->pci_device_id, NULL);
+            if (written != 0)
+               return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                                "r3v-native: plan transcript write failed: "
+                                "%s", strerror(-written));
+         }
+         continue;
+      }
+
       /* The transport bracket a route measurement reads: the ioctl and
        * the completion wait, with the evidence writes, the digest, the
        * completion allocation, and the arming reads left outside it.
@@ -2635,9 +3605,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * invalidate drops the stale lines over the mapping it takes, so a
        * read of the render target observes the device output.
        */
-      if (r3v_native_cmd_buffer_execute_deferred_copies(
-             device, cmd_buffer,
-             R3V_NATIVE_COPY_GROUP_AFTER_DRAW) != VK_SUCCESS)
+      if (r3v_native_queue_execute_ordered_copies(
+             device, cmd_buffer, R3V_NATIVE_COPY_GROUP_AFTER_DRAW) !=
+          VK_SUCCESS)
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       /* The transcript lands on the capture cadence after a completed
        * submission, so a planning pass cut short keeps the entries that
@@ -2659,6 +3629,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
    device->queue_status = r3v_native_queue_status_finalize_submit(
       device->queue_status, submit_has_executable_ib);
+   r3v_native_queue_publish_image_states(submit);
 
    /* The bounded completion wait above retired every buffer.  Consuming
     * permanent binary waits before signaling keeps the semaphore state ready

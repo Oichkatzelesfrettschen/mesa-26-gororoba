@@ -17,10 +17,15 @@
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_operation_route.h"
+#include "amd/r300/common/r300_rb2d_copy.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_job.h"
 #include "amd/r300/common/r300_zb_hyperz_admission.h"
+#include "amd/r300/common/r300_zb_combined_clear.h"
 #include "amd/r300/common/r300_zb_depth_discovery.h"
+#include "amd/r300/common/r300_zb_tile_copy.h"
+#include "r3v_native_depth_image_contract.h"
+#include "r3v_native_depth_pipeline.h"
 #include "r3v_interpolation_lowering.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -102,6 +107,47 @@ r3v_native_queue_status_from_transport(bool ioctl_accepted,
                                : R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE;
 }
 
+struct r3v_native_ordered_transport_progress {
+   bool ioctl_seen;
+   bool any_ioctl_accepted;
+   bool all_ioctls_accepted;
+   bool all_completions_retired;
+};
+
+/* Positional streams can cross several CS boundaries.  Acceptance and
+ * retirement describe the complete stream only when every entered segment
+ * reaches the corresponding boundary; any accepted segment still makes a
+ * later stream failure a completion failure rather than a pre-ioctl refusal.
+ */
+static inline struct r3v_native_ordered_transport_progress
+r3v_native_ordered_transport_progress_init(void)
+{
+   return (struct r3v_native_ordered_transport_progress){
+      .all_ioctls_accepted = true,
+      .all_completions_retired = true,
+   };
+}
+
+static inline void
+r3v_native_ordered_transport_progress_record(
+   struct r3v_native_ordered_transport_progress *progress,
+   bool ioctl_accepted, bool completion_retired)
+{
+   progress->ioctl_seen = true;
+   progress->any_ioctl_accepted |= ioctl_accepted;
+   progress->all_ioctls_accepted &= ioctl_accepted;
+   progress->all_completions_retired &=
+      ioctl_accepted && completion_retired;
+}
+
+static inline enum r3v_native_queue_status
+r3v_native_ordered_transport_failure_status(
+   const struct r3v_native_ordered_transport_progress *progress)
+{
+   return r3v_native_queue_status_from_transport(
+      progress->any_ioctl_accepted, false);
+}
+
 /* A submit with no executable IB finishes without a transport boundary.
  * r3v_native_queue_submit (rg --fixed-strings "r3v_native_queue_submit"
  * src/amd/r300/vulkan/r3v_native_queue.c) records executable-buffer presence
@@ -157,6 +203,114 @@ struct r3v_native_image;
 struct r3v_native_pipeline;
 struct r3v_native_buffer;
 struct r3v_native_arming_provider;
+
+/* The symbolic API layout carried by an ordered image state.  Values retain
+ * the Vulkan layout numbers so a recorder can copy validated API input
+ * without introducing a second conversion table. */
+enum r3v_native_image_api_layout {
+   R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED = VK_IMAGE_LAYOUT_UNDEFINED,
+   R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL = VK_IMAGE_LAYOUT_GENERAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_COLOR_ATTACHMENT_OPTIMAL =
+      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_SHADER_READ_ONLY_OPTIMAL =
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_TRANSFER_SRC_OPTIMAL =
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_TRANSFER_DST_OPTIMAL =
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+   R3V_NATIVE_IMAGE_API_LAYOUT_PREINITIALIZED =
+      VK_IMAGE_LAYOUT_PREINITIALIZED,
+};
+
+static inline VkImageLayout
+r3v_native_packed_depth_stencil_layout(VkImageLayout layout)
+{
+   switch (layout) {
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL:
+      return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL:
+      return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+   default:
+      return layout;
+   }
+}
+
+/* The first representation is zero so calloc and vk_zalloc produce a valid
+ * state for images created before representation-specific admission exists. */
+enum r3v_native_image_representation {
+   R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR = 0,
+   R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+};
+
+enum r3v_native_image_producer {
+   R3V_NATIVE_IMAGE_PRODUCER_HOST = 0,
+   R3V_NATIVE_IMAGE_PRODUCER_RB2D,
+   R3V_NATIVE_IMAGE_PRODUCER_RB3D,
+   R3V_NATIVE_IMAGE_PRODUCER_ZB,
+};
+
+enum r3v_native_image_visibility {
+   R3V_NATIVE_IMAGE_VISIBLE_HOST = 1u << 0,
+   R3V_NATIVE_IMAGE_VISIBLE_RB2D = 1u << 1,
+   R3V_NATIVE_IMAGE_VISIBLE_RB3D = 1u << 2,
+   R3V_NATIVE_IMAGE_VISIBLE_ZB = 1u << 3,
+};
+
+enum r3v_native_image_content_status {
+   R3V_NATIVE_IMAGE_CONTENT_DISCARDED = 0,
+   R3V_NATIVE_IMAGE_CONTENT_INITIALIZED,
+};
+
+/* State committed by the last completed submission.  A zeroed state denotes
+ * an undefined layout, the zero-safe representation, host ownership, and
+ * discarded contents. */
+struct r3v_native_image_committed_state {
+   enum r3v_native_image_api_layout api_layout;
+   enum r3v_native_image_representation representation;
+   enum r3v_native_image_producer producer;
+   uint32_t visible_to;
+   enum r3v_native_image_content_status content;
+};
+
+/* State assembled while recording one command buffer.  The image pointer is
+ * the key; one entry covers every operation that names that image. */
+struct r3v_native_cmd_image_state {
+   struct r3v_native_image *image;
+   enum r3v_native_image_api_layout required_layout;
+   enum r3v_native_image_api_layout current_layout;
+   enum r3v_native_image_representation representation;
+   enum r3v_native_image_producer producer;
+   uint32_t visible_to;
+   enum r3v_native_image_content_status content;
+   bool required_layout_set;
+   bool current_layout_set;
+   bool producer_set;
+   bool visibility_set;
+   bool content_set;
+};
+
+enum r3v_native_rb2d_copy_geometry {
+   R3V_NATIVE_RB2D_COPY_GEOMETRY_TILE = 0,
+   R3V_NATIVE_RB2D_COPY_GEOMETRY_SEGMENTS,
+};
+
+struct r3v_native_rb2d_copy_operation {
+   struct r3v_native_memory *source_memory;
+   struct r3v_native_memory *destination_memory;
+   struct r300_rb2d_copy_segment
+      segments[R300_RB2D_COPY_MAX_SEGMENTS];
+   uint32_t segment_count;
+   uint64_t source_buffer_bytes;
+   uint64_t destination_buffer_bytes;
+   uint32_t write_mask;
+   bool byte_carrier;
+};
 
 /* Deferred draw execution: vertex reads and the load-op clear happen at
  * queue submission, matching Vulkan's execution-time semantics, so the
@@ -237,10 +391,98 @@ struct r3v_native_deferred_copy {
    bool gpu_routed;
 };
 
+/* A copied image barrier keeps command-buffer recording independent of the
+ * application's VkImageMemoryBarrier storage. */
+struct r3v_native_image_barrier_record {
+   struct r3v_native_image *image;
+   enum r3v_native_image_api_layout old_layout;
+   enum r3v_native_image_api_layout new_layout;
+   VkImageAspectFlags aspect_mask;
+   VkPipelineStageFlags src_stage_mask;
+   VkPipelineStageFlags dst_stage_mask;
+   VkAccessFlags src_access_mask;
+   VkAccessFlags dst_access_mask;
+};
+
+struct r3v_native_memory_barrier_record {
+   VkPipelineStageFlags src_stage_mask;
+   VkPipelineStageFlags dst_stage_mask;
+   VkAccessFlags src_access_mask;
+   VkAccessFlags dst_access_mask;
+   struct r3v_native_buffer *buffer;
+   VkDeviceSize offset;
+   VkDeviceSize size;
+};
+
+/* One ordered operation.  Each legacy operation kind carries the index of
+ * its existing array entry; image barriers carry their complete copied
+ * record because no legacy array owns the Vulkan barrier storage. */
+enum r3v_native_ordered_operation_kind {
+   R3V_NATIVE_ORDERED_OPERATION_HOST_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
+   R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
+   R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
+   R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+   R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
+   R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN,
+   R3V_NATIVE_ORDERED_OPERATION_DRAW,
+   R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END,
+   R3V_NATIVE_ORDERED_OPERATION_EVENT,
+   R3V_NATIVE_ORDERED_OPERATION_QUERY,
+};
+
+struct r3v_native_ordered_operation {
+   enum r3v_native_ordered_operation_kind kind;
+   uint32_t ib_position_dwords;
+   union {
+      struct {
+         uint32_t deferred_copy_index;
+      } host_copy;
+      struct {
+         uint32_t deferred_draw_index;
+         uint32_t first_rect;
+         uint32_t rect_count;
+      } color_clear;
+      struct {
+         struct r3v_native_image *image;
+         uint32_t x;
+         uint32_t y;
+         uint32_t width;
+         uint32_t height;
+         uint32_t aspect_mask;
+         uint32_t depth_code;
+         uint32_t stencil;
+      } rb2d_depth_clear;
+      struct {
+         uint32_t rb2d_copy_index;
+      } rb2d_copy;
+      struct r3v_native_image_barrier_record image_barrier;
+      struct r3v_native_memory_barrier_record memory_barrier;
+      struct {
+         uint32_t deferred_draw_index;
+      } render_pass_begin;
+      struct {
+         uint32_t deferred_draw_index;
+      } draw;
+      struct {
+         uint32_t deferred_draw_index;
+      } render_pass_end;
+      struct {
+         uint32_t event_index;
+      } event;
+      struct {
+         uint32_t query_index;
+      } query;
+   } payload;
+};
+
 /* The first command-pool allocation keeps ordinary copy recordings compact;
  * r3v_native_copy_slot grows the storage when a recording reaches it.
  */
 #define R3V_NATIVE_DEFERRED_COPY_INITIAL_CAPACITY 16
+#define R3V_NATIVE_ORDERED_OPERATION_INITIAL_CAPACITY 16
+#define R3V_NATIVE_CMD_IMAGE_STATE_INITIAL_CAPACITY 8
 
 /* The compute descriptor surface: a set layout admits storage-buffer
  * bindings under the compute stage inside the binding bound, a pool
@@ -460,19 +702,24 @@ struct r3v_native_deferred_stream {
 
 struct r3v_native_pass_clear_rect {
    uint32_t x, y, width, height;
+   VkImageAspectFlags aspect_mask;
    uint32_t dword;
+   uint32_t depth_code;
+   uint32_t stencil;
 };
 
-/* Render passes one command buffer records.  The bound is two: the
- * recorded cells concatenate into one indirect buffer whose digest no
- * offline emitter reproduces, so a multi-pass buffer executes only
- * while the submit hazard gate is closed, and widening the bound widens
- * that unarmed surface alone.
- */
-#define R3V_NATIVE_DEFERRED_DRAW_MAX 2u
+/* The initial allocation covers the common one-pass/two-draw shape.  The
+ * command-pool-backed arrays grow as recording adds draw records, so the
+ * record count is independent of the allocation size. */
+#define R3V_NATIVE_DEFERRED_DRAW_INITIAL_CAPACITY 2u
+#define R3V_NATIVE_RENDER_PASS_MAX 2u
 
 struct r3v_native_deferred_draw {
    bool pending;
+   /* The record owns the render-pass load operation when true.  Repeated
+    * draws in the same pass carry false so submission executes the load only
+    * at the pass begin position. */
+   bool load_at_begin;
    /* The attribute slots the vertex job reads, one bit per slot; zero
     * is a pass carrying its load-op clear alone.  streams[slot] is
     * filled for each set bit.
@@ -513,12 +760,22 @@ struct r3v_native_deferred_draw {
    VkCullModeFlags cull_mode;
    VkFrontFace front_face;
    bool sample_mask_zero;
+   /* Color-channel suppression remains independent from sample coverage;
+    * the draw emitter programs RB3D_COLOR_CHANNEL_MASK for this state. */
+   bool color_writes_disabled;
    /* Pipeline lifetime ends at the application's discretion, so the
     * deferred draw carries its own copy of the vertex job and the
     * GPU-route identity metadata.
     */
    struct r300_vertex_job vertex_job;
    bool vertex_job_identity;
+   /* Depth attachment captured at pass begin and its optional load clear. */
+   struct r3v_native_memory *depth_memory;
+   struct r3v_native_depth_image_bound depth_bound;
+   struct r3v_native_depth_pipeline_state depth_pipeline;
+   bool has_depth_pipeline;
+   struct r300_zb_combined_clear_plan depth_clear;
+   bool has_depth_clear;
    /* The post-vertex lowering the pipeline's linked interface
     * selects, applied to the CPU route's records after the job and
     * before clipping (r3v_post_vs_lowering.h). */
@@ -603,11 +860,16 @@ struct r3v_native_deferred_draw {
     * through the target's lane order and the UNORM8 conversion.
     */
    uint32_t clear_dword;
+   /* A later pass carries its color load operation inside its IB span so
+    * the clear executes after every earlier draw and before the current
+    * pass's draw. */
+   bool color_load_in_ib;
    /* The pass target's extent: the viewport transform's window scale
     * at execution.
     */
    uint32_t target_width;
    uint32_t target_height;
+   bool depth_only;
 };
 
 /* The depth surface a depth-control recording binds.  The cell emits
@@ -626,7 +888,8 @@ struct r3v_native_deferred_draw {
  */
 #define R3V_NATIVE_ZB_DEPTH_SURFACES(X)                                       \
    X(Z16_LINEAR, z16_linear)                                                  \
-   X(Z24_LINEAR, z24_linear)
+   X(Z24_LINEAR, z24_linear)                                                \
+   X(RS485M_Z24_MACROTILED_LOGICAL, rs485m_z24_macrotiled_logical)
 
 /* The address-discovery scenarios a discovery recording can name, one
  * entry per declared experiment: the enumerator suffix and the common
@@ -639,7 +902,7 @@ struct r3v_native_deferred_draw {
  * the experiment identity has to name the initial image.
  */
 #define R3V_NATIVE_ZB_DISCOVERY_SCENARIOS(X)                                  \
-   X(Z24_LINEAR, z24_linear)                                                  \
+   X(Z24_LINEAR, z24_linear)                                                \
    X(Z24_LINEAR_SEED_5A, z24_linear_seed_5a)                                  \
    X(Z24_LINEAR_SEED_A5, z24_linear_seed_a5)                                  \
    X(Z24_MICROTILED, z24_microtiled)                                          \
@@ -708,6 +971,16 @@ struct r3v_native_cmd_buffer {
    uint32_t reference_count;
 
    struct r3v_native_image *pass_target;
+   struct r3v_native_image *pass_depth_target;
+   const struct vk_render_pass *active_render_pass;
+   VkImageLayout pass_color_layout;
+   VkImageLayout pass_depth_layout;
+   VkImageLayout pass_color_final_layout;
+   VkImageLayout pass_depth_final_layout;
+   /* Render-area extent used by the raster cell.  A depth-only framebuffer
+    * can cover a smaller window than its attached depth image. */
+   uint32_t pass_render_width;
+   uint32_t pass_render_height;
    /* Byte offset of the attached view's layer inside the target image;
     * the clear, the overlap test, and the cell's RB3D_COLOROFFSET0
     * payload all address the layer from the bind offset plus this.
@@ -748,7 +1021,12 @@ struct r3v_native_cmd_buffer {
    VkDeviceSize bound_index_offset;
    uint32_t bound_index_bytes;
    bool draw_recorded;
-   struct r3v_native_memory *owned_carriers[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   struct r3v_native_memory **owned_carriers;
+   /* Depth-only triangle cells still require a color relocation because
+    * the fixed fragment program exports color.  Each sink is a private
+    * GTT BO, separate from the application depth image, and lives until
+    * command-buffer reset or destruction. */
+   struct r3v_native_memory **owned_color_sinks;
    /* The fetched producer's slot-position BO, allocated at the first
     * fetched admission and released with the buffer; it holds the
     * (v + 0.5, 0.5, 0, 1) record per vertex the fetched body's first
@@ -763,6 +1041,39 @@ struct r3v_native_cmd_buffer {
     * allocation, so the shape the recorder admitted is the shape the
     * predicate judges. */
    enum r3v_native_zb_depth_surface zb_depth_surface;
+   bool rb2d_tiled_copy_configured;
+   uint32_t rb2d_tiled_copy_write_mask;
+   bool zb_depth_clear_configured;
+   struct r3v_native_image *zb_depth_clear_image;
+   uint32_t zb_depth_clear_aspect_mask;
+   uint32_t zb_depth_clear_depth_code;
+   uint32_t zb_depth_clear_stencil;
+   struct r300_zb_tile_copy_request rb2d_tiled_copy_request;
+   /* One configured flag and geometry discriminator cover both the legacy
+    * logical-tile request and the generic owned span list.  The latter owns
+    * every segment so a caller cannot mutate the stream's source or target
+    * windows after recording. */
+   enum r3v_native_rb2d_copy_geometry rb2d_copy_geometry;
+   struct r300_rb2d_copy_segment
+      rb2d_copy_segments[R300_RB2D_COPY_MAX_SEGMENTS];
+   uint32_t rb2d_copy_segment_count;
+   uint64_t rb2d_copy_source_buffer_bytes;
+   uint64_t rb2d_copy_destination_buffer_bytes;
+   bool rb2d_copy_byte_carrier;
+   struct r3v_native_rb2d_copy_operation *rb2d_copy_operations;
+   uint32_t rb2d_copy_operation_count;
+   uint32_t rb2d_copy_operation_capacity;
+   /* Each public persistence command owns a distinct CPU-vertex carrier.
+    * The binding snapshots that command-local allocation while the device
+    * identity below binds the color and paired depth allocations shared by
+    * the three submissions. */
+   bool zb_persistence_configured;
+   enum r3v_native_zb_persistence_ordinal zb_persistence_ordinal;
+   struct r3v_native_memory *zb_persistence_vertex;
+   uint64_t zb_persistence_vertex_generation;
+   uint32_t zb_persistence_vertex_handle;
+   struct r3v_native_memory *zb_persistence_depth_a;
+   struct r3v_native_memory *zb_persistence_depth_b;
    /* The declared experiment and arm a recorded discovery cell carries,
     * meaningful exactly when cell_kind is
     * R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY.  The discovery recorder is
@@ -789,9 +1100,11 @@ struct r3v_native_cmd_buffer {
     * second pass takes a second of each; the queue executes them in
     * this order and concatenates their cells into one indirect buffer.
     */
-   struct r3v_native_deferred_draw
-      deferred_draws[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   struct r3v_native_deferred_draw *deferred_draws;
    uint32_t deferred_draw_count;
+   uint32_t deferred_draw_capacity;
+   uint32_t render_pass_count;
+   uint32_t active_pass_draw_index;
    /* Recorded transfer copies, executed in recorded order at submission
     * through host mappings of the bound memory.  Each copy carries the
     * group its record position places it in, so a command buffer holding
@@ -803,6 +1116,15 @@ struct r3v_native_cmd_buffer {
     */
    struct r3v_native_deferred_copy *deferred_copies;
    uint32_t deferred_copy_count;
+
+   /* Ordered records preserve the API command sequence while the legacy
+    * operation arrays remain the payload owners for their existing users. */
+   struct r3v_native_ordered_operation *ordered_operations;
+   uint32_t ordered_operation_count;
+   uint32_t ordered_operation_capacity;
+   struct r3v_native_cmd_image_state *image_states;
+   uint32_t image_state_count;
+   uint32_t image_state_capacity;
 
    /* What the fill route resolved for this command buffer, valid while
     * fill_route_active.  It is the record a hardware claim rests on: the
@@ -931,6 +1253,49 @@ struct r3v_native_serial_semantic_identity {
    char ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
    char relocs_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
 };
+
+struct r3v_native_zb_persistence_identity {
+   bool valid;
+   uint32_t ib_size_dwords;
+   char ib_blake3[R3V_NATIVE_PLAN_HEX64 + 1];
+   struct r3v_native_memory *color;
+   struct r3v_native_memory *depth_a;
+   struct r3v_native_memory *depth_b;
+   uint64_t color_generation;
+   uint64_t depth_a_generation;
+   uint64_t depth_b_generation;
+   uint32_t color_handle;
+   uint32_t depth_a_handle;
+   uint32_t depth_b_handle;
+};
+
+enum r3v_native_zb_persistence_identity_mismatch {
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_MATCH = 0,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_STATE = 1u << 0,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ORDINAL = 1u << 1,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_SIZE = 1u << 2,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_IB_DIGEST = 1u << 3,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_REFERENCE_COUNT = 1u << 4,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_VERTEX_BINDING = 1u << 5,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_COLOR_BINDING = 1u << 6,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_DEPTH_PAIR = 1u << 7,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_ACTIVE_DEPTH = 1u << 8,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_GENERATION = 1u << 9,
+   R3V_NATIVE_ZB_PERSISTENCE_IDENTITY_HANDLE = 1u << 10,
+};
+
+uint32_t r3v_native_zb_persistence_identity_mismatches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal);
+
+bool r3v_native_zb_persistence_identity_matches(
+   const struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest,
+   uint32_t ordinal);
+void r3v_native_zb_persistence_identity_capture(
+   struct r3v_native_zb_persistence_identity *identity,
+   const struct r3v_native_cmd_buffer *cmd_buffer, const char *ib_digest);
 
 /* Compares one serial continuation with the semantic cell captured by the
  * first admission.  The queue uses the same predicate before retention and
@@ -1081,6 +1446,10 @@ struct r3v_native_device {
     */
    uint64_t transport_enter_ns;
    uint64_t transport_return_ns;
+   /* Number of DRM_RADEON_CS calls made by the last queue submit.  A
+    * positional stream may require several kernel submissions while one
+    * command-buffer authorization still names the whole stream. */
+   uint32_t transport_cs_ioctl_count;
    /* Whether the last submission's deferred draw delivered its carrier
     * through the device-side producer.  The declared route names what a
     * caller asked for; this names what the resolver and the admission
@@ -1101,6 +1470,7 @@ struct r3v_native_device {
     * command buffer, IB bytes, and relocation bytes. */
    uint32_t serial_submissions_consumed;
    struct r3v_native_serial_semantic_identity serial_semantic_identity;
+   struct r3v_native_zb_persistence_identity zb_persistence_identity;
    /* The production path leaves this NULL and collects host facts.  The
     * drm-shim harness installs an explicit host-model provider so a missing
     * radeon module cannot become a matchable live identity. */
@@ -1472,6 +1842,7 @@ struct r3v_native_image {
    /* Bound memory and the allocation offset at which the image starts. */
    struct r3v_native_memory *memory;
    VkDeviceSize memory_offset;
+   struct r3v_native_image_committed_state committed_submission;
    /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;
@@ -1540,6 +1911,12 @@ struct r3v_native_image {
     * queryable subresource layout).
     */
    bool optimal_tiling;
+   /* The bounded RS485M D24S8 image contract keeps its exact tiled
+    * allocation and post-bind surface base separate from the linear color
+    * image layout. */
+   bool depth_family;
+   struct r3v_native_depth_image_contract depth_contract;
+   struct r3v_native_depth_image_bound depth_bound;
 };
 
 struct r3v_native_image_view {
@@ -1551,6 +1928,11 @@ struct r3v_native_image_view {
     */
    uint32_t base_array_layer;
    uint32_t layer_offset_bytes;
+   /* The image aspects selected by the view.  Depth and stencil share the
+    * RS485M D24S8 word, while transfer and attachment validation still need
+    * to distinguish a combined view from a single-aspect view.
+    */
+   VkImageAspectFlags aspect_mask;
    /* The declared view type.  Creation admits every type the image's own
     * geometry supports; the executing routes admit the one-slice types,
     * VK_IMAGE_VIEW_TYPE_1D and VK_IMAGE_VIEW_TYPE_2D, since a TX program
@@ -1629,6 +2011,9 @@ struct r3v_native_pipeline {
     * identity job is GPU-admissible.
     */
    struct r300_vertex_job vertex_job;
+   /* Lowered depth comparison and timing state for a D24S8 subpass. */
+   struct r3v_native_depth_pipeline_state depth_pipeline;
+   bool has_depth_pipeline;
    bool gpu_vertex_job_identity;
    /* The linked stage boundary the two modules declare: per-location
     * kind, width, mask, and Smooth/Flat/NoPerspective interpolation
@@ -1678,11 +2063,12 @@ struct r3v_native_pipeline {
     */
    VkCullModeFlags cull_mode;
    VkFrontFace front_face;
-   /* Set when pSampleMask clears bit 0 or the color write mask clears
-    * every channel: the draw writes nothing, so the host collapses
-    * every triangle to degenerate records.
+   /* Set when pSampleMask clears bit 0: the draw writes no sample, so the
+    * host collapses every triangle to degenerate records.  Color-channel
+    * suppression remains independent and is emitted by the cell.
     */
    bool sample_mask_zero;
+   bool color_writes_disabled;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_image, base, VkImage,
@@ -1705,6 +2091,7 @@ extern const struct vk_command_buffer_ops r3v_native_cmd_buffer_ops;
  * predicate so the two admissions cannot drift apart.
  */
 struct vk_render_pass;
+struct vk_subpass_dependency;
 bool r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass);
 
 /* Releases the public recording state and the owned carrier BO; reset,
@@ -1712,6 +2099,40 @@ bool r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass);
  */
 void r3v_native_cmd_buffer_release_recording(
    struct r3v_native_cmd_buffer *cmd_buffer);
+
+VkResult r3v_native_cmd_buffer_reserve_deferred_draws(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);
+
+VkResult r3v_native_cmd_buffer_reserve_ordered_operations(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);
+
+VkResult r3v_native_cmd_buffer_append_ordered_operation(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_ordered_operation *operation);
+
+VkResult r3v_native_cmd_buffer_reserve_image_states(
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t additional_count);
+
+struct r3v_native_cmd_image_state *r3v_native_cmd_buffer_find_image_state(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image);
+
+VkResult r3v_native_cmd_buffer_append_image_state(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   struct r3v_native_cmd_image_state **state_out);
+
+VkResult r3v_native_cmd_buffer_require_image_layout(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   VkImageLayout layout, enum r3v_native_image_producer producer,
+   bool writes_content);
+
+VkResult r3v_native_cmd_buffer_transition_image_layout(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   VkImageLayout old_layout, VkImageLayout new_layout);
+
+VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct vk_subpass_dependency *dependency);
 
 /* Installs a complete IB and reference list into a native command buffer,
  * taking ownership of both allocations.  The fixed-cell emitters are the
@@ -1731,6 +2152,8 @@ void r3v_native_cmd_buffer_release_recording(
  * on failure.
  */
 struct r300_tcl_bypass_triangle_ib;
+VkResult r3v_native_cell_set_color_channel_mask(
+   struct r300_tcl_bypass_triangle_ib *cell, uint32_t mask);
 /* The board the arming gate compares.  A harness that replaces the fact
  * provider also declares the platform it stands in for; production resolves
  * it from the device and the firmware tables at physical-device creation.
@@ -1744,8 +2167,22 @@ VkResult r3v_native_cmd_buffer_append_ib(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r300_tcl_bypass_triangle_ib *cell,
    const struct r3v_native_bo_reference *references,
-   uint32_t reference_count,
+   const uint32_t *reference_slots, uint32_t reference_count,
    struct r300_tcl_bypass_triangle_ib *alternate_cell);
+
+/* Appends a raw PM4 stream transactionally.  Each relocation site names the
+ * payload dword in appended_dwords and the ordinal of its input reference;
+ * the temporary copy receives merged relocation indices before the combined
+ * IB and reference arrays replace the command buffer. */
+VkResult r3v_native_cmd_buffer_append_raw_ib(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const uint32_t *appended_dwords, uint32_t appended_dword_count,
+   const struct r3v_native_bo_reference *new_references,
+   uint32_t new_reference_count,
+   const uint32_t *relocation_dword_indices,
+   const uint32_t *relocation_reference_ordinals,
+   uint32_t relocation_count);
 
 /* Returns an installed stream and its relocation list to the allocator and
  * clears the cell kind, leaving the command buffer with no transport.  A
@@ -2080,6 +2517,11 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    uint8_t rs_probe_candidate,
    uint32_t triangle_count, const uint32_t color_bits[4],
    const struct r3v_native_sampled_texture *sampled,
+   struct r3v_native_memory *depth_memory,
+   const struct r3v_native_depth_image_bound *depth_bound,
+   const struct r3v_native_depth_pipeline_state *depth_pipeline,
+   const struct r300_zb_combined_clear_plan *depth_clear,
+   bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell);
 
 /* Resolves every adaptive NoPerspective deferred draw of the command
@@ -2111,9 +2553,30 @@ VkResult r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_cmd_buffer *cmd_buffer,
    enum r3v_native_copy_group group);
 
+VkResult r3v_native_cmd_buffer_execute_deferred_copy(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t copy_index);
+
 VkResult r3v_native_cmd_buffer_execute_deferred_draws(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
+
+VkResult r3v_native_cmd_buffer_execute_deferred_draw_load(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index);
+
+VkResult r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index,
+   uint32_t first_rect, uint32_t rect_count);
+
+VkResult r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index);
+
+VKAPI_ATTR void VKAPI_CALL r3v_CmdExecuteCommands(
+   VkCommandBuffer commandBuffer, uint32_t commandBufferCount,
+   const VkCommandBuffer *pCommandBuffers);
 
 /* Executes the command buffer's recorded dispatch at submission
  * through host mappings of the two bound memories, the CPU compute
@@ -2221,14 +2684,82 @@ VkResult r3v_native_record_direct_write(VkCommandBuffer commandBuffer,
 const struct r300_zb_depth_surface *r3v_native_zb_depth_surface_descriptor(
    enum r3v_native_zb_depth_surface selection);
 
-/* Depth bytes a selector's allocation carries: the descriptor's pitch,
- * allocation rows, and pixel width.  Returns 0 for a selector outside
- * the enumeration, which no caller treats as a size. */
+/* Linear controls use the parser footprint. Tiled validation adds two
+ * 2048-byte guards and a 4096-byte tail to the tiled storage envelope.
+ * Returns zero for an unsupported selection or invalid layout. */
 uint32_t r3v_native_zb_depth_surface_bytes(
    enum r3v_native_zb_depth_surface selection);
 
-/* Records the depth control against the Z16 linear surface, the shape
- * the retained cell has always emitted. */
+/* Publishes six vertex positions and records tiled depth validation.
+ * The application owns color and depth initialization across submissions. */
+bool r3v_native_rb2d_tiled_copy_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+VkResult r3v_native_record_rb2d_tiled_copy(
+   VkCommandBuffer command_buffer, VkDeviceMemory source,
+   VkDeviceMemory destination, const struct r300_zb_tile_copy_request *request);
+VkResult r3v_native_record_rb2d_tiled_copy_masked(
+   VkCommandBuffer command_buffer, VkDeviceMemory source,
+   VkDeviceMemory destination, const struct r300_zb_tile_copy_request *request,
+   uint32_t mask);
+VkResult r3v_native_record_rb2d_copy(
+   VkCommandBuffer command_buffer, VkDeviceMemory source_memory,
+   VkDeviceMemory destination_memory, const struct r300_rb2d_copy_plan *plan,
+   uint32_t mask);
+VkResult r3v_native_record_depth_image_copy(
+   VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
+   const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
+bool r3v_native_validate_depth_image_copy(
+   VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
+   const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
+VkResult r3v_native_record_depth_image_to_image_copy(
+   VkCommandBuffer command_buffer, VkImage source_image,
+   VkImageLayout source_layout, VkImage destination_image,
+   VkImageLayout destination_layout, const VkImageCopy *region);
+bool r3v_native_validate_depth_image_to_image_copy(
+   VkImage source_image, VkImageLayout source_layout, VkImage destination_image,
+   VkImageLayout destination_layout, const VkImageCopy *region);
+bool r3v_native_depth_clear_code(float value, uint32_t *code);
+VkResult r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
+                                             VkImage image,
+                                             uint32_t aspect_mask,
+                                             uint32_t depth_code,
+                                             uint32_t stencil);
+/* Record a logical-extent depth/stencil clear as RB2D fills.  Each fill
+ * addresses the physical tile selected by the qualified depth resolver, so
+ * a smaller logical image leaves padding words untouched while the queue
+ * still submits device clear packets. */
+VkResult r3v_native_record_depth_image_clear_logical(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t aspect_mask,
+   uint32_t depth_code, uint32_t stencil);
+VkResult r3v_native_record_depth_image_clear_logical_rect(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t x, uint32_t y,
+   uint32_t width, uint32_t height, uint32_t aspect_mask, uint32_t depth_code,
+   uint32_t stencil);
+bool r3v_native_depth_image_clear_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+bool r3v_native_ordered_image_composition_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
+
+VkResult r3v_native_record_zb_tiled_validation(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   const uint32_t vertices[24], bool depth_write);
+
+VkResult r3v_native_record_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB, const uint32_t vertices[24],
+   enum r3v_native_zb_persistence_ordinal ordinal);
+
+/* Binds one completed public depth command to the three-submission A/B/A
+ * qualification sequence.  The command must contain one 64x64 read-only
+ * D24S8 attachment draw against the active allocation. */
+VkResult r3v_native_bind_zb_tiled_persistence(
+   VkCommandBuffer commandBuffer, VkDeviceMemory depthMemoryA,
+   VkDeviceMemory depthMemoryB,
+   enum r3v_native_zb_persistence_ordinal ordinal);
+
+/* Records the depth control against the Z16 linear surface. */
 VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
                                             VkDeviceMemory vertexMemory,
                                             VkDeviceMemory colorMemory,
@@ -2238,7 +2769,7 @@ VkResult r3v_native_record_zb_depth_control(VkCommandBuffer commandBuffer,
  * allocation is sized from that surface rather than from the Z16
  * footprint, and the recorded selection travels to the queue, so a
  * recording the recorder admits is a submission the frozen-geometry
- * predicate admits.  A selector outside the enumeration refuses. */
+ * predicate admits. The host initialization requires a linear selector. */
 VkResult r3v_native_record_zb_depth_control_surface(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
@@ -2273,8 +2804,8 @@ bool r3v_native_zb_discovery_arm_state(enum r3v_native_zb_discovery_arm arm,
  * The depth allocation is R300_ZB_DISCOVERY_ALLOCATION_BYTES for every
  * scenario, held constant so the transport, the queue predicate, and the
  * retained artifact do not move between tiling rungs.  It is not
- * r3v_native_zb_depth_surface_bytes, which names the parser footprint of
- * a linear surface and carries no guards.
+ * r3v_native_zb_depth_surface_bytes, which sizes the selected depth-control
+ * or tiled-validation allocation.
  *
  * A tiled scenario records here where the depth control refuses it: the
  * control reads the surface back as a row-major image and needs an

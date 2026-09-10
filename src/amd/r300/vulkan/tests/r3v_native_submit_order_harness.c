@@ -223,8 +223,8 @@ enum arm {
     * the host collapses every triangle and the target keeps the clear
     * alone. */
    ARM_SAMPLE_MASK_ZERO_ARMED,
-   /* A zero color write mask writes no channel, the same collapsed
-    * draw. */
+   /* A zero color write mask writes no color channel while preserving
+    * sample coverage and depth/stencil processing. */
    ARM_WRITE_MASK_ZERO_ARMED,
    ARM_INSTANCED_OUT_OF_BOUNDS_REFUSED,
    ARM_INSTANCED_FETCHED_REFUSED,
@@ -483,6 +483,7 @@ module_constant_window_cell(struct r300_tcl_bypass_triangle_ib *out)
  */
 static void
 module_constant_clip_cell(uint32_t source_triangle_count,
+                          bool color_writes_disabled,
                           struct r300_tcl_bypass_triangle_ib *out)
 {
    struct r300_triangle_render_shape shape;
@@ -491,6 +492,8 @@ module_constant_clip_cell(uint32_t source_triangle_count,
    memcpy(shape.color_bits, module_color, sizeof(module_color));
    assert(r300_tcl_bypass_triangle_clip_space_render_shape_emit(
              &shape, source_triangle_count, out) == 0);
+   if (color_writes_disabled)
+      assert(r3v_native_cell_set_color_channel_mask(out, 0u) == VK_SUCCESS);
 }
 
 /* The composed fetched route the driver submits for a width: the
@@ -595,7 +598,8 @@ run_arm(enum arm arm, const char *name)
    assert(strcmp(reference_digest, R300_RETAINED_CPU_ROUTE_IB_BLAKE3) == 0);
    r300_tcl_bypass_triangle_release(&reference);
    struct r300_tcl_bypass_triangle_ib module_clip_cell;
-   module_constant_clip_cell(1u, &module_clip_cell);
+   module_constant_clip_cell(1u, arm == ARM_WRITE_MASK_ZERO_ARMED,
+                             &module_clip_cell);
    char module_clip_digest[BLAKE3_OUT_LEN * 2 + 1];
    r300_triangle_ib_digest_hex(module_clip_cell.ib,
                                module_clip_cell.ib_size_dwords,
@@ -650,7 +654,7 @@ run_arm(enum arm arm, const char *name)
                                  arm == ARM_INSTANCED_FETCHED_REFUSED ||
                                  arm == ARM_MULTI_TRIANGLE_ARMED;
    struct r300_tcl_bypass_triangle_ib two_triangles;
-   module_constant_clip_cell(2u, &two_triangles);
+   module_constant_clip_cell(2u, false, &two_triangles);
    char two_triangle_digest[BLAKE3_OUT_LEN * 2 + 1];
    r300_triangle_ib_digest_hex(two_triangles.ib, two_triangles.ib_size_dwords,
                                two_triangle_digest);
@@ -1770,8 +1774,7 @@ run_arm(enum arm arm, const char *name)
             1.0f;
    }
    if (arm == ARM_CULL_BACK_DROPPED_ARMED ||
-       arm == ARM_SAMPLE_MASK_ZERO_ARMED ||
-       arm == ARM_WRITE_MASK_ZERO_ARMED) {
+       arm == ARM_SAMPLE_MASK_ZERO_ARMED) {
       /* The culled triangle collapses to three copies of its first
        * transformed record. */
       float first[4];
@@ -1965,7 +1968,6 @@ run_arm(enum arm arm, const char *name)
    case ARM_MULTI_TRIANGLE_ARMED:
    case ARM_CULL_BACK_DROPPED_ARMED:
    case ARM_SAMPLE_MASK_ZERO_ARMED:
-   case ARM_WRITE_MASK_ZERO_ARMED:
       /* The CPU route expanded the instances: the carrier holds each
        * instance's transformed triangle in instance order -- the robust
        * arm's out-of-bounds offset record read zeros, so its carrier is
@@ -1975,6 +1977,16 @@ run_arm(enum arm arm, const char *name)
       assert(cs_ioctls == 1);
       assert(carrier_is_expected);
       assert(arm != ARM_INSTANCED_ROBUST_ARMED || carrier_is_reference);
+      check_target(device, &target, true, name);
+      assert(token);
+      break;
+   case ARM_WRITE_MASK_ZERO_ARMED:
+      /* A zero color mask preserves sample coverage and depth/stencil
+       * processing while suppressing color-channel writes. */
+      assert(submitted == VK_SUCCESS);
+      assert(status == R3V_NATIVE_QUEUE_STATUS_COMPLETED);
+      assert(cs_ioctls == 1);
+      assert(carrier_is_expected);
       check_target(device, &target, true, name);
       assert(token);
       break;
@@ -2172,7 +2184,8 @@ run_arm(enum arm arm, const char *name)
    if (arm == ARM_ARMED || arm == ARM_INDEXED_ARMED ||
        arm == ARM_INDEXED_PERMUTED_ARMED ||
        arm == ARM_INSTANCED_FIRST_INSTANCE_ARMED ||
-       arm == ARM_VERTEX_INDEX_ARMED || arm == ARM_INSTANCED_ROBUST_ARMED) {
+       arm == ARM_VERTEX_INDEX_ARMED || arm == ARM_INSTANCED_ROBUST_ARMED ||
+       arm == ARM_WRITE_MASK_ZERO_ARMED) {
       char submitted_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
       uint32_t submitted_dwords;
       retained_ib_digest(manifest_dir, submitted_digest, &submitted_dwords);

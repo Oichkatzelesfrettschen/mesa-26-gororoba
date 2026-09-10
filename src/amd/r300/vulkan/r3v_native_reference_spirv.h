@@ -35,6 +35,11 @@
 #define R3V_REFERENCE_FRAGMENT_COLOR_BITS \
    { 0x00000000u, 0x3f800000u, 0x00000000u, 0x3f800000u }
 
+/* Packed storage word produced by the reference fragment module in the
+ * public B8G8R8A8_UNORM color attachment.
+ */
+#define R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM 0xff00ff00u
+
 static const uint32_t r3v_reference_vertex_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000015,
    0x00000000, 0x00020011, 0x00000001, 0x0006000b,
@@ -119,6 +124,21 @@ static const uint32_t r3v_reference_fragment_spirv[] = {
  */
 #define R3V_REFERENCE_FRAGMENT_BLUE_COLOR_BITS \
    { 0x00000000u, 0x00000000u, 0x3f800000u, 0x3f800000u }
+
+static const uint32_t r3v_reference_fragment_no_output_spirv[] = {
+   0x07230203, 0x00010000, 0x0008000b, 0x00000006,
+   0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e,
+   0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0005000f, 0x00000004, 0x00000004, 0x6e69616d,
+   0x00000000, 0x00030010, 0x00000004, 0x00000007,
+   0x00030003, 0x00000002, 0x000001c2, 0x00040005,
+   0x00000004, 0x6e69616d, 0x00000000, 0x00020013,
+   0x00000002, 0x00030021, 0x00000003, 0x00000002,
+   0x00050036, 0x00000002, 0x00000004, 0x00000000,
+   0x00000003, 0x000200f8, 0x00000005, 0x000100fd,
+   0x00010038,
+};
 
 static const uint32_t r3v_reference_fragment_blue_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x0000000d,

@@ -38,11 +38,13 @@
 #ifndef RADEON_LEGACY_2D_REG_H
 #define RADEON_LEGACY_2D_REG_H
 
-/* Destination geometry: DST_PITCH_OFFSET names the surface, DST_Y_X its
- * origin, and the write to DST_WIDTH_HEIGHT launches the operation.  The
+/* Copy geometry: SRC_PITCH_OFFSET and DST_PITCH_OFFSET name the surfaces,
+ * SRC_Y_X and DST_Y_X name their origins, and the write to DST_WIDTH_HEIGHT
+ * launches the operation.  The
  * grids DST_PITCH_OFFSET packs a surface onto live at
  * R300_RB2D_PITCH_GRANULARITY in r300_rb2d_fill.h, beside the plan that
  * measures a surface against them. */
+#define RADEON_SRC_PITCH_OFFSET 0x1428
 #define RADEON_DST_PITCH_OFFSET 0x142C
 
 /* DST_PITCH_OFFSET's own split, which r100_reloc_pitch_offset fixes: the
@@ -56,6 +58,7 @@
 #define RADEON_DST_PITCH_MASK 0x3fc00000u
 #define RADEON_DST_TILE_MACRO (1u << 30)
 #define RADEON_DST_TILE_MICRO (1u << 31)
+#define RADEON_SRC_Y_X 0x1434
 #define RADEON_DST_Y_X 0x1438
 #define RADEON_DST_WIDTH_HEIGHT 0x1598
 
@@ -78,6 +81,7 @@
 #define RADEON_DEFAULT_SC_BOTTOM_RIGHT 0x16E8
 #define RADEON_SC_TOP_LEFT 0x16EC
 #define RADEON_SC_BOTTOM_RIGHT 0x16F0
+#define RADEON_SRC_SC_BOTTOM_RIGHT 0x16F4
 
 /* Completion, in the order r100_copy_blit ends a blit with: flush the 2D
  * destination cache through DSTCACHE_CTLSTAT, then hold the stream at
@@ -91,14 +95,22 @@
  * sets CLR_CMP_CNTL_DIS and WR_MSK_DIS together, so the operation runs with
  * the color compare and the GMC write mask both retired. */
 #define RADEON_GMC_DST_PITCH_OFFSET_CNTL (1u << 1)
+#define RADEON_GMC_SRC_PITCH_OFFSET_CNTL (1u << 0)
+#define RADEON_GMC_SRC_CLIPPING (1u << 2)
+#define RADEON_GMC_DST_CLIPPING (1u << 3)
 #define RADEON_GMC_BRUSH_SOLID_COLOR (13u << 4)
+#define RADEON_GMC_BRUSH_NONE (15u << 4)
+#define RADEON_GMC_SRC_DATATYPE_COLOR (3u << 12)
+#define RADEON_ROP3_S 0x00cc0000u
 #define RADEON_ROP3_P 0x00f00000u
+#define RADEON_DP_SRC_SOURCE_MEMORY (2u << 24)
 #define RADEON_GMC_CLR_CMP_CNTL_DIS (1u << 28)
 #define RADEON_GMC_WR_MSK_DIS (1u << 30)
 
-/* The destination datatype code DP_GUI_MASTER_CNTL carries at bit 8, which
- * r100_copy_blit writes as (RADEON_COLOR_FORMAT_ARGB8888 << 8). */
+/* DP_GUI_MASTER_CNTL carries the destination datatype at bit 8.  The Radeon
+ * register ABI assigns code 2 to 8-bit color index and code 6 to ARGB8888. */
 #define RADEON_COLOR_FORMAT_ARGB8888 6u
+#define RADEON_GMC_DST_8BPP_CI (2u << 8)
 /* Code 4 is RGB565, two bytes per pixel; r100_cs_2d_dst_cpp sizes it 2. */
 #define RADEON_COLOR_FORMAT_RGB565 4u
 

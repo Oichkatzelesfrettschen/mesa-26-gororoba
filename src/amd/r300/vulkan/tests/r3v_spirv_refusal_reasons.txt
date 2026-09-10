@@ -38,6 +38,8 @@ extended-instruction import outside GLSL.std.450
 float type outside the elementwise-map subset
 float width outside 32 bits
 fragment input outside varying 0 as vec4
+fragment entry point outside the request
+fragment flag id-table allocation failed
 fragment output outside color 0 as vec4
 fragment program outside one constant color
 fragment program outside the sampled texel store
@@ -207,3 +209,5 @@ fragment input outside varyings 0 and 1 as vec4
 fragment program outside the mixed carrier (smooth.xy, noperspective.xy)
 two fragment inputs at one location
 vec4 construction outside (smooth.xy, noperspective.xy)
+input in no-color fragment program
+output in no-color fragment program

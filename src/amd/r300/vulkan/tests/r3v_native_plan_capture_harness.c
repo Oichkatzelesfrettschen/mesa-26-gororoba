@@ -670,8 +670,13 @@ main(int argc, char **argv)
          {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 0, "carrier"},
          {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 1, "slot"},
          {R3V_NATIVE_CELL_KIND_R2VB_GPU_PRODUCER_FETCHED, 2, "source"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED, 0, "vertex"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED, 1, "color"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED, 2, "texture"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE_SAMPLED, 3, "depth"},
          {R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL, 2, "depth"},
          {R3V_NATIVE_CELL_KIND_COMPUTE_IDENTITY_CARRIER, 1, "command1"},
+         {R3V_NATIVE_CELL_KIND_TRIANGLE, 2, "depth"},
          {R3V_NATIVE_CELL_KIND_TRIANGLE, 5, "command5"},
       };
       for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {

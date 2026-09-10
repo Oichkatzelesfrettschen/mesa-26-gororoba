@@ -1,0 +1,326 @@
+{
+  "schema": "r3v-public-depth-stencil-obligations/2",
+  "scope": {
+    "api": "Vulkan 1.0",
+    "extensions": [],
+    "maintenance1": false,
+    "experimental_image": {
+      "silicon": "RS485M",
+      "pci_device": "1002:5974",
+      "subsystem": "1028:022a",
+      "format": "VK_FORMAT_D24_UNORM_S8_UINT",
+      "extent": [
+        64,
+        64
+      ],
+      "samples": 1
+    },
+    "capability_advertisement": true
+  },
+  "authority": {
+    "registry": {
+      "path": "src/vulkan/registry/vk.xml",
+      "header_version": 354,
+      "sha256": "80e7394d0e787d6ec78b67aa324add6f96129fdd042ba640cc336a5481a208ee"
+    },
+    "spec": {
+      "repository": "https://github.com/KhronosGroup/Vulkan-Docs",
+      "tag": "v1.0.68-core",
+      "tag_object": "88ec766f6aac618f1858fd80758d7a8aad458a2c",
+      "revision": "57692834480e19201bb9efe9a67f7a65876b7a32",
+      "selection": "Vulkan core 1.0; extension conditional sections excluded",
+      "chapters": {
+        "features": {
+          "path": "doc/specs/vulkan/chapters/features.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/features.txt",
+          "sha256": "591a5ab0e1be5aa344e138ecbb48e9e8529ab37474637827a1a60b4ac91cabba"
+        },
+        "resources": {
+          "path": "doc/specs/vulkan/chapters/resources.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/resources.txt",
+          "sha256": "fc7dc6245cc0c16f006b851f1c850acc8a7b010d8b54d04fb771b3faf8ccd42c"
+        },
+        "renderpass": {
+          "path": "doc/specs/vulkan/chapters/renderpass.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/renderpass.txt",
+          "sha256": "eadc64f118aec8522249643c605a6fe9933b94bfcc3522dfe45d6ba20edc62cf"
+        },
+        "clears": {
+          "path": "doc/specs/vulkan/chapters/clears.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/clears.txt",
+          "sha256": "1ba04c57a175c26266df550696620f63a8bd88601fde907e0f45a0b2e224b15c"
+        },
+        "copies": {
+          "path": "doc/specs/vulkan/chapters/copies.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/copies.txt",
+          "sha256": "c71f5cdfe507074591d4477109870159c6871ce854015fe88b190ea9ec87321d"
+        },
+        "synchronization": {
+          "path": "doc/specs/vulkan/chapters/synchronization.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/synchronization.txt",
+          "sha256": "5be475133419fdc81f50c97f0d0110ad8db5d905ce322e74860f3096964a9cf7"
+        },
+        "fragops": {
+          "path": "doc/specs/vulkan/chapters/fragops.txt",
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/57692834480e19201bb9efe9a67f7a65876b7a32/doc/specs/vulkan/chapters/fragops.txt",
+          "sha256": "3f67baa6f93f0fdbf550e5595f41b43b95e96bbd32c283ea792d7bad0e0aac74"
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "id": "format-minimums",
+      "authority": "features",
+      "anchor": "features-formats",
+      "registry_symbol": "VkFormat",
+      "requirement": "Require D16 depth attachment support, at least one X8_D24/D32 depth attachment format, and at least one D24S8/D32S8 combined attachment format; the experimental D24S8 choice alone covers neither complete minimum set.",
+      "falsifier": "Query mandatory format combinations against the pinned core format tables.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; the advertised D24S8 route does not supply Vulkan 1.0 mandatory depth-format coverage"
+    },
+    {
+      "id": "limits",
+      "authority": "features",
+      "anchor": "features-limits",
+      "registry_symbol": "VkPhysicalDeviceLimits",
+      "requirement": "Vulkan 1.0 minimum maxImageDimension2D is 4096; a 64x64 experimental image is an evidence bound rather than an advertised conformant limit.",
+      "falsifier": "Compare every exposed image/framebuffer/sample limit with mandatory minima.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; physical limits and D24S8 format bounds remain below the complete Vulkan 1.0 conformance envelope"
+    },
+    {
+      "id": "image-create",
+      "authority": "resources",
+      "anchor": "resources-images",
+      "registry_symbol": "vkCreateImage",
+      "requirement": "Validate image type, extent, layers, mip levels, sample count, tiling, usage and format query consistency for depth/stencil images.",
+      "falsifier": "Create legal and illegal parameter combinations; compare supported queries and creation.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_image_contract_test", "r3v_native_transfer_ops_test"],
+      "experimental_status": "bounded public route; RS485M D24S8 optimal 2D images with one mip, one layer, one sample and extent at most 64x64"
+    },
+    {
+      "id": "memory-binding",
+      "authority": "resources",
+      "anchor": "resources-association",
+      "registry_symbol": "vkBindImageMemory",
+      "requirement": "Honor memory requirements, alignment, offsets, type bits, complete binding and lifetime; retain image storage across permitted rebinding of attachments.",
+      "falsifier": "Exercise nonzero binding offsets and distinct live allocations with guard checks.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_image_contract_test", "r3v_native_transfer_ops_test"],
+      "experimental_status": "bounded public route; aligned suballocation binding validates the tiled depth footprint and preserves image-owned state"
+    },
+    {
+      "id": "aspect-views",
+      "authority": "resources",
+      "anchor": "resources-image-views",
+      "registry_symbol": "vkCreateImageView",
+      "requirement": "Validate view format and depth/stencil aspect selection; keep logical aspects distinct from packed physical storage.",
+      "falsifier": "Create depth-only, stencil-only and combined views; verify permitted uses and preserved sibling aspects.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; depth, stencil and combined views select logical aspects over packed D24S8 storage"
+    },
+    {
+      "id": "depth-state",
+      "authority": "fragops",
+      "anchor": "fragops-depth",
+      "registry_symbol": "VkPipelineDepthStencilStateCreateInfo",
+      "requirement": "Implement depth enable, all compare operators and write enable independently, including disabled-test write behavior.",
+      "falsifier": "Cross product of compare operations, test enable and write enable against a reference.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_pipeline_test"],
+      "experimental_status": "bounded public route; depth comparison and write-enable lowering covers the admitted static D24S8 pipeline state"
+    },
+    {
+      "id": "stencil-state",
+      "authority": "fragops",
+      "anchor": "fragops-stencil",
+      "registry_symbol": "VkStencilOpState",
+      "requirement": "Implement front/back stencil comparisons, reference and masks, fail/depth-fail/pass operations and write masking.",
+      "falsifier": "Exercise all stencil operators with front/back faces and independently varied masks.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_pipeline_test", "r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; static front and back operations share hardware state while ordered primitive segments select their distinct references and masks"
+    },
+    {
+      "id": "dynamic-state",
+      "authority": "fragops",
+      "anchor": "fragops-ds-state",
+      "registry_symbol": "VkDynamicState",
+      "requirement": "Apply static/dynamic stencil references and masks according to pipeline declarations and command ordering.",
+      "falsifier": "Alternate pipelines and dynamic commands; verify state lifetime across draws.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; dynamic stencil reference and mask commands remain refused"
+    },
+    {
+      "id": "depth-bounds",
+      "authority": "fragops",
+      "anchor": "fragops-dbt",
+      "registry_symbol": "VkPhysicalDeviceFeatures",
+      "requirement": "Depth bounds is feature-conditional; support enabled behavior when exposed and reject unsupported feature enablement.",
+      "falsifier": "Exercise advertised feature gating and inclusive bounds oracle.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; depth-bounds testing remains feature-disabled"
+    },
+    {
+      "id": "depth-load-store",
+      "authority": "renderpass",
+      "anchor": "renderpass-load-store-ops",
+      "registry_symbol": "VkAttachmentDescription",
+      "requirement": "Honor depth loadOp/storeOp independently of stencilLoadOp/stencilStoreOp; LOAD preserves defined input and STORE preserves output.",
+      "falsifier": "Test all depth load/store pairs while checking stencil bytes remain governed by their own operations.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_pipeline_test", "r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; render-pass depth load and store operations are selected independently in the admitted one-subpass shape"
+    },
+    {
+      "id": "stencil-load-store",
+      "authority": "renderpass",
+      "anchor": "renderpass-load-store-ops",
+      "registry_symbol": "VkAttachmentDescription",
+      "requirement": "Honor stencil load/store independently; DONT_CARE does not authorize damage to an independently preserved aspect.",
+      "falsifier": "Cross all stencil/depth operation pairs and inspect both aspects.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_depth_pipeline_test", "r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; render-pass stencil load and store operations are selected independently with packed sibling preservation"
+    },
+    {
+      "id": "attachment-clear",
+      "authority": "clears",
+      "anchor": "clears",
+      "registry_symbol": "vkCmdClearAttachments",
+      "requirement": "Clear requested depth/stencil aspects only within declared attachment rectangles/layers and render-pass constraints.",
+      "falsifier": "Clear depth-only and stencil-only rectangles with sibling-aspect and exterior preservation oracles.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; in-pass color and depth/stencil rectangle clears retain command order and validate logical bounds"
+    },
+    {
+      "id": "image-clear",
+      "authority": "clears",
+      "anchor": "clears",
+      "registry_symbol": "vkCmdClearDepthStencilImage",
+      "requirement": "Honor depth/stencil aspect ranges, transfer-destination usage and allowed layouts with correct clear-value conversion.",
+      "falsifier": "Clear each aspect and combined ranges, checking untouched subresources and packed sibling bits.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_transfer_ops_test", "r3v_native_depth_image_contract_test"],
+      "experimental_status": "bounded public route; depth-only, stencil-only and combined range clears normalize aspect requests and preserve the packed sibling"
+    },
+    {
+      "id": "image-copy",
+      "authority": "copies",
+      "anchor": "copies-images",
+      "registry_symbol": "vkCmdCopyImage",
+      "requirement": "Preserve requested depth/stencil aspects and valid compatible image formats; apply Vulkan1.0 core dimensional/layer rules without maintenance1 relaxations.",
+      "falsifier": "Copy aspects between distinct offsets/images; verify sibling aspects, layer ranges and exact defined bits.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_transfer_ops_test"],
+      "experimental_status": "bounded public route; resolver-addressed depth-only and stencil-only image copies support tiled whole-tile and partial regions with overlap checks"
+    },
+    {
+      "id": "buffer-copy-depth",
+      "authority": "copies",
+      "anchor": "copies-buffers-images",
+      "registry_symbol": "vkCmdCopyBufferToImage",
+      "requirement": "D24 buffer depth uses low 24 bits of a 32-bit word, unlike hardware high-24 packing; honor row/image strides, aspect selection and copy bounds in both directions.",
+      "falsifier": "Round-trip D24 through buffers with nontrivial strides; compare defined low24 bits and stencil preservation.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_transfer_ops_test"],
+      "experimental_status": "bounded public route; depth buffer copies use the packed high-24 byte span through the aspect-copy planner"
+    },
+    {
+      "id": "buffer-copy-stencil",
+      "authority": "copies",
+      "anchor": "copies-buffers-images",
+      "registry_symbol": "vkCmdCopyImageToBuffer",
+      "requirement": "Stencil buffer copies use one S8 byte per texel and preserve the depth aspect.",
+      "falsifier": "Round-trip all byte values through offset and strided copies with depth sentinels.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_transfer_ops_test"],
+      "experimental_status": "bounded public route; stencil buffer copies address one low-byte component and preserve packed depth"
+    },
+    {
+      "id": "blit-restrictions",
+      "authority": "copies",
+      "anchor": "copies-imagescaling",
+      "registry_symbol": "vkCmdBlitImage",
+      "requirement": "Gate blits by format features and depth/stencil format/filter restrictions; copies do not imply filtering support.",
+      "falsifier": "Compare queried blit support and accepted commands with depth/stencil format and nearest-filter rules.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; D24S8 blit execution and its complete format-feature admission remain outside the route"
+    },
+    {
+      "id": "layouts",
+      "authority": "synchronization",
+      "anchor": "synchronization-image-layout-transitions",
+      "registry_symbol": "VkImageMemoryBarrier",
+      "requirement": "Implement core depth/stencil attachment, read-only, transfer and general layouts with combined-image aspect rules; separate depth/stencil layouts require extensions outside this scope.",
+      "falsifier": "Transition attachment/transfer/read-only sequences and verify contents plus valid aspect masks.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_transfer_ops_test", "r3v_native_public_surface_harness"],
+      "experimental_status": "bounded public route; GENERAL, transfer and depth attachment/read-only layouts use ordered API state for the admitted combined image"
+    },
+    {
+      "id": "visibility",
+      "authority": "synchronization",
+      "anchor": "synchronization-dependencies-memory",
+      "registry_symbol": "vkCmdPipelineBarrier",
+      "requirement": "Provide availability and visibility across early/late fragment tests, transfer and host access; cache publication must follow Vulkan access scopes.",
+      "falsifier": "Alternate GPU writes, attachment reads, copies and host inspection with explicit dependencies.",
+      "public_status": "bounded",
+      "completion_evidence": ["r3v_native_transfer_ops_test"],
+      "experimental_status": "bounded public route; cross-engine memory barriers emit conservative ZB, RB3D, RB2D cache publication and idle packets"
+    },
+    {
+      "id": "subpass-dependencies",
+      "authority": "renderpass",
+      "anchor": "renderpass-layout-transitions",
+      "registry_symbol": "VkSubpassDependency",
+      "requirement": "Honor external/inter-subpass execution and memory dependencies and automatic layout transitions.",
+      "falsifier": "Load data from preceding writes across subpasses with defined dependency scopes.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; the route covers external dependencies around one subpass and refuses inter-subpass execution"
+    },
+    {
+      "id": "queue-lifetime",
+      "authority": "synchronization",
+      "anchor": "synchronization-fences",
+      "registry_symbol": "vkQueueSubmit",
+      "requirement": "Retain resources until completed submissions; honor semaphore/fence and queue ownership rules within advertised queue families.",
+      "falsifier": "Submit image reuse/destruction and ownership scenarios against completion and lifetime controls.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; semaphore, fence and queue-ownership coverage remains incomplete for general Vulkan workloads"
+    },
+    {
+      "id": "shader-early-tests",
+      "authority": "fragops",
+      "anchor": "fragops-early-mode",
+      "registry_symbol": "VkPipelineShaderStageCreateInfo",
+      "requirement": "Honor EarlyFragmentTests execution mode and its depth/stencil side effects, including discard and shader-written depth rules.",
+      "falsifier": "Use early-test shaders with discard, side effects and depth output; compare order-sensitive expected images.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; shader discard, early-test side effects and public execution coverage remain incomplete"
+    },
+    {
+      "id": "shader-late-tests",
+      "authority": "fragops",
+      "anchor": "fragops-late",
+      "registry_symbol": "VkPipelineShaderStageCreateInfo",
+      "requirement": "Preserve late depth/stencil semantics for shader depth output, discard and side effects; early execution is legal only when observationally equivalent.",
+      "falsifier": "Use depth replacement and discard shaders with stencil updates and visible side effects.",
+      "public_status": "residual",
+      "completion_evidence": [],
+      "experimental_status": "residual public obligation; shader depth output, discard and late-test ordering remain outside qualified public execution"
+    }
+  ]
+}

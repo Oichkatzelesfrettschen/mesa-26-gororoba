@@ -206,8 +206,8 @@ r300_zb_depth_control_emit_into(
       .depth_offset_bytes = params->depth_offset_bytes,
       .depth_relocation_payload =
          DEPTH_CONTROL_RELOC_PAYLOAD(R300_ZB_DEPTH_CONTROL_SLOT_DEPTH),
-      .depth_function = R300_ZS_LESS,
-      .depth_write = true,
+      .depth_function = params->test_options ? params->test_options->depth_function : R300_ZS_LESS,
+      .depth_write = params->test_options ? params->test_options->depth_write : true,
    };
    uint32_t depth_reloc_index = R300_PM4_NO_INDEX;
    const int depth_rc =
@@ -406,6 +406,32 @@ r300_zb_depth_control_reference_emit_surface(
       .first_draw_contract = &contract,
    };
    rc = r300_zb_depth_control_emit(&params, out);
+   r300_fragment_binary_finish(&fs);
+   return rc;
+}
+
+int
+r300_zb_depth_tiled_validation_emit(bool depth_write,
+                                   struct r300_zb_depth_control_ib *out)
+{
+   struct r300_fragment_binary fs;
+   int rc = r300_tcl_bypass_triangle_reference_fs(&fs);
+   if (rc != 0)
+      return rc;
+   struct r300_first_draw_contract contract;
+   rc = r300_zb_depth_control_reference_contract(&contract);
+   if (rc == 0) {
+      const struct r300_zb_depth_test_options test = {R300_ZS_LESS, depth_write};
+      const struct r300_zb_depth_control_params params = {
+         .test_options = &test,
+         .color_pitch_format = r300_rb3d_colorpitch0_pack_argb8888(64),
+         .depth_offset_bytes = 2048,
+         .surface = &r300_zb_depth_surface_rs485m_z24_macrotiled_logical,
+         .fragment_binary = &fs,
+         .first_draw_contract = &contract,
+      };
+      rc = r300_zb_depth_control_emit(&params, out);
+   }
    r300_fragment_binary_finish(&fs);
    return rc;
 }

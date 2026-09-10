@@ -184,6 +184,30 @@ main(int argc, char **argv)
          physical_device, legacy_query, properties2_query,
          VK_FORMAT_R32_SFLOAT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
          "R32_SFLOAT vertex fetch");
+      {
+         VkFormatProperties legacy;
+         legacy_query(physical_device, VK_FORMAT_D24_UNORM_S8_UINT, &legacy);
+         VkFormatProperties2 properties2 = {
+            .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2_KHR,
+         };
+         properties2_query(physical_device, VK_FORMAT_D24_UNORM_S8_UINT,
+                           &properties2);
+         const VkFormatFeatureFlags d24_features =
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+         CHECK(legacy.linearTilingFeatures == 0 &&
+                  legacy.optimalTilingFeatures == d24_features &&
+                  legacy.bufferFeatures == 0 &&
+                  properties2.formatProperties.linearTilingFeatures ==
+                     legacy.linearTilingFeatures &&
+                  properties2.formatProperties.optimalTilingFeatures ==
+                     legacy.optimalTilingFeatures &&
+                  properties2.formatProperties.bufferFeatures ==
+                     legacy.bufferFeatures,
+               "D24_UNORM_S8_UINT grants only optimal tiled depth/stencil "
+               "attachment and transfer features");
+      }
       /* The transfer family's texel table grants the two copy bits on both
        * the linear and the optimal layout through both
        * queries: r3v_CreateImage executes VK_IMAGE_TILING_OPTIMAL over

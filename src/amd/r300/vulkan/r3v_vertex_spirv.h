@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct r3v_native_depth_shader_flags;
+
 /* Lowers an admitted SPIR-V vertex module to the job IR.  The admitted
  * subset is straight-line vec4 code over located vec4 float inputs, one
  * attribute slot per location below R300_VERTEX_JOB_MAX_INPUTS, and the
@@ -52,6 +54,13 @@ bool r3v_fragment_constant_color_from_spirv(const uint32_t *words,
                                              uint32_t color_bits[4],
                                              const char **reason);
 
+/* Admits the depth-only fragment grammar: one straight-line entry function
+ * that returns without declaring shader inputs, outputs, or side effects. */
+bool r3v_fragment_no_color_from_spirv(const uint32_t *words,
+                                      size_t word_count,
+                                      const char *entry_name,
+                                      const char **reason);
+
 /* Reads an admitted SPIR-V fragment module as the varying pass-through:
  * a straight-line Fragment entry function whose single store writes
  * the loaded location-0 vec4 input to the location-0 output unchanged.
@@ -77,6 +86,15 @@ bool r3v_fragment_narrow_passthrough_from_spirv(const uint32_t *words,
                                                  const char *entry_name,
                                                  uint32_t *width,
                                                  const char **reason);
+
+/* Reads fragment execution properties needed by the depth pipeline.  The
+ * module has already passed one of the fragment shape admitters; this walk
+ * records discard, FragDepth, observable memory, and EarlyFragmentTests
+ * instructions without confusing function-local stores with side effects.
+ */
+bool r3v_fragment_depth_shader_flags_from_spirv(
+   const uint32_t *words, size_t word_count, const char *entry_name,
+   struct r3v_native_depth_shader_flags *flags, const char **reason);
 
 /* Reads an admitted SPIR-V fragment module as the mixed carrier: a
  * straight-line Fragment entry function whose single store writes

@@ -12,6 +12,40 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct r300_zb_stencil_face_state {
+   uint32_t function;
+   uint32_t fail_op;
+   uint32_t zpass_op;
+   uint32_t zfail_op;
+   uint32_t reference;
+   uint32_t compare_mask;
+   uint32_t write_mask;
+};
+
+/* The R300 stencil register has front and back operation fields, while the
+ * RS485M reference and mask register supplies one face at a time.  A draw
+ * layer that needs different back reference or mask values must split the
+ * face state without changing primitive order. */
+struct r300_zb_stencil_state {
+   bool enabled;
+   bool two_sided;
+   bool back_reference_requires_draw_split;
+   struct r300_zb_stencil_face_state front;
+   struct r300_zb_stencil_face_state back;
+   uint32_t zstencil_control;
+   uint32_t front_reference_mask;
+   uint32_t back_reference_mask;
+};
+
+struct r300_zb_polygon_offset_state {
+   bool enabled;
+   uint32_t enable_mask;
+   uint32_t front_scale;
+   uint32_t front_offset;
+   uint32_t back_scale;
+   uint32_t back_offset;
+};
+
 /* Binds a depth buffer and arms the depth test.  The first-draw contract
  * writes every ZB function disabled, and r300_first_draw_contract_resolve
  * drops the REFERENCE_ARTIFACT disposition the depth resource words carry,
@@ -55,12 +89,26 @@ struct r300_zb_depth_state_params {
     * proving the write needs this set and a readback of the buffer.
     */
    bool depth_write;
+   /* Disabled testing also suppresses depth writes. */
+   bool depth_test_disabled;
+
+   uint32_t fragment_depth_source;
+   uint32_t fragment_depth_format;
+
+   struct r300_zb_stencil_state stencil;
+   struct r300_zb_polygon_offset_state polygon_offset;
 };
 
 /* Dwords r300_zb_depth_state_emit reserves, so a caller sizes its
  * packet before building.
  */
 uint32_t r300_zb_depth_state_dwords(void);
+
+/* Returns the exact stream size for a validated parameter set.  Optional
+ * stencil reference, shader-depth, and polygon-offset registers are omitted
+ * for the historical depth-only form, preserving its byte identity. */
+uint32_t r300_zb_depth_state_dwords_for_params(
+   const struct r300_zb_depth_state_params *params);
 
 /* Emits the depth binding and test state.  Every parameter is validated
  * before the first dword, so a refused call leaves the builder

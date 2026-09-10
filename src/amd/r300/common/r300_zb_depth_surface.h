@@ -37,14 +37,10 @@
  * under a permutation.  logical_pixel_addressing says a host may compute
  * the byte a coordinate names, and logical_image_readback says it may
  * read the surface back as a row-major image; both require an address
- * transform.  Gallium never computes a tiled byte address -- r300_transfer.c
- * routes a tiled map through a linear shadow texture and lets the engine
- * move the bytes, and radeon_surface.c begins at CHIP_R600 -- so no
- * logical-to-physical transform for R300-class tiling exists in this
- * tree, and both tiled Z24 surfaces answer false to the last two until
- * one backed by its own authority exists.  The Z24 linear surface
- * holds all four, because linear addressing is the same arithmetic at
- * four bytes per pixel as at two.
+ * transform. The bounded RS485M logical descriptor selects an explicit
+ * address resolver; discovery descriptors retain raw mapping and uniform
+ * initialization independently of logical addressing. Gallium's tiled
+ * transfers use a linear shadow texture and GPU copies instead.
  *
  * ZB_DEPTHPITCH carries the macrotile bit at 16 and the two-bit
  * microtile field at 17-18.  The kernel composes them from
@@ -74,8 +70,12 @@ enum r300_zb_macrotile {
    R300_ZB_MACROTILE_TILED = 1,
 };
 
+struct r300_zb_depth_address_resolver;
+
 struct r300_zb_depth_surface {
    const char *name;
+   /* Selected logical address model; discovery leaves this null. */
+   const struct r300_zb_depth_address_resolver *address_resolver;
    /* One complete ZB_FORMAT depth encoding. */
    uint32_t depth_format;
    /* Bytes the format stores per pixel, the width the kernel reads out of
@@ -119,6 +119,9 @@ extern const struct r300_zb_depth_surface r300_zb_depth_surface_z16_linear;
  * surface's geometry, every host capability held, sentinel code
  * 0x00800000 reaching memory as 0x80000000. */
 extern const struct r300_zb_depth_surface r300_zb_depth_surface_z24_linear;
+
+extern const struct r300_zb_depth_surface
+   r300_zb_depth_surface_rs485m_z24_macrotiled_logical;
 
 /* The third rung: packed Z24/S8 microtiled on a macrotile-linear
  * surface, 4x2 pixels to a 32-byte tile.  Raw mapping and uniform
