@@ -221,6 +221,13 @@ struct r300_tcl_bypass_triangle_ib {
    struct r300_tcl_bypass_triangle_reloc_site
       reloc_sites[R300_TRIANGLE_MAX_RELOC_SITES];
    uint32_t reloc_site_count;
+   /* Ordered stencil lowering can split one clip-capacity vertex stream into
+    * one draw per source primitive.  Every additional draw reuses the vertex
+    * BO relocation.  The primary vertex site stays in reloc_sites; these
+    * indices name the repeated NOP payloads without inflating the fixed slot
+    * topology carried by every ordinary cell. */
+   uint32_t *vertex_reloc_aliases;
+   uint32_t vertex_reloc_alias_count;
    /* Set when the emission allocated ib, so the release frees what it owns
     * and leaves caller storage alone.
     */
@@ -260,6 +267,22 @@ int r300_tcl_bypass_triangle_validate_reloc_sites(
 int r300_tcl_bypass_triangle_insert_depth_state(
    struct r300_tcl_bypass_triangle_ib *ib,
    const struct r300_zb_depth_state_params *state, bool z_top_enable);
+
+/* Re-segments a clip-capacity stream into one ordered draw for each source
+ * triangle.  Each segment consumes exactly seven reserved output triangles,
+ * writes one placeholder STENCILREFMASK value, and rebases its vertex fetch.
+ * The operation is transactional and preserves ordinary cells byte-for-byte
+ * when source_triangle_count is zero. */
+int r300_tcl_bypass_triangle_split_ordered_stencil(
+   struct r300_tcl_bypass_triangle_ib *ib, uint32_t source_triangle_count,
+   uint32_t initial_reference_mask);
+
+/* Replaces the ordered segment placeholders after submission-time facing
+ * classification.  The reference_masks array follows source primitive order.
+ */
+int r300_tcl_bypass_triangle_patch_ordered_stencil(
+   uint32_t *ib, uint32_t ib_size_dwords, const uint32_t *reference_masks,
+   uint32_t reference_mask_count);
 
 /* Builds the cell's fragment binary from the compiled constant-color US
  * block (r300_tcl_bypass_triangle_fs_block.h, baked by

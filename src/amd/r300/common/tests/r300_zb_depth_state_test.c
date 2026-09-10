@@ -468,8 +468,9 @@ optional_depth_stencil_registers(void)
 
    params.stencil.back_reference_requires_draw_split = true;
    r300_pm4_builder_init(&b, words, CAPACITY);
-   assert(r300_zb_depth_state_emit(&b, &params, NULL) == -EOPNOTSUPP);
-   assert(b.count == 0);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+   assert(b.count == needed);
+   assert(words[13] == params.stencil.front_reference_mask);
 }
 
 int

@@ -124,8 +124,6 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
              faces[face]->write_mask > UINT8_MAX)
             return -EINVAL;
       }
-      if (params->stencil.back_reference_requires_draw_split)
-         return -EOPNOTSUPP;
    }
    if ((params->fragment_depth_source != 0u ||
         params->fragment_depth_format != 0u) &&

@@ -335,6 +335,70 @@ test_depth_state_insertion(void)
    r300_fragment_binary_finish(&fs);
 }
 
+static void
+test_ordered_stencil_primitive_segments(void)
+{
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_clip_space_family_emit(
+             64u, 64u, false, 3u, &cell) == 0);
+   assert(r300_tcl_bypass_triangle_split_ordered_stencil(
+             &cell, 3u, 0x00ff5au) == 0);
+   assert(cell.reloc_site_count == 2u);
+   assert(cell.vertex_reloc_alias_count == 2u);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
+   const uint32_t references[] = {0x00112233u, 0x00445566u, 0x00778899u};
+   assert(r300_tcl_bypass_triangle_patch_ordered_stencil(
+             cell.ib, cell.ib_size_dwords, references,
+             ARRAY_SIZE(references)) == 0);
+   uint32_t seen = 0u;
+   for (uint32_t index = 0u; index + 2u < cell.ib_size_dwords;) {
+      const uint32_t header = cell.ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      assert(type != 1u);
+      assert(payload <= cell.ib_size_dwords - index - 1u);
+      if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+          (cell.ib[index + 2u] >> 30) == 3u &&
+          (cell.ib[index + 2u] & 0xff00u) ==
+             R300_PACKET3_3D_LOAD_VBPNTR) {
+         assert(seen < ARRAY_SIZE(references));
+         assert(cell.ib[index + 1u] == references[seen]);
+         assert((cell.ib[index + 9u] >> R300_PRIM_NUM_VERTICES_SHIFT) ==
+                3u * R300_TRIANGLE_CLIP_MAX_OUTPUT_TRIANGLES_PER_INPUT);
+         seen++;
+      }
+      index += 1u + payload;
+   }
+   assert(seen == ARRAY_SIZE(references));
+
+   /* Binding updates both the primary vertex relocation and every alias. */
+   const uint32_t slot_indices[R300_TRIANGLE_SLOT_COUNT] = {
+      [R300_TRIANGLE_SLOT_VERTEX] = 5u,
+      [R300_TRIANGLE_SLOT_COLOR] = 2u,
+   };
+   /* Restore the emitted placeholder form required by the relocation
+    * validator before binding. */
+   for (uint32_t index = 0u; index + 2u < cell.ib_size_dwords;) {
+      const uint32_t header = cell.ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      if (header == CP_PACKET0(R300_ZB_STENCILREFMASK, 0) &&
+          (cell.ib[index + 2u] >> 30) == 3u)
+         cell.ib[index + 1u] = 0x00ff5au;
+      index += 1u + payload;
+   }
+   assert(r300_tcl_bypass_triangle_bind_reloc_indices(
+             &cell, slot_indices, ARRAY_SIZE(slot_indices)) == 0);
+   assert(cell.ib[cell.reloc_sites[1].ib_index] == 20u);
+   for (uint32_t alias = 0u; alias < cell.vertex_reloc_alias_count; alias++)
+      assert(cell.ib[cell.vertex_reloc_aliases[alias]] == 20u);
+
+   r300_tcl_bypass_triangle_release(&cell);
+}
+
 /* The checks the site validator proves against the stream itself: a site is
  * the payload of a relocation NOP, so index zero and a corrupted header each
  * refuse, and the site indices follow the stream order.  An in-range
@@ -3507,6 +3571,7 @@ main(void)
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
    test_depth_state_insertion();
+   test_ordered_stencil_primitive_segments();
    test_reloc_site_validator_refuses_each_defect();
    test_emission_is_deterministic();
    test_contract_emission_is_self_contained();
