@@ -1202,6 +1202,50 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
          "an invalid later range preserves the command payload state");
    CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
          "an invalid later range poisons the complete request");
+
+   VK_FROM_HANDLE(r3v_native_device, native_device, f->device);
+   VK_FROM_HANDLE(r3v_native_image, fast_clear_image, image);
+   native_device->zmask_fast_clear_gate = "1";
+   if (begin(f))
+      return 1;
+   const VkClearDepthStencilValue fast_clear = {
+      .depth = 0.25f,
+      .stencil = 0x15au,
+   };
+   const VkImageSubresourceRange fast_clear_range = {
+      .aspectMask =
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+      .baseMipLevel = 0u,
+      .levelCount = 1u,
+      .baseArrayLayer = 0u,
+      .layerCount = 1u,
+   };
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &fast_clear, 1u, &fast_clear_range);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, fast_clear_cmd, f->cmd);
+   CHECK(fast_clear_cmd->cell_kind ==
+               R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION &&
+            fast_clear_cmd->ordered_operation_count == 1u &&
+            fast_clear_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR &&
+            fast_clear_cmd->reference_count == 1u &&
+            fast_clear_cmd->references[0].memory == fast_clear_image->memory &&
+            fast_clear_cmd->image_state_count == 1u &&
+            fast_clear_cmd->image_states[0].current_representation ==
+               R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.clear_depth_code == 0x400000u &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.clear_stencil == 0x5au &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.generation != 0u &&
+            fast_clear_cmd->current_zmask_owner.image == fast_clear_image &&
+            fast_clear_image->committed_submission.representation ==
+               R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         "the exact gate records a transactional combined ZMASK fast clear");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "the gated ZMASK fast clear records successfully");
+   native_device->zmask_fast_clear_gate = NULL;
    return 0;
 }
 

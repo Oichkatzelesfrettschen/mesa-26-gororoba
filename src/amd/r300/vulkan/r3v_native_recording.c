@@ -1060,12 +1060,25 @@ r3v_CmdClearDepthStencilImage(
    }
 
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
-   if (r3v_native_cmd_buffer_require_image_layout(
-          cmd_buffer, native_image, imageLayout,
-          R3V_NATIVE_IMAGE_PRODUCER_RB2D, true) != VK_SUCCESS ||
-       r3v_native_record_depth_image_clear(
-          commandBuffer, image, aspect_mask, depth_code, stencil) !=
-       VK_SUCCESS)
+   const bool use_zmask_fast_clear =
+      cmd_buffer != NULL && cmd_buffer->vk.base.device != NULL &&
+      container_of(cmd_buffer->vk.base.device, struct r3v_native_device, vk)
+            ->zmask_fast_clear_gate != NULL &&
+      aspect_mask == (R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH |
+                      R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL);
+   const enum r3v_native_image_producer producer =
+      use_zmask_fast_clear ? R3V_NATIVE_IMAGE_PRODUCER_ZB
+                           : R3V_NATIVE_IMAGE_PRODUCER_RB2D;
+   VkResult result = r3v_native_cmd_buffer_require_image_layout(
+      cmd_buffer, native_image, imageLayout, producer, true);
+   if (result == VK_SUCCESS) {
+      result = use_zmask_fast_clear
+                  ? r3v_native_record_zmask_fast_clear(
+                       commandBuffer, image, depth_code, stencil)
+                  : r3v_native_record_depth_image_clear(
+                       commandBuffer, image, aspect_mask, depth_code, stencil);
+   }
+   if (result != VK_SUCCESS)
       r3v_native_cmd_poison(commandBuffer);
 }
 
@@ -1874,6 +1887,9 @@ r3v_native_append_secondary_operation(
          r3v_native_memory_to_handle(source->destination_memory), &plan,
          source->write_mask);
    }
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR:
+      return r3v_native_replay_zmask_fast_clear(commandBuffer,
+                                                source_operation);
    case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
       return r3v_native_record_zmask_materialize(
          commandBuffer,

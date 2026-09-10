@@ -218,6 +218,12 @@ r3v_native_ordered_image_composition_geometry_valid(
                 cmd_buffer->rb2d_copy_operation_count)
             return false;
          break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR:
+         if (render_pass_open ||
+             operation->payload.image_fast_clear.image == NULL ||
+             !operation->payload.image_fast_clear.image->zmask_layout_admitted)
+            return false;
+         break;
       case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
          if (render_pass_open ||
              operation->payload.image_materialize.image == NULL ||
@@ -1831,6 +1837,7 @@ r3v_native_queue_execute_ordered_host_operation(
    const struct r3v_native_ordered_operation *operation)
 {
    switch (operation->kind) {
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR:
    case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
       return VK_SUCCESS;
    case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR:

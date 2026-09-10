@@ -481,6 +481,7 @@ enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
    R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
@@ -517,6 +518,12 @@ struct r3v_native_ordered_operation {
       struct {
          uint32_t rb2d_copy_index;
       } rb2d_copy;
+      struct {
+         struct r3v_native_image *image;
+         enum r3v_native_image_representation source_representation;
+         struct r3v_native_zmask_metadata_state source_metadata;
+         struct r3v_native_zmask_metadata_state resulting_metadata;
+      } image_fast_clear;
       struct {
          struct r3v_native_image *image;
          enum r3v_native_image_representation source_representation;
@@ -1597,6 +1604,7 @@ struct r3v_native_device {
     * nanosecond is roughly five hundred years of continuous
     * allocation. */
    uint64_t allocation_generation_counter;
+   uint64_t zmask_metadata_generation_counter;
    /* The bounded measurement campaign this device was created under.  It
     * is opened once, inside vkCreateDevice, over the declaration
     * R3V_NATIVE_MEASUREMENT_DECLARATION names; a device created without
@@ -1648,6 +1656,7 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
+   const char *zmask_fast_clear_gate;
    /* The compute route gate table, one entry per route identity read from
     * that route's own gate the same way (the literal "1" or NULL).  A gate
     * belongs to one route, so an open gate never makes a second route for
@@ -2233,6 +2242,14 @@ VkResult r3v_native_record_zmask_materialize(
    VkCommandBuffer command_buffer, VkImage image,
    enum r3v_native_image_representation source_representation,
    const struct r3v_native_zmask_metadata_state *source_metadata);
+
+VkResult r3v_native_record_zmask_fast_clear(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,
+   uint32_t stencil);
+
+VkResult r3v_native_replay_zmask_fast_clear(
+   VkCommandBuffer command_buffer,
+   const struct r3v_native_ordered_operation *source_operation);
 
 VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
