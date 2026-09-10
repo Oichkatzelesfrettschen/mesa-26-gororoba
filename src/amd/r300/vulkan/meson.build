@@ -479,6 +479,21 @@ if with_tests
     suite : ['r3v'],
   )
 
+  test(
+    'r3v-hyperz-ownership-transaction-selftest',
+    prog_python,
+    args : [files('tests/r3v_hyperz_ownership_transaction_audit.py'),
+            '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-hyperz-ownership-transaction',
+    prog_python,
+    args : [files('tests/r3v_hyperz_ownership_transaction_audit.py'),
+            '--queue', files('r3v_native_queue.c')],
+    suite : ['r3v'],
+  )
+
   # The gate refresh runs many times over one device.  A session opened or
   # reset there would restore the allowance the previous pass spent, so its
   # body names no measurement-session state.

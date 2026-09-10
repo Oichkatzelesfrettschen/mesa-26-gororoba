@@ -1652,6 +1652,8 @@ r3v_native_prepared_release(struct r3v_native_device *device)
    struct r3v_native_prepared_submission *prepared = &device->prepared;
    if (!prepared->valid)
       return;
+   if (prepared->hyperz_newly_acquired)
+      r3v_native_hyperz_release(device);
    radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
    radeon_drm_vk_reloc_list_finish(&prepared->relocs);
    free(prepared->reference_indices);
@@ -1989,8 +1991,12 @@ r3v_native_queue_execute_positional_stream(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    const struct radeon_drm_vk_reloc_list *relocs,
-   struct radeon_drm_vk_completion *completion)
+   struct radeon_drm_vk_completion *completion,
+   bool *any_ioctl_accepted)
 {
+   if (any_ioctl_accepted == NULL)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   *any_ioctl_accepted = false;
    uint32_t submitted_dwords = 0u;
    struct r3v_native_ordered_transport_progress progress =
       r3v_native_ordered_transport_progress_init();
@@ -2038,9 +2044,11 @@ r3v_native_queue_execute_positional_stream(
       r3v_native_fill_route_record_transport(
          cmd_buffer, progress.all_ioctls_accepted,
          progress.all_ioctls_accepted && progress.all_completions_retired);
+   *any_ioctl_accepted = progress.any_ioctl_accepted;
    return VK_SUCCESS;
 
 finish:
+   *any_ioctl_accepted = progress.any_ioctl_accepted;
    if (progress.ioctl_seen) {
       r3v_native_fill_route_record_transport(
          cmd_buffer, progress.all_ioctls_accepted, false);
@@ -2292,7 +2300,8 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    /* HyperZ admission judges the exact IB the CS build binds, on every
     * path that reaches DRM_RADEON_CS: a HyperZ write reaches the kernel
     * only from a descriptor the kernel already made the owner. */
-   result = r3v_native_hyperz_admit(device, cmd_buffer);
+   result = r3v_native_hyperz_admit(
+      device, cmd_buffer, &prepared->hyperz_newly_acquired);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
       goto prepare_fail;
@@ -2349,6 +2358,8 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    return VK_SUCCESS;
 
 prepare_fail:
+   if (prepared->hyperz_newly_acquired)
+      r3v_native_hyperz_release(device);
    free(prepared->reference_indices);
    radeon_drm_vk_reloc_list_finish(&prepared->relocs);
    memset(prepared, 0, sizeof(*prepared));
@@ -2397,6 +2408,8 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
           device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
       trace_result = -EIO;
    const bool ioctl_accepted = result == 0;
+   if (ioctl_accepted)
+      prepared->hyperz_newly_acquired = false;
    if (ioctl_accepted) {
       device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
       if (r3v_native_submission_trace_emit(
@@ -3095,15 +3108,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
-      /* HyperZ admission judges the exact IB this build binds, the same
-       * gate the prepared path runs before its own build. */
-      const VkResult hyperz_admit = r3v_native_hyperz_admit(device, cmd_buffer);
-      if (hyperz_admit != VK_SUCCESS) {
-         free(reference_indices);
-         radeon_drm_vk_completion_finish(&device->drm, &completion);
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         return hyperz_admit;
-      }
       /* The one CS build on the inline path: the completion reference
        * above finalized the relocation list, so the argument block binds
        * the exact chunks the ioctl sends.
@@ -3527,12 +3531,31 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
+      /* Acquire HyperZ only after every fallible preparation and semantic
+       * admission step.  A rejected CS ioctl releases a grant obtained for
+       * this submission; a previously held descriptor grant remains held. */
+      bool hyperz_newly_acquired = false;
+      const VkResult hyperz_admit = r3v_native_hyperz_admit(
+         device, cmd_buffer, &hyperz_newly_acquired);
+      if (hyperz_admit != VK_SUCCESS) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return hyperz_admit;
+      }
+
       if (positional_host_work) {
          device->transport_gpu_producer_delivery =
             r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
          device->transport_cell_kind = cmd_buffer->cell_kind;
+         bool any_ioctl_accepted = false;
          VkResult ordered_result = r3v_native_queue_execute_positional_stream(
-            device, cmd_buffer, &relocs, &completion);
+            device, cmd_buffer, &relocs, &completion,
+            &any_ioctl_accepted);
+         if (hyperz_newly_acquired && any_ioctl_accepted)
+            hyperz_newly_acquired = false;
+         if (hyperz_newly_acquired)
+            r3v_native_hyperz_release(device);
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -3580,6 +3603,10 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
              device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
          trace_result = -EIO;
       const bool ioctl_accepted = result == 0;
+      if (hyperz_newly_acquired && ioctl_accepted)
+         hyperz_newly_acquired = false;
+      if (hyperz_newly_acquired)
+         r3v_native_hyperz_release(device);
       if (ioctl_accepted) {
          device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
          if (r3v_native_submission_trace_emit(
@@ -3700,8 +3727,12 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
 VkResult
 r3v_native_hyperz_admit(struct r3v_native_device *device,
-                        struct r3v_native_cmd_buffer *cmd_buffer)
+                        struct r3v_native_cmd_buffer *cmd_buffer,
+                        bool *newly_acquired)
 {
+   if (newly_acquired == NULL)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   *newly_acquired = false;
    struct r300_zb_hyperz_site site;
    enum r300_zb_hyperz_verdict verdict = r300_zb_hyperz_admit_stream(
       cmd_buffer->ib, cmd_buffer->ib_size_dwords, device->hyperz_ownership,
@@ -3724,6 +3755,7 @@ r3v_native_hyperz_admit(struct r3v_native_device *device,
                                                RADEON_INFO_WANT_HYPERZ, &want);
    if (r == 0 && want == 1u) {
       device->hyperz_ownership = R300_ZB_HYPERZ_OWNED;
+      *newly_acquired = true;
       verdict = r300_zb_hyperz_admit_stream(cmd_buffer->ib,
                                             cmd_buffer->ib_size_dwords,
                                             device->hyperz_ownership, &site);
@@ -3741,13 +3773,16 @@ r3v_native_hyperz_admit(struct r3v_native_device *device,
                            : strerror(-r));
 }
 
-void
+bool
 r3v_native_hyperz_release(struct r3v_native_device *device)
 {
    if (device->hyperz_ownership != R300_ZB_HYPERZ_OWNED)
-      return;
+      return true;
    uint32_t release = 0u;
-   (void)radeon_drm_vk_device_info_u32(&device->drm, RADEON_INFO_WANT_HYPERZ,
-                                       &release);
+   const int result = radeon_drm_vk_device_info_u32(
+      &device->drm, RADEON_INFO_WANT_HYPERZ, &release);
+   if (result != 0 || release != 0u)
+      return false;
    device->hyperz_ownership = R300_ZB_HYPERZ_UNOWNED;
+   return true;
 }

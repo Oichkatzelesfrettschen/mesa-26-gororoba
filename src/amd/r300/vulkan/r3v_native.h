@@ -1309,6 +1309,7 @@ struct r3v_measurement_execution {
 
 struct r3v_native_prepared_submission {
    bool valid;
+   bool hyperz_newly_acquired;
    struct r3v_native_cmd_buffer *cmd_buffer;
    struct radeon_drm_vk_reloc_list relocs;
    struct radeon_drm_vk_cs cs;
@@ -2748,11 +2749,13 @@ VkResult r3v_native_deferred_dispatch_verify_gpu(
  * the admission row the kernel would have rejected on.  A malformed stream
  * refuses before any ioctl. */
 VkResult r3v_native_hyperz_admit(struct r3v_native_device *device,
-                                 struct r3v_native_cmd_buffer *cmd_buffer);
+                                 struct r3v_native_cmd_buffer *cmd_buffer,
+                                 bool *newly_acquired);
 
 /* Releases HyperZ ownership held by the descriptor; a device holding none
- * returns without an ioctl. */
-void r3v_native_hyperz_release(struct r3v_native_device *device);
+ * succeeds without an ioctl.  A failed kernel release leaves the local state
+ * owned because the descriptor remains the only recovery boundary. */
+bool r3v_native_hyperz_release(struct r3v_native_device *device);
 
 VkResult r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_device *device,
