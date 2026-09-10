@@ -353,6 +353,7 @@ struct r3v_native_image_barrier_record {
  * record because no legacy array owns the Vulkan barrier storage. */
 enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_HOST_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
@@ -371,7 +372,16 @@ struct r3v_native_ordered_operation {
          uint32_t deferred_copy_index;
       } host_copy;
       struct {
+         uint32_t deferred_draw_index;
+         uint32_t first_rect;
+         uint32_t rect_count;
+      } color_clear;
+      struct {
          struct r3v_native_image *image;
+         uint32_t x;
+         uint32_t y;
+         uint32_t width;
+         uint32_t height;
          uint32_t aspect_mask;
          uint32_t depth_code;
          uint32_t stencil;
@@ -623,7 +633,10 @@ struct r3v_native_deferred_stream {
 
 struct r3v_native_pass_clear_rect {
    uint32_t x, y, width, height;
+   VkImageAspectFlags aspect_mask;
    uint32_t dword;
+   uint32_t depth_code;
+   uint32_t stencil;
 };
 
 /* Render passes one command buffer records.  The bound is two: the
@@ -782,6 +795,7 @@ struct r3v_native_deferred_draw {
     */
    uint32_t target_width;
    uint32_t target_height;
+   bool depth_only;
 };
 
 /* The depth surface a depth-control recording binds.  The cell emits
@@ -888,6 +902,10 @@ struct r3v_native_cmd_buffer {
    VkImageLayout pass_depth_layout;
    VkImageLayout pass_color_final_layout;
    VkImageLayout pass_depth_final_layout;
+   /* Render-area extent used by the raster cell.  A depth-only framebuffer
+    * can cover a smaller window than its attached depth image. */
+   uint32_t pass_render_width;
+   uint32_t pass_render_height;
    /* Byte offset of the attached view's layer inside the target image;
     * the clear, the overlap test, and the cell's RB3D_COLOROFFSET0
     * payload all address the layer from the bind offset plus this.
@@ -929,6 +947,11 @@ struct r3v_native_cmd_buffer {
    uint32_t bound_index_bytes;
    bool draw_recorded;
    struct r3v_native_memory *owned_carriers[R3V_NATIVE_DEFERRED_DRAW_MAX];
+   /* Depth-only triangle cells still require a color relocation because
+    * the fixed fragment program exports color.  Each sink is a private
+    * GTT BO, separate from the application depth image, and lives until
+    * command-buffer reset or destruction. */
+   struct r3v_native_memory *owned_color_sinks[R3V_NATIVE_DEFERRED_DRAW_MAX];
    /* The fetched producer's slot-position BO, allocated at the first
     * fetched admission and released with the buffer; it holds the
     * (v + 0.5, 0.5, 0, 1) record per vertex the fetched body's first
@@ -1346,6 +1369,10 @@ struct r3v_native_device {
     */
    uint64_t transport_enter_ns;
    uint64_t transport_return_ns;
+   /* Number of DRM_RADEON_CS calls made by the last queue submit.  A
+    * positional stream may require several kernel submissions while one
+    * command-buffer authorization still names the whole stream. */
+   uint32_t transport_cs_ioctl_count;
    /* Whether the last submission's deferred draw delivered its carrier
     * through the device-side producer.  The declared route names what a
     * caller asked for; this names what the resolver and the admission
@@ -2437,9 +2464,30 @@ VkResult r3v_native_cmd_buffer_execute_deferred_copies(
    struct r3v_native_cmd_buffer *cmd_buffer,
    enum r3v_native_copy_group group);
 
+VkResult r3v_native_cmd_buffer_execute_deferred_copy(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t copy_index);
+
 VkResult r3v_native_cmd_buffer_execute_deferred_draws(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer);
+
+VkResult r3v_native_cmd_buffer_execute_deferred_draw_load(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index);
+
+VkResult r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index,
+   uint32_t first_rect, uint32_t rect_count);
+
+VkResult r3v_native_cmd_buffer_execute_deferred_draw(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t draw_index);
+
+VKAPI_ATTR void VKAPI_CALL r3v_CmdExecuteCommands(
+   VkCommandBuffer commandBuffer, uint32_t commandBufferCount,
+   const VkCommandBuffer *pCommandBuffers);
 
 /* Executes the command buffer's recorded dispatch at submission
  * through host mappings of the two bound memories, the CPU compute
@@ -2571,9 +2619,15 @@ VkResult r3v_native_record_rb2d_copy(
 VkResult r3v_native_record_depth_image_copy(
    VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
    const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
+bool r3v_native_validate_depth_image_copy(
+   VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
+   const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
 VkResult r3v_native_record_depth_image_to_image_copy(
    VkCommandBuffer command_buffer, VkImage source_image,
    VkImageLayout source_layout, VkImage destination_image,
+   VkImageLayout destination_layout, const VkImageCopy *region);
+bool r3v_native_validate_depth_image_to_image_copy(
+   VkImage source_image, VkImageLayout source_layout, VkImage destination_image,
    VkImageLayout destination_layout, const VkImageCopy *region);
 bool r3v_native_depth_clear_code(float value, uint32_t *code);
 VkResult r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
@@ -2581,6 +2635,17 @@ VkResult r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
                                              uint32_t aspect_mask,
                                              uint32_t depth_code,
                                              uint32_t stencil);
+/* Record a logical-extent depth/stencil clear as RB2D fills.  Each fill
+ * addresses the physical tile selected by the qualified depth resolver, so
+ * a smaller logical image leaves padding words untouched while the queue
+ * still submits device clear packets. */
+VkResult r3v_native_record_depth_image_clear_logical(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t aspect_mask,
+   uint32_t depth_code, uint32_t stencil);
+VkResult r3v_native_record_depth_image_clear_logical_rect(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t x, uint32_t y,
+   uint32_t width, uint32_t height, uint32_t aspect_mask, uint32_t depth_code,
+   uint32_t stencil);
 bool r3v_native_depth_image_clear_geometry_valid(
    const struct r3v_native_cmd_buffer *cmd_buffer);
 bool r3v_native_ordered_image_composition_geometry_valid(

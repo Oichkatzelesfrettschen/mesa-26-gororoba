@@ -24,8 +24,9 @@ r3v_native_depth_image_contract_init(
        info->pci_subsystem_vendor != R3V_RS485M_SUBSYSTEM_VENDOR ||
        info->pci_subsystem_device != R3V_RS485M_SUBSYSTEM_DEVICE ||
        info->format != VK_FORMAT_D24_UNORM_S8_UINT ||
-       info->image_type != VK_IMAGE_TYPE_2D || info->extent.width != 64u ||
-       info->extent.height != 64u || info->extent.depth != 1u ||
+       info->image_type != VK_IMAGE_TYPE_2D || info->extent.width == 0u ||
+       info->extent.width > 64u || info->extent.height == 0u ||
+       info->extent.height > 64u || info->extent.depth != 1u ||
        info->mip_levels != 1u ||
        info->array_layers != 1u || info->samples != 1u || !info->optimal_tiling ||
        info->compressed)
@@ -41,6 +42,7 @@ r3v_native_depth_image_contract_init(
    struct r3v_native_depth_image_contract candidate = {
       .surface = *surface,
       .layout = layout,
+      .logical_extent = info->extent,
       .surface_base_bytes = layout.base_offset_bytes,
       /* Match r3v_native_zb_depth_surface_bytes: the extra tail observes
        * writes beyond both the tiled storage and its suffix guard. */

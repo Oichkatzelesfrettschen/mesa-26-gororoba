@@ -71,6 +71,16 @@ execute_copy(struct r3v_native_device *device,
    return result;
 }
 
+VkResult
+r3v_native_cmd_buffer_execute_deferred_copy(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer, uint32_t copy_index)
+{
+   if (cmd_buffer == NULL || copy_index >= cmd_buffer->deferred_copy_count)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   return execute_copy(device, &cmd_buffer->deferred_copies[copy_index]);
+}
+
 /* One recorded copy: the record-time admission proved every byte
  * bound, including the bind ranges, so execution's own failure surface
  * is the mapping ioctl and a resource unbound between record and

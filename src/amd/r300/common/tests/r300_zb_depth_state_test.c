@@ -420,6 +420,58 @@ determinism(void)
                  r300_zb_depth_state_dwords() * sizeof(uint32_t)) == 0);
 }
 
+static void
+optional_depth_stencil_registers(void)
+{
+   uint32_t words[CAPACITY];
+   struct r300_pm4_builder b;
+   struct r300_zb_depth_state_params params = reference;
+   params.depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL;
+   params.stencil.enabled = true;
+   params.stencil.front.function = R300_ZS_LESS;
+   params.stencil.front.fail_op = R300_ZS_KEEP;
+   params.stencil.front.zpass_op = R300_ZS_REPLACE;
+   params.stencil.front.zfail_op = R300_ZS_INCR;
+   params.stencil.front.reference = 0x5a;
+   params.stencil.front.compare_mask = 0xf0;
+   params.stencil.front.write_mask = 0xff;
+   params.stencil.back = params.stencil.front;
+   params.stencil.front_reference_mask =
+      params.stencil.front.reference |
+      (params.stencil.front.compare_mask << R300_STENCILMASK_SHIFT) |
+      (params.stencil.front.write_mask << R300_STENCILWRITEMASK_SHIFT);
+   params.stencil.back_reference_mask = params.stencil.front_reference_mask;
+   params.stencil.zstencil_control = R300_ZS_LESS |
+      (R300_ZS_LESS << R300_S_FRONT_FUNC_SHIFT) |
+      (R300_ZS_REPLACE << R300_S_FRONT_ZPASS_OP_SHIFT) |
+      (R300_ZS_LESS << R300_S_BACK_FUNC_SHIFT);
+   params.fragment_depth_source = R300_FG_DEPTH_SRC_SHADER;
+   params.fragment_depth_format = R300_W_FMT_W24 | R300_W_SRC_US;
+   params.polygon_offset.enabled = true;
+   params.polygon_offset.enable_mask = R300_FRONT_ENABLE | R300_BACK_ENABLE;
+   params.polygon_offset.front_scale = 0x41200000u;
+   params.polygon_offset.front_offset = 0x40c00000u;
+   params.polygon_offset.back_scale = params.polygon_offset.front_scale;
+   params.polygon_offset.back_offset = params.polygon_offset.front_offset;
+
+   const uint32_t needed = r300_zb_depth_state_dwords_for_params(&params);
+   assert(needed == r300_zb_depth_state_dwords() + 2u + 4u + 7u);
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == 0);
+   assert(b.count == needed);
+   assert(words[9] == (R300_Z_ENABLE | R300_Z_WRITE_ENABLE |
+                       R300_STENCIL_ENABLE));
+   assert(words[13] == params.stencil.front_reference_mask);
+   assert(words[15] == params.fragment_depth_source);
+   assert(words[17] == params.fragment_depth_format);
+   assert(words[24] == params.polygon_offset.enable_mask);
+
+   params.stencil.back_reference_requires_draw_split = true;
+   r300_pm4_builder_init(&b, words, CAPACITY);
+   assert(r300_zb_depth_state_emit(&b, &params, NULL) == -EOPNOTSUPP);
+   assert(b.count == 0);
+}
+
 int
 main(void)
 {
@@ -436,6 +488,7 @@ main(void)
    existing_builder_error_stands();
    capacity_one_short();
    determinism();
+   optional_depth_stencil_registers();
    printf("r300_zb_depth_state_test: all checks passed\n");
    return 0;
 }

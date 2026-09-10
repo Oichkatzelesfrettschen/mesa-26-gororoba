@@ -72,6 +72,23 @@ r300_zb_depth_state_dwords(void)
    return DEPTH_STATE_REGISTER_WRITES * 2u + DEPTH_STATE_RELOCATION_DWORDS;
 }
 
+uint32_t
+r300_zb_depth_state_dwords_for_params(
+   const struct r300_zb_depth_state_params *params)
+{
+   uint32_t dwords = r300_zb_depth_state_dwords();
+   if (params == NULL)
+      return dwords;
+   if (params->stencil.enabled)
+      dwords += 2u;
+   if (params->fragment_depth_source != 0u ||
+       params->fragment_depth_format != 0u)
+      dwords += 4u;
+   if (params->polygon_offset.enabled)
+      dwords += 7u;
+   return dwords;
+}
+
 int
 r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
                          const struct r300_zb_depth_state_params *params,
@@ -90,6 +107,36 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
    if (params->pitch_pixels == 0 ||
        params->pitch_pixels % DEPTH_PITCH_ALIGNMENT != 0 ||
        params->pitch_pixels > DEPTH_PITCH_MAX)
+      return -EINVAL;
+   if (params->stencil.enabled) {
+      const struct r300_zb_stencil_face_state *front =
+         &params->stencil.front;
+      const struct r300_zb_stencil_face_state *back =
+         &params->stencil.back;
+      const struct r300_zb_stencil_face_state *faces[] = {front, back};
+      for (unsigned face = 0; face < 2; face++) {
+         if (faces[face]->function > R300_ZS_MASK ||
+             faces[face]->fail_op > R300_ZS_MASK ||
+             faces[face]->zpass_op > R300_ZS_MASK ||
+             faces[face]->zfail_op > R300_ZS_MASK ||
+             faces[face]->reference > UINT8_MAX ||
+             faces[face]->compare_mask > UINT8_MAX ||
+             faces[face]->write_mask > UINT8_MAX)
+            return -EINVAL;
+      }
+      if (params->stencil.back_reference_requires_draw_split)
+         return -EOPNOTSUPP;
+   }
+   if ((params->fragment_depth_source != 0u ||
+        params->fragment_depth_format != 0u) &&
+       (params->fragment_depth_source != R300_FG_DEPTH_SRC_SCAN &&
+        params->fragment_depth_source != R300_FG_DEPTH_SRC_SHADER))
+      return -EINVAL;
+   if (params->fragment_depth_source == R300_FG_DEPTH_SRC_SHADER &&
+       params->fragment_depth_format != (R300_W_FMT_W24 | R300_W_SRC_US))
+      return -EINVAL;
+   if (params->fragment_depth_source == R300_FG_DEPTH_SRC_SCAN &&
+       params->fragment_depth_format != (R300_W_FMT_W0 | R300_W_SRC_US))
       return -EINVAL;
    if (params->depth_offset_bytes % DEPTH_OFFSET_ALIGNMENT != 0)
       return -EINVAL;
@@ -117,7 +164,8 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
        params->depth_offset_bytes % DEPTH_MACROTILE_OFFSET_ALIGNMENT != 0)
       return -EINVAL;
 
-   if (!r300_pm4_builder_reserve(builder, r300_zb_depth_state_dwords()))
+   if (!r300_pm4_builder_reserve(builder,
+                                 r300_zb_depth_state_dwords_for_params(params)))
       return builder->error;
 
    r300_pm4_reg(builder, R300_ZB_FORMAT, params->depth_format);
@@ -142,17 +190,46 @@ r300_zb_depth_state_emit(struct r300_pm4_builder *builder,
                    params->pitch_tile_bits |
                    R300_DEPTHENDIAN(R300_SURF_NO_SWAP));
 
-   r300_pm4_reg(builder, R300_ZB_CNTL,
-                params->depth_test_disabled
-                   ? 0u
-                   : R300_Z_ENABLE |
-                        (params->depth_write ? R300_Z_WRITE_ENABLE : 0u));
+   uint32_t zb_control =
+      (params->stencil.enabled ? R300_STENCIL_ENABLE : 0u) |
+      (params->stencil.two_sided ? R300_STENCIL_FRONT_BACK : 0u);
+   if (!params->depth_test_disabled)
+      zb_control |= R300_Z_ENABLE |
+                    (params->depth_write ? R300_Z_WRITE_ENABLE : 0u);
+   r300_pm4_reg(builder, R300_ZB_CNTL, zb_control);
 
-   /* Stencil stays disabled through ZB_CNTL, so the stencil fields of
-    * this word select nothing and the depth comparison is its content.
-    */
+   /* The depth comparison occupies the low field.  Stencil operation fields
+    * share the same register and are supplied when the stencil test is on. */
    r300_pm4_reg(builder, R300_ZB_ZSTENCILCNTL,
-                params->depth_function << R300_Z_FUNC_SHIFT);
+                params->stencil.enabled ? params->stencil.zstencil_control
+                                         : params->depth_function
+                                              << R300_Z_FUNC_SHIFT);
+
+   if (params->stencil.enabled)
+      r300_pm4_reg(builder, R300_ZB_STENCILREFMASK,
+                   params->stencil.front_reference_mask);
+
+   if (params->fragment_depth_source != 0u ||
+       params->fragment_depth_format != 0u) {
+      r300_pm4_reg(builder, R300_FG_DEPTH_SRC,
+                   params->fragment_depth_source);
+      r300_pm4_reg(builder, R300_US_W_FMT,
+                   params->fragment_depth_format);
+   }
+
+   if (params->polygon_offset.enabled) {
+      r300_pm4_packet0(builder, R300_SU_POLY_OFFSET_FRONT_SCALE,
+                       (const uint32_t[]){
+                          params->polygon_offset.front_scale,
+                          params->polygon_offset.front_offset,
+                          params->polygon_offset.back_scale,
+                          params->polygon_offset.back_offset,
+                       }, 4);
+      r300_pm4_reg(builder, R300_SU_POLY_OFFSET_ENABLE,
+                   params->polygon_offset.enable_mask != 0u
+                      ? params->polygon_offset.enable_mask
+                      : R300_FRONT_ENABLE | R300_BACK_ENABLE);
+   }
 
    /* HiZ and fast fill read a hierarchical buffer this cell does not
     * establish, and a depth readback oracle reads the depth surface, so

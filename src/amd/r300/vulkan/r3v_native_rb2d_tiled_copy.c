@@ -13,6 +13,36 @@
 #define R3V_RB2D_TILED_COPY_REFERENCE_DESTINATION 1u
 #define R3V_RB2D_TILED_COPY_REFERENCE_COUNT 2u
 
+static bool
+r3v_native_rb2d_same_storage(const struct r3v_native_memory *source,
+                              const struct r3v_native_memory *destination)
+{
+   return source == destination || source->bo.handle == destination->bo.handle;
+}
+
+static bool
+r3v_native_rb2d_ranges_disjoint(const struct r300_rb2d_copy_plan *plan)
+{
+   for (uint32_t source_index = 0u; source_index < plan->segment_count;
+        source_index++) {
+      const struct r300_rb2d_copy_segment *source =
+         &plan->segments[source_index];
+      const uint64_t source_end =
+         source->source_offset_bytes + source->byte_count;
+      for (uint32_t destination_index = 0u;
+           destination_index < plan->segment_count; destination_index++) {
+         const struct r300_rb2d_copy_segment *destination =
+            &plan->segments[destination_index];
+         const uint64_t destination_end =
+            destination->destination_offset_bytes + destination->byte_count;
+         if (source->source_offset_bytes < destination_end &&
+             destination->destination_offset_bytes < source_end)
+            return false;
+      }
+   }
+   return true;
+}
+
 static int
 build_stream(const struct r300_rb2d_copy_plan *copy_plan, uint32_t mask,
              uint32_t **words_out, uint32_t *dword_count_out,
@@ -76,20 +106,19 @@ r3v_native_record_rb2d_tiled_copy_masked(
    VK_FROM_HANDLE(r3v_native_memory, source_memory, sourceMemory);
    VK_FROM_HANDLE(r3v_native_memory, destination_memory, destinationMemory);
    if (cmd_buffer == NULL || source_memory == NULL || destination_memory == NULL ||
-       request == NULL || source_memory == destination_memory ||
-       source_memory->bo.handle == destination_memory->bo.handle ||
-       request->same_buffer ||
+       request == NULL ||
        request->source.buffer_bytes != source_memory->bo.size ||
        request->destination.buffer_bytes != destination_memory->bo.size)
       return VK_ERROR_INITIALIZATION_FAILED;
-   if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd_buffer, 1u) !=
-       VK_SUCCESS)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
    if (cmd_buffer->rb2d_tiled_copy_configured)
       return VK_ERROR_INITIALIZATION_FAILED;
 
+   const bool same_storage =
+      r3v_native_rb2d_same_storage(source_memory, destination_memory);
+   struct r300_zb_tile_copy_request resolved_request = *request;
+   resolved_request.same_buffer = same_storage;
    struct r300_zb_tile_copy_plan tile_plan;
-   if (r300_zb_tile_copy_plan_build(request, &tile_plan) !=
+   if (r300_zb_tile_copy_plan_build(&resolved_request, &tile_plan) !=
        R300_ZB_TILE_COPY_OK)
       return VK_ERROR_INITIALIZATION_FAILED;
    struct r300_rb2d_copy_segment
@@ -97,13 +126,16 @@ r3v_native_record_rb2d_tiled_copy_masked(
    struct r300_rb2d_copy_plan copy_plan;
    if (r300_rb2d_copy_plan_from_zb_tile(
           &tile_plan, source_memory->bo.size, destination_memory->bo.size,
-          false, segment_storage, &copy_plan) != R300_RB2D_COPY_OK)
+          same_storage, segment_storage, &copy_plan) != R300_RB2D_COPY_OK)
       return VK_ERROR_INITIALIZATION_FAILED;
+   if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd_buffer, 1u) !=
+       VK_SUCCESS)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
    VkResult result = r3v_native_record_rb2d_copy(
       commandBuffer, sourceMemory, destinationMemory, &copy_plan, mask);
    if (result != VK_SUCCESS)
       return result;
-   cmd_buffer->rb2d_tiled_copy_request = *request;
+   cmd_buffer->rb2d_tiled_copy_request = resolved_request;
    cmd_buffer->rb2d_tiled_copy_write_mask = mask;
    cmd_buffer->rb2d_tiled_copy_configured = true;
    cmd_buffer->rb2d_copy_geometry = R3V_NATIVE_RB2D_COPY_GEOMETRY_TILE;
@@ -120,12 +152,13 @@ r3v_native_record_rb2d_copy(
    VK_FROM_HANDLE(r3v_native_memory, source_memory, sourceMemory);
    VK_FROM_HANDLE(r3v_native_memory, destination_memory, destinationMemory);
    if (cmd_buffer == NULL || source_memory == NULL || destination_memory == NULL ||
-       plan == NULL || plan->segments == NULL || plan->same_buffer ||
-       source_memory == destination_memory ||
-       source_memory->bo.handle == destination_memory->bo.handle ||
+       plan == NULL || plan->segments == NULL ||
        plan->source_buffer_bytes != source_memory->bo.size ||
        plan->destination_buffer_bytes != destination_memory->bo.size ||
        r300_rb2d_copy_plan_check(plan) != R300_RB2D_COPY_OK)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   if (r3v_native_rb2d_same_storage(source_memory, destination_memory) &&
+       !r3v_native_rb2d_ranges_disjoint(plan))
       return VK_ERROR_INITIALIZATION_FAILED;
 
    struct r3v_native_device *device = container_of(
@@ -322,12 +355,18 @@ r3v_native_rb2d_tiled_copy_geometry_valid(
       struct r300_rb2d_copy_plan tile_copy_plan;
       const struct r3v_native_rb2d_copy_operation *operation =
          &cmd_buffer->rb2d_copy_operations[0];
-      if (cmd_buffer->reference_count != R3V_RB2D_TILED_COPY_REFERENCE_COUNT ||
+      const bool same_storage =
+         r3v_native_rb2d_same_storage(operation->source_memory,
+                                       operation->destination_memory);
+      const uint32_t expected_reference_count =
+         same_storage ? 1u : R3V_RB2D_TILED_COPY_REFERENCE_COUNT;
+      if (cmd_buffer->reference_count != expected_reference_count ||
           r300_zb_tile_copy_plan_build(&cmd_buffer->rb2d_tiled_copy_request,
                                        &tile_plan) != R300_ZB_TILE_COPY_OK ||
           r300_rb2d_copy_plan_from_zb_tile(
              &tile_plan, cmd_buffer->references[0].memory->bo.size,
-             cmd_buffer->references[1].memory->bo.size, false, tile_segments,
+             cmd_buffer->references[same_storage ? 0u : 1u].memory->bo.size,
+             same_storage, tile_segments,
              &tile_copy_plan) != R300_RB2D_COPY_OK ||
           operation->source_buffer_bytes != tile_copy_plan.source_buffer_bytes ||
           operation->destination_buffer_bytes !=
@@ -348,9 +387,6 @@ r3v_native_rb2d_tiled_copy_geometry_valid(
          &cmd_buffer->rb2d_copy_operations[operation_index];
       if (operation->source_memory == NULL ||
           operation->destination_memory == NULL ||
-          operation->source_memory == operation->destination_memory ||
-          operation->source_memory->bo.handle ==
-             operation->destination_memory->bo.handle ||
           operation->source_buffer_bytes != operation->source_memory->bo.size ||
           operation->destination_buffer_bytes !=
              operation->destination_memory->bo.size ||
@@ -380,11 +416,15 @@ r3v_native_rb2d_tiled_copy_geometry_valid(
       const struct r300_rb2d_copy_plan copy_plan = {
          .source_buffer_bytes = operation->source_buffer_bytes,
          .destination_buffer_bytes = operation->destination_buffer_bytes,
-         .same_buffer = false,
+         .same_buffer = r3v_native_rb2d_same_storage(
+            operation->source_memory, operation->destination_memory),
          .segments = operation->segments,
          .segment_count = operation->segment_count,
          .byte_carrier = operation->byte_carrier,
       };
+      if (copy_plan.same_buffer &&
+          !r3v_native_rb2d_ranges_disjoint(&copy_plan))
+         goto invalid;
       uint32_t *operation_words = NULL;
       uint32_t operation_dwords = 0u;
       struct r300_rb2d_copy_ib emitted;

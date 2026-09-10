@@ -939,8 +939,10 @@ r3v_get_image_format_properties(
       info->tiling == VK_IMAGE_TILING_OPTIMAL && info->flags == 0 &&
       info->usage != 0 &&
       (info->usage & ~r3v_native_depth_usage) == 0;
+   if (info->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+       !r3v_native_depth_query)
+      goto unsupported;
    const bool r3v_native_render_query =
-      !r3v_native_depth_query &&
       (info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
       (info->usage & ~(VkImageUsageFlags)(
                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |

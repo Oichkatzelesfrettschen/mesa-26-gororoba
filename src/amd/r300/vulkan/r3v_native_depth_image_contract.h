@@ -31,6 +31,9 @@ struct r3v_native_depth_image_create_info {
 struct r3v_native_depth_image_contract {
    struct r300_zb_depth_surface surface;
    struct r300_zb_depth_layout layout;
+   /* The RS485M allocation keeps the qualified 64x64 physical surface.
+    * Vulkan bounds each image operation to the extent selected at creation. */
+   VkExtent3D logical_extent;
    uint64_t surface_base_bytes;
    uint64_t binding_bytes;
    bool physical_bo_placement_known;

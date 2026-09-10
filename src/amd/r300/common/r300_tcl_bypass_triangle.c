@@ -819,7 +819,8 @@ r300_tcl_bypass_triangle_insert_depth_state(
    if (!found_vertex_packet)
       return -EINVAL;
 
-   const uint32_t depth_dwords = r300_zb_depth_state_dwords() + 2u;
+   const uint32_t depth_dwords =
+      r300_zb_depth_state_dwords_for_params(state) + 2u;
    uint32_t *depth_words = calloc(depth_dwords, sizeof(*depth_words));
    if (depth_words == NULL)
       return -ENOMEM;
