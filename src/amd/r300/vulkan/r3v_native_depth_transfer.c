@@ -3,6 +3,7 @@
 #include "r3v_native.h"
 
 #include "amd/r300/common/r300_zb_aspect_copy.h"
+#include "amd/r300/common/r300_zb_tile_copy.h"
 
 #include <stdint.h>
 
@@ -19,6 +20,89 @@ r3v_native_depth_copy_apply_binding_offset(
    *surface_offset += bound->binding_offset_bytes;
    return *surface_offset <= bound->bo_bytes &&
           segment->byte_count <= bound->bo_bytes - *surface_offset;
+}
+
+VkResult
+r3v_native_record_depth_image_to_image_copy(
+   VkCommandBuffer command_buffer, VkImage source_image_handle,
+   VkImageLayout source_layout, VkImage destination_image_handle,
+   VkImageLayout destination_layout, const VkImageCopy *region)
+{
+   VK_FROM_HANDLE(r3v_native_image, source_image, source_image_handle);
+   VK_FROM_HANDLE(r3v_native_image, destination_image,
+                  destination_image_handle);
+   const VkImageAspectFlags packed_aspects =
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
+   if (source_image == NULL || destination_image == NULL || region == NULL ||
+       !source_image->depth_family || !destination_image->depth_family ||
+       source_image->memory == NULL || destination_image->memory == NULL ||
+       source_image->memory == destination_image->memory ||
+       source_image->memory->bo.handle == destination_image->memory->bo.handle ||
+       source_image->format != VK_FORMAT_D24_UNORM_S8_UINT ||
+       destination_image->format != source_image->format ||
+       source_image->width != destination_image->width ||
+       source_image->height != destination_image->height ||
+       (source_image->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0u ||
+       (destination_image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0u ||
+       (source_layout != VK_IMAGE_LAYOUT_GENERAL &&
+        source_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) ||
+       (destination_layout != VK_IMAGE_LAYOUT_GENERAL &&
+        destination_layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ||
+       region->srcSubresource.aspectMask != packed_aspects ||
+       region->dstSubresource.aspectMask != packed_aspects ||
+       region->srcSubresource.mipLevel != 0u ||
+       region->dstSubresource.mipLevel != 0u ||
+       region->srcSubresource.baseArrayLayer != 0u ||
+       region->dstSubresource.baseArrayLayer != 0u ||
+       region->srcSubresource.layerCount != 1u ||
+       region->dstSubresource.layerCount != 1u ||
+       region->srcOffset.x < 0 || region->srcOffset.y < 0 ||
+       region->srcOffset.z != 0 || region->dstOffset.x < 0 ||
+       region->dstOffset.y < 0 || region->dstOffset.z != 0 ||
+       region->extent.depth != 1u ||
+       source_image->depth_contract.layout.macrotile_width != 32u ||
+       source_image->depth_contract.layout.macrotile_height != 16u ||
+       destination_image->depth_contract.layout.macrotile_width != 32u ||
+       destination_image->depth_contract.layout.macrotile_height != 16u ||
+       region->extent.width != 32u || region->extent.height != 16u ||
+       ((uint32_t)region->srcOffset.x % 32u) != 0u ||
+       ((uint32_t)region->srcOffset.y % 16u) != 0u ||
+       ((uint32_t)region->dstOffset.x % 32u) != 0u ||
+       ((uint32_t)region->dstOffset.y % 16u) != 0u ||
+       (uint64_t)(uint32_t)region->srcOffset.x + region->extent.width >
+          source_image->width ||
+       (uint64_t)(uint32_t)region->srcOffset.y + region->extent.height >
+          source_image->height ||
+       (uint64_t)(uint32_t)region->dstOffset.x + region->extent.width >
+          destination_image->width ||
+       (uint64_t)(uint32_t)region->dstOffset.y + region->extent.height >
+          destination_image->height)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r300_zb_tile_copy_mapping source_mapping;
+   struct r300_zb_tile_copy_mapping destination_mapping;
+   if (r3v_native_depth_image_contract_copy_mapping(
+          &source_image->depth_bound, (uint32_t)region->srcOffset.x / 32u,
+          (uint32_t)region->srcOffset.y / 16u, &source_mapping) != 0 ||
+       r3v_native_depth_image_contract_copy_mapping(
+          &destination_image->depth_bound,
+          (uint32_t)region->dstOffset.x / 32u,
+          (uint32_t)region->dstOffset.y / 16u,
+          &destination_mapping) != 0)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   const struct r300_zb_tile_copy_request request = {
+      .source = source_mapping,
+      .destination = destination_mapping,
+      .same_buffer = false,
+      .same_format = true,
+      .compressed = false,
+      .multisample = false,
+   };
+   return r3v_native_record_rb2d_tiled_copy(
+      command_buffer, r3v_native_memory_to_handle(source_image->memory),
+      r3v_native_memory_to_handle(destination_image->memory), &request);
 }
 
 VkResult

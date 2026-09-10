@@ -2374,6 +2374,10 @@ VkResult r3v_native_record_rb2d_copy(
 VkResult r3v_native_record_depth_image_copy(
    VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
    const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
+VkResult r3v_native_record_depth_image_to_image_copy(
+   VkCommandBuffer command_buffer, VkImage source_image,
+   VkImageLayout source_layout, VkImage destination_image,
+   VkImageLayout destination_layout, const VkImageCopy *region);
 bool r3v_native_depth_clear_code(float value, uint32_t *code);
 VkResult r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
                                              VkImage image,

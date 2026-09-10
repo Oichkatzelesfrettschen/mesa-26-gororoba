@@ -1082,6 +1082,115 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
 }
 
 static int
+check_depth_image_copy_recording(const struct fixture *f,
+                                 const VkImageCreateInfo *image_info,
+                                 VkImage source_image,
+                                 VkDeviceSize allocation_size)
+{
+   VkImage destination_image = VK_NULL_HANDLE;
+   VkDeviceMemory destination_memory = VK_NULL_HANDLE;
+   REQUIRE(vkCreateImage(f->device, image_info, NULL, &destination_image) ==
+              VK_SUCCESS,
+           "depth copy destination image creation");
+   const VkMemoryAllocateInfo allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = allocation_size,
+      .memoryTypeIndex = 0,
+   };
+   REQUIRE(vkAllocateMemory(f->device, &allocation, NULL,
+                            &destination_memory) == VK_SUCCESS,
+           "depth copy destination allocation");
+   REQUIRE(vkBindImageMemory(f->device, destination_image,
+                             destination_memory, 0u) == VK_SUCCESS,
+           "depth copy destination binding");
+
+   static const struct {
+      VkOffset3D destination;
+      uint32_t segment_count;
+   } cases[] = {
+      {{0, 0, 0}, 1u},
+      {{32, 0, 0}, 2u},
+      {{0, 16, 0}, 4u},
+   };
+   for (uint32_t case_index = 0u; case_index < ARRAY_SIZE(cases);
+        case_index++) {
+      if (begin(f))
+         return 1;
+      const VkImageCopy region = {
+         .srcSubresource = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .srcOffset = {0, 0, 0},
+         .dstSubresource = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .layerCount = 1u,
+         },
+         .dstOffset = cases[case_index].destination,
+         .extent = {32u, 16u, 1u},
+      };
+      vkCmdCopyImage(f->cmd, source_image,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     destination_image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cmd, f->cmd);
+      CHECK(native_cmd->deferred_copy_count == 0u &&
+               native_cmd->rb2d_copy_operation_count == 1u &&
+               native_cmd->rb2d_copy_operations[0].segment_count ==
+                  cases[case_index].segment_count &&
+               native_cmd->references[0].read_domains ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               native_cmd->references[0].write_domain == 0u &&
+               native_cmd->references[1].read_domains == 0u &&
+               native_cmd->references[1].write_domain ==
+                  RADEON_GEM_DOMAIN_GTT,
+            "depth image copy case %u records the parity span plan",
+            case_index);
+      CHECK(native_cmd->rb2d_copy_operations[0]
+                   .segments[0].source_offset_bytes == 6144u &&
+               native_cmd->rb2d_copy_operations[0]
+                      .segments[0].destination_offset_bytes >= 2048u,
+            "depth image copy case %u includes both image bindings",
+            case_index);
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "depth image copy case %u records successfully", case_index);
+   }
+
+   if (begin(f))
+      return 1;
+   const VkImageCopy partial = {
+      .srcSubresource = {
+         .aspectMask =
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .dstSubresource = {
+         .aspectMask =
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+         .layerCount = 1u,
+      },
+      .extent = {31u, 16u, 1u},
+   };
+   vkCmdCopyImage(f->cmd, source_image, VK_IMAGE_LAYOUT_GENERAL,
+                  destination_image, VK_IMAGE_LAYOUT_GENERAL, 1u, &partial);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, refused_cmd, f->cmd);
+   CHECK(refused_cmd->deferred_copy_count == 0u && refused_cmd->ib == NULL &&
+            refused_cmd->references == NULL &&
+            refused_cmd->rb2d_copy_operation_count == 0u,
+         "a partial depth image copy preserves the empty GPU payload");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "a partial depth image copy refuses");
+
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release depth image copy references before object destruction");
+   vkDestroyImage(f->device, destination_image, NULL);
+   vkFreeMemory(f->device, destination_memory, NULL);
+   return 0;
+}
+
+static int
 check_depth_storage(const struct fixture *f, bool refuse_platform)
 {
    VkImageCreateInfo info = {
@@ -1123,6 +1232,8 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    CHECK(vkBindImageMemory(f->device, image, memory, 4096) != VK_SUCCESS,
          "depth rebinding refuses");
    if (check_depth_clear_recording(f, image))
+      return 1;
+   if (check_depth_image_copy_recording(f, &info, image, requirements.size))
       return 1;
    const VkImageAspectFlags view_aspects[] = {
       VK_IMAGE_ASPECT_DEPTH_BIT,

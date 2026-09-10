@@ -854,6 +854,16 @@ r3v_CmdCopyImage(
    VK_FROM_HANDLE(r3v_native_image, src, srcImage);
    VK_FROM_HANDLE(r3v_native_image, dst, dstImage);
 
+   if ((src != NULL && src->depth_family) ||
+       (dst != NULL && dst->depth_family)) {
+      if (regionCount != 1u || pRegions == NULL ||
+          r3v_native_record_depth_image_to_image_copy(
+             commandBuffer, srcImage, srcImageLayout, dstImage,
+             dstImageLayout, &pRegions[0]) != VK_SUCCESS)
+         r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+
    for (uint32_t r = 0; r < regionCount; r++) {
       const VkImageCopy *region = &pRegions[r];
       struct r3v_native_deferred_copy *op =
