@@ -217,6 +217,8 @@ r3v_native_cmd_buffer_require_image_layout(
    VkImageLayout layout, enum r3v_native_image_producer producer,
    bool writes_content)
 {
+   if (image != NULL && image->depth_family)
+      layout = r3v_native_packed_depth_stencil_layout(layout);
    /* DEPTH_STENCIL_READ_ONLY_OPTIMAL permits depth and stencil reads while
     * forbidding every producer that changes packed attachment contents. */
    if (writes_content &&
@@ -263,6 +265,10 @@ r3v_native_cmd_buffer_transition_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout old_layout, VkImageLayout new_layout)
 {
+   if (image != NULL && image->depth_family) {
+      old_layout = r3v_native_packed_depth_stencil_layout(old_layout);
+      new_layout = r3v_native_packed_depth_stencil_layout(new_layout);
+   }
    struct r3v_native_cmd_image_state *state = NULL;
    VkResult result = r3v_native_cmd_buffer_append_image_state(
       cmd_buffer, image, &state);

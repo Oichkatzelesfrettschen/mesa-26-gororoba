@@ -1098,16 +1098,24 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       .renderArea = { .extent = { 32u, 32u } },
    };
    VkCommandBuffer read_only_command = fresh_cmd();
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_read_only,
+                  read_only_command);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
    vkCmdBeginRenderPass(read_only_command, &read_only_begin,
                         VK_SUBPASS_CONTENTS_INLINE);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
    vkCmdBindPipeline(read_only_command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                      read_only_pipeline);
    vkCmdBindVertexBuffers(read_only_command, 0u, 1u, &vertex_buffer,
                           &(VkDeviceSize){0});
    vkCmdDraw(read_only_command, 3u, 1u, 0u, 0u);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
    vkCmdEndRenderPass(read_only_command);
-   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_read_only,
-                  read_only_command);
+   assert(vk_command_buffer_get_record_result(&native_read_only->vk) ==
+          VK_SUCCESS);
    assert(vkEndCommandBuffer(read_only_command) == VK_SUCCESS);
    assert(native_read_only->image_state_count == 1u);
    assert(native_read_only->image_states[0].current_layout ==

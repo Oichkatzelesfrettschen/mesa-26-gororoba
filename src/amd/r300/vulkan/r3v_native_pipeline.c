@@ -33,6 +33,7 @@ r3v_native_color_attachment_layout_ok(VkImageLayout layout, bool initial)
 static bool
 r3v_native_depth_attachment_layout_ok(VkImageLayout layout, bool initial)
 {
+   layout = r3v_native_packed_depth_stencil_layout(layout);
    return (initial && layout == VK_IMAGE_LAYOUT_UNDEFINED) ||
           layout == VK_IMAGE_LAYOUT_GENERAL ||
           layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||

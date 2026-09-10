@@ -304,9 +304,21 @@ main(void)
       .depth_family = true,
       .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
    };
+   assert(r3v_native_packed_depth_stencil_layout(
+             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) ==
+          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+   assert(r3v_native_packed_depth_stencil_layout(
+             VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL) ==
+          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+   assert(r3v_native_packed_depth_stencil_layout(
+             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL) ==
+          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+   assert(r3v_native_packed_depth_stencil_layout(
+             VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL) ==
+          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
    assert(r3v_native_cmd_buffer_require_image_layout(
              &command, &read_only_image,
-             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
              R3V_NATIVE_IMAGE_PRODUCER_ZB, false) == VK_SUCCESS);
    assert(command.image_state_count == 1u);
    const struct r3v_native_cmd_image_state before_read_only_write =

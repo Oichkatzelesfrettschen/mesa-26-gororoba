@@ -213,6 +213,7 @@ static bool
 r3v_native_depth_layout_ok(const struct r3v_native_image *image,
                            VkImageLayout layout)
 {
+   layout = r3v_native_packed_depth_stencil_layout(layout);
    if (layout == VK_IMAGE_LAYOUT_GENERAL)
       return true;
    if ((image->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0u &&

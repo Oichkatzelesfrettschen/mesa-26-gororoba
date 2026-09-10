@@ -226,6 +226,21 @@ enum r3v_native_image_api_layout {
       VK_IMAGE_LAYOUT_PREINITIALIZED,
 };
 
+static inline VkImageLayout
+r3v_native_packed_depth_stencil_layout(VkImageLayout layout)
+{
+   switch (layout) {
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL:
+      return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL:
+      return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+   default:
+      return layout;
+   }
+}
+
 /* The first representation is zero so calloc and vk_zalloc produce a valid
  * state for images created before representation-specific admission exists. */
 enum r3v_native_image_representation {
