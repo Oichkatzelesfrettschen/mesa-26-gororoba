@@ -4142,6 +4142,37 @@ main(void)
       assert(reverse_image->committed_submission.api_layout ==
              R3V_NATIVE_IMAGE_API_LAYOUT_GENERAL);
 
+      /* Replay stages all secondary effects before touching the primary.  A
+       * valid fill followed by an invalid ordered record therefore leaves the
+       * freshly begun primary empty while reporting the command error. */
+      VkCommandBuffer late_invalid_secondary = fresh_secondary_cmd();
+      vkCmdFillBuffer(late_invalid_secondary, staging, 0u, 16u,
+                      0x12345678u);
+      assert(vkEndCommandBuffer(late_invalid_secondary) == VK_SUCCESS);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, late_invalid_native,
+                     late_invalid_secondary);
+      assert(late_invalid_native->ordered_operation_count <
+             late_invalid_native->ordered_operation_capacity);
+      late_invalid_native->ordered_operations[
+         late_invalid_native->ordered_operation_count++] =
+         (struct r3v_native_ordered_operation){
+            .kind = (enum r3v_native_ordered_operation_kind)UINT32_MAX,
+         };
+      VkCommandBuffer transactional_primary = fresh_cmd();
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, transactional_native,
+                     transactional_primary);
+      vkCmdExecuteCommands(transactional_primary, 1u,
+                           &late_invalid_secondary);
+      assert(transactional_native->deferred_copy_count == 0u);
+      assert(transactional_native->ordered_operation_count == 0u);
+      assert(transactional_native->image_state_count == 0u);
+      assert(transactional_native->event_op_count == 0u);
+      assert(transactional_native->query_op_count == 0u);
+      assert(transactional_native->ib == NULL);
+      assert(transactional_native->references == NULL);
+      assert(vkEndCommandBuffer(transactional_primary) ==
+             R3V_NATIVE_REFUSAL_RESULT);
+
       vkDestroyBuffer(device, staging, NULL);
       vkFreeMemory(device, staging_mem, NULL);
       vkDestroyImage(device, source_only, NULL);

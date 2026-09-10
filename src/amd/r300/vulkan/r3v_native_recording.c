@@ -17,6 +17,7 @@
 #include "vk_log.h"
 
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The native command buffer executes only an installed fixed IB, and
@@ -424,12 +425,13 @@ r3v_native_copy_buffer_ok(const struct r3v_native_buffer *buffer,
    if (region->bufferImageHeight != 0 &&
        region->bufferImageHeight < region->imageExtent.height)
       return false;
-   const uint32_t image_height = region->bufferImageHeight != 0
-                                    ? region->bufferImageHeight
-                                    : region->imageExtent.height;
+   /* bufferImageHeight is the distance to the next slice.  A depth-one
+    * region accesses imageExtent.height rows in the current slice, so the
+    * final row uses that extent while the slice stride remains available to
+    * the multi-slice layout contract. */
    const uint64_t last_byte =
       region->bufferOffset +
-      ((uint64_t)(image_height - 1) * row_length +
+      ((uint64_t)(region->imageExtent.height - 1) * row_length +
        region->imageExtent.width) *
          texel_bytes;
    if (last_byte > buffer->vk.size)
@@ -1506,6 +1508,203 @@ r3v_native_merge_secondary_image_states(
    return VK_SUCCESS;
 }
 
+/* Secondary replay has several independently owned recording arrays.  A
+ * shallow command-buffer copy would let a failed replay free or overwrite the
+ * primary's arrays, so the transaction owns private copies of every array a
+ * replay operation can extend. */
+static void
+r3v_native_secondary_transaction_release(
+   struct r3v_native_cmd_buffer *transaction)
+{
+   if (transaction->deferred_copies != NULL) {
+      for (uint32_t index = 0u; index < transaction->deferred_copy_count;
+           index++)
+         vk_free(&transaction->vk.pool->alloc,
+                 transaction->deferred_copies[index].update_data);
+   }
+   vk_free(&transaction->vk.pool->alloc, transaction->deferred_copies);
+   vk_free(&transaction->vk.pool->alloc, transaction->ordered_operations);
+   vk_free(&transaction->vk.pool->alloc, transaction->image_states);
+   free(transaction->rb2d_copy_operations);
+   free(transaction->ib);
+   free(transaction->references);
+   transaction->deferred_copies = NULL;
+   transaction->ordered_operations = NULL;
+   transaction->image_states = NULL;
+   transaction->rb2d_copy_operations = NULL;
+   transaction->ib = NULL;
+   transaction->references = NULL;
+}
+
+static void
+r3v_native_secondary_primary_release_arrays(
+   struct r3v_native_cmd_buffer *primary)
+{
+   if (primary->deferred_copies != NULL) {
+      for (uint32_t index = 0u; index < primary->deferred_copy_count;
+           index++)
+         vk_free(&primary->vk.pool->alloc,
+                 primary->deferred_copies[index].update_data);
+   }
+   vk_free(&primary->vk.pool->alloc, primary->deferred_copies);
+   vk_free(&primary->vk.pool->alloc, primary->ordered_operations);
+   vk_free(&primary->vk.pool->alloc, primary->image_states);
+   free(primary->rb2d_copy_operations);
+   free(primary->ib);
+   free(primary->references);
+}
+
+static VkResult
+r3v_native_secondary_transaction_begin(
+   const struct r3v_native_cmd_buffer *primary,
+   struct r3v_native_cmd_buffer *transaction)
+{
+   *transaction = *primary;
+   transaction->deferred_copies = NULL;
+   transaction->ordered_operations = NULL;
+   transaction->image_states = NULL;
+   transaction->rb2d_copy_operations = NULL;
+   transaction->ib = NULL;
+   transaction->references = NULL;
+
+   if (primary->deferred_copy_count > primary->deferred_copy_capacity ||
+       primary->ordered_operation_count > primary->ordered_operation_capacity ||
+       primary->image_state_count > primary->image_state_capacity ||
+       primary->rb2d_copy_operation_count >
+          primary->rb2d_copy_operation_capacity)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (primary->ib_size_dwords != 0u) {
+      if (primary->ib == NULL ||
+          (size_t)primary->ib_size_dwords > SIZE_MAX / sizeof(*primary->ib))
+         goto invalid;
+      transaction->ib = malloc((size_t)primary->ib_size_dwords *
+                               sizeof(*primary->ib));
+      if (transaction->ib == NULL)
+         goto out_of_memory;
+      memcpy(transaction->ib, primary->ib,
+             (size_t)primary->ib_size_dwords * sizeof(*primary->ib));
+   }
+   if (primary->reference_count != 0u) {
+      if (primary->references == NULL ||
+          (size_t)primary->reference_count >
+             SIZE_MAX / sizeof(*primary->references))
+         goto invalid;
+      transaction->references = malloc((size_t)primary->reference_count *
+                                        sizeof(*primary->references));
+      if (transaction->references == NULL)
+         goto out_of_memory;
+      memcpy(transaction->references, primary->references,
+             (size_t)primary->reference_count * sizeof(*primary->references));
+   }
+   if (primary->deferred_copy_capacity != 0u) {
+      if (primary->deferred_copies == NULL ||
+          (size_t)primary->deferred_copy_capacity >
+             SIZE_MAX / sizeof(*primary->deferred_copies))
+         goto invalid;
+      transaction->deferred_copies = vk_alloc(
+         &transaction->vk.pool->alloc,
+         (size_t)primary->deferred_copy_capacity *
+            sizeof(*primary->deferred_copies),
+         8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (transaction->deferred_copies == NULL)
+         goto out_of_memory;
+      memcpy(transaction->deferred_copies, primary->deferred_copies,
+             (size_t)primary->deferred_copy_count *
+                sizeof(*primary->deferred_copies));
+      for (uint32_t index = 0u; index < primary->deferred_copy_count; index++)
+         transaction->deferred_copies[index].update_data = NULL;
+      for (uint32_t index = 0u; index < primary->deferred_copy_count; index++) {
+         const struct r3v_native_deferred_copy *source =
+            &primary->deferred_copies[index];
+         if (source->update_data == NULL || source->size == 0u)
+            continue;
+         if (source->size > SIZE_MAX)
+            goto out_of_memory;
+         transaction->deferred_copies[index].update_data = vk_alloc(
+            &transaction->vk.pool->alloc, (size_t)source->size, 8,
+            VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (transaction->deferred_copies[index].update_data == NULL)
+            goto out_of_memory;
+         memcpy(transaction->deferred_copies[index].update_data,
+                source->update_data, (size_t)source->size);
+      }
+   }
+   if (primary->ordered_operation_capacity != 0u) {
+      if (primary->ordered_operations == NULL ||
+          (size_t)primary->ordered_operation_capacity >
+             SIZE_MAX / sizeof(*primary->ordered_operations))
+         goto invalid;
+      transaction->ordered_operations = vk_alloc(
+         &transaction->vk.pool->alloc,
+         (size_t)primary->ordered_operation_capacity *
+            sizeof(*primary->ordered_operations),
+         8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (transaction->ordered_operations == NULL)
+         goto out_of_memory;
+      memcpy(transaction->ordered_operations, primary->ordered_operations,
+             (size_t)primary->ordered_operation_count *
+                sizeof(*primary->ordered_operations));
+   }
+   if (primary->image_state_capacity != 0u) {
+      if (primary->image_states == NULL ||
+          (size_t)primary->image_state_capacity >
+             SIZE_MAX / sizeof(*primary->image_states))
+         goto invalid;
+      transaction->image_states = vk_alloc(
+         &transaction->vk.pool->alloc,
+         (size_t)primary->image_state_capacity *
+            sizeof(*primary->image_states),
+         8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+      if (transaction->image_states == NULL)
+         goto out_of_memory;
+      memcpy(transaction->image_states, primary->image_states,
+             (size_t)primary->image_state_count *
+                sizeof(*primary->image_states));
+   }
+   if (primary->rb2d_copy_operation_capacity != 0u) {
+      if (primary->rb2d_copy_operations == NULL ||
+          (size_t)primary->rb2d_copy_operation_capacity >
+             SIZE_MAX / sizeof(*primary->rb2d_copy_operations))
+         goto invalid;
+      transaction->rb2d_copy_operations = malloc(
+         (size_t)primary->rb2d_copy_operation_capacity *
+         sizeof(*primary->rb2d_copy_operations));
+      if (transaction->rb2d_copy_operations == NULL)
+         goto out_of_memory;
+      memcpy(transaction->rb2d_copy_operations,
+             primary->rb2d_copy_operations,
+             (size_t)primary->rb2d_copy_operation_count *
+                sizeof(*primary->rb2d_copy_operations));
+   }
+   return VK_SUCCESS;
+
+invalid:
+   r3v_native_secondary_transaction_release(transaction);
+   return VK_ERROR_INITIALIZATION_FAILED;
+
+out_of_memory:
+   r3v_native_secondary_transaction_release(transaction);
+   return VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+static void
+r3v_native_secondary_transaction_commit(
+   struct r3v_native_cmd_buffer *primary,
+   struct r3v_native_cmd_buffer *transaction)
+{
+   const struct vk_command_buffer primary_vk = primary->vk;
+   r3v_native_secondary_primary_release_arrays(primary);
+   *primary = *transaction;
+   primary->vk = primary_vk;
+   transaction->deferred_copies = NULL;
+   transaction->ordered_operations = NULL;
+   transaction->image_states = NULL;
+   transaction->rb2d_copy_operations = NULL;
+   transaction->ib = NULL;
+   transaction->references = NULL;
+}
+
 static VkResult
 r3v_native_append_secondary_operation(
    VkCommandBuffer commandBuffer,
@@ -1526,11 +1725,13 @@ r3v_native_append_secondary_operation(
       *destination = secondary->deferred_copies[source_index];
       destination->group = r3v_native_copy_group_at_record(primary);
       if (destination->update_data != NULL) {
+         const uint8_t *source_data = destination->update_data;
+         destination->update_data = NULL;
          void *data = vk_alloc(&primary->vk.pool->alloc, destination->size, 8,
                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
          if (data == NULL)
             return VK_ERROR_OUT_OF_HOST_MEMORY;
-         memcpy(data, destination->update_data, destination->size);
+         memcpy(data, source_data, destination->size);
          destination->update_data = data;
       }
       r3v_native_commit_deferred_copy(commandBuffer);
@@ -1633,6 +1834,29 @@ r3v_native_append_secondary_operation(
    return VK_ERROR_INITIALIZATION_FAILED;
 }
 
+static bool
+r3v_native_secondary_shape_valid(
+   const struct r3v_native_cmd_buffer *secondary)
+{
+   return secondary->ordered_operation_count <=
+             secondary->ordered_operation_capacity &&
+          (secondary->ordered_operation_count == 0u ||
+           secondary->ordered_operations != NULL) &&
+          secondary->deferred_copy_count <=
+             secondary->deferred_copy_capacity &&
+          (secondary->deferred_copy_count == 0u ||
+           secondary->deferred_copies != NULL) &&
+          secondary->image_state_count <= secondary->image_state_capacity &&
+          (secondary->image_state_count == 0u ||
+           secondary->image_states != NULL) &&
+          secondary->rb2d_copy_operation_count <=
+             secondary->rb2d_copy_operation_capacity &&
+          (secondary->rb2d_copy_operation_count == 0u ||
+           secondary->rb2d_copy_operations != NULL) &&
+          secondary->event_op_count <= R3V_NATIVE_EVENT_OP_MAX &&
+          secondary->query_op_count <= R3V_NATIVE_QUERY_OP_MAX;
+}
+
 /* Secondary transfer, dependency, event, and query records are replayed at
  * the primary's execute position.  Replay assigns primary-owned payload
  * indices and PM4 positions while preserving the secondary's operation order.
@@ -1656,35 +1880,63 @@ r3v_CmdExecuteCommands(
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
+   if (commandBufferCount == 0u)
+      return;
+
+   struct r3v_native_cmd_buffer transaction;
+   VkResult transaction_result = r3v_native_secondary_transaction_begin(
+      cmd_buffer, &transaction);
+   if (transaction_result != VK_SUCCESS) {
+      vk_command_buffer_set_error(
+         &cmd_buffer->vk,
+         transaction_result == VK_ERROR_OUT_OF_HOST_MEMORY
+            ? transaction_result
+            : R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+
    for (uint32_t i = 0; i < commandBufferCount; i++) {
       VK_FROM_HANDLE(r3v_native_cmd_buffer, secondary, pCommandBuffers[i]);
       if (secondary == NULL ||
           secondary->vk.level != VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
           secondary->vk.record_result != VK_SUCCESS ||
+          !r3v_native_secondary_shape_valid(secondary) ||
           secondary->deferred_draw_count != 0 || secondary->draw_recorded ||
           secondary->deferred_dispatch.pending ||
           secondary->active_query_pool != NULL ||
           secondary->viewport_set || secondary->scissor_set) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
+         transaction_result = VK_ERROR_INITIALIZATION_FAILED;
+         goto replay_failed;
       }
       for (uint32_t operation_index = 0u;
            operation_index < secondary->ordered_operation_count;
            operation_index++) {
-         if (r3v_native_append_secondary_operation(
-                commandBuffer, secondary,
-                &secondary->ordered_operations[operation_index]) !=
-             VK_SUCCESS) {
-            r3v_native_cmd_poison(commandBuffer);
-            return;
+         const VkResult append_result =
+            r3v_native_append_secondary_operation(
+               r3v_native_cmd_buffer_to_handle(&transaction), secondary,
+               &secondary->ordered_operations[operation_index]);
+         if (append_result != VK_SUCCESS) {
+            transaction_result = transaction.vk.record_result != VK_SUCCESS
+                                    ? transaction.vk.record_result
+                                    : append_result;
+            goto replay_failed;
          }
       }
-      if (r3v_native_merge_secondary_image_states(cmd_buffer, secondary) !=
-          VK_SUCCESS) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
-      }
+      transaction_result = r3v_native_merge_secondary_image_states(
+         &transaction, secondary);
+      if (transaction_result != VK_SUCCESS)
+         goto replay_failed;
    }
+   r3v_native_secondary_transaction_commit(cmd_buffer, &transaction);
+   return;
+
+replay_failed:
+   r3v_native_secondary_transaction_release(&transaction);
+   vk_command_buffer_set_error(
+      &cmd_buffer->vk,
+      transaction_result == VK_ERROR_OUT_OF_HOST_MEMORY
+         ? transaction_result
+         : R3V_NATIVE_REFUSAL_RESULT);
 }
 
 /* The fill is a dword-pattern store through the host mapping of the

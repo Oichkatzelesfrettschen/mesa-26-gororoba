@@ -894,6 +894,22 @@ check_host_events(const struct fixture *f)
    REQUIRE(vkCreateEvent(f->device, &event_info, NULL, &event) ==
               VK_SUCCESS,
            "event creation");
+   const VkBufferCreateInfo mixed_buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = 16u,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+   VkBuffer mixed_buffer = VK_NULL_HANDLE;
+   VkDeviceMemory mixed_memory = VK_NULL_HANDLE;
+   REQUIRE(vkCreateBuffer(f->device, &mixed_buffer_info, NULL,
+                          &mixed_buffer) == VK_SUCCESS,
+           "mixed event transfer buffer creation");
+   REQUIRE(allocate_memory(f, 4096u, 0u, &mixed_memory) == 0,
+           "mixed event transfer memory allocation");
+   REQUIRE(vkBindBufferMemory(f->device, mixed_buffer, mixed_memory, 0u) ==
+              VK_SUCCESS,
+           "mixed event transfer memory binding");
    CHECK(vkGetEventStatus(f->device, event) == VK_EVENT_RESET,
          "a fresh event reads unsignaled");
 
@@ -910,6 +926,7 @@ check_host_events(const struct fixture *f)
    REQUIRE(vkBeginCommandBuffer(f->cmd, &begin_info) == VK_SUCCESS,
            "event span begin");
    vkCmdSetEvent(f->cmd, event, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+   vkCmdFillBuffer(f->cmd, mixed_buffer, 0u, 16u, 0x89abcdefu);
    vkCmdWaitEvents(f->cmd, 1, &event,
                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, NULL, 0, NULL,
@@ -920,6 +937,13 @@ check_host_events(const struct fixture *f)
             VK_SUCCESS &&
          vkQueueWaitIdle(f->queue) == VK_SUCCESS,
          "the recorded set satisfies the recorded wait");
+   uint32_t *mixed_map = NULL;
+   REQUIRE(vkMapMemory(f->device, mixed_memory, 0u, 16u, 0u,
+                       (void **)&mixed_map) == VK_SUCCESS,
+           "mixed event transfer memory mapping");
+   CHECK(mixed_map[0] == 0x89abcdefu && mixed_map[3] == 0x89abcdefu,
+         "event transfer event operations execute in recorded order");
+   vkUnmapMemory(f->device, mixed_memory);
    CHECK(vkGetEventStatus(f->device, event) == VK_EVENT_SET,
          "the recorded set published to the host view");
 
@@ -944,6 +968,8 @@ check_host_events(const struct fixture *f)
     * this recording check closes the leg.
     */
    vkDestroyEvent(f->device, event, NULL);
+   vkDestroyBuffer(f->device, mixed_buffer, NULL);
+   vkFreeMemory(f->device, mixed_memory, NULL);
    return 0;
 }
 

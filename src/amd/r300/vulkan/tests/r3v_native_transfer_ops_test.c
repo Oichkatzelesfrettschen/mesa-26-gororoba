@@ -373,6 +373,45 @@ destroy_transfer_image(const struct fixture *f, struct transfer_image *img)
    vkFreeMemory(f->device, img->memory, NULL);
 }
 
+/* bufferImageHeight supplies the distance between slices.  A depth-one copy
+ * reads imageExtent.height rows from the current slice, so a large stride does
+ * not require storage for the unused rows between slices. */
+static int
+check_buffer_image_height_stride(const struct fixture *f)
+{
+   struct transfer_image image;
+   if (create_transfer_image(f, 4, 4, &image))
+      return 1;
+   struct staging staging;
+   if (create_staging(f, 32, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging))
+      return 1;
+   for (uint32_t index = 0u; index < 32u; index++)
+      staging.map[index] = (uint8_t)(index + 1u);
+
+   const VkBufferImageCopy region = {
+      .bufferRowLength = 4u,
+      .bufferImageHeight = 100u,
+      .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u},
+      .imageExtent = {4u, 2u, 1u},
+   };
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image.image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+   REQUIRE(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+           "depth-one copy uses imageExtent.height rows with a large slice stride");
+   if (submit(f))
+      return 1;
+
+   CHECK(memcmp(image.map, staging.map, 16u) == 0,
+         "the first depth-one copy row span is transferred");
+   CHECK(memcmp(image.map + image.row_pitch, staging.map + 16u, 16u) == 0,
+         "the second depth-one copy row span is transferred");
+   destroy_staging(f, &staging);
+   destroy_transfer_image(f, &image);
+   return 0;
+}
+
 static uint32_t
 texel(const struct transfer_image *img, uint32_t x, uint32_t y)
 {
@@ -1893,6 +1932,7 @@ main(int argc, char **argv)
       return 1;
    int fatal = depth_storage ? check_depth_storage(&f, refuse_platform) :
                check_fill_and_update(&f) || check_copy_overlap(&f) ||
+               check_buffer_image_height_stride(&f) ||
                check_blit(&f) || check_texel_formats(&f) ||
                check_optimal_tiling(&f);
    vkDestroyCommandPool(f.device, f.cmd_pool, NULL);
