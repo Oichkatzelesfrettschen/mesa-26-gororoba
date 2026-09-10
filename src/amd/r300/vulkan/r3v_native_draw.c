@@ -136,8 +136,13 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
       }
    }
    const VkImageLayout layout = subpass->depth_stencil_attachment->layout;
-   VkResult result = r3v_native_cmd_buffer_transition_image_layout(
-      cmd_buffer, depth_view->image, attachment->initial_layout, layout);
+   VkResult result = VK_SUCCESS;
+   if (depth_clear || stencil_clear)
+      result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
+         cmd_buffer, depth_view->image);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_image_layout(
+         cmd_buffer, depth_view->image, attachment->initial_layout, layout);
    if (result == VK_SUCCESS)
       result = r3v_native_cmd_buffer_require_image_layout(
          cmd_buffer, depth_view->image, layout,
@@ -385,9 +390,13 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    if (state_result == VK_SUCCESS && depth_view != NULL) {
       depth_layout = subpass->depth_stencil_attachment->layout;
       depth_final_layout = pass->attachments[1].final_layout;
-      state_result = r3v_native_cmd_buffer_transition_image_layout(
-         cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,
-         depth_layout);
+      if (depth_loads_clear)
+         state_result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
+            cmd_buffer, depth_view->image);
+      if (state_result == VK_SUCCESS)
+         state_result = r3v_native_cmd_buffer_transition_image_layout(
+            cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,
+            depth_layout);
       if (state_result == VK_SUCCESS)
          state_result = r3v_native_cmd_buffer_require_image_layout(
             cmd_buffer, depth_view->image, depth_layout,

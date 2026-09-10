@@ -17,6 +17,7 @@
 
 struct r300_fragment_binary;
 struct r300_first_draw_contract;
+struct r300_zmask_materialize_plan;
 
 /* The cell draws one triangle list of two triangles over disjoint halves
  * of the target, at two window-space depths, against a depth surface the
@@ -79,6 +80,12 @@ struct r300_zb_depth_control_params {
     * refuses a null contract.
     */
    const struct r300_first_draw_contract *first_draw_contract;
+   /* A materialization plan selects the internal ZMASK decompression draw.
+    * The ordinary cell leaves this NULL and retains its six-vertex stream.
+    * The internal draw writes depth with depth testing disabled, matching the
+    * R300 decompression state, and keeps stencil testing and writes disabled.
+    */
+   const struct r300_zmask_materialize_plan *zmask_materialize_plan;
 };
 
 /* One IB position whose payload names a relocation slot. */
@@ -147,6 +154,16 @@ struct r300_zb_depth_control_ib {
 extern const float
    r300_zb_depth_control_vertices[R300_ZB_DEPTH_CONTROL_VERTEX_DWORDS];
 
+/* One oversized window-space triangle covers every sample center in the
+ * 64x64 target.  The materialization path uses three FLOAT_4 vertices and
+ * ignores application viewport, scissor, sample-mask, and depth state.
+ */
+#define R300_ZMASK_MATERIALIZE_VERTEX_COUNT 3u
+#define R300_ZMASK_MATERIALIZE_VERTEX_DWORDS \
+   (R300_ZMASK_MATERIALIZE_VERTEX_COUNT * 4u)
+extern const float r300_zmask_materialize_vertices
+   [R300_ZMASK_MATERIALIZE_VERTEX_DWORDS];
+
 /* Dwords r300_zb_depth_control_emit_into writes past the fragment
  * binary's own size, so a caller sizes its storage before building.
  */
@@ -200,6 +217,14 @@ int r300_zb_depth_control_reference_contract(
  */
 int r300_zb_depth_tiled_validation_emit(
    bool depth_write, struct r300_zb_depth_control_ib *out);
+
+/* Emits the full-surface internal draw that materializes metadata-dependent
+ * D24/S8 contents into the ordinary RS485M macrotiled backing store.
+ */
+int r300_zb_depth_zmask_materialize_emit(
+   const struct r300_zmask_materialize_plan *plan,
+   uint32_t depth_offset_bytes, uint32_t vertex_offset,
+   uint32_t color_pitch_format, struct r300_zb_depth_control_ib *out);
 
 int r300_zb_depth_control_reference_emit(
    struct r300_zb_depth_control_ib *out);

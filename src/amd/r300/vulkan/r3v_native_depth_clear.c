@@ -4,6 +4,8 @@
 
 #include "amd/r300/common/r300_rb2d_fill.h"
 #include "amd/r300/common/r300_rb2d_linear_span.h"
+#include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_zmask_materialize_plan.h"
 
 #include <errno.h>
 #include <math.h>
@@ -64,6 +66,10 @@ r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
    if (cmd == NULL || image == NULL || !image->depth_family ||
        image->memory == NULL ||
        cmd->deferred_dispatch.pending || cmd->pass_target != NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(cmd, image) !=
+       VK_SUCCESS)
       return VK_ERROR_INITIALIZATION_FAILED;
 
    if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd, 1u) !=
@@ -160,6 +166,10 @@ r3v_native_record_depth_image_clear_logical_rect(
        height == 0u || x >= logical_width || y >= logical_height ||
        width > logical_width - x || height > logical_height - y ||
        logical_width > surface->width || logical_height > surface->height)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(cmd, image) !=
+       VK_SUCCESS)
       return VK_ERROR_INITIALIZATION_FAILED;
 
    /* The complete admitted surface has a retained one-fill stream.  Keep
@@ -367,6 +377,167 @@ out:
    free(rects);
    free(spans);
    free(offsets);
+   return result;
+}
+
+VkResult
+r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
+                                    VkImage image_handle,
+                                    enum r3v_native_image_representation
+                                       source_representation,
+                                    const struct r3v_native_zmask_metadata_state
+                                       *source_metadata)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
+   VK_FROM_HANDLE(r3v_native_image, image, image_handle);
+   if (cmd_buffer == NULL || image == NULL || !image->depth_family ||
+       image->memory == NULL || !image->zmask_layout_admitted ||
+       image->depth_bound.contract != &image->depth_contract ||
+       cmd_buffer->vk.base.device == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   if (!device->zmask_materialize_scratch_initialized ||
+       device->zmask_materialize_vertex.bo.handle == 0u ||
+       device->zmask_materialize_vertex.bo.size <
+          R3V_NATIVE_MEMORY_ALIGNMENT ||
+       device->zmask_materialize_color.bo.handle == 0u ||
+       device->zmask_materialize_color.bo.size <
+          R300_ZB_DEPTH_CONTROL_COLOR_BYTES)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r3v_native_cmd_image_state *state =
+      r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
+   const enum r3v_native_image_representation representation =
+      state != NULL && state->current_representation_set
+         ? state->current_representation
+         : state != NULL ? state->required_representation
+                         : image->committed_submission.representation;
+   const struct r3v_native_zmask_metadata_state metadata =
+      state != NULL && state->current_zmask_metadata_set
+         ? state->current_zmask_metadata
+         : state != NULL ? state->required_zmask_metadata
+                         : image->committed_submission.zmask_metadata;
+   if (source_metadata == NULL || representation != source_representation ||
+       !r3v_native_zmask_metadata_equal(&metadata, source_metadata) ||
+       (representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
+        representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) ||
+       (metadata.status != R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR &&
+        metadata.status != R3V_NATIVE_ZMASK_METADATA_COMPRESSED) ||
+       metadata.generation == 0u)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r300_zmask_materialize_plan plan;
+   int plan_result = r300_zmask_materialize_prefix(
+      &image->depth_contract.surface, &image->zmask_layout,
+      metadata.clear_depth_code, metadata.clear_stencil, &plan);
+   if (plan_result == 0)
+      plan_result = r300_zmask_materialize_suffix(&plan);
+   const uint64_t depth_offset = image->depth_bound.surface_base_bytes;
+   if (plan_result != 0 || depth_offset > UINT32_MAX ||
+       depth_offset % 32u != 0u)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   struct r300_zb_depth_control_ib cell;
+   const int emit_result = r300_zb_depth_zmask_materialize_emit(
+      &plan, (uint32_t)depth_offset, 0u,
+      r300_rb3d_colorpitch0_pack_argb8888(64u), &cell);
+   if (emit_result != 0)
+      return emit_result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
+                                    : VK_ERROR_INITIALIZATION_FAILED;
+   if (r300_zb_depth_control_validate_reloc_sites(&cell) != 0) {
+      r300_zb_depth_control_release(&cell);
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd_buffer, 1u) !=
+       VK_SUCCESS) {
+      r300_zb_depth_control_release(&cell);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   const uint32_t original_image_state_count = cmd_buffer->image_state_count;
+   const uint32_t original_operation_count =
+      cmd_buffer->ordered_operation_count;
+   const bool original_required_owner_set =
+      cmd_buffer->required_zmask_owner_set;
+   const bool original_current_owner_set = cmd_buffer->current_zmask_owner_set;
+   const struct r3v_native_zmask_owner_state original_required_owner =
+      cmd_buffer->required_zmask_owner;
+   const struct r3v_native_zmask_owner_state original_current_owner =
+      cmd_buffer->current_zmask_owner;
+   const struct r3v_native_cmd_image_state original_state =
+      state != NULL ? *state : (struct r3v_native_cmd_image_state){0};
+
+   struct r3v_native_zmask_owner_state owner;
+   const struct r3v_native_zmask_owner_state retired_owner = {0};
+   const struct r3v_native_zmask_metadata_state retired_metadata = {0};
+   VkResult result = r3v_native_zmask_owner_from_image(image, &metadata,
+                                                       &owner);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_image_representation(
+         cmd_buffer, image, representation,
+         R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_zmask_metadata(
+         cmd_buffer, image, &metadata, &retired_metadata);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_zmask_owner(
+         cmd_buffer, &owner, &retired_owner);
+   const struct r3v_native_bo_reference references[] = {
+      [R300_ZB_DEPTH_CONTROL_SLOT_VERTEX] = {
+         .handle = device->zmask_materialize_vertex.bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .memory = &device->zmask_materialize_vertex,
+      },
+      [R300_ZB_DEPTH_CONTROL_SLOT_COLOR] = {
+         .handle = device->zmask_materialize_color.bo.handle,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = &device->zmask_materialize_color,
+      },
+      [R300_ZB_DEPTH_CONTROL_SLOT_DEPTH] = {
+         .handle = image->memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = image->memory,
+      },
+   };
+   uint32_t relocation_dwords[R300_ZB_DEPTH_CONTROL_MAX_RELOC_SITES];
+   uint32_t relocation_references[R300_ZB_DEPTH_CONTROL_MAX_RELOC_SITES];
+   for (uint32_t index = 0u; index < cell.reloc_site_count; index++) {
+      relocation_dwords[index] = cell.reloc_sites[index].ib_index;
+      relocation_references[index] = cell.reloc_sites[index].slot;
+   }
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_append_raw_ib(
+         device, cmd_buffer, cell.ib, cell.ib_size_dwords, references,
+         ARRAY_SIZE(references), relocation_dwords, relocation_references,
+         cell.reloc_site_count);
+   r300_zb_depth_control_release(&cell);
+   if (result == VK_SUCCESS) {
+      cmd_buffer->ordered_operations[cmd_buffer->ordered_operation_count++] =
+         (struct r3v_native_ordered_operation){
+            .kind = R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE,
+            .ib_position_dwords = cmd_buffer->ib_size_dwords,
+            .payload.image_materialize = {
+               .image = image,
+               .source_representation = representation,
+               .metadata = metadata,
+            },
+         };
+      cmd_buffer->cell_kind = R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION;
+      return VK_SUCCESS;
+   }
+
+   cmd_buffer->ordered_operation_count = original_operation_count;
+   cmd_buffer->required_zmask_owner_set = original_required_owner_set;
+   cmd_buffer->current_zmask_owner_set = original_current_owner_set;
+   cmd_buffer->required_zmask_owner = original_required_owner;
+   cmd_buffer->current_zmask_owner = original_current_owner;
+   if (state != NULL)
+      *state = original_state;
+   cmd_buffer->image_state_count = original_image_state_count;
    return result;
 }
 

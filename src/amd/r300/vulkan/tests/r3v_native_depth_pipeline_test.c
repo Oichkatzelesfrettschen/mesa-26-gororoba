@@ -4,9 +4,13 @@
 
 #include "../r3v_native_depth_pipeline.h"
 #include "../r3v_native.h"
+#include "amd/r300/common/r300_zb_depth_control_cell.h"
+#include "amd/r300/common/r300_zmask_materialize_plan.h"
+#include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "../../common/r300_reg.h"
 #include "vk_render_pass.h"
 #include "vk_alloc.h"
+#include "vk_physical_device.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -452,6 +456,234 @@ main(void)
              &representation_command, &owner_a, &owner_b) != VK_SUCCESS);
    assert(r3v_native_zmask_owner_equal(
       &representation_command.current_zmask_owner, &owner_before_refusal));
+
+   struct r3v_native_cmd_buffer materialize_command = {0};
+   struct r3v_native_device materialize_device = {0};
+   struct vk_instance materialize_instance = {0};
+   struct vk_physical_device materialize_physical = {0};
+   materialize_instance.base.type = VK_OBJECT_TYPE_INSTANCE;
+   list_inithead(&materialize_instance.debug_utils.instance_callbacks);
+   materialize_physical.base.type = VK_OBJECT_TYPE_PHYSICAL_DEVICE;
+   materialize_physical.instance = &materialize_instance;
+   materialize_device.vk.base.type = VK_OBJECT_TYPE_DEVICE;
+   materialize_device.vk.base.device = &materialize_device.vk;
+   materialize_device.vk.physical = &materialize_physical;
+   materialize_device.zmask_materialize_vertex.bo.handle = 1u;
+   materialize_device.zmask_materialize_vertex.bo.size =
+      R3V_NATIVE_MEMORY_ALIGNMENT;
+   materialize_device.zmask_materialize_color.bo.handle = 2u;
+   materialize_device.zmask_materialize_color.bo.size =
+      R300_ZB_DEPTH_CONTROL_COLOR_BYTES;
+   materialize_device.zmask_materialize_scratch_initialized = true;
+   materialize_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   materialize_command.vk.base.device = &materialize_device.vk;
+   materialize_command.vk.pool = &pool;
+   struct r3v_native_memory materialize_memory = {0};
+   materialize_memory.bo.handle = 3u;
+   materialize_memory.bo.size = 26624u;
+   struct r3v_native_image materialize_image = {
+      .base = { .type = VK_OBJECT_TYPE_IMAGE },
+      .memory = &materialize_memory,
+      .committed_submission = {
+         .representation = R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+         .zmask_metadata = fast_clear_metadata,
+      },
+      .zmask_layout = {
+         .stride_in_pixels = 64u,
+         .dwords = 16u,
+         .zmask_ram_dwords = 5120u,
+         .fits_zmask_ram = true,
+         .zcomp8x8 = false,
+      },
+      .zmask_layout_admitted = true,
+      .depth_family = true,
+   };
+   materialize_image.depth_contract.surface =
+      r300_zb_depth_surface_rs485m_z24_macrotiled_logical;
+   materialize_image.depth_bound.contract =
+      &materialize_image.depth_contract;
+   materialize_image.depth_bound.binding_offset_bytes = 4096u;
+   materialize_image.depth_bound.surface_base_bytes = 6144u;
+   materialize_image.depth_bound.bo_bytes = materialize_memory.bo.size;
+   assert(r3v_native_record_zmask_materialize(
+             r3v_native_cmd_buffer_to_handle(&materialize_command),
+             r3v_native_image_to_handle(&materialize_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+             &fast_clear_metadata) == VK_SUCCESS);
+   assert(materialize_command.ordered_operation_count == 1u);
+   assert(materialize_command.ib != NULL &&
+          materialize_command.ib_size_dwords != 0u);
+   assert(materialize_command.reference_count ==
+          R300_ZB_DEPTH_CONTROL_SLOT_COUNT);
+   assert(materialize_command.references[0].memory ==
+             &materialize_device.zmask_materialize_vertex &&
+          materialize_command.references[0].read_domains ==
+             RADEON_GEM_DOMAIN_GTT &&
+          materialize_command.references[0].write_domain == 0u);
+   assert(materialize_command.references[1].memory ==
+             &materialize_device.zmask_materialize_color &&
+          materialize_command.references[1].read_domains == 0u &&
+          materialize_command.references[1].write_domain ==
+             RADEON_GEM_DOMAIN_GTT);
+   assert(materialize_command.references[2].memory == &materialize_memory &&
+          materialize_command.references[2].read_domains ==
+             RADEON_GEM_DOMAIN_GTT &&
+          materialize_command.references[2].write_domain ==
+             RADEON_GEM_DOMAIN_GTT);
+   assert(materialize_command.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(materialize_command.ordered_operations[0].ib_position_dwords ==
+          materialize_command.ib_size_dwords);
+   assert(materialize_command.ordered_operations[0]
+             .payload.image_materialize.image == &materialize_image);
+   struct r300_zmask_materialize_plan expected_plan;
+   assert(r300_zmask_materialize_prefix(
+             &materialize_image.depth_contract.surface,
+             &materialize_image.zmask_layout,
+             fast_clear_metadata.clear_depth_code,
+             fast_clear_metadata.clear_stencil, &expected_plan) == 0);
+   assert(r300_zmask_materialize_suffix(&expected_plan) == 0);
+   struct r300_zb_depth_control_ib expected_cell;
+   assert(r300_zb_depth_zmask_materialize_emit(
+             &expected_plan, 6144u, 0u,
+             r300_rb3d_colorpitch0_pack_argb8888(64u), &expected_cell) == 0);
+   assert(expected_cell.reloc_site_count != 0u);
+   assert(materialize_command.ib_size_dwords == expected_cell.ib_size_dwords);
+   for (uint32_t word = 0u; word < expected_cell.ib_size_dwords; word++) {
+      uint32_t expected_word = expected_cell.ib[word];
+      for (uint32_t index = 0u; index < expected_cell.reloc_site_count;
+           index++) {
+         if (expected_cell.reloc_sites[index].ib_index == word)
+            expected_word = expected_cell.reloc_sites[index].slot * 4u;
+      }
+      assert(materialize_command.ib[word] == expected_word);
+   }
+   r300_zb_depth_control_release(&expected_cell);
+   assert(materialize_command.image_states[0].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(materialize_command.image_states[0]
+             .current_zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   assert(materialize_command.current_zmask_owner_set);
+   assert(materialize_command.current_zmask_owner.image == NULL);
+   assert(materialize_image.committed_submission.representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR);
+   assert(materialize_image.committed_submission.zmask_metadata.generation ==
+          fast_clear_metadata.generation);
+   assert(r3v_native_cmd_buffer_require_ordinary_depth_backing(
+             &materialize_command, &materialize_image) == VK_SUCCESS);
+
+   struct r3v_native_cmd_buffer stale_backing_command = {0};
+   stale_backing_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   stale_backing_command.vk.base.device = &materialize_device.vk;
+   stale_backing_command.vk.pool = &pool;
+   const uint32_t stale_backing_state_count =
+      stale_backing_command.image_state_count;
+   assert(r3v_native_cmd_buffer_require_ordinary_depth_backing(
+             &stale_backing_command, &materialize_image) != VK_SUCCESS);
+   assert(stale_backing_command.image_state_count ==
+          stale_backing_state_count);
+   assert(r3v_native_record_depth_image_clear(
+             r3v_native_cmd_buffer_to_handle(&stale_backing_command),
+             r3v_native_image_to_handle(&materialize_image),
+             R300_ZB_COMBINED_CLEAR_ASPECTS, 0x200000u, 0x5au) != VK_SUCCESS);
+   assert(stale_backing_command.ib_size_dwords == 0u);
+   assert(stale_backing_command.ordered_operation_count == 0u);
+
+   struct r3v_native_cmd_buffer materialize_secondary = {0};
+   materialize_secondary.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   materialize_secondary.vk.base.device = &materialize_device.vk;
+   materialize_secondary.vk.pool = &pool;
+   materialize_secondary.vk.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+   assert(r3v_native_record_zmask_materialize(
+             r3v_native_cmd_buffer_to_handle(&materialize_secondary),
+             r3v_native_image_to_handle(&materialize_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+             &fast_clear_metadata) == VK_SUCCESS);
+   struct r3v_native_cmd_buffer materialize_primary = {0};
+   materialize_primary.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   materialize_primary.vk.base.device = &materialize_device.vk;
+   materialize_primary.vk.pool = &pool;
+   materialize_primary.vk.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+   const struct r3v_native_ordered_operation memory_dependency = {
+      .kind = R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
+   };
+   assert(r3v_native_cmd_buffer_append_ordered_operation(
+             &materialize_primary, &memory_dependency) == VK_SUCCESS);
+   VkCommandBuffer materialize_secondary_handle =
+      r3v_native_cmd_buffer_to_handle(&materialize_secondary);
+   r3v_CmdExecuteCommands(r3v_native_cmd_buffer_to_handle(&materialize_primary),
+                          1u, &materialize_secondary_handle);
+   assert(materialize_primary.vk.record_result == VK_SUCCESS);
+   assert(r3v_native_cmd_buffer_append_ordered_operation(
+             &materialize_primary, &memory_dependency) == VK_SUCCESS);
+   assert(materialize_primary.ordered_operation_count == 3u);
+   assert(materialize_primary.ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
+   assert(materialize_primary.ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(materialize_primary.ordered_operations[2].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER);
+   assert(materialize_primary.ib_size_dwords ==
+          materialize_secondary.ib_size_dwords);
+   assert(materialize_primary.reference_count ==
+          R300_ZB_DEPTH_CONTROL_SLOT_COUNT);
+   assert(materialize_primary.ordered_operations[1].ib_position_dwords ==
+          materialize_primary.ib_size_dwords);
+   assert(materialize_primary.image_states[0].current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(materialize_primary.current_zmask_owner.image == NULL);
+
+   const uint32_t materialize_operation_count =
+      materialize_command.ordered_operation_count;
+   const uint32_t materialize_state_count =
+      materialize_command.image_state_count;
+   const struct r3v_native_cmd_image_state materialize_state_before_refusal =
+      materialize_command.image_states[0];
+   assert(r3v_native_record_zmask_materialize(
+             r3v_native_cmd_buffer_to_handle(&materialize_command),
+             r3v_native_image_to_handle(&materialize_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+             &fast_clear_metadata) != VK_SUCCESS);
+   assert(materialize_command.ordered_operation_count ==
+          materialize_operation_count);
+   assert(materialize_command.image_state_count == materialize_state_count);
+   assert(memcmp(&materialize_command.image_states[0],
+                 &materialize_state_before_refusal,
+                 sizeof(materialize_state_before_refusal)) == 0);
+
+   struct r3v_native_cmd_buffer conflicting_reference_command = {0};
+   conflicting_reference_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   conflicting_reference_command.vk.base.device = &materialize_device.vk;
+   conflicting_reference_command.vk.pool = &pool;
+   struct r3v_native_memory conflicting_memory = materialize_memory;
+   conflicting_memory.bo.handle =
+      materialize_device.zmask_materialize_vertex.bo.handle;
+   struct r3v_native_image conflicting_image = materialize_image;
+   conflicting_image.memory = &conflicting_memory;
+   conflicting_image.depth_bound.contract = &conflicting_image.depth_contract;
+   assert(r3v_native_record_zmask_materialize(
+             r3v_native_cmd_buffer_to_handle(&conflicting_reference_command),
+             r3v_native_image_to_handle(&conflicting_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+             &fast_clear_metadata) != VK_SUCCESS);
+   assert(conflicting_reference_command.ib == NULL);
+   assert(conflicting_reference_command.ib_size_dwords == 0u);
+   assert(conflicting_reference_command.references == NULL);
+   assert(conflicting_reference_command.reference_count == 0u);
+   assert(conflicting_reference_command.ordered_operation_count == 0u);
+   assert(conflicting_reference_command.image_state_count == 0u);
+   assert(!conflicting_reference_command.required_zmask_owner_set);
+   assert(!conflicting_reference_command.current_zmask_owner_set);
+   assert(conflicting_image.committed_submission.representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR);
+   assert(conflicting_image.committed_submission.zmask_metadata.generation ==
+          fast_clear_metadata.generation);
+   r3v_native_cmd_buffer_release_recording(&conflicting_reference_command);
+   r3v_native_cmd_buffer_release_recording(&materialize_command);
+   r3v_native_cmd_buffer_release_recording(&stale_backing_command);
+   r3v_native_cmd_buffer_release_recording(&materialize_primary);
+   r3v_native_cmd_buffer_release_recording(&materialize_secondary);
    r3v_native_cmd_buffer_release_recording(&representation_command);
    r3v_native_cmd_buffer_release_recording(&command);
    return 0;
