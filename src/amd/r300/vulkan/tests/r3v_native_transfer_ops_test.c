@@ -1855,8 +1855,7 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
             VK_SUCCESS && color_view == VK_NULL_HANDLE,
          "depth image refuses a color aspect view");
    struct staging staging;
-   /* The effective bufferImageHeight contributes to the admitted footprint;
-    * keep enough storage for the explicit 100-row image height below. */
+   /* The explicit bufferImageHeight supplies the unused next-slice stride. */
    if (create_staging(f, 400, VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, &staging))
       return 1;
@@ -1926,8 +1925,10 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    vkCmdCopyBufferToImage(f->cmd, undersized_staging.buffer, image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                          &undersized_region);
-   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
-         "bufferImageHeight footprint refuses an undersized buffer");
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, compact_stride_cmd, f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
+            compact_stride_cmd->rb2d_copy_operation_count == 1u,
+         "a depth-one copy ignores unused bufferImageHeight rows");
    if (begin(f))
       return 1;
    depth_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;

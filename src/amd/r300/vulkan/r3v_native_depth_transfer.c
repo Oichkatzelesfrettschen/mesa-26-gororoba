@@ -441,7 +441,7 @@ r3v_native_validate_depth_image_copy(
        image_height < region->imageExtent.height)
       return false;
    const uint64_t row_bytes = (uint64_t)row_length * texel_bytes;
-   const uint64_t row_count = (uint64_t)image_height - 1u;
+   const uint64_t row_count = (uint64_t)region->imageExtent.height - 1u;
    const uint64_t texel_count = row_count * row_length +
                                 region->imageExtent.width;
    if (row_bytes > UINT32_MAX ||
