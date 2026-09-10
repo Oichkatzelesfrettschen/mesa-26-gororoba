@@ -3,10 +3,9 @@
 # It installs the r300 Gallium GL driver, the zink GL-on-Vulkan Gallium
 # driver, and the XA/Xv 2D-acceleration state tracker (libxatracker) into
 # the normal Mesa loader paths so RS482 daily-driver testing uses the fork by
-# default.  The ati_r300 (r3v) Vulkan ICD is staged under
-# /usr/share/mesa-gororoba/vulkan/icd.d and selected by mesa-gororoba-run and
-# the profile.d/environment.d policy (opt-in): its package-default promotion
-# into /usr/share/vulkan/icd.d waits for its conformance and WSI gates.
+# default.  The ati_r300 (r3v) Vulkan ICD is installed under the standard
+# /usr/share/vulkan/icd.d and /usr/lib paths so ordinary loader discovery finds
+# the package's generated manifest and driver library.
 #
 # Scope is deliberately RS482-focused: r300 hardware GL + the r3v Vulkan
 # ICD + zink riding that ICD for the GL-atop-Vulkan lane + XA/Xv and
@@ -19,7 +18,8 @@
 #
 # Two lanes, do not confuse them:
 #   * DEV / rapid iteration: build the devenv tree (ninja -C <builddir>) and run
-#     via VK_DRIVER_FILES (Vulkan) or LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
+#     via the explicit mesa-gororoba-env.sh wrapper or
+#     LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
 #     Incremental, seconds per file.  This package is NOT for per-file iteration.
 # Build profile: a TRUE RELEASE matching the canonical 4_r300_full_release
 # measurement profile -- buildtype=release, assertions OFF (b_ndebug=true), -O2,
@@ -37,7 +37,7 @@
 #
 # Install / reinstall:
 #   sudo pacman -U mesa-gororoba-*.pkg.tar.zst
-# Run probes with the RS482-focused loader overrides:
+# Run probes with the RS482-focused scoped wrapper:
 #   mesa-gororoba-run glxinfo -B
 #   mesa-gororoba-run eglinfo -B -p surfaceless
 #   mesa-gororoba-run vainfo --display drm --device /dev/dri/renderD128
@@ -49,7 +49,7 @@ if [[ -v GOROROBA_DISTCC_JOBS ]]; then
   exit 2
 fi
 pkgver=26.2.0
-pkgrel=21
+pkgrel=22
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
@@ -97,10 +97,10 @@ source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goror
         'radeon_icd.i686.json'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            'ef4d0df49194f421c60c230ab75bbd01dc0d68e57452d795ad805306ba289269'
+            '36d6b0bd829ad2af900e8f0144e1056cbd417f7fef834de6a30db29775b7f513'
             'a45c1892aa28f8bcc732aed982127c2b655b8652ff22122a86632db6207d6ebe'
-            'efc6d113d4c8be163117e134eb6b221a518fe649a5810b105c32b1817ef563d4'
-            '1d13d57d3acf8e7a7ef05dba363d3415a648a971c36447e5dcec259337668fd9'
+            '892c07d30f86bbfe181ac69b60dbcb1113b0b345e2621a27930095b4823233dd'
+            '098ae9caee036317b88342a4d3bc0140a8be86af615c148b866f502ea186c254'
             'e3c0eb4cbf29bfed92683ea07bcd91b21df7383aead8e1d30526e8d8cb90094a'
             'db99ee65f746c9f122477d2cb4e47a184a0153012c992b74e1f1cf0e65187ebd')
 
@@ -180,12 +180,54 @@ build() {
 package() {
   meson install -C build --no-rebuild --destdir "${pkgdir}"
 
-  # The r3v ICD stays off the system loader's search path until its
-  # promotion gate: stage its manifest under the package's own directory,
-  # where mesa-gororoba-env.sh names it through VK_DRIVER_FILES.
-  install -dm755 "${pkgdir}/usr/share/mesa-gororoba/vulkan/icd.d"
-  mv "${pkgdir}/usr/share/vulkan/icd.d"/r3v_icd*.json \
-    "${pkgdir}/usr/share/mesa-gororoba/vulkan/icd.d/"
+  # Meson generates the manifest from the Vulkan registry.  Validate the
+  # generated payload before installing package-owned helper files: an
+  # absolute manifest path must resolve inside the staged package, and a
+  # relative path must resolve from the manifest directory.  Both forms must
+  # identify the one library shipped by this package, so a build-directory,
+  # temporary-stage, or deleted-prefix reference cannot enter the package.
+  python3 - "${pkgdir}" <<'PY_PAYLOAD' || return 1
+import json
+import sys
+from pathlib import Path
+
+package_root = Path(sys.argv[1]).resolve()
+manifest = package_root / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+library = package_root / "usr/lib/libvulkan_r3v.so"
+
+if not manifest.is_file():
+    raise SystemExit("ERROR: generated R3V ICD manifest is missing: %s" % manifest)
+if not library.is_file():
+    raise SystemExit("ERROR: R3V ICD driver library is missing: %s" % library)
+
+try:
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit("ERROR: generated R3V ICD manifest is unreadable: %s" % error)
+
+icd = document.get("ICD")
+if not isinstance(icd, dict):
+    raise SystemExit("ERROR: generated R3V ICD manifest has no ICD object")
+library_path = icd.get("library_path")
+if not isinstance(library_path, str) or not library_path:
+    raise SystemExit("ERROR: generated R3V ICD manifest has no ICD.library_path")
+
+if Path(library_path).is_absolute():
+    resolved = (package_root / library_path.lstrip("/")).resolve()
+else:
+    resolved = (manifest.parent / library_path).resolve()
+
+expected = library.resolve()
+if resolved != expected:
+    raise SystemExit(
+        "ERROR: R3V ICD library_path resolves to %s, expected %s"
+        % (resolved, expected)
+    )
+if not resolved.is_file():
+    raise SystemExit("ERROR: R3V ICD library_path does not name a regular file: %s" % resolved)
+
+print("R3V ICD payload: %s -> %s" % (manifest, library))
+PY_PAYLOAD
 
   install -Dm755 mesa-gororoba-run \
     "${pkgdir}/usr/bin/mesa-gororoba-run"
