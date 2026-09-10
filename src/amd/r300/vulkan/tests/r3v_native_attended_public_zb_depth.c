@@ -22,6 +22,7 @@
 #include "vk_instance.h"
 #include "vk_physical_device.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -112,8 +113,14 @@ create_result_directory(const char *evidence_dir, const char *name,
 {
    const int path_length = snprintf(result_dir, PATH_MAX, "%s/%s",
                                     evidence_dir, name);
-   return path_length > 0 && path_length < PATH_MAX &&
-          mkdir(result_dir, 0700) == 0;
+   if (path_length <= 0 || path_length >= PATH_MAX)
+      return false;
+   if (mkdir(result_dir, 0700) == 0)
+      return true;
+   if (errno != EEXIST)
+      return false;
+   struct stat result_stat;
+   return stat(result_dir, &result_stat) == 0 && S_ISDIR(result_stat.st_mode);
 }
 
 static bool
@@ -1454,11 +1461,12 @@ static enum outcome
 classify_other_depth_check(enum outcome submission_outcome,
                            struct other_depth_check check)
 {
-   if (check.mapped && !check.exact)
-      return OUTCOME_CONTAINMENT_FAILURE;
-   if (submission_outcome == OUTCOME_PASS &&
-       (!check.mapped || check.retention_result != 0))
+   if (submission_outcome != OUTCOME_PASS)
+      return submission_outcome;
+   if (!check.mapped || check.retention_result != 0)
       return OUTCOME_RETENTION_FAILURE;
+   if (!check.exact)
+      return OUTCOME_CONTAINMENT_FAILURE;
    return submission_outcome;
 }
 
@@ -1720,17 +1728,35 @@ public_result_directory_selftest(void)
        mkdtemp(root_template) == NULL)
       return false;
    char result_dir[PATH_MAX];
+   char created_result_dir[PATH_MAX] = {0};
    struct stat result_stat;
    const bool created =
       create_result_directory(root_template, "pattern-2-read", result_dir);
+   if (created)
+      memcpy(created_result_dir, result_dir, sizeof(created_result_dir));
    const bool exact =
       created && stat(result_dir, &result_stat) == 0 &&
       S_ISDIR(result_stat.st_mode) && (result_stat.st_mode & 0777) == 0700;
-   const bool reuse_refused =
-      !create_result_directory(root_template, "pattern-2-read", result_dir);
-   const bool removed = (!created || rmdir(result_dir) == 0) &&
+   const bool reuse_accepted =
+      create_result_directory(root_template, "pattern-2-read", result_dir);
+   char regular_path[PATH_MAX];
+   const int regular_path_length =
+      snprintf(regular_path, sizeof(regular_path), "%s/%s", root_template,
+               "regular-file");
+   FILE *regular_file = NULL;
+   if (regular_path_length > 0 &&
+       (size_t)regular_path_length < sizeof(regular_path))
+      regular_file = fopen(regular_path, "wb");
+   const bool regular_created = regular_file != NULL;
+   if (regular_file != NULL)
+      fclose(regular_file);
+   const bool regular_rejected =
+      regular_created &&
+      !create_result_directory(root_template, "regular-file", result_dir);
+   const bool removed = (!created || rmdir(created_result_dir) == 0) &&
+                        (!regular_created || unlink(regular_path) == 0) &&
                         rmdir(root_template) == 0;
-   return exact && reuse_refused && removed;
+   return exact && reuse_accepted && regular_rejected && removed;
 }
 
 static bool
@@ -1752,6 +1778,11 @@ other_depth_check_selftest(void)
       .exact = true,
       .retention_result = -1,
    };
+   const struct other_depth_check changed_unretained = {
+      .mapped = true,
+      .exact = false,
+      .retention_result = -1,
+   };
    return classify_other_depth_check(OUTCOME_PASS, exact) == OUTCOME_PASS &&
           classify_other_depth_check(OUTCOME_PASS, changed) ==
              OUTCOME_CONTAINMENT_FAILURE &&
@@ -1759,10 +1790,16 @@ other_depth_check_selftest(void)
              OUTCOME_RETENTION_FAILURE &&
           classify_other_depth_check(OUTCOME_PASS, unretained) ==
              OUTCOME_RETENTION_FAILURE &&
+          classify_other_depth_check(OUTCOME_PASS, changed_unretained) ==
+             OUTCOME_RETENTION_FAILURE &&
           classify_other_depth_check(OUTCOME_SUBMISSION_REFUSED, unmapped) ==
              OUTCOME_SUBMISSION_REFUSED &&
           classify_other_depth_check(OUTCOME_SUBMISSION_REFUSED, changed) ==
-             OUTCOME_CONTAINMENT_FAILURE;
+             OUTCOME_SUBMISSION_REFUSED &&
+          classify_other_depth_check(OUTCOME_COMPLETION_FAILURE, changed) ==
+             OUTCOME_COMPLETION_FAILURE &&
+          classify_other_depth_check(OUTCOME_RETENTION_FAILURE, changed) ==
+             OUTCOME_RETENTION_FAILURE;
 }
 
 int
