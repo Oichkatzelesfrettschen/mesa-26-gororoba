@@ -10,6 +10,7 @@
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
+#include "r3v_vertex_spirv.h"
 
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_reg.h"
@@ -279,7 +280,8 @@ classify_color(const uint32_t *color, uint32_t pattern, enum run_mode mode,
    memset(observed_bits, 0, PIXELS / 8u);
    for (uint32_t pixel = 0; pixel < COLOR_BYTES / 4u; pixel++) {
       const bool inside = pixel < PIXELS;
-      const bool drawn = color[pixel] == R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+      const bool drawn =
+         color[pixel] == R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM;
       const bool sentinel = color[pixel] == R300_TRIANGLE_COLOR_SENTINEL;
       if (inside) {
          if (drawn) {
@@ -351,7 +353,8 @@ make_expected_color(uint32_t color[COLOR_BYTES / 4u], uint32_t pattern,
    for (uint32_t y = 0; y < 64u; y++)
       for (uint32_t x = 0; x < 64u; x++)
          if (expected_pixel_high(pattern, mode, x, y))
-            color[y * 64u + x] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+            color[y * 64u + x] =
+               R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM;
 }
 
 static bool
@@ -438,7 +441,7 @@ run_selftest(void)
             return 1;
 
          color[0] = color[0] == R300_TRIANGLE_COLOR_SENTINEL
-                       ? R300_TRIANGLE_DRAW_COLOR_B8G8R8A8
+                       ? R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM
                        : R300_TRIANGLE_COLOR_SENTINEL;
          if (classify_color(color, pattern, mode, bits, &colored,
                             &color_mismatches, &color_containment))
@@ -1139,7 +1142,8 @@ classify_public_color(const uint32_t *color, uint32_t pattern,
                                : mode == MODE_FAR_NEAR
                                     ? true
                                     : expected_pixel_high(pattern, mode, x, y);
-      const bool drawn = color[pixel] == R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+      const bool drawn =
+         color[pixel] == R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM;
       const bool sentinel = color[pixel] == R300_TRIANGLE_COLOR_SENTINEL;
       mismatches += (!drawn && !sentinel) || drawn != expected;
    }
@@ -1518,6 +1522,35 @@ run_public_persistence(const char *evidence_dir, bool record_only,
 }
 
 static bool
+public_reference_fragment_color_selftest(void)
+{
+   const uint32_t expected_bits[4] = R3V_REFERENCE_FRAGMENT_COLOR_BITS;
+   uint32_t observed_bits[4];
+   const char *reason = NULL;
+   if (!r3v_fragment_constant_color_from_spirv(
+          r3v_reference_fragment_spirv,
+          sizeof(r3v_reference_fragment_spirv) /
+             sizeof(r3v_reference_fragment_spirv[0]),
+          "main", observed_bits, &reason) ||
+       memcmp(observed_bits, expected_bits, sizeof(observed_bits)) != 0)
+      return false;
+
+   uint32_t channels[4];
+   for (uint32_t channel = 0; channel < 4; channel++) {
+      if (observed_bits[channel] == 0x00000000u)
+         channels[channel] = 0u;
+      else if (observed_bits[channel] == 0x3f800000u)
+         channels[channel] = 0xffu;
+      else
+         return false;
+   }
+   const uint32_t packed = channels[2] | (channels[1] << 8) |
+                           (channels[0] << 16) | (channels[3] << 24);
+   return packed == R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM &&
+          packed != R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+}
+
+static bool
 public_color_oracle_selftest(void)
 {
    float vertices[48];
@@ -1557,12 +1590,12 @@ public_color_oracle_selftest(void)
    if (!classify_public_color(color, 2, MODE_NEAR_FAR, &mismatches,
                               &containment))
       return false;
-   color[0] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+   color[0] = R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM;
    if (classify_public_color(color, 2, MODE_NEAR_FAR, &mismatches,
                              &containment))
       return false;
    for (uint32_t pixel = 0; pixel < PIXELS; pixel++)
-      color[pixel] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+      color[pixel] = R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM;
    for (uint32_t pixel = PIXELS;
         pixel < COLOR_BYTES / sizeof(uint32_t); pixel++)
       color[pixel] = R300_TRIANGLE_COLOR_SENTINEL;
@@ -1573,7 +1606,7 @@ public_color_oracle_selftest(void)
    if (classify_public_color(color, 2, MODE_FAR_NEAR, &mismatches,
                              &containment))
       return false;
-   color[0] = R300_TRIANGLE_DRAW_COLOR_B8G8R8A8;
+   color[0] = R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM;
    color[PIXELS] ^= 1u;
    return !classify_public_color(color, 2, MODE_FAR_NEAR, &mismatches,
                                  &containment);
@@ -1611,7 +1644,9 @@ int
 main(int argc, char **argv)
 {
    if (argc == 2 && strcmp(argv[1], "--selftest") == 0) {
-      if (run_selftest() != 0 || !public_color_oracle_selftest() ||
+      if (run_selftest() != 0 ||
+          !public_reference_fragment_color_selftest() ||
+          !public_color_oracle_selftest() ||
           !public_result_directory_selftest())
          return 1;
       printf("public color order selftest: PASS\n");

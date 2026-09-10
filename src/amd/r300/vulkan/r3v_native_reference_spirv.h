@@ -35,6 +35,11 @@
 #define R3V_REFERENCE_FRAGMENT_COLOR_BITS \
    { 0x00000000u, 0x3f800000u, 0x00000000u, 0x3f800000u }
 
+/* Packed storage word produced by the reference fragment module in the
+ * public B8G8R8A8_UNORM color attachment.
+ */
+#define R3V_REFERENCE_FRAGMENT_B8G8R8A8_UNORM 0xff00ff00u
+
 static const uint32_t r3v_reference_vertex_spirv[] = {
    0x07230203, 0x00010000, 0x0008000b, 0x00000015,
    0x00000000, 0x00020011, 0x00000001, 0x0006000b,
