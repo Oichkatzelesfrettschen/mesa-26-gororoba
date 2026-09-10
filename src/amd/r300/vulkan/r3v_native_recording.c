@@ -694,43 +694,46 @@ r3v_CmdClearDepthStencilImage(
        native_image->memory == NULL ||
        !(native_image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
        !r3v_native_transfer_destination_layout_ok(imageLayout) ||
-       pDepthStencil == NULL || rangeCount != 1u || pRanges == NULL) {
+       pDepthStencil == NULL || rangeCount == 0u || pRanges == NULL) {
       r3v_native_cmd_poison(commandBuffer);
       return;
    }
 
-   const VkImageSubresourceRange *range = &pRanges[0];
    const VkImageAspectFlags valid_aspects =
       VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-   if (range->aspectMask == 0u ||
-       (range->aspectMask & ~valid_aspects) != 0u ||
-       range->baseMipLevel != 0u ||
-       (range->levelCount != 1u &&
-        range->levelCount != VK_REMAINING_MIP_LEVELS) ||
-       range->baseArrayLayer != 0u ||
-       (range->layerCount != 1u &&
-        range->layerCount != VK_REMAINING_ARRAY_LAYERS)) {
-      r3v_native_cmd_poison(commandBuffer);
-      return;
+   VkImageAspectFlags requested_aspects = 0u;
+   for (uint32_t range_index = 0u; range_index < rangeCount; range_index++) {
+      const VkImageSubresourceRange *range = &pRanges[range_index];
+      if (range->aspectMask == 0u ||
+          (range->aspectMask & ~valid_aspects) != 0u ||
+          range->baseMipLevel != 0u ||
+          (range->levelCount != 1u &&
+           range->levelCount != VK_REMAINING_MIP_LEVELS) ||
+          range->baseArrayLayer != 0u ||
+          (range->layerCount != 1u &&
+           range->layerCount != VK_REMAINING_ARRAY_LAYERS)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      requested_aspects |= range->aspectMask;
    }
 
    uint32_t aspect_mask = 0u;
    uint32_t depth_code = 0u;
    uint32_t stencil = 0u;
-   if ((range->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u) {
+   if ((requested_aspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u) {
       aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
       if (!r3v_native_depth_clear_code(pDepthStencil->depth, &depth_code)) {
          r3v_native_cmd_poison(commandBuffer);
          return;
       }
    }
-   if ((range->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) != 0u) {
+   if ((requested_aspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0u) {
       aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
-      if (pDepthStencil->stencil > UINT8_MAX) {
-         r3v_native_cmd_poison(commandBuffer);
-         return;
-      }
-      stencil = pDepthStencil->stencil;
+      /* The API value is uint32_t, while the packed D24S8 destination
+       * carries the low eight bits of stencil.  The complete range and
+       * aspect request was validated above before conversion. */
+      stencil = pDepthStencil->stencil & UINT8_MAX;
    }
 
    if (r3v_native_record_depth_image_clear(

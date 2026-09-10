@@ -1059,25 +1059,109 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
             "depth clear case %u records successfully", case_index);
    }
 
+   static const struct {
+      uint32_t api_value;
+      uint8_t packed_value;
+   } stencil_values[] = {
+      {0x0000005au, 0x5au},
+      {0x00000100u, 0x00u},
+      {0x0000015au, 0x5au},
+      {UINT32_MAX, 0xffu},
+   };
+   static const VkImageAspectFlags conversion_aspects[] = {
+      VK_IMAGE_ASPECT_STENCIL_BIT,
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+   };
+   for (uint32_t aspect_index = 0u;
+        aspect_index < ARRAY_SIZE(conversion_aspects); aspect_index++) {
+      for (uint32_t value_index = 0u;
+           value_index < ARRAY_SIZE(stencil_values); value_index++) {
+         if (begin(f))
+            return 1;
+         const VkClearDepthStencilValue clear = {
+            .depth = 0.5f,
+            .stencil = stencil_values[value_index].api_value,
+         };
+         const VkImageSubresourceRange range = {
+            .aspectMask = conversion_aspects[aspect_index],
+            .baseMipLevel = 0u,
+            .levelCount = 1u,
+            .baseArrayLayer = 0u,
+            .layerCount = 1u,
+         };
+         vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                                     &clear, 1u, &range);
+         VK_FROM_HANDLE(r3v_native_cmd_buffer, converted_cmd, f->cmd);
+         uint32_t write_mask = 0u;
+         CHECK(converted_cmd->zb_depth_clear_stencil ==
+                  stencil_values[value_index].packed_value &&
+                  converted_cmd->cell_kind ==
+                     R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+                  command_packet0_value(converted_cmd, RADEON_DP_WRITE_MSK,
+                                        &write_mask) &&
+                  write_mask ==
+                     (conversion_aspects[aspect_index] ==
+                            VK_IMAGE_ASPECT_STENCIL_BIT
+                         ? 0x000000ffu
+                         : UINT32_MAX),
+               "stencil conversion case %u/%u records the low byte and aspect mask",
+               aspect_index, value_index);
+         CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+               "stencil conversion case %u/%u records successfully",
+               aspect_index, value_index);
+      }
+   }
+
    if (begin(f))
       return 1;
-   const VkClearDepthStencilValue clear = {.depth = 0.5f, .stencil = 0x100u};
-   const VkImageSubresourceRange stencil_range = {
-      .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
-      .baseMipLevel = 0u,
-      .levelCount = 1u,
-      .baseArrayLayer = 0u,
-      .layerCount = 1u,
+   const VkClearDepthStencilValue split_clear = {
+      .depth = 0.5f,
+      .stencil = 0x15au,
    };
-   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL, &clear,
-                               1u, &stencil_range);
-   VK_FROM_HANDLE(r3v_native_cmd_buffer, refused_cmd, f->cmd);
-   CHECK(refused_cmd->cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED &&
-            refused_cmd->ib == NULL && refused_cmd->references == NULL &&
-            !refused_cmd->zb_depth_clear_configured,
-         "a refused clear preserves the command payload state");
+   const VkImageSubresourceRange split_ranges[] = {
+      {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .baseMipLevel = 0u,
+         .levelCount = VK_REMAINING_MIP_LEVELS,
+         .baseArrayLayer = 0u,
+         .layerCount = VK_REMAINING_ARRAY_LAYERS,
+      },
+      {
+         .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+         .baseMipLevel = 0u,
+         .levelCount = 1u,
+         .baseArrayLayer = 0u,
+         .layerCount = 1u,
+      },
+   };
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &split_clear, ARRAY_SIZE(split_ranges),
+                               split_ranges);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, split_cmd, f->cmd);
+   CHECK(split_cmd->zb_depth_clear_aspect_mask ==
+            R300_ZB_COMBINED_CLEAR_ASPECTS &&
+            split_cmd->zb_depth_clear_stencil == 0x5au,
+         "separate depth and stencil ranges normalize into one combined clear");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "separate depth and stencil ranges record successfully");
+
+   if (begin(f))
+      return 1;
+   VkImageSubresourceRange invalid_ranges[] = {
+      split_ranges[0],
+      split_ranges[1],
+   };
+   invalid_ranges[1].baseMipLevel = 1u;
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &split_clear, ARRAY_SIZE(invalid_ranges),
+                               invalid_ranges);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, invalid_cmd, f->cmd);
+   CHECK(invalid_cmd->cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED &&
+            invalid_cmd->ib == NULL && invalid_cmd->references == NULL &&
+            !invalid_cmd->zb_depth_clear_configured,
+         "an invalid later range preserves the command payload state");
    CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
-         "stencil values outside the packed byte refuse");
+         "an invalid later range poisons the complete request");
    return 0;
 }
 
