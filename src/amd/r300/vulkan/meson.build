@@ -1580,6 +1580,17 @@ test('r3v-native-public-zb-depth-fixtures',
      r3v_native_attended_public_zb_depth,
      args : ['--selftest'], suite : ['r3v'])
 
+r3v_native_zmask_public_lifecycle_test = executable(
+  'r3v_native_zmask_public_lifecycle_test',
+  files('tests/r3v_native_zmask_public_lifecycle_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',
   files('tests/r3v_native_attended_zb_depth_control.c'),
@@ -3594,6 +3605,14 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'r3v-native-public-zb-depth-record-persistence',
     r3v_native_attended_public_zb_depth,
     args : [meson.current_build_dir(), '--persistence', '--record-only'],
+    env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-zmask-public-lifecycle',
+    r3v_native_zmask_public_lifecycle_test,
     env : r3v_native_cell_env,
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
