@@ -110,6 +110,43 @@ r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
    return 0;
 }
 
+int
+r300_zmask_fast_clear_plan_build(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zmask_layout *layout, uint32_t depth_code,
+   uint32_t stencil, struct r300_zmask_clear_plan *out)
+{
+   if (surface == NULL || layout == NULL || out == NULL ||
+       r300_zb_depth_surface_check(surface) != 0 ||
+       surface->bytes_per_pixel != 4u || !surface->microtile ||
+       !surface->macrotile)
+      return -EINVAL;
+
+   struct r300_zmask_clear_plan bind_plan;
+   if (r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL, layout,
+                                   &bind_plan) != 0)
+      return -EINVAL;
+
+   uint32_t clear_word;
+   if (r300_zb_depth_pack(surface, depth_code, stencil, &clear_word) != 0)
+      return -EINVAL;
+
+   struct r300_zmask_clear_plan plan;
+   memset(&plan, 0, sizeof(plan));
+   struct r300_pm4_builder builder;
+   r300_pm4_builder_init(&builder, plan.words,
+                         R300_ZMASK_CLEAR_PLAN_MAX_DWORDS);
+   r300_pm4_reg(&builder, R300_ZB_DEPTHCLEARVALUE, clear_word);
+   r300_pm4_block(&builder, bind_plan.words, bind_plan.dword_count);
+   const int result = r300_pm4_builder_finish(&builder, &plan.dword_count);
+   if (result != 0)
+      return result;
+   plan.requires_hyperz_ownership = bind_plan.requires_hyperz_ownership;
+   plan.writes_hyperz_registers = bind_plan.writes_hyperz_registers;
+   *out = plan;
+   return 0;
+}
+
 enum r300_zmask_compression
 r300_zmask_clear_stage_block(enum r300_zmask_clear_stage stage)
 {

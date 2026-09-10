@@ -1414,6 +1414,7 @@ test(
 r300_zmask_clear_plan_test = executable(
   'r300_zmask_clear_plan_test',
   files('r300_pm4_builder.c', 'r300_zb_hyperz_admission.c',
+        'r300_zb_depth_layout.c', 'r300_zb_depth_surface.c',
         'r300_zmask_layout.c', 'r300_zmask_clear_plan.c',
         'tests/r300_zmask_clear_plan_test.c'),
   c_args : r300_format_contract_test_c_args,
