@@ -1655,6 +1655,111 @@ r3v_native_cmd_buffer_requires_inline_ordering(
    return r3v_recorded_work_census_ordered(&census);
 }
 
+/* Query and event records have no PM4 payload in the native carrier.  Their
+ * operation records provide their mutual execution order.  Submission
+ * preflight keeps them separate from PM4, draw, dispatch, and transfer work
+ * until the transport can split execution at an arbitrary record position. */
+static VkResult
+r3v_native_queue_execute_ordered_query_events(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->ordered_operation_count == 0u) {
+      for (uint32_t q = 0u; q < cmd_buffer->query_op_count; q++) {
+         const struct r3v_native_query_op *op = &cmd_buffer->query_ops[q];
+         const uint8_t value =
+            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1u : 0u;
+         memset(&op->pool->state[op->first_query], value, op->query_count);
+      }
+      for (uint32_t e = 0u; e < cmd_buffer->event_op_count; e++) {
+         const struct r3v_native_event_op *op = &cmd_buffer->event_ops[e];
+         switch (op->kind) {
+         case R3V_NATIVE_EVENT_OP_SET:
+            op->event->signaled = true;
+            break;
+         case R3V_NATIVE_EVENT_OP_RESET:
+            op->event->signaled = false;
+            break;
+         case R3V_NATIVE_EVENT_OP_WAIT:
+            if (!op->event->signaled)
+               return vk_error(device, VK_ERROR_DEVICE_LOST);
+            break;
+         }
+      }
+      return VK_SUCCESS;
+   }
+
+   for (uint32_t operation_index = 0u;
+        operation_index < cmd_buffer->ordered_operation_count;
+        operation_index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[operation_index];
+      if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_QUERY) {
+         const uint32_t query_index = operation->payload.query.query_index;
+         if (query_index >= cmd_buffer->query_op_count)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
+         const struct r3v_native_query_op *op =
+            &cmd_buffer->query_ops[query_index];
+         const uint8_t value =
+            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1u : 0u;
+         memset(&op->pool->state[op->first_query], value, op->query_count);
+      } else if (operation->kind == R3V_NATIVE_ORDERED_OPERATION_EVENT) {
+         const uint32_t event_index = operation->payload.event.event_index;
+         if (event_index >= cmd_buffer->event_op_count)
+            return vk_error(device, VK_ERROR_DEVICE_LOST);
+         const struct r3v_native_event_op *op =
+            &cmd_buffer->event_ops[event_index];
+         switch (op->kind) {
+         case R3V_NATIVE_EVENT_OP_SET:
+            op->event->signaled = true;
+            break;
+         case R3V_NATIVE_EVENT_OP_RESET:
+            op->event->signaled = false;
+            break;
+         case R3V_NATIVE_EVENT_OP_WAIT:
+            if (!op->event->signaled)
+               return vk_error(device, VK_ERROR_DEVICE_LOST);
+            break;
+         }
+      }
+   }
+   return VK_SUCCESS;
+}
+
+/* A PM4 stream is submitted as one CS and therefore already preserves the
+ * relative order of clears, barriers, copies, and render spans.  Host copies
+ * remain the two explicit execution regions represented by their recorded
+ * group.  Scan the ordered stream before invoking a group so an omitted
+ * legacy record cannot execute merely because its side array is populated. */
+static VkResult
+r3v_native_queue_execute_ordered_copies(
+   struct r3v_native_device *device,
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   enum r3v_native_copy_group group)
+{
+   if (cmd_buffer->ordered_operation_count == 0u)
+      return r3v_native_cmd_buffer_execute_deferred_copies(
+         device, cmd_buffer, group);
+
+   for (uint32_t operation_index = 0u;
+        operation_index < cmd_buffer->ordered_operation_count;
+        operation_index++) {
+      const struct r3v_native_ordered_operation *operation =
+         &cmd_buffer->ordered_operations[operation_index];
+      if (operation->kind != R3V_NATIVE_ORDERED_OPERATION_HOST_COPY)
+         continue;
+      const uint32_t copy_index =
+         operation->payload.host_copy.deferred_copy_index;
+      if (copy_index >= cmd_buffer->deferred_copy_count)
+         return vk_error(device, VK_ERROR_DEVICE_LOST);
+      if (cmd_buffer->deferred_copies[copy_index].group != group)
+         continue;
+      return r3v_native_cmd_buffer_execute_deferred_copies(
+         device, cmd_buffer, group);
+   }
+   return VK_SUCCESS;
+}
+
 /* Walks the routed fill's record along the transport that carried it.
  *
  * The route leaves the record at PREPARED: it built a stream and nothing
@@ -2195,6 +2300,19 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                           "r3v-native: command buffer %u carries recording "
                           "error %d", command_index, vk_cmd->record_result);
       }
+      const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
+         vk_cmd, struct r3v_native_cmd_buffer, vk);
+      if ((cmd_buffer->query_op_count != 0u ||
+           cmd_buffer->event_op_count != 0u) &&
+          (cmd_buffer->deferred_copy_count != 0u ||
+           cmd_buffer->deferred_draw_count != 0u ||
+           cmd_buffer->deferred_dispatch.pending ||
+           cmd_buffer->ib_size_dwords != 0u)) {
+         return vk_errorf(
+            device, R3V_NATIVE_REFUSAL_RESULT,
+            "r3v-native: query and event records require a command buffer "
+            "without transfer, draw, dispatch, or PM4 work");
+      }
    }
    VkResult image_preflight =
       r3v_native_queue_preflight_image_states(device, submit);
@@ -2343,36 +2461,12 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       }
 
-      /* Recorded query transitions publish here, in recorded order:
-       * an end makes its query available with the exact zero count,
-       * a reset returns its range to unavailable.
-       */
-      for (uint32_t q = 0; q < cmd_buffer->query_op_count; q++) {
-         const struct r3v_native_query_op *op = &cmd_buffer->query_ops[q];
-         const uint8_t value =
-            op->kind == R3V_NATIVE_QUERY_OP_MAKE_AVAILABLE ? 1 : 0;
-         memset(&op->pool->state[op->first_query], value, op->query_count);
-      }
-
-      /* Recorded event transitions and waits execute here, in order:
-       * a wait finding its event unsignaled is unsatisfiable on the
-       * synchronous timeline and the submission is lost.
-       */
-      for (uint32_t e = 0; e < cmd_buffer->event_op_count; e++) {
-         const struct r3v_native_event_op *op = &cmd_buffer->event_ops[e];
-         switch (op->kind) {
-         case R3V_NATIVE_EVENT_OP_SET:
-            op->event->signaled = true;
-            break;
-         case R3V_NATIVE_EVENT_OP_RESET:
-            op->event->signaled = false;
-            break;
-         case R3V_NATIVE_EVENT_OP_WAIT:
-            if (!op->event->signaled)
-               return vk_error(device, VK_ERROR_DEVICE_LOST);
-            break;
-         }
-      }
+      /* Query and event transitions follow the ordered operation stream;
+       * legacy carriers with no stream retain their category execution. */
+      VkResult query_event_result =
+         r3v_native_queue_execute_ordered_query_events(device, cmd_buffer);
+      if (query_event_result != VK_SUCCESS)
+         return query_event_result;
 
       /* A zero-IB command buffer can still carry a deferred load-op clear
        * from an empty render pass, recorded transfer copies, or a
@@ -2391,9 +2485,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           * for a submission whose earlier copies may already have
           * landed.
           */
-         if (r3v_native_cmd_buffer_execute_deferred_copies(
-                device, cmd_buffer,
-                R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) != VK_SUCCESS)
+         if (r3v_native_queue_execute_ordered_copies(
+                device, cmd_buffer, R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) !=
+             VK_SUCCESS)
             return vk_error(device, VK_ERROR_DEVICE_LOST);
 
          VkResult dispatched =
@@ -2419,9 +2513,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
           * follows the deferred draw on this path as it follows the
           * completion wait on the transport path.
           */
-         if (r3v_native_cmd_buffer_execute_deferred_copies(
-                device, cmd_buffer,
-                R3V_NATIVE_COPY_GROUP_AFTER_DRAW) != VK_SUCCESS)
+         if (r3v_native_queue_execute_ordered_copies(
+                device, cmd_buffer, R3V_NATIVE_COPY_GROUP_AFTER_DRAW) !=
+             VK_SUCCESS)
             return vk_error(device, VK_ERROR_DEVICE_LOST);
          continue;
       }
@@ -2908,9 +3002,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * IB references reaches memory before the ioctl and a refused
        * submission leaves application memory untouched.
        */
-      if (r3v_native_cmd_buffer_execute_deferred_copies(
-             device, cmd_buffer,
-             R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) != VK_SUCCESS) {
+      if (r3v_native_queue_execute_ordered_copies(
+             device, cmd_buffer, R3V_NATIVE_COPY_GROUP_BEFORE_DRAW) !=
+          VK_SUCCESS) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -3191,9 +3285,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * invalidate drops the stale lines over the mapping it takes, so a
        * read of the render target observes the device output.
        */
-      if (r3v_native_cmd_buffer_execute_deferred_copies(
-             device, cmd_buffer,
-             R3V_NATIVE_COPY_GROUP_AFTER_DRAW) != VK_SUCCESS)
+      if (r3v_native_queue_execute_ordered_copies(
+             device, cmd_buffer, R3V_NATIVE_COPY_GROUP_AFTER_DRAW) !=
+          VK_SUCCESS)
          return vk_error(device, VK_ERROR_DEVICE_LOST);
       /* The transcript lands on the capture cadence after a completed
        * submission, so a planning pass cut short keeps the entries that

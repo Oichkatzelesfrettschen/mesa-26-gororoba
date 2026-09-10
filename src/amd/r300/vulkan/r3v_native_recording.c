@@ -1334,6 +1334,11 @@ r3v_CmdExecuteCommands(
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
 
+   if (commandBufferCount != 0u && pCommandBuffers == NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+
    if (cmd_buffer->pass_target != NULL ||
        cmd_buffer->active_query_pool != NULL ||
        cmd_buffer->vk.level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {

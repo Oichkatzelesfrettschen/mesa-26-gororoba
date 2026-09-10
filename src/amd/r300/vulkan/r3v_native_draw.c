@@ -59,8 +59,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
        contents != VK_SUBPASS_CONTENTS_INLINE ||
        !r3v_native_render_pass_matches_cell(pass) || framebuffer == NULL ||
        framebuffer->layers != 1 ||
-       (framebuffer->attachment_count != 1 &&
-        framebuffer->attachment_count != 2)) {
+       framebuffer->attachment_count != pass->attachment_count) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
    }

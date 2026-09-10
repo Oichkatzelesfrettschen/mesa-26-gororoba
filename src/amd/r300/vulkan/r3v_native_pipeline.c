@@ -22,6 +22,22 @@
 
 #include <string.h>
 
+static bool
+r3v_native_color_attachment_layout_ok(VkImageLayout layout, bool initial)
+{
+   return (initial && layout == VK_IMAGE_LAYOUT_UNDEFINED) ||
+          layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+}
+
+static bool
+r3v_native_depth_attachment_layout_ok(VkImageLayout layout, bool initial)
+{
+   return (initial && layout == VK_IMAGE_LAYOUT_UNDEFINED) ||
+          layout == VK_IMAGE_LAYOUT_GENERAL ||
+          layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+}
+
 /* The render-pass shape whose one subpass the cell realizes: one
  * single-sample color attachment in either render-family lane order and one
  * single-sample D24S8 depth/stencil attachment, stored after the subpass.
@@ -44,11 +60,15 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
    if (!r3v_native_render_lane_order(color->format, &lanes) ||
        color->samples != 1 ||
        color->load_op != VK_ATTACHMENT_LOAD_OP_CLEAR ||
-       color->store_op != VK_ATTACHMENT_STORE_OP_STORE)
+       color->store_op != VK_ATTACHMENT_STORE_OP_STORE ||
+       !r3v_native_color_attachment_layout_ok(color->initial_layout, true) ||
+       !r3v_native_color_attachment_layout_ok(color->final_layout, false))
       return false;
    const struct vk_subpass *subpass = &pass->subpasses[0];
    if (subpass->input_count != 0 || subpass->color_count != 1 ||
-       subpass->color_attachments[0].attachment != 0)
+       subpass->color_attachments[0].attachment != 0 ||
+       !r3v_native_color_attachment_layout_ok(
+          subpass->color_attachments[0].layout, false))
       return false;
    if (pass->attachment_count == 1)
       return subpass->depth_stencil_attachment == NULL;
@@ -64,8 +84,12 @@ r3v_native_render_pass_matches_cell(const struct vk_render_pass *pass)
           depth->samples == 1 && (depth_loads_clear || depth_loads) &&
           depth->store_op == VK_ATTACHMENT_STORE_OP_STORE &&
           depth->stencil_store_op == VK_ATTACHMENT_STORE_OP_STORE &&
+          r3v_native_depth_attachment_layout_ok(depth->initial_layout, true) &&
+          r3v_native_depth_attachment_layout_ok(depth->final_layout, false) &&
           subpass->depth_stencil_attachment != NULL &&
-          subpass->depth_stencil_attachment->attachment == 1;
+          subpass->depth_stencil_attachment->attachment == 1 &&
+          r3v_native_depth_attachment_layout_ok(
+             subpass->depth_stencil_attachment->layout, false);
 }
 
 /* SPIR-V ingestion for the semantic front end: the direct word-stream
