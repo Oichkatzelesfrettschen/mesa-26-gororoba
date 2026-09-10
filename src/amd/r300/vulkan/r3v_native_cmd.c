@@ -403,13 +403,23 @@ r3v_native_cmd_buffer_require_ordinary_depth_backing(
       state->current_zmask_metadata_set ? &state->current_zmask_metadata
                                         : &state->required_zmask_metadata;
    const struct r3v_native_zmask_metadata_state retired_metadata = {0};
-   if (representation != R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED ||
-       !r3v_native_zmask_metadata_equal(metadata, &retired_metadata)) {
-      *state = original;
-      cmd_buffer->image_state_count = original_count;
-      return VK_ERROR_INITIALIZATION_FAILED;
+   if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED &&
+       r3v_native_zmask_metadata_equal(metadata, &retired_metadata))
+      return VK_SUCCESS;
+
+   if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
+       metadata->status == R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR &&
+       metadata->generation != 0u) {
+      result = r3v_native_record_zmask_materialize(
+         r3v_native_cmd_buffer_to_handle(cmd_buffer),
+         r3v_native_image_to_handle(image), representation, metadata);
+      if (result == VK_SUCCESS)
+         return VK_SUCCESS;
    }
-   return VK_SUCCESS;
+
+   *state = original;
+   cmd_buffer->image_state_count = original_count;
+   return result == VK_SUCCESS ? VK_ERROR_INITIALIZATION_FAILED : result;
 }
 
 VkResult
