@@ -62,17 +62,30 @@ main(int argc, char **argv)
       strcmp(argv[1], "initialize-cs-refuse") == 0;
    const bool initialize_completion_fail =
       strcmp(argv[1], "initialize-completion-fail") == 0;
+   const bool fast_clear_success =
+      strcmp(argv[1], "fast-clear-success") == 0;
+   const bool fast_clear_cs_refuse =
+      strcmp(argv[1], "fast-clear-cs-refuse") == 0;
+   const bool fast_clear_completion_fail =
+      strcmp(argv[1], "fast-clear-completion-fail") == 0;
    const bool initialize = initialize_success || initialize_cs_refuse ||
                            initialize_completion_fail;
-   const bool success = ownership_success || initialize_success;
-   assert(ownership_success || withhold || refuse || initialize);
+   const bool fast_clear = fast_clear_success || fast_clear_cs_refuse ||
+                           fast_clear_completion_fail;
+   const bool metadata_operation = initialize || fast_clear;
+   const bool cs_refuse = initialize_cs_refuse || fast_clear_cs_refuse;
+   const bool completion_fail = initialize_completion_fail ||
+                                fast_clear_completion_fail;
+   const bool success = ownership_success || initialize_success ||
+                        fast_clear_success;
+   assert(ownership_success || withhold || refuse || metadata_operation);
    if (withhold)
       assert(setenv("R3V_NATIVE_SHIM_HYPERZ_WITHHOLD", "1", 1) == 0);
    if (refuse)
       assert(setenv("R3V_NATIVE_SHIM_HYPERZ_REFUSE", "1", 1) == 0);
-   if (initialize_cs_refuse)
+   if (cs_refuse)
       assert(setenv("R3V_NATIVE_SHIM_CS_REFUSE", "1", 1) == 0);
-   if (initialize_completion_fail)
+   if (completion_fail)
       assert(setenv("R3V_NATIVE_SHIM_COMPLETION_FAIL", "1", 1) == 0);
 
    counter_fn cs_count =
@@ -92,9 +105,12 @@ main(int argc, char **argv)
    if (initialize)
       assert(setenv("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL", "1", 1) ==
              0);
+   if (fast_clear)
+      assert(setenv("R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL", "1", 1) ==
+             0);
 
    char manifest_directory[PATH_MAX] = {0};
-   if (initialize) {
+   if (metadata_operation) {
       const char *temporary_root = getenv("TMPDIR");
       if (temporary_root == NULL || temporary_root[0] == '\0')
          temporary_root = "/tmp";
@@ -158,7 +174,7 @@ main(int argc, char **argv)
              NULL, &device) == VK_SUCCESS);
    struct r3v_native_device *native_device =
       r3v_native_device_from_handle(device);
-   if (initialize)
+   if (metadata_operation)
       r3v_native_install_shim_arming(native_device);
    assert(native_device->zmask_owner.image == NULL);
    assert(native_device->zmask_owner.metadata.status ==
@@ -177,6 +193,8 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkBindImageMemory);
    LOAD_DEVICE(vkBeginCommandBuffer);
    LOAD_DEVICE(vkEndCommandBuffer);
+   LOAD_DEVICE(vkCmdPipelineBarrier);
+   LOAD_DEVICE(vkCmdClearDepthStencilImage);
    LOAD_DEVICE(vkQueueSubmit);
    LOAD_DEVICE(vkDestroyDevice);
    assert(vkGetDeviceQueue != NULL);
@@ -191,6 +209,8 @@ main(int argc, char **argv)
    assert(vkBindImageMemory != NULL);
    assert(vkBeginCommandBuffer != NULL);
    assert(vkEndCommandBuffer != NULL);
+   assert(vkCmdPipelineBarrier != NULL);
+   assert(vkCmdClearDepthStencilImage != NULL);
    assert(vkQueueSubmit != NULL);
    assert(vkDestroyDevice != NULL);
 
@@ -219,7 +239,7 @@ main(int argc, char **argv)
              }) == VK_SUCCESS);
    VkImage image = VK_NULL_HANDLE;
    VkDeviceMemory image_memory = VK_NULL_HANDLE;
-   if (initialize) {
+   if (metadata_operation) {
       assert(vkCreateImage(
                 device,
                 &(VkImageCreateInfo){
@@ -257,8 +277,43 @@ main(int argc, char **argv)
       assert(native_image->committed_submission.zmask_metadata.status ==
              R3V_NATIVE_ZMASK_METADATA_RETIRED);
       native_device->submit_hazard_accepted = true;
-      assert(r3v_native_record_zmask_initialize(command_buffer, image) ==
-             VK_SUCCESS);
+      if (initialize) {
+         assert(r3v_native_record_zmask_initialize(command_buffer, image) ==
+                VK_SUCCESS);
+      } else {
+         const VkImageMemoryBarrier layout_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = {
+               .aspectMask =
+                  VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+               .levelCount = 1u,
+               .layerCount = 1u,
+            },
+         };
+         vkCmdPipelineBarrier(command_buffer,
+                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL,
+                              0u, NULL, 1u, &layout_barrier);
+         const VkClearDepthStencilValue clear = {
+            .depth = 0.25f,
+            .stencil = 0xa5u,
+         };
+         const VkImageSubresourceRange range = {
+            .aspectMask =
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .levelCount = 1u,
+            .layerCount = 1u,
+         };
+         vkCmdClearDepthStencilImage(command_buffer, image,
+                                     VK_IMAGE_LAYOUT_GENERAL, &clear, 1u,
+                                     &range);
+      }
    } else {
       assert(r3v_native_record_zmask_ownership_only(command_buffer) ==
              VK_SUCCESS);
@@ -267,15 +322,24 @@ main(int argc, char **argv)
 
    struct r3v_native_cmd_buffer *native_command =
       r3v_native_cmd_buffer_from_handle(command_buffer);
-   assert(initialize ? native_command->ib_size_dwords != 0u
-                     : native_command->ib_size_dwords == 0u);
-   assert(native_command->reference_count == (initialize ? 1u : 0u));
-   assert(native_command->image_state_count == (initialize ? 1u : 0u));
-   assert(native_command->ordered_operation_count == 1u);
-   assert(native_command->ordered_operations[0].kind ==
-          (initialize ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE
-                      : R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE));
-   if (initialize) {
+   assert(metadata_operation ? native_command->ib_size_dwords != 0u
+                             : native_command->ib_size_dwords == 0u);
+   assert(native_command->reference_count ==
+          (metadata_operation ? 1u : 0u));
+   assert(native_command->image_state_count ==
+          (metadata_operation ? 1u : 0u));
+   const uint32_t metadata_operation_index = fast_clear ? 1u : 0u;
+   assert(native_command->ordered_operation_count ==
+          (fast_clear ? 2u : 1u));
+   if (fast_clear)
+      assert(native_command->ordered_operations[0].kind ==
+             R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER);
+   assert(native_command->ordered_operations[metadata_operation_index].kind ==
+          (initialize
+              ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE
+              : fast_clear ? R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR
+                           : R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE));
+   if (metadata_operation) {
       char digest[2u * BLAKE3_OUT_LEN + 1u];
       r300_triangle_ib_digest_hex(native_command->ib,
                                   native_command->ib_size_dwords, digest);
@@ -295,37 +359,52 @@ main(int argc, char **argv)
       VK_NULL_HANDLE);
    assert(result == (success ? VK_SUCCESS : VK_ERROR_DEVICE_LOST));
    assert(acquire_count() == 1u);
-   assert(release_count() == (initialize_cs_refuse ? 1u : 0u));
-   assert(cs_count() == (initialize ? 1u : 0u));
+   assert(release_count() == (cs_refuse ? 1u : 0u));
+   assert(cs_count() == (metadata_operation ? 1u : 0u));
    const bool retains_ownership =
-      ownership_success || initialize_success || initialize_completion_fail;
+      ownership_success || initialize_success || fast_clear_success ||
+      completion_fail;
    assert(ownership_held() == retains_ownership);
-   assert(native_command->image_state_count == (initialize ? 1u : 0u));
+   assert(native_command->image_state_count ==
+          (metadata_operation ? 1u : 0u));
    assert(native_device->hyperz_ownership ==
           (retains_ownership ? R300_ZB_HYPERZ_OWNED
                              : R300_ZB_HYPERZ_UNOWNED));
    struct r3v_native_image *native_image =
       image != VK_NULL_HANDLE ? r3v_native_image_from_handle(image) : NULL;
    assert(native_device->zmask_owner.image ==
-          (initialize_success ? native_image : NULL));
+          ((initialize_success || fast_clear_success) ? native_image : NULL));
    assert(native_device->zmask_owner.metadata.status ==
-          (initialize_success ? R3V_NATIVE_ZMASK_METADATA_INITIALIZED
-                              : R3V_NATIVE_ZMASK_METADATA_RETIRED));
-   assert(native_device->transport_cs_ioctl_count == (initialize ? 1u : 0u));
+          (initialize_success
+              ? R3V_NATIVE_ZMASK_METADATA_INITIALIZED
+              : fast_clear_success ? R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR
+                                   : R3V_NATIVE_ZMASK_METADATA_RETIRED));
+   assert(native_device->transport_cs_ioctl_count ==
+          (metadata_operation ? 1u : 0u));
    assert(native_device->queue_status ==
           (ownership_success
               ? R3V_NATIVE_QUEUE_STATUS_NO_SUBMISSION
-              : initialize_success
+              : initialize_success || fast_clear_success
                    ? R3V_NATIVE_QUEUE_STATUS_COMPLETED
-                   : initialize_completion_fail
+                   : completion_fail
                         ? R3V_NATIVE_QUEUE_STATUS_COMPLETION_FAILURE
                         : R3V_NATIVE_QUEUE_STATUS_SUBMISSION_REFUSED));
    if (native_image != NULL) {
       assert(native_image->committed_submission.representation ==
-             R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+             (fast_clear_success
+                 ? R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR
+                 : R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED));
       assert(native_image->committed_submission.zmask_metadata.status ==
-             (initialize_success ? R3V_NATIVE_ZMASK_METADATA_INITIALIZED
-                                 : R3V_NATIVE_ZMASK_METADATA_RETIRED));
+             (initialize_success
+                 ? R3V_NATIVE_ZMASK_METADATA_INITIALIZED
+                 : fast_clear_success ? R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR
+                                      : R3V_NATIVE_ZMASK_METADATA_RETIRED));
+      if (fast_clear_success) {
+         assert(native_image->committed_submission.zmask_metadata
+                   .clear_depth_code == 0x400000u);
+         assert(native_image->committed_submission.zmask_metadata
+                   .clear_stencil == 0xa5u);
+      }
    }
 
    vkDestroyCommandPool(device, command_pool, NULL);
@@ -336,8 +415,8 @@ main(int argc, char **argv)
    vkDestroyDevice(device, NULL);
    assert(acquire_count() == 1u);
    assert(release_count() ==
-          ((initialize || ownership_success) ? 1u : 0u));
-   assert(cs_count() == (initialize ? 1u : 0u));
+          ((metadata_operation || ownership_success) ? 1u : 0u));
+   assert(cs_count() == (metadata_operation ? 1u : 0u));
    assert(!ownership_held());
    vkDestroyInstance(instance, NULL);
    return 0;
