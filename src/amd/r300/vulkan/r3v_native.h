@@ -13,6 +13,7 @@
 #include "r3v_native_arming.h"
 #include "r3v_native_plan.h"
 #include "r3v_route_policy.h"
+#include "r3v_submit_preflight.h"
 
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
@@ -1309,7 +1310,7 @@ struct r3v_measurement_execution {
 
 struct r3v_native_prepared_submission {
    bool valid;
-   bool hyperz_newly_acquired;
+   struct r3v_hyperz_grant_transaction hyperz_grant;
    struct r3v_native_cmd_buffer *cmd_buffer;
    struct radeon_drm_vk_reloc_list relocs;
    struct radeon_drm_vk_cs cs;
@@ -2750,12 +2751,24 @@ VkResult r3v_native_deferred_dispatch_verify_gpu(
  * refuses before any ioctl. */
 VkResult r3v_native_hyperz_admit(struct r3v_native_device *device,
                                  struct r3v_native_cmd_buffer *cmd_buffer,
-                                 bool *newly_acquired);
+                                 struct r3v_hyperz_grant_transaction
+                                    *transaction);
+
+enum r300_zb_hyperz_verdict r3v_native_hyperz_submission_prepare(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_hyperz_grant_transaction *transaction,
+   struct r300_zb_hyperz_site *site, int *request_result,
+   uint32_t *returned_ownership);
 
 /* Releases HyperZ ownership held by the descriptor; a device holding none
  * succeeds without an ioctl.  A failed kernel release leaves the local state
  * owned because the descriptor remains the only recovery boundary. */
 bool r3v_native_hyperz_release(struct r3v_native_device *device);
+
+bool r3v_native_hyperz_submission_finish(
+   struct r3v_native_device *device,
+   const struct r3v_hyperz_grant_transaction *transaction);
 
 VkResult r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_device *device,

@@ -479,21 +479,6 @@ if with_tests
     suite : ['r3v'],
   )
 
-  test(
-    'r3v-hyperz-ownership-transaction-selftest',
-    prog_python,
-    args : [files('tests/r3v_hyperz_ownership_transaction_audit.py'),
-            '--selftest'],
-    suite : ['r3v'],
-  )
-  test(
-    'r3v-hyperz-ownership-transaction',
-    prog_python,
-    args : [files('tests/r3v_hyperz_ownership_transaction_audit.py'),
-            '--queue', files('r3v_native_queue.c')],
-    suite : ['r3v'],
-  )
-
   # The gate refresh runs many times over one device.  A session opened or
   # reset there would restore the allowance the previous pass spent, so its
   # body names no measurement-session state.
@@ -1465,6 +1450,20 @@ r3v_native_depth_pipeline_test = executable(
   gnu_symbol_visibility : 'hidden',
 )
 test('r3v-native-depth-pipeline', r3v_native_depth_pipeline_test,
+     suite : ['r3v'])
+
+r3v_hyperz_ownership_transaction_test = executable(
+  'r3v_hyperz_ownership_transaction_test',
+  files('tests/r3v_hyperz_ownership_transaction_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-hyperz-ownership-transaction',
+     r3v_hyperz_ownership_transaction_test,
      suite : ['r3v'])
 
 r3v_native_zb_depth_surface_catalogue_test = executable(

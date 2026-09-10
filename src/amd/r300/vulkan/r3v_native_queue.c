@@ -1652,8 +1652,7 @@ r3v_native_prepared_release(struct r3v_native_device *device)
    struct r3v_native_prepared_submission *prepared = &device->prepared;
    if (!prepared->valid)
       return;
-   if (prepared->hyperz_newly_acquired)
-      r3v_native_hyperz_release(device);
+   r3v_native_hyperz_submission_finish(device, &prepared->hyperz_grant);
    radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
    radeon_drm_vk_reloc_list_finish(&prepared->relocs);
    free(prepared->reference_indices);
@@ -2301,7 +2300,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
     * path that reaches DRM_RADEON_CS: a HyperZ write reaches the kernel
     * only from a descriptor the kernel already made the owner. */
    result = r3v_native_hyperz_admit(
-      device, cmd_buffer, &prepared->hyperz_newly_acquired);
+      device, cmd_buffer, &prepared->hyperz_grant);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
       goto prepare_fail;
@@ -2358,8 +2357,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    return VK_SUCCESS;
 
 prepare_fail:
-   if (prepared->hyperz_newly_acquired)
-      r3v_native_hyperz_release(device);
+   r3v_native_hyperz_submission_finish(device, &prepared->hyperz_grant);
    free(prepared->reference_indices);
    radeon_drm_vk_reloc_list_finish(&prepared->relocs);
    memset(prepared, 0, sizeof(*prepared));
@@ -2408,8 +2406,8 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
           device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
       trace_result = -EIO;
    const bool ioctl_accepted = result == 0;
-   if (ioctl_accepted)
-      prepared->hyperz_newly_acquired = false;
+   r3v_hyperz_grant_transaction_record_ioctl(&prepared->hyperz_grant,
+                                              ioctl_accepted);
    if (ioctl_accepted) {
       device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
       if (r3v_native_submission_trace_emit(
@@ -3534,9 +3532,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
       /* Acquire HyperZ only after every fallible preparation and semantic
        * admission step.  A rejected CS ioctl releases a grant obtained for
        * this submission; a previously held descriptor grant remains held. */
-      bool hyperz_newly_acquired = false;
+      struct r3v_hyperz_grant_transaction hyperz_grant;
       const VkResult hyperz_admit = r3v_native_hyperz_admit(
-         device, cmd_buffer, &hyperz_newly_acquired);
+         device, cmd_buffer, &hyperz_grant);
       if (hyperz_admit != VK_SUCCESS) {
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
@@ -3552,10 +3550,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          VkResult ordered_result = r3v_native_queue_execute_positional_stream(
             device, cmd_buffer, &relocs, &completion,
             &any_ioctl_accepted);
-         if (hyperz_newly_acquired && any_ioctl_accepted)
-            hyperz_newly_acquired = false;
-         if (hyperz_newly_acquired)
-            r3v_native_hyperz_release(device);
+         r3v_hyperz_grant_transaction_record_ioctl(&hyperz_grant,
+                                                    any_ioctl_accepted);
+         r3v_native_hyperz_submission_finish(device, &hyperz_grant);
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -3603,10 +3600,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
              device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
          trace_result = -EIO;
       const bool ioctl_accepted = result == 0;
-      if (hyperz_newly_acquired && ioctl_accepted)
-         hyperz_newly_acquired = false;
-      if (hyperz_newly_acquired)
-         r3v_native_hyperz_release(device);
+      r3v_hyperz_grant_transaction_record_ioctl(&hyperz_grant,
+                                                 ioctl_accepted);
+      r3v_native_hyperz_submission_finish(device, &hyperz_grant);
       if (ioctl_accepted) {
          device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
          if (r3v_native_submission_trace_emit(
@@ -3725,52 +3721,77 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                               submit->signals);
 }
 
-VkResult
-r3v_native_hyperz_admit(struct r3v_native_device *device,
-                        struct r3v_native_cmd_buffer *cmd_buffer,
-                        bool *newly_acquired)
+enum r300_zb_hyperz_verdict
+r3v_native_hyperz_submission_prepare(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_hyperz_grant_transaction *transaction,
+   struct r300_zb_hyperz_site *site, int *request_result,
+   uint32_t *returned_ownership)
 {
-   if (newly_acquired == NULL)
-      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
-   *newly_acquired = false;
-   struct r300_zb_hyperz_site site;
+   if (device == NULL || cmd_buffer == NULL || transaction == NULL ||
+       site == NULL || request_result == NULL || returned_ownership == NULL)
+      return R300_ZB_HYPERZ_REFUSE_STREAM;
+   r3v_hyperz_grant_transaction_begin(transaction);
+   *site = (struct r300_zb_hyperz_site){0};
+   *request_result = 0;
+   *returned_ownership =
+      device->hyperz_ownership == R300_ZB_HYPERZ_OWNED ? 1u : 0u;
    enum r300_zb_hyperz_verdict verdict = r300_zb_hyperz_admit_stream(
       cmd_buffer->ib, cmd_buffer->ib_size_dwords, device->hyperz_ownership,
-      &site);
+      site);
 
    if (verdict == R300_ZB_HYPERZ_ADMIT)
-      return VK_SUCCESS;
-   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM) {
-      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                       "r3v-native: HyperZ admission refused: %s",
-                       r300_zb_hyperz_verdict_name(verdict));
-   }
+      return verdict;
+   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM)
+      return verdict;
 
    /* The first HyperZ write on this descriptor: ask the kernel for the
     * block.  The value is both request and answer, so a returned 1 is
     * ownership and anything else is the kernel withholding it, typically
     * because another descriptor holds it. */
-   uint32_t want = 1u;
-   const int r = radeon_drm_vk_device_info_u32(&device->drm,
-                                               RADEON_INFO_WANT_HYPERZ, &want);
-   if (r == 0 && want == 1u) {
+   *returned_ownership = 1u;
+   *request_result = radeon_drm_vk_device_info_u32(
+      &device->drm, RADEON_INFO_WANT_HYPERZ, returned_ownership);
+   if (*request_result == 0 && *returned_ownership == 1u) {
       device->hyperz_ownership = R300_ZB_HYPERZ_OWNED;
-      *newly_acquired = true;
+      r3v_hyperz_grant_transaction_record_acquisition(transaction);
       verdict = r300_zb_hyperz_admit_stream(cmd_buffer->ib,
                                             cmd_buffer->ib_size_dwords,
-                                            device->hyperz_ownership, &site);
-      if (verdict == R300_ZB_HYPERZ_ADMIT)
-         return VK_SUCCESS;
+                                            device->hyperz_ownership, site);
    }
+   return verdict;
+}
+
+VkResult
+r3v_native_hyperz_admit(struct r3v_native_device *device,
+                        struct r3v_native_cmd_buffer *cmd_buffer,
+                        struct r3v_hyperz_grant_transaction *transaction)
+{
+   struct r300_zb_hyperz_site site;
+   int request_result = 0;
+   uint32_t returned_ownership = 0u;
+   const enum r300_zb_hyperz_verdict verdict =
+      r3v_native_hyperz_submission_prepare(
+         device, cmd_buffer, transaction, &site, &request_result,
+         &returned_ownership);
+   if (verdict == R300_ZB_HYPERZ_ADMIT)
+      return VK_SUCCESS;
+   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM)
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: HyperZ admission refused: %s",
+                       r300_zb_hyperz_verdict_name(verdict));
    return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                     "r3v-native: HyperZ admission refused at ib[%u] "
                     "(%s = 0x%08x): %s; ownership %s (%s)",
                     site.ib_index, site.row != NULL ? site.row->name : "?",
                     site.value,
                     site.row != NULL ? site.row->kernel_rule : "no row",
-                    r == 0 && want == 1u ? "held" : "withheld by the kernel",
-                    r == 0 ? "RADEON_INFO_WANT_HYPERZ answered"
-                           : strerror(-r));
+                    request_result == 0 && returned_ownership == 1u
+                       ? "held"
+                       : "withheld by the kernel",
+                    request_result == 0 ? "RADEON_INFO_WANT_HYPERZ answered"
+                                        : strerror(-request_result));
 }
 
 bool
@@ -3785,4 +3806,13 @@ r3v_native_hyperz_release(struct r3v_native_device *device)
       return false;
    device->hyperz_ownership = R300_ZB_HYPERZ_UNOWNED;
    return true;
+}
+
+bool
+r3v_native_hyperz_submission_finish(
+   struct r3v_native_device *device,
+   const struct r3v_hyperz_grant_transaction *transaction)
+{
+   return !r3v_hyperz_grant_transaction_requires_release(transaction) ||
+          r3v_native_hyperz_release(device);
 }
