@@ -1,10 +1,10 @@
 {
   "schema": "r3v-depth-stencil-cts-cases/1",
   "status": "not_run",
-  "reason": "Public Vulkan depth/stencil paths remain unimplemented; CTS execution is intentionally deferred.",
+  "reason": "The bounded D24S8 public route has offline and shim coverage; CTS execution remains not run.",
   "scope": {"api": "Vulkan 1.0", "extensions": [], "maintenance1": false, "silicon": "RS485M", "pci_device": "1002:5974", "subsystem": "1028:022a"},
   "obligation_source": "docs/hardware/r3v-public-depth-stencil-obligations.json",
-  "obligation_source_sha256": "4794169a596baa4ba077b57f5ac0e2a6e66055a9c6809281dfe05b0f9d70844c",
+  "obligation_source_sha256": "7f3fb9a3905dd65b84dd320ecc2bd83093c58a5dcee806f1d2219cf9402c357b",
   "cts": {
     "repository": "https://github.com/KhronosGroup/VK-GL-CTS.git",
     "commit": "43c65c1327aad14bd602e898f036c284a90efcf4",

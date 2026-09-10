@@ -44,12 +44,12 @@ def unique_pairs(pairs):
 
 
 def validate(document):
-    require(document['schema'] == 'r3v-public-depth-stencil-obligations/1', 'schema')
+    require(document['schema'] == 'r3v-public-depth-stencil-obligations/2', 'schema')
     scope = document['scope']
     require(scope == {'api':'Vulkan 1.0','extensions':[],'maintenance1':False,
                      'experimental_image':{'silicon':'RS485M','pci_device':'1002:5974',
                      'subsystem':'1028:022a','format':'VK_FORMAT_D24_UNORM_S8_UINT',
-                     'extent':[64,64],'samples':1}, 'capability_advertisement':False},
+                     'extent':[64,64],'samples':1}, 'capability_advertisement':True},
             'bounded core API scope')
     registry = document['authority']['registry']
     require(registry == {'path':'src/vulkan/registry/vk.xml','header_version':354,
@@ -77,11 +77,16 @@ def validate(document):
                 'row fields')
         require(row['authority'] in CHAPTERS and row['anchor'] and
                 row['registry_symbol'].encode() in registry_bytes, 'row authority')
-        require(row['public_status'] == 'unimplemented' and row['completion_evidence'] == [],
-                'unsupported public completion')
-        require(row['experimental_status'] ==
-                'native qualification evidence only; public route unimplemented',
-                'evidence class separation')
+        require(row['public_status'] in {'bounded', 'residual'},
+                'public status vocabulary')
+        if row['public_status'] == 'bounded':
+            require(row['completion_evidence'], 'bounded completion evidence')
+            require(row['experimental_status'].startswith('bounded public route; '),
+                    'bounded evidence class separation')
+        else:
+            require(row['completion_evidence'] == [], 'residual completion evidence')
+            require(row['experimental_status'].startswith('residual public obligation; '),
+                    'residual evidence class separation')
         require(all(type(row[key]) is str and len(row[key]) >= 20
                     for key in ('requirement','falsifier')), 'operational obligation')
     return len(rows)
@@ -94,6 +99,15 @@ class MatrixTests(unittest.TestCase):
     def test_positive(self):
         self.assertEqual(validate(self.document), 23)
 
+    def test_bounded_surface_partition(self):
+        validate(self.document)
+        statuses = {row['id']: row['public_status']
+                    for row in self.document['rows']}
+        self.assertEqual(sum(status == 'bounded' for status in statuses.values()), 13)
+        self.assertEqual(sum(status == 'residual' for status in statuses.values()), 10)
+        self.assertEqual(statuses['image-clear'], 'bounded')
+        self.assertEqual(statuses['stencil-state'], 'residual')
+
     def test_every_missing_row_refuses(self):
         for index in range(len(self.document['rows'])):
             changed = copy.deepcopy(self.document)
@@ -101,15 +115,17 @@ class MatrixTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'required obligation rows'):
                 validate(changed)
 
-    def test_fictional_completion_refuses(self):
+    def test_unknown_status_refuses(self):
         for row in self.document['rows']:
             previous = row['public_status']
             row['public_status'] = 'complete'
-            with self.assertRaisesRegex(ValueError, 'unsupported public completion'):
+            with self.assertRaisesRegex(ValueError, 'public status vocabulary'):
                 validate(self.document)
             row['public_status'] = previous
-        self.document['rows'][0]['completion_evidence'] = ['build passed']
-        with self.assertRaisesRegex(ValueError, 'unsupported public completion'):
+        bounded_row = next(row for row in self.document['rows']
+                           if row['public_status'] == 'bounded')
+        bounded_row['completion_evidence'] = []
+        with self.assertRaisesRegex(ValueError, 'bounded completion evidence'):
             validate(self.document)
 
     def test_scope_and_provenance_refuse(self):
@@ -119,6 +135,13 @@ class MatrixTests(unittest.TestCase):
         self.document['scope']['maintenance1'] = False
         self.document['authority']['spec']['revision'] = 'main'
         with self.assertRaisesRegex(ValueError, 'spec pin'):
+            validate(self.document)
+
+    def test_residual_evidence_refuses(self):
+        residual = next(row for row in self.document['rows']
+                        if row['public_status'] == 'residual')
+        residual['completion_evidence'] = ['unverified execution']
+        with self.assertRaisesRegex(ValueError, 'residual completion evidence'):
             validate(self.document)
 
     def test_duplicate_key_refuses(self):
