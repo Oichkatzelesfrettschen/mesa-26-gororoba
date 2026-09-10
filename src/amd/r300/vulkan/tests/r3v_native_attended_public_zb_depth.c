@@ -1448,6 +1448,18 @@ struct other_depth_check {
    int retention_result;
 };
 
+static enum outcome
+classify_other_depth_check(enum outcome submission_outcome,
+                           struct other_depth_check check)
+{
+   if (check.mapped && !check.exact)
+      return OUTCOME_CONTAINMENT_FAILURE;
+   if (submission_outcome == OUTCOME_PASS &&
+       (!check.mapped || check.retention_result != 0))
+      return OUTCOME_RETENTION_FAILURE;
+   return submission_outcome;
+}
+
 static struct other_depth_check
 retain_and_check_other_depth(struct public_context *context,
                              uint32_t target_index,
@@ -1559,6 +1571,11 @@ run_public_persistence(const char *evidence_dir, bool record_only,
    };
    enum outcome final_outcome = OUTCOME_PASS;
    for (uint32_t ordinal = 0; ordinal < 3; ordinal++) {
+      char result_dir[PATH_MAX];
+      if (!create_result_directory(evidence_dir, names[ordinal], result_dir)) {
+         final_outcome = OUTCOME_RETENTION_FAILURE;
+         break;
+      }
       if (!seed_color(&context)) {
          final_outcome = OUTCOME_RETENTION_FAILURE;
          break;
@@ -1574,24 +1591,17 @@ run_public_persistence(const char *evidence_dir, bool record_only,
          &context, targets[ordinal], initial[targets[ordinal]],
          patterns[ordinal], MODE_READ, evidence_dir, names[ordinal],
          submit_result);
-      char result_dir[PATH_MAX];
-      const int path_length = snprintf(result_dir, sizeof(result_dir),
-                                       "%s/%s", evidence_dir,
-                                       names[ordinal]);
       const uint32_t other = targets[ordinal] ^ 1u;
       const char *other_name = other == 0 ? "depth_a_other_after.bin"
                                           : "depth_b_other_after.bin";
-      struct other_depth_check other_check = {0};
-      if (path_length > 0 && (size_t)path_length < sizeof(result_dir))
-         other_check = retain_and_check_other_depth(
-            &context, other, initial[other], result_dir, other_name);
+      const struct other_depth_check other_check =
+         retain_and_check_other_depth(&context, other, initial[other],
+                                      result_dir, other_name);
       printf("[oracle] %s other_depth_mapped=%d other_depth_exact=%d "
              "other_depth_retention_result=%d\n",
              names[ordinal], other_check.mapped, other_check.exact,
              other_check.retention_result);
-      if (!other_check.mapped || !other_check.exact ||
-          other_check.retention_result != 0)
-         final_outcome = OUTCOME_CONTAINMENT_FAILURE;
+      final_outcome = classify_other_depth_check(final_outcome, other_check);
       if (final_outcome != OUTCOME_PASS)
          break;
    }
@@ -1718,6 +1728,38 @@ public_result_directory_selftest(void)
    return exact && reuse_refused && removed;
 }
 
+static bool
+other_depth_check_selftest(void)
+{
+   const struct other_depth_check exact = {
+      .mapped = true,
+      .exact = true,
+      .retention_result = 0,
+   };
+   const struct other_depth_check changed = {
+      .mapped = true,
+      .exact = false,
+      .retention_result = 0,
+   };
+   const struct other_depth_check unmapped = {0};
+   const struct other_depth_check unretained = {
+      .mapped = true,
+      .exact = true,
+      .retention_result = -1,
+   };
+   return classify_other_depth_check(OUTCOME_PASS, exact) == OUTCOME_PASS &&
+          classify_other_depth_check(OUTCOME_PASS, changed) ==
+             OUTCOME_CONTAINMENT_FAILURE &&
+          classify_other_depth_check(OUTCOME_PASS, unmapped) ==
+             OUTCOME_RETENTION_FAILURE &&
+          classify_other_depth_check(OUTCOME_PASS, unretained) ==
+             OUTCOME_RETENTION_FAILURE &&
+          classify_other_depth_check(OUTCOME_SUBMISSION_REFUSED, unmapped) ==
+             OUTCOME_SUBMISSION_REFUSED &&
+          classify_other_depth_check(OUTCOME_SUBMISSION_REFUSED, changed) ==
+             OUTCOME_CONTAINMENT_FAILURE;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1725,7 +1767,8 @@ main(int argc, char **argv)
       if (run_selftest() != 0 ||
           !public_reference_fragment_color_selftest() ||
           !public_color_oracle_selftest() ||
-          !public_result_directory_selftest())
+          !public_result_directory_selftest() ||
+          !other_depth_check_selftest())
          return 1;
       printf("public color order selftest: PASS\n");
       return 0;
