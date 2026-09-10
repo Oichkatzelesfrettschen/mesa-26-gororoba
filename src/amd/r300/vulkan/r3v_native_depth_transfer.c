@@ -404,9 +404,8 @@ r3v_native_validate_depth_image_copy(
                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) ||
        !(native_buffer->vk.usage & (buffer_to_image ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT :
                                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT)) ||
-       native_buffer->memory == NULL ||
-       cmd->deferred_copy_count != 0u || cmd->deferred_draw_count != 0u ||
-       cmd->deferred_dispatch.pending || cmd->pass_target != NULL ||
+       native_buffer->memory == NULL || cmd->deferred_dispatch.pending ||
+       cmd->pass_target != NULL ||
        region->imageSubresource.mipLevel != 0u ||
        region->imageSubresource.baseArrayLayer != 0u ||
        region->imageSubresource.layerCount != 1u ||

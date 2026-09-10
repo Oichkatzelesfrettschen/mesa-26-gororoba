@@ -1929,6 +1929,37 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
             compact_stride_cmd->rb2d_copy_operation_count == 1u,
          "a depth-one copy ignores unused bufferImageHeight rows");
+
+   const VkBufferCopy compact_copy = {.size = 4u};
+   if (begin(f))
+      return 1;
+   vkCmdCopyBuffer(f->cmd, staging.buffer, undersized_staging.buffer, 1u,
+                   &compact_copy);
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, host_then_depth_cmd, f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
+            host_then_depth_cmd->ordered_operation_count == 2u &&
+            host_then_depth_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_HOST_COPY &&
+            host_then_depth_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+         "host and depth transfers retain their forward recording order");
+
+   if (begin(f))
+      return 1;
+   vkCmdCopyBufferToImage(f->cmd, staging.buffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
+   vkCmdCopyBuffer(f->cmd, staging.buffer, undersized_staging.buffer, 1u,
+                   &compact_copy);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, depth_then_host_cmd, f->cmd);
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS &&
+            depth_then_host_cmd->ordered_operation_count == 2u &&
+            depth_then_host_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY &&
+            depth_then_host_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_HOST_COPY,
+         "depth and host transfers retain their reverse recording order");
    if (begin(f))
       return 1;
    depth_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
