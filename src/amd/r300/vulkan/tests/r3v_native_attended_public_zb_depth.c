@@ -19,6 +19,8 @@
 #include "amd/r300/common/r300_zb_depth_layout.h"
 #include "amd/r300/common/r300_zb_depth_surface.h"
 #include "util/mesa-blake3.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -1504,6 +1506,9 @@ run_public_persistence(const char *evidence_dir, bool record_only,
       destroy_public_context(&context);
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
+   struct r3v_native_device *native_device =
+      r3v_native_device_from_handle(context.device);
+   native_device->vk.physical->instance->enable_debug_logging = true;
    const uint32_t targets[3] = { 0, 1, 0 };
    const uint32_t patterns[3] = { 2, 19, 2 };
    VkCommandBuffer commands[3] = { VK_NULL_HANDLE };
