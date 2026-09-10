@@ -146,6 +146,15 @@ check_empty_stage(enum r300_zmask_clear_stage stage, bool wants_ownership,
 }
 
 static void
+check_next_word(const struct r300_zmask_clear_plan *plan, uint32_t *index,
+                uint32_t expected)
+{
+   assert(*index < plan->dword_count);
+   assert(plan->words[*index] == expected);
+   (*index)++;
+}
+
+static void
 check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
                  const struct r300_zmask_layout *layout)
 {
@@ -161,24 +170,26 @@ check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
    assert(plan.dword_count == 15);
 
    uint32_t i = 0;
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_ZMASK_OFFSET, 2));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i++] == layout->stride_in_pixels);
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_ZMASK_WRINDEX, 1));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_ZMASK_RDINDEX, 1));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i++] == PACKET0_HEADER(R300_GB_Z_PEQ_CONFIG, 1));
-   assert(plan.words[i++] ==
-          (layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
-                            : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4));
-   assert(plan.words[i++] == PACKET0_HEADER(R300_ZB_BW_CNTL, 1));
-   assert(plan.words[i++] == expected_bw_cntl);
-   assert(plan.words[i++] ==
-          PACKET3_HEADER(R300_PACKET3_3D_CLEAR_ZMASK, 3));
-   assert(plan.words[i++] == 0);
-   assert(plan.words[i] == layout->dwords);
-   assert(plan.words[i + 1] == 0);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_OFFSET, 2));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, layout->stride_in_pixels);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_WRINDEX, 1));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_RDINDEX, 1));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_GB_Z_PEQ_CONFIG, 1));
+   check_next_word(
+      &plan, &i,
+      layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
+                       : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
+   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_BW_CNTL, 1));
+   check_next_word(&plan, &i, expected_bw_cntl);
+   check_next_word(&plan, &i,
+                   PACKET3_HEADER(R300_PACKET3_3D_CLEAR_ZMASK, 3));
+   check_next_word(&plan, &i, 0u);
+   check_next_word(&plan, &i, layout->dwords);
+   check_next_word(&plan, &i, 0u);
+   assert(i == plan.dword_count);
 
    /* HiZ, RD_COMP and WR_COMP stay off in both bind stages. */
    assert((expected_bw_cntl &
