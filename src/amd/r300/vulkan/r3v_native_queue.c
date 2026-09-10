@@ -304,8 +304,10 @@ r3v_native_cell_geometry_unfrozen(
        * extents inside the render family.  One pending draw is neither
        * form.  The frozen binding facts are shared: two to four
        * entries, each a vertex page read alone or a color target
-       * written alone, since an entry carrying both directions is a
-       * role alias the emitter admits no binding for.
+       * written alone.  A public two-pass depth attachment adds one
+       * shared depth entry at index two, carrying both directions because
+       * the depth test reads and updates one validated target in both
+       * passes.
        */
       const bool first_pending = cmd_buffer->deferred_draws[0].pending;
       const bool second_pending = cmd_buffer->deferred_draws[1].pending;
@@ -313,6 +315,29 @@ r3v_native_cell_geometry_unfrozen(
          return true;
       if (first_pending) {
          if (cmd_buffer->deferred_draw_count != 2)
+            return true;
+         const struct r3v_native_deferred_draw *first =
+            &cmd_buffer->deferred_draws[0];
+         const struct r3v_native_deferred_draw *second =
+            &cmd_buffer->deferred_draws[1];
+         const bool first_has_depth = first->depth_memory != NULL;
+         const bool second_has_depth = second->depth_memory != NULL;
+         if (first_has_depth != second_has_depth ||
+             first->has_depth_pipeline != first_has_depth ||
+             second->has_depth_pipeline != second_has_depth)
+            return true;
+         if (first_has_depth &&
+             (first->depth_memory != second->depth_memory ||
+              first->depth_memory->bo.handle !=
+                 second->depth_memory->bo.handle ||
+              first->depth_bound.contract == NULL ||
+              second->depth_bound.contract == NULL ||
+              first->depth_bound.contract != second->depth_bound.contract ||
+              first->depth_bound.binding_offset_bytes !=
+                 second->depth_bound.binding_offset_bytes ||
+              first->depth_bound.surface_base_bytes !=
+                 second->depth_bound.surface_base_bytes ||
+              first->depth_bound.bo_bytes != second->depth_bound.bo_bytes))
             return true;
          for (uint32_t d = 0; d < 2; d++) {
             const uint32_t width = cmd_buffer->deferred_draws[d].target_width;
@@ -327,8 +352,12 @@ r3v_native_cell_geometry_unfrozen(
                return true;
          }
       }
+      const bool shared_depth = first_pending &&
+                                cmd_buffer->deferred_draws[0].depth_memory !=
+                                   NULL;
       if (cmd_buffer->reference_count < R300_TRIANGLE_RENDER_SLOT_COUNT ||
-          cmd_buffer->reference_count > 2 * R300_TRIANGLE_RENDER_SLOT_COUNT)
+          cmd_buffer->reference_count > 2 * R300_TRIANGLE_RENDER_SLOT_COUNT ||
+          (shared_depth && cmd_buffer->reference_count != 4u))
          return true;
       const struct r3v_native_bo_reference *c = cmd_buffer->references;
       if (c[R300_TRIANGLE_SLOT_VERTEX].read_domains != RADEON_GEM_DOMAIN_GTT ||
@@ -336,8 +365,20 @@ r3v_native_cell_geometry_unfrozen(
           c[R300_TRIANGLE_SLOT_COLOR].read_domains != 0 ||
           c[R300_TRIANGLE_SLOT_COLOR].write_domain != RADEON_GEM_DOMAIN_GTT)
          return true;
+      if (shared_depth) {
+         const struct r3v_native_bo_reference *depth =
+            &c[R300_TRIANGLE_RENDER_SLOT_COUNT];
+         if (depth->memory != cmd_buffer->deferred_draws[0].depth_memory ||
+             depth->handle !=
+                cmd_buffer->deferred_draws[0].depth_memory->bo.handle ||
+             depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+             depth->write_domain != RADEON_GEM_DOMAIN_GTT)
+            return true;
+      }
       for (uint32_t i = R300_TRIANGLE_RENDER_SLOT_COUNT;
            i < cmd_buffer->reference_count; i++) {
+         if (shared_depth && i == R300_TRIANGLE_RENDER_SLOT_COUNT)
+            continue;
          const bool vertex_page = c[i].read_domains == RADEON_GEM_DOMAIN_GTT &&
                                   c[i].write_domain == 0;
          const bool color_target = c[i].read_domains == 0 &&
