@@ -174,6 +174,8 @@ enum r3v_native_cell_kind {
    R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION,
    /* Whole-tile memory copies with independently bound source and destination. */
    R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION,
+   /* Uniform packed D24S8 clear over the complete tiled storage envelope. */
+   R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

@@ -717,6 +717,8 @@ r3v_native_cell_geometry_unfrozen(
    }
    case R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION:
       return !r3v_native_rb2d_tiled_copy_geometry_valid(cmd_buffer);
+   case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR:
+      return !r3v_native_depth_image_clear_geometry_valid(cmd_buffer);
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_PUBLIC:
    case R3V_NATIVE_CELL_KIND_RB2D_FILL_V2_ROUTE:
    case R3V_NATIVE_CELL_KIND_RB2D_CARRIER_QUALIFICATION: {

@@ -680,10 +680,6 @@ r3v_CmdClearColorImage(
    }
 }
 
-/* Depth/stencil clears name a depth or stencil aspect, and image
- * creation admits the one color format, so no image this command can
- * clear exists and the recording refuses.
- */
 VKAPI_ATTR void VKAPI_CALL
 r3v_CmdClearDepthStencilImage(
    VkCommandBuffer commandBuffer,
@@ -693,7 +689,54 @@ r3v_CmdClearDepthStencilImage(
    uint32_t rangeCount,
    const VkImageSubresourceRange *pRanges)
 {
-   r3v_native_cmd_poison(commandBuffer);
+   VK_FROM_HANDLE(r3v_native_image, native_image, image);
+   if (native_image == NULL || !native_image->depth_family ||
+       native_image->memory == NULL ||
+       !(native_image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+       !r3v_native_transfer_destination_layout_ok(imageLayout) ||
+       pDepthStencil == NULL || rangeCount != 1u || pRanges == NULL) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+
+   const VkImageSubresourceRange *range = &pRanges[0];
+   const VkImageAspectFlags valid_aspects =
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+   if (range->aspectMask == 0u ||
+       (range->aspectMask & ~valid_aspects) != 0u ||
+       range->baseMipLevel != 0u ||
+       (range->levelCount != 1u &&
+        range->levelCount != VK_REMAINING_MIP_LEVELS) ||
+       range->baseArrayLayer != 0u ||
+       (range->layerCount != 1u &&
+        range->layerCount != VK_REMAINING_ARRAY_LAYERS)) {
+      r3v_native_cmd_poison(commandBuffer);
+      return;
+   }
+
+   uint32_t aspect_mask = 0u;
+   uint32_t depth_code = 0u;
+   uint32_t stencil = 0u;
+   if ((range->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u) {
+      aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+      if (!r3v_native_depth_clear_code(pDepthStencil->depth, &depth_code)) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+   }
+   if ((range->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) != 0u) {
+      aspect_mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+      if (pDepthStencil->stencil > UINT8_MAX) {
+         r3v_native_cmd_poison(commandBuffer);
+         return;
+      }
+      stencil = pDepthStencil->stencil;
+   }
+
+   if (r3v_native_record_depth_image_clear(
+          commandBuffer, image, aspect_mask, depth_code, stencil) !=
+       VK_SUCCESS)
+      r3v_native_cmd_poison(commandBuffer);
 }
 
 VKAPI_ATTR void VKAPI_CALL

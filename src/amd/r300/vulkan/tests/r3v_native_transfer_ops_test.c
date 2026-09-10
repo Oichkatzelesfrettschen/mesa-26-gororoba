@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -21,6 +22,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../r3v_native.h"
+#include "amd/r300/common/radeon_legacy_2d_reg.h"
 
 static unsigned failures;
 
@@ -978,6 +980,107 @@ create_fixture(struct fixture *f)
    return 0;
 }
 
+static bool
+command_packet0_value(const struct r3v_native_cmd_buffer *cmd, uint32_t reg,
+                      uint32_t *value)
+{
+   const uint32_t header = reg >> 2;
+   for (uint32_t index = 0u; index + 1u < cmd->ib_size_dwords; index++) {
+      if (cmd->ib[index] == header) {
+         *value = cmd->ib[index + 1u];
+         return true;
+      }
+   }
+   return false;
+}
+
+static int
+check_depth_clear_recording(const struct fixture *f, VkImage image)
+{
+   static const struct {
+      VkImageAspectFlags aspects;
+      VkClearDepthStencilValue clear;
+      uint32_t internal_aspects;
+      uint32_t write_mask;
+      bool preserves_component;
+   } cases[] = {
+      {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+       {.depth = 0.25f, .stencil = 0xa5u}, R300_ZB_COMBINED_CLEAR_ASPECTS,
+       UINT32_MAX, false},
+      {VK_IMAGE_ASPECT_DEPTH_BIT, {.depth = 0.25f, .stencil = 0x1ffu},
+       R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH, 0xffffff00u, true},
+      {VK_IMAGE_ASPECT_STENCIL_BIT, {.depth = NAN, .stencil = 0xa5u},
+       R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL, 0x000000ffu, true},
+   };
+
+   for (unsigned case_index = 0u; case_index < ARRAY_SIZE(cases);
+        case_index++) {
+      if (begin(f))
+         return 1;
+      const VkImageSubresourceRange range = {
+         .aspectMask = cases[case_index].aspects,
+         .baseMipLevel = 0u,
+         .levelCount = 1u,
+         .baseArrayLayer = 0u,
+         .layerCount = 1u,
+      };
+      vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                                  &cases[case_index].clear, 1u, &range);
+      VK_FROM_HANDLE(r3v_native_cmd_buffer, native_cmd, f->cmd);
+      CHECK(native_cmd->cell_kind == R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+               native_cmd->zb_depth_clear_configured &&
+               native_cmd->zb_depth_clear_aspect_mask ==
+                  cases[case_index].internal_aspects,
+            "depth clear case %u records a GPU cell and aspect identity",
+            case_index);
+      CHECK(native_cmd->reference_count == 1u &&
+               native_cmd->references[0].write_domain ==
+                  RADEON_GEM_DOMAIN_GTT &&
+               native_cmd->references[0].read_domains ==
+                  (cases[case_index].preserves_component
+                      ? RADEON_GEM_DOMAIN_GTT
+                      : 0u),
+            "depth clear case %u records exact destination access",
+            case_index);
+      uint32_t master = 0u, write_mask = 0u, extent = 0u;
+      CHECK(command_packet0_value(native_cmd, RADEON_DP_GUI_MASTER_CNTL,
+                                  &master) &&
+               command_packet0_value(native_cmd, RADEON_DP_WRITE_MSK,
+                                     &write_mask) &&
+               command_packet0_value(native_cmd, RADEON_DST_WIDTH_HEIGHT,
+                                     &extent) &&
+               write_mask == cases[case_index].write_mask &&
+               ((master & RADEON_GMC_WR_MSK_DIS) != 0u) ==
+                  !cases[case_index].preserves_component &&
+               extent == ((512u << 16) | 10u),
+            "depth clear case %u emits the physical envelope and mask",
+            case_index);
+      CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+            "depth clear case %u records successfully", case_index);
+   }
+
+   if (begin(f))
+      return 1;
+   const VkClearDepthStencilValue clear = {.depth = 0.5f, .stencil = 0x100u};
+   const VkImageSubresourceRange stencil_range = {
+      .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+      .baseMipLevel = 0u,
+      .levelCount = 1u,
+      .baseArrayLayer = 0u,
+      .layerCount = 1u,
+   };
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL, &clear,
+                               1u, &stencil_range);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, refused_cmd, f->cmd);
+   CHECK(refused_cmd->cell_kind == R3V_NATIVE_CELL_KIND_UNDECLARED &&
+            refused_cmd->ib == NULL && refused_cmd->references == NULL &&
+            !refused_cmd->zb_depth_clear_configured,
+         "a refused clear preserves the command payload state");
+   CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
+         "stencil values outside the packed byte refuse");
+   return 0;
+}
+
 static int
 check_depth_storage(const struct fixture *f, bool refuse_platform)
 {
@@ -1019,6 +1122,8 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
          "nonzero aligned depth binding");
    CHECK(vkBindImageMemory(f->device, image, memory, 4096) != VK_SUCCESS,
          "depth rebinding refuses");
+   if (check_depth_clear_recording(f, image))
+      return 1;
    const VkImageAspectFlags view_aspects[] = {
       VK_IMAGE_ASPECT_DEPTH_BIT,
       VK_IMAGE_ASPECT_STENCIL_BIT,

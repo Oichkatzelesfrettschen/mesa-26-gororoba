@@ -799,6 +799,11 @@ struct r3v_native_cmd_buffer {
    enum r3v_native_zb_depth_surface zb_depth_surface;
    bool rb2d_tiled_copy_configured;
    uint32_t rb2d_tiled_copy_write_mask;
+   bool zb_depth_clear_configured;
+   struct r3v_native_image *zb_depth_clear_image;
+   uint32_t zb_depth_clear_aspect_mask;
+   uint32_t zb_depth_clear_depth_code;
+   uint32_t zb_depth_clear_stencil;
    struct r300_zb_tile_copy_request rb2d_tiled_copy_request;
    /* One configured flag and geometry discriminator cover both the legacy
     * logical-tile request and the generic owned span list.  The latter owns
@@ -2369,6 +2374,14 @@ VkResult r3v_native_record_rb2d_copy(
 VkResult r3v_native_record_depth_image_copy(
    VkCommandBuffer command_buffer, VkBuffer buffer, VkImage image,
    const VkBufferImageCopy *region, VkImageLayout layout, bool buffer_to_image);
+bool r3v_native_depth_clear_code(float value, uint32_t *code);
+VkResult r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
+                                             VkImage image,
+                                             uint32_t aspect_mask,
+                                             uint32_t depth_code,
+                                             uint32_t stencil);
+bool r3v_native_depth_image_clear_geometry_valid(
+   const struct r3v_native_cmd_buffer *cmd_buffer);
 
 VkResult r3v_native_record_zb_tiled_validation(
    VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,

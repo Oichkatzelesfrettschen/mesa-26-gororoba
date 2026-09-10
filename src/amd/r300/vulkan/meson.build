@@ -316,6 +316,7 @@ r3v_native_files = files(
   'r3v_native_recording.c',
   'r3v_native_transfer.c',
   'r3v_native_depth_transfer.c',
+  'r3v_native_depth_clear.c',
   'r3v_fill_route.c',
   'r3v_measurement_claim.c',
   'r3v_measurement_declaration.c',

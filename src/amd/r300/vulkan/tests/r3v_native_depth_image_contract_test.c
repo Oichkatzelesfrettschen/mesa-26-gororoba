@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "../r3v_native_depth_image_contract.h"
+#include "../r3v_native.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -117,5 +117,32 @@ main(void)
                                                         &mapping) == -EINVAL);
    assert(r3v_native_depth_image_contract_copy_mapping(&bound, 0u, 4u,
                                                         &mapping) == -EINVAL);
+
+   /* The clear recorder installs one GPU RB2D stream and one exact BO
+    * reference.  Mutating either identity must invalidate the geometry. */
+   struct r3v_native_memory memory = {0};
+   memory.bo.handle = 17u;
+   memory.bo.size = before.binding_bytes;
+   struct r3v_native_image image = {0};
+   image.base.type = VK_OBJECT_TYPE_IMAGE;
+   image.memory = &memory;
+   image.depth_family = true;
+   image.depth_contract = before;
+   assert(r3v_native_depth_image_contract_bind(&before, 0u,
+                                                before.binding_bytes,
+                                                &image.depth_bound) == 0);
+   struct r3v_native_cmd_buffer command = {0};
+   command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+   assert(r3v_native_record_depth_image_clear(
+             r3v_native_cmd_buffer_to_handle(&command),
+             r3v_native_image_to_handle(&image),
+             R300_ZB_COMBINED_CLEAR_ASPECTS, 0x123456u, 0xa5u) == VK_SUCCESS);
+   assert(r3v_native_depth_image_clear_geometry_valid(&command));
+   command.ib[0] ^= 1u;
+   assert(!r3v_native_depth_image_clear_geometry_valid(&command));
+   command.ib[0] ^= 1u;
+   command.references[0].read_domains ^= RADEON_GEM_DOMAIN_GTT;
+   assert(!r3v_native_depth_image_clear_geometry_valid(&command));
+   r3v_native_cmd_buffer_release_ib(&command);
    return 0;
 }

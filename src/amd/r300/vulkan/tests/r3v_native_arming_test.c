@@ -115,6 +115,7 @@ test_each_factor_refuses(void)
       R3V_NATIVE_CELL_KIND_TRIANGLE,
       R3V_NATIVE_CELL_KIND_DIRECT_WRITE,
       R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION,
+      R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR,
       R3V_NATIVE_CELL_KIND_R2VB_PRODUCER,
    };
    for (unsigned i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {

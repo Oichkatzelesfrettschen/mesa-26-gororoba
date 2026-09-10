@@ -18,7 +18,6 @@
 
 #include <radeon_drm.h>
 #include "vk_alloc.h"
-#include <math.h>
 #include <string.h>
 
 static void
@@ -26,15 +25,6 @@ poison(VkCommandBuffer commandBuffer, VkResult error)
 {
    VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
    vk_command_buffer_set_error(cmd_buffer, error);
-}
-
-static bool
-depth_clear_code(float value, uint32_t *code)
-{
-   if (code == NULL || !isfinite(value) || value < 0.0f || value > 1.0f)
-      return false;
-   *code = (uint32_t)((double)value * 16777215.0 + 0.5);
-   return true;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -141,7 +131,7 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
          uint32_t depth_code = 0;
          const VkClearDepthStencilValue clear =
             pRenderPassBegin->pClearValues[1].depthStencil;
-         if (!depth_clear_code(clear.depth, &depth_code) ||
+         if (!r3v_native_depth_clear_code(clear.depth, &depth_code) ||
              r300_zb_combined_clear_plan(
                 &(struct r300_zb_combined_clear_request){
                    .surface = &depth_view->image->depth_contract.surface,
