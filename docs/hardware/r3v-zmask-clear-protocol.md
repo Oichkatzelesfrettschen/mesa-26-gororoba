@@ -8,13 +8,16 @@ ownership, the ZMASK bind and clear, and the ZB_BW_CNTL compression
 enables. The ladder below separates them so a verdict names one
 mechanism.
 
-No silicon run exists for any stage. Every claim here is a source-derived
+One silicon observation bounds this ladder, and it is a kernel refusal
+rather than a stage result: the first ZMASK submission ever attempted
+through the public lifecycle route was rejected by the radeon CS parser
+before any packet executed. The Evidence section carries it. Every
+claim about what a stage does to depth memory remains a source-derived
 model built from `src/amd/r300/common/r300_zmask_layout.c`,
 `r300_zmask_clear_plan.c`, the Gallium derivation in
 `r300_setup_hyperz_properties`, and the kernel's `r300_packet0_check` and
-`r300_packet3_check`. The first ZMASK cell exercises the
-`RADEON_INFO_WANT_HYPERZ` acquire path for the first time in this driver;
-the cell runs when scheduled.
+`r300_packet3_check`. The `RADEON_INFO_WANT_HYPERZ` acquire path has not
+run yet either: the refused submission never reached it.
 
 ## The layout the stages consume
 
@@ -147,15 +150,18 @@ depth images, since no state changed.
 ### C: bind and clear with compression off
 
 The bind places the level at the base of the ZMASK RAM
-(`ZB_ZMASK_OFFSET` = 0) at the layout's pitch, zeroes both
-autoincrementing RAM access indices, writes `GB_Z_PEQ_CONFIG` with the
-block size the layout was computed at -- the 64x64 reference level clears
+(`ZB_ZMASK_OFFSET` = 0) at the layout's pitch, writes `GB_Z_PEQ_CONFIG`
+with the block size the layout was computed at -- the 64x64 reference level clears
 four dwords at 8x8 and sixteen at 4x4, so a register and a coverage taken
 from different blocks describe different surfaces -- writes
 `ZB_BW_CNTL` = 0 so
 `FAST_FILL_ENABLE`, `RD_COMP_ENABLE`, `WR_COMP_ENABLE` and `HIZ_ENABLE`
 all stay off, and issues `3D_CLEAR_ZMASK` over exactly
-`layout.dwords` dwords starting at index 0 with value 0.
+`layout.dwords` dwords starting at index 0 with value 0. The clear
+packet carries that start index in its own payload, so the RAM window
+travels with the packet and the stage programs no index register:
+`ZB_ZMASK_WRINDEX` (0x4f38) and `ZB_ZMASK_RDINDEX` (0x4f40) lie outside
+the kernel's PACKET0 authority, which the Evidence section records.
 `SC_HYPERZ` stays unwritten: the scan converter's HiZ bit belongs to the
 HiZ stage past this ladder.
 
@@ -440,7 +446,63 @@ each names what that demonstration would have to establish.
 - Compressed representations. `RD_COMP_ENABLE` and `WR_COMP_ENABLE` are off
   through stages C and D, so no compressed tile is ever produced and no
   resolve for one exists. The refusal is explicit rather than silent.
-||||||| 89fead4ca63
+
+## Evidence
+
+### Known (silicon): the kernel refuses the ZMASK RAM index ports
+
+The first ZMASK submission through the public ZMASK lifecycle route on a
+Dell Vostro 1000 -- RS485M (Radeon Xpress 1150, `CHIP_RS480`, R300-class
+US/PFS fixed VLIW), radeon-unified 0.8.19 on 7.1.8-1-cachyos -- was
+refused by the radeon CS parser:
+
+```text
+Forbidden register 0x4F38 in cs at 14 (val=00000000)
+[drm:radeon_cs_ib_chunk [radeon]] *ERROR* Invalid command stream !
+```
+
+`DRM_RADEON_CS` returned `EINVAL` and the queue submit was refused. The
+IB digest matched the shim-prepared stream, so the submitted bytes are
+the ones the plan builds.
+
+| Field | Value |
+| --- | --- |
+| observation | `Forbidden register 0x4F38 in cs at 14 (val=00000000)`; `DRM_RADEON_CS` returns `EINVAL` |
+| source commit | mesa 89fead4ca63 package; kernel radeon-unified 0.8.19 on 7.1.8-1-cachyos |
+| retained bundle | `steinmarder-r300` `results/r3v-zmask-public-lifecycle-rs485m-89fead4c-silicon-aaa41045c` |
+| kernel constraint | `reg_srcs/r300` omits 0x4f38 and 0x4f40, and `r300_packet0_check` carries no case for either, so its default arm refuses whatever `hyperz_filp` holds |
+| falsification criterion | a submission carrying a write to 0x4f38 that the parser admits under any ownership state |
+| evidence class | known (silicon) |
+
+Two corollaries stand on the same mechanism rather than on the
+observation. `r100_cs_parse_packet0` tests a run's top register against
+the safe bitmap's extent before reading the bitmap, and `table_build` in
+`mkregtable.c` sizes the r300 table as 159 words from the `0x4f60` the
+`reg_srcs/r300` header names, so 0x4f80 is the first register no PACKET0
+run may reach. And a register `reg_srcs/r300` lists carries a cleared bit
+and skips the check entirely, which makes the safe list and the case
+labels disjoint. Both are read off the named kernel sources, not
+measured.
+
+### Hypothesis: the corrected stream admits
+
+Removing the two writes leaves stage C writing `ZB_ZMASK_OFFSET`,
+`ZB_ZMASK_PITCH`, `GB_Z_PEQ_CONFIG`, `ZB_BW_CNTL`, and
+`3D_CLEAR_ZMASK`, every one of which lies in the union of the safe list
+and the case labels. The prediction is that the same submission reaches
+the ring: `DRM_RADEON_CS` returns 0 and `dmesg` carries no
+`Forbidden register` line and no `Invalid command stream` line for it.
+This is falsified by any further parser rejection, which would name a
+second register the model admits and the kernel does not. No run has
+tested it, so nothing here bounds what the stage then does to depth
+memory -- the ownership acquire and every stage observation stay
+unmeasured.
+
+`r300-zmask-kernel-register-crosscheck` is the standing check that the
+class cannot return: it holds every register every ZMASK plan stage and
+the materializer write against the checked-in copy of the kernel's own
+authority, and its known-bad is the fifteen-dword stream the RS485M
+refused.
 
 ## Automatic selection
 
