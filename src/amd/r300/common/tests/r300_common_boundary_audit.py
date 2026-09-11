@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from functools import cache
 from pathlib import Path
 
 AUDIT_OK = 0
@@ -201,6 +202,11 @@ def strip_outer_parentheses(expression: str) -> str:
     return expression
 
 
+@cache
+def _comment_free_lines(text: str) -> tuple[str, ...]:
+    return tuple(strip_comments(text).splitlines())
+
+
 def source_lines(layer: str, text: str):
     """Yield every (line_number, line) pair the layer's sources carry.
 
@@ -208,7 +214,7 @@ def source_lines(layer: str, text: str):
     conditional arm cannot hide a forbidden include or identifier.
     """
     del layer
-    return enumerate(strip_comments(text).splitlines(), start=1)
+    return enumerate(_comment_free_lines(text), start=1)
 
 
 def include_has_prefix(include: str, prefix: str) -> bool:
@@ -428,6 +434,27 @@ def selftest() -> int:
             if actual != expected:
                 print(f"selftest {label}: expected {expected}, got {actual}")
                 return 1
+
+        repeated_source = (
+            'const char *url = "http://x";\n'
+            "nir_shader *bad;\n"
+            '/* #include "comment.h" */\n')
+        _comment_free_lines.cache_clear()
+        first_lines = list(source_lines("common", repeated_source))
+        second_lines = list(source_lines("native", repeated_source))
+        cache_info = _comment_free_lines.cache_info()
+        if first_lines != second_lines or len(first_lines) != 3:
+            print("selftest cached source line iteration changed")
+            return 1
+        if ("http://x" not in first_lines[0][1] or
+                "nir_shader" not in first_lines[1][1] or
+                "comment.h" in "\n".join(line for _, line in first_lines)):
+            print("selftest cached source comment parsing changed")
+            return 1
+        if (cache_info.hits != 1 or cache_info.misses != 1 or
+                cache_info.currsize != 1):
+            print(f"selftest source line cache mismatch: {cache_info}")
+            return 1
 
         with contextlib.redirect_stderr(io.StringIO()):
             empty_sources = audit_sources("common", [])
