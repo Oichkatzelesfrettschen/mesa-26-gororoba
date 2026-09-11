@@ -1462,6 +1462,27 @@ r300_zmask_materialize_plan_test = executable(
 )
 test('r300-zmask-materialize-plan', r300_zmask_materialize_plan_test,
      suite : ['r300'])
+
+# Every register a ZMASK stream writes, against the checked-in copy of the
+# kernel's own PACKET0 authority: reg_srcs/r300 and the r300_packet0_check
+# case labels of radeon-unified 0.8.19.  The authority object is test data,
+# so it stays out of libr300_common.
+r300_zmask_kernel_register_crosscheck_test = executable(
+  'r300_zmask_kernel_register_crosscheck_test',
+  files('r300_pm4_builder.c', 'r300_zb_depth_layout.c',
+        'r300_zb_depth_surface.c', 'r300_zb_hyperz_admission.c',
+        'r300_zmask_clear_plan.c', 'r300_zmask_layout.c',
+        'r300_zmask_materialize_plan.c',
+        'tests/r300_kernel_packet0_authority.c',
+        'tests/r300_zmask_kernel_register_crosscheck_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r300-zmask-kernel-register-crosscheck',
+     r300_zmask_kernel_register_crosscheck_test, suite : ['r300'])
 r300_zb_aspect_copy_test = executable(
   'r300_zb_aspect_copy_test',
   files('r300_zb_aspect_copy.c', 'r300_zb_depth_layout.c',

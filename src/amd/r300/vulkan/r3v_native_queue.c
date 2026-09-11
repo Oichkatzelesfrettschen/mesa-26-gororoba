@@ -3771,6 +3771,12 @@ r3v_native_hyperz_submission_prepare(
       return verdict;
    if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM)
       return verdict;
+   /* A register outside the kernel's PACKET0 authority answers before
+    * hyperz_filp is read, so the acquire would spend an ioctl and return
+    * the same verdict.  The stream is rewritten or it is refused. */
+   if (verdict == R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER ||
+       verdict == R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE)
+      return verdict;
 
    /* The first HyperZ write on this descriptor: ask the kernel for the
     * block.  The value is both request and answer, so a returned 1 is
@@ -3823,6 +3829,17 @@ r3v_native_hyperz_admit(struct r3v_native_device *device,
       return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                        "r3v-native: HyperZ admission refused: %s",
                        r300_zb_hyperz_verdict_name(verdict));
+   /* No acquire ran for these two, so the message carries the register
+    * and the kernel rule and states nothing about ownership. */
+   if (verdict == R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER ||
+       verdict == R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE)
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: HyperZ admission refused at ib[%u] "
+                       "(0x%04x = 0x%08x): %s; %s",
+                       site.ib_index, site.reg_or_opcode, site.value,
+                       r300_zb_hyperz_verdict_name(verdict),
+                       site.row != NULL ? site.row->kernel_rule
+                                        : "no row");
    return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                     "r3v-native: HyperZ admission refused at ib[%u] "
                     "(%s = 0x%08x): %s; ownership %s (%s)",

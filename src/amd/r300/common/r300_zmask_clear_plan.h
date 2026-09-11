@@ -48,9 +48,10 @@ enum r300_zmask_clear_stage {
    R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED,
 };
 
-/* Longest append: the ZMASK_OFFSET and ZMASK_PITCH run, the two index
- * registers, GB_Z_PEQ_CONFIG, ZB_BW_CNTL, and the four-dword
- * 3D_CLEAR_ZMASK packet.
+/* Longest append: the ZMASK_OFFSET and ZMASK_PITCH run, GB_Z_PEQ_CONFIG,
+ * ZB_BW_CNTL, and the four-dword 3D_CLEAR_ZMASK packet, eleven dwords,
+ * which r300_zmask_fast_clear_plan_build prefixes with
+ * ZB_DEPTHCLEARVALUE.  The capacity holds a stage the ladder gains.
  */
 #define R300_ZMASK_CLEAR_PLAN_MAX_DWORDS 20u
 

@@ -92,9 +92,12 @@ emit_bind_and_clear(struct r300_pm4_builder *b,
 
    r300_pm4_reg(b, R300_ZB_BW_CNTL, zb_bw_cntl);
 
-   /* The packet payload carries its own start index.  r300_packet0_check
-    * rejects the ZMASK index data ports, so command streams leave the
-    * autoincrementing register interface untouched.
+   /* The packet payload carries its own start index, so the RAM window
+    * the clear fills travels with the packet.  The autoincrementing
+    * index ports reach the RAM through ZB_ZMASK_WRINDEX (0x4f38) and
+    * ZB_ZMASK_RDINDEX (0x4f40), which the r300 safe-register list omits
+    * and r300_packet0_check carries no case for, so its default arm
+    * refuses the submission under HyperZ ownership as well.
     */
    const uint32_t clear[ZMASK_CLEAR_PAYLOAD_DWORDS] = {0u, layout->dwords,
                                                        0u};

@@ -266,7 +266,7 @@
           "discovery": "rg --fixed-strings 'r3v_native_zmask_plan_obligations_init' src/amd/r300/vulkan/tests/r3v_native_zmask_plan_obligations_test.c"
         }
       ],
-      "falsifier": "Allow a core vkCmd entry point outside the qualified draw, transfer, clear, or experimental compute subsets to succeed without recording executable work, or admit a ZMASK fast clear for a recorded operation whose plan obligations preserve an aspect or a region."
+      "falsifier": "Allow a core vkCmd entry point outside the qualified draw, transfer, clear, or experimental compute subsets to succeed without recording executable work, admit a ZMASK fast clear for a recorded operation whose plan obligations preserve an aspect or a region, or record a ZMASK stream carrying a PACKET0 register outside the union of the kernel safe-register list and the r300_packet0_check case labels."
     },
     {
       "id": "auxiliary-core-types",
