@@ -3073,6 +3073,19 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       c_args : [no_override_init_args],
     )
     test(
+      'r3v-native-loader-zmask-lifecycle-preparation',
+      prog_python,
+      args : [
+        files('tests/r3v_native_loader_zmask_lifecycle_preparation_check.py'),
+        r3v_native_loader_zmask_lifecycle_application,
+      ],
+      env : environment(r3v_native_loader_app_vars),
+      depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd,
+                 r3v_native_loader_zmask_lifecycle_application],
+      timeout : 300,
+      suite : ['r3v'],
+    )
+    test(
       'r3v-native-loader-fill-application',
       prog_python,
       args : [

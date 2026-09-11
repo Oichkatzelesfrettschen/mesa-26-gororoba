@@ -9,6 +9,7 @@
 
 #include "r3v_native_reference_spirv.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -94,6 +95,7 @@ struct application {
    uint32_t queue_submit_calls_attempted;
    uint32_t queue_submits_accepted;
    uint32_t queue_executions_completed;
+   VkResult queue_submit_result;
    bool expected_icd_dso_mapped;
 };
 
@@ -127,11 +129,83 @@ struct oracle_results {
    bool artifacts_retained;
 };
 
+struct preparation_results {
+   bool expected_icd_dso_mapped;
+   bool authorization_declarations_absent;
+   bool submission_refused;
+   bool submit_object_retained;
+   bool attempt_token_absent;
+   bool shim_counter_available;
+   uint64_t shim_cs_ioctls;
+   bool shim_hyperz_state_available;
+   bool shim_hyperz_unowned_before;
+   uint64_t shim_hyperz_acquire_ioctls;
+   uint64_t shim_hyperz_release_ioctls;
+   bool shim_hyperz_owned_after;
+};
+
+struct shim_hyperz_state {
+   uint64_t acquire_ioctls;
+   uint64_t release_ioctls;
+   bool owned;
+};
+
 static bool
 exact_gate_open(const char *name)
 {
    const char *value = getenv(name);
    return value != NULL && strcmp(value, "1") == 0;
+}
+
+static bool
+environment_absent(const char *name)
+{
+   return getenv(name) == NULL;
+}
+
+static bool
+preparation_authorization_declarations_absent(void)
+{
+   static const char *const names[] = {
+      "R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
+      "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE",
+      "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+   };
+   for (size_t index = 0u; index < sizeof(names) / sizeof(names[0]); index++) {
+      if (!environment_absent(names[index]))
+         return false;
+   }
+   return true;
+}
+
+static bool
+read_shim_cs_count(uint64_t *count)
+{
+   uint64_t (*counter)(void) = (uint64_t (*)(void))dlsym(
+      RTLD_DEFAULT, "drm_shim_test_radeon_cs_ioctls");
+   if (counter == NULL)
+      return false;
+   *count = counter();
+   return true;
+}
+
+static bool
+read_shim_hyperz_state(struct shim_hyperz_state *state)
+{
+   uint64_t (*acquire_counter)(void) = (uint64_t (*)(void))dlsym(
+      RTLD_DEFAULT, "drm_shim_test_radeon_hyperz_acquire_ioctls");
+   uint64_t (*release_counter)(void) = (uint64_t (*)(void))dlsym(
+      RTLD_DEFAULT, "drm_shim_test_radeon_hyperz_release_ioctls");
+   bool (*owned)(void) = (bool (*)(void))dlsym(
+      RTLD_DEFAULT, "drm_shim_test_radeon_hyperz_owned");
+   if (acquire_counter == NULL || release_counter == NULL || owned == NULL)
+      return false;
+   *state = (struct shim_hyperz_state){
+      .acquire_ioctls = acquire_counter(),
+      .release_ioctls = release_counter(),
+      .owned = owned(),
+   };
+   return true;
 }
 
 static bool
@@ -716,7 +790,7 @@ seed_host_allocations(struct application *application)
       color_words[index] = COLOR_SENTINEL;
    vkUnmapMemory(application->device, application->color_memory);
 
-   static const float vertices[24] = {
+   float vertices[24] = {
       -1.0f, -1.0f, 0.25f, 1.0f,
       3.0f,  -1.0f, 0.25f, 1.0f,
       -1.0f, 3.0f,  0.25f, 1.0f,
@@ -724,6 +798,21 @@ seed_host_allocations(struct application *application)
       3.0f,  -1.0f, 0.75f, 1.0f,
       -1.0f, 3.0f,  0.75f, 1.0f,
    };
+   if (application->depth_count == 2u) {
+      const float update_right =
+         -1.0f + 2.0f * UPDATE_WIDTH / TARGET_WIDTH;
+      const float update_bottom =
+         -1.0f + 2.0f * UPDATE_HEIGHT / TARGET_HEIGHT;
+      const float update_vertices[24] = {
+         -1.0f,        -1.0f,         0.25f, 1.0f,
+         update_right, -1.0f,         0.25f, 1.0f,
+         -1.0f,        update_bottom, 0.25f, 1.0f,
+         update_right, -1.0f,         0.25f, 1.0f,
+         update_right, update_bottom, 0.25f, 1.0f,
+         -1.0f,        update_bottom, 0.25f, 1.0f,
+      };
+      memcpy(vertices, update_vertices, sizeof(vertices));
+   }
    void *vertex_map = NULL;
    if (vkMapMemory(application->device, application->vertex.memory, 0u,
                    application->vertex.size, 0u,
@@ -791,7 +880,7 @@ record_fast_clear(VkCommandBuffer command_buffer, VkImage image, float depth,
 static void
 record_draw(struct application *application, uint32_t width, uint32_t height,
             VkAccessFlags depth_access, VkImageLayout depth_layout,
-            bool record_fail_discriminator)
+            uint32_t vertex_count, bool record_fail_discriminator)
 {
    const VkImageMemoryBarrier clear_to_draw = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -830,7 +919,7 @@ record_draw(struct application *application, uint32_t width, uint32_t height,
    vkCmdBindVertexBuffers(application->command_buffer, 0u, 1u,
                           &application->vertex.buffer,
                           &(VkDeviceSize){0u});
-   vkCmdDraw(application->command_buffer, 3u, 1u, 0u, 0u);
+   vkCmdDraw(application->command_buffer, vertex_count, 1u, 0u, 0u);
    if (record_fail_discriminator) {
       vkCmdBindPipeline(application->command_buffer,
                         VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -909,7 +998,7 @@ record_application(struct application *application, enum application_mode mode)
    if (mode == MODE_READ_MATERIALIZE_EXPORT) {
       record_draw(application, TARGET_WIDTH, TARGET_HEIGHT,
                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true);
+                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 3u, true);
       record_aspect_exports(
          application, 0u,
          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
@@ -919,10 +1008,10 @@ record_application(struct application *application, enum application_mode mode)
    } else {
       record_fast_clear(application->command_buffer,
                         application->depth[1].image, 0.75f, 0x1a5u);
-      record_draw(application, UPDATE_WIDTH, UPDATE_HEIGHT,
+      record_draw(application, TARGET_WIDTH, TARGET_HEIGHT,
                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_GENERAL, false);
+                  VK_IMAGE_LAYOUT_GENERAL, 6u, false);
       record_aspect_exports(
          application, 0u,
          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
@@ -935,7 +1024,10 @@ record_application(struct application *application, enum application_mode mode)
                             VK_ACCESS_TRANSFER_WRITE_BIT,
                             VK_IMAGE_LAYOUT_GENERAL);
    }
-   return vkEndCommandBuffer(application->command_buffer) == VK_SUCCESS;
+   result = vkEndCommandBuffer(application->command_buffer);
+   if (result != VK_SUCCESS)
+      fprintf(stderr, "vkEndCommandBuffer failed: %d\n", result);
+   return result == VK_SUCCESS;
 }
 
 static enum submission_result
@@ -947,8 +1039,9 @@ submit_once(struct application *application)
       .pCommandBuffers = &application->command_buffer,
    };
    application->queue_submit_calls_attempted++;
-   if (vkQueueSubmit(application->queue, 1u, &submit, application->fence) !=
-       VK_SUCCESS)
+   application->queue_submit_result =
+      vkQueueSubmit(application->queue, 1u, &submit, application->fence);
+   if (application->queue_submit_result != VK_SUCCESS)
       return SUBMISSION_REFUSED;
    application->queue_submits_accepted++;
    if (vkWaitForFences(application->device, 1u, &application->fence, VK_TRUE,
@@ -1277,6 +1370,23 @@ json_bool(bool value)
    return value ? "true" : "false";
 }
 
+static const char *
+result_name(VkResult result)
+{
+   switch (result) {
+   case VK_SUCCESS:
+      return "VK_SUCCESS";
+   case VK_ERROR_DEVICE_LOST:
+      return "VK_ERROR_DEVICE_LOST";
+   case VK_ERROR_OUT_OF_HOST_MEMORY:
+      return "VK_ERROR_OUT_OF_HOST_MEMORY";
+   case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+      return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+   default:
+      return "VK_RESULT_OTHER";
+   }
+}
+
 static bool
 retain_outcome(int directory_descriptor, enum application_mode mode,
                const struct application *application,
@@ -1365,6 +1475,91 @@ retain_outcome(int directory_descriptor, enum application_mode mode,
    return length > 0 && (size_t)length < sizeof(json) &&
           retain_file_atomically(directory_descriptor,
                                  "application_outcome.json", json,
+                                 (size_t)length);
+}
+
+static bool
+preparation_submit_object_retained(int directory_descriptor)
+{
+   static const char *const names[] = {
+      "ib.bin",
+      "relocs.bin",
+      "manifest.json",
+      "submit_relocs.bin",
+      "submit_manifest.json",
+   };
+   for (size_t index = 0u; index < sizeof(names) / sizeof(names[0]); index++) {
+      struct stat status;
+      if (fstatat(directory_descriptor, names[index], &status,
+                  AT_SYMLINK_NOFOLLOW) != 0 ||
+          !S_ISREG(status.st_mode) || status.st_size <= 0)
+         return false;
+   }
+   return true;
+}
+
+static bool
+preparation_attempt_token_absent(int directory_descriptor)
+{
+   struct stat status;
+   errno = 0;
+   return fstatat(directory_descriptor, "attempt.token", &status,
+                  AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
+}
+
+static bool
+retain_preparation_outcome(int directory_descriptor,
+                           enum application_mode mode,
+                           const struct application *application,
+                           const struct preparation_results *results)
+{
+   char json[2048];
+   const char *mode_name =
+      mode == MODE_READ_MATERIALIZE_EXPORT ? "read-materialize-export"
+                                           : "aba-materialize-export";
+   const int length = snprintf(
+      json, sizeof(json),
+      "{\n"
+      "  \"schema\": \"r3v-zmask-public-lifecycle-preparation-outcome/1\",\n"
+      "  \"mode\": \"%s\",\n"
+      "  \"queue_submit_result\": \"%s\",\n"
+      "  \"queue_submit_result_value\": %d,\n"
+      "  \"queue_submit_calls_attempted\": %u,\n"
+      "  \"queue_submits_accepted\": %u,\n"
+      "  \"queue_executions_completed\": %u,\n"
+      "  \"expected_icd_dso_mapped\": %s,\n"
+      "  \"authorization_declarations_absent\": %s,\n"
+      "  \"submission_refused\": %s,\n"
+      "  \"submit_object_retained\": %s,\n"
+      "  \"attempt_token_absent\": %s,\n"
+      "  \"shim_counter_available\": %s,\n"
+      "  \"shim_cs_ioctls\": %llu,\n"
+      "  \"shim_hyperz_state_available\": %s,\n"
+      "  \"shim_hyperz_unowned_before\": %s,\n"
+      "  \"shim_hyperz_acquire_ioctls\": %llu,\n"
+      "  \"shim_hyperz_release_ioctls\": %llu,\n"
+      "  \"shim_hyperz_owned_after\": %s\n"
+      "}\n",
+      mode_name, result_name(application->queue_submit_result),
+      application->queue_submit_result,
+      application->queue_submit_calls_attempted,
+      application->queue_submits_accepted,
+      application->queue_executions_completed,
+      json_bool(results->expected_icd_dso_mapped),
+      json_bool(results->authorization_declarations_absent),
+      json_bool(results->submission_refused),
+      json_bool(results->submit_object_retained),
+      json_bool(results->attempt_token_absent),
+      json_bool(results->shim_counter_available),
+      (unsigned long long)results->shim_cs_ioctls,
+      json_bool(results->shim_hyperz_state_available),
+      json_bool(results->shim_hyperz_unowned_before),
+      (unsigned long long)results->shim_hyperz_acquire_ioctls,
+      (unsigned long long)results->shim_hyperz_release_ioctls,
+      json_bool(results->shim_hyperz_owned_after));
+   return length > 0 && (size_t)length < sizeof(json) &&
+          retain_file_atomically(directory_descriptor,
+                                 "preparation_outcome.json", json,
                                  (size_t)length);
 }
 
@@ -1475,15 +1670,35 @@ main(int argc, char **argv)
       return passed ? 0 : 1;
    }
    enum application_mode mode;
+   bool preparation = false;
    if (argc == 3 && strcmp(argv[1], "--read-materialize-export") == 0)
       mode = MODE_READ_MATERIALIZE_EXPORT;
    else if (argc == 3 && strcmp(argv[1], "--aba-materialize-export") == 0)
       mode = MODE_ABA_MATERIALIZE_EXPORT;
-   else {
+   else if (argc == 3 &&
+            strcmp(argv[1], "--prepare-read-materialize-export") == 0) {
+      mode = MODE_READ_MATERIALIZE_EXPORT;
+      preparation = true;
+   } else if (argc == 3 &&
+              strcmp(argv[1], "--prepare-aba-materialize-export") == 0) {
+      mode = MODE_ABA_MATERIALIZE_EXPORT;
+      preparation = true;
+   } else {
       fprintf(stderr,
               "usage: %s --read-materialize-export DIR | "
-              "--aba-materialize-export DIR | --self-test\n",
+              "--aba-materialize-export DIR | "
+              "--prepare-read-materialize-export DIR | "
+              "--prepare-aba-materialize-export DIR | --self-test\n",
               argv[0]);
+      return 2;
+   }
+
+   const bool authorization_declarations_absent =
+      preparation_authorization_declarations_absent();
+   if (preparation && !authorization_declarations_absent) {
+      fprintf(stderr,
+              "preparation requires the IB, kernel, and module "
+              "authorization declarations to be absent\n");
       return 2;
    }
 
@@ -1512,11 +1727,11 @@ main(int argc, char **argv)
    }
 
    bool retained = true;
-   if (mode == MODE_READ_MATERIALIZE_EXPORT) {
+   if (!preparation && mode == MODE_READ_MATERIALIZE_EXPORT) {
       retained &= retain_initial_backing(
          &application, 0u, directory_descriptor, "read-initial-backing.bin",
          &oracles.read_initial_backing);
-   } else {
+   } else if (!preparation) {
       retained &= retain_initial_backing(
          &application, 0u, directory_descriptor,
          "aba-a-initial-backing.bin", &oracles.aba_a_initial_backing);
@@ -1540,7 +1755,108 @@ main(int argc, char **argv)
       close(directory_descriptor);
       return 1;
    }
+   uint64_t shim_cs_before = 0u;
+   uint64_t shim_cs_after = 0u;
+   struct shim_hyperz_state shim_hyperz_before = {0};
+   struct shim_hyperz_state shim_hyperz_after = {0};
+   const bool shim_counter_available =
+      preparation && read_shim_cs_count(&shim_cs_before);
+   const bool shim_hyperz_before_available =
+      preparation && read_shim_hyperz_state(&shim_hyperz_before);
    const enum submission_result submission = submit_once(&application);
+   const bool shim_counter_still_available =
+      shim_counter_available && read_shim_cs_count(&shim_cs_after);
+   const bool shim_hyperz_after_available =
+      shim_hyperz_before_available &&
+      read_shim_hyperz_state(&shim_hyperz_after);
+   if (preparation) {
+      const bool shim_cs_monotonic =
+         shim_counter_still_available && shim_cs_after >= shim_cs_before;
+      const bool shim_hyperz_counts_monotonic =
+         shim_hyperz_after_available &&
+         shim_hyperz_after.acquire_ioctls >= shim_hyperz_before.acquire_ioctls &&
+         shim_hyperz_after.release_ioctls >= shim_hyperz_before.release_ioctls;
+      const struct preparation_results preparation_results = {
+         .expected_icd_dso_mapped = application.expected_icd_dso_mapped,
+         .authorization_declarations_absent =
+            authorization_declarations_absent,
+         .submission_refused =
+            submission == SUBMISSION_REFUSED &&
+            application.queue_submit_result == VK_ERROR_DEVICE_LOST &&
+            application.queue_submit_calls_attempted == 1u &&
+            application.queue_submits_accepted == 0u &&
+            application.queue_executions_completed == 0u,
+         .submit_object_retained =
+            preparation_submit_object_retained(directory_descriptor),
+         .attempt_token_absent =
+            preparation_attempt_token_absent(directory_descriptor),
+         .shim_counter_available = shim_cs_monotonic,
+         .shim_cs_ioctls = shim_cs_monotonic
+                              ? shim_cs_after - shim_cs_before
+                              : UINT64_MAX,
+         .shim_hyperz_state_available = shim_hyperz_counts_monotonic,
+         .shim_hyperz_unowned_before =
+            shim_hyperz_before_available && !shim_hyperz_before.owned,
+         .shim_hyperz_acquire_ioctls =
+            shim_hyperz_counts_monotonic
+               ? shim_hyperz_after.acquire_ioctls -
+                    shim_hyperz_before.acquire_ioctls
+               : UINT64_MAX,
+         .shim_hyperz_release_ioctls =
+            shim_hyperz_counts_monotonic
+               ? shim_hyperz_after.release_ioctls -
+                    shim_hyperz_before.release_ioctls
+               : UINT64_MAX,
+         .shim_hyperz_owned_after =
+            shim_hyperz_after_available && shim_hyperz_after.owned,
+      };
+      const bool preparation_passed =
+         preparation_results.expected_icd_dso_mapped &&
+         preparation_results.authorization_declarations_absent &&
+         preparation_results.submission_refused &&
+         preparation_results.submit_object_retained &&
+         preparation_results.attempt_token_absent &&
+         preparation_results.shim_counter_available &&
+         preparation_results.shim_cs_ioctls == 0u &&
+         preparation_results.shim_hyperz_state_available &&
+         preparation_results.shim_hyperz_unowned_before &&
+         preparation_results.shim_hyperz_acquire_ioctls == 0u &&
+         preparation_results.shim_hyperz_release_ioctls == 0u &&
+         !preparation_results.shim_hyperz_owned_after;
+      const bool outcome_retained =
+         retain_preparation_outcome(directory_descriptor, mode, &application,
+                                    &preparation_results);
+      const bool directory_synced =
+         outcome_retained && fsync(directory_descriptor) == 0;
+      printf("mode=prepare-%s queue_submit_calls_attempted=%u "
+             "queue_submits_accepted=%u queue_executions_completed=%u "
+             "submit_result=%d submit_object_retained=%u "
+             "shim_counter_available=%u shim_cs_ioctls=%llu "
+             "shim_hyperz_acquire_ioctls=%llu "
+             "shim_hyperz_release_ioctls=%llu "
+             "shim_hyperz_owned_after=%u\n",
+             mode == MODE_READ_MATERIALIZE_EXPORT
+                ? "read-materialize-export"
+                : "aba-materialize-export",
+             application.queue_submit_calls_attempted,
+             application.queue_submits_accepted,
+             application.queue_executions_completed,
+             application.queue_submit_result,
+             preparation_results.submit_object_retained,
+             preparation_results.shim_counter_available,
+             (unsigned long long)preparation_results.shim_cs_ioctls,
+             (unsigned long long)
+                preparation_results.shim_hyperz_acquire_ioctls,
+             (unsigned long long)
+                preparation_results.shim_hyperz_release_ioctls,
+             preparation_results.shim_hyperz_owned_after);
+      destroy_application(&application);
+      const bool directory_closed = close(directory_descriptor) == 0;
+      return preparation_passed && outcome_retained && directory_synced &&
+                directory_closed
+             ? 0
+             : 1;
+   }
    if (submission != SUBMISSION_COMPLETED) {
       fprintf(stderr, "one-submit lifecycle execution failed\n");
       oracles.artifacts_retained = false;
