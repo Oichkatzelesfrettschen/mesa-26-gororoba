@@ -316,7 +316,7 @@ ladder's own stage table; no silicon run bounds any of it.
 | nonuniform ordinary initialization | A | a uniform image that any clear value reproduces |
 | compressed-write draw that cannot remain a uniform clear | F | the fast-clear substitution explaining the contents |
 | switch away and return | A | contents living in a cache that never retired |
-| compressed read under the decompression group | E | a read that never consulted the metadata |
+| compressed read under the decompression group | E | the written tiles being readable only under the group that wrote them |
 | materialize every compressed tile to depth memory | E | contents reachable only while the metadata is bound |
 | return `ZB_BW_CNTL` to zero | C | the metadata answering the verifying read |
 | read back through the qualified tiled address resolver | A | an address model that reads the wrong words |

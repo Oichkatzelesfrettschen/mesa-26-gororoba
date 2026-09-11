@@ -28,7 +28,8 @@ static const struct r300_zmask_qualification_step_row compressed_steps[] = {
    {R300_ZMASK_QUALIFICATION_COMPRESSED_READ,
     R300_ZMASK_CLEAR_STAGE_READ_COMPRESSED, false,
     "compressed read under the decompression group",
-    "a read that never consulted the metadata"},
+    "the written tiles being readable only under the group that wrote "
+    "them"},
    {R300_ZMASK_QUALIFICATION_MATERIALIZE,
     R300_ZMASK_CLEAR_STAGE_READ_COMPRESSED, false,
     "materialize every compressed tile to depth memory",

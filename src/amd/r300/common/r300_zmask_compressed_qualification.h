@@ -101,6 +101,9 @@ struct r300_zmask_qualification_plan {
    enum r300_zmask_evidence_class target_class;
 };
 
+/* The step's name in the shipped sequence.  A caller holding its own
+ * copy of a plan reads the name off that plan's rows, because a copy may
+ * carry rows this function does not see. */
 const char *r300_zmask_qualification_step_name(
    enum r300_zmask_qualification_step step);
 
