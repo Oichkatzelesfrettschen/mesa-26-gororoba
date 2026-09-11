@@ -9,6 +9,8 @@
  * calling.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native_surface.h"
 
 #include "util/macros.h"
@@ -431,7 +433,7 @@ call_memory_range_validation(void)
     * r3v_native_validate_mapped_ranges (rg --fixed-strings
     * r3v_native_validate_mapped_ranges src/amd/r300/vulkan/), so the first
     * three cases exercise valid ranges and the remaining cases exercise its
-    * refusal boundaries.  The native memory table marks memoryTypeIndex 0
+    * refusal boundaries. The native memory table marks the host-visible type
     * VK_MEMORY_PROPERTY_HOST_COHERENT_BIT through
     * r3v_GetPhysicalDeviceMemoryProperties2 (rg --fixed-strings
     * r3v_GetPhysicalDeviceMemoryProperties2 src/amd/r300/vulkan/), so the
@@ -765,7 +767,7 @@ main(void)
 
    /* The allocation uses four nonCoherentAtomSize multiples as deterministic
     * test-table geometry for the mapped-range bounds cases.  The native
-    * memory table marks memoryTypeIndex 0 HOST_COHERENT, so this allocation
+    * memory table marks the mapped type HOST_COHERENT, so this allocation
     * does not claim the conditional offset-alignment VUID
     * (rg --fixed-strings r3v_GetPhysicalDeviceMemoryProperties2
     * src/amd/r300/vulkan/; rg --fixed-strings
@@ -785,7 +787,7 @@ main(void)
       device, &(VkMemoryAllocateInfo){
                  .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                  .allocationSize = live_size,
-                 .memoryTypeIndex = 0,
+                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
               },
       NULL, &live_memory);
    CHECK(allocation_result == VK_SUCCESS,
@@ -836,7 +838,7 @@ main(void)
          &(VkMemoryAllocateInfo){
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = texel_buffer_reqs.size,
-            .memoryTypeIndex = 0,
+            .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
          },
          NULL, &texel_buffer_memory);
       CHECK(texel_buffer_alloc_result == VK_SUCCESS &&

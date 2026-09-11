@@ -13,6 +13,8 @@
 
 #define VK_NO_PROTOTYPES
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_shim_arming.h"
@@ -317,7 +319,7 @@ run_arm(enum arm arm, const char *name)
                            &(VkMemoryAllocateInfo){
                               .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = allocation,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &input_memory) == VK_SUCCESS);
    if (arm == ARM_ALIAS_REFUSED) {
@@ -328,7 +330,7 @@ run_arm(enum arm arm, const char *name)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = allocation,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &output_memory) == VK_SUCCESS);
    }

@@ -11,6 +11,8 @@
  * is per-leg state.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native_reference_spirv.h"
 
 #include <stdbool.h>
@@ -153,8 +155,8 @@ bind_buffer(VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage,
    const VkMemoryAllocateInfo allocate_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = requirements.size,
-      /* Type 0 is the one host-visible native type. */
-      .memoryTypeIndex = 0,
+      /* The allocation uses the host-visible native type. */
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    CHECK(vkAllocateMemory(device, &allocate_info, NULL, memory) ==
             VK_SUCCESS,

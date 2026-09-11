@@ -18,6 +18,8 @@
  * composition.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
@@ -407,7 +409,7 @@ main(int argc, char **argv)
                         &(VkMemoryAllocateInfo){
                            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                            .allocationSize = reqs.size,
-                           .memoryTypeIndex = 0,
+                           .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                         },
                         NULL, &color_memory) != VK_SUCCESS ||
        vkBindImageMemory(device, image, color_memory, 0) != VK_SUCCESS) {
@@ -427,7 +429,7 @@ main(int argc, char **argv)
                         &(VkMemoryAllocateInfo){
                            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                            .allocationSize = 4096,
-                           .memoryTypeIndex = 0,
+                           .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                         },
                         NULL, &vertex_memory) != VK_SUCCESS) {
       fprintf(stderr, "vertex allocation failed\n");

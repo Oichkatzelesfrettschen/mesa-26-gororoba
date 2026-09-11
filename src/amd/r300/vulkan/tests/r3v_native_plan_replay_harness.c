@@ -9,6 +9,8 @@
 #undef NDEBUG
 #define VK_NO_PROTOTYPES
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_shim_arming.h"
@@ -181,7 +183,7 @@ build_scene(struct scene *s)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = reqs.size,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &s->image_memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, s->image, s->image_memory, 0) ==
@@ -204,7 +206,7 @@ build_scene(struct scene *s)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &s->vertex_memory) == VK_SUCCESS);
    assert(vkCreateBuffer(device,

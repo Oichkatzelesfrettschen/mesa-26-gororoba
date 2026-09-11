@@ -13,6 +13,8 @@
  * stage prints and flushes before it runs.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native_arming.h"
 #include "r3v_native_watchdog_guard.h"
 #include "r3v_native_reference_spirv.h"
@@ -353,7 +355,7 @@ main(int argc, char **argv)
                           &(VkMemoryAllocateInfo){
                              .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                              .allocationSize = tex_reqs.size,
-                             .memoryTypeIndex = 0,
+                             .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                           },
                           NULL, &tex_memory));
    CHECK(vkBindImageMemory(device, tex_image, tex_memory, 0));
@@ -518,7 +520,7 @@ main(int argc, char **argv)
                           &(VkMemoryAllocateInfo){
                              .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                              .allocationSize = color_bytes,
-                             .memoryTypeIndex = 0,
+                             .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                           },
                           NULL, &target_memory));
    CHECK(vkBindImageMemory(device, target_image, target_memory, 0));
@@ -718,7 +720,7 @@ main(int argc, char **argv)
                           &(VkMemoryAllocateInfo){
                              .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                              .allocationSize = 4096,
-                             .memoryTypeIndex = 0,
+                             .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                           },
                           NULL, &vertex_memory));
    VkBuffer vertex_buffer = VK_NULL_HANDLE;

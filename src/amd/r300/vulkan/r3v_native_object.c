@@ -403,16 +403,16 @@ r3v_native_validate_mapped_ranges(struct r3v_native_device *device,
    return VK_SUCCESS;
 }
 
-/* Type 0 is the one host-visible memory type, and it reports
+/* The host-visible memory type reports
  * VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, which makes host writes visible to
  * the device and device writes visible to the host without either call.  The
  * native driver holds that promise itself: the unsnooped GART mapping is
  * published and invalidated by radeon_drm_vk_bo_cache_sync around the
  * synchronous submission, the only window in which the device reads or
- * writes a mapped range.  r3v_native_memory_properties_fill grants type 1
- * VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT alone (rg --fixed-strings
+ * writes a mapped range. r3v_native_memory_properties_fill grants the
+ * device-only type VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT alone (rg --fixed-strings
  * r3v_native_memory_properties_fill src/amd/r300/vulkan/), and vkMapMemory
- * admits a host-visible type alone, so every mapped range names type 0.
+ * admits the host-visible type alone.
  * These commands therefore carry range validation alone.
  */
 VKAPI_ATTR VkResult VKAPI_CALL

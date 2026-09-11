@@ -7,6 +7,8 @@
  * depth allocations before classifying logical and physical results.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_reference_spirv.h"
@@ -886,7 +888,7 @@ create_public_context(struct public_context *context, uint32_t depth_count)
       &(VkMemoryAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
          .allocationSize = color_requirements.size,
-         .memoryTypeIndex = 0,
+         .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
       }, NULL, &context->color_memory);
    if (result == VK_SUCCESS)
       result = context->api.bind_image_memory(
@@ -935,7 +937,7 @@ create_public_context(struct public_context *context, uint32_t depth_count)
          &(VkMemoryAllocateInfo){
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = depth_requirements.size,
-            .memoryTypeIndex = 0,
+            .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
          }, NULL, &target->memory);
       if (result == VK_SUCCESS)
          result = context->api.bind_image_memory(
@@ -972,7 +974,7 @@ create_public_context(struct public_context *context, uint32_t depth_count)
       context->device,
       &(VkMemoryAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-         .allocationSize = VERTEX_BYTES, .memoryTypeIndex = 0,
+         .allocationSize = VERTEX_BYTES, .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
       }, NULL, &context->vertex_memory);
    if (result == VK_SUCCESS)
       result = context->api.create_buffer(

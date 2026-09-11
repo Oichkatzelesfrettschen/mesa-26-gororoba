@@ -10,6 +10,8 @@
 #undef NDEBUG
 #define VK_NO_PROTOTYPES
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_shim_arming.h"
@@ -208,7 +210,7 @@ create_triangle_resources(VkDevice device)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = r.image_reqs.size,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &r.image_memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, r.image, r.image_memory, 0) == VK_SUCCESS);
@@ -230,7 +232,7 @@ create_triangle_resources(VkDevice device)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &r.vertex_memory) == VK_SUCCESS);
    assert(vkCreateBuffer(device,
@@ -721,7 +723,7 @@ main(int argc, char **argv)
                                        VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                     .allocationSize =
                                        R3V_NATIVE_MEMORY_ALIGNMENT,
-                                    .memoryTypeIndex = 0,
+                                    .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                                  },
                                  NULL, &memories[i]) == VK_SUCCESS);
          VK_FROM_HANDLE(r3v_native_memory, memory, memories[i]);

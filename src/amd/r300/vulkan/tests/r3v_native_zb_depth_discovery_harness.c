@@ -18,6 +18,8 @@
  * lost and a refused submission loses it.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <dlfcn.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -409,7 +411,7 @@ main(int argc, char **argv)
          &(VkMemoryAllocateInfo){
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = allocations[i].size,
-            .memoryTypeIndex = 0,
+            .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
          },
          NULL, &allocations[i].memory);
       CHECK(result == VK_SUCCESS, "vkAllocateMemory[%u]: %d", i, result);

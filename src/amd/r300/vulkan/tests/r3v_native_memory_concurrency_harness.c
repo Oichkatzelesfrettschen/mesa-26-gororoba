@@ -14,6 +14,8 @@
 #undef NDEBUG
 
 #define VK_NO_PROTOTYPES
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_measurement_session.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_ioctl.h"
@@ -122,7 +124,7 @@ generation_worker(void *arg)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = 4096,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &memory) == VK_SUCCESS);
       w->generations[i] = r3v_native_memory_from_handle(memory)->generation;
@@ -153,7 +155,7 @@ memory_cycle_worker(void *arg)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = 8192,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &memory) == VK_SUCCESS);
       void *map = NULL;
@@ -365,7 +367,7 @@ main(int argc, char **argv)
                    &(VkMemoryAllocateInfo){
                       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                       .allocationSize = 4096,
-                      .memoryTypeIndex = 0,
+                      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                    },
                    NULL, &memories[i]) == VK_SUCCESS);
          void *map = NULL;
@@ -471,7 +473,7 @@ main(int argc, char **argv)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = 4096,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &recycled) == VK_SUCCESS);
       const struct r3v_native_memory *reused =
@@ -498,7 +500,7 @@ main(int argc, char **argv)
          &(VkMemoryAllocateInfo){
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = 4096,
-            .memoryTypeIndex = 0,
+            .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
          },
          NULL, &refused);
       atomic_store(&refuse_gem_create, false);
@@ -514,7 +516,7 @@ main(int argc, char **argv)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = 4096,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &allocated) == VK_SUCCESS);
       assert(r3v_native_memory_from_handle(allocated)->generation ==
@@ -560,7 +562,7 @@ main(int argc, char **argv)
                    &(VkMemoryAllocateInfo){
                       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                       .allocationSize = 4096,
-                      .memoryTypeIndex = 0,
+                      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                    },
                    NULL, &first_on_each[d]) == VK_SUCCESS);
       }
@@ -577,7 +579,7 @@ main(int argc, char **argv)
                    &(VkMemoryAllocateInfo){
                       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                       .allocationSize = 4096,
-                      .memoryTypeIndex = 0,
+                      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                    },
                    NULL, &extra) == VK_SUCCESS);
          vkFreeMemory(device, extra, NULL);
@@ -662,7 +664,7 @@ main(int argc, char **argv)
                    &(VkMemoryAllocateInfo){
                       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                       .allocationSize = 4096,
-                      .memoryTypeIndex = 0,
+                      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                    },
                    NULL, &spacers[i]) == VK_SUCCESS);
       }
@@ -682,7 +684,7 @@ main(int argc, char **argv)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = 65536,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &memory) == VK_SUCCESS);
       assert(vkBindBufferMemory(device, buffer, memory, 0) == VK_SUCCESS);
@@ -938,7 +940,7 @@ main(int argc, char **argv)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = 4096,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &memory) == VK_SUCCESS);
       void *map = NULL;

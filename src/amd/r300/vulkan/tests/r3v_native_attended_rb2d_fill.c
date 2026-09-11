@@ -52,6 +52,7 @@
 
 #include "r3v_public_rb2d_fill_oracle.h"
 #include "r3v_public_rb2d_fill_scenario.h"
+#include "../r3v_memory_properties_contract.h"
 
 #include "amd/r300/common/r300_chip_identity.h"
 
@@ -640,6 +641,8 @@ main(int argc, char **argv)
    }
    if (wait_bound == 0 || wait_bound > (uint64_t)120 * 1000 * 1000 * 1000)
       refuse("the declared wait bound is outside (0, 120 s]");
+   if (type_index != R3V_NATIVE_MEMORY_HOST_VISIBLE)
+      refuse("memory_type_index differs from the native host-visible type");
 
    /* The host facts last, so a declaration that is complete and
     * self-consistent reaches them on any host and is refused there by

@@ -8,6 +8,8 @@
  * buffers and images under the drm-shim transport.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native_reference_spirv.h"
 
 #include <stdbool.h>
@@ -138,7 +140,7 @@ check_buffer_view_lifetime(const struct fixture *f)
    const VkMemoryAllocateInfo memory_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = mem_reqs.size,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory memory = VK_NULL_HANDLE;
    REQUIRE(vkAllocateMemory(f->device, &memory_info, NULL, &memory) ==
@@ -355,7 +357,7 @@ check_buffer_view_whole_size_rounds_down(const struct fixture *f)
    const VkMemoryAllocateInfo memory_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = mem_reqs.size,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory memory = VK_NULL_HANDLE;
    REQUIRE(vkAllocateMemory(f->device, &memory_info, NULL, &memory) ==
@@ -412,7 +414,7 @@ check_buffer_binding(const struct fixture *f)
               VK_SUCCESS,
            "buffer object creation");
    VkDeviceMemory memory;
-   if (allocate_memory(f, 2 * 4096, 0, &memory))
+   if (allocate_memory(f, 2 * 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, &memory))
       return 1;
 
    CHECK(vkBindBufferMemory(f->device, buffer, memory, 4) != VK_SUCCESS,
@@ -471,7 +473,7 @@ check_buffer_binding(const struct fixture *f)
          "a footprint past the allocation end refuses");
 
    VkDeviceMemory device_local;
-   if (allocate_memory(f, 4096, 1, &device_local))
+   if (allocate_memory(f, 4096, R3V_NATIVE_MEMORY_DEVICE_LOCAL, &device_local))
       return 1;
    const VkResult wrong_type =
       vkBindBufferMemory(f->device, oversize, device_local, 0);
@@ -512,7 +514,7 @@ check_image_binding(const struct fixture *f)
    VkMemoryRequirements requirements;
    vkGetImageMemoryRequirements(f->device, image, &requirements);
    VkDeviceMemory memory;
-   if (allocate_memory(f, requirements.size, 0, &memory))
+   if (allocate_memory(f, requirements.size, R3V_NATIVE_MEMORY_HOST_VISIBLE, &memory))
       return 1;
 
    CHECK(vkBindImageMemory(f->device, image, memory, 0) == VK_SUCCESS,
@@ -530,7 +532,7 @@ check_image_binding(const struct fixture *f)
                  VK_SUCCESS,
               "second render-family image creation");
       VkDeviceMemory memory2;
-      if (allocate_memory(f, requirements.size, 0, &memory2))
+      if (allocate_memory(f, requirements.size, R3V_NATIVE_MEMORY_HOST_VISIBLE, &memory2))
          return 1;
       VkBindImageMemoryInfoKHR bind2 = {
          .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO_KHR,
@@ -786,7 +788,7 @@ check_empty_secondary_execution(const struct fixture *f)
                           &fill_buffer) == VK_SUCCESS,
            "replay fill buffer creation");
    VkDeviceMemory fill_memory;
-   if (allocate_memory(f, 4096, 0, &fill_memory))
+   if (allocate_memory(f, 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, &fill_memory))
       return 1;
    REQUIRE(vkBindBufferMemory(f->device, fill_buffer, fill_memory, 0) ==
               VK_SUCCESS,
@@ -905,7 +907,7 @@ check_host_events(const struct fixture *f)
    REQUIRE(vkCreateBuffer(f->device, &mixed_buffer_info, NULL,
                           &mixed_buffer) == VK_SUCCESS,
            "mixed event transfer buffer creation");
-   REQUIRE(allocate_memory(f, 4096u, 0u, &mixed_memory) == 0,
+   REQUIRE(allocate_memory(f, 4096u, R3V_NATIVE_MEMORY_HOST_VISIBLE, &mixed_memory) == 0,
            "mixed event transfer memory allocation");
    REQUIRE(vkBindBufferMemory(f->device, mixed_buffer, mixed_memory, 0u) ==
               VK_SUCCESS,

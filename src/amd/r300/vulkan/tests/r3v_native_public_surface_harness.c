@@ -19,6 +19,8 @@
  */
 #define VK_NO_PROTOTYPES
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_physical_device.h"
 #include "r3v_cpu_sync.h"
@@ -155,9 +157,9 @@ r3v_native_cache_publication_precedes_close(uint64_t cache_event,
 }
 
 static bool
-r3v_native_memory_type_bits_are_type_zero_only(uint32_t memory_type_bits)
+r3v_native_memory_type_bits_are_host_visible_only(uint32_t memory_type_bits)
 {
-   return memory_type_bits == 0x1u;
+   return memory_type_bits == R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS;
 }
 
 static bool
@@ -396,7 +398,7 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
    VkDeviceMemory depth_memory = VK_NULL_HANDLE;
    assert(vkAllocateMemory(device, &(VkMemoryAllocateInfo){
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .allocationSize = requirements.size + 4096, .memoryTypeIndex = 0,
+      .allocationSize = requirements.size + 4096, .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    }, NULL, &depth_memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, depth_image, depth_memory, 4096) ==
           VK_SUCCESS);
@@ -2078,7 +2080,7 @@ main(void)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = reqs.size + 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &color_memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, image, color_memory, 0) == VK_SUCCESS);
@@ -2121,7 +2123,7 @@ main(void)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &vertex_memory) == VK_SUCCESS);
    VkBuffer vertex_buffer = VK_NULL_HANDLE;
@@ -2180,16 +2182,20 @@ main(void)
       .pNext = &device_dedicated,
    };
 
-   /* Calibrate the exact-mask verdict by accepting only 0x1 and rejecting
-    * the empty and extra-bit masks before checking the device query.
+   /* Calibrate the host-visible mask against empty, device-only, and
+    * mixed masks before checking the device query.
     */
-   assert(r3v_native_memory_type_bits_are_type_zero_only(0x1u));
-   assert(!r3v_native_memory_type_bits_are_type_zero_only(0x0u));
-   assert(!r3v_native_memory_type_bits_are_type_zero_only(0x5u));
+   assert(r3v_native_memory_type_bits_are_host_visible_only(
+      R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS));
+   assert(!r3v_native_memory_type_bits_are_host_visible_only(0x0u));
+   assert(!r3v_native_memory_type_bits_are_host_visible_only(0x1u));
+   assert(!r3v_native_memory_type_bits_are_host_visible_only(
+      R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS |
+      (1u << R3V_NATIVE_MEMORY_DEVICE_LOCAL)));
 
    r3v_GetDeviceBufferMemoryRequirements(device, &device_buffer_info,
                                          &device_buffer_requirements);
-   assert(r3v_native_memory_type_bits_are_type_zero_only(
+   assert(r3v_native_memory_type_bits_are_host_visible_only(
       device_buffer_requirements.memoryRequirements.memoryTypeBits));
    assert(device_dedicated.prefersDedicatedAllocation == VK_FALSE);
    assert(device_dedicated.requiresDedicatedAllocation == VK_FALSE);
@@ -2465,7 +2471,7 @@ main(void)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = second_reqs.size,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &second_memory) == VK_SUCCESS);
       assert(vkBindImageMemory(device, second_image, second_memory, 0) ==
@@ -3686,7 +3692,7 @@ main(void)
       const VkMemoryAllocateInfo transfer_alloc = {
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
          .allocationSize = 8192,
-         .memoryTypeIndex = 0,
+         .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
       };
       const VkDeviceSize transfer_image_offset = R3V_NATIVE_MEMORY_ALIGNMENT;
       const uint32_t transfer_image_base_word =
@@ -4191,7 +4197,7 @@ main(void)
                    &(VkMemoryAllocateInfo){
                       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                       .allocationSize = R3V_NATIVE_TARGET_MEMORY_BYTES,
-                      .memoryTypeIndex = 0,
+                      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                    },
                    NULL, &ordered_memory) == VK_SUCCESS);
          assert(vkBindImageMemory(device, ordered_image, ordered_memory,
@@ -4259,7 +4265,7 @@ main(void)
                    &(VkMemoryAllocateInfo){
                       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                       .allocationSize = 2 * R3V_NATIVE_TARGET_ROW_BYTES,
-                      .memoryTypeIndex = 0,
+                      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                    },
                    NULL, &readback_memory) == VK_SUCCESS);
          assert(vkBindBufferMemory(device, readback, readback_memory, 0) ==
@@ -6874,7 +6880,7 @@ main(void)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = 4096,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &index_memory) == VK_SUCCESS);
       VkBuffer index_buffer = VK_NULL_HANDLE;
@@ -7489,7 +7495,7 @@ main(void)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = sub_reqs.size + 4096,
-                   .memoryTypeIndex = 0,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &sub_memory) == VK_SUCCESS);
       assert(vkBindImageMemory(device, sub_image, sub_memory, 0) ==
@@ -7643,7 +7649,7 @@ main(void)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = wide_reqs.size,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &wide_memory) == VK_SUCCESS);
       assert(vkBindImageMemory(device, wide_image, wide_memory, 0) ==
@@ -7754,7 +7760,7 @@ main(void)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = wide_pitch_bytes,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &readback_memory) == VK_SUCCESS);
       VkBuffer readback_buffer = VK_NULL_HANDLE;
@@ -7942,7 +7948,7 @@ main(void)
       VkMemoryAllocateInfo offset_alloc = {
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
          .allocationSize = 4096 + reqs.size,
-         .memoryTypeIndex = 0,
+         .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
       };
       assert(vkAllocateMemory(device, &offset_alloc, NULL, &offset_memory) ==
              VK_SUCCESS);
@@ -8492,7 +8498,7 @@ main(void)
              &(VkMemoryAllocateInfo){
                 .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 .allocationSize = 4096,
-                .memoryTypeIndex = 0,
+                .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
              },
              NULL, &implicitly_unmapped) == VK_SUCCESS);
    VK_FROM_HANDLE(r3v_native_memory, native_implicitly_unmapped,
