@@ -79,6 +79,19 @@ COMPILER_CHAIN ?= ccache
 COMPILER_FAMILY ?= llvm
 REPRODUCIBLE_RUN ?= 0
 override make_shell_quote = '$(subst ','"'"',$(1))'
+override PYTHON_RESOLVER := $(BUILD_INFRA_ROOT)/scripts/resolve-python-interpreter.sh
+override MESA_PYTHON_INPUT := $(value PYTHON)
+override PYTHON := $(shell \
+	MESA_PYTHON_INPUT=$(call make_shell_quote,$(value MESA_PYTHON_INPUT)) \
+	sh $(call make_shell_quote,$(PYTHON_RESOLVER)))
+override PYTHON_RESOLVE_STATUS := $(.SHELLSTATUS)
+ifneq ($(PYTHON_RESOLVE_STATUS),0)
+$(error Python interpreter resolution failed)
+endif
+ifneq ($(words $(PYTHON)),1)
+$(error Python interpreter resolver returned an invalid executable)
+endif
+export PYTHON
 override MESA_PROFILE_RAW := $(value PROFILE)
 override MESA_HOSTENV_RAW := $(value HOSTENV)
 override MESA_INSTALL_NAMESPACE_RAW := $(value INSTALL_NAMESPACE)
@@ -94,7 +107,7 @@ override SELECTOR_FIELDS := $(shell \
 	MESA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_CHAIN_RAW)) \
 	MESA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_FAMILY_RAW)) \
 	MESA_REPRODUCIBLE_RUN_INPUT=$(call make_shell_quote,$(value MESA_REPRODUCIBLE_RUN_RAW)) \
-	python3 $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
+	"$(PYTHON)" $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
 	validate-selectors)
 override SELECTOR_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SELECTOR_RESOLVE_STATUS),0)
@@ -118,7 +131,7 @@ override REPRODUCIBLE_RUN := $(word 7,$(SELECTOR_FIELDS))
 
 override MAKE_VERSION_SUPPORTED := $(shell \
 	MESA_MAKE_VERSION_INPUT=$(call make_shell_quote,$(value MAKE_VERSION)) \
-	python3 $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
+	"$(PYTHON)" $(call make_shell_quote,$(BUILD_INFRA_ROOT)/scripts/source_root_control.py) \
 	validate-make-version)
 ifneq ($(MAKE_VERSION_SUPPORTED),yes)
 $(error GNU Make 4.2 or newer is required; found $(MAKE_VERSION))
@@ -232,7 +245,7 @@ override SOURCE_ROOT_FIELDS := $(shell \
 	MESA_COMPILER_CHAIN_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_CHAIN_INPUT)) \
 	MESA_COMPILER_FAMILY_INPUT=$(call make_shell_quote,$(value MESA_COMPILER_FAMILY_INPUT)) \
 	MESA_REPRODUCIBLE_RUN_INPUT=$(call make_shell_quote,$(value MESA_REPRODUCIBLE_RUN_INPUT)) \
-	python3 $(SOURCE_ROOT_CONTROL) resolve-make)
+	"$(PYTHON)" $(SOURCE_ROOT_CONTROL) resolve-make)
 override SOURCE_ROOT_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(SOURCE_ROOT_RESOLVE_STATUS),0)
 $(error source root and build path resolution failed)
@@ -284,7 +297,7 @@ override MESA_PREFIX_INPUT := $(PREFIX)
 override MESA_SYSCONFDIR_INPUT := $(SYSCONFDIR)
 ifeq ($(REPRODUCIBLE_RUN),1)
 override REPRODUCIBLE_SOURCE_CHECK_OUTPUT := $(shell \
-	python3 $(SOURCE_ROOT_CONTROL) check-reproducible-source)
+	"$(PYTHON)" $(SOURCE_ROOT_CONTROL) check-reproducible-source)
 override REPRODUCIBLE_SOURCE_CHECK_STATUS := $(.SHELLSTATUS)
 ifneq ($(REPRODUCIBLE_SOURCE_CHECK_STATUS),0)
 $(error reproducible source isolation failed)
@@ -321,7 +334,7 @@ override BUILD_EXECUTION_FIELDS := $(shell \
 	MESA_DISTCC_JOBS_INPUT=$(call make_shell_quote,$(value DISTCC_JOBS)) \
 	MESA_LOCK_WAIT_INPUT=$(call make_shell_quote,$(value LOCK_WAIT)) \
 	MESA_BUILD_LOCK_INPUT=$(call make_shell_quote,$(value BUILD_LOCK)) \
-	python3 $(SOURCE_ROOT_CONTROL) validate-build-execution)
+	"$(PYTHON)" $(SOURCE_ROOT_CONTROL) validate-build-execution)
 override BUILD_EXECUTION_RESOLVE_STATUS := $(.SHELLSTATUS)
 ifneq ($(BUILD_EXECUTION_RESOLVE_STATUS),0)
 $(error build execution control resolution failed)
@@ -356,46 +369,46 @@ $(FLOCK) -x -w "$(LOCK_WAIT)" 9 || { \
 endef
 
 define CHECK_SOURCE_ROOT
-python3 "$(SOURCE_ROOT_CONTROL)" check-source || exit 2; \
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" check-source || exit 2; \
 if [ "$(REPRODUCIBLE_RUN)" = "1" ]; then \
-  python3 "$(SOURCE_ROOT_CONTROL)" check-reproducible-source || exit 2; \
+  "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" check-reproducible-source || exit 2; \
 fi
 endef
 
 define CHECK_LAYOUT
-python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation="$1" || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" check-layout --operation="$1" || exit 2
 endef
 
 define VERIFY_CAPTURED_INPUTS
-python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs --fields $1 || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs --fields $1 || exit 2
 endef
 
 define PREPARE_SOURCE_IDENTITY
-python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" prepare-identity || exit 2
 endef
 
 define PREPARE_SOURCE_VIEW
-python3 "$(SOURCE_ROOT_CONTROL)" prepare-source-view || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" prepare-source-view || exit 2
 endef
 
 define WRITE_SOURCE_IDENTITY
-python3 "$(SOURCE_ROOT_CONTROL)" write-identity || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" write-identity || exit 2
 endef
 
 define VERIFY_SOURCE_IDENTITY
-python3 "$(SOURCE_ROOT_CONTROL)" verify-identity || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-identity || exit 2
 endef
 
 define VERIFY_ARTIFACT_IDENTITY
-python3 "$(SOURCE_ROOT_CONTROL)" verify-artifact-identity || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-artifact-identity || exit 2
 endef
 
 define VERIFY_DELETE_IDENTITY
-python3 "$(SOURCE_ROOT_CONTROL)" verify-delete-identity || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-delete-identity || exit 2
 endef
 
 define VERIFY_DISTCLEAN_IDENTITY
-python3 "$(SOURCE_ROOT_CONTROL)" verify-distclean-identity || exit 2
+"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-distclean-identity || exit 2
 endef
 
 # --- internal paths ---------------------------------------------------------
@@ -484,13 +497,14 @@ override define CREATE_AND_ASSIGN_DISTCC_PROBE_DIRECTORY
 probe_dir="$$(mktemp -d)" && [ -n "$$probe_dir" ] && [ -d "$$probe_dir" ]
 endef
 
-.PHONY: list source-root-check source-root-control-unit-test remove-identity-v7-build-root \
+.PHONY: list source-root-check source-root-control-unit-test python-interpreter-resolution-test \
+        python-interpreter-recursive-export-check remove-identity-v7-build-root \
         naming-policy-test \
         review-thread-frontier-check review-thread-frontier-live-check \
         review-thread-frontier-unit-test review-thread-corpus-check \
         review-thread-corpus-unit-test review-thread-reconciliation-check \
         review-thread-reconciliation-unit-test headless-hardware-gl-runner-test \
-        source-root-selection-test distcc-probe-directory-test \
+        source-root-selection-test distcc-setup-preflight-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean-registered-build clean clean-all distclean install \
         artifact-check test \
@@ -522,7 +536,7 @@ endef
 # allowlist row (build-infra/component-policy/radeon-minimal-allowlist.toml).
 .PHONY: profile-audit
 profile-audit:
-	python3 $(CURDIR)/scripts/profile_audit.py --repo-root $(CURDIR)/..
+	"$(PYTHON)" $(CURDIR)/scripts/profile_audit.py --repo-root $(CURDIR)/..
 
 # Keep the release profile, its canonical documentation, and the named rebuild
 # target as one contract.  This is a static gate: it proves test registration
@@ -733,22 +747,31 @@ source-root-check:
 
 source-root-control-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q \
+		"$(PYTHON)" -m pytest -q \
 		$(CURDIR)/tests/test_source_root_control.py \
 		$(CURDIR)/tests/test_package_source_identity.py \
 		$(CURDIR)/tests/test_mount_boundary_calibration.py
+
+python-interpreter-resolution-test:
+	sh $(CURDIR)/tests/test-python-interpreter-resolution.sh \
+		"$(PYTHON_RESOLVER)" "$(PYTHON)" "$(CURDIR)"
+	$(MAKE) --no-print-directory python-interpreter-recursive-export-check
+
+python-interpreter-recursive-export-check:
+	@test "$$PYTHON" = "$(PYTHON)"
+	@echo "OK    recursive Make exports the resolved Python executable"
 
 remove-identity-v7-build-root: source-root-check
 	@[ "$(REPRODUCIBLE_RUN)" = "0" ] || { echo "schema-7 cleanup requires REPRODUCIBLE_RUN=0" >&2; exit 2; }
 	@$(ACQUIRE_BUILD_LOCK) \
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,clean); \
-	python3 "$(SOURCE_ROOT_CONTROL)" remove-identity-v7-build-root; \
+	"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" remove-identity-v7-build-root; \
 	echo "removed verified schema-7 build root: $(BUILD_ROOT)"
 
 naming-policy-test:
-	python3 $(CURDIR)/scripts/naming_policy.py --self-test
-	python3 $(CURDIR)/scripts/naming_policy.py --repo-root $(CURDIR)/..
+	"$(PYTHON)" $(CURDIR)/scripts/naming_policy.py --self-test
+	"$(PYTHON)" $(CURDIR)/scripts/naming_policy.py --repo-root $(CURDIR)/..
 
 # A receipt identifier in docs/hardware names a sealed steinmarder-r300
 # bundle; a name that resolves to none is a claim ahead of its evidence.
@@ -772,8 +795,8 @@ packaging-built-package-selection-test:
 	sh $(CURDIR)/packaging/test-built-package-selection.sh
 
 receipt-identifier-check:
-	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py --self-test
-	python3 $(CURDIR)/scripts/lint/check_receipt_identifiers.py \
+	"$(PYTHON)" $(CURDIR)/scripts/lint/check_receipt_identifiers.py --self-test
+	"$(PYTHON)" $(CURDIR)/scripts/lint/check_receipt_identifiers.py \
 	  --repo-root $(CURDIR)/.. \
 	  $(if $(filter 1,$(REPRODUCIBLE_RUN)),--require-evidence,)
 
@@ -798,9 +821,9 @@ comment-hygiene-check:
 		echo "FAIL  comment-hygiene linter missing or not executable: $(COMMENT_HYGIENE_LINT)" >&2; exit 1; }
 	@[ -f "$(COMMENT_HYGIENE_HOOK)" ] && [ -x "$(COMMENT_HYGIENE_HOOK)" ] || { \
 		echo "FAIL  comment-hygiene hook missing or not executable: $(COMMENT_HYGIENE_HOOK)" >&2; exit 1; }
-	python3 "$(COMMENT_HYGIENE_LINT)" --self-test
-	python3 "$(COMMENT_HYGIENE_CANDIDATES)" --self-test
-	python3 "$(COMMENT_HYGIENE_CANDIDATES)" \
+	"$(PYTHON)" "$(COMMENT_HYGIENE_LINT)" --self-test
+	"$(PYTHON)" "$(COMMENT_HYGIENE_CANDIDATES)" --self-test
+	"$(PYTHON)" "$(COMMENT_HYGIENE_CANDIDATES)" \
 	  --repo-root "$(CURDIR)/.." --base "$(COMMENT_HYGIENE_BASE)" \
 	  --mode "$(COMMENT_HYGIENE_MODE)" --lint-with "$(COMMENT_HYGIENE_LINT)"
 
@@ -818,30 +841,30 @@ comment-hygiene-check-test:
 # at the family's vulkan/ directory, and the build graph enters it there.
 .PHONY: driver-root-audit
 driver-root-audit:
-	python3 $(CURDIR)/scripts/driver_root_audit.py --self-test
-	python3 $(CURDIR)/scripts/driver_root_audit.py --repo-root $(CURDIR)/..
+	"$(PYTHON)" $(CURDIR)/scripts/driver_root_audit.py --self-test
+	"$(PYTHON)" $(CURDIR)/scripts/driver_root_audit.py --repo-root $(CURDIR)/..
 
 review-thread-frontier-check:
-	python3 $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_CAPTURE)
-	python3 $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
+	"$(PYTHON)" $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_CAPTURE)
+	"$(PYTHON)" $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
 		--capture-frontier $(REVIEW_THREAD_CAPTURE)/frontier.tsv \
 		--assessments $(REVIEW_THREAD_CLASSIFICATION) \
 		--output $(REVIEW_THREAD_FRONTIER) \
 		--batch-id merged-review-thread-closure-batch-0004 \
 		--batch-size 50
-	python3 $(REVIEW_THREAD_RESOLUTION_TOOL) check \
+	"$(PYTHON)" $(REVIEW_THREAD_RESOLUTION_TOOL) check \
 		--frontier $(REVIEW_THREAD_PRE_RESOLUTION_FRONTIER) \
 		--journal $(REVIEW_THREAD_RESOLUTION_JOURNAL) \
 		--ledger $(REVIEW_THREAD_LEDGER) \
 		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
-	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+	"$(PYTHON)" $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_ARCHIVE_FRONTIER) \
 		--ledger $(REVIEW_THREAD_ARCHIVE_LEDGER) \
 		--batch-size 50 \
 		--repo-root $(CURDIR)/.. \
 		--main-ref $(REVIEW_THREAD_ARCHIVE_COMMIT) \
 		--candidate-ref $(REVIEW_THREAD_ARCHIVE_COMMIT)
-	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+	"$(PYTHON)" $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_FRONTIER) \
 		--ledger $(REVIEW_THREAD_LEDGER) \
 		--evidence-refresh-ledger $(REVIEW_THREAD_EVIDENCE_REFRESH_LEDGER) \
@@ -850,19 +873,19 @@ review-thread-frontier-check:
 		--main-ref origin/main \
 		--candidate-ref HEAD \
 		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
-	python3 $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_TVPLC_CAPTURE)
-	python3 $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
+	"$(PYTHON)" $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_TVPLC_CAPTURE)
+	"$(PYTHON)" $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
 		--capture-frontier $(REVIEW_THREAD_TVPLC_CAPTURE)/frontier.tsv \
 		--assessments $(REVIEW_THREAD_TVPLC_CLASSIFICATION) \
 		--output $(REVIEW_THREAD_TVPLC_FRONTIER) \
 		--batch-id merged-review-thread-closure-batch-0005 \
 		--batch-size 50
-	python3 $(REVIEW_THREAD_RESOLUTION_TOOL) check \
+	"$(PYTHON)" $(REVIEW_THREAD_RESOLUTION_TOOL) check \
 		--frontier $(REVIEW_THREAD_TVPLC_PRE_RESOLUTION_FRONTIER) \
 		--journal $(REVIEW_THREAD_TVPLC_RESOLUTION_JOURNAL) \
 		--ledger $(REVIEW_THREAD_TVPLC_LEDGER) \
 		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
-	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+	"$(PYTHON)" $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_TVPLC_FRONTIER) \
 		--ledger $(REVIEW_THREAD_TVPLC_LEDGER) \
 		--evidence-refresh-ledger $(REVIEW_THREAD_TVPLC_EVIDENCE_REFRESH_LEDGER) \
@@ -871,19 +894,19 @@ review-thread-frontier-check:
 		--main-ref origin/main \
 		--candidate-ref HEAD \
 		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
-	python3 $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_WHUFS_CAPTURE)
-	python3 $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
+	"$(PYTHON)" $(REVIEW_THREAD_CAPTURE_TOOL) check --input-dir $(REVIEW_THREAD_WHUFS_CAPTURE)
+	"$(PYTHON)" $(REVIEW_THREAD_CLASSIFICATION_TOOL) check \
 		--capture-frontier $(REVIEW_THREAD_WHUFS_CAPTURE)/frontier.tsv \
 		--assessments $(REVIEW_THREAD_WHUFS_CLASSIFICATION) \
 		--output $(REVIEW_THREAD_WHUFS_FRONTIER) \
 		--batch-id merged-review-thread-closure-batch-0006 \
 		--batch-size 50
-	python3 $(REVIEW_THREAD_RESOLUTION_TOOL) check \
+	"$(PYTHON)" $(REVIEW_THREAD_RESOLUTION_TOOL) check \
 		--frontier $(REVIEW_THREAD_WHUFS_PRE_RESOLUTION_FRONTIER) \
 		--journal $(REVIEW_THREAD_WHUFS_RESOLUTION_JOURNAL) \
 		--ledger $(REVIEW_THREAD_WHUFS_LEDGER) \
 		$(if $(filter 1,$(REVIEW_THREAD_LIVE)),--live,)
-	python3 $(REVIEW_THREAD_FRONTIER_TOOL) \
+	"$(PYTHON)" $(REVIEW_THREAD_FRONTIER_TOOL) \
 		--frontier $(REVIEW_THREAD_WHUFS_FRONTIER) \
 		--ledger $(REVIEW_THREAD_WHUFS_LEDGER) \
 		--evidence-refresh-ledger $(REVIEW_THREAD_WHUFS_EVIDENCE_REFRESH_LEDGER) \
@@ -898,7 +921,7 @@ review-thread-frontier-live-check:
 
 review-thread-frontier-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q \
+		"$(PYTHON)" -m pytest -q \
 			$(CURDIR)/tests/test_review_thread_frontier.py \
 			$(CURDIR)/tests/test_review_thread_batch_capture.py \
 			$(CURDIR)/tests/test_review_thread_classification.py \
@@ -906,16 +929,16 @@ review-thread-frontier-unit-test:
 
 review-thread-corpus-check:
 	PYTHONDONTWRITEBYTECODE=1 \
-		python3 $(REVIEW_THREAD_CORPUS_TOOL) check \
+		"$(PYTHON)" $(REVIEW_THREAD_CORPUS_TOOL) check \
 			--input-dir $(REVIEW_THREAD_CORPUS)
 	PYTHONDONTWRITEBYTECODE=1 \
-		python3 $(REVIEW_THREAD_GROUP_HISTORY_TOOL) check \
+		"$(PYTHON)" $(REVIEW_THREAD_GROUP_HISTORY_TOOL) check \
 			--corpus-dir $(REVIEW_THREAD_CORPUS) \
 			--repo-root $(CURDIR)/.. \
 			--revision $(REVIEW_THREAD_DISPOSITION_REVISION) \
 			--output-dir $(REVIEW_THREAD_CORPUS_ANALYSIS)
 	PYTHONDONTWRITEBYTECODE=1 \
-		python3 $(REVIEW_THREAD_CLUSTERS_TOOL) check \
+		"$(PYTHON)" $(REVIEW_THREAD_CLUSTERS_TOOL) check \
 			--corpus-dir $(REVIEW_THREAD_CORPUS) \
 			--history-dir $(REVIEW_THREAD_CORPUS_ANALYSIS) \
 			--repo-root $(CURDIR)/.. \
@@ -925,14 +948,14 @@ review-thread-corpus-check:
 
 review-thread-corpus-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
-		python3 -m pytest -q \
+		"$(PYTHON)" -m pytest -q \
 			$(CURDIR)/tests/test_review_thread_corpus.py \
 			$(CURDIR)/tests/test_review_thread_group_history.py \
 			$(CURDIR)/tests/test_review_thread_clusters.py
 
 review-thread-reconciliation-check:
 	PYTHONDONTWRITEBYTECODE=1 \
-		python3 $(REVIEW_THREAD_RECONCILIATION_TOOL) check \
+		"$(PYTHON)" $(REVIEW_THREAD_RECONCILIATION_TOOL) check \
 			--corpus-dir $(REVIEW_THREAD_CORPUS) \
 			--cluster-dir $(REVIEW_THREAD_CLUSTERS) \
 			--repo-root $(CURDIR)/.. \
@@ -943,12 +966,12 @@ review-thread-reconciliation-check:
 
 review-thread-reconciliation-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
-		python3 -m pytest -q \
+		"$(PYTHON)" -m pytest -q \
 			$(CURDIR)/tests/test_review_thread_reconciliation.py
 
 headless-hardware-gl-runner-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q \
+		"$(PYTHON)" -m pytest -q \
 			$(CURDIR)/tests/test_headless_hardware_gl_runner.py
 
 help:
@@ -974,6 +997,7 @@ help:
 	@echo "  headless-hardware-gl-runner-test calibrate transient Xorg unit teardown"
 	@echo "  source-root-check require TOPSRC to be an exact Mesa Git worktree root"
 	@echo "  source-root-control-unit-test exercise path and identity invariants"
+	@echo "  python-interpreter-resolution-test calibrate CPython selection and recursive export"
 	@echo "  remove-identity-v7-build-root remove an exact verified schema-7 build root"
 	@echo "  naming-policy-test reject retired build controls and unclear qualification wording"
 	@echo "  receipt-identifier-check resolve every docs/hardware receipt identifier to a retained bundle"
@@ -982,6 +1006,7 @@ help:
 	@echo "  packaging-built-package-selection-test calibrate the repository entry against the recipe's own package list"
 	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
+	@echo "  distcc-setup-preflight-test calibrates IPv4 admission and read-only preflight behavior"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
 	@echo "  distcc-gcc-major-probe-test calibrates remote C/C++ dispatch and GNU compiler identity"
 	@echo "  install           unprivileged build-owned experiment staging"
@@ -1087,6 +1112,33 @@ distcc-probe-directory-test:
 	esac; \
 	rmdir -- "$$probe_dir"; \
 	echo "OK    distcc probe directory accepts TMPDIR paths with spaces"
+
+distcc-setup-preflight-test:
+	@set -euo pipefail; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf -- "$$tmpdir"' EXIT HUP INT TERM; \
+	mkdir -p -- "$$tmpdir/home/.distcc" "$$tmpdir/bin"; \
+	printf '%s\n' '10.0.0.141/4,lzo' > "$$tmpdir/home/.distcc/hosts"; \
+	printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$$0 version"' > "$$tmpdir/fake-tool"; \
+	chmod +x "$$tmpdir/fake-tool"; \
+	for tool in ccache distcc sccache rustc rustfmt clang-22 clang++-22; do \
+		ln -s -- "$$tmpdir/fake-tool" "$$tmpdir/bin/$$tool"; \
+	done; \
+	if ! HOME="$$tmpdir/home" PATH="$$tmpdir/bin:$$PATH" \
+		"$(TOPSRC)/build-infra/scripts/setup-distcc.sh" \
+		> "$$tmpdir/preflight.out" 2> "$$tmpdir/preflight.err"; then \
+		echo "FAIL  distcc setup preflight rejected a valid IPv4 volunteer" >&2; \
+		sed -n '1,20p' "$$tmpdir/preflight.err" >&2; \
+		exit 1; \
+	fi; \
+	grep -Fq 'distcc hosts: 10.0.0.141/4,lzo' "$$tmpdir/preflight.out" || { \
+		echo "FAIL  distcc setup preflight did not report the IPv4 volunteer" >&2; exit 1; \
+	}; \
+	if grep -Eq '(^|[[:space:]])rm([[:space:]]|$$)' \
+		"$(TOPSRC)/build-infra/scripts/setup-distcc.sh"; then \
+		echo "FAIL  distcc setup preflight contains a removal command" >&2; exit 1; \
+	fi; \
+	echo "OK    distcc setup preflight accepts IPv4 volunteers without removal commands"
 
 distcc-gcc-major-probe-test:
 	@set -euo pipefail; \
@@ -1195,7 +1247,10 @@ distcc-gcc-major-probe-test:
 		done; \
 		[ "$$remote_distcc_count" -gt 0 ] && [ "$$remote_distcc_failures" -eq 0 ]; \
 	}; \
-	getent() { return 0; }; \
+	getent() { \
+		case "$${2:-}" in unreachable.example) return 2 ;; esac; \
+		return 0; \
+	}; \
 	fake_probe_spec=""; \
 	distcc() { \
 		fake_probe_spec="$${DISTCC_HOSTS:-}"; output=""; \
@@ -1227,7 +1282,10 @@ distcc-gcc-major-probe-test:
 	test "$$(distcc_host_name '@localhost/2')" = localhost || { \
 		echo "FAIL  distcc host parser did not classify SSH localhost as local" >&2; exit 1; \
 	}; \
-	echo "OK    distcc host parser handles user, port, and option syntax"; \
+	test "$$(distcc_host_name '10.0.0.141/4,lzo')" = 10.0.0.141 || { \
+		echo "FAIL  distcc host parser did not preserve an IPv4 volunteer" >&2; exit 1; \
+	}; \
+	echo "OK    distcc host parser handles user, port, option, and IPv4 syntax"; \
 	client_compiler_dir="$$tmpdir/client-compilers"; mkdir -- "$$client_compiler_dir"; \
 	: > "$$client_compiler_dir/clang-22"; : > "$$client_compiler_dir/clang++-22"; \
 	chmod +x "$$client_compiler_dir/clang-22" "$$client_compiler_dir/clang++-22"; \
@@ -1243,18 +1301,35 @@ distcc-gcc-major-probe-test:
 	}; \
 	echo "OK    distcc probes mirror ccache and direct compiler forms"; \
 	: > "$$tmpdir/probe-tools"; \
-	DISTCC_HOSTS='+zeroconf @localhost/2 localhost/2 volunteer-a/1'; \
+	DISTCC_HOSTS='+zeroconf @localhost/2 localhost/2 10.0.0.141/4,lzo volunteer-a/1'; \
 	if ! probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir" "$$resolved_clangxx"; then \
 		echo "FAIL  LLVM C and C++ volunteer probes were rejected" >&2; exit 1; \
 	fi; \
-	test "$$remote_distcc_count" -eq 1 || { \
+	test "$$remote_distcc_count" -eq 2 || { \
 		echo "FAIL  discovery or SSH-local tokens were counted as remote volunteers" >&2; exit 1; \
 	}; \
-	printf '%s\n%s\n' "$$resolved_clang" "$$resolved_clangxx" | \
+	printf '%s\n%s\n%s\n%s\n' "$$resolved_clang" "$$resolved_clangxx" \
+		"$$resolved_clang" "$$resolved_clangxx" | \
 		cmp -s - "$$tmpdir/probe-tools" || { \
 		echo "FAIL  LLVM volunteer probes did not dispatch the exact C and C++ compiler forms" >&2; exit 1; \
 	}; \
-	echo "OK    LLVM probes skip discovery/local tokens and dispatch exact C/C++ compiler forms"; \
+	echo "OK    LLVM probes dispatch hostname and IPv4 volunteers with exact C/C++ compiler forms"; \
+	DISTCC_HOSTS='/4,lzo'; \
+	if probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir" "$$resolved_clangxx"; then \
+		echo "FAIL  malformed distcc volunteer was accepted" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 0 && test "$$remote_distcc_failures" -eq 0 || { \
+		echo "FAIL  malformed distcc volunteer entered the remote probe set" >&2; exit 1; \
+	}; \
+	echo "OK    malformed distcc volunteer fails closed"; \
+	DISTCC_HOSTS='unreachable.example/1'; \
+	if probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir" "$$resolved_clangxx"; then \
+		echo "FAIL  unreachable distcc volunteer was accepted" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 1 && test "$$remote_distcc_failures" -eq 1 || { \
+		echo "FAIL  unreachable distcc volunteer did not fail its remote probe" >&2; exit 1; \
+	}; \
+	echo "OK    unreachable distcc volunteer fails closed"; \
 	DISTCC_HOSTS='volunteer-a/1'; \
 	if probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir"; then \
 		echo "FAIL  LLVM volunteer passed without a C++ compiler probe" >&2; exit 1; \
@@ -1295,7 +1370,8 @@ distcc-gcc-major-probe-test:
 	}; \
 	echo "OK    missing GCC identity fails closed"
 
-audit: source-root-check source-root-control-unit-test package-layout-test naming-policy-test \
+audit: source-root-check source-root-control-unit-test python-interpreter-resolution-test \
+       package-layout-test naming-policy-test \
        receipt-identifier-check packaging-source-checksum-test \
        packaging-source-commit-pin-test \
        packaging-built-package-selection-test \
@@ -1304,6 +1380,7 @@ audit: source-root-check source-root-control-unit-test package-layout-test namin
        review-thread-corpus-check review-thread-corpus-unit-test \
        loader-environment-function-scope-test \
        source-root-selection-test \
+       distcc-setup-preflight-test \
        distcc-probe-directory-test \
        distcc-gcc-major-probe-test \
        vostro-prefix-check audit-werror profile-audit \
@@ -1556,7 +1633,7 @@ audit: source-root-check source-root-control-unit-test package-layout-test namin
 	elif grep -Eq "^[[:space:]]*platforms[[:space:]]*=[^#]*'wayland'" "$(CONFIG)"; then wayland_platform=1; \
 	elif grep -Eq "^[[:space:]]*platforms[[:space:]]*=[^#]*'auto'" "$(CONFIG)"; then wayland_platform=1; \
 	else wayland_platform=0; fi; \
-	for tool in meson ninja pkg-config python3; do need_command "$$tool"; done; \
+	for tool in meson ninja pkg-config "$(PYTHON)"; do need_command "$$tool"; done; \
 	case "$(COMPILER_CHAIN)" in \
 		ccache) need_command ccache; \
 		        if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
@@ -1576,18 +1653,14 @@ audit: source-root-check source-root-control-unit-test package-layout-test namin
 		if command -v sccache >/dev/null 2>&1; then ok "optional command sccache"; else warn "optional sccache missing; required only for Rusticl recovery profiles"; fi; \
 		if command -v rustc >/dev/null 2>&1; then ok "optional command rustc"; else warn "optional rustc missing; required only for Rusticl recovery profiles"; fi; \
 	fi; \
-	if python3 -c 'import mako, ply' >/dev/null 2>&1; then ok "python modules mako ply"; else fail "missing Python module mako or ply"; fi; \
-	if python3 -c 'import sys; sys.version_info < (3, 12) or __import__("packaging")' >/dev/null 2>&1; then ok "python packaging requirement"; else fail "Python 3.12+ needs module packaging"; fi; \
+	if "$(PYTHON)" -c 'import mako, ply' >/dev/null 2>&1; then ok "python modules mako ply"; else fail "missing Python module mako or ply"; fi; \
+	if "$(PYTHON)" -c 'import sys; sys.version_info < (3, 12) or __import__("packaging")' >/dev/null 2>&1; then ok "python packaging requirement"; else fail "Python 3.12+ needs module packaging"; fi; \
 	for pc in libdrm xcb-dri3 xcb-present xshmfence x11-xcb xrandr xcb-randr xcb-sync xcb-xfixes vulkan; do need_pkg_config "$$pc"; done; \
 	if [ "$$wayland_platform" -eq 1 ]; then \
 		for pc in wayland-client wayland-server wayland-protocols; do need_pkg_config "$$pc"; done; \
 	else ok "profile does not request Wayland platform"; fi; \
 	if command -v glslangValidator >/dev/null 2>&1; then ok "command glslangValidator"; else fail "missing command glslangValidator"; fi; \
 	if [ "$$distcc_active" = "1" ]; then \
-		if [ -r "$$HOME/.distcc/hosts" ]; then \
-			if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
-			else ok "distcc hosts use hostname policy"; fi; \
-		else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
 		if [ "$${MESA_DISTCC_JOBS:-}" = "$(DISTCC_JOBS)" ]; then \
 			ok "distcc aggregate build ceiling is $(DISTCC_JOBS) jobs"; \
 		else \
@@ -1826,7 +1899,7 @@ configure: source-root-check vostro-prefix-check
 	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) ($$toolchain_label, $(COMPILER_CHAIN))"; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)" $(PROFILE_OVERLAY)) || { \
+	profile_dflags=$$("$(PYTHON)" "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)" $(PROFILE_OVERLAY)) || { \
 		echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	echo "profile -D flags: $$profile_dflags"; \
 	$(MESON) setup $(SETUP_ARGS) $$profile_dflags \
@@ -1864,7 +1937,7 @@ build: source-root-check
 	exit "$$build_status"
 
 clean-registered-build:
-	@selected_builddir_state="$$(python3 "$(SOURCE_ROOT_CONTROL)" selected-builddir-state)" || exit 2; \
+	@selected_builddir_state="$$("$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" selected-builddir-state)" || exit 2; \
 	case "$$selected_builddir_state" in \
 		present) $(MAKE) --no-print-directory clean ;; \
 		absent) echo "no registered build exists: $(BUILDDIR)" ;; \
@@ -1946,15 +2019,15 @@ install: source-root-check vostro-prefix-check
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) MESA_SYSCONFDIR_INPUT="$(SYSCONFDIR)" \
 	    $(FLOCK) -x -w $(LOCK_WAIT) "$(BUILD_LOCK)" bash -c 'set -euo pipefail; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-captured-inputs \
 	      --fields source_root control_root build_root builddir prefix sysconfdir; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" check-layout --operation=install; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" prepare-source-view; \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" check-layout --operation=install; \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-identity; \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" prepare-source-view; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	    profile_dflags=$$(python3 "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)" $(PROFILE_OVERLAY)) || { \
+	    profile_dflags=$$("$(PYTHON)" "$(PROFILE_DFLAGS_SCRIPT)" "$(CONFIG)" $(PROFILE_OVERLAY)) || { \
 	      echo "failed to extract profile -D flags from $(CONFIG)" >&2; exit 2; }; \
 	    $(MESON) setup $(SETUP_ARGS) $$profile_dflags --prefix="$(PREFIX)" \
 	      --sysconfdir="$$MESA_SYSCONFDIR_INPUT" "$(BUILDDIR)" "$(MESON_SOURCE_ROOT)" || { \
@@ -1962,12 +2035,12 @@ install: source-root-check vostro-prefix-check
 	      exit 2; \
 	    }; \
 	    echo "[install] staging Meson output beneath BUILD_ROOT"; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" install-experiment --meson "$(MESON)" || { \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" install-experiment --meson "$(MESON)" || { \
 	      echo "Meson install failed; source identity remains provisional" >&2; \
 	      exit 2; \
 	    }; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" write-identity; \
-	    python3 "$(SOURCE_ROOT_CONTROL)" verify-identity; \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" write-identity; \
+	    "$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-identity; \
 	    echo "[install] complete; releasing flock"'
 
 # The logical /usr prefix remains metadata; all writes use a fresh build-owned DESTDIR.
@@ -1978,10 +2051,10 @@ stage-package: source-root-check
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,stage-package); \
 	$(VERIFY_SOURCE_IDENTITY); \
-	python3 "$(CURDIR)/scripts/mesa_package_layout.py" config --builddir "$(BUILDDIR)"; \
+	"$(PYTHON)" "$(CURDIR)/scripts/mesa_package_layout.py" config --builddir "$(BUILDDIR)"; \
 	$(MESON) install --no-rebuild -C "$(BUILDDIR)" --destdir "$(BUILD_ROOT)/package-root"; \
 	$(VERIFY_SOURCE_IDENTITY); \
-	python3 "$(CURDIR)/scripts/mesa_package_layout.py" stage \
+	"$(PYTHON)" "$(CURDIR)/scripts/mesa_package_layout.py" stage \
 	  --builddir "$(BUILDDIR)" --stage "$(BUILD_ROOT)/package-root"
 
 .PHONY: clean-package-stage
@@ -1991,12 +2064,12 @@ clean-package-stage: source-root-check
 	$(call VERIFY_CAPTURED_INPUTS,source_root control_root build_root builddir prefix sysconfdir); \
 	$(call CHECK_LAYOUT,build); \
 	$(VERIFY_SOURCE_IDENTITY); \
-	python3 "$(CURDIR)/scripts/mesa_package_layout.py" verify \
+	"$(PYTHON)" "$(CURDIR)/scripts/mesa_package_layout.py" verify \
 	  --builddir "$(BUILDDIR)" --stage "$(BUILD_ROOT)/package-root"; \
-	python3 "$(SOURCE_ROOT_CONTROL)" remove-package-stage
+	"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" remove-package-stage
 
 package-layout-test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q $(CURDIR)/tests/test_mesa_package_layout.py
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$(PYTHON)" -m pytest -q $(CURDIR)/tests/test_mesa_package_layout.py
 
 
 artifact-check: source-root-check vostro-prefix-check
@@ -2035,7 +2108,7 @@ test: source-root-check
 
 build-lease-test:
 	@set -euo pipefail; \
-	tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+	tmpdir="$$("$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" \
 		create-test-directory --label=build-lease)"; \
 	canonical_builddir="$(TOPSRC)/build/.build-lease-test-$$$$"; \
 	trap 'rm -rf "$$tmpdir" "$$canonical_builddir"' EXIT HUP INT TERM; \
@@ -2173,7 +2246,7 @@ source-root-selection-test:
 	export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
 		GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
 		GIT_TERMINAL_PROMPT=0; \
-	tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+	tmpdir="$$("$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" \
 		create-test-directory --label=source-root)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	if legacy_make_output="$$( $(MAKE) --no-print-directory -C "$(CURDIR)" \
@@ -2642,7 +2715,7 @@ source-root-selection-test:
 						mount --no-canonicalize --bind "/proc/self/fd/$$control_root_fd" "$$2" ;; \
 				esac; \
 				exec {control_root_fd}<&-; \
-				exec python3 "$$1" --control-root "$$2"' \
+				exec "$$PYTHON" "$$1" --control-root "$$2"' \
 				_ "$(MOUNT_BOUNDARY_CALIBRATION)" "$(CONTROL_ROOT)" \
 				2>&1 \
 		)" || { \
@@ -2684,7 +2757,7 @@ source-root-selection-test:
 			MESA_BUILDDIR_INPUT="$$system_prefix_build_root/probe" \
 			MESA_PREFIX_INPUT="$$system_prefix" \
 			MESA_PROFILE_INPUT="$(PROFILE)" \
-			python3 "$(SOURCE_ROOT_CONTROL)" \
+			"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=distclean >/dev/null 2>&1; then \
 			echo "FAIL  distclean layout accepted system prefix $$system_prefix" >&2; \
 			exit 1; \
@@ -2698,7 +2771,7 @@ source-root-selection-test:
 			MESA_BUILDDIR_INPUT="$$system_build_root/probe" \
 			MESA_PREFIX_INPUT="$$system_prefix_build_root/prefix" \
 			MESA_PROFILE_INPUT="$(PROFILE)" \
-			python3 "$(SOURCE_ROOT_CONTROL)" \
+			"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=distclean >/dev/null 2>&1; then \
 			echo "FAIL  distclean layout accepted system build root $$system_build_root" >&2; \
 			exit 1; \
@@ -2712,7 +2785,7 @@ source-root-selection-test:
 			MESA_BUILDDIR_INPUT="$$hostile_home/source-root-review/probe" \
 			MESA_PREFIX_INPUT="$$system_prefix_build_root/prefix" \
 			MESA_PROFILE_INPUT="$(PROFILE)" \
-			python3 "$(SOURCE_ROOT_CONTROL)" \
+			"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" \
 				check-layout --operation=clean >/dev/null 2>&1; then \
 			echo "FAIL  HOME=$$hostile_home admitted a destructive root" >&2; \
 			exit 1; \
@@ -3033,7 +3106,7 @@ source-root-selection-test:
 		echo "FAIL  external configure rejected the build-owned default prefix" >&2; \
 		printf '%s\n' "$$default_prefix_output" >&2; exit 1; \
 	}; \
-	python3 -c 'import json, pathlib, sys; root = pathlib.Path(sys.argv[1]); identity = json.loads((root / ".mesa-external-source-identity.json").read_text()); sys.exit(0 if identity["prefix"] == str(root / "prefix") and identity["state"] == "final" else "FAIL  default prefix identity differs from BUILD_ROOT/prefix")' \
+	"$(PYTHON)" -c 'import json, pathlib, sys; root = pathlib.Path(sys.argv[1]); identity = json.loads((root / ".mesa-external-source-identity.json").read_text()); sys.exit(0 if identity["prefix"] == str(root / "prefix") and identity["state"] == "final" else "FAIL  default prefix identity differs from BUILD_ROOT/prefix")' \
 		"$$default_prefix_build_root"; \
 	cmp -s "$$default_prefix_build_root/.mesa-external-source-identity.json" \
 		"$$default_prefix_build_root/probe/.mesa-source-identity.json" || { \
@@ -3161,7 +3234,7 @@ source-root-selection-test:
 		MESA_BUILDDIR_INPUT="$$transaction_builddir" \
 		MESA_PREFIX_INPUT="$$transaction_prefix" \
 		MESA_PROFILE_INPUT="$(PROFILE)" \
-		python3 "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
+		"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" prepare-identity; \
 	printf '%s\n' "source drift" >> "$$transaction_source/meson.build"; \
 	git -C "$$transaction_source" add meson.build; \
 	git -C "$$transaction_source" \
@@ -3173,7 +3246,7 @@ source-root-selection-test:
 		MESA_BUILDDIR_INPUT="$$transaction_builddir" \
 		MESA_PREFIX_INPUT="$$transaction_prefix" \
 		MESA_PROFILE_INPUT="$(PROFILE)" \
-		python3 "$(SOURCE_ROOT_CONTROL)" write-identity 2>&1 )"; then \
+		"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" write-identity 2>&1 )"; then \
 		echo "FAIL  identity finalization accepted a different source tuple" >&2; \
 		exit 1; \
 	fi; \
@@ -3232,7 +3305,7 @@ source-root-selection-test:
 	mkdir -p "$$bytecode_control"; \
 	touch "$$bytecode_control/source_view_bytecode_probe.py"; \
 	env -u PYTHONDONTWRITEBYTECODE PYTHONPATH="$$bytecode_control" \
-		python3 -c 'import source_view_bytecode_probe'; \
+		"$(PYTHON)" -c 'import source_view_bytecode_probe'; \
 	find "$$bytecode_control" -path '*/__pycache__/*.pyc' -print -quit | \
 		grep -q . || { \
 		echo "FAIL  Python bytecode control did not create a cache file" >&2; \
@@ -3244,7 +3317,7 @@ source-root-selection-test:
 			'test "$${PYTHONDONTWRITEBYTECODE:-}" = 1' \
 			'test "$$MESA_GIT_SHA1_OVERRIDE" = "$$MESA_SOURCE_COMMIT_CAPTURED"' \
 			'source_view="$$MESA_BUILD_ROOT_INPUT/.mesa-source-view"' \
-			'PYTHONPATH="$$source_view" python3 -c "import source_view_bytecode_probe"'; \
+			'PYTHONPATH="$$source_view" "$(PYTHON)" -c "import source_view_bytecode_probe"'; \
 	} > "$$bytecode_ninja"; \
 	chmod 700 "$$bytecode_ninja"; \
 	$(MAKE) --no-print-directory -C "$(CURDIR)" build \
@@ -3281,7 +3354,7 @@ source-root-selection-test:
 			MESA_COMPILER_FAMILY_INPUT=llvm \
 			MESA_REPRODUCIBLE_RUN_INPUT=0 \
 			"$$selector_variable=$$selector_value" \
-			python3 "$(SOURCE_ROOT_CONTROL)" verify-identity 2>&1 )"; then \
+			"$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" verify-identity 2>&1 )"; then \
 			echo "FAIL  identity accepted $$selector_field drift" >&2; \
 			exit 1; \
 		fi; \
@@ -3984,7 +4057,7 @@ source-root-selection-test:
 	echo "OK    external TOPSRC rejects dirty source state"
 
 build-job-policy-test:
-	@tmpdir="$$(python3 "$(SOURCE_ROOT_CONTROL)" \
+	@tmpdir="$$("$(PYTHON)" "$(SOURCE_ROOT_CONTROL)" \
 		create-test-directory --label=build-jobs)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	mkdir -p "$$tmpdir/build"; \
@@ -4183,11 +4256,11 @@ package-mesa:
 	@echo "packaged + repo-added under $(MESA_REPO_DIR); deploy: make deploy-mesa TARGET_HOST=<host>"
 
 deploy-mesa:
-	python3 $(CURDIR)/scripts/deploy_mesa.py \
+	"$(PYTHON)" $(CURDIR)/scripts/deploy_mesa.py \
 		--package-dir "$(MESA_PKG_DIR)" \
 		--target-host "$(TARGET_HOST)" \
 		--accepted "$(MESA_DEPLOY_ACCEPTED)"
 
 deploy-mesa-unit-test:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-		python3 -m pytest -q $(CURDIR)/tests/test_deploy_mesa.py
+		"$(PYTHON)" -m pytest -q $(CURDIR)/tests/test_deploy_mesa.py
