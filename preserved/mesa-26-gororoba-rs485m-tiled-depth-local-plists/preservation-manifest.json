@@ -1,0 +1,28 @@
+{
+  "files": [
+    {
+      "path": "r300_zb_aspect_copy.plist",
+      "sha256": "d96f8a524780f6128731d5c01159313541513947bf2e30a1ea6172446e936d68",
+      "size": 341
+    },
+    {
+      "path": "r300_zb_depth_layout.plist",
+      "sha256": "d96f8a524780f6128731d5c01159313541513947bf2e30a1ea6172446e936d68",
+      "size": 341
+    },
+    {
+      "path": "r300_zb_depth_surface.plist",
+      "sha256": "d96f8a524780f6128731d5c01159313541513947bf2e30a1ea6172446e936d68",
+      "size": 341
+    },
+    {
+      "path": "r300_zb_tile_copy.plist",
+      "sha256": "d96f8a524780f6128731d5c01159313541513947bf2e30a1ea6172446e936d68",
+      "size": 341
+    }
+  ],
+  "reason": "Preserve unrelated untracked analyzer fixtures before retiring the merged feature worktree.",
+  "schema": "mesa-local-plist-preservation-1",
+  "source_head": "e29e5e86b979f87bf95e870d5d525273839ec65f",
+  "source_worktree": "/home/eirikr/workspaces/mesa/mesa-26-gororoba-rs485m-tiled-depth"
+}
