@@ -799,8 +799,19 @@ seed_host_allocations(struct application *application)
       -1.0f, 3.0f,  0.75f, 1.0f,
    };
    if (application->depth_count == 2u) {
-      vertices[4] = -1.0f + 4.0f * UPDATE_WIDTH / TARGET_WIDTH;
-      vertices[9] = -1.0f + 4.0f * UPDATE_HEIGHT / TARGET_HEIGHT;
+      const float update_right =
+         -1.0f + 2.0f * UPDATE_WIDTH / TARGET_WIDTH;
+      const float update_bottom =
+         -1.0f + 2.0f * UPDATE_HEIGHT / TARGET_HEIGHT;
+      const float update_vertices[24] = {
+         -1.0f,        -1.0f,         0.25f, 1.0f,
+         update_right, -1.0f,         0.25f, 1.0f,
+         -1.0f,        update_bottom, 0.25f, 1.0f,
+         update_right, -1.0f,         0.25f, 1.0f,
+         update_right, update_bottom, 0.25f, 1.0f,
+         -1.0f,        update_bottom, 0.25f, 1.0f,
+      };
+      memcpy(vertices, update_vertices, sizeof(vertices));
    }
    void *vertex_map = NULL;
    if (vkMapMemory(application->device, application->vertex.memory, 0u,
@@ -869,7 +880,7 @@ record_fast_clear(VkCommandBuffer command_buffer, VkImage image, float depth,
 static void
 record_draw(struct application *application, uint32_t width, uint32_t height,
             VkAccessFlags depth_access, VkImageLayout depth_layout,
-            bool record_fail_discriminator)
+            uint32_t vertex_count, bool record_fail_discriminator)
 {
    const VkImageMemoryBarrier clear_to_draw = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -908,7 +919,7 @@ record_draw(struct application *application, uint32_t width, uint32_t height,
    vkCmdBindVertexBuffers(application->command_buffer, 0u, 1u,
                           &application->vertex.buffer,
                           &(VkDeviceSize){0u});
-   vkCmdDraw(application->command_buffer, 3u, 1u, 0u, 0u);
+   vkCmdDraw(application->command_buffer, vertex_count, 1u, 0u, 0u);
    if (record_fail_discriminator) {
       vkCmdBindPipeline(application->command_buffer,
                         VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -987,7 +998,7 @@ record_application(struct application *application, enum application_mode mode)
    if (mode == MODE_READ_MATERIALIZE_EXPORT) {
       record_draw(application, TARGET_WIDTH, TARGET_HEIGHT,
                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true);
+                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 3u, true);
       record_aspect_exports(
          application, 0u,
          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
@@ -1000,7 +1011,7 @@ record_application(struct application *application, enum application_mode mode)
       record_draw(application, TARGET_WIDTH, TARGET_HEIGHT,
                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                  VK_IMAGE_LAYOUT_GENERAL, false);
+                  VK_IMAGE_LAYOUT_GENERAL, 6u, false);
       record_aspect_exports(
          application, 0u,
          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
@@ -1759,6 +1770,8 @@ main(int argc, char **argv)
       shim_hyperz_before_available &&
       read_shim_hyperz_state(&shim_hyperz_after);
    if (preparation) {
+      const bool shim_cs_monotonic =
+         shim_counter_still_available && shim_cs_after >= shim_cs_before;
       const bool shim_hyperz_counts_monotonic =
          shim_hyperz_after_available &&
          shim_hyperz_after.acquire_ioctls >= shim_hyperz_before.acquire_ioctls &&
@@ -1777,10 +1790,10 @@ main(int argc, char **argv)
             preparation_submit_object_retained(directory_descriptor),
          .attempt_token_absent =
             preparation_attempt_token_absent(directory_descriptor),
-         .shim_counter_available = shim_counter_still_available,
-         .shim_cs_ioctls = shim_counter_still_available
+         .shim_counter_available = shim_cs_monotonic,
+         .shim_cs_ioctls = shim_cs_monotonic
                               ? shim_cs_after - shim_cs_before
-                              : 0u,
+                              : UINT64_MAX,
          .shim_hyperz_state_available = shim_hyperz_counts_monotonic,
          .shim_hyperz_unowned_before =
             shim_hyperz_before_available && !shim_hyperz_before.owned,
