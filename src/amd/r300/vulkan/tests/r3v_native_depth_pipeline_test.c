@@ -1097,8 +1097,17 @@ main(void)
           R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR);
    assert(materialize_image.committed_submission.zmask_metadata.generation ==
           fast_clear_metadata.generation);
+   const struct r3v_native_zmask_plan_request backing_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR,
+      .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
+      .width = materialize_image.depth_contract.logical_extent.width,
+      .height = materialize_image.depth_contract.logical_extent.height,
+      .logical_width = materialize_image.depth_contract.logical_extent.width,
+      .logical_height = materialize_image.depth_contract.logical_extent.height,
+   };
    assert(r3v_native_cmd_buffer_require_ordinary_depth_backing(
-             &materialize_command, &materialize_image) == VK_SUCCESS);
+             &materialize_command, &materialize_image, &backing_request,
+             NULL) == VK_SUCCESS);
 
    struct r3v_native_cmd_buffer stale_backing_command = {0};
    stale_backing_command.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;

@@ -10,7 +10,8 @@ static const size_t common_predicates[] = {
    offsetof(struct r3v_native_zmask_fast_clear_facts, platform_qualified),
    offsetof(struct r3v_native_zmask_fast_clear_facts,
             image_contract_qualified),
-   offsetof(struct r3v_native_zmask_fast_clear_facts, combined_aspects),
+   offsetof(struct r3v_native_zmask_fast_clear_facts,
+            plan_obligations_admitted),
    offsetof(struct r3v_native_zmask_fast_clear_facts, transfer_destination),
    offsetof(struct r3v_native_zmask_fast_clear_facts, binding_valid),
    offsetof(struct r3v_native_zmask_fast_clear_facts, layout_qualified),
@@ -27,7 +28,7 @@ automatic_facts(void)
       .automatic_qualified = true,
       .platform_qualified = true,
       .image_contract_qualified = true,
-      .combined_aspects = true,
+      .plan_obligations_admitted = true,
       .transfer_destination = true,
       .binding_valid = true,
       .layout_qualified = true,
@@ -90,7 +91,7 @@ static void
 test_public_shape_fallbacks(void)
 {
    struct r3v_native_zmask_fast_clear_facts facts = automatic_facts();
-   facts.combined_aspects = false;
+   facts.plan_obligations_admitted = false;
    assert(r3v_native_zmask_fast_clear_select_facts(&facts) ==
           R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY);
 
