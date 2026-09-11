@@ -516,7 +516,9 @@ During migration, inspect package ownership before removing obsolete installed
 ASan/O0 packages or alternate-prefix residue. The instrumentation-only
 debug-tools package has no driver dependency. The core package installs the
 generated R3V manifest beneath `usr/share/vulkan/icd.d`, where the standard
-loader discovers it without a wrapper or driver-selection override.
+loader discovers it without a wrapper or driver-selection override. The
+generated manifest carries loader schema version 1.0.1, the R3V Vulkan 1.0 API
+version, and the 64-bit library architecture selected by the system profile.
 `mesa-gororoba-run` remains available for prefix-specific development. A
 32-bit RADV manifest belongs with a package that supplies the matching 32-bit
 driver; the core 64-bit package supplies neither artifact.
