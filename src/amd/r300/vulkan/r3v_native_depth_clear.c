@@ -438,6 +438,15 @@ r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
        !r3v_native_zmask_metadata_equal(&metadata, source_metadata) ||
        !r3v_native_zmask_metadata_valid(&metadata))
       return VK_ERROR_INITIALIZATION_FAILED;
+   /* The compressed representation materializes through the ladder's
+    * compressed-write stage, R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED,
+    * and the plan-level prerequisite that opens it is
+    * r300_zmask_qualification_materialize_admitted over the
+    * compressed-content qualification sequence.  That sequence has no
+    * run behind it, so the intra-tile compressed encoding is
+    * unqualified and the path refuses rather than reading tiles whose
+    * contents nothing has observed.
+    */
    if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED &&
        metadata.status == R3V_NATIVE_ZMASK_METADATA_COMPRESSED)
       return VK_ERROR_FEATURE_NOT_PRESENT;

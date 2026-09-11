@@ -462,7 +462,8 @@ r3v_native_cmd_buffer_require_ordinary_depth_backing(
          return r3v_native_depth_backing_refuse(
             device, VK_ERROR_FEATURE_NOT_PRESENT,
             "requires_materialization holds over a compressed ZMASK "
-            "representation, which no resolve route reaches");
+            "representation, whose resolve opens on "
+            "r300_zmask_qualification_materialize_admitted");
       }
    }
 
