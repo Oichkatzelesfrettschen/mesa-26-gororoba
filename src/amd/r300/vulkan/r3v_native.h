@@ -309,6 +309,9 @@ struct r3v_native_zmask_metadata_state {
    uint64_t generation;
 };
 
+bool r3v_native_zmask_metadata_valid(
+   const struct r3v_native_zmask_metadata_state *metadata);
+
 struct r3v_native_zmask_owner_state {
    struct r3v_native_image *image;
    uint32_t offset_dwords;

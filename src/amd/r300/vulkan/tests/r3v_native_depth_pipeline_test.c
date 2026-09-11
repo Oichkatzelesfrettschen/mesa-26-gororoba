@@ -940,22 +940,84 @@ main(void)
    assert(r3v_native_zmask_owner_from_image(
              &switching_owner_image, &compressed_metadata,
              &materialize_device.zmask_owner) == VK_SUCCESS);
+   const struct r3v_native_image_committed_state compressed_image_before =
+      switching_owner_image.committed_submission;
+   const struct r3v_native_zmask_owner_state compressed_owner_before =
+      materialize_device.zmask_owner;
+   const uint64_t compressed_generation_before =
+      materialize_device.zmask_metadata_generation_counter;
    struct r3v_native_cmd_buffer compressed_materialize_command = {0};
    compressed_materialize_command.vk.base.type =
       VK_OBJECT_TYPE_COMMAND_BUFFER;
    compressed_materialize_command.vk.base.device = &materialize_device.vk;
    compressed_materialize_command.vk.pool = &pool;
+   const VkCommandBuffer compressed_materialize_handle =
+      r3v_native_cmd_buffer_to_handle(&compressed_materialize_command);
+   const struct r3v_native_cmd_buffer compressed_command_before =
+      compressed_materialize_command;
+   const bool compressed_scratch_before =
+      materialize_device.zmask_materialize_scratch_initialized;
+   materialize_device.zmask_materialize_scratch_initialized = false;
    assert(r3v_native_record_zmask_materialize(
-             r3v_native_cmd_buffer_to_handle(&compressed_materialize_command),
+             compressed_materialize_handle,
              r3v_native_image_to_handle(&switching_owner_image),
              R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
              &compressed_metadata) == VK_ERROR_FEATURE_NOT_PRESENT);
+   assert(!materialize_device.zmask_materialize_scratch_initialized);
+   materialize_device.zmask_materialize_scratch_initialized =
+      compressed_scratch_before;
+   assert(memcmp(&compressed_materialize_command, &compressed_command_before,
+                 sizeof(compressed_command_before)) == 0);
+   assert(compressed_materialize_command.cell_kind ==
+          R3V_NATIVE_CELL_KIND_UNDECLARED);
+   assert(compressed_materialize_command.ib == NULL);
    assert(compressed_materialize_command.ib_size_dwords == 0u);
+   assert(compressed_materialize_command.references == NULL);
    assert(compressed_materialize_command.reference_count == 0u);
+   assert(compressed_materialize_command.ordered_operations == NULL);
    assert(compressed_materialize_command.ordered_operation_count == 0u);
+   assert(compressed_materialize_command.ordered_operation_capacity == 0u);
+   assert(compressed_materialize_command.image_states == NULL);
    assert(compressed_materialize_command.image_state_count == 0u);
+   assert(compressed_materialize_command.image_state_capacity == 0u);
    assert(!compressed_materialize_command.required_zmask_owner_set);
    assert(!compressed_materialize_command.current_zmask_owner_set);
+   assert(r3v_native_zmask_owner_equal(
+      &compressed_materialize_command.required_zmask_owner, &no_owner));
+   assert(r3v_native_zmask_owner_equal(
+      &compressed_materialize_command.current_zmask_owner, &no_owner));
+   assert(memcmp(&switching_owner_image.committed_submission,
+                 &compressed_image_before, sizeof(compressed_image_before)) ==
+          0);
+   assert(r3v_native_zmask_owner_equal(&materialize_device.zmask_owner,
+                                       &compressed_owner_before));
+   assert(materialize_device.zmask_metadata_generation_counter ==
+          compressed_generation_before);
+
+   struct r3v_native_zmask_metadata_state invalid_compressed_metadata =
+      compressed_metadata;
+   invalid_compressed_metadata.clear_depth_code = 0x1000000u;
+   switching_owner_image.committed_submission.zmask_metadata =
+      invalid_compressed_metadata;
+   assert(r3v_native_record_zmask_materialize(
+             compressed_materialize_handle,
+             r3v_native_image_to_handle(&switching_owner_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
+             &invalid_compressed_metadata) == VK_ERROR_INITIALIZATION_FAILED);
+   assert(memcmp(&compressed_materialize_command, &compressed_command_before,
+                 sizeof(compressed_command_before)) == 0);
+   invalid_compressed_metadata = compressed_metadata;
+   invalid_compressed_metadata.clear_stencil = 0x100u;
+   switching_owner_image.committed_submission.zmask_metadata =
+      invalid_compressed_metadata;
+   assert(r3v_native_record_zmask_materialize(
+             compressed_materialize_handle,
+             r3v_native_image_to_handle(&switching_owner_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
+             &invalid_compressed_metadata) == VK_ERROR_INITIALIZATION_FAILED);
+   assert(memcmp(&compressed_materialize_command, &compressed_command_before,
+                 sizeof(compressed_command_before)) == 0);
+   switching_owner_image.committed_submission = compressed_image_before;
    struct r3v_native_cmd_buffer compressed_owner_initialize = {0};
    compressed_owner_initialize.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
    compressed_owner_initialize.vk.base.device = &materialize_device.vk;
