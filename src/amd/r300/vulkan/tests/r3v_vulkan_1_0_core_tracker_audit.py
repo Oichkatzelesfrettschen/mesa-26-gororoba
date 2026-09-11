@@ -18,6 +18,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -123,8 +124,8 @@ def sheet_blocks(sheet, expected_projection_sha256=PROJECTION_SHA256):
     return set(names)
 
 
-def validate_evidence_locator(locator, source_root):
-    """Resolve one recorded rg command against the declared source tree."""
+def parse_evidence_locator(locator):
+    """Parse and validate one recorded literal-search command."""
     path = locator["path"]
     discovery = locator["discovery"]
     try:
@@ -135,33 +136,98 @@ def validate_evidence_locator(locator, source_root):
         len(command) != 4
         or command[0] != "rg"
         or command[1] != "--fixed-strings"
+        or not command[2]
+        or command[2].startswith("-")
         or command[3] != path
     ):
         raise AuditFailure(
             f"evidence locator for {path!r} is not an exact rg command"
         )
+    return command
+
+
+def validate_evidence_locator(locator, source_root, source_commit):
+    """Resolve one recorded locator against its pinned Git source tree."""
+    path = locator["path"]
+    command = parse_evidence_locator(locator)
+    if not isinstance(source_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", source_commit
+    ):
+        raise AuditFailure("reviewed source Mesa commit must be a full object ID")
     relative_path = Path(path)
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise AuditFailure(f"evidence locator escapes the source root: {path!r}")
     root = source_root.resolve()
-    source_path = (root / relative_path).resolve()
+    if not root.is_dir():
+        raise AuditFailure(f"source root is not a directory: {root}")
     try:
-        source_path.relative_to(root)
-    except ValueError as error:
-        raise AuditFailure(f"evidence locator escapes the source root: {path!r}") from error
-    if not source_path.is_file():
-        raise AuditFailure(f"evidence locator names no source file: {path!r}")
-    result = subprocess.run(
-        command,
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
+        repository_root = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=root,
+                text=True,
+            ).strip()
+        ).resolve()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AuditFailure(f"source root is not a Git worktree: {root}") from error
+    if repository_root != root:
         raise AuditFailure(
-            f"evidence locator does not resolve in the source tree: {discovery}"
+            f"source root must be the Git worktree root: {root} != {repository_root}"
         )
+    try:
+        commit_type = subprocess.check_output(
+            ["git", "cat-file", "-t", source_commit],
+            cwd=root,
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+        if commit_type != "commit":
+            raise AuditFailure(
+                f"reviewed source object is not a commit: {source_commit}"
+            )
+        blob_spec = f"{source_commit}:{path}"
+        blob_type = subprocess.check_output(
+            ["git", "cat-file", "-t", blob_spec],
+            cwd=root,
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+        if blob_type != "blob":
+            raise AuditFailure(
+                f"evidence locator names no source blob at {source_commit}:{path}"
+            )
+        source_bytes = subprocess.check_output(
+            ["git", "cat-file", "blob", blob_spec],
+            cwd=root,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AuditFailure(
+            f"cannot resolve evidence source {source_commit}:{path}"
+        ) from error
+    if command[2].encode("utf-8") not in source_bytes:
+        raise AuditFailure(
+            f"evidence locator does not resolve in {source_commit}:{path}"
+        )
+
+
+def validate_reviewed_source(tracker, source_root):
+    reviewed_source = tracker.get("reviewed_source")
+    if not isinstance(reviewed_source, dict):
+        raise AuditFailure("tracker reviewed_source must be an object")
+    source_commit = reviewed_source.get("mesa_commit")
+    if not isinstance(source_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", source_commit
+    ):
+        raise AuditFailure("tracker reviewed_source.mesa_commit must be a full object ID")
+    driver_root = reviewed_source.get("driver_root")
+    if not isinstance(driver_root, str) or not driver_root:
+        raise AuditFailure("tracker reviewed_source.driver_root must be a path")
+    if source_root is not None:
+        for row in tracker["rows"]:
+            for locator in row["evidence"]:
+                validate_evidence_locator(locator, source_root, source_commit)
+    return source_commit
 
 
 def registry_blocks(path):
@@ -232,6 +298,7 @@ def audit(
     rows = tracker.get("rows")
     if not isinstance(rows, list) or not rows:
         raise AuditFailure("tracker rows must be a nonempty array")
+    validate_reviewed_source(tracker, None)
     seen = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -258,18 +325,11 @@ def audit(
                 )
             path = locator["path"]
             discovery = locator["discovery"]
-            if (
-                not isinstance(path, str)
-                or not path
-                or not isinstance(discovery, str)
-                or not discovery.startswith("rg --fixed-strings ")
-                or path not in discovery
-            ):
+            if not isinstance(path, str) or not path or not isinstance(discovery, str):
                 raise AuditFailure(
                     f"tracker row {identifier} has a non-reproducible evidence locator"
                 )
-            if source_root is not None:
-                validate_evidence_locator(locator, source_root)
+            parse_evidence_locator(locator)
         if not isinstance(falsifier, str) or not falsifier:
             raise AuditFailure(f"tracker row {identifier} lacks a falsifier")
         blocks = row.get("requirement_blocks")
@@ -289,6 +349,8 @@ def audit(
                 f"tracker maps requirement blocks more than once: {sorted(overlap)}"
             )
         seen.update(blocks)
+    if source_root is not None:
+        validate_reviewed_source(tracker, source_root)
     unknown = seen - block_names
     missing = block_names - seen
     if unknown:
@@ -329,6 +391,10 @@ def selftest():
     tracker = {
         "schema_version": 1,
         "sheet": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
+        "reviewed_source": {
+            "mesa_commit": "0b66d14e758c80808e7cc661c008b2a834d12fba",
+            "driver_root": "src/amd/r300/vulkan",
+        },
         "conformance_boundary": "Source review does not establish conformance.",
         "rows": [
             {
@@ -391,9 +457,32 @@ def selftest():
         raise AuditFailure("selftest admitted a mutated registry projection")
     with tempfile.TemporaryDirectory() as temporary_directory:
         source_root = Path(temporary_directory)
+        subprocess.run(
+            ["git", "init", "--quiet"], cwd=source_root, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "tracker-audit@example.invalid"],
+            cwd=source_root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Tracker Audit Selftest"],
+            cwd=source_root,
+            check=True,
+        )
         Path(source_root, "source.c").write_text(
             "void vkMapMemory(void) {}\n", encoding="utf-8"
         )
+        subprocess.run(["git", "add", "source.c"], cwd=source_root, check=True)
+        subprocess.run(
+            ["git", "commit", "--quiet", "-m", "add source fixture"],
+            cwd=source_root,
+            check=True,
+        )
+        source_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=source_root, text=True
+        ).strip()
+        tracker["reviewed_source"]["mesa_commit"] = source_commit
         audit(
             sheet,
             tracker,
@@ -415,6 +504,49 @@ def selftest():
             pass
         else:
             raise AuditFailure("selftest admitted an unresolved evidence locator")
+        empty_term = copy.deepcopy(tracker)
+        empty_term["rows"][0]["evidence"][0]["discovery"] = (
+            "rg --fixed-strings '' source.c"
+        )
+        try:
+            audit(
+                sheet,
+                empty_term,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an empty evidence search term")
+        option_term = copy.deepcopy(tracker)
+        option_term["rows"][0]["evidence"][0]["discovery"] = (
+            "rg --fixed-strings --hidden source.c"
+        )
+        try:
+            audit(
+                sheet,
+                option_term,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an option-like evidence term")
+        invalid_commit = copy.deepcopy(tracker)
+        invalid_commit["reviewed_source"]["mesa_commit"] = "0" * 40
+        try:
+            audit(
+                sheet,
+                invalid_commit,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an invalid reviewed source commit")
         scalar_json = Path(temporary_directory) / "scalar.json"
         scalar_json.write_text("[]", encoding="utf-8")
         try:

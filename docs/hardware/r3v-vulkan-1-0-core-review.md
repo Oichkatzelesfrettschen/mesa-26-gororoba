@@ -46,9 +46,11 @@ offline test also compares the complete ordered requirement-block projection
 with the SHA-256 digest derived from that XML. The audit rejects a different
 XML payload, a changed direct-requirement projection, duplicate tracker
 coverage within or across rows, an unknown requirement block, a missing
-requirement block, a non-object JSON input, an evidence locator whose exact
-`rg --fixed-strings` command does not resolve in the declared source root, or
-a status that claims conformance.
+requirement block, a non-object JSON input, an evidence locator whose literal
+term is absent from the source blob at the tracker's reviewed Mesa commit, or
+a status that claims conformance. The audit resolves those blobs through the
+Git object database, so a later checkout cannot silently change the source
+review result.
 
 ## Source review at Mesa `0b66d14e758c80808e7cc661c008b2a834d12fba`
 
