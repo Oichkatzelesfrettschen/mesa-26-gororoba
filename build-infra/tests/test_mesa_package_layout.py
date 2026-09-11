@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,45 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 layout = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(layout)
+
+
+def r3v_manifest_document(
+    library_path: str = "/usr/lib/libvulkan_r3v.so",
+) -> dict[str, object]:
+    return {
+        "file_format_version": "1.0.1",
+        "ICD": {
+            "api_version": "1.0.999",
+            "library_arch": "64",
+            "library_path": library_path,
+        },
+    }
+
+
+def write_r3v_manifest(
+    path: Path, library_path: str = "/usr/lib/libvulkan_r3v.so"
+) -> None:
+    path.write_text(json.dumps(r3v_manifest_document(library_path)) + "\n")
+
+
+def generate_r3v_manifest(path: Path) -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT.parent / "src/vulkan/util/vk_icd_gen.py"),
+            "--api-version",
+            "1.0.999",
+            "--sizeof-pointer",
+            "8",
+            "--icd-lib-path",
+            "/usr/lib",
+            "--icd-filename",
+            "libvulkan_r3v.so",
+            "--out",
+            str(path),
+        ],
+        check=True,
+    )
 
 
 @pytest.fixture
@@ -55,12 +97,28 @@ def configured_build(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def staged_payload(configured_build: Path) -> Path:
+def r3v_shared_object(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    output = tmp_path_factory.mktemp("r3v-elf") / "libvulkan_r3v.so"
+    subprocess.run(
+        ["cc", "-shared", "-x", "c", "-o", str(output), "-"],
+        input="int r3v_package_layout_fixture(void) { return 0; }\n",
+        text=True,
+        check=True,
+    )
+    return output
+
+
+@pytest.fixture
+def staged_payload(configured_build: Path, r3v_shared_object: Path) -> Path:
     stage = configured_build.parent / "package-root"
     for relative in layout.REQUIRED_ARTIFACTS:
         path = stage / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture\n")
+    shutil.copyfile(r3v_shared_object, stage / "usr/lib/libvulkan_r3v.so")
+    license_path = stage / "usr/share/licenses/mesa-gororoba/license.rst"
+    license_path.parent.mkdir(parents=True)
+    license_path.write_text("fixture license\n")
     (stage / "usr/lib/pkgconfig/dri.pc").write_text(
         "prefix=/usr\ndridriverdir=/usr/lib/dri\n"
     )
@@ -69,17 +127,238 @@ def staged_payload(configured_build: Path) -> Path:
     )
     manifest = stage / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text('{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}}\n')
+    generate_r3v_manifest(manifest)
     return stage
 
 
 def test_complete_stock_package(configured_build: Path, staged_payload: Path) -> None:
     layout.publish_stage(configured_build, staged_payload)
     layout.verify_stage(configured_build, staged_payload, None)
-    assert (
+    assert (staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json").is_file()
+    assert not (
         staged_payload / "usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json"
-    ).is_file()
-    assert list((staged_payload / "usr/share/vulkan/icd.d").glob("*.json")) == []
+    ).exists()
+    receipt = json.loads(
+        (staged_payload / "usr/share/mesa-gororoba/build-identity.json").read_text()
+    )
+    for relative in (
+        "usr/bin/mesa-gororoba-run",
+        "etc/mesa-gororoba/mesa-gororoba-env.sh",
+        "usr/lib/environment.d/90-mesa-gororoba-r300.conf",
+        "usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf",
+        "usr/share/licenses/mesa-gororoba/license.rst",
+    ):
+        assert relative in receipt["sha256"]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "usr/bin/mesa-gororoba-run",
+        "etc/mesa-gororoba/mesa-gororoba-env.sh",
+        "usr/lib/environment.d/90-mesa-gororoba-r300.conf",
+        "usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf",
+        "usr/share/licenses/mesa-gororoba/license.rst",
+    ),
+)
+def test_packaging_policy_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path, relative: str
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    (staged_payload / relative).write_text("changed after qualification\n")
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
+
+
+@pytest.mark.parametrize(
+    "library_path",
+    (
+        "/usr/lib/libvulkan_r3v.so",
+        "../../../lib/libvulkan_r3v.so",
+        "libvulkan_r3v.so",
+    ),
+)
+def test_r3v_loader_artifact_resolves_packaged_library(
+    configured_build: Path, staged_payload: Path, library_path: str
+) -> None:
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    write_r3v_manifest(manifest, library_path)
+    layout.publish_stage(configured_build, staged_payload)
+    layout.verify_stage(configured_build, staged_payload, None)
+
+
+@pytest.mark.parametrize(
+    "library_path",
+    (
+        "/tmp/build/libvulkan_r3v.so",
+        "../../../../tmp/stage/libvulkan_r3v.so",
+        "libvulkan_other.so",
+    ),
+)
+def test_r3v_loader_artifact_rejects_other_library(
+    configured_build: Path, staged_payload: Path, library_path: str
+) -> None:
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    write_r3v_manifest(manifest, library_path)
+    with pytest.raises(ValueError, match="packaged driver library"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_private_directory(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    private_manifest = (
+        staged_payload / "usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json"
+    )
+    private_manifest.parent.mkdir(parents=True)
+    private_manifest.write_text(
+        '{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}}\n'
+    )
+    with pytest.raises(ValueError, match="complete standard loader set"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        "{",
+        "[]",
+        "null",
+        '"manifest"',
+        "7",
+    ),
+)
+def test_r3v_loader_artifact_rejects_invalid_manifest(
+    configured_build: Path, staged_payload: Path, document: str
+) -> None:
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(document)
+    with pytest.raises(layout.PackageLayoutError, match="manifest"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+@pytest.mark.parametrize(
+    "icd",
+    (
+        None,
+        [],
+        {},
+        {"api_version": "1.0.999", "library_arch": "64"},
+        {"api_version": "1.0.999", "library_arch": "64", "library_path": ""},
+        {"api_version": "1.0.999", "library_arch": "64", "library_path": 7},
+    ),
+)
+def test_r3v_loader_artifact_rejects_invalid_icd(
+    configured_build: Path, staged_payload: Path, icd: object
+) -> None:
+    document = r3v_manifest_document()
+    document["ICD"] = icd
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(json.dumps(document))
+    with pytest.raises(layout.PackageLayoutError, match="manifest"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    (
+        ("file_format_version", None, "file_format_version"),
+        ("file_format_version", "1.0.0", "file_format_version"),
+        ("api_version", None, "api_version"),
+        ("api_version", "1.1.0", "api_version"),
+        ("api_version", 7, "api_version"),
+        ("library_arch", None, "library_arch"),
+        ("library_arch", "32", "library_arch"),
+        ("library_arch", 64, "library_arch"),
+    ),
+)
+def test_r3v_loader_artifact_rejects_invalid_schema(
+    configured_build: Path,
+    staged_payload: Path,
+    field: str,
+    value: object,
+    error: str,
+) -> None:
+    document = r3v_manifest_document()
+    if field == "file_format_version":
+        document[field] = value
+    else:
+        document["ICD"][field] = value
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(json.dumps(document))
+    with pytest.raises(layout.PackageLayoutError, match=error):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_duplicate_manifest(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    duplicate = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.other.json"
+    write_r3v_manifest(duplicate)
+    with pytest.raises(ValueError, match="complete standard loader set"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_unselected_manifest(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    unselected = staged_payload / "usr/share/vulkan/icd.d/alternate.json"
+    write_r3v_manifest(unselected, "/usr/lib/libvulkan_other.so")
+    with pytest.raises(layout.PackageLayoutError, match="complete standard loader set"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_non_elf_library(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    (staged_payload / "usr/lib/libvulkan_r3v.so").write_text("not an ELF object\n")
+    with pytest.raises(layout.PackageLayoutError, match="not an ELF object"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_non_shared_elf(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    library = staged_payload / "usr/lib/libvulkan_r3v.so"
+    content = bytearray(library.read_bytes())
+    byte_order = "<" if content[5] == 1 else ">"
+    content[16:18] = struct.pack(f"{byte_order}H", 2)
+    library.write_bytes(content)
+    with pytest.raises(layout.PackageLayoutError, match="not a shared object"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_library_symlink_outside_usr_lib(
+    configured_build: Path, staged_payload: Path, r3v_shared_object: Path
+) -> None:
+    escaped_target = staged_payload / "usr/share/libvulkan_r3v.so"
+    shutil.copyfile(r3v_shared_object, escaped_target)
+    library = staged_payload / "usr/lib/libvulkan_r3v.so"
+    library.unlink()
+    library.symlink_to("../share/libvulkan_r3v.so")
+    with pytest.raises(layout.PackageLayoutError, match="escapes staged usr/lib"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    document = r3v_manifest_document()
+    document["changed"] = True
+    manifest.write_text(json.dumps(document) + "\n")
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
+
+
+def test_r3v_loader_artifact_library_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    (staged_payload / "usr/lib/libvulkan_r3v.so").write_text("changed\n")
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
 
 
 @pytest.mark.parametrize("relative", layout.REQUIRED_ARTIFACTS)

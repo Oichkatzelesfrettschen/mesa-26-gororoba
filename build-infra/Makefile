@@ -2044,6 +2044,8 @@ install: source-root-check vostro-prefix-check
 	    echo "[install] complete; releasing flock"'
 
 # The logical /usr prefix remains metadata; all writes use a fresh build-owned DESTDIR.
+PACKAGE_PAYLOAD_ROOT ?= $(CURDIR)/packaging/mesa-gororoba
+PACKAGE_NAME ?= mesa-gororoba
 .PHONY: stage-package package-layout-test
 stage-package: source-root-check
 	@set -euo pipefail; \
@@ -2054,6 +2056,16 @@ stage-package: source-root-check
 	"$(PYTHON)" "$(CURDIR)/scripts/mesa_package_layout.py" config --builddir "$(BUILDDIR)"; \
 	$(MESON) install --no-rebuild -C "$(BUILDDIR)" --destdir "$(BUILD_ROOT)/package-root"; \
 	$(VERIFY_SOURCE_IDENTITY); \
+	install -Dm755 "$(PACKAGE_PAYLOAD_ROOT)/mesa-gororoba-run" \
+	  "$(BUILD_ROOT)/package-root/usr/bin/mesa-gororoba-run"; \
+	install -Dm644 "$(PACKAGE_PAYLOAD_ROOT)/mesa-gororoba-env.sh" \
+	  "$(BUILD_ROOT)/package-root/etc/mesa-gororoba/mesa-gororoba-env.sh"; \
+	install -Dm644 "$(PACKAGE_PAYLOAD_ROOT)/90-mesa-gororoba-r300.conf" \
+	  "$(BUILD_ROOT)/package-root/usr/lib/environment.d/90-mesa-gororoba-r300.conf"; \
+	install -Dm644 "$(PACKAGE_PAYLOAD_ROOT)/20-rs482-modesetting-glamor.conf" \
+	  "$(BUILD_ROOT)/package-root/usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf"; \
+	install -Dm644 "$(MESON_SOURCE_ROOT)/docs/license.rst" \
+	  "$(BUILD_ROOT)/package-root/usr/share/licenses/$(PACKAGE_NAME)/license.rst"; \
 	"$(PYTHON)" "$(CURDIR)/scripts/mesa_package_layout.py" stage \
 	  --builddir "$(BUILDDIR)" --stage "$(BUILD_ROOT)/package-root"
 

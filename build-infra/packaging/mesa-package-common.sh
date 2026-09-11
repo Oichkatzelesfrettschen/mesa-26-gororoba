@@ -55,6 +55,7 @@ _package_make() {
   make -C "${_control_root}/build-infra" "$@" \
     PROFILE="${_profile}" PREFIX=/usr TOPSRC="${_source_root}" \
     BUILD_ROOT="${_build_root}" BUILDDIR="${_builddir}" \
+    PACKAGE_PAYLOAD_ROOT="${srcdir}" PACKAGE_NAME="${pkgname}" \
     REPRODUCIBLE_RUN="${MESA_PACKAGE_REPRODUCIBLE_RUN:-0}"
 }
 
@@ -97,13 +98,4 @@ package() {
   python3 "${_control_root}/build-infra/scripts/mesa_package_layout.py" verify \
     --builddir "${_builddir}" --stage "${_stage}" --profile "${_profile}" --source-commit "${_selected_commit}" || return 1
   cp -a "${_stage}/." "${pkgdir}/" || return 1
-  install -Dm755 "${srcdir}/mesa-gororoba-run" "${pkgdir}/usr/bin/mesa-gororoba-run"
-  install -Dm644 "${srcdir}/mesa-gororoba-env.sh" \
-    "${pkgdir}/etc/mesa-gororoba/mesa-gororoba-env.sh"
-  install -Dm644 "${srcdir}/90-mesa-gororoba-r300.conf" \
-    "${pkgdir}/usr/lib/environment.d/90-mesa-gororoba-r300.conf"
-  install -Dm644 "${srcdir}/20-rs482-modesetting-glamor.conf" \
-    "${pkgdir}/usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf"
-  install -Dm644 "${_source_root}/docs/license.rst" \
-    "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
 }
