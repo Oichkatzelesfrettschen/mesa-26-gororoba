@@ -134,12 +134,18 @@ NATIVE_BEHAVIOR = {
     "UpdateDescriptorSets": "NATIVE_LIVE",
 }
 
-# The public recording surface's live command subset: the one begin/bind/
-# draw sequence whose lowering is the qualified triangle cell.  Every
-# other vkCmd* keeps the fail-closed prefix resolution.
+# The public recording surface's live command subset includes the qualified
+# draw cell and the bounded native transfer and clear recorders.  Every other
+# vkCmd* keeps the fail-closed prefix resolution.
 NATIVE_LIVE_CMDS = {
     "CmdBeginRenderPass",
     "CmdBindDescriptorSets",
+    "CmdClearColorImage",
+    "CmdClearDepthStencilImage",
+    "CmdCopyBuffer",
+    "CmdCopyBufferToImage",
+    "CmdCopyImage",
+    "CmdCopyImageToBuffer",
     "CmdDispatch",
     "CmdEndRenderPass",
     "CmdBindPipeline",
@@ -782,6 +788,8 @@ def selftest():
     behavior_legs = (
         ("CmdInvented", {"CmdInvented"}, set(), "CORE_FAIL_CLOSED"),
         ("CmdDraw", {"CmdDraw"}, set(), "NATIVE_LIVE"),
+        ("CmdClearColorImage", {"CmdClearColorImage"}, set(), "NATIVE_LIVE"),
+        ("CmdCopyImage", {"CmdCopyImage"}, set(), "NATIVE_LIVE"),
         ("CmdDrawIndirect", {"CmdDrawIndirect"}, set(), "CORE_FAIL_CLOSED"),
         ("Invented", {"Invented"}, set(), "UNCLASSIFIED"),
         ("MapMemory", {"MapMemory"}, set(), "NATIVE_LIVE"),

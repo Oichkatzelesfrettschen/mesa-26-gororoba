@@ -36,6 +36,7 @@ sha256sum /tmp/vk-1.0.69-core.xml
 "$PYTHON" src/amd/r300/vulkan/tests/r3v_vulkan_1_0_core_tracker_audit.py \
   --sheet docs/hardware/r3v-vulkan-1-0-core-sheet.json \
   --tracker docs/hardware/r3v-vulkan-1-0-core-implementation-tracker.json \
+  --source-root . \
   --registry-xml /tmp/vk-1.0.69-core.xml
 ```
 
@@ -45,11 +46,13 @@ offline test also compares the complete ordered requirement-block projection
 with the SHA-256 digest derived from that XML. The audit rejects a different
 XML payload, a changed direct-requirement projection, duplicate tracker
 coverage within or across rows, an unknown requirement block, a missing
-requirement block, a non-object JSON input, an evidence locator without its
-exact `rg --fixed-strings` discovery command, or a status that claims
-conformance.
+requirement block, a non-object JSON input, an evidence locator whose literal
+term is absent from the source blob at the tracker's reviewed Mesa commit, or
+a status that claims conformance. The audit resolves those blobs through the
+Git object database, so a later checkout cannot silently change the source
+review result.
 
-## Source review at Mesa `8f6d3ff8fa3fd0c1651b6909c247bebbd1a30e07`
+## Source review at Mesa `0b66d14e758c80808e7cc661c008b2a834d12fba`
 
 The native R3V ICD owns a Gallium-free Radeon DRM transport. The separation
 audit examines native source and binary links for Gallium identifiers and
@@ -63,6 +66,7 @@ The implementation tracker records eleven mechanism groups:
 
 | Group | Source review result | Next decisive evidence |
 | --- | --- | --- |
+| API definition and version | bounded | direct version and constant checks against the reported API |
 | instance and discovery | bounded | loader query against the exact ICD |
 | device, queue, and submission | bounded behind arming and retention | retained target submission with completion and output evidence |
 | memory and binding | bounded one-BO model | memory CTS slice and target lifetime receipt |

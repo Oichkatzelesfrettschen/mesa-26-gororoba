@@ -9,7 +9,8 @@ source-audited bounded execution, explicit refusal, or an unassessed surface;
 it cannot turn source presence into a conformance verdict.
 
 Usage:
-  r3v_vulkan_1_0_core_tracker_audit.py --sheet PATH --tracker PATH
+  r3v_vulkan_1_0_core_tracker_audit.py --sheet PATH --tracker PATH \
+      --source-root PATH
   r3v_vulkan_1_0_core_tracker_audit.py --selftest
 """
 
@@ -17,6 +18,9 @@ import argparse
 import copy
 import hashlib
 import json
+import re
+import shlex
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as element_tree
@@ -25,6 +29,21 @@ from pathlib import Path
 SOURCE_COMMIT = "ab08f0951ef1ad9b84db93f971e113c1d9d55609"
 SOURCE_SHA256 = "820d7e3f6fb54d955b0bbd89a0c96be3e66f9a7cc60a7eb28d820ad57c6c2b4e"
 PROJECTION_SHA256 = "ddd64cfa307fc9c00561970900396fc45ccfcb543e1979419e27a9452a9e92c7"
+SOURCE_IDENTITY = {
+    "publisher": "Khronos Group",
+    "repository": "https://github.com/KhronosGroup/Vulkan-Docs",
+    "tag": "v1.0.69-core",
+    "commit": SOURCE_COMMIT,
+    "tag_object": "ff4049b28854a0a7472623f3c037dee800fb4c58",
+    "tagger_date": "2018-02-19T23:33:22Z",
+    "xml_path": "src/spec/vk.xml",
+    "xml_url": (
+        "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/"
+        f"{SOURCE_COMMIT}/src/spec/vk.xml"
+    ),
+    "xml_sha256": SOURCE_SHA256,
+    "registry_landing_page": "https://registry.khronos.org/vulkan/specs/1.0/README.md",
+}
 ALLOWED_STATUSES = frozenset({"bounded", "refused", "unassessed"})
 
 
@@ -53,12 +72,10 @@ def sheet_blocks(sheet, expected_projection_sha256=PROJECTION_SHA256):
     if sheet.get("schema_version") != 1:
         raise AuditFailure("sheet schema_version must equal 1")
     source = sheet.get("source")
-    if not isinstance(source, dict):
-        raise AuditFailure("sheet source must be an object")
-    if source.get("commit") != SOURCE_COMMIT:
-        raise AuditFailure("sheet source commit does not pin Vulkan-Docs v1.0.69-core")
-    if source.get("xml_sha256") != SOURCE_SHA256:
-        raise AuditFailure("sheet XML digest does not pin the official registry input")
+    if source != SOURCE_IDENTITY:
+        raise AuditFailure(
+            "sheet source identity does not pin the official Vulkan-Docs release"
+        )
     projection = sheet.get("projection")
     if not isinstance(projection, dict):
         raise AuditFailure("sheet projection must be an object")
@@ -105,6 +122,112 @@ def sheet_blocks(sheet, expected_projection_sha256=PROJECTION_SHA256):
     if counts != expected_counts:
         raise AuditFailure("sheet counts disagree with its requirement blocks")
     return set(names)
+
+
+def parse_evidence_locator(locator):
+    """Parse and validate one recorded literal-search command."""
+    path = locator["path"]
+    discovery = locator["discovery"]
+    try:
+        command = shlex.split(discovery)
+    except ValueError as error:
+        raise AuditFailure(f"evidence locator has malformed shell syntax: {error}") from error
+    if (
+        len(command) != 4
+        or command[0] != "rg"
+        or command[1] != "--fixed-strings"
+        or not command[2]
+        or command[2].startswith("-")
+        or command[3] != path
+    ):
+        raise AuditFailure(
+            f"evidence locator for {path!r} is not an exact rg command"
+        )
+    return command
+
+
+def validate_evidence_locator(locator, source_root, source_commit):
+    """Resolve one recorded locator against its pinned Git source tree."""
+    path = locator["path"]
+    command = parse_evidence_locator(locator)
+    if not isinstance(source_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", source_commit
+    ):
+        raise AuditFailure("reviewed source Mesa commit must be a full object ID")
+    relative_path = Path(path)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise AuditFailure(f"evidence locator escapes the source root: {path!r}")
+    root = source_root.resolve()
+    if not root.is_dir():
+        raise AuditFailure(f"source root is not a directory: {root}")
+    try:
+        repository_root = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=root,
+                text=True,
+            ).strip()
+        ).resolve()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AuditFailure(f"source root is not a Git worktree: {root}") from error
+    if repository_root != root:
+        raise AuditFailure(
+            f"source root must be the Git worktree root: {root} != {repository_root}"
+        )
+    try:
+        commit_type = subprocess.check_output(
+            ["git", "cat-file", "-t", source_commit],
+            cwd=root,
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+        if commit_type != "commit":
+            raise AuditFailure(
+                f"reviewed source object is not a commit: {source_commit}"
+            )
+        blob_spec = f"{source_commit}:{path}"
+        blob_type = subprocess.check_output(
+            ["git", "cat-file", "-t", blob_spec],
+            cwd=root,
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+        if blob_type != "blob":
+            raise AuditFailure(
+                f"evidence locator names no source blob at {source_commit}:{path}"
+            )
+        source_bytes = subprocess.check_output(
+            ["git", "cat-file", "blob", blob_spec],
+            cwd=root,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AuditFailure(
+            f"cannot resolve evidence source {source_commit}:{path}"
+        ) from error
+    if command[2].encode("utf-8") not in source_bytes:
+        raise AuditFailure(
+            f"evidence locator does not resolve in {source_commit}:{path}"
+        )
+
+
+def validate_reviewed_source(tracker, source_root):
+    reviewed_source = tracker.get("reviewed_source")
+    if not isinstance(reviewed_source, dict):
+        raise AuditFailure("tracker reviewed_source must be an object")
+    source_commit = reviewed_source.get("mesa_commit")
+    if not isinstance(source_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", source_commit
+    ):
+        raise AuditFailure("tracker reviewed_source.mesa_commit must be a full object ID")
+    driver_root = reviewed_source.get("driver_root")
+    if not isinstance(driver_root, str) or not driver_root:
+        raise AuditFailure("tracker reviewed_source.driver_root must be a path")
+    if source_root is not None:
+        for row in tracker["rows"]:
+            for locator in row["evidence"]:
+                validate_evidence_locator(locator, source_root, source_commit)
+    return source_commit
 
 
 def registry_blocks(path):
@@ -160,6 +283,7 @@ def audit(
     tracker,
     registry_xml=None,
     expected_projection_sha256=PROJECTION_SHA256,
+    source_root=None,
 ):
     block_names = sheet_blocks(sheet, expected_projection_sha256)
     if registry_xml is not None:
@@ -174,6 +298,7 @@ def audit(
     rows = tracker.get("rows")
     if not isinstance(rows, list) or not rows:
         raise AuditFailure("tracker rows must be a nonempty array")
+    validate_reviewed_source(tracker, None)
     seen = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -200,16 +325,11 @@ def audit(
                 )
             path = locator["path"]
             discovery = locator["discovery"]
-            if (
-                not isinstance(path, str)
-                or not path
-                or not isinstance(discovery, str)
-                or not discovery.startswith("rg --fixed-strings ")
-                or path not in discovery
-            ):
+            if not isinstance(path, str) or not path or not isinstance(discovery, str):
                 raise AuditFailure(
                     f"tracker row {identifier} has a non-reproducible evidence locator"
                 )
+            parse_evidence_locator(locator)
         if not isinstance(falsifier, str) or not falsifier:
             raise AuditFailure(f"tracker row {identifier} lacks a falsifier")
         blocks = row.get("requirement_blocks")
@@ -229,6 +349,8 @@ def audit(
                 f"tracker maps requirement blocks more than once: {sorted(overlap)}"
             )
         seen.update(blocks)
+    if source_root is not None:
+        validate_reviewed_source(tracker, source_root)
     unknown = seen - block_names
     missing = block_names - seen
     if unknown:
@@ -245,7 +367,7 @@ def audit(
 def selftest():
     sheet = {
         "schema_version": 1,
-        "source": {"commit": SOURCE_COMMIT, "xml_sha256": SOURCE_SHA256},
+        "source": copy.deepcopy(SOURCE_IDENTITY),
         "projection": {
             "feature": "VK_VERSION_1_0",
             "api": "vulkan",
@@ -269,6 +391,10 @@ def selftest():
     tracker = {
         "schema_version": 1,
         "sheet": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
+        "reviewed_source": {
+            "mesa_commit": "0b66d14e758c80808e7cc661c008b2a834d12fba",
+            "driver_root": "src/amd/r300/vulkan",
+        },
         "conformance_boundary": "Source review does not establish conformance.",
         "rows": [
             {
@@ -287,6 +413,14 @@ def selftest():
     }
     expected_digest = projection_digest(sheet["projection"]["requirement_blocks"])
     audit(sheet, tracker, expected_projection_sha256=expected_digest)
+    mutated_source = copy.deepcopy(sheet)
+    mutated_source["source"]["tag_object"] = "0" * 40
+    try:
+        audit(mutated_source, tracker, expected_projection_sha256=expected_digest)
+    except AuditFailure:
+        pass
+    else:
+        raise AuditFailure("selftest admitted a mutated registry source identity")
     tracker["rows"][0]["status"] = "conformant"
     try:
         audit(sheet, tracker, expected_projection_sha256=expected_digest)
@@ -322,6 +456,97 @@ def selftest():
     else:
         raise AuditFailure("selftest admitted a mutated registry projection")
     with tempfile.TemporaryDirectory() as temporary_directory:
+        source_root = Path(temporary_directory)
+        subprocess.run(
+            ["git", "init", "--quiet"], cwd=source_root, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "tracker-audit@example.invalid"],
+            cwd=source_root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Tracker Audit Selftest"],
+            cwd=source_root,
+            check=True,
+        )
+        Path(source_root, "source.c").write_text(
+            "void vkMapMemory(void) {}\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", "source.c"], cwd=source_root, check=True)
+        subprocess.run(
+            ["git", "commit", "--quiet", "-m", "add source fixture"],
+            cwd=source_root,
+            check=True,
+        )
+        source_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=source_root, text=True
+        ).strip()
+        tracker["reviewed_source"]["mesa_commit"] = source_commit
+        audit(
+            sheet,
+            tracker,
+            expected_projection_sha256=expected_digest,
+            source_root=source_root,
+        )
+        bad_locator = copy.deepcopy(tracker)
+        bad_locator["rows"][0]["evidence"][0]["discovery"] = (
+            "rg --fixed-strings 'missing' source.c"
+        )
+        try:
+            audit(
+                sheet,
+                bad_locator,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an unresolved evidence locator")
+        empty_term = copy.deepcopy(tracker)
+        empty_term["rows"][0]["evidence"][0]["discovery"] = (
+            "rg --fixed-strings '' source.c"
+        )
+        try:
+            audit(
+                sheet,
+                empty_term,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an empty evidence search term")
+        option_term = copy.deepcopy(tracker)
+        option_term["rows"][0]["evidence"][0]["discovery"] = (
+            "rg --fixed-strings --hidden source.c"
+        )
+        try:
+            audit(
+                sheet,
+                option_term,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an option-like evidence term")
+        invalid_commit = copy.deepcopy(tracker)
+        invalid_commit["reviewed_source"]["mesa_commit"] = "0" * 40
+        try:
+            audit(
+                sheet,
+                invalid_commit,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an invalid reviewed source commit")
         scalar_json = Path(temporary_directory) / "scalar.json"
         scalar_json.write_text("[]", encoding="utf-8")
         try:
@@ -347,6 +572,7 @@ def main(argv=None):
     parser.add_argument("--sheet", type=Path)
     parser.add_argument("--tracker", type=Path)
     parser.add_argument("--registry-xml", type=Path)
+    parser.add_argument("--source-root", type=Path)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -354,8 +580,13 @@ def main(argv=None):
             return selftest()
         if args.sheet is None or args.tracker is None:
             parser.error("--sheet and --tracker are required")
+        if args.source_root is None:
+            parser.error("--source-root is required")
         rows, blocks = audit(
-            read_json(args.sheet), read_json(args.tracker), args.registry_xml
+            read_json(args.sheet),
+            read_json(args.tracker),
+            args.registry_xml,
+            source_root=args.source_root,
         )
         print(
             "r3v_vulkan_1_0_core_tracker_audit: "
