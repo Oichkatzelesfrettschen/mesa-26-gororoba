@@ -317,6 +317,7 @@ r3v_native_files = files(
   'r3v_native_transfer.c',
   'r3v_native_depth_transfer.c',
   'r3v_native_depth_clear.c',
+  'r3v_native_zmask_admission.c',
   'r3v_fill_route.c',
   'r3v_measurement_claim.c',
   'r3v_measurement_declaration.c',
@@ -1486,6 +1487,23 @@ r3v_native_zmask_fast_clear_selector_test = executable(
 )
 test('r3v-native-zmask-fast-clear-selector',
      r3v_native_zmask_fast_clear_selector_test,
+     suite : ['r3v'])
+
+# The automatic ZMASK selection gate decides without a device: the clause
+# table walks one admitting candidate and one known-bad mutation apiece,
+# and the requirement table is evaluated against an empty, a partial, and
+# a complete record.
+r3v_native_zmask_admission_test = executable(
+  'r3v_native_zmask_admission_test',
+  files('r3v_native_zmask_admission.c',
+        'tests/r3v_native_zmask_admission_test.c'),
+  include_directories : [inc_include, inc_src, include_directories('.')],
+  link_with : [libr300_common],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-zmask-admission',
+     r3v_native_zmask_admission_test,
      suite : ['r3v'])
 
 r3v_hyperz_ownership_transaction_test = executable(

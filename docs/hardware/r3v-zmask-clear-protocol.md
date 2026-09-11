@@ -240,3 +240,14 @@ follows those groups:
 
 Each step keeps the ownership requirement stages C and D establish, and
 each is measured against A by the same two oracles.
+
+## Automatic selection
+
+Standing selection of the fast clear over the ordinary combined clear is
+its own decision, declared in
+[r3v-zmask-automatic-selection-gate.md](r3v-zmask-automatic-selection-gate.md).
+That gate states the admission predicate over one candidate, the eight
+retained results the promotion consumes, and the reason genuine
+compression takes a separate verdict rather than riding the fast-clear
+promotion. Automatic selection stays disabled until every one of the eight
+results is retained.
