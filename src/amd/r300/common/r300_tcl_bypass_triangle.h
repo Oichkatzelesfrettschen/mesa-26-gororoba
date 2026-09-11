@@ -19,6 +19,7 @@ struct r300_noperspective_mixed_carrier_plan;
 struct r300_flat_color0_plan;
 struct r300_rs_tex_adj_probe_plan;
 struct r300_zb_depth_state_params;
+struct r300_zmask_materialize_plan;
 
 /* BO slots the cell references; the transport binds slot order to the
  * relocation-list order at submission.
@@ -267,6 +268,14 @@ int r300_tcl_bypass_triangle_validate_reloc_sites(
 int r300_tcl_bypass_triangle_insert_depth_state(
    struct r300_tcl_bypass_triangle_ib *ib,
    const struct r300_zb_depth_state_params *state, bool z_top_enable);
+
+/* Wraps every draw packet in one cell with the fast-clear metadata read
+ * prefix and reset suffix.  The operation preserves relocation ordering and
+ * leaves the input unchanged on refusal.
+ */
+int r300_tcl_bypass_triangle_insert_zmask_fast_clear_read(
+   struct r300_tcl_bypass_triangle_ib *ib,
+   const struct r300_zmask_materialize_plan *plan);
 
 /* Re-segments a clip-capacity stream into one ordered draw for each source
  * triangle.  Each segment consumes exactly seven reserved output triangles,

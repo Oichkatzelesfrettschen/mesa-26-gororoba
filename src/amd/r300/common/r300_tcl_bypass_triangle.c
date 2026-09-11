@@ -2,6 +2,7 @@
 
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_zb_depth_state.h"
+#include "r300_zmask_materialize_plan.h"
 #include "r300_first_draw_state.h"
 #include "r300_flat_color0_plan.h"
 #include "r300_noperspective_reciprocal_fs_block.h"
@@ -1075,6 +1076,104 @@ r300_tcl_bypass_triangle_insert_depth_state(
       return -EINVAL;
    }
    free(ib->ib);
+   *ib = candidate;
+   return 0;
+}
+
+int
+r300_tcl_bypass_triangle_insert_zmask_fast_clear_read(
+   struct r300_tcl_bypass_triangle_ib *ib,
+   const struct r300_zmask_materialize_plan *plan)
+{
+   if (ib == NULL || ib->ib == NULL || !ib->owns_ib || plan == NULL ||
+       plan->begin_dword_count == 0u ||
+       plan->begin_dword_count >= plan->dword_count ||
+       plan->dword_count > R300_ZMASK_MATERIALIZE_PLAN_MAX_DWORDS ||
+       ib->ib_size_dwords > UINT32_MAX - plan->dword_count ||
+       r300_tcl_bypass_triangle_validate_reloc_sites(ib) != 0)
+      return -EINVAL;
+
+   uint32_t first_vertex_packet = UINT32_MAX;
+   uint32_t final_draw_end = UINT32_MAX;
+   for (uint32_t index = 0u; index < ib->ib_size_dwords;) {
+      const uint32_t header = ib->ib[index];
+      const uint32_t type = header >> 30;
+      const uint32_t payload =
+         type == 2u ? 0u : ((header >> 16) & 0x3fffu) + 1u;
+      if (type == 1u || payload > ib->ib_size_dwords - index - 1u)
+         return -EINVAL;
+      if (type == 3u &&
+          (header & 0xff00u) == R300_PACKET3_3D_LOAD_VBPNTR &&
+          first_vertex_packet == UINT32_MAX)
+         first_vertex_packet = index;
+      if (type == 3u &&
+          (header & 0xff00u) == R300_PACKET3_3D_DRAW_VBUF_2)
+         final_draw_end = index + 1u + payload;
+      index += 1u + payload;
+   }
+   if (first_vertex_packet == UINT32_MAX || final_draw_end == UINT32_MAX ||
+       first_vertex_packet >= final_draw_end)
+      return -EINVAL;
+
+   const uint32_t suffix_dwords =
+      r300_zmask_materialize_end_dword_count(plan);
+   const uint32_t total_dwords = ib->ib_size_dwords + plan->dword_count;
+   uint32_t *merged = calloc(total_dwords, sizeof(*merged));
+   if (merged == NULL)
+      return -ENOMEM;
+   uint32_t *adjusted_aliases = NULL;
+   if (ib->vertex_reloc_alias_count != 0u) {
+      adjusted_aliases = calloc(ib->vertex_reloc_alias_count,
+                                sizeof(*adjusted_aliases));
+      if (adjusted_aliases == NULL) {
+         free(merged);
+         return -ENOMEM;
+      }
+      memcpy(adjusted_aliases, ib->vertex_reloc_aliases,
+             (size_t)ib->vertex_reloc_alias_count *
+                sizeof(*adjusted_aliases));
+   }
+
+   memcpy(merged, ib->ib, (size_t)first_vertex_packet * sizeof(*merged));
+   memcpy(merged + first_vertex_packet, plan->words,
+          (size_t)plan->begin_dword_count * sizeof(*merged));
+   memcpy(merged + first_vertex_packet + plan->begin_dword_count,
+          ib->ib + first_vertex_packet,
+          (size_t)(final_draw_end - first_vertex_packet) * sizeof(*merged));
+   memcpy(merged + final_draw_end + plan->begin_dword_count,
+          r300_zmask_materialize_end_words(plan),
+          (size_t)suffix_dwords * sizeof(*merged));
+   memcpy(merged + final_draw_end + plan->dword_count,
+          ib->ib + final_draw_end,
+          (size_t)(ib->ib_size_dwords - final_draw_end) * sizeof(*merged));
+
+   struct r300_tcl_bypass_triangle_ib candidate = *ib;
+   candidate.ib = merged;
+   candidate.ib_size_dwords = total_dwords;
+   candidate.vertex_reloc_aliases = adjusted_aliases;
+   for (uint32_t site = 0u; site < candidate.reloc_site_count; site++) {
+      if (candidate.reloc_sites[site].ib_index >= first_vertex_packet)
+         candidate.reloc_sites[site].ib_index += plan->begin_dword_count;
+      if (candidate.reloc_sites[site].ib_index >=
+          final_draw_end + plan->begin_dword_count)
+         candidate.reloc_sites[site].ib_index += suffix_dwords;
+   }
+   for (uint32_t alias = 0u; alias < candidate.vertex_reloc_alias_count;
+        alias++) {
+      if (candidate.vertex_reloc_aliases[alias] >= first_vertex_packet)
+         candidate.vertex_reloc_aliases[alias] += plan->begin_dword_count;
+      if (candidate.vertex_reloc_aliases[alias] >=
+          final_draw_end + plan->begin_dword_count)
+         candidate.vertex_reloc_aliases[alias] += suffix_dwords;
+   }
+   if (r300_tcl_bypass_triangle_validate_reloc_sites(&candidate) != 0) {
+      free(adjusted_aliases);
+      free(merged);
+      return -EINVAL;
+   }
+
+   free(ib->ib);
+   free(ib->vertex_reloc_aliases);
    *ib = candidate;
    return 0;
 }

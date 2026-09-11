@@ -26,6 +26,7 @@
 #include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
 #include "amd/r300/common/r300_zmask_layout.h"
+#include "amd/r300/common/r300_zmask_materialize_plan.h"
 #include "r3v_native_depth_image_contract.h"
 #include "r3v_native_depth_pipeline.h"
 #include "r3v_interpolation_lowering.h"
@@ -880,6 +881,11 @@ struct r3v_native_deferred_draw {
    bool has_depth_pipeline;
    struct r300_zb_combined_clear_plan depth_clear;
    bool has_depth_clear;
+   /* A read-only depth attachment can consume a fast-clear value without
+    * retiring its metadata.  The copied plan wraps this draw's depth test;
+    * compressed metadata never enters this route. */
+   struct r300_zmask_materialize_plan zmask_fast_clear_read;
+   bool has_zmask_fast_clear_read;
    /* The post-vertex lowering the pipeline's linked interface
     * selects, applied to the CPU route's records after the job and
     * before clipping (r3v_post_vs_lowering.h). */
@@ -2250,6 +2256,11 @@ VkResult r3v_native_cmd_buffer_require_ordinary_depth_backing(
    struct r3v_native_cmd_buffer *cmd_buffer,
    struct r3v_native_image *image);
 
+VkResult r3v_native_cmd_buffer_prepare_zmask_fast_clear_read(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image,
+   struct r300_zmask_materialize_plan *plan, bool *enabled);
+
 VkResult r3v_native_cmd_buffer_transition_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout old_layout, VkImageLayout new_layout);
@@ -2701,6 +2712,7 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    const struct r3v_native_depth_image_bound *depth_bound,
    const struct r3v_native_depth_pipeline_state *depth_pipeline,
    const struct r300_zb_combined_clear_plan *depth_clear,
+   const struct r300_zmask_materialize_plan *zmask_fast_clear_read,
    bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell);
 

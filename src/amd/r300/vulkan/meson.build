@@ -3042,6 +3042,18 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       dependencies : [dep_vulkan_loader, dep_dl],
       c_args : [no_override_init_args],
     )
+    # Public ZMASK lifecycle qualification application.  The executable
+    # reaches R3V through libvulkan, records one submission per selected
+    # scenario, and retains logical color plus depth and stencil exports.
+    # Driver-internal state and object layouts stay outside its link surface.
+    r3v_native_loader_zmask_lifecycle_application = executable(
+      'r3v_native_loader_zmask_lifecycle_application',
+      files('tests/r3v_native_loader_zmask_lifecycle_application.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
+      dependencies : [dep_vulkan_loader, dep_dl],
+      c_args : [no_override_init_args],
+    )
     test(
       'r3v-native-loader-fill-application',
       prog_python,
@@ -3352,6 +3364,62 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
         depends : [r3v_native_loader_fill_application],
         suite : ['r3v'],
       )
+      test(
+        'r3v-native-loader-zmask-lifecycle-application-symbol-audit',
+        prog_python,
+        args : [
+          files('tests/r3v_native_loader_application_symbol_audit.py'),
+          prog_nm_r3v.full_path(),
+          r3v_native_loader_zmask_lifecycle_application.full_path(),
+          '--forbid', 'r3v_',
+          '--forbid', 'r300_',
+          '--forbid', 'radeon_drm_vk_',
+          '--forbid', 'drm_shim_',
+        ],
+        depends : [r3v_native_loader_zmask_lifecycle_application],
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-native-loader-zmask-lifecycle-oracle-calibration',
+        r3v_native_loader_zmask_lifecycle_application,
+        args : ['--self-test'],
+        depends : [r3v_native_loader_zmask_lifecycle_application],
+        suite : ['r3v'],
+      )
+      if prog_readelf_r3v.found()
+        test(
+          'r3v-native-loader-zmask-lifecycle-dependencies',
+          prog_python,
+          args : [
+            files('tests/r3v_native_loader_application_symbol_audit.py'),
+            prog_nm_r3v.full_path(),
+            r3v_native_loader_zmask_lifecycle_application.full_path(),
+            '--readelf', prog_readelf_r3v.full_path(),
+            '--require-needed', 'libvulkan.so.1',
+            '--allow-needed', 'libvulkan.so.1',
+            '--allow-needed', 'libc.so.6',
+          ],
+          depends : [r3v_native_loader_zmask_lifecycle_application],
+          suite : ['r3v'],
+        )
+        test(
+          'r3v-native-loader-zmask-lifecycle-dependencies-known-bad',
+          find_program('sh'),
+          args : [
+            '-c', '"$1" "$2" "$3" "$4" --readelf "$5" ' +
+                  '--require-needed libvulkan.so.1 ' +
+                  '--allow-needed libvulkan.so.1; test $? -eq 1',
+            'assert-verdict',
+            prog_python.full_path(),
+            files('tests/r3v_native_loader_application_symbol_audit.py'),
+            prog_nm_r3v.full_path(),
+            r3v_native_loader_zmask_lifecycle_application.full_path(),
+            prog_readelf_r3v.full_path(),
+          ],
+          depends : [r3v_native_loader_zmask_lifecycle_application],
+          suite : ['r3v'],
+        )
+      endif
     endif
     # The fill route's exact-submit-object replay through the full CS
     # parser/tracker: parser-owned mutations reject, and the 2D destination

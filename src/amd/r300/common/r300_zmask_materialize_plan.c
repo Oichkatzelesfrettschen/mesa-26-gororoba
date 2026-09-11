@@ -79,3 +79,24 @@ r300_zmask_materialize_suffix(struct r300_zmask_materialize_plan *out)
    *out = plan;
    return 0;
 }
+
+int
+r300_zmask_fast_clear_read_plan(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zmask_layout *layout, uint32_t depth_code,
+   uint32_t stencil, struct r300_zmask_materialize_plan *out)
+{
+   if (out == NULL)
+      return -EINVAL;
+
+   struct r300_zmask_materialize_plan plan;
+   int result = r300_zmask_materialize_prefix(
+      surface, layout, depth_code, stencil, &plan);
+   if (result == 0)
+      result = r300_zmask_materialize_suffix(&plan);
+   if (result != 0)
+      return result;
+
+   *out = plan;
+   return 0;
+}
