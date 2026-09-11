@@ -9,7 +9,8 @@ source-audited bounded execution, explicit refusal, or an unassessed surface;
 it cannot turn source presence into a conformance verdict.
 
 Usage:
-  r3v_vulkan_1_0_core_tracker_audit.py --sheet PATH --tracker PATH
+  r3v_vulkan_1_0_core_tracker_audit.py --sheet PATH --tracker PATH \
+      --source-root PATH
   r3v_vulkan_1_0_core_tracker_audit.py --selftest
 """
 
@@ -17,6 +18,8 @@ import argparse
 import copy
 import hashlib
 import json
+import shlex
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as element_tree
@@ -25,6 +28,21 @@ from pathlib import Path
 SOURCE_COMMIT = "ab08f0951ef1ad9b84db93f971e113c1d9d55609"
 SOURCE_SHA256 = "820d7e3f6fb54d955b0bbd89a0c96be3e66f9a7cc60a7eb28d820ad57c6c2b4e"
 PROJECTION_SHA256 = "ddd64cfa307fc9c00561970900396fc45ccfcb543e1979419e27a9452a9e92c7"
+SOURCE_IDENTITY = {
+    "publisher": "Khronos Group",
+    "repository": "https://github.com/KhronosGroup/Vulkan-Docs",
+    "tag": "v1.0.69-core",
+    "commit": SOURCE_COMMIT,
+    "tag_object": "ff4049b28854a0a7472623f3c037dee800fb4c58",
+    "tagger_date": "2018-02-19T23:33:22Z",
+    "xml_path": "src/spec/vk.xml",
+    "xml_url": (
+        "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/"
+        f"{SOURCE_COMMIT}/src/spec/vk.xml"
+    ),
+    "xml_sha256": SOURCE_SHA256,
+    "registry_landing_page": "https://registry.khronos.org/vulkan/specs/1.0/README.md",
+}
 ALLOWED_STATUSES = frozenset({"bounded", "refused", "unassessed"})
 
 
@@ -53,12 +71,10 @@ def sheet_blocks(sheet, expected_projection_sha256=PROJECTION_SHA256):
     if sheet.get("schema_version") != 1:
         raise AuditFailure("sheet schema_version must equal 1")
     source = sheet.get("source")
-    if not isinstance(source, dict):
-        raise AuditFailure("sheet source must be an object")
-    if source.get("commit") != SOURCE_COMMIT:
-        raise AuditFailure("sheet source commit does not pin Vulkan-Docs v1.0.69-core")
-    if source.get("xml_sha256") != SOURCE_SHA256:
-        raise AuditFailure("sheet XML digest does not pin the official registry input")
+    if source != SOURCE_IDENTITY:
+        raise AuditFailure(
+            "sheet source identity does not pin the official Vulkan-Docs release"
+        )
     projection = sheet.get("projection")
     if not isinstance(projection, dict):
         raise AuditFailure("sheet projection must be an object")
@@ -105,6 +121,47 @@ def sheet_blocks(sheet, expected_projection_sha256=PROJECTION_SHA256):
     if counts != expected_counts:
         raise AuditFailure("sheet counts disagree with its requirement blocks")
     return set(names)
+
+
+def validate_evidence_locator(locator, source_root):
+    """Resolve one recorded rg command against the declared source tree."""
+    path = locator["path"]
+    discovery = locator["discovery"]
+    try:
+        command = shlex.split(discovery)
+    except ValueError as error:
+        raise AuditFailure(f"evidence locator has malformed shell syntax: {error}") from error
+    if (
+        len(command) != 4
+        or command[0] != "rg"
+        or command[1] != "--fixed-strings"
+        or command[3] != path
+    ):
+        raise AuditFailure(
+            f"evidence locator for {path!r} is not an exact rg command"
+        )
+    relative_path = Path(path)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise AuditFailure(f"evidence locator escapes the source root: {path!r}")
+    root = source_root.resolve()
+    source_path = (root / relative_path).resolve()
+    try:
+        source_path.relative_to(root)
+    except ValueError as error:
+        raise AuditFailure(f"evidence locator escapes the source root: {path!r}") from error
+    if not source_path.is_file():
+        raise AuditFailure(f"evidence locator names no source file: {path!r}")
+    result = subprocess.run(
+        command,
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AuditFailure(
+            f"evidence locator does not resolve in the source tree: {discovery}"
+        )
 
 
 def registry_blocks(path):
@@ -160,6 +217,7 @@ def audit(
     tracker,
     registry_xml=None,
     expected_projection_sha256=PROJECTION_SHA256,
+    source_root=None,
 ):
     block_names = sheet_blocks(sheet, expected_projection_sha256)
     if registry_xml is not None:
@@ -210,6 +268,8 @@ def audit(
                 raise AuditFailure(
                     f"tracker row {identifier} has a non-reproducible evidence locator"
                 )
+            if source_root is not None:
+                validate_evidence_locator(locator, source_root)
         if not isinstance(falsifier, str) or not falsifier:
             raise AuditFailure(f"tracker row {identifier} lacks a falsifier")
         blocks = row.get("requirement_blocks")
@@ -245,7 +305,7 @@ def audit(
 def selftest():
     sheet = {
         "schema_version": 1,
-        "source": {"commit": SOURCE_COMMIT, "xml_sha256": SOURCE_SHA256},
+        "source": copy.deepcopy(SOURCE_IDENTITY),
         "projection": {
             "feature": "VK_VERSION_1_0",
             "api": "vulkan",
@@ -287,6 +347,14 @@ def selftest():
     }
     expected_digest = projection_digest(sheet["projection"]["requirement_blocks"])
     audit(sheet, tracker, expected_projection_sha256=expected_digest)
+    mutated_source = copy.deepcopy(sheet)
+    mutated_source["source"]["tag_object"] = "0" * 40
+    try:
+        audit(mutated_source, tracker, expected_projection_sha256=expected_digest)
+    except AuditFailure:
+        pass
+    else:
+        raise AuditFailure("selftest admitted a mutated registry source identity")
     tracker["rows"][0]["status"] = "conformant"
     try:
         audit(sheet, tracker, expected_projection_sha256=expected_digest)
@@ -322,6 +390,31 @@ def selftest():
     else:
         raise AuditFailure("selftest admitted a mutated registry projection")
     with tempfile.TemporaryDirectory() as temporary_directory:
+        source_root = Path(temporary_directory)
+        Path(source_root, "source.c").write_text(
+            "void vkMapMemory(void) {}\n", encoding="utf-8"
+        )
+        audit(
+            sheet,
+            tracker,
+            expected_projection_sha256=expected_digest,
+            source_root=source_root,
+        )
+        bad_locator = copy.deepcopy(tracker)
+        bad_locator["rows"][0]["evidence"][0]["discovery"] = (
+            "rg --fixed-strings 'missing' source.c"
+        )
+        try:
+            audit(
+                sheet,
+                bad_locator,
+                expected_projection_sha256=expected_digest,
+                source_root=source_root,
+            )
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted an unresolved evidence locator")
         scalar_json = Path(temporary_directory) / "scalar.json"
         scalar_json.write_text("[]", encoding="utf-8")
         try:
@@ -347,6 +440,7 @@ def main(argv=None):
     parser.add_argument("--sheet", type=Path)
     parser.add_argument("--tracker", type=Path)
     parser.add_argument("--registry-xml", type=Path)
+    parser.add_argument("--source-root", type=Path)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -354,8 +448,13 @@ def main(argv=None):
             return selftest()
         if args.sheet is None or args.tracker is None:
             parser.error("--sheet and --tracker are required")
+        if args.source_root is None:
+            parser.error("--source-root is required")
         rows, blocks = audit(
-            read_json(args.sheet), read_json(args.tracker), args.registry_xml
+            read_json(args.sheet),
+            read_json(args.tracker),
+            args.registry_xml,
+            source_root=args.source_root,
         )
         print(
             "r3v_vulkan_1_0_core_tracker_audit: "
