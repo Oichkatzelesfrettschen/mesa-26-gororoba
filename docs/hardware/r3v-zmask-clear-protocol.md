@@ -301,6 +301,53 @@ bridge back to the ordinary uncompressed model. The register facts keep
 their AMD Radeon R5xx Acceleration and AMD R3xx 3D register reference
 citations; neither authority substitutes for the other.
 
+## Compressed-content qualification sequence
+
+Reaching stage F establishes the register configuration; it does not
+establish that the metadata carries anything but the zeros stage C wrote.
+The sequence below is what separates the two, and
+`r300_zmask_compressed_qualification.c` carries it as data a harness
+consumes step by step. Every row is a source-derived model from
+`r300_update_hyperz`, the fast-clear notes in `r300_blit.c`, and the
+ladder's own stage table; no silicon run bounds any of it.
+
+| Step | Stage | What it removes |
+| --- | --- | --- |
+| nonuniform ordinary initialization | A | a uniform image that any clear value reproduces |
+| compressed-write draw that cannot remain a uniform clear | F | the fast-clear substitution explaining the contents |
+| switch away and return | A | contents living in a cache that never retired |
+| compressed read under the decompression group | E | a read that never consulted the metadata |
+| materialize every compressed tile to depth memory | E | contents reachable only while the metadata is bound |
+| return `ZB_BW_CNTL` to zero | C | the metadata answering the verifying read |
+| read back through the qualified tiled address resolver | A | an address model that reads the wrong words |
+| compare to an independent oracle | A | the ZB path grading its own output |
+
+The discriminator requirement is the rule the descriptor enforces. A plan
+is evidence only when it carries a step whose observation the fast-clear
+substitution cannot produce, and
+`r300_zmask_qualification_plan_check` refuses a plan carrying none,
+however many steps it runs. The shipped sequence carries two: the
+compressed-write draw, whose varying depth is not the cleared state
+whatever the metadata says, and the oracle comparison, which grades the
+materialized bytes against a value the ZB never produced after the
+disable step removed the metadata from that read.
+
+The sequence is also the prerequisite the ZMASK_COMPRESSED materializer
+consumes. `r3v_native_depth_clear.c` refuses to materialize a compressed
+representation, and the refusal stands until a plan reaching the
+compressed-write class carries a run:
+`r300_zmask_qualification_materialize_admitted` is what reads that,
+and it answers false for a plan reaching only the fast-clear or the
+compressed-read class, because those leave the intra-tile compressed
+encoding unqualified.
+
+The resolver the verification reads through is the tiled address model,
+which is itself a labeled hypothesis until measured; the ZMASK
+qualification therefore stands behind the address-model measurement
+described under the Z24 control cell above, and a run of this sequence
+before that measurement lands verifies against an address model no
+observation supports.
+
 ## Past F
 
 HiZ is the step past this ladder, and it is unreachable on this part:
