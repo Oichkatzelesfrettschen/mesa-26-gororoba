@@ -3,7 +3,7 @@
   "artifact": "R3V Vulkan 1.0 core implementation tracker",
   "sheet": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
   "reviewed_source": {
-    "mesa_commit": "0d66a5059f0519f8923696c8e137f5c1b846b325",
+    "mesa_commit": "bdc0a1d6283bce367860cf324e560fdc1ba7a476",
     "driver_root": "src/amd/r300/vulkan"
   },
   "conformance_boundary": "Each status records a static source review. A bounded or refused row establishes neither Vulkan conformance nor RS485M execution. A conformance claim requires an executed CTS result with the source, ICD, and target identity retained.",
@@ -256,9 +256,17 @@
         {
           "path": "src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c",
           "discovery": "rg --fixed-strings 'vkCmdDraw' src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_depth_clear.c",
+          "discovery": "rg --fixed-strings 'r3v_native_zmask_plan_admit' src/amd/r300/vulkan/r3v_native_depth_clear.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_zmask_plan_obligations_test.c",
+          "discovery": "rg --fixed-strings 'r3v_native_zmask_plan_obligations_init' src/amd/r300/vulkan/tests/r3v_native_zmask_plan_obligations_test.c"
         }
       ],
-      "falsifier": "Allow a core vkCmd entry point outside the qualified draw, transfer, clear, or experimental compute subsets to succeed without recording executable work."
+      "falsifier": "Allow a core vkCmd entry point outside the qualified draw, transfer, clear, or experimental compute subsets to succeed without recording executable work, or admit a ZMASK fast clear for a recorded operation whose plan obligations preserve an aspect or a region."
     },
     {
       "id": "auxiliary-core-types",
