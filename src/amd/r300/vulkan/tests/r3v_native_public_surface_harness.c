@@ -157,9 +157,9 @@ r3v_native_cache_publication_precedes_close(uint64_t cache_event,
 }
 
 static bool
-r3v_native_memory_type_bits_are_type_zero_only(uint32_t memory_type_bits)
+r3v_native_memory_type_bits_are_host_visible_only(uint32_t memory_type_bits)
 {
-   return memory_type_bits == 0x1u;
+   return memory_type_bits == R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS;
 }
 
 static bool
@@ -2185,13 +2185,17 @@ main(void)
    /* Calibrate the exact-mask verdict by accepting only 0x1 and rejecting
     * the empty and extra-bit masks before checking the device query.
     */
-   assert(r3v_native_memory_type_bits_are_type_zero_only(0x1u));
-   assert(!r3v_native_memory_type_bits_are_type_zero_only(0x0u));
-   assert(!r3v_native_memory_type_bits_are_type_zero_only(0x5u));
+   assert(r3v_native_memory_type_bits_are_host_visible_only(
+      R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS));
+   assert(!r3v_native_memory_type_bits_are_host_visible_only(0x0u));
+   assert(!r3v_native_memory_type_bits_are_host_visible_only(0x1u));
+   assert(!r3v_native_memory_type_bits_are_host_visible_only(
+      R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS |
+      (1u << R3V_NATIVE_MEMORY_DEVICE_LOCAL)));
 
    r3v_GetDeviceBufferMemoryRequirements(device, &device_buffer_info,
                                          &device_buffer_requirements);
-   assert(r3v_native_memory_type_bits_are_type_zero_only(
+   assert(r3v_native_memory_type_bits_are_host_visible_only(
       device_buffer_requirements.memoryRequirements.memoryTypeBits));
    assert(device_dedicated.prefersDedicatedAllocation == VK_FALSE);
    assert(device_dedicated.requiresDedicatedAllocation == VK_FALSE);
