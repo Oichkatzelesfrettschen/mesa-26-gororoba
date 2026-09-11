@@ -52,7 +52,7 @@ a status that claims conformance. The audit resolves those blobs through the
 Git object database, so a later checkout cannot silently change the source
 review result.
 
-## Source review at Mesa `0b66d14e758c80808e7cc661c008b2a834d12fba`
+## Source review at Mesa `0d66a5059f0519f8923696c8e137f5c1b846b325`
 
 The native R3V ICD owns a Gallium-free Radeon DRM transport. The separation
 audit examines native source and binary links for Gallium identifiers and
